@@ -614,6 +614,28 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("a2a backfill failed")
 
+        # Beads bridge: project task graph ↔ A2A coordination channel.
+        # See docs/superpowers/specs/2026-04-27-projects-beads-bridge-design.md.
+        # Construction failure must not break boot — log and continue
+        # without a bridge; routes already null-check app.state.beads_bridge.
+        try:
+            from tinyagentos.projects.beads_bridge import BeadsBridge
+            beads_bridge = BeadsBridge(
+                project_store=project_store,
+                task_store=project_task_store,
+                channel_store=chat_channels,
+                msg_store=chat_messages,
+                broker=project_event_broker,
+                data_root=projects_root,
+            )
+            await beads_bridge.start()
+            await beads_bridge.backfill_active()
+            app.state.beads_bridge = beads_bridge
+            logger.info("beads bridge ready")
+        except Exception:
+            logger.exception("beads bridge failed to start — continuing without")
+            app.state.beads_bridge = None
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers —
         # agents and LiteLLM keep running independently, so there's nothing to
@@ -647,6 +669,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await user_memory.close()
         await desktop_settings.close()
         await canvas_store.close()
+        try:
+            bb = getattr(app.state, "beads_bridge", None)
+            if bb is not None:
+                await bb.stop()
+        except Exception:
+            logger.exception("beads bridge stop failed")
         await project_task_store.close()
         await project_store.close()
         await chat_channels.close()
@@ -718,6 +746,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_store = project_store
     app.state.project_task_store = project_task_store
     app.state.project_event_broker = project_event_broker
+    app.state.beads_bridge = None
     projects_root.mkdir(parents=True, exist_ok=True)
     app.state.projects_root = projects_root
     app.state.chat_hub = chat_hub
