@@ -358,3 +358,124 @@ async def test_on_event_ignores_unknown_kinds(tmp_path):
         "prj_1", {"kind": "task.created", "payload": {"id": "tsk_a"}}
     )
     assert bridge._msg_store.send_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_event_closed_emits_ready_for_unblocked_dependents(tmp_path):
+    """When tsk_a closes, tsk_b (which was blocked by tsk_a) should get a
+    ⚡ ready system message in the A2A channel."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+
+    async def _get_task(task_id):
+        if task_id == "tsk_a":
+            return {
+                "id": "tsk_a",
+                "title": "A",
+                "status": "closed",
+                "closed_by": "alice",
+                "close_reason": None,
+            }
+        if task_id == "tsk_b":
+            return {
+                "id": "tsk_b",
+                "title": "B",
+                "status": "open",
+                "labels": ["frontend"],
+            }
+        return None
+
+    bridge._task_store.get_task = AsyncMock(side_effect=_get_task)
+
+    async def _list_rels(task_id, direction="from"):
+        # tsk_a blocks tsk_b
+        if task_id == "tsk_a" and direction == "from":
+            return [
+                {
+                    "from_task_id": "tsk_a",
+                    "to_task_id": "tsk_b",
+                    "kind": "blocks",
+                }
+            ]
+        if task_id == "tsk_b" and direction == "to":
+            return [
+                {
+                    "from_task_id": "tsk_a",
+                    "to_task_id": "tsk_b",
+                    "kind": "blocks",
+                }
+            ]
+        return []
+
+    bridge._task_store.list_relationships = AsyncMock(side_effect=_list_rels)
+
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.closed", "payload": {"id": "tsk_a", "closed_by": "alice"}},
+    )
+
+    # Two messages: closed for tsk_a, ready for tsk_b
+    assert bridge._msg_store.send_message.await_count == 2
+    bodies = [
+        c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
+    ]
+    assert any("closed tsk_a" in b for b in bodies)
+    assert any("tsk_b ready" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_on_event_closed_no_ready_when_other_blocker_open(tmp_path):
+    """If tsk_b has another open blocker besides the closing tsk_a, no
+    ⚡ ready emits."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+
+    async def _get_task(task_id):
+        if task_id == "tsk_a":
+            return {"id": "tsk_a", "title": "A", "status": "closed"}
+        if task_id == "tsk_b":
+            return {"id": "tsk_b", "title": "B", "status": "open", "labels": []}
+        if task_id == "tsk_c":
+            return {"id": "tsk_c", "title": "C", "status": "open"}  # still blocking
+        return None
+
+    bridge._task_store.get_task = AsyncMock(side_effect=_get_task)
+
+    async def _list_rels(task_id, direction="from"):
+        if task_id == "tsk_a" and direction == "from":
+            return [{"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}]
+        if task_id == "tsk_b" and direction == "to":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"},
+                {"from_task_id": "tsk_c", "to_task_id": "tsk_b", "kind": "blocks"},
+            ]
+        return []
+
+    bridge._task_store.list_relationships = AsyncMock(side_effect=_list_rels)
+
+    await bridge.on_event(
+        "prj_1", {"kind": "task.closed", "payload": {"id": "tsk_a"}}
+    )
+
+    bodies = [
+        c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
+    ]
+    assert not any("ready" in b for b in bodies)

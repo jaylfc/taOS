@@ -258,7 +258,49 @@ class BeadsBridge:
                 await self._post_system(
                     channel["id"], format_closed(actor, tsk_id, title, note)
                 )
+                await self._announce_newly_ready(channel["id"], project_id, tsk_id)
         except Exception:
             logger.exception(
                 "beads bridge: on_event crashed for %s/%s", project_id, event
+            )
+
+    async def _announce_newly_ready(
+        self, channel_id: str, project_id: str, closed_task_id: str
+    ) -> None:
+        from tinyagentos.projects.beads_format import format_ready
+        try:
+            outbound = await self._task_store.list_relationships(
+                closed_task_id, direction="from"
+            )
+        except Exception:
+            logger.exception(
+                "beads bridge: list_relationships failed for %s", closed_task_id
+            )
+            return
+        for rel in outbound:
+            if rel.get("kind") != "blocks":
+                continue
+            dependent_id = rel["to_task_id"]
+            dep = await self._task_store.get_task(dependent_id)
+            if dep is None or dep.get("status") != "open":
+                continue
+            # Check every other blocker on this dependent is also closed.
+            other_blockers = await self._task_store.list_relationships(
+                dependent_id, direction="to"
+            )
+            still_blocked = False
+            for other in other_blockers:
+                if other.get("kind") != "blocks":
+                    continue
+                if other["from_task_id"] == closed_task_id:
+                    continue
+                src = await self._task_store.get_task(other["from_task_id"])
+                if src is not None and src.get("status") not in ("closed", "cancelled"):
+                    still_blocked = True
+                    break
+            if still_blocked:
+                continue
+            await self._post_system(
+                channel_id,
+                format_ready(dependent_id, dep.get("title", ""), list(dep.get("labels") or [])),
             )
