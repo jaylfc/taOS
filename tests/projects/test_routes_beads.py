@@ -167,3 +167,66 @@ async def test_a2a_mention_attaches_comment(app):
             )
             items = r.json()["items"]
             assert any(c2["author_id"] == "bob" and "prod" in c2["body"] for c2 in items)
+
+
+@pytest.mark.asyncio
+async def test_bridge_render_failure_does_not_break_routes(app, monkeypatch):
+    """If _render_jsonl raises, the route still returns 200 and the
+    project is re-marked dirty for retry."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            r = await c.post(
+                "/api/projects",
+                json={"name": "Demo", "slug": "demo-fail"},
+            )
+            assert r.status_code == 200, r.text
+            project = r.json()
+
+            bridge = app.state.beads_bridge
+            calls = {"n": 0}
+            real_render = bridge._render_jsonl
+
+            async def flaky_render(project_id):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise RuntimeError("simulated render failure")
+                return await real_render(project_id)
+
+            monkeypatch.setattr(bridge, "_render_jsonl", flaky_render)
+
+            r = await c.post(
+                f"/api/projects/{project['id']}/tasks",
+                json={"title": "First"},
+            )
+            assert r.status_code == 200, r.text
+
+            # Wait for first render attempt (fails) + re-mark dirty + retry
+            await asyncio.sleep(0.6)
+
+            beads_file = (
+                Path(app.state.projects_root)
+                / project["slug"]
+                / ".beads"
+                / "tasks.jsonl"
+            )
+            assert beads_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_bridge_none_does_not_break_route(app, monkeypatch):
+    """If beads_bridge is None (e.g. construction failed at boot), routes
+    are unaffected and tasks still create successfully."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            monkeypatch.setattr(app.state, "beads_bridge", None)
+            r = await c.post(
+                "/api/projects",
+                json={"name": "Demo", "slug": "demo-none"},
+            )
+            assert r.status_code == 200, r.text
+            project = r.json()
+            r = await c.post(
+                f"/api/projects/{project['id']}/tasks",
+                json={"title": "T"},
+            )
+            assert r.status_code == 200, r.text
