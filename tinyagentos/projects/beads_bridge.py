@@ -100,6 +100,29 @@ class BeadsBridge:
             return
         self._dirty.add(project_id)
 
+    async def backfill_active(self) -> int:
+        """Mark every active project dirty. Called at boot."""
+        try:
+            projects = await self._project_store.list_projects(status="active")
+        except Exception:
+            logger.exception("beads bridge: backfill list_projects failed")
+            return 0
+        count = 0
+        for p in projects:
+            self.mark_dirty(p["id"])
+            count += 1
+        return count
+
+    async def export_now(self, project_id: str) -> Path | None:
+        """Synchronous render-and-write. Returns the file path, or None
+        if the project doesn't exist."""
+        project = await self._project_store.get_project(project_id)
+        if project is None:
+            return None
+        async with self._locks[project_id]:
+            await self._render_jsonl(project_id)
+        return self._data_root / project["slug"] / ".beads" / "tasks.jsonl"
+
     async def _writer_loop(self) -> None:
         while not self._stopped.is_set():
             try:

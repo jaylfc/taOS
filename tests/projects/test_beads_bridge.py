@@ -206,3 +206,47 @@ async def test_render_failure_re_marks_dirty(tmp_path):
     await bridge.stop()
     # Failed render re-marks the project dirty
     assert "prj_1" in bridge._dirty
+
+
+@pytest.mark.asyncio
+async def test_backfill_active_marks_every_active_project(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._project_store.list_projects = AsyncMock(
+        return_value=[
+            {"id": "prj_1", "slug": "a"},
+            {"id": "prj_2", "slug": "b"},
+        ]
+    )
+    n = await bridge.backfill_active()
+    assert n == 2
+    assert bridge._dirty == {"prj_1", "prj_2"}
+
+
+@pytest.mark.asyncio
+async def test_backfill_active_no_projects(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._project_store.list_projects = AsyncMock(return_value=[])
+    n = await bridge.backfill_active()
+    assert n == 0
+    assert bridge._dirty == set()
+
+
+@pytest.mark.asyncio
+async def test_export_now_writes_synchronously(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._task_store.list_tasks = AsyncMock(return_value=[_task_row()])
+    bridge._task_store.list_relationships = AsyncMock(return_value=[])
+    bridge._project_store.get_project = AsyncMock(
+        return_value={"id": "prj_1", "slug": "demo"}
+    )
+    path = await bridge.export_now("prj_1")
+    assert path.exists()
+    assert path.name == "tasks.jsonl"
+
+
+@pytest.mark.asyncio
+async def test_export_now_returns_none_for_missing_project(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._project_store.get_project = AsyncMock(return_value=None)
+    path = await bridge.export_now("prj_missing")
+    assert path is None
