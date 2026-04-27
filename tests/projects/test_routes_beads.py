@@ -81,3 +81,89 @@ async def test_export_endpoint_writes_jsonl(app):
             assert p.exists()
             line = p.read_text().strip()
             assert json.loads(line)["title"] == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_a2a_claim_verb_via_rest_post_claims_task(app):
+    """Send '/claim tsk_<id>' as a non-system message into the project's
+    A2A channel via REST. Bridge should claim the task without invoking
+    agent dispatch."""
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            r = await c.post(
+                "/api/projects",
+                json={"name": "Demo", "slug": "demo-verb"},
+            )
+            project = r.json()
+
+            # Create a task to claim
+            r = await c.post(
+                f"/api/projects/{project['id']}/tasks",
+                json={"title": "claimable"},
+            )
+            task = r.json()
+
+            # Find the project's A2A channel
+            r = await c.get(f"/api/chat/channels?project_id={project['id']}")
+            channels = r.json()["channels"]
+            a2a = next(c2 for c2 in channels if (c2.get("settings") or {}).get("kind") == "a2a")
+
+            # Send the verb as an "agent" non-system message
+            r = await c.post(
+                "/api/chat/messages",
+                json={
+                    "channel_id": a2a["id"],
+                    "author_id": "alice",
+                    "author_type": "agent",
+                    "content": f"/claim {task['id']}",
+                    "content_type": "text",
+                },
+            )
+            assert r.status_code == 200, r.text
+
+            # Allow a tick for the bridge to process the hook
+            await asyncio.sleep(0.1)
+
+            # Task should now be claimed by alice
+            r = await c.get(
+                f"/api/projects/{project['id']}/tasks/{task['id']}"
+            )
+            assert r.json()["status"] == "claimed"
+            assert r.json()["claimed_by"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_a2a_mention_attaches_comment(app):
+    async with app.router.lifespan_context(app):
+        async with _auth_client(app) as c:
+            r = await c.post(
+                "/api/projects",
+                json={"name": "Demo", "slug": "demo-mention"},
+            )
+            project = r.json()
+            r = await c.post(
+                f"/api/projects/{project['id']}/tasks",
+                json={"title": "mentioned"},
+            )
+            task = r.json()
+            r = await c.get(f"/api/chat/channels?project_id={project['id']}")
+            channels = r.json()["channels"]
+            a2a = next(c2 for c2 in channels if (c2.get("settings") or {}).get("kind") == "a2a")
+
+            await c.post(
+                "/api/chat/messages",
+                json={
+                    "channel_id": a2a["id"],
+                    "author_id": "bob",
+                    "author_type": "agent",
+                    "content": f"chasing {task['id']} in prod",
+                    "content_type": "text",
+                },
+            )
+            await asyncio.sleep(0.1)
+
+            r = await c.get(
+                f"/api/projects/{project['id']}/tasks/{task['id']}/comments"
+            )
+            items = r.json()["items"]
+            assert any(c2["author_id"] == "bob" and "prod" in c2["body"] for c2 in items)

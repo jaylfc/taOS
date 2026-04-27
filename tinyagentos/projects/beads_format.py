@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 from typing import Literal
 
 _VERB_RE = re.compile(
-    r"^/(claim|release|close)[ \t]+(tsk_[a-z0-9]+)(?:[ \t]+(.+))?$",
+    r"^/(claim|release|close)[ \t]+(tsk[-_][a-z0-9]+)(?:[ \t]+(.+))?$",
     flags=re.MULTILINE,
 )
-_TASK_ID_RE = re.compile(r"\btsk_[a-z0-9]+\b")
+_TASK_ID_RE = re.compile(r"\btsk[-_][a-z0-9]+\b")
 _PRIORITY_MAP = {0: "p3", 1: "p2", 2: "p1"}
 
 
@@ -83,7 +83,7 @@ Verb = Literal["claim", "release", "close"]
 
 
 def parse_verbs(body: str) -> list[tuple[Verb, str, str | None]]:
-    """Find lines matching `^/(claim|release|close) tsk_<id>[ note]$`.
+    """Find lines matching `^/(claim|release|close) tsk[-_]<id>[ note]$`.
 
     Returns tuples in document order.
     """
@@ -97,7 +97,7 @@ def parse_verbs(body: str) -> list[tuple[Verb, str, str | None]]:
 
 
 def scan_task_ids(body: str) -> list[str]:
-    """Find all `\\btsk_[a-z0-9]+\\b` ids, deduped, order preserved."""
+    """Find all `\\btsk[-_][a-z0-9]+\\b` ids, deduped, order preserved."""
     seen: set[str] = set()
     out: list[str] = []
     for m in _TASK_ID_RE.finditer(body or ""):

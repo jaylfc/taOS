@@ -47,6 +47,20 @@ async def _capture_user_memory(
         logger.debug(f"user memory capture failed: {e}")
 
 
+async def _beads_on_chat_message(app, channel: dict, message: dict) -> None:
+    """Best-effort hand-off to the Beads bridge. Never raises."""
+    bridge = getattr(app.state, "beads_bridge", None)
+    if bridge is None:
+        return
+    project_id = channel.get("project_id")
+    if not project_id:
+        return
+    try:
+        await bridge.on_chat_message(project_id, channel["id"], message)
+    except Exception:
+        logger.warning("beads on_chat_message failed", exc_info=True)
+
+
 @router.get("/api/docs/chat-guide")
 async def get_chat_guide():
     from pathlib import Path as _Path
@@ -104,6 +118,9 @@ async def chat_ws(websocket: WebSocket):
                     channel = await ch_store.get_channel(data["channel_id"])
                     if channel is not None:
                         router_svc.dispatch(message, channel)
+                        asyncio.create_task(
+                            _beads_on_chat_message(websocket.app, channel, message)
+                        )
 
                 # Capture user message into user memory (async, non-blocking)
                 user_memory = getattr(websocket.app.state, "user_memory", None)
@@ -237,7 +254,8 @@ async def post_message(request: Request):
     stripped = content.lstrip()
     if stripped.startswith("/"):
         channel = await ch_store.get_channel(channel_id)
-        if channel and channel.get("type") != "dm":
+        _is_a2a = (channel or {}).get("settings", {}) and (channel or {}).get("settings", {}).get("kind") == "a2a"
+        if channel and channel.get("type") != "dm" and not _is_a2a:
             from tinyagentos.chat.mentions import parse_mentions
             members = list(channel.get("members") or [])
             mentions = parse_mentions(content, members)
@@ -333,10 +351,13 @@ async def post_message(request: Request):
             pass  # Never block chat for archive failures
 
     router_svc = getattr(request.app.state, "agent_chat_router", None)
-    if router_svc is not None:
-        channel = await ch_store.get_channel(channel_id)
-        if channel is not None:
+    channel = await ch_store.get_channel(channel_id)
+    if channel is not None:
+        if router_svc is not None:
             router_svc.dispatch(message, channel)
+        asyncio.create_task(
+            _beads_on_chat_message(request.app, channel, message)
+        )
 
     return message
 
