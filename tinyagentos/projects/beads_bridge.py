@@ -126,5 +126,41 @@ class BeadsBridge:
                 logger.exception("beads bridge: writer loop iteration crashed")
 
     async def _render_jsonl(self, project_id: str) -> None:
-        """Render the project's tasks.jsonl. Implemented in Task 6."""
-        raise NotImplementedError
+        project = await self._project_store.get_project(project_id)
+        if project is None:
+            return
+        slug = project["slug"]
+        beads_dir = self._data_root / slug / ".beads"
+        beads_dir.mkdir(parents=True, exist_ok=True)
+        target = beads_dir / "tasks.jsonl"
+        tmp = beads_dir / f"tasks.jsonl.{os.getpid()}.tmp"
+
+        tasks = await self._task_store.list_tasks(project_id=project_id)
+        from tinyagentos.projects.beads_format import (
+            compute_ready,
+            task_to_jsonl_dict,
+        )
+        import json
+
+        lines: list[str] = []
+        for t in tasks:
+            outbound = await self._task_store.list_relationships(
+                t["id"], direction="from"
+            )
+            incoming = await self._task_store.list_relationships(
+                t["id"], direction="to"
+            )
+            incoming_blocker_statuses: list[str] = []
+            for rel in incoming:
+                if rel.get("kind") != "blocks":
+                    continue
+                src = await self._task_store.get_task(rel["from_task_id"])
+                if src is not None:
+                    incoming_blocker_statuses.append(src.get("status", "open"))
+            ready = compute_ready(t, incoming_blocker_statuses)
+            lines.append(
+                json.dumps(task_to_jsonl_dict(t, outbound, ready), separators=(",", ":"))
+            )
+
+        tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
+        os.replace(tmp, target)
