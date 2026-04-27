@@ -479,3 +479,206 @@ async def test_on_event_closed_no_ready_when_other_blocker_open(tmp_path):
         c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
     ]
     assert not any("ready" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_on_event_closed_emits_ready_for_multiple_dependents(tmp_path):
+    """Closing tsk_a should emit ⚡ ready for both tsk_b and tsk_c when each
+    has only tsk_a as their blocker."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+
+    async def _get_task(task_id):
+        if task_id == "tsk_a":
+            return {
+                "id": "tsk_a",
+                "title": "A",
+                "status": "closed",
+                "closed_by": "alice",
+            }
+        if task_id == "tsk_b":
+            return {"id": "tsk_b", "title": "B", "status": "open", "labels": []}
+        if task_id == "tsk_c":
+            return {"id": "tsk_c", "title": "C", "status": "open", "labels": []}
+        return None
+
+    bridge._task_store.get_task = AsyncMock(side_effect=_get_task)
+
+    async def _list_rels(task_id, direction="from"):
+        if task_id == "tsk_a" and direction == "from":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"},
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_c", "kind": "blocks"},
+            ]
+        if task_id == "tsk_b" and direction == "to":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}
+            ]
+        if task_id == "tsk_c" and direction == "to":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_c", "kind": "blocks"}
+            ]
+        return []
+
+    bridge._task_store.list_relationships = AsyncMock(side_effect=_list_rels)
+
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.closed", "payload": {"id": "tsk_a", "closed_by": "alice"}},
+    )
+
+    calls = bridge._msg_store.send_message.await_args_list
+    system_bodies = [
+        c.kwargs["content"]
+        for c in calls
+        if c.kwargs.get("content_type") == "system"
+    ]
+    # 1 closed + 2 ready
+    assert len(system_bodies) == 3
+    assert any("closed tsk_a" in b for b in system_bodies)
+    assert any("tsk_b ready" in b for b in system_bodies)
+    assert any("tsk_c ready" in b for b in system_bodies)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dependent_status", ["closed", "cancelled"])
+async def test_on_event_closed_no_ready_when_dependent_not_open(
+    tmp_path, dependent_status
+):
+    """If tsk_b is already closed/cancelled, no ⚡ ready emits even though
+    its sole blocker tsk_a just closed."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+
+    async def _get_task(task_id):
+        if task_id == "tsk_a":
+            return {"id": "tsk_a", "title": "A", "status": "closed"}
+        if task_id == "tsk_b":
+            return {"id": "tsk_b", "title": "B", "status": dependent_status}
+        return None
+
+    bridge._task_store.get_task = AsyncMock(side_effect=_get_task)
+
+    async def _list_rels(task_id, direction="from"):
+        if task_id == "tsk_a" and direction == "from":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}
+            ]
+        if task_id == "tsk_b" and direction == "to":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}
+            ]
+        return []
+
+    bridge._task_store.list_relationships = AsyncMock(side_effect=_list_rels)
+
+    await bridge.on_event(
+        "prj_1", {"kind": "task.closed", "payload": {"id": "tsk_a"}}
+    )
+
+    bodies = [
+        c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
+    ]
+    # closed message posted, but no ready
+    assert any("closed tsk_a" in b for b in bodies)
+    assert not any("⚡" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_on_event_closed_ready_synthesis_handles_missing_dependent(tmp_path):
+    """If get_task returns None for the dependent referenced by an outbound
+    blocks edge, _announce_newly_ready must skip silently — closed message
+    still posts, no ready, no exception."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+
+    async def _get_task(task_id):
+        if task_id == "tsk_a":
+            return {"id": "tsk_a", "title": "A", "status": "closed"}
+        # tsk_b lookup returns None (orphan edge)
+        return None
+
+    bridge._task_store.get_task = AsyncMock(side_effect=_get_task)
+
+    async def _list_rels(task_id, direction="from"):
+        if task_id == "tsk_a" and direction == "from":
+            return [
+                {"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}
+            ]
+        return []
+
+    bridge._task_store.list_relationships = AsyncMock(side_effect=_list_rels)
+
+    # No exception should escape
+    await bridge.on_event(
+        "prj_1", {"kind": "task.closed", "payload": {"id": "tsk_a"}}
+    )
+
+    bodies = [
+        c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
+    ]
+    assert any("closed tsk_a" in b for b in bodies)
+    assert not any("ready" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_on_event_closed_ready_synthesis_failure_does_not_break_close_message(
+    tmp_path,
+):
+    """If list_relationships raises while announcing newly-ready dependents,
+    the closed message must already have been posted and no exception
+    escapes on_event."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_a", "title": "A", "status": "closed"}
+    )
+    bridge._task_store.list_relationships = AsyncMock(
+        side_effect=RuntimeError("boom")
+    )
+
+    # No exception escapes on_event
+    await bridge.on_event(
+        "prj_1", {"kind": "task.closed", "payload": {"id": "tsk_a"}}
+    )
+
+    # Closed message was posted before _announce_newly_ready ran
+    calls = bridge._msg_store.send_message.await_args_list
+    assert len(calls) == 1
+    assert "closed tsk_a" in calls[0].kwargs["content"]
