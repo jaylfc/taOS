@@ -254,7 +254,7 @@ async def post_message(request: Request):
     stripped = content.lstrip()
     if stripped.startswith("/"):
         channel = await ch_store.get_channel(channel_id)
-        _is_a2a = (channel or {}).get("settings", {}) and (channel or {}).get("settings", {}).get("kind") == "a2a"
+        _is_a2a = ((channel or {}).get("settings") or {}).get("kind") == "a2a"
         if channel and channel.get("type") != "dm" and not _is_a2a:
             from tinyagentos.chat.mentions import parse_mentions
             members = list(channel.get("members") or [])
