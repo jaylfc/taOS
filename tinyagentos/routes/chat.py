@@ -18,6 +18,17 @@ from tinyagentos.chat.reactions import maybe_trigger_semantic
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    """Schedule a fire-and-forget coroutine, retaining a reference so it
+    cannot be GC'd before completion (RUF006)."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 async def _capture_user_memory(
     user_memory,
@@ -114,13 +125,12 @@ async def chat_ws(websocket: WebSocket):
                 await hub.broadcast(data["channel_id"], {"type": "message", "seq": hub.next_seq(), **message})
 
                 router_svc = getattr(websocket.app.state, "agent_chat_router", None)
-                if router_svc is not None:
-                    channel = await ch_store.get_channel(data["channel_id"])
-                    if channel is not None:
-                        router_svc.dispatch(message, channel)
-                        asyncio.create_task(
-                            _beads_on_chat_message(websocket.app, channel, message)
-                        )
+                if _ws_channel is not None:
+                    if router_svc is not None:
+                        router_svc.dispatch(message, _ws_channel)
+                    _spawn_background(
+                        _beads_on_chat_message(websocket.app, _ws_channel, message)
+                    )
 
                 # Capture user message into user memory (async, non-blocking)
                 user_memory = getattr(websocket.app.state, "user_memory", None)
@@ -354,7 +364,7 @@ async def post_message(request: Request):
     if _http_channel is not None:
         if router_svc is not None:
             router_svc.dispatch(message, _http_channel)
-        asyncio.create_task(
+        _spawn_background(
             _beads_on_chat_message(request.app, _http_channel, message)
         )
 
