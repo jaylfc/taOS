@@ -187,3 +187,78 @@ class BeadsBridge:
 
         tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
         os.replace(tmp, target)
+
+    async def _find_a2a_channel(self, project_id: str) -> dict | None:
+        """Resolve the project's A2A channel. None if missing/archived."""
+        try:
+            channels = await self._channel_store.list_channels(
+                project_id=project_id, archived=False,
+            )
+        except Exception:
+            logger.exception("beads bridge: list_channels failed for %s", project_id)
+            return None
+        for ch in channels:
+            if (
+                ch.get("name") == "a2a"
+                and ch.get("type") == "group"
+                and (ch.get("settings") or {}).get("kind") == "a2a"
+            ):
+                return ch
+        return None
+
+    async def _post_system(self, channel_id: str, body: str) -> None:
+        try:
+            await self._msg_store.send_message(
+                channel_id=channel_id,
+                author_id="bridge",
+                author_type="system",
+                content=body,
+                content_type="system",
+                state="complete",
+            )
+        except Exception:
+            logger.exception("beads bridge: send_message failed for %s", channel_id)
+
+    async def on_event(self, project_id: str, event: dict) -> None:
+        try:
+            kind = event.get("kind")
+            if kind not in ("task.claimed", "task.released", "task.closed"):
+                return
+            payload = event.get("payload") or {}
+            tsk_id = payload.get("id")
+            if not tsk_id:
+                return
+            channel = await self._find_a2a_channel(project_id)
+            if channel is None:
+                return
+            task = await self._task_store.get_task(tsk_id)
+            if task is None:
+                return
+            title = task.get("title", "")
+            from tinyagentos.projects.beads_format import (
+                format_claimed,
+                format_closed,
+                format_released,
+            )
+            if kind == "task.claimed":
+                actor = payload.get("claimed_by") or task.get("claimed_by") or "agent"
+                await self._post_system(
+                    channel["id"], format_claimed(actor, tsk_id, title)
+                )
+            elif kind == "task.released":
+                # The release event payload doesn't include releaser_id;
+                # use the actor we last knew about, or fall back to "agent".
+                actor = task.get("claimed_by") or "agent"
+                await self._post_system(
+                    channel["id"], format_released(actor, tsk_id, title)
+                )
+            elif kind == "task.closed":
+                actor = payload.get("closed_by") or task.get("closed_by") or "agent"
+                note = task.get("close_reason")
+                await self._post_system(
+                    channel["id"], format_closed(actor, tsk_id, title, note)
+                )
+        except Exception:
+            logger.exception(
+                "beads bridge: on_event crashed for %s/%s", project_id, event
+            )

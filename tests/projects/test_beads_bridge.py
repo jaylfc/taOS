@@ -250,3 +250,111 @@ async def test_export_now_returns_none_for_missing_project(tmp_path):
     bridge._project_store.get_project = AsyncMock(return_value=None)
     path = await bridge.export_now("prj_missing")
     assert path is None
+
+
+@pytest.mark.asyncio
+async def test_on_event_claimed_posts_system_message(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_a", "title": "Hello", "status": "claimed"}
+    )
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.claimed", "payload": {"id": "tsk_a", "claimed_by": "alice"}},
+    )
+    assert bridge._msg_store.send_message.await_count == 1
+    kwargs = bridge._msg_store.send_message.await_args.kwargs
+    assert kwargs["channel_id"] == "ch_1"
+    assert kwargs["author_id"] == "bridge"
+    assert kwargs["author_type"] == "system"
+    assert kwargs["content_type"] == "system"
+    assert "alice claimed tsk_a" in kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_on_event_released_posts_system_message(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_a", "title": "T", "status": "open", "claimed_by": None}
+    )
+    await bridge.on_event(
+        "prj_1", {"kind": "task.released", "payload": {"id": "tsk_a"}}
+    )
+    assert bridge._msg_store.send_message.await_count == 1
+    assert "released tsk_a" in (
+        bridge._msg_store.send_message.await_args.kwargs["content"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_event_closed_posts_system_message(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_1",
+                "name": "a2a",
+                "type": "group",
+                "settings": {"kind": "a2a"},
+            }
+        ]
+    )
+    bridge._task_store.get_task = AsyncMock(
+        return_value={
+            "id": "tsk_a",
+            "title": "T",
+            "status": "closed",
+            "closed_by": "alice",
+            "close_reason": "ship it",
+        }
+    )
+    bridge._task_store.list_relationships = AsyncMock(return_value=[])
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.closed", "payload": {"id": "tsk_a", "closed_by": "alice"}},
+    )
+    # First call is the closed message
+    first_call = bridge._msg_store.send_message.await_args_list[0]
+    assert "alice closed tsk_a" in first_call.kwargs["content"]
+    assert "ship it" in first_call.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_on_event_no_a2a_channel_is_silent(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[])
+    bridge._task_store.get_task = AsyncMock(return_value={"id": "tsk_a", "title": "T"})
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.claimed", "payload": {"id": "tsk_a", "claimed_by": "alice"}},
+    )
+    assert bridge._msg_store.send_message.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_event_ignores_unknown_kinds(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    await bridge.on_event(
+        "prj_1", {"kind": "task.created", "payload": {"id": "tsk_a"}}
+    )
+    assert bridge._msg_store.send_message.await_count == 0
