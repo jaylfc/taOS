@@ -845,3 +845,47 @@ async def test_on_chat_message_verb_alone_does_not_double_attach(tmp_path):
     await bridge.on_chat_message("prj_1", "ch_1", _msg("/claim tsk_abc"))
     bridge._task_store.claim_task.assert_awaited_once()
     bridge._task_store.add_comment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_subscribes_to_broker_for_active_projects(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._project_store.list_projects = AsyncMock(
+        return_value=[
+            {"id": "prj_1", "slug": "a"},
+            {"id": "prj_2", "slug": "b"},
+        ]
+    )
+    await bridge.start()
+    await bridge.backfill_active()
+    # backfill_active should have subscribed each active project to the broker
+    assert bridge._broker.subscribe.await_count == 2
+    await bridge.stop()
+
+
+@pytest.mark.asyncio
+async def test_broker_event_triggers_on_event(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    queue: asyncio.Queue = asyncio.Queue()
+    bridge._broker.subscribe = AsyncMock(return_value=queue)
+    bridge._project_store.list_projects = AsyncMock(
+        return_value=[{"id": "prj_1", "slug": "a"}]
+    )
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_x", "title": "X", "status": "claimed"}
+    )
+
+    await bridge.start()
+    await bridge.backfill_active()
+
+    # Simulate an event arriving on the broker queue
+    from tinyagentos.projects.events import ProjectEvent
+    queue.put_nowait(
+        ProjectEvent(kind="task.claimed", payload={"id": "tsk_x", "claimed_by": "bob"})
+    )
+    await asyncio.sleep(0.1)
+    await bridge.stop()
+
+    # The subscriber loop should have called on_event, which posts a system msg
+    assert bridge._msg_store.send_message.await_count >= 1

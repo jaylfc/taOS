@@ -101,7 +101,7 @@ class BeadsBridge:
         self._dirty.add(project_id)
 
     async def backfill_active(self) -> int:
-        """Mark every active project dirty. Called at boot."""
+        """Mark every active project dirty and subscribe to broker. Called at boot."""
         try:
             projects = await self._project_store.list_projects(status="active")
         except Exception:
@@ -110,8 +110,47 @@ class BeadsBridge:
         count = 0
         for p in projects:
             self.mark_dirty(p["id"])
+            await self._ensure_subscribed(p["id"])
             count += 1
         return count
+
+    async def _ensure_subscribed(self, project_id: str) -> None:
+        if project_id in self._broker_tasks:
+            return
+        try:
+            queue = await self._broker.subscribe(project_id)
+        except Exception:
+            logger.exception(
+                "beads bridge: broker subscribe failed for %s", project_id
+            )
+            return
+        self._broker_queues[project_id] = queue
+        self._broker_tasks[project_id] = asyncio.create_task(
+            self._broker_loop(project_id, queue),
+            name=f"beads-bridge-broker:{project_id}",
+        )
+
+    async def _broker_loop(self, project_id: str, queue: Any) -> None:
+        try:
+            while not self._stopped.is_set():
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                # ProjectEvent dataclass has .kind and .payload
+                event = {"kind": ev.kind, "payload": ev.payload}
+                await self.on_event(project_id, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "beads bridge: broker loop crashed for %s", project_id
+            )
+        finally:
+            try:
+                await self._broker.unsubscribe(project_id, queue)
+            except Exception:
+                pass
 
     async def export_now(self, project_id: str) -> Path | None:
         """Synchronous render-and-write. Returns the file path, or None
