@@ -304,3 +304,42 @@ class BeadsBridge:
                 channel_id,
                 format_ready(dependent_id, dep.get("title", ""), list(dep.get("labels") or [])),
             )
+
+    async def on_chat_message(
+        self, project_id: str, channel_id: str, message: dict
+    ) -> None:
+        """Chat send hook. Filters non-A2A channels and our own system
+        messages, then dispatches verbs and attaches mention comments."""
+        try:
+            if message.get("content_type") == "system":
+                return
+            channel = await self._find_a2a_channel(project_id)
+            if channel is None or channel["id"] != channel_id:
+                return
+            body = message.get("content") or ""
+            author = message.get("author_id") or "agent"
+            await self._dispatch_verbs(body, author)
+            # Comment attachment lands in Task 11.
+        except Exception:
+            logger.exception(
+                "beads bridge: on_chat_message crashed for %s/%s",
+                project_id, channel_id,
+            )
+
+    async def _dispatch_verbs(self, body: str, author: str) -> None:
+        from tinyagentos.projects.beads_format import parse_verbs
+        for verb, tsk_id, note in parse_verbs(body):
+            try:
+                if verb == "claim":
+                    await self._task_store.claim_task(tsk_id, author)
+                elif verb == "release":
+                    await self._task_store.release_task(tsk_id, author)
+                elif verb == "close":
+                    await self._task_store.close_task(
+                        tsk_id, closed_by=author, reason=note
+                    )
+            except Exception:
+                logger.info(
+                    "beads bridge: verb /%s %s by %s failed",
+                    verb, tsk_id, author, exc_info=True,
+                )

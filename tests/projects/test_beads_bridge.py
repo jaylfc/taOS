@@ -648,6 +648,104 @@ async def test_on_event_closed_ready_synthesis_handles_missing_dependent(tmp_pat
     assert not any("ready" in b for b in bodies)
 
 
+def _a2a_ch():
+    return {
+        "id": "ch_1",
+        "name": "a2a",
+        "type": "group",
+        "settings": {"kind": "a2a"},
+    }
+
+
+def _msg(content: str, **kw):
+    base = {
+        "id": "msg_1",
+        "channel_id": "ch_1",
+        "author_id": "alice",
+        "author_type": "agent",
+        "content": content,
+        "content_type": "text",
+    }
+    base.update(kw)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_skips_system_content_type(tmp_path):
+    """Bridge must not loop on its own system messages."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    await bridge.on_chat_message(
+        "prj_1", "ch_1", _msg("/claim tsk_abc", content_type="system")
+    )
+    assert bridge._task_store.claim_task.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_skips_non_a2a_channel(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[
+            {
+                "id": "ch_other",
+                "name": "general",
+                "type": "topic",
+                "settings": {},
+            }
+        ]
+    )
+    await bridge.on_chat_message("prj_1", "ch_other", _msg("/claim tsk_abc"))
+    assert bridge._task_store.claim_task.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_claim_calls_task_store(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("/claim tsk_abc"))
+    bridge._task_store.claim_task.assert_awaited_once_with("tsk_abc", "alice")
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_release_calls_task_store(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("/release tsk_abc"))
+    bridge._task_store.release_task.assert_awaited_once_with("tsk_abc", "alice")
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_close_with_note_calls_task_store(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("/close tsk_abc shipped"))
+    bridge._task_store.close_task.assert_awaited_once_with(
+        "tsk_abc", closed_by="alice", reason="shipped"
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_multiple_verbs_processed_in_order(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    await bridge.on_chat_message(
+        "prj_1", "ch_1", _msg("/claim tsk_a\n/close tsk_b done")
+    )
+    bridge._task_store.claim_task.assert_awaited_once_with("tsk_a", "alice")
+    bridge._task_store.close_task.assert_awaited_once_with(
+        "tsk_b", closed_by="alice", reason="done"
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_verb_failure_is_silent(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.claim_task = AsyncMock(side_effect=ValueError("nope"))
+    # Should not raise
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("/claim tsk_abc"))
+
+
 @pytest.mark.asyncio
 async def test_on_event_closed_ready_synthesis_failure_does_not_break_close_message(
     tmp_path,
