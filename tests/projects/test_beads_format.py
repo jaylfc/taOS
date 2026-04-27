@@ -96,3 +96,53 @@ def test_compute_ready_closed_task_never_ready():
 
 def test_compute_ready_claimed_task_not_ready():
     assert compute_ready(_task(status="claimed"), incoming_blocker_statuses=[]) is False
+
+
+from tinyagentos.projects.beads_format import (
+    format_claimed,
+    format_closed,
+    format_ready,
+    format_released,
+)
+
+
+def test_format_claimed():
+    assert format_claimed("alice", "tsk_abc", "Wire OAuth") == (
+        '🤚 alice claimed tsk_abc — "Wire OAuth"'
+    )
+
+
+def test_format_released():
+    assert format_released("alice", "tsk_abc", "Wire OAuth") == (
+        '↩️ alice released tsk_abc — "Wire OAuth"'
+    )
+
+
+def test_format_closed_without_note():
+    assert format_closed("alice", "tsk_abc", "Wire OAuth", note=None) == (
+        '✅ alice closed tsk_abc — "Wire OAuth"'
+    )
+
+
+def test_format_closed_with_note():
+    assert format_closed("alice", "tsk_abc", "Wire OAuth", note="ship it") == (
+        '✅ alice closed tsk_abc — "Wire OAuth"\nship it'
+    )
+
+
+def test_format_closed_strips_blank_note():
+    assert format_closed("alice", "tsk_abc", "T", note="   ") == (
+        '✅ alice closed tsk_abc — "T"'
+    )
+
+
+def test_format_ready_with_labels():
+    assert format_ready("tsk_abc", "Wire OAuth", labels=["auth", "ui"]) == (
+        '⚡ tsk_abc ready — "Wire OAuth" — auth, ui'
+    )
+
+
+def test_format_ready_no_labels():
+    assert format_ready("tsk_abc", "Wire OAuth", labels=[]) == (
+        '⚡ tsk_abc ready — "Wire OAuth"'
+    )

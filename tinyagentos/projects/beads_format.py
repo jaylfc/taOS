@@ -54,3 +54,25 @@ def compute_ready(task: dict, incoming_blocker_statuses: list[str]) -> bool:
     if task.get("status") != "open":
         return False
     return all(s in ("closed", "cancelled") for s in incoming_blocker_statuses)
+
+
+def format_claimed(agent: str, tsk_id: str, title: str) -> str:
+    return f'🤚 {agent} claimed {tsk_id} — "{title}"'
+
+
+def format_released(agent: str, tsk_id: str, title: str) -> str:
+    return f'↩️ {agent} released {tsk_id} — "{title}"'
+
+
+def format_closed(agent: str, tsk_id: str, title: str, note: str | None) -> str:
+    head = f'✅ {agent} closed {tsk_id} — "{title}"'
+    if note and note.strip():
+        return f"{head}\n{note.strip()}"
+    return head
+
+
+def format_ready(tsk_id: str, title: str, labels: list[str]) -> str:
+    head = f'⚡ {tsk_id} ready — "{title}"'
+    if labels:
+        return f"{head} — {', '.join(labels)}"
+    return head
