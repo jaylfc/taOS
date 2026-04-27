@@ -351,12 +351,11 @@ async def post_message(request: Request):
             pass  # Never block chat for archive failures
 
     router_svc = getattr(request.app.state, "agent_chat_router", None)
-    channel = await ch_store.get_channel(channel_id)
-    if channel is not None:
+    if _http_channel is not None:
         if router_svc is not None:
-            router_svc.dispatch(message, channel)
+            router_svc.dispatch(message, _http_channel)
         asyncio.create_task(
-            _beads_on_chat_message(request.app, channel, message)
+            _beads_on_chat_message(request.app, _http_channel, message)
         )
 
     return message

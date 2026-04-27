@@ -106,7 +106,9 @@ async def test_a2a_claim_verb_via_rest_post_claims_task(app):
             # Find the project's A2A channel
             r = await c.get(f"/api/chat/channels?project_id={project['id']}")
             channels = r.json()["channels"]
-            a2a = next(c2 for c2 in channels if (c2.get("settings") or {}).get("kind") == "a2a")
+            a2a_list = [c2 for c2 in channels if (c2.get("settings") or {}).get("kind") == "a2a"]
+            assert a2a_list, "Expected A2A channel to be created for project"
+            a2a = a2a_list[0]
 
             # Send the verb as an "agent" non-system message
             r = await c.post(
@@ -148,7 +150,9 @@ async def test_a2a_mention_attaches_comment(app):
             task = r.json()
             r = await c.get(f"/api/chat/channels?project_id={project['id']}")
             channels = r.json()["channels"]
-            a2a = next(c2 for c2 in channels if (c2.get("settings") or {}).get("kind") == "a2a")
+            a2a_list = [c2 for c2 in channels if (c2.get("settings") or {}).get("kind") == "a2a"]
+            assert a2a_list, "Expected A2A channel to be created for project"
+            a2a = a2a_list[0]
 
             await c.post(
                 "/api/chat/messages",
