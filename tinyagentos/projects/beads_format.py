@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Iterable, Literal
-
 
 _VERB_RE = re.compile(
     r"^/(claim|release|close)\s+(tsk_[a-z0-9]+)(?:\s+(.+))?$",
