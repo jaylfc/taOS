@@ -60,6 +60,19 @@ def _mirror(request: Request, project: dict) -> None:
         )
 
 
+def _beads_mark_dirty(request: Request, project_id: str) -> None:
+    """Best-effort hand-off to the Beads bridge. Never raises."""
+    bridge = getattr(request.app.state, "beads_bridge", None)
+    if bridge is None:
+        return
+    try:
+        bridge.mark_dirty(project_id)
+    except Exception:
+        logger.warning(
+            "beads mark_dirty failed for project %s", project_id, exc_info=True
+        )
+
+
 @router.post("/api/projects")
 async def create_project(payload: CreateProjectIn, request: Request):
     store = request.app.state.project_store
@@ -312,6 +325,7 @@ async def create_task(project_id: str, payload: CreateTaskIn, request: Request):
         parent_task_id=payload.parent_task_id,
         created_by=_user_id(request),
     )
+    _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, _user_id(request), "task.created", {"task_id": t["id"], "title": t["title"]})
     return t
 
@@ -360,6 +374,7 @@ async def update_task(project_id: str, task_id: str, payload: UpdateTaskIn, requ
             cur = await store.get_task(cur["parent_task_id"])
 
     await store.update_task(task_id, **payload.model_dump(exclude_none=True))
+    _beads_mark_dirty(request, project_id)
     return await store.get_task(task_id)
 
 
@@ -372,6 +387,7 @@ async def claim_task(project_id: str, task_id: str, payload: ClaimIn, request: R
     ok = await store.claim_task(task_id, payload.claimer_id)
     if not ok:
         return JSONResponse({"error": "already claimed"}, status_code=409)
+    _beads_mark_dirty(request, project_id)
     pstore = request.app.state.project_store
     await pstore.log_activity(project_id, payload.claimer_id, "task.claimed", {"task_id": task_id})
     return await store.get_task(task_id)
@@ -386,6 +402,7 @@ async def release_task(project_id: str, task_id: str, payload: ReleaseIn, reques
     ok = await store.release_task(task_id, payload.releaser_id)
     if not ok:
         return JSONResponse({"error": "not claimed by releaser"}, status_code=409)
+    _beads_mark_dirty(request, project_id)
     return await store.get_task(task_id)
 
 
@@ -398,6 +415,7 @@ async def close_task(project_id: str, task_id: str, payload: CloseIn, request: R
     ok = await store.close_task(task_id, closed_by=payload.closed_by, reason=payload.reason)
     if not ok:
         return JSONResponse({"error": "cannot close"}, status_code=409)
+    _beads_mark_dirty(request, project_id)
     pstore = request.app.state.project_store
     await pstore.log_activity(project_id, payload.closed_by, "task.closed", {"task_id": task_id})
     project = await pstore.get_project(project_id)
@@ -439,6 +457,7 @@ async def add_relationship(project_id: str, task_id: str, payload: AddRelIn, req
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
+    _beads_mark_dirty(request, project_id)
     return rel
 
 
@@ -531,3 +550,19 @@ async def project_events(project_id: str, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/api/projects/{project_id}/beads/export")
+async def beads_export(project_id: str, request: Request):
+    """Force a synchronous render of the project's .beads/tasks.jsonl
+    snapshot. Returns 503 when the bridge isn't running."""
+    bridge = getattr(request.app.state, "beads_bridge", None)
+    if bridge is None:
+        return JSONResponse({"error": "beads bridge not running"}, status_code=503)
+    pstore = request.app.state.project_store
+    if await pstore.get_project(project_id) is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    path = await bridge.export_now(project_id)
+    if path is None:
+        return JSONResponse({"error": "export failed"}, status_code=500)
+    return {"path": str(path)}
