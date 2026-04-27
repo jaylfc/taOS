@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from typing import Literal
 
 _VERB_RE = re.compile(
-    r"^/(claim|release|close)\s+(tsk_[a-z0-9]+)(?:\s+(.+))?$",
+    r"^/(claim|release|close)[ \t]+(tsk_[a-z0-9]+)(?:[ \t]+(.+))?$",
     flags=re.MULTILINE,
 )
 _TASK_ID_RE = re.compile(r"\btsk_[a-z0-9]+\b")
@@ -76,3 +77,33 @@ def format_ready(tsk_id: str, title: str, labels: list[str]) -> str:
     if labels:
         return f"{head} — {', '.join(labels)}"
     return head
+
+
+Verb = Literal["claim", "release", "close"]
+
+
+def parse_verbs(body: str) -> list[tuple[Verb, str, str | None]]:
+    """Find lines matching `^/(claim|release|close) tsk_<id>[ note]$`.
+
+    Returns tuples in document order.
+    """
+    out: list[tuple[Verb, str, str | None]] = []
+    for m in _VERB_RE.finditer(body or ""):
+        verb = m.group(1)
+        tsk = m.group(2)
+        note = m.group(3)
+        out.append((verb, tsk, note if note else None))  # type: ignore[arg-type]
+    return out
+
+
+def scan_task_ids(body: str) -> list[str]:
+    """Find all `\\btsk_[a-z0-9]+\\b` ids, deduped, order preserved."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _TASK_ID_RE.finditer(body or ""):
+        tid = m.group(0)
+        if tid in seen:
+            continue
+        seen.add(tid)
+        out.append(tid)
+    return out

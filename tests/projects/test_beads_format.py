@@ -146,3 +146,69 @@ def test_format_ready_no_labels():
     assert format_ready("tsk_abc", "Wire OAuth", labels=[]) == (
         '⚡ tsk_abc ready — "Wire OAuth"'
     )
+
+
+from tinyagentos.projects.beads_format import parse_verbs, scan_task_ids
+
+
+def test_parse_verbs_simple():
+    assert parse_verbs("/claim tsk_abc") == [("claim", "tsk_abc", None)]
+
+
+def test_parse_verbs_release():
+    assert parse_verbs("/release tsk_abc") == [("release", "tsk_abc", None)]
+
+
+def test_parse_verbs_close_with_note():
+    assert parse_verbs("/close tsk_abc done shipping") == [
+        ("close", "tsk_abc", "done shipping")
+    ]
+
+
+def test_parse_verbs_close_without_note():
+    assert parse_verbs("/close tsk_abc") == [("close", "tsk_abc", None)]
+
+
+def test_parse_verbs_multiple_lines():
+    body = "/claim tsk_a\n/close tsk_b done\nstray"
+    assert parse_verbs(body) == [
+        ("claim", "tsk_a", None),
+        ("close", "tsk_b", "done"),
+    ]
+
+
+def test_parse_verbs_indented_line_not_matched():
+    assert parse_verbs("  /claim tsk_abc") == []
+
+
+def test_parse_verbs_unknown_verb_not_matched():
+    assert parse_verbs("/foo tsk_abc") == []
+
+
+def test_parse_verbs_invalid_task_id_not_matched():
+    assert parse_verbs("/claim notavalid") == []
+    assert parse_verbs("/claim tsk_") == []  # must have at least one hex char
+
+
+def test_parse_verbs_empty_body():
+    assert parse_verbs("") == []
+
+
+def test_scan_task_ids_finds_all():
+    assert scan_task_ids("see tsk_abc and tsk_def for context") == [
+        "tsk_abc",
+        "tsk_def",
+    ]
+
+
+def test_scan_task_ids_dedupes_preserve_order():
+    assert scan_task_ids("tsk_abc tsk_def tsk_abc") == ["tsk_abc", "tsk_def"]
+
+
+def test_scan_task_ids_word_boundary():
+    # xtsk_abc is not a match (no leading word boundary)
+    assert scan_task_ids("xtsk_abc tsk_def") == ["tsk_def"]
+
+
+def test_scan_task_ids_none_in_body():
+    assert scan_task_ids("nothing here") == []
