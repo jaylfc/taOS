@@ -780,3 +780,68 @@ async def test_on_event_closed_ready_synthesis_failure_does_not_break_close_mess
     calls = bridge._msg_store.send_message.await_args_list
     assert len(calls) == 1
     assert "closed tsk_a" in calls[0].kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_mention_attaches_comment(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_abc", "project_id": "prj_1"}
+    )
+    await bridge.on_chat_message(
+        "prj_1", "ch_1", _msg("seeing tsk_abc explode under load")
+    )
+    bridge._task_store.add_comment.assert_awaited_once()
+    kwargs = bridge._task_store.add_comment.await_args.kwargs
+    assert kwargs["task_id"] == "tsk_abc"
+    assert kwargs["author_id"] == "alice"
+    assert "explode under load" in kwargs["body"]
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_mention_dedupes_per_message_task(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_abc", "project_id": "prj_1"}
+    )
+    msg = _msg("ping tsk_abc again", id="msg_dup")
+    await bridge.on_chat_message("prj_1", "ch_1", msg)
+    await bridge.on_chat_message("prj_1", "ch_1", msg)
+    assert bridge._task_store.add_comment.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_mention_skips_unknown_task(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(return_value=None)  # task not found
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("ghost tsk_zzz"))
+    assert bridge._task_store.add_comment.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_mention_skips_cross_project_task(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_abc", "project_id": "prj_OTHER"}
+    )
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("tsk_abc here"))
+    assert bridge._task_store.add_comment.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_verb_alone_does_not_double_attach(tmp_path):
+    """`/claim tsk_abc` should hit claim_task once and NOT also create a
+    comment for the same id (the verb is the action; commenting on top
+    would be noise)."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_abc", "project_id": "prj_1"}
+    )
+    await bridge.on_chat_message("prj_1", "ch_1", _msg("/claim tsk_abc"))
+    bridge._task_store.claim_task.assert_awaited_once()
+    bridge._task_store.add_comment.assert_not_awaited()

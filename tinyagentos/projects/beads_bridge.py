@@ -318,17 +318,25 @@ class BeadsBridge:
                 return
             body = message.get("content") or ""
             author = message.get("author_id") or "agent"
-            await self._dispatch_verbs(body, author)
-            # Comment attachment lands in Task 11.
+            verb_ids = await self._dispatch_verbs(body, author)
+            await self._attach_mentions(
+                project_id=project_id,
+                message_id=message.get("id") or "",
+                author=author,
+                body=body,
+                verb_ids=verb_ids,
+            )
         except Exception:
             logger.exception(
                 "beads bridge: on_chat_message crashed for %s/%s",
                 project_id, channel_id,
             )
 
-    async def _dispatch_verbs(self, body: str, author: str) -> None:
+    async def _dispatch_verbs(self, body: str, author: str) -> set[str]:
         from tinyagentos.projects.beads_format import parse_verbs
+        acted: set[str] = set()
         for verb, tsk_id, note in parse_verbs(body):
+            acted.add(tsk_id)
             try:
                 if verb == "claim":
                     await self._task_store.claim_task(tsk_id, author)
@@ -343,3 +351,46 @@ class BeadsBridge:
                     "beads bridge: verb /%s %s by %s failed",
                     verb, tsk_id, author, exc_info=True,
                 )
+        return acted
+
+    async def _attach_mentions(
+        self,
+        *,
+        project_id: str,
+        message_id: str,
+        author: str,
+        body: str,
+        verb_ids: set[str],
+    ) -> None:
+        from tinyagentos.projects.beads_format import scan_task_ids
+        for tsk_id in scan_task_ids(body):
+            if tsk_id in verb_ids:
+                continue
+            key = (message_id, tsk_id)
+            if key in self._seen_comments_set:
+                continue
+            try:
+                task = await self._task_store.get_task(tsk_id)
+            except Exception:
+                logger.exception(
+                    "beads bridge: get_task failed for %s", tsk_id,
+                )
+                continue
+            if task is None or task.get("project_id") != project_id:
+                continue
+            try:
+                await self._task_store.add_comment(
+                    task_id=tsk_id, author_id=author, body=body,
+                )
+            except Exception:
+                logger.info(
+                    "beads bridge: add_comment failed for %s", tsk_id,
+                    exc_info=True,
+                )
+                continue
+            # Record only after successful attach. Bounded FIFO eviction.
+            if len(self._seen_comments_order) == self._seen_comments_order.maxlen:
+                evicted = self._seen_comments_order[0]
+                self._seen_comments_set.discard(evicted)
+            self._seen_comments_order.append(key)
+            self._seen_comments_set.add(key)
