@@ -54,10 +54,14 @@ cp "$REPO_ROOT/pyproject.toml" "$CONTENTS/Resources/taos/pyproject.toml"
 # Frontend
 cp -R "$STAGING/frontend" "$CONTENTS/Resources/frontend"
 
-# Apple container CLI
+# Apple container CLI + libexec plugins (image/network/runtime)
 mkdir -p "$CONTENTS/Resources/bin"
 cp "$STAGING/bin/container" "$CONTENTS/Resources/bin/container"
 chmod +x "$CONTENTS/Resources/bin/container"
+if [[ -d "$STAGING/libexec/container" ]]; then
+  mkdir -p "$CONTENTS/Resources/libexec"
+  cp -R "$STAGING/libexec/container" "$CONTENTS/Resources/libexec/container"
+fi
 
 # Sparkle.framework — fetched/extracted by build.sh prior
 if [[ -d "$STAGING/Sparkle.framework" ]]; then

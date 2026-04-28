@@ -10,8 +10,8 @@
 set -euo pipefail
 
 VERSION=""
-PYTHON_VER="3.12.7"
-CLI_VER="0.5.0"
+PYTHON_VER="3.12.13"
+CLI_VER="0.12.0"
 OUTPUT="dist"
 while [[ $# -gt 0 ]]; do
   case "$1" in

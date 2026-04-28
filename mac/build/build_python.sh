@@ -21,8 +21,8 @@ done
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CHECKSUM_FILE="$REPO_ROOT/mac/build/checksums/python-build-standalone.sha256"
 
-# Latest stable release naming convention from indygreg/python-build-standalone
-TAG="20250108"
+# Latest stable release naming convention from astral-sh/python-build-standalone
+TAG="20260414"
 URL="https://github.com/astral-sh/python-build-standalone/releases/download/${TAG}/cpython-${PYTHON_VER}+${TAG}-aarch64-apple-darwin-install_only.tar.gz"
 
 mkdir -p "$OUTPUT"
