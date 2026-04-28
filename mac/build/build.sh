@@ -72,7 +72,12 @@ echo "[build] (8/9) notarize"
 "$SCRIPT_DIR/notarize.sh" --dmg "$DMG"
 
 echo "[build] (9/9) sparkle-sign"
-"$SCRIPT_DIR/sparkle_sign.sh" --dmg "$DMG" --version "$VERSION" --output "$REPO_ROOT/$OUTPUT"
+SPARKLE_KEY="${SPARKLE_ED_PRIVATE_KEY:-$HOME/.taos/sparkle_ed_private.pem}"
+if [[ -f "$SPARKLE_KEY" ]]; then
+  "$SCRIPT_DIR/sparkle_sign.sh" --dmg "$DMG" --version "$VERSION" --output "$REPO_ROOT/$OUTPUT"
+else
+  echo "[sparkle-sign] skipped — no Sparkle EdDSA private key at $SPARKLE_KEY"
+fi
 
 # Clean staging on success
 rm -rf "$STAGING"

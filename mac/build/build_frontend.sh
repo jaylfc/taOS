@@ -16,11 +16,11 @@ done
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-cd "$REPO_ROOT/frontend"
-echo "[build_frontend] pnpm install"
-pnpm install --frozen-lockfile
-echo "[build_frontend] pnpm build"
-pnpm build
+cd "$REPO_ROOT/desktop"
+echo "[build_frontend] npm ci"
+npm ci
+echo "[build_frontend] npm run build"
+npm run build
 
 mkdir -p "$OUTPUT/frontend"
 cp -R dist/. "$OUTPUT/frontend/"

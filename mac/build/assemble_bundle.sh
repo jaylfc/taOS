@@ -29,7 +29,13 @@ rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Frameworks"
 
 # Info.plist
-SU_PUBLIC_ED_KEY="$(cat "$REPO_ROOT/mac/appcast/ed_public.pem" | grep -v '^-----' | tr -d '\n')"
+ED_KEY_FILE="$REPO_ROOT/mac/appcast/ed_public.pem"
+if [[ -f "$ED_KEY_FILE" ]]; then
+  SU_PUBLIC_ED_KEY="$(grep -v '^-----' "$ED_KEY_FILE" | tr -d '\n')"
+else
+  echo "[assemble_bundle] no ed_public.pem — Sparkle will be disabled in this build"
+  SU_PUBLIC_ED_KEY=""
+fi
 sed -e "s|\${VERSION}|$VERSION|g" \
     -e "s|\${SU_PUBLIC_ED_KEY}|$SU_PUBLIC_ED_KEY|g" \
     "$REPO_ROOT/mac/launcher/Sources/taOSLauncher/Resources/Info.plist.in" \
