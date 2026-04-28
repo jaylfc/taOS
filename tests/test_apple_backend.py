@@ -242,3 +242,35 @@ async def test_get_container_logs_returns_error_message_on_failure(monkeypatch):
         out = await b.get_container_logs("x")
     assert out.startswith("Error getting logs:")
     assert "no such container" in out
+
+
+@pytest.mark.asyncio
+async def test_snapshot_create(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "sha256:deadbeef")
+        result = await b.snapshot_create("x", "v1")
+    argv = m.call_args.args[0]
+    assert argv[1] == "commit"
+    assert "x" in argv
+    assert "taos/v1:latest" in argv
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_snapshot_restore_unsupported(monkeypatch):
+    b = _backend(monkeypatch)
+    result = await b.snapshot_restore("x", "v1")
+    assert result["success"] is False
+    assert "not supported" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_list_parses_taos_images(monkeypatch):
+    b = _backend(monkeypatch)
+    payload = '[{"reference":"taos/v1:latest"},{"reference":"taos/v2:latest"}]'
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, payload)
+        result = await b.snapshot_list("x")
+    assert result["success"] is True
+    assert result["snapshots"] == ["v1", "v2"]

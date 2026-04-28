@@ -161,13 +161,36 @@ class AppleContainerBackend(ContainerBackend):
         raise NotImplementedError
 
     async def snapshot_create(self, name: str, snapshot_name: str) -> dict:
-        raise NotImplementedError
+        code, output = await self._run(
+            [self.binary, "commit", name, f"taos/{snapshot_name}:latest"]
+        )
+        return {"success": code == 0, "output": output}
 
     async def snapshot_restore(self, name: str, snapshot_name: str) -> dict:
-        raise NotImplementedError
+        return {
+            "success": False,
+            "output": "",
+            "note": "apple container snapshot restore not supported",
+        }
 
     async def snapshot_list(self, name: str) -> dict:
-        raise NotImplementedError
+        code, output = await self._run(
+            [self.binary, "images", "ls", "--format", "json"]
+        )
+        if code != 0:
+            return {"success": False, "snapshots": [], "output": output}
+        try:
+            items = json.loads(output) if output.strip() else []
+        except json.JSONDecodeError:
+            return {"success": False, "snapshots": [], "output": output}
+
+        snapshots: list[str] = []
+        for it in items:
+            ref = it.get("reference", "")
+            if ref.startswith("taos/"):
+                tag = ref[len("taos/"):].split(":", 1)[0]
+                snapshots.append(tag)
+        return {"success": True, "snapshots": snapshots, "output": output}
 
     async def set_env(self, name: str, key: str, value: str) -> dict:
         raise NotImplementedError
