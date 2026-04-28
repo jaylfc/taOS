@@ -139,3 +139,35 @@ async def test_agent_with_permission_can_update(store_with_member):
         author_kind="agent", author_id="agent-1",
     )
     assert updated["x"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_delete_element_soft_excludes_from_list(store):
+    e = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    await store.delete_element(
+        project_id="p", element_id=e["id"],
+        author_kind="user", author_id="u",
+    )
+    rows = await store.list_elements("p")
+    assert rows == []
+    raw = await store.get_element(e["id"])
+    assert raw is not None
+    assert raw["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_requires_permission(store_with_member):
+    from tinyagentos.projects.canvas.store import CanvasPermissionError
+    cs, _ = store_with_member
+    e = await cs.add_element(
+        project_id="p1", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    with pytest.raises(CanvasPermissionError):
+        await cs.delete_element(
+            project_id="p1", element_id=e["id"],
+            author_kind="agent", author_id="agent-1",
+        )

@@ -176,3 +176,26 @@ class ProjectCanvasStore(BaseStore):
             raise ValueError(f"element not found: {element_id}")
         await self._publish(project_id, "canvas.element_updated", {"element": updated})
         return updated
+
+    async def delete_element(
+        self,
+        *,
+        project_id: str,
+        element_id: str,
+        author_kind: str,
+        author_id: str,
+    ) -> None:
+        await self._check_edit_permission(project_id, author_kind, author_id)
+        now = time.time()
+        cur = await self._db.execute(
+            """UPDATE project_canvas_elements
+               SET deleted_at = ?, updated_at = ?
+               WHERE id = ? AND project_id = ? AND deleted_at IS NULL""",
+            (now, now, element_id, project_id),
+        )
+        await self._db.commit()
+        if cur.rowcount == 1:
+            await self._publish(
+                project_id, "canvas.element_deleted",
+                {"element_id": element_id},
+            )
