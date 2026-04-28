@@ -171,3 +171,26 @@ async def test_delete_requires_permission(store_with_member):
             project_id="p1", element_id=e["id"],
             author_kind="agent", author_id="agent-1",
         )
+
+
+@pytest_asyncio.fixture
+async def store_with_broker(tmp_path):
+    from tinyagentos.projects.events import ProjectEventBroker
+    broker = ProjectEventBroker()
+    s = ProjectCanvasStore(tmp_path / "canvas.db", broker=broker)
+    await s.init()
+    yield s, broker
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_add_element_publishes_event(store_with_broker):
+    s, broker = store_with_broker
+    queue = await broker.subscribe("p1")
+    await s.add_element(
+        project_id="p1", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "x"}},
+    )
+    ev = await queue.get()
+    assert ev.kind == "canvas.element_added"
+    assert ev.payload["element"]["payload"]["text"] == "x"
