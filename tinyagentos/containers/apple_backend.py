@@ -116,12 +116,14 @@ class AppleContainerBackend(ContainerBackend):
     async def exec_in_container(
         self, name: str, cmd: list[str], timeout: int = 300
     ) -> tuple[int, str]:
-        raise NotImplementedError
+        return await self._run([self.binary, "exec", name, *cmd], timeout=timeout)
 
     async def push_file(
         self, name: str, local_path: str, remote_path: str
     ) -> tuple[int, str]:
-        raise NotImplementedError
+        return await self._run(
+            [self.binary, "cp", local_path, f"{name}:{remote_path}"]
+        )
 
     async def start_container(self, name: str) -> dict:
         raise NotImplementedError

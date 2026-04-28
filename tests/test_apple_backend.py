@@ -137,3 +137,29 @@ async def test_create_container_with_root_size_gib_does_not_orphan(monkeypatch, 
             )
     assert result["success"] is True
     assert any("set_root_quota" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_exec_in_container(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "hello world\n")
+        code, output = await b.exec_in_container("taos-agent-x", ["echo", "hi"])
+    assert code == 0
+    assert "hello" in output
+    argv = m.call_args.args[0]
+    assert argv[1] == "exec"
+    assert "taos-agent-x" in argv
+    assert "echo" in argv and "hi" in argv
+
+
+@pytest.mark.asyncio
+async def test_push_file(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "")
+        code, output = await b.push_file("taos-agent-x", "/tmp/foo", "/etc/foo")
+    argv = m.call_args.args[0]
+    assert argv[1] == "cp"
+    assert "/tmp/foo" in argv
+    assert "taos-agent-x:/etc/foo" in argv
