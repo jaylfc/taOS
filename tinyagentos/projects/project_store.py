@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS project_members (
     role TEXT NOT NULL DEFAULT 'member',
     source_agent_id TEXT,
     memory_seed TEXT NOT NULL DEFAULT 'none',
+    can_edit_canvas INTEGER NOT NULL DEFAULT 0,
     added_at REAL NOT NULL,
     PRIMARY KEY (project_id, member_id)
 );
@@ -60,6 +61,16 @@ def _row_to_project(row, description) -> dict:
 
 class ProjectStore(BaseStore):
     SCHEMA = PROJECTS_SCHEMA
+
+    async def _post_init(self) -> None:
+        try:
+            await self._db.execute(
+                "ALTER TABLE project_members ADD COLUMN can_edit_canvas INTEGER NOT NULL DEFAULT 0"
+            )
+            await self._db.commit()
+        except Exception:
+            # Column already exists on fresh installs (created by SCHEMA).
+            pass
 
     async def create_project(
         self,
