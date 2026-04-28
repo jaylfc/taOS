@@ -108,3 +108,59 @@ async def delete_canvas_element(project_id: str, element_id: str, request: Reque
     except CanvasPermissionError as e:
         return JSONResponse({"error": "permission_denied", "message": str(e)}, status_code=403)
     return Response(status_code=204)
+
+
+class PermissionIn(BaseModel):
+    can_edit_canvas: bool
+
+
+@router.get("/api/projects/{project_id}/canvas/snapshot.png")
+async def get_canvas_png(project_id: str, request: Request):
+    cs = request.app.state.project_canvas_store
+    elements = await cs.list_elements(project_id)
+    project = await request.app.state.project_store.get_project(project_id)
+    if project is None:
+        return JSONResponse({"error": "project not found"}, status_code=404)
+    out = (
+        request.app.state.projects_root
+        / project["slug"] / "files" / "canvas"
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    target = out / "snapshot.png"
+    render_snapshot_png(elements=elements, output_path=target)
+    return FileResponse(target, media_type="image/png")
+
+
+@router.get("/api/projects/{project_id}/canvas/snapshot.tldr")
+async def get_canvas_tldr(project_id: str, request: Request):
+    snap = request.app.state.canvas_snapshotter
+    path = await snap.export_now(project_id)
+    if path is None or not path.exists():
+        return JSONResponse({"error": "project not found"}, status_code=404)
+    return FileResponse(path, media_type="application/json")
+
+
+@router.patch("/api/projects/{project_id}/canvas/permissions/{agent_id}")
+async def set_canvas_permission(
+    project_id: str, agent_id: str, payload: PermissionIn, request: Request,
+):
+    ps = request.app.state.project_store
+    val = 1 if payload.can_edit_canvas else 0
+    cur = await ps._db.execute(
+        "UPDATE project_members SET can_edit_canvas = ? "
+        "WHERE project_id = ? AND member_id = ?",
+        (val, project_id, agent_id),
+    )
+    await ps._db.commit()
+    if cur.rowcount == 0:
+        return JSONResponse({"error": "member not found"}, status_code=404)
+    broker = request.app.state.project_broker
+    from tinyagentos.projects.events import ProjectEvent
+    await broker.publish(
+        project_id,
+        ProjectEvent(
+            kind="canvas.permission_changed",
+            payload={"agent_id": agent_id, "can_edit_canvas": bool(val)},
+        ),
+    )
+    return {"ok": True, "agent_id": agent_id, "can_edit_canvas": bool(val)}

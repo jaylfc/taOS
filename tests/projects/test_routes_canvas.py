@@ -91,3 +91,29 @@ async def test_delete_element_returns_204_and_hides(client):
     assert r2.status_code == 204
     r3 = await c.get(f"/api/projects/{p['id']}/canvas/elements")
     assert r3.json()["elements"] == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_png_renders(client):
+    c, p, _ = client
+    await c.post(f"/api/projects/{p['id']}/canvas/elements", json={
+        "kind": "note", "x": 0, "y": 0, "w": 100, "h": 50, "payload": {"text": "hi"}})
+    r = await c.get(f"/api/projects/{p['id']}/canvas/snapshot.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/png")
+    assert len(r.content) > 100
+
+
+@pytest.mark.asyncio
+async def test_permission_toggle(client):
+    c, p, app = client
+    ps = app.state.project_store
+    await ps.add_member(p["id"], "agent-1", member_kind="native")
+    r = await c.patch(
+        f"/api/projects/{p['id']}/canvas/permissions/agent-1",
+        json={"can_edit_canvas": True},
+    )
+    assert r.status_code == 200
+    members = await ps.list_members(p["id"])
+    me = next(m for m in members if m["member_id"] == "agent-1")
+    assert me["can_edit_canvas"] == 1
