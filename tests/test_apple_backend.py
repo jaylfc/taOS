@@ -123,20 +123,17 @@ async def test_create_container_returns_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_container_with_root_size_gib_does_not_orphan(monkeypatch, caplog):
-    """If set_root_quota is unimplemented or fails, create_container still succeeds."""
-    import logging
+async def test_create_container_with_root_size_gib_does_not_orphan(monkeypatch):
+    """set_root_quota returns accounting-only success; create_container still succeeds."""
     b = _backend(monkeypatch)
     with patch.object(b, "_run", new_callable=AsyncMock) as m:
         m.return_value = (0, "abc123")
-        with caplog.at_level(logging.WARNING):
-            result = await b.create_container(
-                name="taos-agent-quota",
-                image="docker.io/library/debian:bookworm",
-                root_size_gib=10,
-            )
+        result = await b.create_container(
+            name="taos-agent-quota",
+            image="docker.io/library/debian:bookworm",
+            root_size_gib=10,
+        )
     assert result["success"] is True
-    assert any("set_root_quota" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -319,3 +316,28 @@ async def test_snapshot_list_excludes_non_taos_images(monkeypatch):
         result = await b.snapshot_list("x")
     assert result["success"] is True
     assert result["snapshots"] == ["v1", "v2"]
+
+
+@pytest.mark.asyncio
+async def test_add_proxy_device_is_noop(monkeypatch):
+    b = _backend(monkeypatch)
+    result = await b.add_proxy_device("x", "litellm", "tcp:127.0.0.1:4000",
+                                       "tcp:127.0.0.1:4000")
+    assert result["success"] is True
+    assert "host.containers.internal" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_set_env_unsupported(monkeypatch):
+    b = _backend(monkeypatch)
+    result = await b.set_env("x", "KEY", "value")
+    assert result["success"] is False
+    assert "recreate" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_set_root_quota_accounting_only(monkeypatch):
+    b = _backend(monkeypatch)
+    result = await b.set_root_quota("x", 5)
+    assert result["success"] is True
+    assert "accounting-only" in result["note"]

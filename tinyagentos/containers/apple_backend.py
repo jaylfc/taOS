@@ -64,7 +64,11 @@ class AppleContainerBackend(ContainerBackend):
         return results
 
     async def set_root_quota(self, name: str, size_gib: int) -> dict:
-        raise NotImplementedError
+        return {
+            "success": True,
+            "output": "",
+            "note": "apple container CLI exposes no rootfs quota; accounting-only",
+        }
 
     async def create_container(
         self,
@@ -158,7 +162,11 @@ class AppleContainerBackend(ContainerBackend):
         self, name: str, device_name: str, listen: str, connect: str,
         bind_mode: str | None = None,
     ) -> dict:
-        raise NotImplementedError
+        return {
+            "success": True,
+            "output": "",
+            "note": "apple containers reach host services via host.containers.internal",
+        }
 
     async def snapshot_create(self, name: str, snapshot_name: str) -> dict:
         code, output = await self._run(
@@ -193,4 +201,8 @@ class AppleContainerBackend(ContainerBackend):
         return {"success": True, "snapshots": snapshots, "output": output}
 
     async def set_env(self, name: str, key: str, value: str) -> dict:
-        raise NotImplementedError
+        return {
+            "success": False,
+            "output": "",
+            "note": "apple container env change requires recreate",
+        }
