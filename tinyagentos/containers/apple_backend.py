@@ -11,10 +11,11 @@ All ``subprocess`` calls go through ``asyncio.create_subprocess_exec``
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 
-from .backend import ContainerBackend, ContainerInfo
+from .backend import ContainerBackend, ContainerInfo, _parse_memory
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,31 @@ class AppleContainerBackend(ContainerBackend):
 
     # All ABC methods raise NotImplementedError until subsequent tasks.
     async def list_containers(self, prefix: str = "taos-agent-") -> list[ContainerInfo]:
-        raise NotImplementedError
+        code, output = await self._run([self.binary, "ls", "-a", "--format", "json"])
+        if code != 0:
+            logger.error("apple container ls failed: %s", output)
+            return []
+        try:
+            items = json.loads(output) if output.strip() else []
+        except json.JSONDecodeError:
+            logger.error("apple container ls returned non-JSON: %s", output[:200])
+            return []
+
+        results: list[ContainerInfo] = []
+        for it in items:
+            name = it.get("name", "")
+            if not name.startswith(prefix):
+                continue
+            results.append(
+                ContainerInfo(
+                    name=name,
+                    status=it.get("status", "unknown"),
+                    ip=it.get("ip"),
+                    memory_mb=_parse_memory(str(it.get("memory", "0"))),
+                    cpu_cores=int(it.get("cpus", 0) or 0),
+                )
+            )
+        return results
 
     async def set_root_quota(self, name: str, size_gib: int) -> dict:
         raise NotImplementedError
