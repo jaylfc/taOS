@@ -67,3 +67,44 @@ async def create_canvas_element(
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     return {"element": new_el}
+
+
+class PatchElementIn(BaseModel):
+    x: float | None = None
+    y: float | None = None
+    w: float | None = None
+    h: float | None = None
+    rotation: float | None = None
+    z_index: int | None = None
+    payload: dict | None = None
+
+
+@router.patch("/api/projects/{project_id}/canvas/elements/{element_id}")
+async def update_canvas_element(
+    project_id: str, element_id: str, payload: PatchElementIn, request: Request,
+):
+    cs = request.app.state.project_canvas_store
+    patch = {k: v for k, v in payload.model_dump().items() if v is not None}
+    try:
+        updated = await cs.update_element(
+            project_id=project_id, element_id=element_id, patch=patch,
+            author_kind="user", author_id=_user_id(request),
+        )
+    except CanvasPermissionError as e:
+        return JSONResponse({"error": "permission_denied", "message": str(e)}, status_code=403)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return {"element": updated}
+
+
+@router.delete("/api/projects/{project_id}/canvas/elements/{element_id}", status_code=204)
+async def delete_canvas_element(project_id: str, element_id: str, request: Request):
+    cs = request.app.state.project_canvas_store
+    try:
+        await cs.delete_element(
+            project_id=project_id, element_id=element_id,
+            author_kind="user", author_id=_user_id(request),
+        )
+    except CanvasPermissionError as e:
+        return JSONResponse({"error": "permission_denied", "message": str(e)}, status_code=403)
+    return Response(status_code=204)

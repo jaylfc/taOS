@@ -66,3 +66,28 @@ async def test_post_then_get_elements(client):
 
     r2 = await c.get(f"/api/projects/{p['id']}/canvas/elements")
     assert len(r2.json()["elements"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_element_updates_payload(client):
+    c, p, _ = client
+    r = await c.post(f"/api/projects/{p['id']}/canvas/elements", json={
+        "kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}})
+    eid = r.json()["element"]["id"]
+    r2 = await c.patch(f"/api/projects/{p['id']}/canvas/elements/{eid}",
+                        json={"x": 99, "payload": {"text": "edited"}})
+    assert r2.status_code == 200
+    assert r2.json()["element"]["x"] == 99
+    assert r2.json()["element"]["payload"]["text"] == "edited"
+
+
+@pytest.mark.asyncio
+async def test_delete_element_returns_204_and_hides(client):
+    c, p, _ = client
+    r = await c.post(f"/api/projects/{p['id']}/canvas/elements", json={
+        "kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}})
+    eid = r.json()["element"]["id"]
+    r2 = await c.delete(f"/api/projects/{p['id']}/canvas/elements/{eid}")
+    assert r2.status_code == 204
+    r3 = await c.get(f"/api/projects/{p['id']}/canvas/elements")
+    assert r3.json()["elements"] == []
