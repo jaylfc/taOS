@@ -105,6 +105,16 @@ class TestSettingsRoutes:
         assert resp.json()["status"] == "updated"
 
     @pytest.mark.asyncio
+    async def test_set_apple_runtime(self, client):
+        resp = await client.put(
+            "/api/settings/container-runtime",
+            content='{"runtime": "apple"}',
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "updated"
+
+    @pytest.mark.asyncio
     async def test_set_invalid_runtime(self, client):
         resp = await client.put(
             "/api/settings/container-runtime",

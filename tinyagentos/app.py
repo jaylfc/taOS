@@ -591,7 +591,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         runtime = getattr(config, "container_runtime", "auto")
         if runtime == "auto":
             runtime = detect_runtime()
-        if runtime == "lxc":
+        if runtime == "apple":
+            from tinyagentos.containers.apple_backend import AppleContainerBackend
+            set_backend(AppleContainerBackend())
+        elif runtime == "lxc":
             set_backend(LXCBackend())
         elif runtime in ("docker", "podman"):
             set_backend(DockerBackend(binary=runtime))
@@ -790,7 +793,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         _runtime = getattr(config, "container_runtime", "auto")
         if _runtime == "auto":
             _runtime = detect_runtime()
-        if _runtime == "lxc":
+        if _runtime == "apple":
+            from tinyagentos.containers.apple_backend import AppleContainerBackend
+            set_backend(AppleContainerBackend())
+        elif _runtime == "lxc":
             set_backend(LXCBackend())
         elif _runtime in ("docker", "podman"):
             set_backend(DockerBackend(binary=_runtime))

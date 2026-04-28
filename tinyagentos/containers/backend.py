@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -201,14 +203,16 @@ class ContainerBackend(ABC):
 def detect_runtime() -> str:
     """Detect the available container runtime.
 
-    Checks for incus, docker, podman in priority order.
-    Returns 'lxc', 'docker', 'podman', or 'none'.
+    On macOS, the Mac launcher signals its bundled apple/container CLI by
+    setting ``TAOS_CONTAINER_BIN``. When present, the apple backend wins
+    over every other runtime (Mac .app is a self-contained product).
 
-    Policy: LXC (incus) is preferred when multiple runtimes are present.
-    Docker and podman are supported for app-store services but never take
-    precedence over LXC for agent deployment.
+    Otherwise checks for incus, docker, podman in priority order.
+    Returns 'apple', 'lxc', 'docker', 'podman', or 'none'.
     """
     available = []
+    if sys.platform == "darwin" and os.environ.get("TAOS_CONTAINER_BIN"):
+        available.append("apple")
     if shutil.which("incus"):
         available.append("lxc")
     if shutil.which("docker"):
@@ -216,9 +220,9 @@ def detect_runtime() -> str:
     if shutil.which("podman"):
         available.append("podman")
 
-    if "lxc" in available:
-        # LXC is preferred: full-OS containers align with taOS's host-owns-state
-        # model; Docker coexists for app-store services but never displaces LXC.
+    if "apple" in available:
+        selected = "apple"
+    elif "lxc" in available:
         selected = "lxc"
     elif available:
         selected = available[0]
@@ -226,7 +230,7 @@ def detect_runtime() -> str:
         selected = "none"
 
     logger.info(
-        "detect_runtime: selected=%s, available=%s, policy=lxc-preferred",
+        "detect_runtime: selected=%s, available=%s, policy=apple-on-mac>lxc>others",
         selected,
         available,
     )
