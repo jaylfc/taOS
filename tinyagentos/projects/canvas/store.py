@@ -62,3 +62,49 @@ class ProjectCanvasStore(BaseStore):
         if self._broker is not None:
             from tinyagentos.projects.events import ProjectEvent
             await self._broker.publish(project_id, ProjectEvent(kind=kind, payload=payload))
+
+    async def get_element(self, element_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM project_canvas_elements WHERE id = ?", (element_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return _row_to_element(row, cur.description)
+
+    async def add_element(
+        self,
+        *,
+        project_id: str,
+        element: dict,
+        author_kind: str,
+        author_id: str,
+    ) -> dict:
+        kind = element.get("kind")
+        if kind not in _VALID_KINDS:
+            raise ValueError(f"invalid kind: {kind}")
+        if author_kind == "agent" and kind not in _AGENT_ALLOWED_KINDS:
+            raise ValueError(f"agents may not emit kind={kind}")
+        if author_kind not in ("user", "agent"):
+            raise ValueError(f"invalid author_kind: {author_kind}")
+        eid = element.get("id") or new_id("cve")
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO project_canvas_elements
+               (id, project_id, kind, author_kind, author_id,
+                x, y, w, h, rotation, z_index, payload, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                eid, project_id, kind, author_kind, author_id,
+                float(element["x"]), float(element["y"]),
+                float(element["w"]), float(element["h"]),
+                float(element.get("rotation", 0)),
+                int(element.get("z_index", 0)),
+                json.dumps(element.get("payload") or {}),
+                now, now,
+            ),
+        )
+        await self._db.commit()
+        new_el = await self.get_element(eid)
+        await self._publish(project_id, "canvas.element_added", {"element": new_el})
+        return new_el
