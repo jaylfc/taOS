@@ -117,3 +117,72 @@ async def test_permission_toggle(client):
     members = await ps.list_members(p["id"])
     me = next(m for m in members if m["member_id"] == "agent-1")
     assert me["can_edit_canvas"] == 1
+
+
+async def _collect_canvas_sse(app, project_id, n_lines, timeout=5.0):
+    """Drive the canvas SSE endpoint over raw ASGI and collect n_lines."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "headers": [(b"accept", b"text/event-stream")],
+        "scheme": "http",
+        "path": f"/api/projects/{project_id}/canvas/stream",
+        "raw_path": f"/api/projects/{project_id}/canvas/stream".encode(),
+        "query_string": b"",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 1234),
+        "root_path": "",
+    }
+
+    lines: list[str] = []
+    done = asyncio.Event()
+
+    async def receive():
+        await done.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            body = message.get("body", b"")
+            if body:
+                for line in body.decode().split("\n"):
+                    stripped = line.rstrip("\r")
+                    if stripped:
+                        lines.append(stripped)
+                        if len(lines) >= n_lines:
+                            done.set()
+
+    task = asyncio.create_task(app(scope, receive, send))
+    try:
+        await asyncio.wait_for(asyncio.shield(done.wait()), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    return lines
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_emits_canvas_events(client):
+    c, p, app = client
+
+    # Publish a canvas event into the broker replay buffer first
+    # so the SSE subscriber gets it immediately on subscribe.
+    from tinyagentos.projects.events import ProjectEvent
+    await app.state.project_broker.publish(
+        p["id"],
+        ProjectEvent(kind="canvas.element_added", payload={"id": "e1"}),
+    )
+
+    lines = await _collect_canvas_sse(app, p["id"], n_lines=1, timeout=3.0)
+    data_lines = [l for l in lines if l.startswith("data:")]
+    assert data_lines, f"No data: lines received; got: {lines}"
+    evt = json.loads(data_lines[0][5:].strip())
+    assert evt["type"] == "canvas.element_added"

@@ -164,3 +164,33 @@ async def set_canvas_permission(
         ),
     )
     return {"ok": True, "agent_id": agent_id, "can_edit_canvas": bool(val)}
+
+
+@router.get("/api/projects/{project_id}/canvas/stream")
+async def canvas_stream(project_id: str, request: Request):
+    broker = request.app.state.project_broker
+    queue = await broker.subscribe(project_id)
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    yield ":keepalive\n\n"
+                    continue
+                if not str(ev.kind).startswith("canvas."):
+                    continue
+                data = json.dumps({
+                    "type": ev.kind,
+                    "project_id": project_id,
+                    "payload": ev.payload,
+                    "ts": ev.ts,
+                })
+                yield f"data: {data}\n\n"
+        finally:
+            await broker.unsubscribe(project_id, queue)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
