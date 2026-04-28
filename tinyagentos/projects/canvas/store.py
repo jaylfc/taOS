@@ -119,3 +119,60 @@ class ProjectCanvasStore(BaseStore):
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_element(r, desc) for r in rows]
+
+    async def _check_edit_permission(
+        self, project_id: str, author_kind: str, author_id: str
+    ) -> None:
+        if author_kind == "user":
+            return
+        if author_kind != "agent":
+            raise ValueError(f"invalid author_kind: {author_kind}")
+        async with self._db.execute(
+            "SELECT can_edit_canvas FROM project_members "
+            "WHERE project_id = ? AND member_id = ?",
+            (project_id, author_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or not row[0]:
+            raise CanvasPermissionError(
+                f"agent {author_id} has no can_edit_canvas on project {project_id}"
+            )
+
+    async def update_element(
+        self,
+        *,
+        project_id: str,
+        element_id: str,
+        patch: dict,
+        author_kind: str,
+        author_id: str,
+    ) -> dict:
+        await self._check_edit_permission(project_id, author_kind, author_id)
+        sets: list[str] = []
+        params: list = []
+        for col in ("x", "y", "w", "h", "rotation", "z_index"):
+            if col in patch:
+                sets.append(f"{col} = ?")
+                params.append(patch[col])
+        if "payload" in patch:
+            sets.append("payload = ?")
+            params.append(json.dumps(patch["payload"]))
+        if not sets:
+            existing = await self.get_element(element_id)
+            if existing is None:
+                raise ValueError(f"element not found: {element_id}")
+            return existing
+        sets.append("updated_at = ?"); params.append(time.time())
+        params.append(element_id)
+        params.append(project_id)
+        await self._db.execute(
+            f"UPDATE project_canvas_elements SET {', '.join(sets)} "
+            f"WHERE id = ? AND project_id = ? AND deleted_at IS NULL",
+            params,
+        )
+        await self._db.commit()
+        updated = await self.get_element(element_id)
+        if updated is None:
+            raise ValueError(f"element not found: {element_id}")
+        await self._publish(project_id, "canvas.element_updated", {"element": updated})
+        return updated

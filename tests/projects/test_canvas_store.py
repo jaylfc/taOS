@@ -71,3 +71,71 @@ async def test_list_elements_excludes_other_projects(store):
     )
     rows = await store.list_elements("p1")
     assert [r["id"] for r in rows] == [a["id"]]
+
+
+@pytest_asyncio.fixture
+async def store_with_member(tmp_path):
+    """Provides a canvas store backed by the same DB as a project_members
+    table, so permission lookups have something to read."""
+    from tinyagentos.projects.project_store import ProjectStore
+    db = tmp_path / "shared.db"
+    ps = ProjectStore(db)
+    await ps.init()
+    cs = ProjectCanvasStore(db)
+    await cs.init()
+    await ps.add_member("p1", "agent-1", member_kind="native")
+    yield cs, ps
+    await cs.close()
+    await ps.close()
+
+
+@pytest.mark.asyncio
+async def test_user_can_always_update(store_with_member):
+    cs, _ = store_with_member
+    e = await cs.add_element(
+        project_id="p1", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    updated = await cs.update_element(
+        project_id="p1", element_id=e["id"],
+        patch={"x": 50.0, "payload": {"text": "edited"}},
+        author_kind="user", author_id="u",
+    )
+    assert updated["x"] == 50.0
+    assert updated["payload"]["text"] == "edited"
+
+
+@pytest.mark.asyncio
+async def test_agent_without_permission_cannot_update(store_with_member):
+    from tinyagentos.projects.canvas.store import CanvasPermissionError
+    cs, _ = store_with_member
+    e = await cs.add_element(
+        project_id="p1", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    with pytest.raises(CanvasPermissionError):
+        await cs.update_element(
+            project_id="p1", element_id=e["id"],
+            patch={"x": 50.0},
+            author_kind="agent", author_id="agent-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_with_permission_can_update(store_with_member):
+    cs, ps = store_with_member
+    await cs._db.execute(
+        "UPDATE project_members SET can_edit_canvas = 1 WHERE project_id = ? AND member_id = ?",
+        ("p1", "agent-1"),
+    )
+    await cs._db.commit()
+    e = await cs.add_element(
+        project_id="p1", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    updated = await cs.update_element(
+        project_id="p1", element_id=e["id"],
+        patch={"x": 50.0},
+        author_kind="agent", author_id="agent-1",
+    )
+    assert updated["x"] == 50.0
