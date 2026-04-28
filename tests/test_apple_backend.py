@@ -120,3 +120,20 @@ async def test_create_container_returns_failure(monkeypatch):
         result = await b.create_container(name="taos-agent-bad", image="nonexistent")
     assert result["success"] is False
     assert "image not found" in result["output"]
+
+
+@pytest.mark.asyncio
+async def test_create_container_with_root_size_gib_does_not_orphan(monkeypatch, caplog):
+    """If set_root_quota is unimplemented or fails, create_container still succeeds."""
+    import logging
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "abc123")
+        with caplog.at_level(logging.WARNING):
+            result = await b.create_container(
+                name="taos-agent-quota",
+                image="docker.io/library/debian:bookworm",
+                root_size_gib=10,
+            )
+    assert result["success"] is True
+    assert any("set_root_quota" in rec.message for rec in caplog.records)

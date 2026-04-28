@@ -95,7 +95,21 @@ class AppleContainerBackend(ContainerBackend):
             return {"success": False, "output": output}
 
         if root_size_gib is not None:
-            await self.set_root_quota(name, root_size_gib)
+            try:
+                quota_result = await self.set_root_quota(name, root_size_gib)
+                if isinstance(quota_result, dict) and not quota_result.get("success"):
+                    logger.warning(
+                        "set_root_quota for %s did not succeed: %s",
+                        name,
+                        quota_result.get("note") or quota_result.get("output"),
+                    )
+            except NotImplementedError:
+                logger.warning(
+                    "set_root_quota not yet implemented on Apple backend; "
+                    "ignoring root_size_gib=%s for %s",
+                    root_size_gib,
+                    name,
+                )
 
         return {"success": True, "output": output.strip()}
 
