@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Build the Vite frontend and copy output to staging.
+#
+# Args: --output <STAGING_DIR>
+set -euo pipefail
+
+OUTPUT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output) OUTPUT="$2"; shift 2 ;;
+    *) echo "build_frontend.sh: unknown arg $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$OUTPUT" ]] || { echo "--output required" >&2; exit 2; }
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+cd "$REPO_ROOT/frontend"
+echo "[build_frontend] pnpm install"
+pnpm install --frozen-lockfile
+echo "[build_frontend] pnpm build"
+pnpm build
+
+mkdir -p "$OUTPUT/frontend"
+cp -R dist/. "$OUTPUT/frontend/"
+echo "[build_frontend] done: $OUTPUT/frontend"
