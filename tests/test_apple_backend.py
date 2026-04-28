@@ -232,3 +232,13 @@ async def test_rename_container(monkeypatch):
     assert argv[1] == "rename"
     assert argv[-2:] == ["old", "new"]
     assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_container_logs_returns_error_message_on_failure(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (1, "no such container: x")
+        out = await b.get_container_logs("x")
+    assert out.startswith("Error getting logs:")
+    assert "no such container" in out

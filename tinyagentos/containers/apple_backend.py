@@ -143,10 +143,10 @@ class AppleContainerBackend(ContainerBackend):
         return {"success": code == 0, "output": output}
 
     async def get_container_logs(self, name: str, lines: int = 100) -> str:
-        _, output = await self._run(
+        code, output = await self._run(
             [self.binary, "logs", "--tail", str(lines), name]
         )
-        return output
+        return output if code == 0 else f"Error getting logs: {output}"
 
     async def rename_container(self, old_name: str, new_name: str) -> dict:
         code, output = await self._run(
