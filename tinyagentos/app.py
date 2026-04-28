@@ -202,9 +202,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
     from tinyagentos.projects.events import ProjectEventBroker
+    from tinyagentos.projects.canvas.store import ProjectCanvasStore as ProjectCanvasStoreImpl
+    from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
     project_store = ProjectStore(data_dir / "projects.db")
     project_event_broker = ProjectEventBroker()
     project_task_store = ProjectTaskStore(data_dir / "projects.db", broker=project_event_broker)
+    project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
     projects_root = data_dir / "projects"
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
@@ -263,6 +266,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_channels.init()
         await project_store.init()
         await project_task_store.init()
+        await project_canvas_store.init()
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
@@ -404,6 +408,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.project_store = project_store
         app.state.project_task_store = project_task_store
         app.state.project_event_broker = project_event_broker
+        app.state.project_canvas_store = project_canvas_store
         app.state.projects_root = projects_root
         app.state.chat_hub = chat_hub
         from tinyagentos.chat.group_policy import GroupPolicy
@@ -639,6 +644,20 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("beads bridge failed to start — continuing without")
             app.state.beads_bridge = None
 
+        try:
+            canvas_snapshotter = CanvasSnapshotter(
+                project_store=project_store,
+                canvas_store=project_canvas_store,
+                broker=project_event_broker,
+                data_root=projects_root,
+            )
+            await canvas_snapshotter.start()
+            await canvas_snapshotter.backfill_active()
+            app.state.canvas_snapshotter = canvas_snapshotter
+        except Exception:
+            logger.exception("canvas snapshotter failed to start")
+            app.state.canvas_snapshotter = None
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers —
         # agents and LiteLLM keep running independently, so there's nothing to
@@ -678,6 +697,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await bb.stop()
         except Exception:
             logger.exception("beads bridge stop failed")
+        cs_snap = getattr(app.state, "canvas_snapshotter", None)
+        if cs_snap is not None:
+            try:
+                await cs_snap.stop()
+            except Exception:
+                logger.exception("canvas snapshotter stop failed")
+        await project_canvas_store.close()
         await project_task_store.close()
         await project_store.close()
         await chat_channels.close()
@@ -749,7 +775,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_store = project_store
     app.state.project_task_store = project_task_store
     app.state.project_event_broker = project_event_broker
+    app.state.project_canvas_store = project_canvas_store
     app.state.beads_bridge = None
+    app.state.canvas_snapshotter = None
     projects_root.mkdir(parents=True, exist_ok=True)
     app.state.projects_root = projects_root
     app.state.chat_hub = chat_hub
@@ -911,6 +939,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.project_files import router as project_files_router
     app.include_router(project_files_router)
+
+    from tinyagentos.routes.project_canvas import router as project_canvas_router
+    app.include_router(project_canvas_router)
 
     from tinyagentos.routes.shared_folders import router as shared_folders_router
     app.include_router(shared_folders_router)
