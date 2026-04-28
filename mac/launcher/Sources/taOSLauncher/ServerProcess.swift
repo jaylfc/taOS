@@ -7,16 +7,16 @@ import Foundation
 final class ServerProcess {
     let executable: URL
     let arguments: [String]
-    let environment: [String: String]
+    let env: [String: String]
     let logFile: URL
 
     private var process: Process?
     private var logHandle: FileHandle?
 
-    init(executable: URL, arguments: [String], environment: [String: String], logFile: URL) {
+    init(executable: URL, arguments: [String], env: [String: String], logFile: URL) {
         self.executable = executable
         self.arguments = arguments
-        self.environment = environment
+        self.env = env
         self.logFile = logFile
     }
 
@@ -39,7 +39,7 @@ final class ServerProcess {
         let proc = Process()
         proc.executableURL = executable
         proc.arguments = arguments
-        proc.environment = environment
+        proc.environment = env
         proc.standardOutput = handle
         proc.standardError = handle
         try proc.run()

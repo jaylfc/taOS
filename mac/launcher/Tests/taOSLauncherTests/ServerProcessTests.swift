@@ -21,7 +21,7 @@ final class ServerProcessTests: XCTestCase {
         let server = ServerProcess(
             executable: URL(fileURLWithPath: "/bin/bash"),
             arguments: [script.path],
-            environment: ProcessInfo.processInfo.environment,
+            env: ProcessInfo.processInfo.environment,
             logFile: log
         )
 
