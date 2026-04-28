@@ -163,3 +163,47 @@ async def test_push_file(monkeypatch):
     assert argv[1] == "cp"
     assert "/tmp/foo" in argv
     assert "taos-agent-x:/etc/foo" in argv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,verb,extra",
+    [
+        ("start_container", "start", {}),
+        ("restart_container", "restart", {}),
+        ("destroy_container", "rm", {}),
+    ],
+)
+async def test_lifecycle_simple(monkeypatch, method, verb, extra):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "ok")
+        result = await getattr(b, method)("taos-agent-x", **extra)
+    argv = m.call_args.args[0]
+    assert argv[1] == verb
+    assert "taos-agent-x" in argv
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_stop_uses_kill_when_force(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "ok")
+        await b.stop_container("x", force=True)
+    assert m.call_args.args[0][1] == "kill"
+
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "ok")
+        await b.stop_container("x", force=False)
+    assert m.call_args.args[0][1] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_destroy_force_removes_running(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "ok")
+        await b.destroy_container("x")
+    argv = m.call_args.args[0]
+    assert "-f" in argv  # rm -f to remove running containers

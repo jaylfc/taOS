@@ -126,16 +126,21 @@ class AppleContainerBackend(ContainerBackend):
         )
 
     async def start_container(self, name: str) -> dict:
-        raise NotImplementedError
+        code, output = await self._run([self.binary, "start", name])
+        return {"success": code == 0, "output": output}
 
     async def stop_container(self, name: str, force: bool = False) -> dict:
-        raise NotImplementedError
+        verb = "kill" if force else "stop"
+        code, output = await self._run([self.binary, verb, name])
+        return {"success": code == 0, "output": output}
 
     async def restart_container(self, name: str) -> dict:
-        raise NotImplementedError
+        code, output = await self._run([self.binary, "restart", name])
+        return {"success": code == 0, "output": output}
 
     async def destroy_container(self, name: str) -> dict:
-        raise NotImplementedError
+        code, output = await self._run([self.binary, "rm", "-f", name])
+        return {"success": code == 0, "output": output}
 
     async def get_container_logs(self, name: str, lines: int = 100) -> str:
         raise NotImplementedError
