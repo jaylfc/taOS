@@ -143,10 +143,16 @@ class AppleContainerBackend(ContainerBackend):
         return {"success": code == 0, "output": output}
 
     async def get_container_logs(self, name: str, lines: int = 100) -> str:
-        raise NotImplementedError
+        _, output = await self._run(
+            [self.binary, "logs", "--tail", str(lines), name]
+        )
+        return output
 
     async def rename_container(self, old_name: str, new_name: str) -> dict:
-        raise NotImplementedError
+        code, output = await self._run(
+            [self.binary, "rename", old_name, new_name]
+        )
+        return {"success": code == 0, "output": output}
 
     async def add_proxy_device(
         self, name: str, device_name: str, listen: str, connect: str,

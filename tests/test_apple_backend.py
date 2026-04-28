@@ -207,3 +207,28 @@ async def test_destroy_force_removes_running(monkeypatch):
         await b.destroy_container("x")
     argv = m.call_args.args[0]
     assert "-f" in argv  # rm -f to remove running containers
+
+
+@pytest.mark.asyncio
+async def test_get_container_logs(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "line1\nline2\n")
+        out = await b.get_container_logs("x", lines=42)
+    argv = m.call_args.args[0]
+    assert argv[1] == "logs"
+    assert "--tail" in argv and "42" in argv
+    assert "x" in argv
+    assert "line1" in out
+
+
+@pytest.mark.asyncio
+async def test_rename_container(monkeypatch):
+    b = _backend(monkeypatch)
+    with patch.object(b, "_run", new_callable=AsyncMock) as m:
+        m.return_value = (0, "")
+        result = await b.rename_container("old", "new")
+    argv = m.call_args.args[0]
+    assert argv[1] == "rename"
+    assert argv[-2:] == ["old", "new"]
+    assert result["success"] is True
