@@ -57,3 +57,17 @@ async def test_add_element_rejects_agent_user_shape(store):
             element={"kind": "user_shape", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {}},
             author_kind="agent", author_id="agent-1",
         )
+
+
+@pytest.mark.asyncio
+async def test_list_elements_excludes_other_projects(store):
+    a = await store.add_element(
+        project_id="p1", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    await store.add_element(
+        project_id="p2", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "b"}},
+    )
+    rows = await store.list_elements("p1")
+    assert [r["id"] for r in rows] == [a["id"]]

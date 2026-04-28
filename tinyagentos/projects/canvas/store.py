@@ -108,3 +108,14 @@ class ProjectCanvasStore(BaseStore):
         new_el = await self.get_element(eid)
         await self._publish(project_id, "canvas.element_added", {"element": new_el})
         return new_el
+
+    async def list_elements(self, project_id: str) -> list[dict]:
+        async with self._db.execute(
+            """SELECT * FROM project_canvas_elements
+               WHERE project_id = ? AND deleted_at IS NULL
+               ORDER BY z_index ASC, created_at ASC""",
+            (project_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_element(r, desc) for r in rows]
