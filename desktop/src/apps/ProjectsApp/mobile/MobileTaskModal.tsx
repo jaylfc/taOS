@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type TouchEvent } from "react";
 
 export interface MobileTaskModalTask {
   id: string;
@@ -25,6 +25,8 @@ interface Props {
   relationshipsSlot?: ReactNode;
   activitySlot?: ReactNode;
 }
+
+const SWIPE_THRESHOLD_PX = 60;
 
 function primaryActionFor(status: string): { label: string; next: string } {
   switch (status) {
@@ -65,6 +67,25 @@ export function MobileTaskModal({
 }: Props) {
   const action = primaryActionFor(task.status);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  const onTouchStart = (e: TouchEvent) => {
+    const t = e.touches[0];
+    if (!t) return;
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
+  };
+  const onTouchEnd = (e: TouchEvent) => {
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - start.x;
+    const dy = Math.abs(t.clientY - start.y);
+    if (Math.abs(dx) < SWIPE_THRESHOLD_PX || dy > Math.abs(dx)) return;
+    if (dx < 0 && hasNext) onNext();
+    if (dx > 0 && hasPrev) onPrev();
+  };
 
   useEffect(() => {
     const t = window.setTimeout(() => closeBtnRef.current?.focus(), 50);
@@ -76,7 +97,10 @@ export function MobileTaskModal({
       role="dialog"
       aria-modal="true"
       aria-label="Task details"
+      data-testid="mobile-task-modal"
       className="fixed inset-0 z-50 flex flex-col bg-zinc-950 text-zinc-200"
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
     >
       {/* Top bar */}
       <div

@@ -66,3 +66,32 @@ describe("MobileTaskModal", () => {
     expect(onChangeStatus).toHaveBeenCalledWith(next);
   });
 });
+
+describe("MobileTaskModal — swipe gestures", () => {
+  it("calls onNext when the user swipes left", () => {
+    const onNext = vi.fn();
+    render(<MobileTaskModal task={baseTask} {...noopHandlers} hasNext onNext={onNext} />);
+    const dialog = screen.getByTestId("mobile-task-modal");
+    fireEvent.touchStart(dialog, { touches: [{ clientX: 300, clientY: 100 }] });
+    fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 80, clientY: 100 }] });
+    expect(onNext).toHaveBeenCalledOnce();
+  });
+
+  it("calls onPrev when the user swipes right", () => {
+    const onPrev = vi.fn();
+    render(<MobileTaskModal task={baseTask} {...noopHandlers} hasPrev onPrev={onPrev} />);
+    const dialog = screen.getByTestId("mobile-task-modal");
+    fireEvent.touchStart(dialog, { touches: [{ clientX: 80, clientY: 100 }] });
+    fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 300, clientY: 100 }] });
+    expect(onPrev).toHaveBeenCalledOnce();
+  });
+
+  it("ignores small touches (< 60px threshold)", () => {
+    const onNext = vi.fn();
+    render(<MobileTaskModal task={baseTask} {...noopHandlers} hasNext onNext={onNext} />);
+    const dialog = screen.getByTestId("mobile-task-modal");
+    fireEvent.touchStart(dialog, { touches: [{ clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 90, clientY: 100 }] });
+    expect(onNext).not.toHaveBeenCalled();
+  });
+});
