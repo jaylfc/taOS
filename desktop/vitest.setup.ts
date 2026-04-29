@@ -24,3 +24,23 @@ if (typeof localStorage === "undefined" || typeof localStorage.clear !== "functi
 if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !== "function") {
   Element.prototype.scrollIntoView = function () {};
 }
+
+// JSDOM does not implement window.matchMedia. Hooks like useIsMobile call it
+// in a useEffect, which would otherwise crash any test that mounts them.
+// Default to "no match" (desktop). Individual tests can override per-suite.
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}

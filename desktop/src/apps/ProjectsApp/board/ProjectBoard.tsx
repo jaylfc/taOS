@@ -14,6 +14,9 @@ import { EMPTY_FILTERS } from "./types";
 import type { Filters, GroupBy, Task, ViewMode } from "./types";
 import { projectsApi } from "../../../lib/projects";
 import type { ProjectTask } from "../../../lib/projects";
+import { useIsMobile } from "../../../hooks/use-is-mobile";
+import { MobileBoardCarousel } from "../mobile/MobileBoardCarousel";
+import type { BoardColumn as MobileBoardColumn, BoardTask } from "../mobile/MobileBoardCarousel";
 
 export interface ProjectBoardProps {
   projectId: string;
@@ -64,6 +67,20 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
   });
 
   const filtered = useMemo(() => applyFilters(tasks, filters), [tasks, filters]);
+
+  const isMobile = useIsMobile();
+
+  const mobileColumns: ReadonlyArray<MobileBoardColumn> = [
+    { id: "ready", label: "Ready" },
+    { id: "claimed", label: "Claimed" },
+    { id: "closed", label: "Closed" },
+  ];
+
+  const tasksByColumn = useMemo<Record<string, BoardTask[]>>(() => ({
+    ready: filtered.filter((t) => t.status === "open"),
+    claimed: filtered.filter((t) => t.status === "claimed"),
+    closed: filtered.filter((t) => t.status === "closed"),
+  }), [filtered]);
 
   const lanes = useMemo(() => {
     if (viewMode !== "lanes") return null;
@@ -125,6 +142,19 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
       onDragStart={drag ? onCardDragStart : undefined}
     />
   );
+
+  if (isMobile) {
+    return (
+      <div className="flex h-full flex-col">
+        <MobileBoardCarousel
+          columns={mobileColumns}
+          tasksByColumn={tasksByColumn}
+          groupBy={groupBy}
+          onOpenTask={(id) => onOpenTask?.(id)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className={styles.frame}>
