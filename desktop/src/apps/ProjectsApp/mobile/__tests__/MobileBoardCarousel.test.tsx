@@ -80,3 +80,50 @@ describe("MobileBoardCarousel — shell", () => {
     }
   });
 });
+
+import { describe as describe2 } from "vitest";
+
+describe2("MobileBoardCarousel — swimlane section headers", () => {
+  it("renders a section header per assignee when groupBy='assignee'", () => {
+    const tbc = {
+      open: [
+        { id: "a1", title: "Alice 1", status: "open", assignee: "alice" },
+        { id: "a2", title: "Alice 2", status: "open", assignee: "alice" },
+        { id: "b1", title: "Bob 1", status: "open", assignee: "bob" },
+      ],
+      claimed: [],
+      closed: [],
+    };
+    render(
+      <MobileBoardCarousel
+        columns={columns}
+        tasksByColumn={tbc}
+        groupBy="assignee"
+        onOpenTask={() => {}}
+      />
+    );
+    expect(screen.getByText(/alice \(2\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/bob \(1\)/i)).toBeInTheDocument();
+  });
+
+  it("collapses a section when its header is tapped", () => {
+    const tbc = {
+      open: [
+        { id: "a1", title: "Alice One", status: "open", assignee: "alice" },
+      ],
+      claimed: [],
+      closed: [],
+    };
+    render(
+      <MobileBoardCarousel
+        columns={columns}
+        tasksByColumn={tbc}
+        groupBy="assignee"
+        onOpenTask={() => {}}
+      />
+    );
+    expect(screen.getByText("Alice One")).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/alice \(1\)/i));
+    expect(screen.queryByText("Alice One")).not.toBeInTheDocument();
+  });
+});

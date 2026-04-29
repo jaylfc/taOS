@@ -26,7 +26,7 @@ interface Props {
 
 /**
  * Mobile board shell — sticky pill strip + horizontally paged columns.
- * Section-header swimlanes (when `groupBy` is set) come in Task 14.
+ * When `groupBy` is set, each column renders collapsible swimlane sections.
  */
 export function MobileBoardCarousel({ columns, tasksByColumn, groupBy, onOpenTask }: Props) {
   const [activeIdx, setActiveIdx] = useState(0);
@@ -125,30 +125,113 @@ function EmptyColumn({ label }: { label: string }) {
 
 function ColumnContent({
   tasks,
-  groupBy: _groupBy,
+  groupBy,
   onOpenTask,
 }: {
   tasks: BoardTask[];
   groupBy: GroupBy;
   onOpenTask: (id: string) => void;
 }) {
-  // Section-header swimlanes come in Task 14. For now, render a flat list.
+  const groups = groupTasks(tasks, groupBy);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  if (groups.length === 1 && groups[0]?.key === "_all") {
+    return (
+      <ul className="flex flex-col gap-2 p-3">
+        {tasks.map((t) => (
+          <TaskListItem key={t.id} task={t} onOpen={onOpenTask} />
+        ))}
+      </ul>
+    );
+  }
+
   return (
-    <ul className="flex flex-col gap-2 p-3">
-      {tasks.map((t) => (
-        <li key={t.id}>
-          <button
-            type="button"
-            onClick={() => onOpenTask(t.id)}
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-left text-sm hover:bg-zinc-800"
-          >
-            <div className="truncate font-medium">{t.title}</div>
-            {t.assignee && (
-              <div className="mt-1 text-xs text-zinc-500">{t.assignee}</div>
+    <div className="flex flex-col">
+      {groups.map((g) => {
+        const isCollapsed = collapsed[g.key] ?? false;
+        return (
+          <section key={g.key}>
+            <button
+              type="button"
+              onClick={() =>
+                setCollapsed((c) => ({ ...c, [g.key]: !isCollapsed }))
+              }
+              className="sticky top-0 z-[1] flex w-full items-center justify-between bg-zinc-900/95 px-3 py-2 text-left text-sm font-medium text-zinc-200 backdrop-blur"
+            >
+              <span>
+                {isCollapsed ? "▸" : "▾"} {g.label} ({g.tasks.length})
+              </span>
+            </button>
+            {!isCollapsed && (
+              <ul className="flex flex-col gap-2 p-3">
+                {g.tasks.map((t) => (
+                  <TaskListItem key={t.id} task={t} onOpen={onOpenTask} />
+                ))}
+              </ul>
             )}
-          </button>
-        </li>
-      ))}
-    </ul>
+          </section>
+        );
+      })}
+    </div>
   );
+}
+
+function TaskListItem({
+  task,
+  onOpen,
+}: {
+  task: BoardTask;
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpen(task.id)}
+        className="w-full rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-left text-sm hover:bg-zinc-800"
+      >
+        <div className="truncate font-medium">{task.title}</div>
+        {task.assignee && (
+          <div className="mt-1 text-xs text-zinc-500">{task.assignee}</div>
+        )}
+      </button>
+    </li>
+  );
+}
+
+function groupTasks(
+  tasks: BoardTask[],
+  groupBy: GroupBy
+): Array<{ key: string; label: string; tasks: BoardTask[] }> {
+  if (!groupBy) return [{ key: "_all", label: "", tasks }];
+  const buckets = new Map<string, { label: string; tasks: BoardTask[] }>();
+  for (const t of tasks) {
+    let key: string;
+    let label: string;
+    switch (groupBy) {
+      case "assignee":
+        key = t.assignee ?? "_unassigned";
+        label = t.assignee ?? "Unassigned";
+        break;
+      case "parent":
+        key = t.parent_id ?? "_root";
+        label = t.parent_id ?? "(no parent)";
+        break;
+      case "label":
+        key = t.labels?.[0] ?? "_unlabeled";
+        label = t.labels?.[0] ?? "(no label)";
+        break;
+      case "priority":
+        key = String(t.priority ?? "_none");
+        label = t.priority != null ? `P${t.priority}` : "(no priority)";
+        break;
+    }
+    if (!buckets.has(key)) buckets.set(key, { label, tasks: [] });
+    buckets.get(key)!.tasks.push(t);
+  }
+  return Array.from(buckets.entries()).map(([key, { label, tasks }]) => ({
+    key,
+    label,
+    tasks,
+  }));
 }
