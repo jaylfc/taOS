@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import styles from "./BoardToolbar.module.css";
 import type { ViewMode, GroupBy, Filters } from "./types";
 import { BoardFilters } from "./BoardFilters";
@@ -25,6 +25,13 @@ const VIEW_LABEL: Record<ViewMode, string> = {
 export function BoardToolbar(p: BoardToolbarProps) {
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const groupSelectRef = useRef<HTMLSelectElement>(null);
+
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const t = window.setTimeout(() => groupSelectRef.current?.focus(), 50);
+    return () => window.clearTimeout(t);
+  }, [sheetOpen]);
 
   if (isMobile) {
     return (
@@ -58,9 +65,11 @@ export function BoardToolbar(p: BoardToolbarProps) {
               <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-zinc-700" />
               <h2 className="mb-3 text-base font-semibold">Filter & group</h2>
 
+              {/* On mobile we always show group-by; the carousel applies it regardless of viewMode. */}
               <label className="mb-3 flex items-center gap-2 text-sm">
                 <span className="text-zinc-300">Group by</span>
                 <select
+                  ref={groupSelectRef}
                   value={p.groupBy}
                   onChange={(e) => p.onChangeGroup(e.target.value as GroupBy)}
                   className="flex-1 rounded bg-zinc-800 px-2 py-1 text-sm text-zinc-100"
