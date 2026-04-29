@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import styles from "./TaskModal.module.css";
 import { Hero } from "./modal/Hero";
 import { MetadataPane } from "./modal/MetadataPane";
@@ -22,6 +22,7 @@ export interface TaskModalProps {
 export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, onNext }: TaskModalProps) {
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [task, setTask] = useState<Task | null>(null);
+  const statusChangeInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!taskId) { setTask(null); return; }
@@ -53,6 +54,8 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
 
   const onChangeStatus = async (newStatus: string) => {
     if (!task) return;
+    if (statusChangeInFlightRef.current) return;
+    statusChangeInFlightRef.current = true;
     try {
       if (newStatus === "claimed") await projectsApi.tasks.claim(projectId, task.id, currentUserId);
       else if (newStatus === "closed") await projectsApi.tasks.close(projectId, task.id, currentUserId);
@@ -63,6 +66,9 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
       setTask(all.find((t) => t.id === task.id) ?? null);
     } catch (err) {
       console.error("Mobile status change failed", err);
+      window.alert("Could not change status — please retry.");
+    } finally {
+      statusChangeInFlightRef.current = false;
     }
   };
 
