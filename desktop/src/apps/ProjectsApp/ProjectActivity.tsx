@@ -24,16 +24,16 @@ export function ProjectActivity({ projectId }: { projectId: string }) {
       {items.map((a) => (
         <li
           key={a.id}
-          className="bg-zinc-900 px-3 py-2 rounded text-sm flex flex-col-reverse gap-1 md:block md:gap-0"
+          className="bg-zinc-900 px-3 py-2 rounded text-sm flex flex-col gap-1 md:flex-row-reverse md:items-baseline md:justify-end md:gap-2"
         >
-          <span className="text-zinc-500 md:mr-2 text-xs md:text-sm md:tabular-nums">
-            {new Date(a.created_at * 1000).toLocaleString()}
-          </span>
-          <span>
+          <div className="md:contents">
             <span className="font-medium">{a.kind}</span>
             {a.payload && Object.keys(a.payload).length > 0 && (
               <span className="ml-2 text-zinc-500 text-xs">{JSON.stringify(a.payload)}</span>
             )}
+          </div>
+          <span className="text-zinc-500 text-xs md:text-sm md:tabular-nums">
+            {new Date(a.created_at * 1000).toLocaleString()}
           </span>
         </li>
       ))}
