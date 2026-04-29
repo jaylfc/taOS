@@ -153,6 +153,7 @@ function ColumnContent({
           <section key={g.key}>
             <button
               type="button"
+              aria-expanded={!isCollapsed}
               onClick={() =>
                 setCollapsed((c) => ({ ...c, [g.key]: !isCollapsed }))
               }
