@@ -8,6 +8,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./vitest.setup.ts"],
+    // *.spec.ts is reserved for Playwright e2e specs; vitest uses *.test.ts
+    exclude: ["**/node_modules/**", "**/dist/**", "tests/**"],
   },
   plugins: [react(), tailwindcss()],
   base: "/desktop/",
