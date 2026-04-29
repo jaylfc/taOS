@@ -61,17 +61,22 @@ describe("MobileBoardCarousel — shell", () => {
   });
 
   it("scrolls to a column when its pill is tapped", () => {
+    const original = Element.prototype.scrollIntoView;
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
-    render(
-      <MobileBoardCarousel
-        columns={columns}
-        tasksByColumn={tasksByColumn}
-        groupBy={null}
-        onOpenTask={() => {}}
-      />
-    );
-    fireEvent.click(screen.getByRole("tab", { name: /claimed/i }));
-    expect(scrollIntoView).toHaveBeenCalled();
+    try {
+      render(
+        <MobileBoardCarousel
+          columns={columns}
+          tasksByColumn={tasksByColumn}
+          groupBy={null}
+          onOpenTask={() => {}}
+        />
+      );
+      fireEvent.click(screen.getByRole("tab", { name: /claimed/i }));
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
   });
 });
