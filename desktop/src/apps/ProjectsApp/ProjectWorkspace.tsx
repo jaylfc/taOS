@@ -7,9 +7,10 @@ import { ProjectBoard } from "./board/ProjectBoard";
 import { TaskModal } from "./board/TaskModal";
 import { FilesApp } from "@/apps/FilesApp";
 import { MessagesApp } from "@/apps/MessagesApp";
+import { CanvasView } from "./canvas/CanvasView";
 
-type Tab = "board" | "tasks" | "files" | "messages" | "members" | "activity";
-const TABS: Tab[] = ["board", "tasks", "files", "messages", "members", "activity"];
+type Tab = "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity";
+const TABS: Tab[] = ["board", "canvas", "tasks", "files", "messages", "members", "activity"];
 
 function readTaskParam(): string | null {
   if (typeof window === "undefined") return null;
@@ -94,6 +95,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
             )}
           </>
         )}
+        {tab === "canvas" && <CanvasView projectId={project.id} projectSlug={project.slug} />}
         {tab === "tasks" && <ProjectTaskList projectId={project.id} />}
         {tab === "files" && (
           <FilesApp
