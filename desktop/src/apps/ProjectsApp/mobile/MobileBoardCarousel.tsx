@@ -188,6 +188,7 @@ function TaskListItem({
     <li>
       <button
         type="button"
+        data-testid="task-card"
         onClick={() => onOpen(task.id)}
         className="w-full rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-left text-sm hover:bg-zinc-800"
       >

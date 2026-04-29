@@ -87,13 +87,18 @@ test.describe("projects mobile shell @iphone-14", () => {
     await page.getByPlaceholder(/task title/i).fill(`mobile e2e ${Date.now()}`);
     // Submit button text is "Create".
     await page.getByRole("button", { name: /^create$/i }).click();
-    // Sheet closes after submit; network may fail so use soft assert.
-    await expect
-      .soft(page.getByTestId("task-create-sheet"))
-      .not.toBeVisible({ timeout: 5000 });
-    // Dismiss if still open (API failure).
-    if (await page.getByTestId("task-create-sheet").isVisible().catch(() => false)) {
+    // Wait for the sheet to auto-close after submit. If it doesn't (network failure
+    // or actual regression), dismiss it manually and fail the test loudly.
+    const sheetClosed = await page
+      .getByTestId("task-create-sheet")
+      .waitFor({ state: "hidden", timeout: 5000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!sheetClosed) {
       await page.getByRole("button", { name: /cancel/i }).click();
+      throw new Error(
+        "TaskCreateSheet did not auto-close after submit — likely a network failure or a regression in TaskCreateSheet's onSubmit handler.",
+      );
     }
 
     // Board tab — navigate and verify carousel mounted.
@@ -111,7 +116,7 @@ test.describe("projects mobile shell @iphone-14", () => {
     }
 
     // Tap first task card in scroller → MobileTaskModal opens (conditional on tasks existing).
-    const firstCard = scroller.locator("button").first();
+    const firstCard = scroller.getByTestId("task-card").first();
     if (await firstCard.isVisible().catch(() => false)) {
       await firstCard.click();
       const modal = page.getByTestId("mobile-task-modal");
