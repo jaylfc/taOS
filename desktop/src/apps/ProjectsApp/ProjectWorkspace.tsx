@@ -61,8 +61,10 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
     <div className="flex flex-col h-full">
       <header className="flex flex-col gap-3 px-4 py-3 border-b border-zinc-800 md:flex-row md:items-center md:justify-between md:px-6 md:py-4">
         <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold md:text-xl">{project.name}</h1>
-          <p className="mt-1 line-clamp-2 text-xs text-zinc-500 md:line-clamp-none">{project.description}</p>
+          <h1 className="truncate text-lg font-semibold md:text-xl" title={project.name}>{project.name}</h1>
+          {project.description && (
+            <p className="mt-1 line-clamp-2 text-xs text-zinc-500 md:line-clamp-none" title={project.description}>{project.description}</p>
+          )}
         </div>
       </header>
       {isMobile ? (
