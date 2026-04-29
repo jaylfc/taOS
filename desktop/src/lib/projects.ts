@@ -17,6 +17,7 @@ export type ProjectMember = {
   source_agent_id: string | null;
   memory_seed: "none" | "snapshot" | "empty";
   added_at: number;
+  can_edit_canvas?: boolean;
 };
 
 export type ProjectTask = {

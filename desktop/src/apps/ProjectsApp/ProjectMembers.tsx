@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
 import { AddAgentDialog } from "./AddAgentDialog";
+import { canvasApi } from "./canvas/canvas-api";
 
 export function ProjectMembers({ project, onChanged }: { project: Project; onChanged: () => void }) {
   const [members, setMembers] = useState<ProjectMember[]>([]);
@@ -45,18 +46,37 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
                 {m.member_kind === "clone" ? ` · ${m.memory_seed}` : ""}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                await projectsApi.members.remove(project.id, m.member_id);
-                refresh();
-                onChanged();
-              }}
-              className="text-xs text-red-400 hover:underline"
-              aria-label={`Remove ${m.member_id}`}
-            >
-              Remove
-            </button>
+            <div className="flex items-center gap-2">
+              {(m.member_kind === "native" || m.member_kind === "clone") && (
+                <label
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                  title="When off, this agent can add new elements but cannot modify or delete existing ones."
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!m.can_edit_canvas}
+                    onChange={async (e) => {
+                      await canvasApi.setPermission(project.id, m.member_id, e.target.checked);
+                      refresh();
+                      onChanged();
+                    }}
+                  />
+                  <span className="text-xs">Can edit canvas</span>
+                </label>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  await projectsApi.members.remove(project.id, m.member_id);
+                  refresh();
+                  onChanged();
+                }}
+                className="text-xs text-red-400 hover:underline"
+                aria-label={`Remove ${m.member_id}`}
+              >
+                Remove
+              </button>
+            </div>
           </li>
         ))}
       </ul>
