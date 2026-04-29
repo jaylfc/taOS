@@ -16,7 +16,6 @@ interface Props {
  * Distinct from the global PillBar (which is the iOS home-indicator widget).
  */
 export function WorkspaceTabPills({ tabs, active, onSelect }: Props) {
-  const scrollerRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
 
   // Keep the active pill in view when it changes (e.g. via URL state).
@@ -28,7 +27,6 @@ export function WorkspaceTabPills({ tabs, active, onSelect }: Props) {
     <div
       role="tablist"
       data-testid="workspace-tab-pills-scroller"
-      ref={scrollerRef}
       className="flex gap-2 overflow-x-auto px-3 py-2 border-b border-white/10
                  [scrollbar-width:none] [-ms-overflow-style:none]
                  [&::-webkit-scrollbar]:hidden"
