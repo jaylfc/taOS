@@ -13,6 +13,9 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "psutil>=5.9.0",
     "python-multipart>=0.0.9",
+    # Project canvas board renders low-fidelity PNG snapshots for vision
+    # agents (tinyagentos/projects/canvas/render.py).
+    "Pillow>=10.0",
     # Model torrent mesh — every instance is a potential peer so
     # downloads distribute across the swarm rather than hammering a
     # single mirror. Worker install scripts install the OS-level
