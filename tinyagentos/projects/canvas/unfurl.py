@@ -153,7 +153,7 @@ async def fetch_link_metadata(url: str) -> dict:
     except Exception:
         logger.info("canvas unfurl error for %s", url, exc_info=True)
         return _fallback(url)
-    if status >= 400:
+    if status < 200 or status >= 300:
         return _fallback(url)
     try:
         return _parse_metadata(body, url)
