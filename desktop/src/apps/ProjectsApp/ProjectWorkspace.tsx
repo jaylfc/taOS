@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Project } from "@/lib/projects";
+import { projectsApi, type Project } from "@/lib/projects";
 import { ProjectTaskList } from "./ProjectTaskList";
 import { ProjectMembers } from "./ProjectMembers";
 import { ProjectActivity } from "./ProjectActivity";
@@ -10,6 +10,8 @@ import { MessagesApp } from "@/apps/MessagesApp";
 import { CanvasView } from "./canvas/CanvasView";
 import { useIsMobile } from "../../hooks/use-is-mobile";
 import { WorkspaceTabPills } from "../../components/mobile/WorkspaceTabPills";
+import { ProjectFab } from "./mobile/ProjectFab";
+import { TaskCreateSheet } from "./mobile/TaskCreateSheet";
 
 type Tab = "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity";
 const TABS: Tab[] = ["board", "canvas", "tasks", "files", "messages", "members", "activity"];
@@ -33,6 +35,14 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(() => readTaskParam());
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
+
+  const handleCreateTask = async ({ title }: { title: string }) => {
+    await projectsApi.tasks.create(project.id, { title });
+    window.dispatchEvent(
+      new CustomEvent("projects:tasks-refresh", { detail: { projectId: project.id } }),
+    );
+  };
 
   const tabPills = TABS.map((t) => ({
     id: t,
@@ -134,6 +144,16 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         {tab === "members" && <ProjectMembers project={project} onChanged={onChanged} />}
         {tab === "activity" && <ProjectActivity projectId={project.id} />}
       </div>
+      {isMobile && (tab === "tasks" || tab === "board") && (
+        <>
+          <ProjectFab onClick={() => setCreateSheetOpen(true)} />
+          <TaskCreateSheet
+            open={createSheetOpen}
+            onClose={() => setCreateSheetOpen(false)}
+            onSubmit={handleCreateTask}
+          />
+        </>
+      )}
     </div>
   );
 }

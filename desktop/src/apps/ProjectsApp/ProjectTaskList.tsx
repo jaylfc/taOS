@@ -37,6 +37,15 @@ export function ProjectTaskList({ projectId }: { projectId: string }) {
     refresh();
   }, [projectId, view]);
 
+  useEffect(() => {
+    const onRefresh = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.projectId === projectId) refresh();
+    };
+    window.addEventListener("projects:tasks-refresh", onRefresh);
+    return () => window.removeEventListener("projects:tasks-refresh", onRefresh);
+  }, [projectId, view]);
+
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
     const title = newTitle.trim();

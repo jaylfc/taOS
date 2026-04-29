@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { Project } from "@/lib/projects";
 import { ProjectWorkspace } from "../ProjectWorkspace";
 
@@ -60,5 +60,33 @@ describe("ProjectWorkspace tab strip", () => {
       render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
     });
     expect(screen.queryByTestId("workspace-tab-pills-scroller")).not.toBeInTheDocument();
+  });
+
+  it("renders the FAB on mobile when the Tasks tab is active", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    await act(async () => {
+      render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
+    });
+    expect(screen.getByLabelText("Create task")).toBeInTheDocument();
+  });
+
+  it("does not render the FAB on desktop", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    await act(async () => {
+      render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
+    });
+    expect(screen.queryByLabelText("Create task")).not.toBeInTheDocument();
+  });
+
+  it("hides the FAB when a non-task tab is active on mobile", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    await act(async () => {
+      render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
+    });
+    // Switch to Files tab via the mobile pill button.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    });
+    expect(screen.queryByLabelText("Create task")).not.toBeInTheDocument();
   });
 });
