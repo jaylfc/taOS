@@ -94,4 +94,30 @@ describe("MobileTaskModal — swipe gestures", () => {
     fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 90, clientY: 100 }] });
     expect(onNext).not.toHaveBeenCalled();
   });
+
+  it("ignores vertical-dominant swipes", () => {
+    const onNext = vi.fn();
+    render(<MobileTaskModal task={baseTask} {...noopHandlers} hasNext onNext={onNext} />);
+    const dialog = screen.getByTestId("mobile-task-modal");
+    // |dx|=80 (clears threshold), |dy|=160 (dy > |dx| → vertical-dominant guard fires)
+    fireEvent.touchStart(dialog, { touches: [{ clientX: 150, clientY: 100 }] });
+    fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 230, clientY: 260 }] });
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it("ignores multi-touch (pinch) gestures", () => {
+    const onNext = vi.fn();
+    render(<MobileTaskModal task={baseTask} {...noopHandlers} hasNext onNext={onNext} />);
+    const dialog = screen.getByTestId("mobile-task-modal");
+    // touchstart with TWO fingers — first one near left, second near right
+    fireEvent.touchStart(dialog, {
+      touches: [
+        { clientX: 100, clientY: 100 },
+        { clientX: 300, clientY: 100 },
+      ],
+    });
+    // first finger lifts after sliding right (large dx if guard absent)
+    fireEvent.touchEnd(dialog, { changedTouches: [{ clientX: 300, clientY: 100 }] });
+    expect(onNext).not.toHaveBeenCalled();
+  });
 });

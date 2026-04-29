@@ -70,6 +70,7 @@ export function MobileTaskModal({
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const onTouchStart = (e: TouchEvent) => {
+    if (e.touches.length !== 1) return;
     const t = e.touches[0];
     if (!t) return;
     touchStartRef.current = { x: t.clientX, y: t.clientY };
