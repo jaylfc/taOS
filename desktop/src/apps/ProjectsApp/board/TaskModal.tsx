@@ -7,6 +7,8 @@ import { Relationships } from "./modal/Relationships";
 import { Activity } from "./modal/Activity";
 import { projectsApi } from "../../../lib/projects";
 import type { Task } from "./types";
+import { useIsMobile } from "../../../hooks/use-is-mobile";
+import { MobileTaskModal } from "../mobile/MobileTaskModal";
 
 export interface TaskModalProps {
   projectId: string;
@@ -47,7 +49,65 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
     return () => window.removeEventListener("keydown", onKey);
   }, [taskId, onClose, onNext, onPrev]);
 
+  const isMobile = useIsMobile();
+
+  const onChangeStatus = async (newStatus: string) => {
+    if (!task) return;
+    try {
+      if (newStatus === "claimed") await projectsApi.tasks.claim(projectId, task.id, currentUserId);
+      else if (newStatus === "closed") await projectsApi.tasks.close(projectId, task.id, currentUserId);
+      else if (newStatus === "open") await projectsApi.tasks.release(projectId, task.id, currentUserId);
+      else return;
+      const all = (await projectsApi.tasks.list(projectId)) as unknown as Task[];
+      setAllTasks(all);
+      setTask(all.find((t) => t.id === task.id) ?? null);
+    } catch (err) {
+      console.error("Mobile status change failed", err);
+    }
+  };
+
   if (!taskId) return null;
+
+  if (isMobile) {
+    if (!task) {
+      return (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Loading task"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950 text-zinc-400"
+        >
+          Loading…
+        </div>
+      );
+    }
+    return (
+      <MobileTaskModal
+        task={task}
+        onClose={onClose}
+        onPrev={() => onPrev?.()}
+        onNext={() => onNext?.()}
+        hasPrev={!!onPrev}
+        hasNext={!!onNext}
+        onChangeStatus={onChangeStatus}
+        heroSlot={<Hero task={task} />}
+        metadataSlot={
+          <MetadataPane
+            projectId={projectId}
+            task={task}
+            onUpdated={(t) => {
+              setTask(t);
+              setAllTasks(prev => prev.map(x => x.id === t.id ? t : x));
+            }}
+          />
+        }
+        subtasksSlot={<SubTasks all={allTasks} parentId={task.id} />}
+        relationshipsSlot={<Relationships projectId={projectId} taskId={task.id} />}
+        activitySlot={<Activity projectId={projectId} taskId={task.id} currentUserId={currentUserId} />}
+      />
+    );
+  }
+
   return (
     <div className={styles.scrim} role="dialog" aria-modal="true" aria-label={task?.title ?? "Task"}>
       <div className={styles.frame}>
