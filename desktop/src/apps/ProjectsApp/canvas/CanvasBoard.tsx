@@ -8,6 +8,7 @@ import { subscribeCanvasStream } from "./canvas-sse";
 import { TaosNoteShapeUtil } from "./shapes/NoteShape";
 import { TaosLinkShapeUtil } from "./shapes/LinkShape";
 import { TaosImageShapeUtil } from "./shapes/ImageShape";
+import { useIsMobile } from "../../../hooks/use-is-mobile";
 
 interface CanvasBoardProps {
   projectId: string;
@@ -17,6 +18,7 @@ interface CanvasBoardProps {
 const CUSTOM_SHAPE_UTILS = [TaosNoteShapeUtil, TaosLinkShapeUtil, TaosImageShapeUtil];
 
 export function CanvasBoard({ projectId, projectSlug }: CanvasBoardProps) {
+  const isMobile = useIsMobile();
   const cacheRef = useRef(createCanvasStore());
   const editorRef = useRef<Editor | null>(null);
 
@@ -50,6 +52,11 @@ export function CanvasBoard({ projectId, projectSlug }: CanvasBoardProps) {
     return unsub;
   }, [projectSlug]);
 
+  // Keep readonly state in sync if isMobile changes after mount (e.g. window resize)
+  useEffect(() => {
+    editorRef.current?.updateInstanceState({ isReadonly: isMobile });
+  }, [isMobile]);
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <Tldraw
@@ -57,6 +64,7 @@ export function CanvasBoard({ projectId, projectSlug }: CanvasBoardProps) {
         shapeUtils={[...defaultShapeUtils, ...CUSTOM_SHAPE_UTILS] as any}
         onMount={(editor) => {
           editorRef.current = editor;
+          editor.updateInstanceState({ isReadonly: isMobile });
           // Send local user edits to backend
           editor.store.listen(
             (entry) => {
