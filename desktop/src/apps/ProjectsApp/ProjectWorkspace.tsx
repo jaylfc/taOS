@@ -8,6 +8,8 @@ import { TaskModal } from "./board/TaskModal";
 import { FilesApp } from "@/apps/FilesApp";
 import { MessagesApp } from "@/apps/MessagesApp";
 import { CanvasView } from "./canvas/CanvasView";
+import { useIsMobile } from "../../hooks/use-is-mobile";
+import { WorkspaceTabPills } from "../../components/mobile/WorkspaceTabPills";
 
 type Tab = "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity";
 const TABS: Tab[] = ["board", "canvas", "tasks", "files", "messages", "members", "activity"];
@@ -26,10 +28,16 @@ function setTaskParam(taskId: string | null) {
 }
 
 export function ProjectWorkspace({ project, onChanged }: { project: Project; onChanged: () => void }) {
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<Tab>("tasks");
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(() => readTaskParam());
+
+  const tabPills = TABS.map((t) => ({
+    id: t,
+    label: t.charAt(0).toUpperCase() + t.slice(1),
+  }));
 
   useEffect(() => {
     let cancelled = false;
@@ -55,22 +63,30 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         <h1 className="text-lg font-semibold">{project.name}</h1>
         <p className="text-xs text-zinc-500">{project.description}</p>
       </header>
-      <nav className="flex border-b border-zinc-800 px-2" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`px-3 py-2 text-sm capitalize ${
-              tab === t ? "border-b-2 border-blue-400" : "text-zinc-400"
-            }`}
-          >
-            {t}
-          </button>
-        ))}
-      </nav>
+      {isMobile ? (
+        <WorkspaceTabPills
+          tabs={tabPills}
+          active={tab}
+          onSelect={(id) => setTab(id as Tab)}
+        />
+      ) : (
+        <nav className="flex border-b border-zinc-800 px-2" role="tablist">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={`px-3 py-2 text-sm capitalize ${
+                tab === t ? "border-b-2 border-blue-400" : "text-zinc-400"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </nav>
+      )}
       <div className="flex-1 min-h-0 overflow-auto p-4">
         {tab === "board" && (
           <>
