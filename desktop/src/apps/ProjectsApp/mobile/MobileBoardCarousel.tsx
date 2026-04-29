@@ -9,8 +9,8 @@ export interface BoardTask {
   id: string;
   title: string;
   status: string;
-  assignee?: string | null;
-  parent_id?: string | null;
+  assignee_id?: string | null;
+  parent_task_id?: string | null;
   labels?: string[];
   priority?: number | null;
 }
@@ -192,8 +192,8 @@ function TaskListItem({
         className="w-full rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-left text-sm hover:bg-zinc-800"
       >
         <div className="truncate font-medium">{task.title}</div>
-        {task.assignee && (
-          <div className="mt-1 text-xs text-zinc-500">{task.assignee}</div>
+        {task.assignee_id && (
+          <div className="mt-1 text-xs text-zinc-500">{task.assignee_id}</div>
         )}
       </button>
     </li>
@@ -211,12 +211,12 @@ function groupTasks(
     let label: string;
     switch (groupBy) {
       case "assignee":
-        key = t.assignee ?? "_unassigned";
-        label = t.assignee ?? "Unassigned";
+        key = t.assignee_id ?? "_unassigned";
+        label = t.assignee_id ?? "Unassigned";
         break;
       case "parent":
-        key = t.parent_id ?? "_root";
-        label = t.parent_id ?? "(no parent)";
+        key = t.parent_task_id ?? "_root";
+        label = t.parent_task_id ?? "(no parent)";
         break;
       case "label":
         key = t.labels?.[0] ?? "_unlabeled";

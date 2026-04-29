@@ -10,11 +10,11 @@ const columns = [
 
 const tasksByColumn = {
   open: [
-    { id: "t1", title: "First", status: "open", assignee: "alice" },
-    { id: "t2", title: "Second", status: "open", assignee: "alice" },
+    { id: "t1", title: "First", status: "open", assignee_id: "alice" },
+    { id: "t2", title: "Second", status: "open", assignee_id: "alice" },
   ],
   claimed: [
-    { id: "t3", title: "Claimed", status: "claimed", assignee: "bob" },
+    { id: "t3", title: "Claimed", status: "claimed", assignee_id: "bob" },
   ],
   closed: [],
 };
@@ -87,9 +87,9 @@ describe2("MobileBoardCarousel — swimlane section headers", () => {
   it("renders a section header per assignee when groupBy='assignee'", () => {
     const tbc = {
       open: [
-        { id: "a1", title: "Alice 1", status: "open", assignee: "alice" },
-        { id: "a2", title: "Alice 2", status: "open", assignee: "alice" },
-        { id: "b1", title: "Bob 1", status: "open", assignee: "bob" },
+        { id: "a1", title: "Alice 1", status: "open", assignee_id: "alice" },
+        { id: "a2", title: "Alice 2", status: "open", assignee_id: "alice" },
+        { id: "b1", title: "Bob 1", status: "open", assignee_id: "bob" },
       ],
       claimed: [],
       closed: [],
@@ -109,7 +109,7 @@ describe2("MobileBoardCarousel — swimlane section headers", () => {
   it("collapses a section when its header is tapped", () => {
     const tbc = {
       open: [
-        { id: "a1", title: "Alice One", status: "open", assignee: "alice" },
+        { id: "a1", title: "Alice One", status: "open", assignee_id: "alice" },
       ],
       claimed: [],
       closed: [],

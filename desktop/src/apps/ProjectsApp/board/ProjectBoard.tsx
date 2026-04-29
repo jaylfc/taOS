@@ -29,6 +29,11 @@ const PERSIST_KEY = (pid: string) => `taos.projects.${pid}.board`;
 // modes that actually render to avoid `lanes!` blowing up on rehydrate.
 const VALID_VIEWS: ViewMode[] = ["lanes", "kanban"];
 const VALID_GROUPS: GroupBy[] = ["assignee", "parent", "label", "priority"];
+const MOBILE_COLUMNS: ReadonlyArray<MobileBoardColumn> = [
+  { id: "ready", label: "Ready" },
+  { id: "claimed", label: "Claimed" },
+  { id: "closed", label: "Closed" },
+];
 type ColStatus = "ready" | "claimed" | "closed";
 
 export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBoardProps) {
@@ -69,12 +74,6 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
   const filtered = useMemo(() => applyFilters(tasks, filters), [tasks, filters]);
 
   const isMobile = useIsMobile();
-
-  const mobileColumns: ReadonlyArray<MobileBoardColumn> = [
-    { id: "ready", label: "Ready" },
-    { id: "claimed", label: "Claimed" },
-    { id: "closed", label: "Closed" },
-  ];
 
   const tasksByColumn = useMemo<Record<string, BoardTask[]>>(() => ({
     ready: filtered.filter((t) => t.status === "open"),
@@ -145,14 +144,12 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
 
   if (isMobile) {
     return (
-      <div className="flex h-full flex-col">
-        <MobileBoardCarousel
-          columns={mobileColumns}
-          tasksByColumn={tasksByColumn}
-          groupBy={groupBy}
-          onOpenTask={(id) => onOpenTask?.(id)}
-        />
-      </div>
+      <MobileBoardCarousel
+        columns={MOBILE_COLUMNS}
+        tasksByColumn={tasksByColumn}
+        groupBy={groupBy}
+        onOpenTask={(id) => onOpenTask?.(id)}
+      />
     );
   }
 
