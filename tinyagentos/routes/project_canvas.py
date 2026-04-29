@@ -154,7 +154,7 @@ async def set_canvas_permission(
     await ps._db.commit()
     if cur.rowcount == 0:
         return JSONResponse({"error": "member not found"}, status_code=404)
-    broker = request.app.state.project_broker
+    broker = request.app.state.project_event_broker
     from tinyagentos.projects.events import ProjectEvent
     await broker.publish(
         project_id,
@@ -168,7 +168,7 @@ async def set_canvas_permission(
 
 @router.get("/api/projects/{project_id}/canvas/stream")
 async def canvas_stream(project_id: str, request: Request):
-    broker = request.app.state.project_broker
+    broker = request.app.state.project_event_broker
     queue = await broker.subscribe(project_id)
 
     async def gen():

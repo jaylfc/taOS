@@ -34,7 +34,7 @@ async def client(tmp_path):
     app.state.project_store = ps
     app.state.project_canvas_store = cs
     app.state.canvas_snapshotter = snap
-    app.state.project_broker = broker
+    app.state.project_event_broker = broker
     app.state.projects_root = data_root
     app.include_router(canvas_router)
 
@@ -176,7 +176,7 @@ async def test_sse_stream_emits_canvas_events(client):
     # Publish a canvas event into the broker replay buffer first
     # so the SSE subscriber gets it immediately on subscribe.
     from tinyagentos.projects.events import ProjectEvent
-    await app.state.project_broker.publish(
+    await app.state.project_event_broker.publish(
         p["id"],
         ProjectEvent(kind="canvas.element_added", payload={"id": "e1"}),
     )
