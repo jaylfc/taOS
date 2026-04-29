@@ -25,7 +25,7 @@ const noopHandlers = {
 describe("MobileTaskModal", () => {
   it("renders all five sections in order", () => {
     render(<MobileTaskModal task={baseTask} {...noopHandlers} />);
-    const sections = screen.getAllByRole("group");
+    const sections = screen.getAllByRole("region");
     const labels = sections.map((s) => s.getAttribute("aria-label"));
     expect(labels).toEqual(["Hero", "Metadata", "SubTasks", "Relationships", "Activity"]);
   });
@@ -44,7 +44,25 @@ describe("MobileTaskModal", () => {
 
   it("the Activity section is collapsed by default", () => {
     render(<MobileTaskModal task={baseTask} {...noopHandlers} />);
-    const activity = screen.getByRole("group", { name: "Activity" });
+    const activity = screen.getByRole("region", { name: "Activity" });
     expect(activity.querySelector("details")).not.toHaveAttribute("open");
+  });
+
+  it.each([
+    ["open" as const, /^Claim$/, "claimed"],
+    ["claimed" as const, /^Close$/, "closed"],
+    ["closed" as const, /^Reopen$/, "open"],
+    ["blocked" as const, /^Update$/, "blocked"],
+  ])("status %s shows %s and emits %s", (status, label, next) => {
+    const onChangeStatus = vi.fn();
+    render(
+      <MobileTaskModal
+        task={{ ...baseTask, status }}
+        {...noopHandlers}
+        onChangeStatus={onChangeStatus}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    expect(onChangeStatus).toHaveBeenCalledWith(next);
   });
 });

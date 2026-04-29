@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 export interface MobileTaskModalTask {
   id: string;
@@ -64,6 +64,12 @@ export function MobileTaskModal({
   activitySlot,
 }: Props) {
   const action = primaryActionFor(task.status);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => closeBtnRef.current?.focus(), 50);
+    return () => window.clearTimeout(t);
+  }, []);
 
   return (
     <div
@@ -99,8 +105,9 @@ export function MobileTaskModal({
           ›
         </button>
         <button
+          ref={closeBtnRef}
           type="button"
-          aria-label="Close"
+          aria-label="Close modal"
           onClick={onClose}
           className="rounded-lg px-2 py-1 text-sm text-zinc-300"
         >
@@ -135,28 +142,28 @@ export function MobileTaskModal({
 
         <Section label="Metadata" defaultOpen>
           {metadataSlot ?? (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
-              <div className="text-zinc-500">Assignee</div>
-              <div className="text-zinc-300">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
+              <dt className="text-zinc-500">Assignee</dt>
+              <dd className="text-zinc-300">
                 {task.assignee_id ?? <Empty>Unassigned</Empty>}
-              </div>
-              <div className="text-zinc-500">Priority</div>
-              <div className="text-zinc-300">
+              </dd>
+              <dt className="text-zinc-500">Priority</dt>
+              <dd className="text-zinc-300">
                 {task.priority != null ? `P${task.priority}` : <Empty>—</Empty>}
-              </div>
-              <div className="text-zinc-500">Labels</div>
-              <div className="text-zinc-300">
+              </dd>
+              <dt className="text-zinc-500">Labels</dt>
+              <dd className="text-zinc-300">
                 {task.labels && task.labels.length > 0 ? (
                   task.labels.join(", ")
                 ) : (
                   <Empty>None</Empty>
                 )}
-              </div>
-              <div className="text-zinc-500">Parent</div>
-              <div className="text-zinc-300">
+              </dd>
+              <dt className="text-zinc-500">Parent</dt>
+              <dd className="text-zinc-300">
                 {task.parent_task_id ?? <Empty>None</Empty>}
-              </div>
-            </div>
+              </dd>
+            </dl>
           )}
         </Section>
 
@@ -200,14 +207,14 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <div role="group" aria-label={label} className="border-b border-zinc-800">
-      <details role="presentation" open={defaultOpen}>
+    <section aria-label={label} className="border-b border-zinc-800">
+      <details open={defaultOpen}>
         <summary className="cursor-pointer list-none px-3 py-3 text-sm font-medium text-zinc-300">
           {label}
         </summary>
         <div className="px-3 pb-3">{children}</div>
       </details>
-    </div>
+    </section>
   );
 }
 
