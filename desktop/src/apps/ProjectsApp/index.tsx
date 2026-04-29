@@ -29,7 +29,7 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
   const isMobile = useIsMobile();
   const selected = projects.find((p) => p.id === selectedId) ?? null;
 
-  const list = (
+  const listPane = (
     <ProjectList
       projects={projects}
       selectedId={selectedId}
@@ -38,7 +38,7 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
     />
   );
 
-  const detail = (
+  const detailPane = (
     <>
       {error && <div role="alert" className="p-3 text-red-400">{error}</div>}
       {selected ? (
@@ -52,8 +52,8 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
   if (isMobile) {
     return (
       <MobileSplitView
-        list={list}
-        detail={detail}
+        list={listPane}
+        detail={detailPane}
         selectedId={selectedId}
         onBack={() => setSelectedId(null)}
         listTitle="Projects"
@@ -65,10 +65,10 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
   return (
     <div className="flex h-full w-full">
       <aside className="w-72 border-r border-zinc-800 flex flex-col">
-        {list}
+        {listPane}
       </aside>
       <main className="flex-1 min-w-0">
-        {detail}
+        {detailPane}
       </main>
     </div>
   );

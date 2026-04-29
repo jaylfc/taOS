@@ -24,10 +24,13 @@ vi.mock("../ProjectWorkspace", () => ({
   ProjectWorkspace: () => <div data-testid="project-workspace" />,
 }));
 
-// Stub MobileSplitView so it renders without needing window.matchMedia
+// Stub MobileSplitView so it renders without needing window.matchMedia.
+// Surface listTitle as a data attribute so the test can verify the production
+// code actually routed through this component with the expected props,
+// rather than a desktop-branch element happening to wear the same testid.
 vi.mock("../../../components/mobile/MobileSplitView", () => ({
-  MobileSplitView: ({ list }: { list: React.ReactNode }) => (
-    <div data-testid="mobile-split-view">{list}</div>
+  MobileSplitView: ({ list, listTitle }: { list: React.ReactNode; listTitle?: string }) => (
+    <div data-testid="mobile-split-view" data-list-title={listTitle}>{list}</div>
   ),
 }));
 
@@ -36,6 +39,7 @@ describe("ProjectsApp mobile shell", () => {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
     render(<ProjectsApp windowId="test-window" />);
     expect(screen.getByTestId("mobile-split-view")).toBeInTheDocument();
+    expect(screen.getByTestId("mobile-split-view")).toHaveAttribute("data-list-title", "Projects");
   });
 
   it("renders side-by-side flex layout when useIsMobile is false", () => {
