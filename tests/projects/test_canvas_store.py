@@ -194,3 +194,35 @@ async def test_add_element_publishes_event(store_with_broker):
     ev = await queue.get()
     assert ev.kind == "canvas.element_added"
     assert ev.payload["element"]["payload"]["text"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_update_element_does_not_leak_across_projects(store):
+    """Calling update_element with the wrong project_id must not return or
+    mutate an element belonging to another project."""
+    e = await store.add_element(
+        project_id="prj-A",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"t": "a"}},
+        author_kind="user",
+        author_id="u",
+    )
+    with pytest.raises(ValueError, match="not found"):
+        await store.update_element(
+            project_id="prj-B",
+            element_id=e["id"],
+            patch={"x": 999},
+            author_kind="user",
+            author_id="u",
+        )
+    # Empty-patch fast path must also reject cross-project lookups.
+    with pytest.raises(ValueError, match="not found"):
+        await store.update_element(
+            project_id="prj-B",
+            element_id=e["id"],
+            patch={},
+            author_kind="user",
+            author_id="u",
+        )
+    # Original row is unchanged.
+    again = await store.get_element(e["id"])
+    assert again["x"] == 0

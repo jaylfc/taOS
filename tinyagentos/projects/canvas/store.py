@@ -63,10 +63,19 @@ class ProjectCanvasStore(BaseStore):
             from tinyagentos.projects.events import ProjectEvent
             await self._broker.publish(project_id, ProjectEvent(kind=kind, payload=payload))
 
-    async def get_element(self, element_id: str) -> dict | None:
-        async with self._db.execute(
-            "SELECT * FROM project_canvas_elements WHERE id = ?", (element_id,)
-        ) as cur:
+    async def get_element(
+        self, element_id: str, *, project_id: str | None = None
+    ) -> dict | None:
+        if project_id is None:
+            sql = "SELECT * FROM project_canvas_elements WHERE id = ?"
+            args: tuple = (element_id,)
+        else:
+            sql = (
+                "SELECT * FROM project_canvas_elements "
+                "WHERE id = ? AND project_id = ?"
+            )
+            args = (element_id, project_id)
+        async with self._db.execute(sql, args) as cur:
             row = await cur.fetchone()
             if row is None:
                 return None
@@ -158,7 +167,7 @@ class ProjectCanvasStore(BaseStore):
             sets.append("payload = ?")
             params.append(json.dumps(patch["payload"]))
         if not sets:
-            existing = await self.get_element(element_id)
+            existing = await self.get_element(element_id, project_id=project_id)
             if existing is None:
                 raise ValueError(f"element not found: {element_id}")
             return existing
@@ -171,7 +180,7 @@ class ProjectCanvasStore(BaseStore):
             params,
         )
         await self._db.commit()
-        updated = await self.get_element(element_id)
+        updated = await self.get_element(element_id, project_id=project_id)
         if updated is None:
             raise ValueError(f"element not found: {element_id}")
         await self._publish(project_id, "canvas.element_updated", {"element": updated})

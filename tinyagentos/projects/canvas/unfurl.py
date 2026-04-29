@@ -7,28 +7,62 @@ dict with title=url and empty description.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import time
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 5.0
+# Cap unfurl response bodies. Pages over this limit are truncated; the
+# parser only needs <head> metadata so a megabyte is generous.
+_MAX_BODY_BYTES = 1_000_000
+
+
+async def _check_ssrf_safe(host: str) -> None:
+    """Resolve host and reject private / loopback / link-local addresses."""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, None)
+    for _family, _type, _proto, _canon, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+        ):
+            raise ValueError(f"refusing to fetch non-public address: {ip}")
 
 
 async def _http_get(url: str) -> tuple[int, str]:
-    """Indirection seam for tests."""
+    """Indirection seam for tests. Production path enforces SSRF + size cap."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"unsupported scheme: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("missing host")
+    await _check_ssrf_safe(parsed.hostname)
+    # follow_redirects=False so a redirect to localhost/private cannot bypass
+    # the resolution check above.
     async with httpx.AsyncClient(
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=_TIMEOUT,
         headers={"User-Agent": "taOS-canvas-unfurl/0.1"},
     ) as client:
-        r = await client.get(url)
-        return r.status_code, r.text
+        async with client.stream("GET", url) as r:
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in r.aiter_bytes():
+                total += len(chunk)
+                chunks.append(chunk)
+                if total >= _MAX_BODY_BYTES:
+                    break
+            body = b"".join(chunks)[:_MAX_BODY_BYTES]
+            text = body.decode(r.encoding or "utf-8", errors="replace")
+            return r.status_code, text
 
 
 class _MetaParser(HTMLParser):
