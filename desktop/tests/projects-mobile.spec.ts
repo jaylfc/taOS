@@ -57,10 +57,9 @@ test.describe("projects mobile shell @iphone-14", () => {
         .catch(() => false);
 
       if (!dialogGone) {
-        // API unavailable — dismiss dialog, skip project-detail sub-flow.
+        // Dismiss the still-open dialog before skipping (Playwright will fail on an open dialog otherwise).
         await page.getByRole("dialog").getByRole("button", { name: /cancel/i }).click();
-        // Core assertion already passed (list is visible), test ends here.
-        return;
+        test.skip(true, "Workspace sub-flow requires a backend for project creation; backend not available in this run.");
       }
     }
 

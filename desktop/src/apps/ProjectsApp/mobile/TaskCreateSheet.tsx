@@ -53,8 +53,9 @@ export function TaskCreateSheet({ open, onClose, onSubmit }: Props) {
       <button
         type="button"
         aria-label="Dismiss"
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 bg-black/50 disabled:cursor-not-allowed"
         onClick={onClose}
+        disabled={submitting}
       />
       <form
         onSubmit={submit}
@@ -66,6 +67,7 @@ export function TaskCreateSheet({ open, onClose, onSubmit }: Props) {
         <input
           ref={inputRef}
           type="text"
+          aria-label="Task title"
           placeholder="Task title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}

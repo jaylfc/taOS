@@ -144,12 +144,23 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
 
   if (isMobile) {
     return (
-      <MobileBoardCarousel
-        columns={MOBILE_COLUMNS}
-        tasksByColumn={tasksByColumn}
-        groupBy={groupBy}
-        onOpenTask={(id) => onOpenTask?.(id)}
-      />
+      <div className={styles.frame}>
+        <BoardToolbar
+          viewMode={viewMode}
+          groupBy={groupBy}
+          filters={filters}
+          live={connected}
+          onChangeView={setViewMode}
+          onChangeGroup={setGroupBy}
+          onChangeFilters={setFilters}
+        />
+        <MobileBoardCarousel
+          columns={MOBILE_COLUMNS}
+          tasksByColumn={tasksByColumn}
+          groupBy={groupBy}
+          onOpenTask={(id) => onOpenTask?.(id)}
+        />
+      </div>
     );
   }
 

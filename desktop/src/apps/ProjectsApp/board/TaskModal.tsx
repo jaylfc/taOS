@@ -81,9 +81,19 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
           role="dialog"
           aria-modal="true"
           aria-label="Loading task"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950 text-zinc-400"
+          className="fixed inset-0 z-50 flex flex-col bg-zinc-950 text-zinc-400"
         >
-          Loading…
+          <div className="flex justify-end p-3" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.5rem)" }}>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="rounded-lg px-2 py-1 text-sm text-zinc-300"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex flex-1 items-center justify-center">Loading…</div>
         </div>
       );
     }

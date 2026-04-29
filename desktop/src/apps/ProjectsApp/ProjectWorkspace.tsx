@@ -90,7 +90,9 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
               key={t}
               type="button"
               role="tab"
+              id={`workspace-tab-${t}`}
               aria-selected={tab === t}
+              aria-controls={`workspace-tabpanel-${t}`}
               onClick={() => setTab(t)}
               className={`px-3 py-2 text-sm capitalize ${
                 tab === t ? "border-b-2 border-blue-400" : "text-zinc-400"
@@ -101,7 +103,12 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
           ))}
         </nav>
       )}
-      <div className="flex-1 min-h-0 overflow-auto p-4">
+      <div
+        className="flex-1 min-h-0 overflow-auto p-4"
+        role="tabpanel"
+        id={`workspace-tabpanel-${tab}`}
+        aria-labelledby={`workspace-tab-${tab}`}
+      >
         {tab === "board" && (
           <>
             {!authResolved ? (

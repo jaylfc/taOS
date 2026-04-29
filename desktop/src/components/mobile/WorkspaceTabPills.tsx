@@ -40,8 +40,11 @@ export function WorkspaceTabPills({ tabs, active, onSelect }: Props) {
           <button
             key={t.id}
             ref={isActive ? activeRef : undefined}
+            type="button"
             role="tab"
+            id={`workspace-tab-${t.id}`}
             aria-selected={isActive}
+            aria-controls={`workspace-tabpanel-${t.id}`}
             onClick={() => onSelect(t.id)}
             className={
               "shrink-0 rounded-full px-3 py-1.5 text-sm transition-colors " +
