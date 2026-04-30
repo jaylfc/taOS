@@ -49,6 +49,12 @@ async def test_create_task_marks_project_dirty(app):
             project = r.json()
 
             bridge = app.state.beads_bridge
+            # Stop the background writer so it cannot drain _dirty between the
+            # POST and the assertion — the writer loop runs every 0.2 s and on
+            # slower event-loop implementations (e.g. CPython 3.11) it can fire
+            # during the awaits inside the HTTP round-trip, clearing the set
+            # before the assertion has a chance to read it.
+            await bridge.stop()
             bridge._dirty.clear()
 
             r = await c.post(
