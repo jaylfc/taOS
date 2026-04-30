@@ -38,15 +38,15 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
       </header>
       <ul className="space-y-1" aria-label="Project members">
         {members.map((m) => (
-          <li key={m.member_id} className="flex justify-between items-center bg-zinc-900 px-3 py-2 rounded">
-            <div>
-              <div className="text-sm">{m.member_id}</div>
+          <li key={m.member_id} className="flex flex-col gap-2 bg-zinc-900 px-3 py-3 rounded md:flex-row md:items-center md:justify-between md:gap-4 md:py-2">
+            <div className="min-w-0">
+              <div className="truncate text-sm" title={m.member_id}>{m.member_id}</div>
               <div className="text-xs text-zinc-500">
                 {m.member_kind}
                 {m.member_kind === "clone" ? ` · ${m.memory_seed}` : ""}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
               {(m.member_kind === "native" || m.member_kind === "clone") && (
                 <label
                   style={{ display: "inline-flex", alignItems: "center", gap: 6 }}

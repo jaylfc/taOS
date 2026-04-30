@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Project } from "@/lib/projects";
+import { projectsApi, type Project } from "@/lib/projects";
 import { ProjectTaskList } from "./ProjectTaskList";
 import { ProjectMembers } from "./ProjectMembers";
 import { ProjectActivity } from "./ProjectActivity";
@@ -8,6 +8,10 @@ import { TaskModal } from "./board/TaskModal";
 import { FilesApp } from "@/apps/FilesApp";
 import { MessagesApp } from "@/apps/MessagesApp";
 import { CanvasView } from "./canvas/CanvasView";
+import { useIsMobile } from "../../hooks/use-is-mobile";
+import { WorkspaceTabPills } from "../../components/mobile/WorkspaceTabPills";
+import { ProjectFab } from "./mobile/ProjectFab";
+import { TaskCreateSheet } from "./mobile/TaskCreateSheet";
 
 type Tab = "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity";
 const TABS: Tab[] = ["board", "canvas", "tasks", "files", "messages", "members", "activity"];
@@ -26,10 +30,24 @@ function setTaskParam(taskId: string | null) {
 }
 
 export function ProjectWorkspace({ project, onChanged }: { project: Project; onChanged: () => void }) {
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<Tab>("tasks");
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(() => readTaskParam());
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
+
+  const handleCreateTask = async ({ title }: { title: string }) => {
+    await projectsApi.tasks.create(project.id, { title });
+    window.dispatchEvent(
+      new CustomEvent("projects:tasks-refresh", { detail: { projectId: project.id } }),
+    );
+  };
+
+  const tabPills = TABS.map((t) => ({
+    id: t,
+    label: t.charAt(0).toUpperCase() + t.slice(1),
+  }));
 
   useEffect(() => {
     let cancelled = false;
@@ -51,27 +69,46 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
 
   return (
     <div className="flex flex-col h-full">
-      <header className="px-4 py-3 border-b border-zinc-800">
-        <h1 className="text-lg font-semibold">{project.name}</h1>
-        <p className="text-xs text-zinc-500">{project.description}</p>
+      <header className="flex flex-col gap-3 px-4 py-3 border-b border-zinc-800 md:flex-row md:items-center md:justify-between md:px-6 md:py-4">
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold md:text-xl" title={project.name}>{project.name}</h1>
+          {project.description && (
+            <p className="mt-1 line-clamp-2 text-xs text-zinc-500 md:line-clamp-none" title={project.description}>{project.description}</p>
+          )}
+        </div>
       </header>
-      <nav className="flex border-b border-zinc-800 px-2" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`px-3 py-2 text-sm capitalize ${
-              tab === t ? "border-b-2 border-blue-400" : "text-zinc-400"
-            }`}
-          >
-            {t}
-          </button>
-        ))}
-      </nav>
-      <div className="flex-1 min-h-0 overflow-auto p-4">
+      {isMobile ? (
+        <WorkspaceTabPills
+          tabs={tabPills}
+          active={tab}
+          onSelect={(id) => setTab(id as Tab)}
+        />
+      ) : (
+        <nav className="flex border-b border-zinc-800 px-2" role="tablist">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              id={`workspace-tab-${t}`}
+              aria-selected={tab === t}
+              aria-controls={`workspace-tabpanel-${t}`}
+              onClick={() => setTab(t)}
+              className={`px-3 py-2 text-sm capitalize ${
+                tab === t ? "border-b-2 border-blue-400" : "text-zinc-400"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </nav>
+      )}
+      <div
+        className="flex-1 min-h-0 overflow-auto p-4"
+        role="tabpanel"
+        id={`workspace-tabpanel-${tab}`}
+        aria-labelledby={`workspace-tab-${tab}`}
+      >
         {tab === "board" && (
           <>
             {!authResolved ? (
@@ -114,6 +151,16 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         {tab === "members" && <ProjectMembers project={project} onChanged={onChanged} />}
         {tab === "activity" && <ProjectActivity projectId={project.id} />}
       </div>
+      {isMobile && (tab === "tasks" || tab === "board") && (
+        <>
+          <ProjectFab onClick={() => setCreateSheetOpen(true)} />
+          <TaskCreateSheet
+            open={createSheetOpen}
+            onClose={() => setCreateSheetOpen(false)}
+            onSubmit={handleCreateTask}
+          />
+        </>
+      )}
     </div>
   );
 }

@@ -82,7 +82,7 @@ export function MobileSplitView({
   // Mobile: single-pane with slide transition
   const showingDetail = selectedId !== null;
   return (
-    <div style={{ position: "relative", height: "100%", width: "100%", overflow: "hidden" }}>
+    <div data-testid="mobile-split-view" style={{ position: "relative", height: "100%", width: "100%", overflow: "hidden" }}>
       {/* Slider track — two panes each 100%, translated by view state */}
       <div
         style={{

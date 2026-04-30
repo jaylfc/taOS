@@ -14,6 +14,9 @@ import { EMPTY_FILTERS } from "./types";
 import type { Filters, GroupBy, Task, ViewMode } from "./types";
 import { projectsApi } from "../../../lib/projects";
 import type { ProjectTask } from "../../../lib/projects";
+import { useIsMobile } from "../../../hooks/use-is-mobile";
+import { MobileBoardCarousel } from "../mobile/MobileBoardCarousel";
+import type { BoardColumn as MobileBoardColumn, BoardTask } from "../mobile/MobileBoardCarousel";
 
 export interface ProjectBoardProps {
   projectId: string;
@@ -26,6 +29,11 @@ const PERSIST_KEY = (pid: string) => `taos.projects.${pid}.board`;
 // modes that actually render to avoid `lanes!` blowing up on rehydrate.
 const VALID_VIEWS: ViewMode[] = ["lanes", "kanban"];
 const VALID_GROUPS: GroupBy[] = ["assignee", "parent", "label", "priority"];
+const MOBILE_COLUMNS: ReadonlyArray<MobileBoardColumn> = [
+  { id: "ready", label: "Ready" },
+  { id: "claimed", label: "Claimed" },
+  { id: "closed", label: "Closed" },
+];
 type ColStatus = "ready" | "claimed" | "closed";
 
 export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBoardProps) {
@@ -64,6 +72,14 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
   });
 
   const filtered = useMemo(() => applyFilters(tasks, filters), [tasks, filters]);
+
+  const isMobile = useIsMobile();
+
+  const tasksByColumn = useMemo<Record<string, BoardTask[]>>(() => ({
+    ready: filtered.filter((t) => t.status === "open"),
+    claimed: filtered.filter((t) => t.status === "claimed"),
+    closed: filtered.filter((t) => t.status === "closed"),
+  }), [filtered]);
 
   const lanes = useMemo(() => {
     if (viewMode !== "lanes") return null;
@@ -125,6 +141,28 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
       onDragStart={drag ? onCardDragStart : undefined}
     />
   );
+
+  if (isMobile) {
+    return (
+      <div className={styles.frame}>
+        <BoardToolbar
+          viewMode={viewMode}
+          groupBy={groupBy}
+          filters={filters}
+          live={connected}
+          onChangeView={setViewMode}
+          onChangeGroup={setGroupBy}
+          onChangeFilters={setFilters}
+        />
+        <MobileBoardCarousel
+          columns={MOBILE_COLUMNS}
+          tasksByColumn={tasksByColumn}
+          groupBy={groupBy}
+          onOpenTask={(id) => onOpenTask?.(id)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className={styles.frame}>
