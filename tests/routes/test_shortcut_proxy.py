@@ -577,6 +577,47 @@ class TestSsePassthrough:
         assert "text/event-stream" in resp.headers.get("content-type", "")
 
 
+class TestDashboardSubpathForwarding:
+    """M2 — captured subpath must appear in upstream URL."""
+
+    @pytest.mark.asyncio
+    async def test_deep_subpath_forwarded_to_upstream(self, app, seeded_agent_factory):
+        """proxy_dashboard with path='some/deep/page' must hit upstream /some/deep/page."""
+        from unittest.mock import MagicMock
+        shortcuts = [_make_dashboard_shortcut(port=8080, path="/")]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        shortcut = {**shortcuts[0], "_idx": 0}
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url.query = ""
+        mock_request.headers = {}
+        mock_request.app = app
+
+        async def _empty():
+            return
+            yield
+
+        mock_request.stream = _empty
+        captured_urls: list[str] = []
+
+        def _capture(request: httpx.Request, *args, **kwargs):
+            captured_urls.append(str(request.url))
+            return httpx.Response(200, text="ok")
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._resolve_container_ip",
+            return_value="10.0.0.5",
+        ), respx.mock(assert_all_called=False) as rsps:
+            rsps.get(url__startswith="http://10.0.0.5:8080/").mock(side_effect=_capture)
+            await proxy_dashboard(
+                agent["id"], shortcut, mock_request, path="some/deep/page"
+            )
+
+        assert len(captured_urls) == 1
+        assert "some/deep/page" in captured_urls[0]
+
+
 class TestWebSocketRoute:
     def test_ws_route_exists(self, app):
         """The WS route /shortcut/dashboard/{agent}/{idx}/ws/{path} must be registered."""

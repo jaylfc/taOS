@@ -5,6 +5,7 @@ Task 21: tui shortcut spawns PTY with bash -lc <command>.
 """
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from unittest.mock import patch
@@ -102,6 +103,8 @@ class TestTerminalPtyBridge:
                 with test_client.websocket_connect(
                     f"/shortcut/terminal/{agent_id}/0"
                 ) as ws:
+                    # Send the required ticket handshake frame (Task 29 protocol).
+                    ws.send_text(json.dumps({"type": "ticket", "ticket": "dummy-ticket"}))
                     data = ws.receive_text()
                     assert data == "$ "
             finally:
@@ -146,8 +149,79 @@ class TestTuiSpawnCommand:
                 with test_client.websocket_connect(
                     f"/shortcut/terminal/{agent_id}/0"
                 ) as ws:
+                    # Send the required ticket handshake frame before data.
+                    ws.send_text(json.dumps({"type": "ticket", "ticket": "dummy-ticket"}))
                     ws.receive_text()
             finally:
                 test_client.cookies.clear()
 
         assert captured_cmd == ["bash", "-lc", "htop"]
+
+
+# ---------------------------------------------------------------------------
+# C1 — ticket handshake validation (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+class TestTerminalHandshake:
+    def test_missing_handshake_closes_1008(self, test_client, seeded_agent_factory):
+        """Connection that never sends a ticket handshake must be rejected."""
+        shortcuts = [
+            {
+                "kind": "container-terminal",
+                "label": "Shell",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_terminal_session(agent_id, 0)
+
+        fake_pty = FakePtyHandle()
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._get_container_pty",
+            return_value=fake_pty,
+        ):
+            test_client.cookies.set("taos_shortcut", session_id)
+            try:
+                with pytest.raises(Exception):
+                    with test_client.websocket_connect(
+                        f"/shortcut/terminal/{agent_id}/0"
+                    ) as ws:
+                        # Send wrong handshake — no "ticket" key
+                        ws.send_text(json.dumps({"type": "not-ticket"}))
+                        ws.receive_text()
+            finally:
+                test_client.cookies.clear()
+
+    def test_malformed_json_handshake_closes_1008(self, test_client, seeded_agent_factory):
+        """Non-JSON first frame must cause the connection to be rejected."""
+        shortcuts = [
+            {
+                "kind": "container-terminal",
+                "label": "Shell",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_terminal_session(agent_id, 0)
+
+        fake_pty = FakePtyHandle()
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._get_container_pty",
+            return_value=fake_pty,
+        ):
+            test_client.cookies.set("taos_shortcut", session_id)
+            try:
+                with pytest.raises(Exception):
+                    with test_client.websocket_connect(
+                        f"/shortcut/terminal/{agent_id}/0"
+                    ) as ws:
+                        ws.send_text("not-json-at-all!!!")
+                        ws.receive_text()
+            finally:
+                test_client.cookies.clear()

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import time
 from typing import Any, Optional
+
+_ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 # In-process cache: (agent_name, source_hash) -> (value, expires_at)
 _cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
@@ -76,12 +79,17 @@ def _exec_token_source(
 
     if kind == "container_env":
         var = source["var"]
-        result = subprocess.run(
-            ["incus", "exec", container, "--", "sh", "-c", f"echo ${var}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        if not _ENV_VAR_RE.match(var):
+            return None
+        try:
+            result = subprocess.run(
+                ["incus", "exec", container, "--", "printenv", var],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
         if result.returncode != 0:
             return None
         return result.stdout.strip() or None
@@ -89,12 +97,15 @@ def _exec_token_source(
     if kind == "container_file":
         path = source["path"]
         json_pointer = source.get("json_pointer", "")
-        result = subprocess.run(
-            ["incus", "exec", container, "--", "cat", path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        try:
+            result = subprocess.run(
+                ["incus", "exec", container, "--", "cat", path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
         if result.returncode != 0:
             return None
         try:

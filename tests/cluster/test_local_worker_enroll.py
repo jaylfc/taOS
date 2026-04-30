@@ -8,6 +8,7 @@ import pytest
 from tinyagentos.cluster.manager import ClusterManager
 
 
+
 class TestEnrollLocalWorker:
     """enroll_local_worker registers a 'local' worker in the ClusterManager."""
 
@@ -79,30 +80,29 @@ class TestEnrollLocalWorker:
 
 
 class TestWorkerRegistryBridge:
-    """get_local_worker falls back to stub when no manager is active."""
+    """get_local_worker raises RuntimeError when no manager is active (fail closed)."""
 
-    def test_fallback_returns_dict_with_required_keys(self):
+    def test_no_manager_raises_runtime_error(self):
         import tinyagentos.cluster.worker_registry as wr
 
-        # Reset active manager to ensure fallback path
+        # Reset active manager to verify fail-closed behaviour
         original = wr._active_manager
         wr._active_manager = None
         try:
-            result = wr.get_local_worker()
-            assert "worker_url" in result
-            assert "signing_key" in result
-            assert "name" in result
+            with pytest.raises(RuntimeError, match="No active ClusterManager"):
+                wr.get_local_worker()
         finally:
             wr._active_manager = original
 
-    def test_fallback_name_is_local(self):
+    def test_manager_without_local_worker_raises_runtime_error(self):
         import tinyagentos.cluster.worker_registry as wr
 
         original = wr._active_manager
-        wr._active_manager = None
+        empty_mgr = ClusterManager()
+        wr.set_active_manager(empty_mgr)
         try:
-            result = wr.get_local_worker()
-            assert result["name"] == "local"
+            with pytest.raises(RuntimeError, match="Local worker not registered"):
+                wr.get_local_worker()
         finally:
             wr._active_manager = original
 

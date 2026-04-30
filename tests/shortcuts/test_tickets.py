@@ -110,3 +110,39 @@ def test_ticket_dataclass_fields():
     )
     assert t.agent_id == "a"
     assert t.shortcut_idx == 2
+
+
+# ---------------------------------------------------------------------------
+# M4 — signing key length enforcement
+# ---------------------------------------------------------------------------
+
+def test_mint_ticket_rejects_short_key():
+    """mint_ticket must reject signing keys shorter than 32 bytes."""
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        mint_ticket(
+            agent_id="a",
+            shortcut_idx=0,
+            scope="dashboard",
+            signing_key=b"too-short",
+            worker_url="http://x",
+        )
+
+
+def test_validate_ticket_rejects_short_key():
+    """validate_ticket must reject signing keys shorter than 32 bytes."""
+    tracker = JtiTracker()
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        validate_ticket("anytoken", signing_key=b"short", tracker=tracker)
+
+
+def test_mint_accepts_exactly_32_byte_key():
+    """A 32-byte key is the minimum valid key length."""
+    key = b"x" * 32
+    ticket, token = mint_ticket(
+        agent_id="a",
+        shortcut_idx=0,
+        scope="dashboard",
+        signing_key=key,
+        worker_url="http://x",
+    )
+    assert token  # didn't raise

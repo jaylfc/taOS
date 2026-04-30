@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import secrets
 import time
@@ -203,11 +204,15 @@ async def proxy_dashboard(
     agent_name: str,
     shortcut: dict[str, Any],
     request: Request,
+    path: str = "",
 ) -> Any:
     """Forward the HTTP request to the agent's container dashboard port.
 
     Resolves container IP, strips hop-by-hop headers, and streams the
     upstream response back to the client.
+
+    path is the captured route segment (no leading slash). When provided it is
+    appended to the shortcut's base path so deep links work correctly.
     """
     ip = _resolve_container_ip(request, agent_name)
     if ip is None:
@@ -218,7 +223,7 @@ async def proxy_dashboard(
 
     port = shortcut["port"]
     base_path = (shortcut.get("path") or "/").rstrip("/")
-    upstream_path = base_path + "/"
+    upstream_path = f"{base_path}/{path}" if path else f"{base_path}/"
 
     upstream_url = f"http://{ip}:{port}{upstream_path}"
     query = request.url.query
@@ -334,7 +339,7 @@ async def shortcut_dashboard_proxy(
     shortcut = _get_shortcut_from_cookie(request, agent_name, idx, shortcuts)
     shortcut = {**shortcut, "_idx": idx}
 
-    return await proxy_dashboard(agent_name, shortcut, request)
+    return await proxy_dashboard(agent_name, shortcut, request, path=path)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +397,23 @@ async def shortcut_terminal_ws(
         return
 
     await websocket.accept()
+
+    # Read the first frame: must be {"type": "ticket", "ticket": "..."}.
+    # The ticket was already consumed at /redeem to mint the cookie session.
+    # We don't re-validate it here (the cookie is the authoritative auth).
+    # Requiring this frame confirms the client intends a shortcut connection
+    # (defense-in-depth per Task 29 protocol spec).
+    try:
+        first_frame = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+        handshake = json.loads(first_frame)
+        if handshake.get("type") != "ticket" or not handshake.get("ticket"):
+            await websocket.close(code=1008, reason="malformed ticket handshake")
+            await asyncio.to_thread(pty_handle.close)
+            return
+    except (json.JSONDecodeError, KeyError, asyncio.TimeoutError) as exc:
+        await websocket.close(code=1008, reason=f"invalid handshake: {exc}")
+        await asyncio.to_thread(pty_handle.close)
+        return
 
     async def pty_to_ws():
         try:
@@ -459,8 +481,13 @@ async def shortcut_dashboard_ws(
             async def _client_to_upstream():
                 try:
                     while True:
-                        data = await websocket.receive_bytes()
-                        await upstream.send(data)
+                        msg = await websocket.receive()
+                        if msg["type"] == "websocket.disconnect":
+                            break
+                        if "text" in msg and msg["text"] is not None:
+                            await upstream.send(msg["text"])
+                        elif "bytes" in msg and msg["bytes"] is not None:
+                            await upstream.send(msg["bytes"])
                 except Exception:
                     pass
 

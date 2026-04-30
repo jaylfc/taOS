@@ -81,3 +81,80 @@ def test_unknown_kind_raises():
     _clear_cache()
     with pytest.raises(ValueError, match="unknown token_source kind"):
         read_token_source(AGENT, {"kind": "magic", "value": "x"})
+
+
+# ---------------------------------------------------------------------------
+# M1 — shell injection safety
+# ---------------------------------------------------------------------------
+
+def test_container_env_uses_printenv_not_sh_c(monkeypatch):
+    """container_env must invoke printenv, not sh -c (shell injection fix)."""
+    _clear_cache()
+    captured_cmd: list = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cmd.extend(cmd)
+        return MagicMock(stdout="token123\n", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    source = {"kind": "container_env", "var": "MY_TOKEN"}
+    read_token_source(AGENT, source)
+
+    assert "sh" not in captured_cmd
+    assert "-c" not in captured_cmd
+    assert "printenv" in captured_cmd
+
+
+def test_container_env_rejects_invalid_var_name(monkeypatch):
+    """var names with shell-special chars must be rejected (return None)."""
+    _clear_cache()
+    mock_run = MagicMock()
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    # These should all be rejected without calling subprocess.run
+    bad_vars = [
+        "FOO; rm -rf /tmp",
+        "FOO|bar",
+        "foo",          # lowercase not allowed
+        "123STARTS",    # starts with digit
+        "",
+    ]
+    for bad_var in bad_vars:
+        source = {"kind": "container_env", "var": bad_var}
+        result = read_token_source(AGENT, source)
+        assert result is None, f"Expected None for var={bad_var!r}, got {result!r}"
+    mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# M5 — subprocess exception handling
+# ---------------------------------------------------------------------------
+
+def test_container_env_handles_file_not_found(monkeypatch):
+    """FileNotFoundError (incus missing) must return None, not raise."""
+    _clear_cache()
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("incus not found")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    source = {"kind": "container_env", "var": "MY_TOKEN"}
+    result = read_token_source(AGENT, source)
+    assert result is None
+
+
+def test_container_file_handles_timeout(monkeypatch):
+    """TimeoutExpired must return None, not raise."""
+    _clear_cache()
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=10)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    source = {
+        "kind": "container_file",
+        "path": "/etc/config.json",
+        "json_pointer": "/key",
+    }
+    result = read_token_source(AGENT, source)
+    assert result is None

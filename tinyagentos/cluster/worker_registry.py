@@ -1,26 +1,15 @@
 # tinyagentos/cluster/worker_registry.py
-"""Bridge between the route-side `get_local_worker()` API and the cluster manager.
+"""Bridge from the route-side `get_local_worker()` API to the ClusterManager.
 
-After Task 23 lands enroll_local_worker, this module looks up "local" in
-ClusterManager and returns the WorkerInfo as a dict. If no manager exists
-(e.g., during unit tests that don't start the app), falls back to the
-stub key for compatibility.
+Tasks 22-23 register the local worker via enroll_local_worker(); this module
+just exposes that registration to non-async callers (route handlers).
 """
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Optional
 
 from tinyagentos.cluster.manager import ClusterManager
 
-# Stub key used as fallback when no ClusterManager has enrolled a local worker
-# (mostly for unit tests that don't invoke the app lifespan).
-_FALLBACK_SIGNING_KEY: bytes = hashlib.sha256(
-    b"taos-local-worker-default-signing-key-v1"
-).digest()
-_FALLBACK_WORKER_URL: str = "http://127.0.0.1:6969"
-
-# Module-level reference to the active ClusterManager. Set by app startup.
 _active_manager: Optional[ClusterManager] = None
 
 
@@ -33,18 +22,21 @@ def set_active_manager(manager: ClusterManager) -> None:
 def get_local_worker() -> dict[str, Any]:
     """Return the local worker config as a dict.
 
-    Reads from the active ClusterManager if available; falls back to the stub.
+    Raises RuntimeError if no manager has been registered or if the local
+    worker has not been enrolled — fail closed to prevent forging tickets
+    with a fallback key.
     """
-    if _active_manager is not None:
-        worker = _active_manager.get_worker("local")
-        if worker is not None:
-            return {
-                "worker_url": worker.worker_url or _FALLBACK_WORKER_URL,
-                "signing_key": worker.signing_key or _FALLBACK_SIGNING_KEY,
-                "name": worker.name,
-            }
+    if _active_manager is None:
+        raise RuntimeError(
+            "No active ClusterManager — local worker not enrolled. "
+            "Tests must call set_active_manager(test_manager); production "
+            "calls it from app startup after enroll_local_worker()."
+        )
+    worker = _active_manager.get_worker("local")
+    if worker is None:
+        raise RuntimeError("Local worker not registered with ClusterManager")
     return {
-        "worker_url": _FALLBACK_WORKER_URL,
-        "signing_key": _FALLBACK_SIGNING_KEY,
-        "name": "local",
+        "worker_url": worker.worker_url,
+        "signing_key": worker.signing_key,
+        "name": worker.name,
     }

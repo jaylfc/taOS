@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ def mint_ticket(
     ttl: int = 30,
 ) -> tuple[Ticket, str]:
     """Mint a signed ticket. Returns (Ticket, base64url-encoded token string)."""
+    if len(signing_key) < 32:
+        raise ValueError("signing_key must be at least 32 bytes")
     jti = uuid.uuid4().hex
     exp = int(time.time()) + ttl
     ticket = Ticket(
@@ -70,6 +73,8 @@ def validate_ticket(
     - ticket expired
     - replayed jti
     """
+    if len(signing_key) < 32:
+        raise ValueError("signing_key must be at least 32 bytes")
     try:
         raw = base64.urlsafe_b64decode(token.encode() + b"=" * (-len(token) % 4))
         # HMAC-SHA256 is always 32 bytes; the separator is at the fixed offset
@@ -95,9 +100,8 @@ def validate_ticket(
         raise ValueError("ticket expired")
 
     jti = data["jti"]
-    if tracker.seen(jti):
+    if not tracker.record_if_new(jti, data["exp"]):
         raise ValueError("replayed jti")
-    tracker.record(jti, exp=data["exp"])
 
     return Ticket(
         agent_id=data["agent_id"],
@@ -114,18 +118,30 @@ class JtiTracker:
 
     def __init__(self) -> None:
         self._seen: dict[str, int] = {}  # jti -> exp
+        self._lock = threading.Lock()
 
     def seen(self, jti: str) -> bool:
-        """Return True if this jti has been recorded."""
-        self._evict()
-        return jti in self._seen
+        """Return True if this jti has been recorded. Kept for test inspection."""
+        with self._lock:
+            self._evict()
+            return jti in self._seen
 
     def record(self, jti: str, exp: int) -> None:
         """Mark jti as used. exp is the unix-second expiry of the ticket."""
-        self._seen[jti] = exp
+        with self._lock:
+            self._seen[jti] = exp
+
+    def record_if_new(self, jti: str, exp: int) -> bool:
+        """Atomically check + record. Returns True if newly recorded, False if already seen."""
+        with self._lock:
+            self._evict()
+            if jti in self._seen:
+                return False
+            self._seen[jti] = exp
+            return True
 
     def _evict(self) -> None:
-        """Remove expired entries to bound memory use."""
+        """Remove expired entries to bound memory use. Caller must hold _lock."""
         now = int(time.time())
         expired = [k for k, v in self._seen.items() if v < now]
         for k in expired:
