@@ -224,6 +224,12 @@ class AutoUpdateService:
         pip_cmd = str(Path(sys.executable).parent / "pip")
         await _run([pip_cmd, "install", "-e", ".", "-q"], self._project_dir)
 
+        # Rebuild the desktop bundle if source moved (covers non-systemd hosts).
+        from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+        _rebuilt, _rebuild_msg = await rebuild_desktop_bundle_if_stale(self._project_dir)
+        if _rebuilt:
+            logger.info("Desktop rebuild: %s", _rebuild_msg)
+
         from tinyagentos.restart_orchestrator import write_pending_restart
         write_pending_restart(new_commit)
 

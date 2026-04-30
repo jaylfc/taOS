@@ -568,6 +568,13 @@ async def apply_update(request: Request):
     )
     await proc2.communicate()
 
+    # Rebuild the desktop bundle if new source files landed (belt-and-braces on
+    # non-systemd hosts where ExecStartPre doesn't run: Mac .app, Docker, dev).
+    from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+    _rebuilt, _rebuild_msg = await rebuild_desktop_bundle_if_stale(project_dir)
+    if _rebuilt:
+        logger.info("Desktop rebuild: %s", _rebuild_msg)
+
     # Record the new SHA so the restart modal can confirm the update was applied
     # and the Updates section can show the pending-restart banner.
     sha_proc = await asyncio.create_subprocess_exec(
