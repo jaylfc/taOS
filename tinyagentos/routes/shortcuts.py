@@ -14,10 +14,19 @@ router = APIRouter()
 
 
 def _get_agent_by_name_or_id(request: Request, agent_ref: str) -> dict[str, Any]:
-    """Return the agent dict for *agent_ref* (matched by name or id) or raise 404."""
+    """Return the agent dict for *agent_ref* (matched by name first, then id) or raise 404.
+
+    Two-pass lookup: match by name first across all agents, fall back to id only if
+    no name match exists. Single-pass `name or id` is order-dependent — an agent
+    with `id="tom"` could win over a different agent with `name="tom"` depending
+    on list order.
+    """
     agents = request.app.state.config.agents
     for agent in agents:
-        if agent.get("name") == agent_ref or agent.get("id") == agent_ref:
+        if agent.get("name") == agent_ref:
+            return agent
+    for agent in agents:
+        if agent.get("id") == agent_ref:
             return agent
     raise HTTPException(status_code=404, detail="Agent not found")
 
