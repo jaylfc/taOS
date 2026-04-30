@@ -188,6 +188,11 @@ export function BrowserApp({ windowId: _windowId, initialUrl }: { windowId?: str
       setHistory([safe]);
       setHistoryIndex(0);
       if (iframeRef.current) {
+        // initialUrl is set directly on the iframe (NOT via proxyUrl) because the
+        // agent-shortcuts feature redirects the browser straight to the worker — the
+        // worker sets its own session cookie via /redeem and serves dashboard
+        // content directly. Routing through the controller's proxyUrl wrapping would
+        // break that worker-direct cookie flow.
         iframeRef.current.src = safe;
       }
     } catch (err) {
