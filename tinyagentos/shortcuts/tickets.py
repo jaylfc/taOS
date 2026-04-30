@@ -71,12 +71,14 @@ def validate_ticket(
     - replayed jti
     """
     try:
-        raw = base64.urlsafe_b64decode(token.encode() + b"==")
-        dot_idx = raw.rfind(b".")
-        if dot_idx == -1:
+        raw = base64.urlsafe_b64decode(token.encode() + b"=" * (-len(token) % 4))
+        # HMAC-SHA256 is always 32 bytes; the separator is at the fixed offset
+        # len(raw) - 33.  Using rfind would misfire if 0x2e appears in the sig.
+        sig_start = len(raw) - 32
+        if sig_start < 2 or raw[sig_start - 1:sig_start] != b".":
             raise ValueError("malformed token: no separator")
-        payload_bytes = raw[:dot_idx]
-        sig = raw[dot_idx + 1:]
+        payload_bytes = raw[:sig_start - 1]
+        sig = raw[sig_start:]
     except Exception as exc:
         raise ValueError(f"invalid signature: token decode failed — {exc}") from exc
 
