@@ -145,8 +145,13 @@ def seeded_agent_factory(app, monkeypatch):
 
 @pytest.fixture
 def patch_worker_signing_key(monkeypatch):
-    """Replace _LOCAL_SIGNING_KEY with the test key used in redeem tests."""
+    """Inject the test signing key used in redeem tests.
+
+    Patches _FALLBACK_SIGNING_KEY and clears _active_manager so get_local_worker()
+    uses the fallback path (no enrolled worker) and returns the test key.
+    """
     import tinyagentos.cluster.worker_registry as wr_mod
 
-    monkeypatch.setattr(wr_mod, "_LOCAL_SIGNING_KEY", b"test-signing-key-32-bytes-padded")
+    monkeypatch.setattr(wr_mod, "_FALLBACK_SIGNING_KEY", b"test-signing-key-32-bytes-padded")
+    monkeypatch.setattr(wr_mod, "_active_manager", None)
     yield
