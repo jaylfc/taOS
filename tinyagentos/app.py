@@ -1062,6 +1062,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.shortcuts import router as shortcuts_router
     app.include_router(shortcuts_router)
 
+    from tinyagentos.routes.shortcut_proxy import router as shortcut_proxy_router
+    app.include_router(shortcut_proxy_router)
+
     return app
 
 
