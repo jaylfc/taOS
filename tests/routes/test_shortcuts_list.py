@@ -83,3 +83,22 @@ def test_unauthenticated_returns_401(test_client, agent_with_shortcuts):
     agent_id = agent_with_shortcuts["id"]
     resp = test_client.get(f"/api/agents/{agent_id}/shortcuts")
     assert resp.status_code == 401
+
+
+def test_get_shortcuts_by_name(test_client, admin_auth_headers, agent_with_shortcuts):
+    """Frontend passes agent.name; route must find the agent."""
+    agent_name = agent_with_shortcuts["name"]
+    resp = test_client.get(
+        f"/api/agents/{agent_name}/shortcuts", headers=admin_auth_headers
+    )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert isinstance(resp.json(), list)
+
+
+def test_get_shortcuts_by_id(test_client, admin_auth_headers, agent_with_shortcuts):
+    """Backwards-compat: lookup by id should also work."""
+    agent_id = agent_with_shortcuts["id"]
+    resp = test_client.get(
+        f"/api/agents/{agent_id}/shortcuts", headers=admin_auth_headers
+    )
+    assert resp.status_code == 200

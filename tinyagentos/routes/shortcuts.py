@@ -13,11 +13,11 @@ from tinyagentos.cluster.worker_registry import get_local_worker
 router = APIRouter()
 
 
-def _get_agent_by_id(request: Request, agent_id: str) -> dict[str, Any]:
-    """Return the agent dict for *agent_id* or raise 404."""
+def _get_agent_by_name_or_id(request: Request, agent_ref: str) -> dict[str, Any]:
+    """Return the agent dict for *agent_ref* (matched by name or id) or raise 404."""
     agents = request.app.state.config.agents
     for agent in agents:
-        if agent.get("id") == agent_id:
+        if agent.get("name") == agent_ref or agent.get("id") == agent_ref:
             return agent
     raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -41,7 +41,7 @@ async def list_shortcuts(
     Each entry includes idx, kind, label, and icon.
     requires_capability is not exposed to the frontend.
     """
-    agent = _get_agent_by_id(request, agent_id)
+    agent = _get_agent_by_name_or_id(request, agent_id)
     all_shortcuts = _get_framework_shortcuts(agent)
 
     result = []
@@ -72,7 +72,7 @@ async def launch_shortcut(
     403 if the user lacks the required capability.
     404 if agent or shortcut idx not found.
     """
-    agent = _get_agent_by_id(request, agent_id)
+    agent = _get_agent_by_name_or_id(request, agent_id)
     all_shortcuts = _get_framework_shortcuts(agent)
 
     if idx < 0 or idx >= len(all_shortcuts):
