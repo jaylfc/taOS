@@ -39,7 +39,8 @@ def test_shortcuts_field_is_optional():
     validate_framework_manifest(
         "test-no-shortcuts",
         {
-            "display_name": "Test Framework",
+            "id": "test-no-shortcuts",
+            "name": "Test Framework",
             "shortcuts": [],
         },
     )
@@ -49,5 +50,5 @@ def test_shortcuts_field_absent_ok():
     """A framework dict without the shortcuts key is still valid."""
     validate_framework_manifest(
         "test-absent",
-        {"display_name": "Test Framework"},
+        {"id": "test-absent", "name": "Test Framework"},
     )

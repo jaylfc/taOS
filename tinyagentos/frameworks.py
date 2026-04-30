@@ -152,12 +152,13 @@ def validate_framework_manifest(
 
     Raises FrameworkManifestError if required fields are absent.
     """
+    for base_field in ("id", "name"):
+        if base_field not in entry:
+            raise FrameworkManifestError(
+                f"Framework {fw_id!r}: missing required field {base_field!r}"
+            )
+
     if require_update_fields:
-        for base_field in ("id", "name"):
-            if base_field not in entry:
-                raise FrameworkManifestError(
-                    f"Framework {fw_id!r}: missing required field {base_field!r}"
-                )
         missing = [f for f in _REQUIRED_UPDATE_FIELDS if f not in entry]
         if missing:
             raise FrameworkManifestError(
