@@ -8,9 +8,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "==> Pulling latest..."
-git pull --ff-only origin master
+git pull --ff-only
 
-if [ -d desktop ] && [ desktop/src -nt static/desktop/index.html ]; then
+if [ -d desktop ] && { [ ! -f static/desktop/index.html ] || [ desktop/src -nt static/desktop/index.html ]; }; then
   echo "==> Frontend source moved since last build — rebuilding..."
   cd desktop
   npm install --silent
