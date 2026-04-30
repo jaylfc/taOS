@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import React from "react";
 
@@ -76,7 +76,7 @@ const MOCK_AGENT = {
 };
 
 function setupFetch(launchResponse: { redirect_url: string; expires_in: number }) {
-  global.fetch = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
     if (url === "/api/agents" && !opts?.method) {
       return Promise.resolve({
         ok: true,
@@ -103,13 +103,17 @@ function setupFetch(launchResponse: { redirect_url: string; expires_in: number }
       headers: { get: () => "application/json" },
       json: () => Promise.resolve({}),
     } as unknown as Response);
-  });
+  }));
 }
 
 describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
   beforeEach(() => {
     mockOpenWindow.mockClear();
     Object.keys(captors).forEach((k) => delete captors[k]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("dashboard kind opens BrowserApp with initialUrl from redirect_url", async () => {

@@ -170,10 +170,16 @@ export function BrowserApp({ windowId: _windowId, initialUrl }: { windowId?: str
     }
   }, []);
 
-  // Apply initialUrl once on mount via ref — idempotent across rerenders
+  // Apply initialUrl once on mount — idempotent across rerenders.
+  // Also sync url/inputValue/history so the address bar, copy, and
+  // back/forward all reflect the launch URL rather than DEFAULT_URL.
   useEffect(() => {
     if (!initialUrl || initialUrlApplied.current) return;
     initialUrlApplied.current = true;
+    setUrl(initialUrl);
+    setInputValue(initialUrl);
+    setHistory([initialUrl]);
+    setHistoryIndex(0);
     if (iframeRef.current) {
       iframeRef.current.src = initialUrl;
     }

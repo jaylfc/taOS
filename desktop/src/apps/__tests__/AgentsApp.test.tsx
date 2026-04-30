@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import React from "react";
 
@@ -83,7 +83,7 @@ const MOCK_AGENTS = [
 
 describe("AgentsApp — AgentShortcutRow wiring (Task 27)", () => {
   beforeEach(() => {
-    global.fetch = vi.fn().mockImplementation((url: string) => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
       if (url === "/api/agents") {
         return Promise.resolve({
           ok: true,
@@ -103,7 +103,11 @@ describe("AgentsApp — AgentShortcutRow wiring (Task 27)", () => {
         headers: { get: () => "application/json" },
         json: () => Promise.resolve({}),
       } as unknown as Response);
-    });
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("renders an AgentShortcutRow for each agent in the list", async () => {

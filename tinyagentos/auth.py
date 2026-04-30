@@ -154,7 +154,17 @@ class AuthManager:
 
     def _public_user(self, record: dict) -> dict:
         raw_caps = record.get("capabilities")
-        caps: list[str] = list(raw_caps) if raw_caps is not None else []
+        if raw_caps is not None:
+            caps: list[str] = list(raw_caps)
+        else:
+            # Legacy record predates capabilities — apply sensible defaults so
+            # upgrades don't silently lock users out of every shortcut.
+            users = self._read_users().get("users", [])
+            is_primary = bool(users) and users[0].get("id") == record.get("id")
+            if is_primary or record.get("is_admin"):
+                caps = list(default_caps_for_admin())
+            else:
+                caps = list(default_caps_for_new_user())
         return {
             "id": record.get("id", ""),
             "username": record.get("username", ""),

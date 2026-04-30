@@ -218,4 +218,4 @@ def validate_framework_manifest(
         try:
             validate_shortcuts(shortcuts)
         except ValueError as exc:
-            raise ValueError(f"framework '{fw_id}': {exc}") from exc
+            raise FrameworkManifestError(f"framework '{fw_id}': {exc}") from exc

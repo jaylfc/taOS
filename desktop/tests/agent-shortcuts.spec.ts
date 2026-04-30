@@ -70,9 +70,10 @@ test.describe("Agent shortcuts @iphone-14", () => {
 
     // Shortcut buttons use aria-label={shortcut.label}; pick any container-terminal shortcut.
     // Common label patterns: "Container shell", "Shell", "Terminal".
+    // Use CSS attribute selector on the button itself: filter({has}) only matches descendants,
+    // not the element's own aria-label attribute.
     const shellBtn = page
-      .locator(".agent-shortcut-btn")
-      .filter({ has: page.locator('[aria-label*="shell" i], [aria-label*="terminal" i]') })
+      .locator('.agent-shortcut-btn[aria-label*="shell" i], .agent-shortcut-btn[aria-label*="terminal" i]')
       .first();
 
     if (!(await shellBtn.isVisible().catch(() => false))) {
@@ -97,8 +98,7 @@ test.describe("Agent shortcuts @iphone-14", () => {
     // Dashboard shortcuts have kind="dashboard" — they open BrowserApp.
     // Common label patterns: "Gateway dashboard", "Dashboard", "Web UI".
     const dashBtn = page
-      .locator(".agent-shortcut-btn")
-      .filter({ has: page.locator('[aria-label*="dashboard" i], [aria-label*="gateway" i]') })
+      .locator('.agent-shortcut-btn[aria-label*="dashboard" i], .agent-shortcut-btn[aria-label*="gateway" i]')
       .first();
 
     if (!(await dashBtn.isVisible().catch(() => false))) {

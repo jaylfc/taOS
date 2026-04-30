@@ -31,6 +31,13 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 # In-memory session store: session_id -> {agent_id, shortcut_idx, scope, expires_at}
+#
+# Known limitation: this store is process-local. In a multi-worker (multi-process)
+# ASGI deployment, /redeem and the follow-up /shortcut/... request must hit the same
+# worker process, otherwise the session lookup returns 401. Sticky sessions on the
+# load balancer (by IP or cookie) are required for that deployment model.
+# This is intentional for v1 — a shared backend (Redis/DB) would solve it but
+# introduces a hard dependency not warranted until horizontal scale is needed.
 _sessions: dict[str, dict[str, Any]] = {}
 _SESSION_IDLE_TTL = 300  # 5 minutes
 

@@ -1,17 +1,19 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import BrowserApp from "./BrowserApp";
 
 describe("BrowserApp initialUrl", () => {
   afterEach(() => vi.clearAllMocks());
 
-  it("sets iframe src to initialUrl on first mount", () => {
+  it("sets iframe src via proxy URL for initialUrl on first mount", () => {
     const { container } = render(
       <BrowserApp initialUrl="https://openclaw.local/ui" />,
     );
     const iframe = container.querySelector("iframe");
     expect(iframe).not.toBeNull();
-    expect(iframe?.src).toBe("https://openclaw.local/ui");
+    // The iframe always loads through the desktop proxy endpoint.
+    // Verify the initialUrl is encoded in the proxy src.
+    expect(iframe?.src).toContain("openclaw.local%2Fui");
   });
 
   it("does not override user-navigated src on re-mount when initialUrl unchanged", () => {
@@ -28,5 +30,11 @@ describe("BrowserApp initialUrl", () => {
     const { container } = render(<BrowserApp />);
     const iframe = container.querySelector("iframe");
     expect(iframe?.src ?? "").not.toContain("https://");
+  });
+
+  it("shows initialUrl in the address bar input, not DEFAULT_URL", () => {
+    render(<BrowserApp initialUrl="https://openclaw.local/dashboard" />);
+    const input = screen.getByRole<HTMLInputElement>("textbox");
+    expect(input.value).toBe("https://openclaw.local/dashboard");
   });
 });
