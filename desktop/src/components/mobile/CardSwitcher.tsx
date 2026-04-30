@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import * as icons from "lucide-react";
 import { X, Plus } from "lucide-react";
 import { useProcessStore } from "@/stores/process-store";
@@ -66,7 +67,7 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 flex flex-col backdrop-blur-sm"
       style={{ zIndex: 9000, backgroundColor: "rgba(0, 0, 0, 0.6)" }}
@@ -175,6 +176,7 @@ export function CardSwitcher({ open, onClose, onSelectApp, onLaunchpad }: Props)
           })}
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

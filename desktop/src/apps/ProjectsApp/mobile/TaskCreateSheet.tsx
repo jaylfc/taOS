@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export interface TaskCreatePayload {
   title: string;
@@ -42,7 +43,7 @@ export function TaskCreateSheet({ open, onClose, onSubmit }: Props) {
     }
   };
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -97,6 +98,7 @@ export function TaskCreateSheet({ open, onClose, onSubmit }: Props) {
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }

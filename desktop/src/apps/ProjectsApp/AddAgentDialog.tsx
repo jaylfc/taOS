@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { projectsApi } from "@/lib/projects";
 
 type Mode = "new" | "existing";
@@ -56,7 +57,7 @@ export function AddAgentDialog({
     onClose();
   };
 
-  return (
+  return createPortal(
     <div role="dialog" aria-modal="true" aria-label="Add agent" className="fixed inset-0 bg-black/50 flex items-center justify-center">
       <form onSubmit={onSubmit} className="bg-zinc-900 p-4 rounded shadow w-[26rem] space-y-3">
         <h3 className="text-lg font-semibold">Add agent</h3>
@@ -142,6 +143,7 @@ export function AddAgentDialog({
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }

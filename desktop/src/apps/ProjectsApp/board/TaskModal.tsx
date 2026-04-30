@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import styles from "./TaskModal.module.css";
 import { Hero } from "./modal/Hero";
 import { MetadataPane } from "./modal/MetadataPane";
@@ -76,7 +77,7 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
 
   if (isMobile) {
     if (!task) {
-      return (
+      return createPortal(
         <div
           role="dialog"
           aria-modal="true"
@@ -94,7 +95,8 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
             </button>
           </div>
           <div className="flex flex-1 items-center justify-center">Loading…</div>
-        </div>
+        </div>,
+        document.body,
       );
     }
     return (
@@ -124,7 +126,7 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
     );
   }
 
-  return (
+  return createPortal(
     <div className={styles.scrim} role="dialog" aria-modal="true" aria-label={task?.title ?? "Task"}>
       <div className={styles.frame}>
         <header className={styles.bar}>
@@ -157,6 +159,7 @@ export function TaskModal({ projectId, taskId, currentUserId, onClose, onPrev, o
           ) : <p className={styles.loading}>Loading…</p>}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

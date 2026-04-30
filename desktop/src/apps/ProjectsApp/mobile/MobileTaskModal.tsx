@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode, type TouchEvent } from "react";
+import { createPortal } from "react-dom";
 
 export interface MobileTaskModalTask {
   id: string;
@@ -93,7 +94,7 @@ export function MobileTaskModal({
     return () => window.clearTimeout(t);
   }, []);
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -218,7 +219,8 @@ export function MobileTaskModal({
           {action.label}
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

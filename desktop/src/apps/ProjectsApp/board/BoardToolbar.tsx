@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import styles from "./BoardToolbar.module.css";
 import type { ViewMode, GroupBy, Filters } from "./types";
 import { BoardFilters } from "./BoardFilters";
@@ -45,7 +46,7 @@ export function BoardToolbar(p: BoardToolbarProps) {
             Filter / Group ▾
           </button>
         </div>
-        {sheetOpen && (
+        {sheetOpen && createPortal(
           <div
             role="dialog"
             aria-modal="true"
@@ -100,7 +101,8 @@ export function BoardToolbar(p: BoardToolbarProps) {
                 Done
               </button>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </>
     );
