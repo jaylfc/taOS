@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { projectsApi } from "@/lib/projects";
 
 const slugify = (s: string) =>
@@ -41,7 +42,7 @@ export function CreateProjectDialog({
     }
   };
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -99,6 +100,7 @@ export function CreateProjectDialog({
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }
