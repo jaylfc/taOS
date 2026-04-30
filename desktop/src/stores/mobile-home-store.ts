@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getAllApps } from "@/registry/app-registry";
 
 type WidgetItem = { type: "widget"; widgetType: string };
 type AppItem = { type: "app"; appId: string };
@@ -7,13 +8,6 @@ export type HomeItem = WidgetItem | AppItem;
 export interface HomePage {
   items: HomeItem[];
 }
-
-const ALL_APP_IDS = [
-  "messages", "agents", "files", "store", "settings", "models", "providers",
-  "activity", "cluster", "memory", "channels", "secrets", "tasks", "import",
-  "images", "library", "reddit", "youtube", "github", "x-monitor",
-  "agent-browsers", "calculator", "calendar", "contacts",
-];
 
 const DEFAULT_DOCK: string[] = ["messages", "agents", "files", "store"];
 
@@ -27,7 +21,7 @@ const DEFAULT_PAGES: HomePage[] = [
     ],
   },
   {
-    items: ALL_APP_IDS.map((appId) => ({ type: "app", appId }) as AppItem),
+    items: getAllApps().map((a) => ({ type: "app", appId: a.id }) as AppItem),
   },
 ];
 
