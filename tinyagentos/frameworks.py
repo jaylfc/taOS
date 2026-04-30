@@ -1,6 +1,8 @@
 """Framework manifest registry with update-metadata and validation."""
 from __future__ import annotations
 
+from tinyagentos.shortcuts.validation import validate_shortcuts
+
 
 class FrameworkManifestError(ValueError):
     """Raised when a framework manifest entry is invalid or incomplete."""
@@ -150,15 +152,21 @@ def validate_framework_manifest(
 
     Raises FrameworkManifestError if required fields are absent.
     """
-    for base_field in ("id", "name"):
-        if base_field not in entry:
-            raise FrameworkManifestError(
-                f"Framework {fw_id!r}: missing required field {base_field!r}"
-            )
-
     if require_update_fields:
+        for base_field in ("id", "name"):
+            if base_field not in entry:
+                raise FrameworkManifestError(
+                    f"Framework {fw_id!r}: missing required field {base_field!r}"
+                )
         missing = [f for f in _REQUIRED_UPDATE_FIELDS if f not in entry]
         if missing:
             raise FrameworkManifestError(
                 f"Framework {fw_id!r}: missing update fields: {missing}"
             )
+
+    shortcuts = entry.get("shortcuts")
+    if shortcuts is not None:
+        try:
+            validate_shortcuts(shortcuts)
+        except ValueError as exc:
+            raise ValueError(f"framework '{fw_id}': {exc}") from exc
