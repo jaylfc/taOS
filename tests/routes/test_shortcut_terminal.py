@@ -106,3 +106,48 @@ class TestTerminalPtyBridge:
                     assert data == "$ "
             finally:
                 test_client.cookies.clear()
+
+
+# ---------------------------------------------------------------------------
+# Task 21 — tui shortcut spawns PTY with bash -lc <command>
+# ---------------------------------------------------------------------------
+
+class TestTuiSpawnCommand:
+    def test_tui_shortcut_passes_command_to_spawn_pty(
+        self, test_client, seeded_agent_factory
+    ):
+        """For a tui shortcut, spawn_pty must be called with cmd=['bash','-lc',<command>]."""
+        shortcuts = [
+            {
+                "kind": "tui",
+                "label": "htop",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+                "command": "htop",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_terminal_session(agent_id, 0, scope="tui")
+
+        captured_cmd: list = []
+        fake_pty = FakePtyHandle()
+
+        def _fake_get_pty(agent_name: str, cmd: list | None) -> FakePtyHandle:
+            captured_cmd.extend(cmd or [])
+            return fake_pty
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._get_container_pty",
+            side_effect=_fake_get_pty,
+        ):
+            test_client.cookies.set("taos_shortcut", session_id)
+            try:
+                with test_client.websocket_connect(
+                    f"/shortcut/terminal/{agent_id}/0"
+                ) as ws:
+                    ws.receive_text()
+            finally:
+                test_client.cookies.clear()
+
+        assert captured_cmd == ["bash", "-lc", "htop"]
