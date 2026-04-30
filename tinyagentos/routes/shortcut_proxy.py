@@ -336,3 +336,69 @@ async def shortcut_dashboard_proxy(
     shortcut = {**shortcut, "_idx": idx}
 
     return await proxy_dashboard(agent_name, shortcut, request)
+
+
+@router.websocket("/shortcut/dashboard/{agent_name}/{idx}/ws/{path:path}")
+async def shortcut_dashboard_ws(
+    agent_name: str,
+    idx: int,
+    path: str,
+    websocket: WebSocket,
+):
+    """WebSocket proxy for shortcut dashboards.
+
+    Validates the taos_shortcut cookie, then upgrades and pipes both
+    directions to the container's dashboard WebSocket endpoint.
+    """
+    shortcuts = _get_shortcuts_for_agent(websocket, agent_name)
+    try:
+        shortcut = _get_shortcut_from_cookie(websocket, agent_name, idx, shortcuts)
+    except HTTPException as exc:
+        await websocket.close(code=1008, reason=exc.detail)
+        return
+
+    ip = _resolve_container_ip(websocket, agent_name)
+    if ip is None:
+        await websocket.close(code=1011, reason="No container IP")
+        return
+
+    port = shortcut["port"]
+    base_path = (shortcut.get("path") or "/").rstrip("/")
+    ws_path = f"{base_path}/ws/{path}" if path else f"{base_path}/ws/"
+    upstream_ws_url = f"ws://{ip}:{port}{ws_path}"
+
+    await websocket.accept()
+
+    try:
+        import websockets as _ws_lib
+        async with _ws_lib.connect(upstream_ws_url) as upstream:
+            async def _client_to_upstream():
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        await upstream.send(data)
+                except Exception:
+                    pass
+
+            async def _upstream_to_client():
+                try:
+                    async for message in upstream:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception:
+                    pass
+
+            await asyncio.gather(
+                _client_to_upstream(),
+                _upstream_to_client(),
+                return_exceptions=True,
+            )
+    except Exception as exc:
+        logger.debug("WS proxy error for %s: %s", agent_name, exc)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass

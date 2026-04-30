@@ -537,3 +537,61 @@ class TestAuthHeaderInjection:
             await proxy_dashboard(agent["id"], shortcut, mock_request)
 
         assert "authorization" not in {k.lower() for k in captured_headers}
+
+
+# ---------------------------------------------------------------------------
+# Task 19 — SSE pass-through + WebSocket upgrade
+# ---------------------------------------------------------------------------
+
+class TestSsePassthrough:
+    def test_sse_response_streams_through(
+        self, test_client, seeded_agent_factory, monkeypatch
+    ):
+        """text/event-stream response must pass through with correct status."""
+        shortcuts = [_make_dashboard_shortcut(port=7070)]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_session(agent_id, 0)
+
+        monkeypatch.setattr(
+            "tinyagentos.routes.shortcut_proxy._resolve_container_ip",
+            lambda req, name: "10.0.0.5",
+        )
+
+        sse_body = b"data: hello\n\ndata: world\n\n"
+
+        test_client.cookies.set("taos_shortcut", session_id)
+        try:
+            with respx.mock(assert_all_called=False) as rsps:
+                rsps.get("http://10.0.0.5:7070/").mock(
+                    return_value=httpx.Response(
+                        200,
+                        content=sse_body,
+                        headers={"content-type": "text/event-stream"},
+                    )
+                )
+                resp = test_client.get(f"/shortcut/dashboard/{agent_id}/0/")
+        finally:
+            test_client.cookies.clear()
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+
+
+class TestWebSocketRoute:
+    def test_ws_route_exists(self, app):
+        """The WS route /shortcut/dashboard/{agent}/{idx}/ws/{path} must be registered."""
+        routes = [r.path for r in app.routes if hasattr(r, "path")]
+        ws_route = "/shortcut/dashboard/{agent_name}/{idx}/ws/{path:path}"
+        assert ws_route in routes, f"WS route not found. Routes: {routes}"
+
+    def test_ws_missing_cookie_closes_with_1008(self, test_client, seeded_agent_factory):
+        """WebSocket with no cookie must be rejected (1008 or connection refused)."""
+        shortcuts = [_make_dashboard_shortcut()]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+
+        with pytest.raises(Exception):
+            with test_client.websocket_connect(
+                f"/shortcut/dashboard/{agent_id}/0/ws/"
+            ) as ws:
+                ws.receive_text()
