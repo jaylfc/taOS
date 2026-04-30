@@ -51,8 +51,9 @@ function isIOS(): boolean {
 
 type BrowserMode = "embedded" | "external";
 
-export function BrowserApp({ windowId: _windowId }: { windowId: string }) {
+export function BrowserApp({ windowId: _windowId, initialUrl }: { windowId?: string; initialUrl?: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const initialUrlApplied = useRef(false);
   const [url, setUrl] = useState(DEFAULT_URL);
   const [inputValue, setInputValue] = useState(DEFAULT_URL);
   const [history, setHistory] = useState<string[]>([DEFAULT_URL]);
@@ -167,6 +168,16 @@ export function BrowserApp({ windowId: _windowId }: { windowId: string }) {
     if (isIOS()) {
       setMode("external");
     }
+  }, []);
+
+  // Apply initialUrl once on mount via ref — idempotent across rerenders
+  useEffect(() => {
+    if (!initialUrl || initialUrlApplied.current) return;
+    initialUrlApplied.current = true;
+    if (iframeRef.current) {
+      iframeRef.current.src = initialUrl;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // When in external mode and URL changes, don't auto-open — user clicks the button
@@ -466,3 +477,5 @@ export function BrowserApp({ windowId: _windowId }: { windowId: string }) {
     </div>
   );
 }
+
+export default BrowserApp;
