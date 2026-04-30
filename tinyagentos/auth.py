@@ -7,6 +7,11 @@ import secrets
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+
+from fastapi import HTTPException, Request
+
+from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +153,18 @@ class AuthManager:
     # ------------------------------------------------------------------ #
 
     def _public_user(self, record: dict) -> dict:
+        raw_caps = record.get("capabilities")
+        if raw_caps is not None:
+            caps: list[str] = list(raw_caps)
+        else:
+            # Legacy record predates capabilities — apply sensible defaults so
+            # upgrades don't silently lock users out of every shortcut.
+            users = self._read_users().get("users", [])
+            is_primary = bool(users) and users[0].get("id") == record.get("id")
+            if is_primary or record.get("is_admin"):
+                caps = list(default_caps_for_admin())
+            else:
+                caps = list(default_caps_for_new_user())
         return {
             "id": record.get("id", ""),
             "username": record.get("username", ""),
@@ -157,11 +174,26 @@ class AuthManager:
             "pending": "pending_invite" in record,
             "last_login_at": record.get("last_login_at"),
             "created_at": record.get("created_at"),
+            "capabilities": caps,
         }
 
     # ------------------------------------------------------------------ #
     #  User lookups                                                        #
     # ------------------------------------------------------------------ #
+
+    def get_primary_user(self) -> dict | None:
+        """Return the public profile of the primary/admin user (first in the list)."""
+        users = self._read_users().get("users", [])
+        if users:
+            return self._public_user(users[0])
+        return None
+
+    def get_user_by_id(self, user_id: str) -> dict | None:
+        """Return the public profile for *user_id*, or None if not found."""
+        record = self._find_user_by_id(user_id)
+        if record:
+            return self._public_user(record)
+        return None
 
     def find_user(self, username: str) -> dict | None:
         for u in self._read_users().get("users", []):
@@ -223,6 +255,7 @@ class AuthManager:
             "password_hash": hash_password(password),
             "created_at": int(time.time()),
             "is_admin": True,
+            "capabilities": list(default_caps_for_admin()),
         }
         users["users"] = [record]
         users["current_user_id"] = record["id"]
@@ -282,6 +315,7 @@ class AuthManager:
         record["email"] = email
         record["password_hash"] = hash_password(password)
         record["created_at"] = int(time.time())
+        record["capabilities"] = list(default_caps_for_new_user())
         users[target_idx] = record
         data["users"] = users
         self._write_users(data)
@@ -544,3 +578,27 @@ class AuthManager:
                 data["users"] = users
                 self._write_users(data)
                 return
+
+
+# ---------------------------------------------------------------------------
+# FastAPI dependency
+# ---------------------------------------------------------------------------
+
+
+def get_current_user(request: Request) -> dict[str, Any]:
+    """FastAPI dependency — return the current session user or raise 401.
+
+    Reads the ``taos_session`` cookie.  The auth middleware already blocks
+    unauthenticated requests before they reach route handlers, but this
+    dependency also handles the case where the middleware was bypassed (e.g.
+    direct TestClient calls without a cookie) and returns the capability-rich
+    user dict needed for capability checks.
+    """
+    auth_mgr = request.app.state.auth
+    token = request.cookies.get("taos_session", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    user = auth_mgr.session_user(token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user

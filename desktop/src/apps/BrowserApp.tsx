@@ -51,8 +51,9 @@ function isIOS(): boolean {
 
 type BrowserMode = "embedded" | "external";
 
-export function BrowserApp({ windowId: _windowId }: { windowId: string }) {
+export function BrowserApp({ windowId: _windowId, initialUrl }: { windowId?: string; initialUrl?: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const initialUrlApplied = useRef(false);
   const [url, setUrl] = useState(DEFAULT_URL);
   const [inputValue, setInputValue] = useState(DEFAULT_URL);
   const [history, setHistory] = useState<string[]>([DEFAULT_URL]);
@@ -167,6 +168,37 @@ export function BrowserApp({ windowId: _windowId }: { windowId: string }) {
     if (isIOS()) {
       setMode("external");
     }
+  }, []);
+
+  // Apply initialUrl once on mount — idempotent across rerenders.
+  // Also sync url/inputValue/history so the address bar, copy, and
+  // back/forward all reflect the launch URL rather than DEFAULT_URL.
+  useEffect(() => {
+    if (!initialUrl || initialUrlApplied.current) return;
+    try {
+      const parsed = new URL(initialUrl, window.location.href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        console.warn("[BrowserApp] rejected initialUrl with non-http(s) scheme:", parsed.protocol);
+        return;
+      }
+      initialUrlApplied.current = true;
+      const safe = parsed.toString();
+      setUrl(safe);
+      setInputValue(safe);
+      setHistory([safe]);
+      setHistoryIndex(0);
+      if (iframeRef.current) {
+        // initialUrl is set directly on the iframe (NOT via proxyUrl) because the
+        // agent-shortcuts feature redirects the browser straight to the worker — the
+        // worker sets its own session cookie via /redeem and serves dashboard
+        // content directly. Routing through the controller's proxyUrl wrapping would
+        // break that worker-direct cookie flow.
+        iframeRef.current.src = safe;
+      }
+    } catch (err) {
+      console.warn("[BrowserApp] invalid initialUrl:", initialUrl, err);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // When in external mode and URL changes, don't auto-open — user clicks the button
@@ -466,3 +498,5 @@ export function BrowserApp({ windowId: _windowId }: { windowId: string }) {
     </div>
   );
 }
+
+export default BrowserApp;

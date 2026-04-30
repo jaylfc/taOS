@@ -221,6 +221,9 @@ class AppleContainerBackend(ContainerBackend):
                 snapshots.append(tag)
         return {"success": True, "snapshots": snapshots, "output": output}
 
+    def spawn_pty(self, name: str, cmd: list[str] | None = None):
+        raise NotImplementedError("apple spawn_pty not yet implemented")
+
     async def set_env(self, name: str, key: str, value: str) -> dict:
         return {
             "success": False,

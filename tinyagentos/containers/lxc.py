@@ -4,10 +4,66 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import pty
+import select
+import shlex
+import signal
+import subprocess
 
-from .backend import ContainerBackend, ContainerInfo, _parse_memory
+from .backend import ContainerBackend, ContainerInfo, PtyHandle, _parse_memory
 
 logger = logging.getLogger(__name__)
+
+
+class _IncusPtyHandle(PtyHandle):
+    """PtyHandle backed by a real incus exec subprocess with a pseudo-tty."""
+
+    def __init__(self, proc: subprocess.Popen, master_fd: int) -> None:
+        self._proc = proc
+        self._master_fd = master_fd
+
+    def read(self, size: int = 4096) -> bytes:
+        ready, _, _ = select.select([self._master_fd], [], [], 0.1)
+        if ready:
+            return os.read(self._master_fd, size)
+        return b""
+
+    def write(self, data: bytes) -> None:
+        os.write(self._master_fd, data)
+
+    def resize(self, rows: int, cols: int) -> None:
+        import fcntl
+        import struct
+        import termios
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsize)
+
+    def close(self) -> None:
+        try:
+            self._proc.send_signal(signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            os.close(self._master_fd)
+        except OSError:
+            pass
+        self._proc.wait(timeout=5)
+
+
+def _open_incus_pty(container: str, shell_cmd: str) -> _IncusPtyHandle:
+    """Open an incus exec session with a real PTY."""
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        ["incus", "exec", "--tty", "--interactive", container, "--",
+         "bash", "-lc", shell_cmd],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    return _IncusPtyHandle(proc, master_fd)
 
 
 async def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
@@ -274,6 +330,14 @@ class LXCBackend(ContainerBackend):
                     snap_name = stripped.split()[0]
                     snapshots.append(snap_name)
         return {"success": True, "snapshots": snapshots, "output": output}
+
+    def spawn_pty(self, name: str, cmd: list[str] | None = None) -> PtyHandle:
+        container = f"taos-agent-{name}"
+        if cmd is None:
+            shell_cmd = "exec bash -l"
+        else:
+            shell_cmd = " ".join(shlex.quote(c) for c in cmd)
+        return _open_incus_pty(container, shell_cmd)
 
     async def set_env(self, name: str, key: str, value: str) -> dict:
         """Set an environment variable on the container via incus config set.

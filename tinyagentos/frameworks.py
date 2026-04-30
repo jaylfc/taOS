@@ -1,6 +1,8 @@
 """Framework manifest registry with update-metadata and validation."""
 from __future__ import annotations
 
+from tinyagentos.shortcuts.validation import validate_shortcuts
+
 
 class FrameworkManifestError(ValueError):
     """Raised when a framework manifest entry is invalid or incomplete."""
@@ -22,6 +24,25 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "compact", "description": "Summarise and compact context"},
             {"name": "cost", "description": "Show token spend for this session"},
         ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+            {"kind": "tui", "label": "OpenClaw agent",
+             "command": "openclaw agent",
+             "icon": "tui", "requires_capability": "agent.terminal"},
+            {"kind": "tui", "label": "OpenClaw doctor",
+             "command": "openclaw doctor",
+             "icon": "diagnostic", "requires_capability": "agent.terminal"},
+            {"kind": "dashboard", "label": "Gateway dashboard",
+             "port": 18789, "path": "/",
+             "auth": {
+                 "type": "bearer",
+                 "token_source": {"kind": "container_file",
+                                  "path": "/root/.openclaw/openclaw.json",
+                                  "json_pointer": "/gateway/auth/token"},
+             },
+             "icon": "dashboard", "requires_capability": "agent.dashboard"},
+        ],
     },
     "smolagents": {
         "id": "smolagents",
@@ -30,6 +51,13 @@ FRAMEWORKS: dict[str, dict] = {
         "verification_status": "beta",
         "slash_commands": [
             {"name": "help", "description": "Show SmolAgents help"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+            {"kind": "tui", "label": "SmolAgents interactive",
+             "command": "smolagent",
+             "icon": "tui", "requires_capability": "agent.terminal"},
         ],
     },
     "generic": {
@@ -46,6 +74,10 @@ FRAMEWORKS: dict[str, dict] = {
         "slash_commands": [
             {"name": "help", "description": "Show PocketFlow help"},
         ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+        ],
     },
     "langroid": {
         "id": "langroid",
@@ -55,6 +87,10 @@ FRAMEWORKS: dict[str, dict] = {
         "slash_commands": [
             {"name": "help", "description": "Show Langroid help"},
         ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+        ],
     },
     "openai-agents-sdk": {
         "id": "openai-agents-sdk",
@@ -63,6 +99,10 @@ FRAMEWORKS: dict[str, dict] = {
         "verification_status": "beta",
         "slash_commands": [
             {"name": "help", "description": "Show Agents SDK help"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
         ],
     },
     "hermes": {
@@ -74,6 +114,16 @@ FRAMEWORKS: dict[str, dict] = {
             {"name": "help", "description": "List available commands"},
             {"name": "clear", "description": "Clear the session context"},
             {"name": "model", "description": "Show or change active model"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+            {"kind": "tui", "label": "Hermes chat",
+             "command": "hermes",
+             "icon": "tui", "requires_capability": "agent.terminal"},
+            {"kind": "tui", "label": "Hermes doctor",
+             "command": "hermes doctor",
+             "icon": "diagnostic", "requires_capability": "agent.terminal"},
         ],
     },
     "agent_zero": {
@@ -162,3 +212,10 @@ def validate_framework_manifest(
             raise FrameworkManifestError(
                 f"Framework {fw_id!r}: missing update fields: {missing}"
             )
+
+    shortcuts = entry.get("shortcuts")
+    if shortcuts is not None:
+        try:
+            validate_shortcuts(shortcuts)
+        except ValueError as exc:
+            raise FrameworkManifestError(f"framework '{fw_id}': {exc}") from exc

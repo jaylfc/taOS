@@ -32,6 +32,10 @@ import { PersonaPicker } from "@/components/persona-picker/PersonaPicker";
 import type { PersonaSelection } from "@/components/persona-picker/types";
 import { slugifyClient, isValidSlug, SLUG_REGEX } from "@/lib/slug";
 import { MigrationBanner } from "@/components/MigrationBanner";
+import { AgentShortcutRow } from "@/components/AgentShortcutRow";
+import type { AgentShortcut } from "@/hooks/use-agent-shortcuts";
+import { useProcessStore } from "@/stores/process-store";
+import { getApp } from "@/registry/app-registry";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -1637,6 +1641,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [diskStates, setDiskStates] = useState<Record<string, DiskState>>({});
   const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
   const [latestByFramework, setLatestByFramework] = useState<Record<string, LatestVersion>>({});
+  const openWindow = useProcessStore((s) => s.openWindow);
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -1873,6 +1878,28 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     );
   }
 
+  const handleShortcutLaunch = useCallback(async (agentId: string, shortcut: AgentShortcut) => {
+    const res = await fetch(
+      `/api/agents/${encodeURIComponent(agentId)}/shortcuts/${shortcut.idx}/launch`,
+      { method: "POST", headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return;
+    const { redirect_url } = await res.json() as { redirect_url: string };
+    const kind = shortcut.kind;
+    if (kind === "dashboard") {
+      const app = getApp("browser");
+      if (app) openWindow("browser", app.defaultSize, { initialUrl: redirect_url });
+    } else if (kind === "tui" || kind === "container-terminal") {
+      const parsed = new URL(redirect_url, window.location.href);
+      const ticket = parsed.searchParams.get("t") ?? "";
+      const wsUrl = redirect_url
+        .replace(/^http:\/\//, "ws://")
+        .replace(/^https:\/\//, "wss://");
+      const app = getApp("terminal");
+      if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } });
+    }
+  }, [openWindow]);
+
   function handleWizardClose(deployed?: boolean) {
     setWizardOpen(false);
     if (deployed) {
@@ -1991,17 +2018,22 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               })}
             <div className="space-y-2" role="list" aria-label="Agent list">
               {agents.map((agent) => (
-                <AgentRow
-                  key={agent.name}
-                  agent={agent}
-                  diskState={diskStates[agent.name] ?? null}
-                  latestByFramework={latestByFramework}
-                  onViewLogs={(name) => setDetail({ name, tab: "logs" })}
-                  onViewSkills={(name) => setDetail({ name, tab: "skills" })}
-                  onViewMessages={(name) => setDetail({ name, tab: "messages" })}
-                  onDelete={handleDelete}
-                  onResume={handleResume}
-                />
+                <div key={agent.name}>
+                  <AgentRow
+                    agent={agent}
+                    diskState={diskStates[agent.name] ?? null}
+                    latestByFramework={latestByFramework}
+                    onViewLogs={(name) => setDetail({ name, tab: "logs" })}
+                    onViewSkills={(name) => setDetail({ name, tab: "skills" })}
+                    onViewMessages={(name) => setDetail({ name, tab: "messages" })}
+                    onDelete={handleDelete}
+                    onResume={handleResume}
+                  />
+                  <AgentShortcutRow
+                    agentId={agent.name}
+                    onLaunch={handleShortcutLaunch}
+                  />
+                </div>
               ))}
             </div>
             <ArchivedAgentsPanel

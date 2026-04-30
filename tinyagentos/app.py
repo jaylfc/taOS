@@ -497,6 +497,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("auto-update service failed to start")
         await cluster_manager.start()
+        # Enroll this controller as the 'local' cluster worker so route-layer
+        # code (get_local_worker) picks up the in-memory signing key.
+        from tinyagentos.cluster.local_worker import enroll_local_worker
+        from tinyagentos.cluster.worker_registry import set_active_manager
+        _bind_port = config.server.get("port", 6969)
+        await enroll_local_worker(cluster_manager, bind_port=_bind_port)
+        set_active_manager(cluster_manager)
         # Start the live backend catalog — everything that asks "what's
         # available?" reads from this rather than the filesystem.
         try:
@@ -1058,6 +1065,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # --- Memory Management Routes ---
     from tinyagentos.routes.memory_management import router as memory_management_router
     app.include_router(memory_management_router)
+
+    from tinyagentos.routes.shortcuts import router as shortcuts_router
+    app.include_router(shortcuts_router)
+
+    from tinyagentos.routes.shortcut_proxy import router as shortcut_proxy_router
+    app.include_router(shortcut_proxy_router)
 
     return app
 

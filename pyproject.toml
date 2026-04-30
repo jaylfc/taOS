@@ -23,6 +23,8 @@ dependencies = [
     "libtorrent>=2.0.9",
     # Memory system — standalone package, pulled from GitHub
     "taosmd @ git+https://github.com/jaylfc/taosmd.git@master",
+    # WebSocket client for dashboard proxy (shortcut_proxy.py)
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,8 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23.0",
     "httpx",
+    "respx>=0.21.0",
+    "websockets>=12.0",
 ]
 e2e = [
     "pytest>=8.0",

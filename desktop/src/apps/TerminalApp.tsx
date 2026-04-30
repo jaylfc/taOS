@@ -60,7 +60,12 @@ function saveRecent(entry: SshHost) {
   }
 }
 
-export function TerminalApp({ windowId: _windowId }: { windowId: string }) {
+interface ShortcutProp {
+  wsUrl: string;
+  ticket: string;
+}
+
+export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: string; shortcut?: ShortcutProp }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -68,7 +73,7 @@ export function TerminalApp({ windowId: _windowId }: { windowId: string }) {
 
   const [session, setSession] = useState<Session | null>(null);
   const [view, setView] = useState<"picker" | "ssh-form" | "terminal">(
-    "picker",
+    shortcut ? "terminal" : "picker",
   );
   const [recent, setRecent] = useState<SshHost[]>(() => loadRecent());
 
@@ -133,6 +138,97 @@ export function TerminalApp({ windowId: _windowId }: { windowId: string }) {
     });
     setView("terminal");
   };
+
+  // Shortcut mode: connect immediately without a session
+  useEffect(() => {
+    if (!shortcut) return;
+    if (termRef.current) return;
+
+    const wsUrl = shortcut.wsUrl;
+    const ticket = shortcut.ticket;
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "ticket", ticket }));
+    };
+
+    // If the container is available and ResizeObserver is supported, set up xterm too
+    if (containerRef.current && typeof ResizeObserver !== "undefined") {
+      const term = new Terminal({
+        theme: {
+          background: "#151625",
+          foreground: "rgba(255, 255, 255, 0.85)",
+          cursor: "#8b92a3",
+          cursorAccent: "#151625",
+          selectionBackground: "rgba(139, 146, 163, 0.3)",
+          black: "#1a1b2e",
+          red: "#ff5f57",
+          green: "#28c840",
+          yellow: "#febc2e",
+          blue: "#8b92a3",
+          magenta: "#f093fb",
+          cyan: "#4facfe",
+          white: "rgba(255,255,255,0.85)",
+          brightBlack: "#555",
+          brightRed: "#ff6b6b",
+          brightGreen: "#51cf66",
+          brightYellow: "#ffd43b",
+          brightBlue: "#748ffc",
+          brightMagenta: "#e599f7",
+          brightCyan: "#66d9e8",
+          brightWhite: "#ffffff",
+        },
+        fontFamily:
+          "'JetBrains Mono', 'Fira Code', 'MesloLGS NF', 'Hack Nerd Font', 'Cascadia Code', 'SF Mono', monospace",
+        fontSize: 14,
+        lineHeight: 1.2,
+        cursorBlink: true,
+        cursorStyle: "bar",
+        allowProposedApi: true,
+      });
+      const fit = new FitAddon();
+      const webLinks = new WebLinksAddon();
+      term.loadAddon(fit);
+      term.loadAddon(webLinks);
+      term.open(containerRef.current);
+      fit.fit();
+      fitRef.current = fit;
+      termRef.current = term;
+
+      ws.onmessage = (event) => { term.write(event.data); };
+      ws.onerror = () => { term.writeln("\r\n\x1b[31mWebSocket connection error\x1b[0m"); };
+      ws.onclose = () => { term.writeln("\r\n\x1b[33mConnection closed\x1b[0m"); };
+
+      const inputDisposable = term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(data);
+      });
+      const resizeObserver = new ResizeObserver(() => {
+        try { fit.fit(); } catch { /* ignore */ }
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      });
+      resizeObserver.observe(containerRef.current);
+
+      return () => {
+        resizeObserver.disconnect();
+        inputDisposable.dispose();
+        try { ws.close(); } catch { /* ignore */ }
+        term.dispose();
+        termRef.current = null;
+        wsRef.current = null;
+        fitRef.current = null;
+      };
+    }
+
+    return () => {
+      try { ws.close(); } catch { /* ignore */ }
+      wsRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (view !== "terminal" || !session) return;
@@ -450,7 +546,9 @@ export function TerminalApp({ windowId: _windowId }: { windowId: string }) {
       <Toolbar className="text-xs" style={{ color: "rgba(255,255,255,0.7)" }}>
         <ToolbarGroup>
           <div className="font-mono px-1">
-            {session?.mode === "ssh" ? (
+            {shortcut ? (
+              <span>Connecting to shortcut…</span>
+            ) : session?.mode === "ssh" ? (
               <>
                 <span className="opacity-60">ssh://</span>
                 {session.username}@{session.host}
@@ -477,3 +575,5 @@ export function TerminalApp({ windowId: _windowId }: { windowId: string }) {
     </div>
   );
 }
+
+export default TerminalApp;

@@ -46,3 +46,7 @@ class WorkerInfo:
     kv_cache_quant_k_support: list[str] = field(default_factory=lambda: ["fp16"])
     kv_cache_quant_v_support: list[str] = field(default_factory=lambda: ["fp16"])
     kv_cache_quant_boundary_layer_protect: bool = False
+    # Shortcut / worker-registry fields (Tasks 22-23)
+    worker_url: str | None = None          # Public URL used by shortcut proxy
+    signing_key: bytes = field(default_factory=bytes)  # HMAC key for ticket signing
+    tls_cert_provider: str | None = None   # e.g. "letsencrypt", None = plain HTTP
