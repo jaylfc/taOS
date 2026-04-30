@@ -1,4 +1,4 @@
-import { useAgentShortcuts } from "../hooks/use-agent-shortcuts";
+import { useAgentShortcuts, type AgentShortcut } from "../hooks/use-agent-shortcuts";
 import { useIsMobile } from "../hooks/use-is-mobile";
 
 const ICON_GLYPHS: Record<string, string> = {
@@ -10,7 +10,7 @@ const ICON_GLYPHS: Record<string, string> = {
 
 interface AgentShortcutRowProps {
   agentId: string;
-  onLaunch: (agentId: string, idx: number) => void;
+  onLaunch: (agentId: string, shortcut: AgentShortcut) => void;
 }
 
 export function AgentShortcutRow({ agentId, onLaunch }: AgentShortcutRowProps) {
@@ -32,7 +32,7 @@ export function AgentShortcutRow({ agentId, onLaunch }: AgentShortcutRowProps) {
             aria-label={shortcut.label}
             title={shortcut.label}
             className="agent-shortcut-btn"
-            onClick={() => onLaunch(agentId, shortcut.idx)}
+            onClick={() => onLaunch(agentId, shortcut)}
           >
             <span className="agent-shortcut-icon" aria-hidden="true">{glyph}</span>
             {!isMobile && (

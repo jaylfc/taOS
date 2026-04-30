@@ -67,17 +67,16 @@ describe("AgentShortcutRow", () => {
     expect(btn.querySelector("[data-label]")).toBeNull();
   });
 
-  it("calls onLaunch with agentId and shortcut idx when button is clicked", async () => {
+  it("calls onLaunch with agentId and the full shortcut object when button is clicked", async () => {
     const onLaunch = vi.fn();
+    const shortcut = { idx: 2, label: "Web dashboard", icon: "dashboard", kind: "dashboard" as const, requires_capability: "agent.dashboard" };
     vi.mocked(useAgentShortcutsModule.useAgentShortcuts).mockReturnValue({
-      shortcuts: [
-        { idx: 2, label: "Web dashboard", icon: "dashboard", kind: "dashboard", requires_capability: "agent.dashboard" },
-      ],
+      shortcuts: [shortcut],
       loading: false,
       error: null,
     });
     const { getByRole } = render(<AgentShortcutRow agentId="xyz" onLaunch={onLaunch} />);
     getByRole("button", { name: "Web dashboard" }).click();
-    expect(onLaunch).toHaveBeenCalledWith("xyz", 2);
+    expect(onLaunch).toHaveBeenCalledWith("xyz", shortcut);
   });
 });
