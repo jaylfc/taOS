@@ -546,7 +546,9 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
       <Toolbar className="text-xs" style={{ color: "rgba(255,255,255,0.7)" }}>
         <ToolbarGroup>
           <div className="font-mono px-1">
-            {session?.mode === "ssh" ? (
+            {shortcut ? (
+              <span>Connecting to shortcut…</span>
+            ) : session?.mode === "ssh" ? (
               <>
                 <span className="opacity-60">ssh://</span>
                 {session.username}@{session.host}
