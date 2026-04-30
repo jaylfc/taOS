@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import threading
 import time
 from typing import Any, Optional
 
@@ -11,6 +12,7 @@ _ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 # In-process cache: (agent_name, source_hash) -> (value, expires_at)
 _cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
+_cache_lock = threading.Lock()
 _CACHE_TTL = 60.0  # seconds
 
 
@@ -52,13 +54,15 @@ def read_token_source(agent_name: str, source: dict[str, Any]) -> Optional[str]:
 
     cache_key = (agent_name, _source_hash(source))
     now = time.monotonic()
-    if cache_key in _cache:
-        value, expires_at = _cache[cache_key]
-        if now < expires_at:
-            return value
+    with _cache_lock:
+        if cache_key in _cache:
+            value, expires_at = _cache[cache_key]
+            if now < expires_at:
+                return value
 
     value = _exec_token_source(agent_name, source, kind)
-    _cache[cache_key] = (value, now + _CACHE_TTL)
+    with _cache_lock:
+        _cache[cache_key] = (value, now + _CACHE_TTL)
     return value
 
 
@@ -67,9 +71,10 @@ def invalidate_agent_cache(agent_name: str) -> None:
 
     Called when the agent container restarts so stale tokens are not served.
     """
-    to_remove = [k for k in _cache if k[0] == agent_name]
-    for k in to_remove:
-        del _cache[k]
+    with _cache_lock:
+        to_remove = [k for k in _cache if k[0] == agent_name]
+        for k in to_remove:
+            del _cache[k]
 
 
 def _exec_token_source(

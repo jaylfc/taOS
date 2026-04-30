@@ -1,3 +1,14 @@
+"""
+HMAC-signed tickets for shortcut redemption.
+
+Replay protection (JtiTracker) is in-memory and process-local. This is
+sufficient for single-process deployments (the v1 single-Pi case). For
+cluster / multi-worker deployments, the tracker MUST be replaced with a
+shared store (Redis is the obvious choice) — see follow-up issue.
+
+The HMAC + 30s expiry already constrains the replay window to seconds.
+The JTI check is the second line of defense within that window.
+"""
 from __future__ import annotations
 
 import base64

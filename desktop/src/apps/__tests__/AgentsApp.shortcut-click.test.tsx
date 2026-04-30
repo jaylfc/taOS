@@ -135,7 +135,7 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
     );
   });
 
-  it("tui kind opens TerminalApp with wsUrl and ticket extracted from redirect_url", async () => {
+  it("tui kind opens TerminalApp with wsUrl (ws://) and ticket extracted from t= param", async () => {
     const redirectUrl = "http://worker.local/redeem?t=myticket42";
     setupFetch({ redirect_url: redirectUrl, expires_in: 30 });
 
@@ -152,14 +152,38 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
       expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }),
       expect.objectContaining({
         shortcut: expect.objectContaining({
-          wsUrl: redirectUrl,
+          wsUrl: "ws://worker.local/redeem?t=myticket42",
           ticket: "myticket42",
         }),
       })
     );
   });
 
-  it("container-terminal kind opens TerminalApp with wsUrl and ticket", async () => {
+  it("https redirect_url is converted to wss:// scheme for TerminalApp", async () => {
+    const redirectUrl = "https://worker.secure/redeem?t=secureticket";
+    setupFetch({ redirect_url: redirectUrl, expires_in: 30 });
+
+    render(<AgentsApp windowId="test" />);
+    await screen.findByTestId("shortcut-row-test-agent");
+
+    const { onLaunch } = captors["test-agent"]!;
+    await act(async () => {
+      await onLaunch!("test-agent", { idx: 1, label: "TUI", icon: "tui", kind: "tui", requires_capability: "agent.terminal" });
+    });
+
+    expect(mockOpenWindow).toHaveBeenCalledWith(
+      "terminal",
+      expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }),
+      expect.objectContaining({
+        shortcut: expect.objectContaining({
+          wsUrl: "wss://worker.secure/redeem?t=secureticket",
+          ticket: "secureticket",
+        }),
+      })
+    );
+  });
+
+  it("container-terminal kind opens TerminalApp with wsUrl (ws://) and ticket", async () => {
     const redirectUrl = "http://worker.local/redeem?t=containerticket";
     setupFetch({ redirect_url: redirectUrl, expires_in: 30 });
 
@@ -176,7 +200,7 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
       expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }),
       expect.objectContaining({
         shortcut: expect.objectContaining({
-          wsUrl: redirectUrl,
+          wsUrl: "ws://worker.local/redeem?t=containerticket",
           ticket: "containerticket",
         }),
       })

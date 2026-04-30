@@ -175,13 +175,23 @@ export function BrowserApp({ windowId: _windowId, initialUrl }: { windowId?: str
   // back/forward all reflect the launch URL rather than DEFAULT_URL.
   useEffect(() => {
     if (!initialUrl || initialUrlApplied.current) return;
-    initialUrlApplied.current = true;
-    setUrl(initialUrl);
-    setInputValue(initialUrl);
-    setHistory([initialUrl]);
-    setHistoryIndex(0);
-    if (iframeRef.current) {
-      iframeRef.current.src = initialUrl;
+    try {
+      const parsed = new URL(initialUrl, window.location.href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        console.warn("[BrowserApp] rejected initialUrl with non-http(s) scheme:", parsed.protocol);
+        return;
+      }
+      initialUrlApplied.current = true;
+      const safe = parsed.toString();
+      setUrl(safe);
+      setInputValue(safe);
+      setHistory([safe]);
+      setHistoryIndex(0);
+      if (iframeRef.current) {
+        iframeRef.current.src = safe;
+      }
+    } catch (err) {
+      console.warn("[BrowserApp] invalid initialUrl:", initialUrl, err);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

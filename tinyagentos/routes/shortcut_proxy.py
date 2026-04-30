@@ -140,18 +140,27 @@ def _get_shortcuts_for_agent(request: Request, agent_name: str) -> list[dict[str
     return []
 
 
+_TERMINAL_SCOPES = frozenset({"container-terminal", "tui"})
+
+
 def _get_shortcut_from_cookie(
     connection: Any,
     agent_name: str,
     idx: int,
     shortcuts: list[dict[str, Any]],
+    expected_scope: Optional[str] = None,
 ) -> dict[str, Any]:
     """Validate the taos_shortcut cookie and return the shortcut dict.
 
     Raises HTTPException:
       401 — missing/expired session
-      403 — session doesn't match agent_name or idx
+      403 — session doesn't match agent_name, idx, or scope
       404 — shortcut idx out of range
+
+    expected_scope:
+      "dashboard" — session scope must be "dashboard"
+      "terminal"  — session scope must be in {"container-terminal", "tui"}
+      None        — scope not checked (backwards-compat)
     """
     session_id = connection.cookies.get("taos_shortcut")
     if not session_id:
@@ -164,6 +173,11 @@ def _get_shortcut_from_cookie(
 
     if session["shortcut_idx"] != idx:
         raise HTTPException(status_code=403, detail="Session shortcut index mismatch")
+
+    if expected_scope == "dashboard" and session["scope"] != "dashboard":
+        raise HTTPException(status_code=403, detail="Session scope mismatch")
+    if expected_scope == "terminal" and session["scope"] not in _TERMINAL_SCOPES:
+        raise HTTPException(status_code=403, detail="Session scope mismatch")
 
     if idx < 0 or idx >= len(shortcuts):
         raise HTTPException(status_code=404, detail=f"Shortcut idx {idx} not found")
@@ -292,7 +306,13 @@ async def redeem_ticket(
     t: str = Query(..., description="Base64url-encoded HMAC ticket"),
 ) -> RedirectResponse:
     """Validate ticket, set session cookie, redirect to the shortcut endpoint."""
-    worker = get_local_worker()
+    try:
+        worker = get_local_worker()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Worker not ready: {exc}",
+        ) from exc
     signing_key: bytes = worker["signing_key"]
 
     try:
@@ -343,7 +363,7 @@ async def shortcut_dashboard_proxy(
     then forwards the request to the container port.
     """
     shortcuts = _get_shortcuts_for_agent(request, agent_name)
-    shortcut = _get_shortcut_from_cookie(request, agent_name, idx, shortcuts)
+    shortcut = _get_shortcut_from_cookie(request, agent_name, idx, shortcuts, expected_scope="dashboard")
     shortcut = {**shortcut, "_idx": idx}
 
     return await proxy_dashboard(agent_name, shortcut, request, path=path)
@@ -378,7 +398,7 @@ async def shortcut_terminal_ws(
     """
     shortcuts = _get_shortcuts_for_agent(websocket, agent_name)
     try:
-        shortcut = _get_shortcut_from_cookie(websocket, agent_name, idx, shortcuts)
+        shortcut = _get_shortcut_from_cookie(websocket, agent_name, idx, shortcuts, expected_scope="terminal")
     except HTTPException as exc:
         await websocket.close(code=1008, reason=exc.detail)
         return
@@ -396,30 +416,29 @@ async def shortcut_terminal_ws(
     else:
         cmd = None
 
-    try:
-        pty_handle = await asyncio.to_thread(_get_container_pty, agent_name, cmd)
-    except Exception as exc:
-        logger.warning("terminal: spawn_pty failed for %s: %s", agent_name, exc)
-        await websocket.close(code=1011, reason="PTY spawn failed")
-        return
-
     await websocket.accept()
 
-    # Read the first frame: must be {"type": "ticket", "ticket": "..."}.
-    # The ticket was already consumed at /redeem to mint the cookie session.
-    # We don't re-validate it here (the cookie is the authoritative auth).
-    # Requiring this frame confirms the client intends a shortcut connection
-    # (defense-in-depth per Task 29 protocol spec).
+    # Validate handshake BEFORE spawning PTY — prevents resource leak when a
+    # client with a valid cookie sends a bad or missing first frame.
+    # The ticket was already consumed at /redeem to mint the cookie session;
+    # we don't re-validate it cryptographically here (the cookie is the
+    # authoritative auth). Requiring this frame confirms the client intends a
+    # shortcut connection (defense-in-depth per Task 29 protocol spec).
     try:
         first_frame = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
         handshake = json.loads(first_frame)
         if handshake.get("type") != "ticket" or not handshake.get("ticket"):
             await websocket.close(code=1008, reason="malformed ticket handshake")
-            await asyncio.to_thread(pty_handle.close)
             return
     except (json.JSONDecodeError, KeyError, asyncio.TimeoutError) as exc:
         await websocket.close(code=1008, reason=f"invalid handshake: {exc}")
-        await asyncio.to_thread(pty_handle.close)
+        return
+
+    try:
+        pty_handle = await asyncio.to_thread(_get_container_pty, agent_name, cmd)
+    except Exception as exc:
+        logger.warning("terminal: spawn_pty failed for %s: %s", agent_name, exc)
+        await websocket.close(code=1011, reason="PTY spawn failed")
         return
 
     async def pty_to_ws():
@@ -465,7 +484,7 @@ async def shortcut_dashboard_ws(
     """
     shortcuts = _get_shortcuts_for_agent(websocket, agent_name)
     try:
-        shortcut = _get_shortcut_from_cookie(websocket, agent_name, idx, shortcuts)
+        shortcut = _get_shortcut_from_cookie(websocket, agent_name, idx, shortcuts, expected_scope="dashboard")
     except HTTPException as exc:
         await websocket.close(code=1008, reason=exc.detail)
         return
@@ -480,11 +499,20 @@ async def shortcut_dashboard_ws(
     ws_path = f"{base_path}/ws/{path}" if path else f"{base_path}/ws/"
     upstream_ws_url = f"ws://{ip}:{port}{ws_path}"
 
+    # Build auth header for upstream, same as HTTP proxy does.
+    auth_header = await _build_auth_header(agent_name, shortcut)
+    extra_headers: dict[str, str] = {}
+    if auth_header:
+        extra_headers[auth_header[0]] = auth_header[1]
+
     await websocket.accept()
 
     try:
         import websockets as _ws_lib
-        async with _ws_lib.connect(upstream_ws_url) as upstream:
+        async with _ws_lib.connect(
+            upstream_ws_url,
+            additional_headers=extra_headers,
+        ) as upstream:
             async def _client_to_upstream():
                 try:
                     while True:

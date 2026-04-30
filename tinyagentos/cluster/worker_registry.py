@@ -35,6 +35,10 @@ def get_local_worker() -> dict[str, Any]:
     worker = _active_manager.get_worker("local")
     if worker is None:
         raise RuntimeError("Local worker not registered with ClusterManager")
+    if not worker.signing_key or len(worker.signing_key) < 32:
+        raise RuntimeError("Local worker has missing or short signing_key (need ≥32 bytes)")
+    if not worker.worker_url:
+        raise RuntimeError("Local worker has empty worker_url")
     return {
         "worker_url": worker.worker_url,
         "signing_key": worker.signing_key,

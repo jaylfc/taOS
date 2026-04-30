@@ -636,3 +636,170 @@ class TestWebSocketRoute:
                 f"/shortcut/dashboard/{agent_id}/0/ws/"
             ) as ws:
                 ws.receive_text()
+
+
+# ---------------------------------------------------------------------------
+# M2 — handshake validated BEFORE PTY spawn
+# ---------------------------------------------------------------------------
+
+class TestTerminalHandshakeBeforePty:
+    @pytest.mark.asyncio
+    async def test_bad_handshake_does_not_spawn_pty(self, seeded_agent_factory, monkeypatch):
+        """A malformed first frame must close the WS without spawning a PTY."""
+        from unittest.mock import AsyncMock, MagicMock, patch, call
+        import tinyagentos.routes.shortcut_proxy as proxy_mod
+
+        shortcuts = [
+            {
+                "kind": "container-terminal",
+                "label": "Shell",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+                "port": 8888,
+                "path": "/",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_session(agent_id, 0, scope="container-terminal")
+
+        spawn_called = []
+
+        def fake_spawn(name, cmd):
+            spawn_called.append(name)
+            return MagicMock(close=lambda: None)
+
+        monkeypatch.setattr(proxy_mod, "_get_container_pty", fake_spawn)
+
+        # Build a fake WebSocket that returns a bad handshake frame
+        ws = MagicMock()
+        ws.cookies = {"taos_shortcut": session_id}
+        ws.accept = AsyncMock()
+        ws.close = AsyncMock()
+        ws.receive_text = AsyncMock(return_value='{"type": "bad_type"}')
+
+        # Patch _get_shortcuts_for_agent to return our shortcuts
+        monkeypatch.setattr(
+            proxy_mod,
+            "_get_shortcuts_for_agent",
+            lambda conn, name: shortcuts,
+        )
+
+        from tinyagentos.routes.shortcut_proxy import shortcut_terminal_ws
+        await shortcut_terminal_ws(agent_id, 0, ws)
+
+        # PTY must NOT have been spawned
+        assert spawn_called == [], "spawn_pty must not be called when handshake is bad"
+        ws.close.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# M4 — scope enforcement
+# ---------------------------------------------------------------------------
+
+class TestScopeEnforcement:
+    def test_terminal_session_rejected_for_dashboard_route(self):
+        """A session with scope='container-terminal' must be rejected by dashboard route (403)."""
+        from unittest.mock import MagicMock
+        # Create a terminal-scoped session
+        session_id = _make_session("agent1", 0, scope="container-terminal")
+        mock_conn = MagicMock()
+        mock_conn.cookies = {"taos_shortcut": session_id}
+        shortcuts = [_make_dashboard_shortcut()]
+
+        from tinyagentos.routes.shortcut_proxy import _get_shortcut_from_cookie
+        with pytest.raises(Exception) as exc_info:
+            _get_shortcut_from_cookie(mock_conn, "agent1", 0, shortcuts, expected_scope="dashboard")
+        assert exc_info.value.status_code == 403
+
+    def test_dashboard_session_rejected_for_terminal_route(self):
+        """A session with scope='dashboard' must be rejected by terminal route (403)."""
+        from unittest.mock import MagicMock
+        session_id = _make_session("agent1", 0, scope="dashboard")
+        mock_conn = MagicMock()
+        mock_conn.cookies = {"taos_shortcut": session_id}
+        shortcuts = [{"kind": "container-terminal"}]
+
+        from tinyagentos.routes.shortcut_proxy import _get_shortcut_from_cookie
+        with pytest.raises(Exception) as exc_info:
+            _get_shortcut_from_cookie(mock_conn, "agent1", 0, shortcuts, expected_scope="terminal")
+        assert exc_info.value.status_code == 403
+
+    def test_tui_session_accepted_for_terminal_route(self):
+        """scope='tui' is accepted for terminal route (tui is in _TERMINAL_SCOPES)."""
+        from unittest.mock import MagicMock
+        session_id = _make_session("agent1", 0, scope="tui")
+        mock_conn = MagicMock()
+        mock_conn.cookies = {"taos_shortcut": session_id}
+        shortcuts = [{"kind": "tui", "command": "htop"}]
+
+        from tinyagentos.routes.shortcut_proxy import _get_shortcut_from_cookie
+        result = _get_shortcut_from_cookie(mock_conn, "agent1", 0, shortcuts, expected_scope="terminal")
+        assert result["kind"] == "tui"
+
+
+# ---------------------------------------------------------------------------
+# M5 — /redeem returns 503 when worker registry not ready
+# ---------------------------------------------------------------------------
+
+class TestRedeemWorkerNotReady:
+    def test_redeem_returns_503_when_no_worker(self, test_client, monkeypatch):
+        """GET /redeem with no active ClusterManager must return 503."""
+        import tinyagentos.cluster.worker_registry as wr_mod
+        monkeypatch.setattr(wr_mod, "_active_manager", None)
+
+        resp = test_client.get("/redeem?t=anytoken", follow_redirects=False)
+        assert resp.status_code == 503
+        assert "not ready" in resp.json().get("detail", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# M6 — worker_registry fail-closed on bad signing_key / worker_url
+# ---------------------------------------------------------------------------
+
+class TestWorkerRegistryFailClosed:
+    def test_short_signing_key_raises(self):
+        """get_local_worker must raise if signing_key < 32 bytes."""
+        from unittest.mock import MagicMock, patch
+        from tinyagentos.cluster.worker_registry import get_local_worker
+
+        fake_manager = MagicMock()
+        fake_manager.get_worker.return_value = MagicMock(
+            signing_key=b"short",
+            worker_url="http://localhost:6969",
+            name="local",
+        )
+        with patch("tinyagentos.cluster.worker_registry._active_manager", fake_manager):
+            with pytest.raises(RuntimeError, match="signing_key"):
+                get_local_worker()
+
+    def test_empty_worker_url_raises(self):
+        """get_local_worker must raise if worker_url is empty."""
+        from unittest.mock import MagicMock, patch
+        from tinyagentos.cluster.worker_registry import get_local_worker
+
+        fake_manager = MagicMock()
+        fake_manager.get_worker.return_value = MagicMock(
+            signing_key=b"x" * 32,
+            worker_url="",
+            name="local",
+        )
+        with patch("tinyagentos.cluster.worker_registry._active_manager", fake_manager):
+            with pytest.raises(RuntimeError, match="worker_url"):
+                get_local_worker()
+
+    def test_valid_worker_returns_dict(self):
+        """get_local_worker returns dict when worker has valid key and url."""
+        from unittest.mock import MagicMock, patch
+        from tinyagentos.cluster.worker_registry import get_local_worker
+
+        fake_manager = MagicMock()
+        fake_manager.get_worker.return_value = MagicMock(
+            signing_key=b"x" * 32,
+            worker_url="http://localhost:6969",
+            name="local",
+        )
+        with patch("tinyagentos.cluster.worker_registry._active_manager", fake_manager):
+            result = get_local_worker()
+        assert result["worker_url"] == "http://localhost:6969"
+        assert result["signing_key"] == b"x" * 32

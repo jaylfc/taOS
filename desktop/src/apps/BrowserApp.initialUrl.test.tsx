@@ -16,6 +16,23 @@ describe("BrowserApp initialUrl", () => {
     expect(iframe?.src).toContain("openclaw.local%2Fui");
   });
 
+  it("rejects javascript: initialUrl and does not set iframe src", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { container } = render(
+      <BrowserApp initialUrl="javascript:alert(1)" />,
+    );
+    const iframe = container.querySelector("iframe");
+    // iframe src must NOT contain the dangerous payload
+    expect(iframe?.src ?? "").not.toContain("javascript");
+    expect(iframe?.src ?? "").not.toContain("alert");
+    // a warning must have been emitted
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[BrowserApp]"),
+      expect.anything(),
+    );
+    warnSpy.mockRestore();
+  });
+
   it("does not override user-navigated src on re-mount when initialUrl unchanged", () => {
     const { container, rerender } = render(
       <BrowserApp initialUrl="https://openclaw.local/ui" />,

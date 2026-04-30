@@ -1890,10 +1890,13 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
       const app = getApp("browser");
       if (app) openWindow("browser", app.defaultSize, { initialUrl: redirect_url });
     } else if (kind === "tui" || kind === "container-terminal") {
-      const url = new URL(redirect_url, window.location.href);
-      const ticket = url.searchParams.get("t") ?? redirect_url;
+      const parsed = new URL(redirect_url, window.location.href);
+      const ticket = parsed.searchParams.get("t") ?? "";
+      const wsUrl = redirect_url
+        .replace(/^http:\/\//, "ws://")
+        .replace(/^https:\/\//, "wss://");
       const app = getApp("terminal");
-      if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl: redirect_url, ticket } });
+      if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } });
     }
   }, [openWindow]);
 
