@@ -11,7 +11,9 @@ EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth
 # through the normal auth gate so an unauthenticated request hits a
 # server-side redirect instead of rendering whatever stale bundle the
 # browser cached.
-EXEMPT_PREFIXES = ("/static/", "/desktop/assets/", "/chat-pwa/assets/", "/ws/")
+# /shortcut/ routes use their own taos_shortcut session cookie for auth;
+# they are intentionally excluded from the main session gate here.
+EXEMPT_PREFIXES = ("/static/", "/desktop/assets/", "/chat-pwa/assets/", "/ws/", "/shortcut/")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
