@@ -8,6 +8,8 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +150,8 @@ class AuthManager:
     # ------------------------------------------------------------------ #
 
     def _public_user(self, record: dict) -> dict:
+        raw_caps = record.get("capabilities")
+        caps: list[str] = list(raw_caps) if raw_caps is not None else []
         return {
             "id": record.get("id", ""),
             "username": record.get("username", ""),
@@ -157,11 +161,26 @@ class AuthManager:
             "pending": "pending_invite" in record,
             "last_login_at": record.get("last_login_at"),
             "created_at": record.get("created_at"),
+            "capabilities": caps,
         }
 
     # ------------------------------------------------------------------ #
     #  User lookups                                                        #
     # ------------------------------------------------------------------ #
+
+    def get_primary_user(self) -> dict | None:
+        """Return the public profile of the primary/admin user (first in the list)."""
+        users = self._read_users().get("users", [])
+        if users:
+            return self._public_user(users[0])
+        return None
+
+    def get_user_by_id(self, user_id: str) -> dict | None:
+        """Return the public profile for *user_id*, or None if not found."""
+        record = self._find_user_by_id(user_id)
+        if record:
+            return self._public_user(record)
+        return None
 
     def find_user(self, username: str) -> dict | None:
         for u in self._read_users().get("users", []):
@@ -223,6 +242,7 @@ class AuthManager:
             "password_hash": hash_password(password),
             "created_at": int(time.time()),
             "is_admin": True,
+            "capabilities": list(default_caps_for_admin()),
         }
         users["users"] = [record]
         users["current_user_id"] = record["id"]
@@ -282,6 +302,7 @@ class AuthManager:
         record["email"] = email
         record["password_hash"] = hash_password(password)
         record["created_at"] = int(time.time())
+        record["capabilities"] = list(default_caps_for_new_user())
         users[target_idx] = record
         data["users"] = users
         self._write_users(data)
