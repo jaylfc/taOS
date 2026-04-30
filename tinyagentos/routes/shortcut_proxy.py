@@ -3,10 +3,12 @@
 Also contains the shortcut dashboard reverse-proxy route:
   GET  /shortcut/dashboard/{agent_name}/{idx}/{path:path}
 
-Auth injection and WebSocket proxy are added in subsequent tasks.
+WebSocket proxy is added in the next task.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import logging
 import secrets
 import time
@@ -166,6 +168,38 @@ def _get_shortcut_from_cookie(
 _proxy_client = httpx.AsyncClient(timeout=60.0)
 
 
+async def _build_auth_header(
+    agent_name: str,
+    shortcut: dict[str, Any],
+) -> Optional[tuple[str, str]]:
+    """Return (header_name, header_value) for the shortcut's auth config, or None.
+
+    Reads the token via read_token_source (sync) wrapped in asyncio.to_thread
+    so the event loop is not blocked.
+    """
+    auth = shortcut.get("auth") or {}
+    auth_type = auth.get("type", "none")
+    if auth_type == "none":
+        return None
+
+    token_source = auth.get("token_source")
+    if not token_source:
+        return None
+
+    from tinyagentos.shortcuts.token_source import read_token_source
+    token = await asyncio.to_thread(read_token_source, agent_name, token_source)
+    if not token:
+        return None
+
+    if auth_type == "bearer":
+        return ("Authorization", f"Bearer {token}")
+    if auth_type == "basic":
+        encoded = base64.b64encode(token.encode()).decode()
+        return ("Authorization", f"Basic {encoded}")
+
+    return None
+
+
 async def proxy_dashboard(
     agent_name: str,
     shortcut: dict[str, Any],
@@ -193,6 +227,11 @@ async def proxy_dashboard(
         upstream_url = f"{upstream_url}?{query}"
 
     fwd_headers = _filter_proxy_headers(dict(request.headers))
+
+    # Inject auth header if configured.
+    auth_header = await _build_auth_header(agent_name, shortcut)
+    if auth_header:
+        fwd_headers[auth_header[0]] = auth_header[1]
 
     async def _stream_body():
         async for chunk in request.stream():

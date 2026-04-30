@@ -1,7 +1,9 @@
-"""Tests for shortcut dashboard reverse-proxy (Task 17 — basic HTTP forward).
+"""Tests for shortcut dashboard reverse-proxy (Tasks 17-18).
 
-Tests for Tasks 18 (auth injection) and 19 (SSE + WebSocket) follow in
-subsequent commits.
+Task 17: basic HTTP forward + hop-by-hop header stripping
+Task 18: auth header injection (bearer / basic / none) via read_token_source
+
+Tests for Task 19 (SSE + WebSocket) follow in the next commit.
 """
 from __future__ import annotations
 
@@ -360,3 +362,178 @@ class TestDashboardRouteIntegration:
             test_client.cookies.clear()
         assert resp.status_code == 200
         assert resp.text == "proxied!"
+
+
+# ---------------------------------------------------------------------------
+# Task 18 — auth header injection
+# ---------------------------------------------------------------------------
+
+class TestAuthHeaderInjection:
+    @pytest.mark.asyncio
+    async def test_bearer_auth_injected(self, app, seeded_agent_factory):
+        """When auth.type=bearer, Authorization: Bearer <token> must be added."""
+        from unittest.mock import MagicMock
+        shortcuts = [
+            {
+                **_make_dashboard_shortcut(auth_type="bearer"),
+                "auth": {
+                    "type": "bearer",
+                    "token_source": {"kind": "static", "value": "mytoken123"},
+                },
+                "_idx": 0,
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        shortcut = shortcuts[0]
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url.query = ""
+        mock_request.headers = {}
+        mock_request.app = app
+
+        async def _empty():
+            return
+            yield
+
+        mock_request.stream = _empty
+        captured_headers: dict = {}
+
+        def _capture_headers(request: httpx.Request, *args, **kwargs):
+            captured_headers.update(dict(request.headers))
+            return httpx.Response(200, text="ok")
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._resolve_container_ip",
+            return_value="10.0.0.5",
+        ), respx.mock(assert_all_called=False) as rsps:
+            rsps.get("http://10.0.0.5:8080/").mock(side_effect=_capture_headers)
+            await proxy_dashboard(agent["id"], shortcut, mock_request)
+
+        assert "authorization" in {k.lower() for k in captured_headers}
+        auth_val = next(
+            v for k, v in captured_headers.items() if k.lower() == "authorization"
+        )
+        assert auth_val == "Bearer mytoken123"
+
+    @pytest.mark.asyncio
+    async def test_basic_auth_injected(self, app, seeded_agent_factory):
+        """When auth.type=basic, Authorization: Basic <b64> must be added."""
+        import base64
+        from unittest.mock import MagicMock
+        shortcuts = [
+            {
+                **_make_dashboard_shortcut(auth_type="basic"),
+                "auth": {
+                    "type": "basic",
+                    "token_source": {"kind": "static", "value": "user:pass"},
+                },
+                "_idx": 0,
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        shortcut = shortcuts[0]
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url.query = ""
+        mock_request.headers = {}
+        mock_request.app = app
+
+        async def _empty():
+            return
+            yield
+
+        mock_request.stream = _empty
+        captured_headers: dict = {}
+
+        def _capture(request: httpx.Request, *args, **kwargs):
+            captured_headers.update(dict(request.headers))
+            return httpx.Response(200, text="ok")
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._resolve_container_ip",
+            return_value="10.0.0.5",
+        ), respx.mock(assert_all_called=False) as rsps:
+            rsps.get("http://10.0.0.5:8080/").mock(side_effect=_capture)
+            await proxy_dashboard(agent["id"], shortcut, mock_request)
+
+        auth_val = next(
+            v for k, v in captured_headers.items() if k.lower() == "authorization"
+        )
+        expected_b64 = base64.b64encode(b"user:pass").decode()
+        assert auth_val == f"Basic {expected_b64}"
+
+    @pytest.mark.asyncio
+    async def test_none_auth_no_authorization_header(self, app, seeded_agent_factory):
+        """When auth.type=none, no Authorization header must be sent upstream."""
+        from unittest.mock import MagicMock
+        shortcuts = [_make_dashboard_shortcut(auth_type="none")]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        shortcut = {**shortcuts[0], "_idx": 0}
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url.query = ""
+        mock_request.headers = {}
+        mock_request.app = app
+
+        async def _empty():
+            return
+            yield
+
+        mock_request.stream = _empty
+        captured_headers: dict = {}
+
+        def _capture(request: httpx.Request, *args, **kwargs):
+            captured_headers.update(dict(request.headers))
+            return httpx.Response(200, text="ok")
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._resolve_container_ip",
+            return_value="10.0.0.5",
+        ), respx.mock(assert_all_called=False) as rsps:
+            rsps.get("http://10.0.0.5:8080/").mock(side_effect=_capture)
+            await proxy_dashboard(agent["id"], shortcut, mock_request)
+
+        assert "authorization" not in {k.lower() for k in captured_headers}
+
+    @pytest.mark.asyncio
+    async def test_token_source_none_skips_auth(self, app, seeded_agent_factory):
+        """If token_source is None even with bearer type, no auth header is added."""
+        from unittest.mock import MagicMock
+        shortcuts = [
+            {
+                **_make_dashboard_shortcut(auth_type="bearer"),
+                "auth": {"type": "bearer", "token_source": None},
+                "_idx": 0,
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        shortcut = shortcuts[0]
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url.query = ""
+        mock_request.headers = {}
+        mock_request.app = app
+
+        async def _empty():
+            return
+            yield
+
+        mock_request.stream = _empty
+        captured_headers: dict = {}
+
+        def _capture(request: httpx.Request, *args, **kwargs):
+            captured_headers.update(dict(request.headers))
+            return httpx.Response(200, text="ok")
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._resolve_container_ip",
+            return_value="10.0.0.5",
+        ), respx.mock(assert_all_called=False) as rsps:
+            rsps.get("http://10.0.0.5:8080/").mock(side_effect=_capture)
+            await proxy_dashboard(agent["id"], shortcut, mock_request)
+
+        assert "authorization" not in {k.lower() for k in captured_headers}
