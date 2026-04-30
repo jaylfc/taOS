@@ -429,16 +429,40 @@ rm -rf ~/.local/share/tinyagentos-worker
 
 ### Upgrading a long-running install
 
+**Controller (recommended):** use the one-shot update script:
+
 ```bash
-cd ~/.local/share/tinyagentos-worker  # or ~/tinyagentos for the controller
+cd ~/tinyagentos
+bin/update.sh
+```
+
+This pulls the latest, rebuilds the desktop frontend bundle if the source has moved (skips it when nothing changed), then restarts the service. The frontend rebuild takes ~50s when it fires; it is a no-op otherwise.
+
+**Manual equivalent:**
+
+```bash
+cd ~/tinyagentos
 git pull
 # Clear stale Python bytecode after upgrades (git pull preserves source mtimes
 # which can confuse Python's .pyc cache invalidation on some setups)
 find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-sudo systemctl restart tinyagentos-worker  # or tinyagentos for the controller
+# Rebuild frontend if desktop source changed (omit if you didn't pull any desktop/ changes)
+cd desktop && npm install && npm run build && cd ..
+sudo systemctl restart tinyagentos
 ```
 
-The bytecode cleanup line is belt-and-braces, Python's mtime-based invalidation usually works, but on long-running boxes that have survived many upgrades it occasionally doesn't, and a stale `.pyc` is easy to mistake for a code bug.
+The systemd unit also runs a conditional rebuild as an `ExecStartPre` step — if you skip the manual `npm run build`, the next service restart detects the stale bundle and rebuilds it automatically (~50s startup overhead when it fires).
+
+**Worker:**
+
+```bash
+cd ~/.local/share/tinyagentos-worker
+git pull
+find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+sudo systemctl restart tinyagentos-worker
+```
+
+The bytecode cleanup line is belt-and-braces; Python's mtime-based invalidation usually works, but on long-running boxes that have survived many upgrades it occasionally doesn't, and a stale `.pyc` is easy to mistake for a code bug.
 
 ## Service Management
 

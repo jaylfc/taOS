@@ -21,6 +21,15 @@ ExecStartPre=+/bin/sh -c '\
   chmod o+r /sys/kernel/debug/rkrga/load 2>/dev/null || true; \
   chmod o+rx /sys/kernel/debug/mali0 2>/dev/null || true; \
   chmod o+r /sys/kernel/debug/mali0/dvfs_utilization 2>/dev/null || true'
+# Rebuild the desktop bundle if desktop/src is newer than the last build output.
+# Catches the case where `git pull` landed new frontend source but `npm run build`
+# was not run before restarting the service. ~0s when current, ~50s when stale.
+ExecStartPre=/bin/sh -c '\
+  cd TAOS_INSTALL_DIR && \
+  if [ -d desktop ] && [ desktop/src -nt static/desktop/index.html ]; then \
+    echo "[taos] desktop source newer than bundle — rebuilding..." && \
+    cd desktop && npm install --silent && npm run build; \
+  fi'
 ExecStart=TAOS_PYTHON -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port TAOS_PORT
 ExecStop=TAOS_STOP_SCRIPT
 # Reload sends SIGHUP to the main process, causing uvicorn to re-exec in-place.
