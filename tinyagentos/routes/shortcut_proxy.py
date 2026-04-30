@@ -1,9 +1,8 @@
 """Worker /redeem endpoint — validates HMAC ticket, sets cookie, 302.
 
-Also contains the shortcut dashboard reverse-proxy route:
+Also contains the shortcut reverse-proxy routes:
   GET  /shortcut/dashboard/{agent_name}/{idx}/{path:path}
-
-WebSocket proxy is added in the next task.
+  WS   /shortcut/terminal/{agent_name}/{idx}
 """
 from __future__ import annotations
 
@@ -336,6 +335,91 @@ async def shortcut_dashboard_proxy(
     shortcut = {**shortcut, "_idx": idx}
 
     return await proxy_dashboard(agent_name, shortcut, request)
+
+
+# ---------------------------------------------------------------------------
+# Terminal PTY bridge helpers — Task 20 / 21
+# ---------------------------------------------------------------------------
+
+def _get_container_pty(agent_name: str, cmd: list[str] | None):
+    """Spawn a PTY inside the agent's container.
+
+    Delegates to the active ContainerBackend.spawn_pty.  cmd=None → default
+    shell; cmd=['bash','-lc','<command>'] → tui shortcut.
+    """
+    from tinyagentos.containers.backend import get_backend
+    backend = get_backend()
+    return backend.spawn_pty(agent_name, cmd)
+
+
+@router.websocket("/shortcut/terminal/{agent_name}/{idx}")
+async def shortcut_terminal_ws(
+    agent_name: str,
+    idx: int,
+    websocket: WebSocket,
+):
+    """WebSocket PTY bridge for container-terminal and tui shortcuts.
+
+    Validates the taos_shortcut cookie, opens a PTY inside the agent container
+    via the active ContainerBackend, then pipes data in both directions until
+    either end closes.
+    """
+    shortcuts = _get_shortcuts_for_agent(websocket, agent_name)
+    try:
+        shortcut = _get_shortcut_from_cookie(websocket, agent_name, idx, shortcuts)
+    except HTTPException as exc:
+        await websocket.close(code=1008, reason=exc.detail)
+        return
+
+    scope = shortcut["kind"]
+    if scope not in ("container-terminal", "tui"):
+        await websocket.close(code=1008, reason=f"Unsupported shortcut kind: {scope}")
+        return
+
+    # For tui shortcuts pass the configured command; for container-terminal use
+    # the default shell (cmd=None).
+    if scope == "tui":
+        command = shortcut.get("command", "")
+        cmd: list[str] | None = ["bash", "-lc", command]
+    else:
+        cmd = None
+
+    try:
+        pty_handle = await asyncio.to_thread(_get_container_pty, agent_name, cmd)
+    except Exception as exc:
+        logger.warning("terminal: spawn_pty failed for %s: %s", agent_name, exc)
+        await websocket.close(code=1011, reason="PTY spawn failed")
+        return
+
+    await websocket.accept()
+
+    async def pty_to_ws():
+        try:
+            while True:
+                data = await asyncio.to_thread(pty_handle.read)
+                if not data:
+                    await asyncio.sleep(0.02)
+                    continue
+                await websocket.send_text(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+
+    async def ws_to_pty():
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                await asyncio.to_thread(pty_handle.write, msg.encode("utf-8"))
+        except Exception:
+            pass
+
+    try:
+        await asyncio.gather(pty_to_ws(), ws_to_pty(), return_exceptions=True)
+    finally:
+        await asyncio.to_thread(pty_handle.close)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.websocket("/shortcut/dashboard/{agent_name}/{idx}/ws/{path:path}")
