@@ -10,7 +10,7 @@ cd "$REPO_ROOT"
 echo "==> Pulling latest..."
 git pull --ff-only
 
-if [ -d desktop ] && { [ ! -f static/desktop/index.html ] || [ desktop/src -nt static/desktop/index.html ]; }; then
+if [ -d desktop ] && { [ ! -f static/desktop/index.html ] || [ -n "$(find desktop/src -type f -newer static/desktop/index.html -print -quit 2>/dev/null)" ]; }; then
   echo "==> Frontend source moved since last build — rebuilding..."
   cd desktop
   npm install --silent
