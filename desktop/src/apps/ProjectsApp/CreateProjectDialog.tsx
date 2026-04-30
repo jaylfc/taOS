@@ -46,11 +46,11 @@ export function CreateProjectDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Create project"
-      className="fixed inset-0 bg-black/50 flex items-center justify-center"
+      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
     >
       <form
         onSubmit={onSubmit}
-        className="bg-zinc-900 p-4 rounded shadow w-96 space-y-3"
+        className="bg-zinc-900 p-4 rounded shadow w-full max-w-sm space-y-3"
       >
         <h3 className="text-lg font-semibold">New Project</h3>
         <label className="block text-sm">
