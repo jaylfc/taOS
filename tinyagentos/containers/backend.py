@@ -37,6 +37,26 @@ def _parse_memory(mem_str: str) -> int:
         return 0
 
 
+class PtyHandle(ABC):
+    """Abstract handle to an open PTY session inside a container."""
+
+    @abstractmethod
+    def read(self, size: int = 4096) -> bytes:
+        """Read up to size bytes from the PTY. Blocks until data available."""
+
+    @abstractmethod
+    def write(self, data: bytes) -> None:
+        """Write bytes to the PTY stdin."""
+
+    @abstractmethod
+    def resize(self, rows: int, cols: int) -> None:
+        """Notify the PTY of a terminal resize."""
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the PTY and terminate the subprocess."""
+
+
 class ContainerBackend(ABC):
     """Abstract base class for container runtime backends."""
 
@@ -182,6 +202,14 @@ class ContainerBackend(ABC):
         Returns ``{"success": bool, "snapshots": list[str], "output": str}``.
         """
         ...
+
+    @abstractmethod
+    def spawn_pty(self, name: str, cmd: list[str] | None = None) -> PtyHandle:
+        """Open an interactive PTY in container name.
+
+        If cmd is None, the container's default shell is used.
+        cmd is passed via bash -lc <cmd> so PATH from .bashrc is honoured.
+        """
 
     @abstractmethod
     async def set_env(self, name: str, key: str, value: str) -> dict:
