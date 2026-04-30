@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 
 // Stub heavy deps first
@@ -128,5 +128,17 @@ describe("AgentsApp — AgentShortcutRow wiring (Task 27)", () => {
 
     const rowBeta = screen.getByTestId("shortcut-row-agent-beta");
     expect(rowBeta.getAttribute("data-has-launch")).toBe("true");
+  });
+
+  it("does NOT render a Back button or full-screen dialog when the detail panel is opened on desktop", async () => {
+    render(<AgentsApp windowId="test" />);
+
+    // Open the detail panel via the logs button on the first agent
+    const logsBtn = await screen.findByRole("button", { name: /view logs for agent-alpha/i });
+    fireEvent.click(logsBtn);
+
+    // No back button and no dialog wrapper on desktop
+    expect(screen.queryByRole("button", { name: /back to agents/i })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: /agent details/i })).toBeNull();
   });
 });
