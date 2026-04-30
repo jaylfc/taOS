@@ -265,6 +265,9 @@ class DockerBackend(ContainerBackend):
         ]
         return {"success": True, "snapshots": snapshots, "output": output}
 
+    def spawn_pty(self, name: str, cmd: list[str] | None = None):
+        raise NotImplementedError("docker spawn_pty not yet implemented")
+
     async def set_env(self, name: str, key: str, value: str) -> dict:
         """Docker does not support per-container env changes without recreating.
 
