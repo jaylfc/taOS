@@ -7,6 +7,9 @@ import secrets
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+
+from fastapi import HTTPException, Request
 
 from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
 
@@ -565,3 +568,27 @@ class AuthManager:
                 data["users"] = users
                 self._write_users(data)
                 return
+
+
+# ---------------------------------------------------------------------------
+# FastAPI dependency
+# ---------------------------------------------------------------------------
+
+
+def get_current_user(request: Request) -> dict[str, Any]:
+    """FastAPI dependency — return the current session user or raise 401.
+
+    Reads the ``taos_session`` cookie.  The auth middleware already blocks
+    unauthenticated requests before they reach route handlers, but this
+    dependency also handles the case where the middleware was bypassed (e.g.
+    direct TestClient calls without a cookie) and returns the capability-rich
+    user dict needed for capability checks.
+    """
+    auth_mgr = request.app.state.auth
+    token = request.cookies.get("taos_session", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    user = auth_mgr.session_user(token)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user

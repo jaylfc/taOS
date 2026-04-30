@@ -1059,6 +1059,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.memory_management import router as memory_management_router
     app.include_router(memory_management_router)
 
+    from tinyagentos.routes.shortcuts import router as shortcuts_router
+    app.include_router(shortcuts_router)
+
     return app
 
 
