@@ -128,3 +128,8 @@ class JtiTracker:
         expired = [k for k, v in self._seen.items() if v < now]
         for k in expired:
             del self._seen[k]
+
+
+# Module-level singleton. Routes import this for convenience so they don't
+# need to manage the tracker's lifecycle.
+_GLOBAL_JTI_TRACKER: JtiTracker = JtiTracker()
