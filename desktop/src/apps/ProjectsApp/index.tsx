@@ -9,14 +9,23 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isMobile = useIsMobile();
 
   const refresh = async () => {
     try {
       const list = await projectsApi.list("active");
       setProjects(list);
       setError(null);
+      // Mobile shows the project list as its own screen; auto-selecting
+      // the first project would slide the user straight into the detail
+      // view and skip the list. Desktop's split layout shows both at once,
+      // so picking up the first project is a useful default there.
       const stillExists = selectedId && list.some((p) => p.id === selectedId);
-      if (!stillExists) setSelectedId(list.length > 0 ? list[0]!.id : null);
+      if (!stillExists && !isMobile) {
+        setSelectedId(list.length > 0 ? list[0]!.id : null);
+      } else if (!stillExists) {
+        setSelectedId(null);
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -26,7 +35,6 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
     refresh();
   }, []);
 
-  const isMobile = useIsMobile();
   const selected = projects.find((p) => p.id === selectedId) ?? null;
 
   const listPane = (
