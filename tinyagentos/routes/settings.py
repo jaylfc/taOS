@@ -542,6 +542,25 @@ async def apply_update(request: Request):
     from tinyagentos.restart_orchestrator import write_pending_restart
     project_dir = Path(__file__).parent.parent.parent
 
+    # systemd ExecStartPre rebuilds produce new content-hashed files in
+    # static/desktop/assets/ and modify desktop/tsconfig.tsbuildinfo on each
+    # restart, leaving the tree dirty. git pull --ff-only then refuses to
+    # overwrite the locals and the Install Update button always 500s. Wipe
+    # build outputs first — git pull restores them or the rebuild below
+    # regenerates them.
+    reset_proc = await asyncio.create_subprocess_exec(
+        "git", "checkout", "--", "desktop/tsconfig.tsbuildinfo", "static/desktop",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await reset_proc.communicate()
+    clean_proc = await asyncio.create_subprocess_exec(
+        "git", "clean", "-fd", "static/desktop/assets",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await clean_proc.communicate()
+
     # Git pull
     proc = await asyncio.create_subprocess_exec(
         "git", "pull", "--ff-only", "origin", "master",
