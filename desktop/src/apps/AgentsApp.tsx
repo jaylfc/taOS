@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { Bot, Box, Plus, Trash2, ScrollText, Play, Server, X, ChevronRight, ChevronLeft, Check, Wrench, MessageSquare, PauseCircle, RotateCcw, Archive, HardDrive } from "lucide-react";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
@@ -367,11 +368,13 @@ function AgentDetailPanel({
   initialTab,
   onClose,
   onAgentUpdated,
+  fullHeight = false,
 }: {
   agent: Agent;
   initialTab: DetailTab;
   onClose: () => void;
   onAgentUpdated: () => void;
+  fullHeight?: boolean;
 }) {
   const [tab, setTab] = useState<DetailTab>(initialTab);
   const [logs, setLogs] = useState<string>("Fetching logs...");
@@ -429,8 +432,8 @@ function AgentDetailPanel({
       <Tabs
       value={tab}
       onValueChange={(v) => setTab(v as DetailTab)}
-      className="border-t border-white/5 bg-shell-bg-deep flex flex-col"
-      style={{ height: "22rem" }}
+      className={fullHeight ? "border-t border-white/5 bg-shell-bg-deep flex flex-1 min-h-0 flex-col" : "border-t border-white/5 bg-shell-bg-deep flex flex-col"}
+      style={fullHeight ? undefined : { height: "22rem" }}
     >
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/5 shrink-0">
         <div className="flex items-center gap-3">
@@ -1649,6 +1652,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [diskStates, setDiskStates] = useState<Record<string, DiskState>>({});
   const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
   const [latestByFramework, setLatestByFramework] = useState<Record<string, LatestVersion>>({});
+  const isMobile = useIsMobile();
   const openWindow = useProcessStore((s) => s.openWindow);
 
   const fetchAgents = useCallback(async () => {
@@ -2053,6 +2057,44 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
       {detail && (() => {
         const agent = agents.find((a) => a.name === detail.name);
         if (!agent) return null;
+        if (isMobile) {
+          return createPortal(
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Agent details — ${agent.display_name || agent.name}`}
+              className="fixed inset-0 z-50 flex flex-col bg-zinc-950 text-zinc-200"
+            >
+              <div
+                className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2"
+                style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.5rem)" }}
+              >
+                <button
+                  type="button"
+                  aria-label="Back to agents"
+                  onClick={() => setDetail(null)}
+                  className="rounded-lg px-2 py-1 text-sm text-zinc-300"
+                >
+                  ‹ Back
+                </button>
+                <div className="flex-1 truncate text-center text-sm font-medium text-zinc-200">
+                  {agent.display_name || agent.name}
+                </div>
+                <span className="w-10" aria-hidden="true" />
+              </div>
+              <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+                <AgentDetailPanel
+                  agent={agent}
+                  initialTab={detail.tab}
+                  onClose={() => setDetail(null)}
+                  onAgentUpdated={fetchAgents}
+                  fullHeight
+                />
+              </div>
+            </div>,
+            document.body,
+          );
+        }
         return (
           <AgentDetailPanel
             agent={agent}

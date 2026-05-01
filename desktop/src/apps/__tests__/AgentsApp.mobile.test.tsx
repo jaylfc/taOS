@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 
 // Mock useIsMobile to return true so we test the mobile layout branch
 vi.mock("@/hooks/use-is-mobile", () => ({
@@ -33,6 +33,11 @@ vi.mock("@/components/agent-settings/MemoryTab", () => ({ MemoryTab: () => null 
 vi.mock("@/components/agent-settings/FrameworkTab", () => ({ FrameworkTab: () => null }));
 vi.mock("./AgentSkillsPanel", () => ({ AgentSkillsPanel: () => null }));
 vi.mock("./AgentMessagesPanel", () => ({ AgentMessagesPanel: () => null }));
+vi.mock("@/components/AgentShortcutRow", () => ({ AgentShortcutRow: () => null }));
+vi.mock("@/stores/process-store", () => ({
+  useProcessStore: (sel: (s: { openWindow: ReturnType<typeof vi.fn> }) => unknown) =>
+    sel({ openWindow: vi.fn() }),
+}));
 vi.mock("@/components/ui", () => ({
   Button: ({ children, onClick, className, ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement> & { children?: React.ReactNode }) => (
     <button onClick={onClick} className={className} {...rest}>{children}</button>
@@ -124,5 +129,35 @@ describe("AgentsApp mobile layout (390px viewport)", () => {
     expect(skillsBtn).toBeTruthy();
     expect(messagesBtn).toBeTruthy();
     expect(deleteBtn).toBeTruthy();
+  });
+
+  it("renders a Back button in a full-screen dialog when the detail panel is opened on mobile", async () => {
+    render(<AgentsApp windowId="test" />);
+
+    // Wait for the agent list to load and click the skills button
+    const skillsBtn = await screen.findByRole("button", { name: /manage skills for my-agent/i });
+    fireEvent.click(skillsBtn);
+
+    // The full-screen overlay must render with a back button
+    const backBtn = screen.getByRole("button", { name: /back to agents/i });
+    expect(backBtn).toBeTruthy();
+
+    // The overlay must be a dialog with aria-modal
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+  });
+
+  it("closes the full-screen panel when the Back button is clicked", async () => {
+    render(<AgentsApp windowId="test" />);
+
+    const skillsBtn = await screen.findByRole("button", { name: /manage skills for my-agent/i });
+    fireEvent.click(skillsBtn);
+
+    const backBtn = screen.getByRole("button", { name: /back to agents/i });
+    fireEvent.click(backBtn);
+
+    // Panel must be gone
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: /back to agents/i })).toBeNull();
   });
 });
