@@ -16,6 +16,16 @@ def _a2a(channels: list[dict]) -> dict | None:
     return None
 
 
+async def _test_agent_id(client) -> tuple[str, str]:
+    """Return (agent_id, agent_name) for the test-agent in config."""
+    res = await client.get("/api/agents")
+    assert res.status_code == 200
+    data = res.json()
+    agents = data if isinstance(data, list) else data.get("agents", [])
+    ta = next(a for a in agents if a["name"] == "test-agent")
+    return ta["id"], ta["name"]
+
+
 @pytest.mark.asyncio
 async def test_create_project_creates_a2a_channel(client):
     res = await client.post("/api/projects", json={"name": "P", "slug": "ra2a-1"})
@@ -32,35 +42,38 @@ async def test_create_project_creates_a2a_channel(client):
 
 @pytest.mark.asyncio
 async def test_add_member_adds_to_a2a_channel(client):
+    agent_id, agent_name = await _test_agent_id(client)
     pid = (await client.post("/api/projects", json={"name": "P", "slug": "ra2a-2"})).json()["id"]
 
     res = await client.post(
         f"/api/projects/{pid}/members",
-        json={"mode": "native", "agent_id": "agentA"},
+        json={"mode": "native", "agent_id": agent_id},
     )
     assert res.status_code == 200
 
     channels = await _list_channels(client, pid)
     a2a = _a2a(channels)
     assert a2a is not None
-    assert "agentA" in a2a["members"]
+    # Channel members are agent names (not hex IDs)
+    assert agent_name in a2a["members"]
 
 
 @pytest.mark.asyncio
 async def test_remove_member_removes_from_a2a_channel(client):
+    agent_id, agent_name = await _test_agent_id(client)
     pid = (await client.post("/api/projects", json={"name": "P", "slug": "ra2a-3"})).json()["id"]
     await client.post(
         f"/api/projects/{pid}/members",
-        json={"mode": "native", "agent_id": "agentA"},
+        json={"mode": "native", "agent_id": agent_id},
     )
 
-    res = await client.delete(f"/api/projects/{pid}/members/agentA")
+    res = await client.delete(f"/api/projects/{pid}/members/{agent_id}")
     assert res.status_code == 200
 
     channels = await _list_channels(client, pid)
     a2a = _a2a(channels)
     assert a2a is not None
-    assert "agentA" not in a2a["members"]
+    assert agent_name not in a2a["members"]
 
 
 @pytest.mark.asyncio

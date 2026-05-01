@@ -624,7 +624,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         try:
             from tinyagentos.projects.a2a import backfill_all as _a2a_backfill_all
-            _n = await _a2a_backfill_all(chat_channels, project_store)
+            _n = await _a2a_backfill_all(chat_channels, project_store, config=config)
             logger.info("a2a backfill: ensured channels for %d active projects", _n)
         except Exception:
             logger.exception("a2a backfill failed")

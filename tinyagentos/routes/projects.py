@@ -94,6 +94,7 @@ async def create_project(payload: CreateProjectIn, request: Request):
             request.app.state.chat_channels,
             request.app.state.project_store,
             p["id"],
+            config=getattr(request.app.state, "config", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for new project %s", p.get("id"), exc_info=True)
@@ -228,6 +229,7 @@ async def add_member(project_id: str, payload: AddMemberIn, request: Request):
             request.app.state.chat_channels,
             request.app.state.project_store,
             project_id,
+            config=getattr(request.app.state, "config", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for project %s on add_member", project_id, exc_info=True)
@@ -255,6 +257,7 @@ async def remove_member(project_id: str, member_id: str, request: Request):
             request.app.state.chat_channels,
             request.app.state.project_store,
             project_id,
+            config=getattr(request.app.state, "config", None),
         )
     except Exception:
         logger.warning("a2a ensure failed for project %s on remove_member", project_id, exc_info=True)
