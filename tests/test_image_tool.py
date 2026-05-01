@@ -13,6 +13,8 @@ import base64
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 import pytest
 import httpx
 
@@ -188,17 +190,17 @@ async def test_image_generation_forwards_new_params():
 
 
 @pytest.mark.asyncio
-async def test_image_generation_backward_compat():
-    """Omitting model/guidance_scale/negative_prompt uses legacy direct path."""
+async def test_image_generation_default_routes_via_scheduler():
+    """Omitting model still routes via the scheduler (no hardcoded model
+    fallback). The model field is left out of the payload so the
+    scheduler's GenerateRequest default ("") applies."""
     from tinyagentos.tools.image_tool import execute_image_generation
 
-    response_body = {
-        "data": [{"b64_json": base64.b64encode(b"fake-png").decode()}]
-    }
+    fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = response_body
+    mock_resp.content = fake_png
     mock_resp.raise_for_status = MagicMock()
 
     captured: dict = {}
@@ -216,15 +218,88 @@ async def test_image_generation_backward_compat():
     with patch("httpx.AsyncClient", return_value=mock_client):
         result = await execute_image_generation(
             prompt="a red barn",
+            seed=7,
+        )
+
+    assert result["success"] is True
+    assert "/api/images/generate" in captured["url"]
+    body = captured["body"]
+    assert body["prompt"] == "a red barn"
+    assert body["seed"] == 7
+    # No hardcoded model — the field is omitted so the server picks
+    assert "model" not in body
+    # negative_prompt absent when empty
+    assert "negative_prompt" not in body
+
+
+@pytest.mark.asyncio
+async def test_image_generation_blank_model_treated_as_omitted():
+    """Whitespace-only or empty model strings should not land in the payload."""
+    from tinyagentos.tools.image_tool import execute_image_generation
+
+    fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = fake_png
+    mock_resp.raise_for_status = MagicMock()
+
+    captured: dict = {}
+
+    async def fake_post(url, json=None, **kwargs):
+        captured["body"] = json or {}
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.post = fake_post
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        result = await execute_image_generation(prompt="x", model="   ")
+
+    assert result["success"] is True
+    assert "model" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_image_generation_falls_back_on_controller_unreachable():
+    """When the controller is unreachable, fall back to the direct
+    backend call. The fallback also must not pin a model name."""
+    from tinyagentos.tools.image_tool import execute_image_generation
+
+    direct_response_body = {"data": [{"b64_json": base64.b64encode(b"fake").decode()}]}
+
+    direct_resp = MagicMock()
+    direct_resp.status_code = 200
+    direct_resp.json.return_value = direct_response_body
+    direct_resp.raise_for_status = MagicMock()
+
+    captured_urls: list = []
+    captured_body: dict = {}
+
+    async def fake_post(url, json=None, **kwargs):
+        captured_urls.append(url)
+        # First call (scheduler) raises; second call (direct backend) succeeds.
+        if "/api/images/generate" in url:
+            raise httpx.ConnectError("controller down")
+        captured_body.update(json or {})
+        return direct_resp
+
+    mock_client = AsyncMock()
+    mock_client.post = fake_post
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        result = await execute_image_generation(
+            prompt="a red barn",
             backend_url="http://localhost:8080",
             seed=7,
         )
 
     assert result["success"] is True
-    # Must have gone to the direct backend path, not the scheduler
-    assert "/v1/images/generations" in captured["url"]
-    body = captured["body"]
-    assert body["prompt"] == "a red barn"
-    assert body["seed"] == 7
-    # negative_prompt absent when empty
-    assert "negative_prompt" not in body
+    # Tried scheduler first, then direct backend.
+    assert any("/api/images/generate" in u for u in captured_urls)
+    assert any("/v1/images/generations" in u for u in captured_urls)
+    # Direct fallback does NOT pin a model name.
+    assert "model" not in captured_body

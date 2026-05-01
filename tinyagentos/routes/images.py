@@ -29,7 +29,11 @@ router = APIRouter()
 
 class GenerateRequest(BaseModel):
     prompt: str
-    model: str = "lcm-dreamshaper-v7"
+    # Empty string means "let the scheduler pick a model based on what's
+    # installed on the host". Hardcoding a Pi-specific name here was a
+    # footgun for users on different hardware (e.g. NVIDIA GPU users
+    # who don't have lcm-dreamshaper-v7 installed at all).
+    model: str = ""
     size: str = "512x512"
     steps: int = 4
     seed: int | None = None

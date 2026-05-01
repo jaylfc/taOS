@@ -31,11 +31,11 @@ IMAGE_GENERATION_TOOL = {
             },
             "model": {
                 "type": "string",
-                "description": "Pick from list_image_models output. When supplied, routes through the controller's scheduler which picks the right backend (NPU first, CPU fallback). Omit to call the default backend directly with lcm-dreamshaper-v7 (legacy path; bypasses the scheduler).",
+                "description": "Pick from list_image_models output. Omit to let the controller's scheduler pick a model based on the host's installed backends — works on any hardware (Pi NPU, NVIDIA GPU, CPU).",
             },
             "guidance_scale": {
                 "type": "number",
-                "description": "Classifier-free guidance scale. Higher values follow the prompt more strictly; 7.5 is balanced. Lower (1–4) for artistic flexibility, higher (10–15) for strict adherence.",
+                "description": "Classifier-free guidance scale. Higher values follow the prompt more strictly; 7.5 is balanced. Lower (1-4) for artistic flexibility, higher (10-15) for strict adherence.",
                 "default": 7.5,
                 "minimum": 1.0,
                 "maximum": 20.0,
@@ -163,63 +163,74 @@ async def execute_image_generation(
     negative_prompt: str = "",
     controller_url: str = "http://localhost:6969",
 ) -> dict:
-    """Execute image generation via an OpenAI-compatible endpoint.
+    """Execute image generation, preferring the controller's scheduler.
 
-    When a model is specified, routes through the controller's scheduler
-    (/api/images/generate) which knows how to find the right backend.
-    When no model is given, falls back to hitting the backend_url directly.
+    Always tries the controller's ``/api/images/generate`` first so the
+    scheduler can pick a backend (Pi NPU, NVIDIA GPU, CPU, …) using
+    whatever's installed on the host. Falls back to a direct call to
+    ``backend_url`` only when the controller is unreachable — and the
+    fallback omits the model field so the local backend uses whatever
+    checkpoint it has loaded rather than a pinned model name.
 
-    Returns dict with 'success', 'image_b64' (base64 PNG), and 'error' if failed.
+    Returns dict with 'success', 'image_b64' (base64 PNG), and 'error'
+    if failed.
     """
+    import base64
     import httpx
     import random
 
     if seed is None:
         seed = random.randint(1, 999999)
 
-    # If a model is specified, go through the scheduler so it can route to
-    # the right backend. The scheduler endpoint accepts the full GenerateRequest.
-    if model is not None:
-        effective_model = model
-        target_url = f"{controller_url.rstrip('/')}/api/images/generate"
-        payload: dict = {
-            "prompt": prompt,
-            "model": effective_model,
-            "size": size,
-            "steps": steps,
-            "seed": seed,
-            "guidance_scale": guidance_scale,
-        }
-        if negative_prompt:
-            payload["negative_prompt"] = negative_prompt
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(target_url, json=payload)
-                resp.raise_for_status()
-                # /api/images/generate returns raw PNG bytes
-                image_bytes = resp.content
-                import base64
-                return {
-                    "success": True,
-                    "image_b64": base64.b64encode(image_bytes).decode(),
-                    "seed": seed,
-                    "model": effective_model,
-                    "size": size,
-                }
-        except httpx.ConnectError:
-            return {"success": False, "error": f"Cannot connect to controller at {controller_url}"}
-        except httpx.TimeoutException:
-            return {"success": False, "error": "Image generation timed out (>120s)"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+    # 1. Scheduler-routed path. Works for any hardware. If no model is
+    #    supplied, the scheduler's GenerateRequest defaults the model to
+    #    empty and the chosen backend uses its loaded checkpoint.
+    target_url = f"{controller_url.rstrip('/')}/api/images/generate"
+    payload: dict = {
+        "prompt": prompt,
+        "size": size,
+        "steps": steps,
+        "seed": seed,
+        "guidance_scale": guidance_scale,
+    }
+    if isinstance(model, str) and model.strip():
+        payload["model"] = model.strip()
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
 
-    # No model specified — direct call to the backend's OpenAI-compatible endpoint.
-    effective_model = "lcm-dreamshaper-v7"
+    controller_unreachable = False
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(target_url, json=payload)
+            resp.raise_for_status()
+            # /api/images/generate returns raw PNG bytes
+            image_bytes = resp.content
+            return {
+                "success": True,
+                "image_b64": base64.b64encode(image_bytes).decode(),
+                "seed": seed,
+                "model": model or "",
+                "size": size,
+            }
+    except httpx.ConnectError:
+        controller_unreachable = True  # fall through to direct path below
+    except httpx.TimeoutException:
+        return {"success": False, "error": "Image generation timed out (>120s)"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+    if not controller_unreachable:
+        # Defensive guard — shouldn't reach here without a return above.
+        return {"success": False, "error": "Image generation failed unexpectedly"}
+
+    # 2. Connect-failure fallback: direct call to backend_url. Used when
+    #    the caller's network can't see the controller (e.g. an LXC agent
+    #    where localhost:6969 is not the controller). We do NOT pin a
+    #    model name here — the local backend uses its own loaded model.
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             body: dict = {
                 "prompt": prompt,
-                "model": effective_model,
                 "size": size,
                 "n": 1,
                 "num_inference_steps": steps,
@@ -227,6 +238,8 @@ async def execute_image_generation(
                 "guidance_scale": guidance_scale,
                 "response_format": "b64_json",
             }
+            if isinstance(model, str) and model.strip():
+                body["model"] = model.strip()
             if negative_prompt:
                 body["negative_prompt"] = negative_prompt
             resp = await client.post(
@@ -240,12 +253,12 @@ async def execute_image_generation(
                     "success": True,
                     "image_b64": data["data"][0].get("b64_json", ""),
                     "seed": seed,
-                    "model": effective_model,
+                    "model": model or "",
                     "size": size,
                 }
             return {"success": False, "error": "No image data in response"}
     except httpx.ConnectError:
-        return {"success": False, "error": f"Cannot connect to image backend at {backend_url}"}
+        return {"success": False, "error": f"Cannot connect to controller at {controller_url} or backend at {backend_url}"}
     except httpx.TimeoutException:
         return {"success": False, "error": "Image generation timed out (>120s)"}
     except Exception as e:
