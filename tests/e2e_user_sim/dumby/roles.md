@@ -1,92 +1,105 @@
-# Existing Pi agents — role assignments for the Dumby the Dumbo project
+# Dumby the Dumbo team — coordinator-driven model
 
-The Pi already runs six agents, one per framework. Rather than deploy
-fresh agents per role, the user-sim **reuses the existing six** and
-addresses them by role in each chat brief. This exercises all six beta
-frameworks with no setup overhead.
+The user-sim **does not script the creative workflow turn-by-turn**. Jay
+gives the kick-off brief to a single coordinator (Tom). Tom is then
+responsible for allocating work, checking it, iterating, and seeing the
+project through to delivery. Every other agent receives instructions
+*from Tom*, not from Jay.
 
-| Agent  | Framework         | Emoji | Color     | Role                              |
-|--------|-------------------|-------|-----------|-----------------------------------|
-| john   | openclaw          | 👻    | `#ef4444` | Writer                            |
-| tom    | hermes            | 🤖    | `#3b82f6` | Editor                            |
-| don    | smolagents        | 🐝    | `#10b981` | Illustrator                       |
-| linus  | langroid          | 🧠    | `#a855f7` | Web Designer                      |
-| pat    | pocketflow        | 🌊    | `#f59e0b` | Marketing Strategist              |
-| olive  | openai-agents-sdk | 🫒    | `#06b6d4` | Producer / cross-review           |
+This is a real autonomy test for the multi-agent stack: can Tom
+actually drive the team end-to-end via the project a2a channel?
 
-These agents already exist on the Pi (`/api/agents` lists them). The
-user-sim **does not** create or delete them — only attaches them to the
-Dumby project as Members and addresses them in the project chat.
+## The team Tom is briefed about
 
-## Role context (passed in each chat brief, not as a persona edit)
+| Agent  | Framework         | Emoji | Color     | Strength to lean on                              |
+|--------|-------------------|-------|-----------|--------------------------------------------------|
+| **tom**    | hermes            | 🤖    | `#3b82f6` | Coordinator + Senior Editor (this is *you*)      |
+| john   | openclaw          | 👻    | `#ef4444` | Strong narrative/prose drafting                  |
+| don    | smolagents        | 🐝    | `#10b981` | Image generation + visual art (Images app)       |
+| linus  | langroid          | 🧠    | `#a855f7` | Multi-step reasoning + HTML/web                  |
+| pat    | pocketflow        | 🌊    | `#f59e0b` | Graph/flow thinking — marketing strategy + plans |
+| olive  | openai-agents-sdk | 🫒    | `#06b6d4` | Final QA cross-review                            |
 
-The existing personas on these agents are generic ("You are John, a
-curious agent…"). The user-sim does not modify them. Instead, every
-brief in the project chat starts with a one-line role hat:
+All agents run on `kilo-auto/free`, all are members of the Dumby
+project, and Tom has `can_edit_canvas` so he can post storyboard
+sketches / scene notes to the project canvas.
 
-> @john — *acting as Writer for Dumby the Dumbo* — please draft Chapter 1.
-> Target: ~400 words, ages 4–8, gentle warmth, short paragraphs, concrete
-> imagery. Hand off to @tom (Editor) when done.
+## Tom's coordinator brief
 
-Treat the agent as smart enough to take the role from the brief. If they
-don't, that's a finding worth recording.
+Jay pastes this verbatim into the project messages tab as the very
+first message of the session.
 
-## Role briefs (use these verbatim or close to it)
+> @tom — *acting as Project Coordinator and Senior Editor for "Dumby
+> the Dumbo"*. You're driving this project end-to-end. Jay (the human)
+> will not allocate tasks or chase agents — that's your job. You will
+> see the project through to delivery.
+>
+> **Your team (all already members of this project, all on
+> `kilo-auto/free`):**
+> - @john — openclaw — strongest at narrative prose. Use for chapter
+>   drafting and revisions.
+> - @don — smolagents — image generation. Has access to the Images app
+>   for cover art and scene illustrations. Save outputs to project Files.
+> - @linus — langroid — strong on structured/web work. Use for the
+>   landing-page `index.html`.
+> - @pat — pocketflow — flow/strategy thinker. Use for marketing
+>   strategy + social plan.
+> - @olive — openai-agents-sdk — your QA reviewer. Loop her in for
+>   final cross-review of the whole package.
+>
+> **The brief:** "Dumby the Dumbo" is a kids' picture book for ages
+> 4–8. Synopsis: a clumsy, ditsy young elephant called Dumby learns
+> that being yourself is enough by accidentally saving a flock of
+> flamingos one giggle at a time. Target: ~3 short chapters (~400
+> words each), gentle warm tone, concrete imagery, believable child
+> dialogue.
+>
+> **Deliverables you're responsible for:**
+> 1. 3 chapters drafted, edited, revised
+> 2. Cover illustration + ≥2 scene illustrations (don, via Images app)
+> 3. A single-file mobile-first `index.html` landing page (linus,
+>    saved to project Files)
+> 4. `strategy.md` + `social.md` marketing pack (pat, saved to Files)
+> 5. Final go/no-go review note from @olive on the whole package
+>
+> **Your tools:**
+> - The project messages channel — @-mention teammates, brief them,
+>   collect their work, give feedback
+> - The project canvas — you have edit access. Post storyboard ideas,
+>   scene notes, sketch prompts here so the team can riff on them
+> - The project Files area — final artifacts go here
+>
+> Start by laying out your plan: who you're going to brief first, in
+> what order, and what hand-offs you expect. Then begin executing.
+> Tell me (Jay) when each phase is done. If you get stuck, say so
+> explicitly and what you need.
 
-### Writer brief (john)
-> Acting as Writer. You are drafting "Dumby the Dumbo" — a kids' book
-> about a clumsy young elephant who learns being himself is enough. The
-> story is for ages 4–8. Write short paragraphs, concrete imagery,
-> believable child dialogue, gentle warmth. Deliver chapter by chapter,
-> never the whole book at once. Hand each draft to @tom for review.
+## The user-sim's actual role this session
 
-### Editor brief (tom)
-> Acting as Editor. Critique drafts from @john for a children's picture
-> book audience: pacing, age-appropriateness, character voice,
-> read-aloud quality. Numbered, actionable notes — not vague praise.
-> Approve or send back to @john for revision.
+1. Post Tom's coordinator brief above in the project messages tab.
+2. Watch Tom reply with a plan.
+3. Watch Tom @-mention teammates. The a2a channel routes mentions
+   correctly now (post-#286), so each agent will reply when called.
+4. Don't intervene unless Tom is stuck for >5 minutes with no output.
+   If Tom reports a blocker, surface it (don't try to be the
+   coordinator).
+5. Optionally create kanban tasks reflecting Tom's plan so the board
+   shows live progress on Jay's phone.
 
-### Illustrator brief (don)
-> Acting as Illustrator. Read each approved chapter from @john. For each
-> scene you decide subject, mood, palette, composition. Use the Images
-> app (Open Images on the dock) to render covers and scenes. Save them
-> into the Dumby project Files area. Explain your choices in the project
-> chat so @john and @tom can react.
+## What success looks like
 
-### Web Designer brief (linus)
-> Acting as Web Designer. Build a single-file `index.html` landing page
-> for "Dumby the Dumbo": mobile-first, system font stack, no external
-> JS, accessible (semantic landmarks, alt text on images). Embed the
-> cover image @don generated. Save the file into project Files. Review
-> @pat's marketing copy and call out any web-readability issues.
+- Tom posts a coherent allocation plan
+- Tom @-mentions teammates and they reply
+- Artifacts (chapter drafts, images, HTML, marketing docs) accumulate
+- Tom posts ≥1 storyboard / scene note to the canvas
+- Olive eventually posts a final go/no-go note
+- Tom signs off
 
-### Marketing Strategist brief (pat)
-> Acting as Marketing Strategist. Read the latest drafts from @john, the
-> editorial notes from @tom, the cover by @don, and @linus's landing
-> page. Write `strategy.md` (positioning, audience, channels) and
-> `social.md` (a 4-week plan suitable for a first-time self-published
-> author). Save both into project Files.
+## What "interesting failure" looks like (also valuable)
 
-### Producer brief (olive)
-> Acting as Producer / cross-review coordinator. After everyone has
-> shipped their primary artifact, you read the whole package and post a
-> final go/no-go note in the project chat. You also nudge anyone whose
-> hand-off is stuck.
-
-## Handoff protocol
-
-Every handoff message must:
-1. Address the next agent by `@name`.
-2. State the handoff type: `DRAFT`, `REVIEW`, `CRITIQUE`, `REVISION`,
-   `ARTIFACT`.
-3. Reference the previous artifact (file path, image filename, or
-   message timestamp).
-
-## Cross-review pass (after primary artifacts exist)
-
-- @john critiques @linus's `index.html` from a story-fit perspective.
-- @don critiques @pat's `social.md` from a visual/brand perspective.
-- @olive reads everything, posts the final go/no-go note.
-
-Critiques get posted to the project chat; the relevant agent revises if
-their owner accepts the note.
+- Tom doesn't allocate — just chats
+- Tom @-mentions but ignores the replies
+- Cross-agent handoffs break down — record exactly where
+- Tom claims completion before all deliverables exist
+- Any agent silently no-ops when @-mentioned — record this; it's a
+  real product finding
