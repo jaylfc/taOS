@@ -16,6 +16,8 @@ actually drive the team end-to-end via the project a2a channel?
 | **tom**    | hermes            | 🤖    | `#3b82f6` | Coordinator + Senior Editor (this is *you*)      |
 | john   | openclaw          | 👻    | `#ef4444` | Strong narrative/prose drafting                  |
 | don    | smolagents        | 🐝    | `#10b981` | Image generation + visual art (Images app)       |
+
+@don has access to two image-gen tools: `list_image_models` (discover what's installed) and `generate_image` (text-to-image, with optional `model`, `guidance_scale`, `negative_prompt`). Recommended workflow: list → pick the model that fits the task (LCM models = fast and stylized; full SD/SDXL = slower, more photorealistic) → generate with `guidance_scale=7.5` for balanced output, raise to 10–12 if the model is ignoring details, lower to 4–6 for more artistic interpretation.
 | linus  | langroid          | 🧠    | `#a855f7` | Multi-step reasoning + HTML/web                  |
 | pat    | pocketflow        | 🌊    | `#f59e0b` | Graph/flow thinking — marketing strategy + plans |
 | olive  | openai-agents-sdk | 🫒    | `#06b6d4` | Final QA cross-review                            |

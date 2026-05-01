@@ -6,9 +6,13 @@ Verifies that:
   OpenAI/MCP-style schemas.
 - Executing a non-existent skill returns a 404.
 - The ``file_write`` and ``file_read`` built-ins round-trip successfully.
+- ``list_image_models`` skill dispatches correctly via skill-exec.
+- ``image_generation`` skill still dispatches correctly (no regression).
 """
 
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -101,3 +105,56 @@ async def test_file_write_and_read(app_with_store):
         )
         assert read_resp.status_code == 200
         assert read_resp.json().get("content") == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_skill_exec_list_image_models(app_with_store):
+    """list_image_models skill returns a list of models via skill-exec."""
+    store = app_with_store.state.skills
+    await store.assign_skill("don", "list_image_models")
+
+    models_payload = {"success": True, "models": [{"name": "LCM", "id": "lcm"}]}
+
+    with patch(
+        "tinyagentos.tools.image_tool.execute_list_image_models",
+        new_callable=AsyncMock,
+        return_value=models_payload,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_store), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/skill-exec/list_image_models/call", json={"args": {}}
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert isinstance(data["models"], list)
+
+
+@pytest.mark.asyncio
+async def test_skill_exec_image_generation_no_regression(app_with_store):
+    """Existing image_generation skill still dispatches correctly."""
+    store = app_with_store.state.skills
+    await store.assign_skill("don", "image_generation")
+
+    gen_payload = {"success": True, "image_b64": "abc", "seed": 1, "model": "lcm", "size": "512x512"}
+
+    with patch(
+        "tinyagentos.tools.image_tool.execute_image_generation",
+        new_callable=AsyncMock,
+        return_value=gen_payload,
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_store), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/skill-exec/image_generation/call",
+                json={"args": {"prompt": "a red barn"}},
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert data["image_b64"] == "abc"

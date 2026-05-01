@@ -155,7 +155,21 @@ async def _skill_image_generation(args: dict, request: Request) -> dict:
             prompt=args.get("prompt", ""),
             size=args.get("size", "512x512"),
             steps=args.get("steps", 4),
+            model=args.get("model") or None,
+            guidance_scale=float(args.get("guidance_scale", 7.5)),
+            negative_prompt=args.get("negative_prompt", ""),
         )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_list_image_models(args: dict, request: Request) -> dict:
+    """List installed image-generation models."""
+    try:
+        from tinyagentos.tools.image_tool import execute_list_image_models
+
+        result = await execute_list_image_models()
         return result
     except Exception as exc:
         return {"error": str(exc)}
@@ -169,6 +183,7 @@ SKILL_IMPLEMENTATIONS = {
     "code_exec": _skill_code_exec,
     "http_request": _skill_http_request,
     "image_generation": _skill_image_generation,
+    "list_image_models": _skill_list_image_models,
 }
 
 

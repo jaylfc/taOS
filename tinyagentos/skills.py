@@ -180,9 +180,30 @@ class SkillStore(BaseStore):
                         "properties": {
                             "prompt": {"type": "string"},
                             "size": {"type": "string", "default": "512x512"},
+                            "model": {"type": "string"},
+                            "guidance_scale": {"type": "number", "default": 7.5},
+                            "negative_prompt": {"type": "string", "default": ""},
                         },
                         "required": ["prompt"],
                     },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.image_tool",
+            },
+            {
+                "id": "list_image_models",
+                "name": "List Image Models",
+                "category": "media",
+                "description": "Discover installed image-generation models",
+                "tool_schema": {
+                    "name": "list_image_models",
+                    "description": "List installed image-generation models the agent can pick from",
+                    "input_schema": {"type": "object", "properties": {}},
                 },
                 "frameworks": {
                     "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
