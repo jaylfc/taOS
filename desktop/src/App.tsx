@@ -21,13 +21,16 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { NotificationToasts } from "@/components/NotificationToast";
 import { NotificationCentre } from "@/components/NotificationCentre";
 import { useNotificationStore } from "@/stores/notification-store";
+import { TaosAssistantPanel } from "@/components/TaosAssistantPanel";
+import { useTaosAgentStore } from "@/stores/taos-agent-store";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
   toggleLaunchpad: () => void;
+  toggleAssistant: () => void;
 }
 
-function SystemShortcuts({ toggleSearch, toggleLaunchpad }: SystemShortcutsProps) {
+function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: SystemShortcutsProps) {
   const windows = useProcessStore((s) => s.windows);
   const closeWindow = useProcessStore((s) => s.closeWindow);
   const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
@@ -72,6 +75,7 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad }: SystemShortcutsProps
 
   useShortcut("Ctrl+Space", toggleSearch, "Toggle search palette", "system");
   useShortcut("Ctrl+l", toggleLaunchpad, "Toggle launchpad", "system");
+  useShortcut("Ctrl+/", toggleAssistant, "Toggle taOS Assistant", "system");
   useShortcut("Ctrl+w", closeFocused, "Close focused window", "system");
   useShortcut("Ctrl+m", minimizeFocused, "Minimize focused window", "system");
   useShortcut("Ctrl+f", maximizeFocused, "Maximize/restore focused window", "system");
@@ -135,6 +139,7 @@ export function App() {
 
   const toggleLaunchpad = useCallback(() => setLaunchpadOpen((v) => !v), []);
   const toggleSearch = useCallback(() => setSearchOpen((v) => !v), []);
+  const toggleAssistant = useCallback(() => useTaosAgentStore.getState().togglePanel(), []);
 
   // Listen for launchpad open event from context menu
   useEffect(() => {
@@ -213,7 +218,7 @@ export function App() {
   if (mode === "desktop") {
     return (
       <ShortcutProvider>
-        <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} />
+        <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
         <LoginGate>
           {!launched && <LoginScreen onLaunch={() => setLaunched(true)} />}
           {launched && !isFullscreen && (
@@ -227,13 +232,14 @@ export function App() {
           )}
           <div className={`transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
             <div className="h-screen w-screen flex flex-col overflow-hidden bg-shell-bg text-shell-text">
-              <TopBar onSearchOpen={toggleSearch} />
+              <TopBar onSearchOpen={toggleSearch} onAssistantOpen={toggleAssistant} />
               <Desktop />
               <Dock onLaunchpadOpen={toggleLaunchpad} />
               <Launchpad open={launchpadOpen} onClose={() => setLaunchpadOpen(false)} onOpenApp={(wid) => setActiveWindowId(wid)} />
               <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} onOpenApp={(wid) => setActiveWindowId(wid)} />
               <NotificationToasts />
               <NotificationCentre />
+              <TaosAssistantPanel />
             </div>
           </div>
         </LoginGate>
@@ -244,7 +250,7 @@ export function App() {
   // Mobile/Tablet layout — no login gate, no fullscreen button (PWA is already fullscreen)
   return (
     <ShortcutProvider>
-      <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} />
+      <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
     <div className="taos-wallpaper h-screen w-screen flex flex-col text-shell-text" style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
         <MobileTopBar

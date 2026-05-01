@@ -1,4 +1,4 @@
-import { Bell, Search, LayoutGrid, Power, Lock, Settings, RotateCcw, LogOut } from "lucide-react";
+import { Bell, Search, LayoutGrid, Power, Lock, Settings, RotateCcw, LogOut, Sparkles } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useClock } from "@/hooks/use-clock";
 import { useWidgetStore } from "@/stores/widget-store";
@@ -8,6 +8,7 @@ import { StatusIndicators } from "./StatusIndicators";
 
 interface Props {
   onSearchOpen: () => void;
+  onAssistantOpen: () => void;
 }
 
 function PowerMenu() {
@@ -94,7 +95,7 @@ function PowerMenu() {
   );
 }
 
-export function TopBar({ onSearchOpen }: Props) {
+export function TopBar({ onSearchOpen, onAssistantOpen }: Props) {
   const clock = useClock();
   const { showWidgets, toggleWidgets } = useWidgetStore();
   const unreadCount = useNotificationStore((s) => s.notifications.filter((n) => !n.read).length);
@@ -113,6 +114,15 @@ export function TopBar({ onSearchOpen }: Props) {
         <img src="/static/taos-logo.png" alt="taOS" className="h-4 w-auto" />
         <span className="text-xs font-medium text-shell-text-secondary">taOS</span>
       </div>
+
+      <button
+        onClick={onAssistantOpen}
+        className="ml-3 p-1 rounded hover:bg-shell-surface-hover transition-colors text-shell-text-secondary"
+        aria-label="Open taOS Assistant"
+        title="taOS Assistant"
+      >
+        <Sparkles size={14} />
+      </button>
 
       <button
         onClick={onSearchOpen}
