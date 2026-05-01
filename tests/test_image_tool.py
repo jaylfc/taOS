@@ -150,7 +150,9 @@ async def test_list_image_models_api_failure():
 
 @pytest.mark.asyncio
 async def test_image_generation_forwards_new_params():
-    """model/guidance_scale/negative_prompt must appear in the POST body."""
+    """model/guidance_scale/negative_prompt must appear in the POST body
+    AND the call must hit the scheduler route — guards against regressing
+    to a non-scheduler endpoint."""
     from tinyagentos.tools.image_tool import execute_image_generation
 
     fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16  # minimal fake PNG bytes
@@ -161,8 +163,10 @@ async def test_image_generation_forwards_new_params():
     mock_resp.raise_for_status = MagicMock()
 
     captured_payload: dict = {}
+    captured_url: dict = {}
 
     async def fake_post(url, json=None, **kwargs):
+        captured_url["url"] = url
         captured_payload.update(json or {})
         return mock_resp
 
@@ -181,6 +185,7 @@ async def test_image_generation_forwards_new_params():
         )
 
     assert result["success"] is True
+    assert "/api/images/generate" in captured_url["url"]
     assert captured_payload["model"] == "lcm-dreamshaper-v7"
     assert captured_payload["guidance_scale"] == 10.0
     assert captured_payload["negative_prompt"] == "blurry, low quality"
@@ -262,7 +267,18 @@ async def test_image_generation_blank_model_treated_as_omitted():
 @pytest.mark.asyncio
 async def test_image_generation_falls_back_on_controller_unreachable():
     """When the controller is unreachable, fall back to the direct
-    backend call. The fallback also must not pin a model name."""
+    backend call. The fallback forwards a user-supplied model (their
+    explicit choice wins) but does NOT inject a hardcoded Pi-specific
+    default — the principle is "don't pin a default", not "drop user
+    input".
+
+    Two sub-assertions matter for the regression:
+
+      1. Scheduler is tried first with the user's model.
+      2. Fallback is tried second; if the user did NOT supply a model,
+         the fallback payload does not include one (so heterogeneous
+         hardware doesn't get a Pi-pinned default forwarded).
+    """
     from tinyagentos.tools.image_tool import execute_image_generation
 
     direct_response_body = {"data": [{"b64_json": base64.b64encode(b"fake").decode()}]}
@@ -273,14 +289,14 @@ async def test_image_generation_falls_back_on_controller_unreachable():
     direct_resp.raise_for_status = MagicMock()
 
     captured_urls: list = []
-    captured_body: dict = {}
+    captured_payloads: list = []
 
     async def fake_post(url, json=None, **kwargs):
         captured_urls.append(url)
+        captured_payloads.append(json or {})
         # First call (scheduler) raises; second call (direct backend) succeeds.
         if "/api/images/generate" in url:
             raise httpx.ConnectError("controller down")
-        captured_body.update(json or {})
         return direct_resp
 
     mock_client = AsyncMock()
@@ -288,16 +304,40 @@ async def test_image_generation_falls_back_on_controller_unreachable():
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
+    # Case A: user supplied a model — both scheduler and fallback get it.
     with patch("httpx.AsyncClient", return_value=mock_client):
-        result = await execute_image_generation(
+        result_a = await execute_image_generation(
             prompt="a red barn",
+            model="lcm-dreamshaper-v7",
             backend_url="http://localhost:8080",
             seed=7,
         )
 
-    assert result["success"] is True
-    # Tried scheduler first, then direct backend.
+    assert result_a["success"] is True
     assert any("/api/images/generate" in u for u in captured_urls)
     assert any("/v1/images/generations" in u for u in captured_urls)
-    # Direct fallback does NOT pin a model name.
-    assert "model" not in captured_body
+    scheduler_payload = next(
+        p for u, p in zip(captured_urls, captured_payloads) if "/api/images/generate" in u
+    )
+    fallback_payload = next(
+        p for u, p in zip(captured_urls, captured_payloads) if "/v1/images/generations" in u
+    )
+    assert scheduler_payload.get("model") == "lcm-dreamshaper-v7"
+    assert fallback_payload.get("model") == "lcm-dreamshaper-v7"
+
+    # Case B: no model supplied — neither scheduler nor fallback should
+    # add a default. This is the heterogeneous-hardware regression.
+    captured_urls.clear()
+    captured_payloads.clear()
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        result_b = await execute_image_generation(
+            prompt="a barn at dusk",
+            backend_url="http://localhost:8080",
+            seed=8,
+        )
+
+    assert result_b["success"] is True
+    fallback_payload_b = next(
+        p for u, p in zip(captured_urls, captured_payloads) if "/v1/images/generations" in u
+    )
+    assert "model" not in fallback_payload_b
