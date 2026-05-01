@@ -389,3 +389,136 @@ async def test_router_thread_policy_key_is_scoped():
     await router._route(msg2, _channel(["user", "tom"], "lively"))
     # Expect 2 bridge calls total (one per message), since policy keys are independent.
     assert len(bridge.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Lead agent routing
+# ---------------------------------------------------------------------------
+
+def _channel_with_leads(members, leads, mode="quiet", muted=None, ctype="group"):
+    return {
+        "id": "c1",
+        "type": ctype,
+        "members": members,
+        "settings": {
+            "response_mode": mode,
+            "leads": leads,
+            "max_hops": 3,
+            "cooldown_seconds": 5,
+            "rate_cap_per_minute": 20,
+            "muted": muted or [],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_lead_receives_quiet_message_not_mentioning_them():
+    """A lead agent receives messages in quiet mode even without an @mention."""
+    bridge = _FakeBridge()
+    state = _state_for({"name": "coord", "status": "running"}, bridge=bridge)
+    state.config.agents = [
+        {"name": "coord", "status": "running"},
+        {"name": "worker", "status": "running"},
+    ]
+    from tinyagentos.chat.group_policy import GroupPolicy
+    state.group_policy = GroupPolicy()
+    router = AgentChatRouter(state)
+
+    msg = {"id": "m1", "author_id": "user", "author_type": "user",
+           "content": "just an update", "metadata": {"hops_since_user": 0}}
+    ch = _channel_with_leads(["user", "coord", "worker"], leads=["coord"], mode="quiet")
+    await router._route(msg, ch)
+
+    slugs = [c[0] for c in bridge.calls]
+    assert "coord" in slugs
+    assert "worker" not in slugs
+
+
+@pytest.mark.asyncio
+async def test_non_lead_skipped_in_quiet_with_no_mention():
+    """Non-lead agents are still silent in quiet mode when not mentioned."""
+    bridge = _FakeBridge()
+    state = _state_for({"name": "coord", "status": "running"}, bridge=bridge)
+    state.config.agents = [
+        {"name": "coord", "status": "running"},
+        {"name": "worker", "status": "running"},
+    ]
+    from tinyagentos.chat.group_policy import GroupPolicy
+    state.group_policy = GroupPolicy()
+    router = AgentChatRouter(state)
+
+    msg = {"id": "m1", "author_id": "user", "author_type": "user",
+           "content": "just an update", "metadata": {"hops_since_user": 0}}
+    ch = _channel_with_leads(["user", "coord", "worker"], leads=["coord"], mode="quiet")
+    await router._route(msg, ch)
+
+    slugs = [c[0] for c in bridge.calls]
+    assert "worker" not in slugs
+
+
+@pytest.mark.asyncio
+async def test_multiple_leads_both_receive():
+    """All leads receive a quiet message not mentioning either of them."""
+    bridge = _FakeBridge()
+    state = _state_for({"name": "alpha", "status": "running"}, bridge=bridge)
+    state.config.agents = [
+        {"name": "alpha", "status": "running"},
+        {"name": "beta", "status": "running"},
+        {"name": "worker", "status": "running"},
+    ]
+    from tinyagentos.chat.group_policy import GroupPolicy
+    state.group_policy = GroupPolicy()
+    router = AgentChatRouter(state)
+
+    msg = {"id": "m1", "author_id": "user", "author_type": "user",
+           "content": "status update", "metadata": {"hops_since_user": 0}}
+    ch = _channel_with_leads(["user", "alpha", "beta", "worker"],
+                              leads=["alpha", "beta"], mode="quiet")
+    await router._route(msg, ch)
+
+    slugs = sorted(c[0] for c in bridge.calls)
+    assert slugs == ["alpha", "beta"]
+
+
+@pytest.mark.asyncio
+async def test_lead_not_double_added_when_mentioned():
+    """Lead @mentioned explicitly: they appear exactly once in recipients."""
+    bridge = _FakeBridge()
+    state = _state_for({"name": "coord", "status": "running"}, bridge=bridge)
+    state.config.agents = [
+        {"name": "coord", "status": "running"},
+        {"name": "worker", "status": "running"},
+    ]
+    from tinyagentos.chat.group_policy import GroupPolicy
+    state.group_policy = GroupPolicy()
+    router = AgentChatRouter(state)
+
+    msg = {"id": "m1", "author_id": "user", "author_type": "user",
+           "content": "@coord check this", "metadata": {"hops_since_user": 0}}
+    ch = _channel_with_leads(["user", "coord", "worker"], leads=["coord"], mode="quiet")
+    await router._route(msg, ch)
+
+    slugs = [c[0] for c in bridge.calls]
+    assert slugs.count("coord") == 1
+
+
+@pytest.mark.asyncio
+async def test_lead_who_is_author_does_not_receive_own_message():
+    """A lead who authored the message does not receive it."""
+    bridge = _FakeBridge()
+    state = _state_for({"name": "coord", "status": "running"}, bridge=bridge)
+    state.config.agents = [
+        {"name": "coord", "status": "running"},
+        {"name": "worker", "status": "running"},
+    ]
+    from tinyagentos.chat.group_policy import GroupPolicy
+    state.group_policy = GroupPolicy()
+    router = AgentChatRouter(state)
+
+    msg = {"id": "m1", "author_id": "coord", "author_type": "agent",
+           "content": "progress report", "metadata": {"hops_since_user": 1}}
+    ch = _channel_with_leads(["user", "coord", "worker"], leads=["coord"], mode="quiet")
+    await router._route(msg, ch)
+
+    slugs = [c[0] for c in bridge.calls]
+    assert "coord" not in slugs

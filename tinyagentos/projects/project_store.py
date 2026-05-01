@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS project_members (
     source_agent_id TEXT,
     memory_seed TEXT NOT NULL DEFAULT 'none',
     can_edit_canvas INTEGER NOT NULL DEFAULT 0,
+    is_lead INTEGER NOT NULL DEFAULT 0,
     added_at REAL NOT NULL,
     PRIMARY KEY (project_id, member_id)
 );
@@ -63,14 +64,26 @@ class ProjectStore(BaseStore):
     SCHEMA = PROJECTS_SCHEMA
 
     async def _post_init(self) -> None:
-        try:
-            await self._db.execute(
-                "ALTER TABLE project_members ADD COLUMN can_edit_canvas INTEGER NOT NULL DEFAULT 0"
-            )
-            await self._db.commit()
-        except Exception:
-            # Column already exists on fresh installs (created by SCHEMA).
-            pass
+        for col_def in (
+            "ALTER TABLE project_members ADD COLUMN can_edit_canvas INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE project_members ADD COLUMN is_lead INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                await self._db.execute(col_def)
+                await self._db.commit()
+            except Exception:
+                # Column already exists on fresh installs (created by SCHEMA).
+                pass
+
+    async def set_member_lead(self, project_id: str, member_id: str, is_lead: bool) -> None:
+        val = 1 if is_lead else 0
+        cur = await self._db.execute(
+            "UPDATE project_members SET is_lead = ? WHERE project_id = ? AND member_id = ?",
+            (val, project_id, member_id),
+        )
+        await self._db.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"member {member_id!r} not in project {project_id!r}")
 
     async def create_project(
         self,

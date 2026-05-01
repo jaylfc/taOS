@@ -51,6 +51,23 @@ async def _find_a2a_channels(channel_store, project_id: str) -> list[dict]:
     ]
 
 
+def _build_agent_lookups(config):
+    """Return (by_id, by_name) dicts from config.agents, or (None, None) when config is None."""
+    if config is None:
+        return None, None
+    agents = getattr(config, "agents", None) or []
+    by_id: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for agent in agents:
+        aid = agent.get("id")
+        name = agent.get("name")
+        if aid:
+            by_id[aid] = agent
+        if name:
+            by_name[name] = agent
+    return by_id, by_name
+
+
 def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
     """Convert project_members rows to agent names for channel membership.
 
@@ -68,19 +85,9 @@ def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
     If config is None (test path), member_id is returned as-is so that tests
     that already store names in project_members continue to work unmodified.
     """
-    if config is None:
+    by_id, by_name = _build_agent_lookups(config)
+    if by_id is None:
         return {m["member_id"] for m in member_rows}
-
-    agents = getattr(config, "agents", None) or []
-    by_id: dict[str, dict] = {}
-    by_name: dict[str, dict] = {}
-    for agent in agents:
-        aid = agent.get("id")
-        name = agent.get("name")
-        if aid:
-            by_id[aid] = agent
-        if name:
-            by_name[name] = agent
 
     resolved: set[str] = set()
     for m in member_rows:
@@ -97,6 +104,33 @@ def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
     return resolved
 
 
+def _resolve_lead_names(member_rows: list[dict], config) -> list[str]:
+    """Return sorted list of resolved agent names for members where is_lead = 1.
+
+    Uses the same config-lookup strategy as _resolve_member_names. Returns
+    names in sorted order for deterministic storage.
+    """
+    leads = [m for m in member_rows if m.get("is_lead")]
+    if not leads:
+        return []
+    by_id, by_name = _build_agent_lookups(config)
+    result: list[str] = []
+    for m in leads:
+        mid = m["member_id"]
+        if by_id is None:
+            # No config (test path): use member_id as name directly.
+            result.append(mid)
+            continue
+        agent = by_id.get(mid) or by_name.get(mid)
+        if agent is None:
+            logger.debug("a2a: lead member_id %r not found in config — skipping", mid)
+            continue
+        name = agent.get("name")
+        if name:
+            result.append(name)
+    return sorted(set(result))
+
+
 async def ensure_a2a_channel(
     channel_store, project_store, project_id: str, *, config=None
 ) -> dict:
@@ -109,12 +143,17 @@ async def ensure_a2a_channel(
     router both operate on names. When None (test path with name-keyed members),
     member_ids are used as-is.
 
+    Also syncs settings.leads from project members where is_lead = 1 so that
+    the router can give leads visibility into all channel messages regardless
+    of response_mode.
+
     Idempotent. Serialized per project_id via _A2A_LOCKS to prevent racing
     member-sync diffs when multiple callers fire concurrently.
     """
     async with _A2A_LOCKS[project_id]:
         project_members = await project_store.list_members(project_id)
         expected = _resolve_member_names(project_members, config)
+        expected_leads = _resolve_lead_names(project_members, config)
 
         matches = await _find_a2a_channels(channel_store, project_id)
         if not matches:
@@ -126,7 +165,7 @@ async def ensure_a2a_channel(
                 created_by=created_by,
                 members=sorted(expected),
                 description="Agent coordination channel.",
-                settings={"kind": A2A_KIND},
+                settings={"kind": A2A_KIND, "leads": expected_leads},
                 project_id=project_id,
             )
 
@@ -141,16 +180,26 @@ async def ensure_a2a_channel(
             )
             await channel_store.set_settings(dup["id"], {"archived": True})
 
+        # Sync members.
         current = set(existing.get("members") or [])
-        if current == expected:
-            return existing
-
         to_add = expected - current
         to_remove = current - expected
         for slug in sorted(to_add):
             await channel_store.add_member(existing["id"], slug)
         for slug in sorted(to_remove):
             await channel_store.remove_member(existing["id"], slug)
+
+        # Sync settings.leads — always write so the field stays current even if
+        # the member set didn't change (e.g. is_lead toggled without add/remove).
+        current_settings = dict(existing.get("settings") or {})
+        leads_changed = current_settings.get("leads") != expected_leads
+        if leads_changed:
+            current_settings["leads"] = expected_leads
+            await channel_store.set_settings(existing["id"], current_settings)
+
+        if not to_add and not to_remove and not leads_changed:
+            return existing
+
         return await channel_store.get_channel(existing["id"])
 
 

@@ -18,6 +18,7 @@ export type ProjectMember = {
   memory_seed: "none" | "snapshot" | "empty";
   added_at: number;
   can_edit_canvas?: boolean;
+  is_lead?: number;
 };
 
 export type ProjectTask = {
@@ -115,6 +116,11 @@ export const projectsApi = {
       }),
     remove: (pid: string, member_id: string) =>
       http<{ ok: boolean }>(`/api/projects/${pid}/members/${member_id}`, { method: "DELETE" }),
+    setLead: (pid: string, member_id: string, is_lead: boolean) =>
+      http<{ ok: boolean; is_lead: boolean }>(
+        `/api/projects/${pid}/members/${member_id}/lead`,
+        { method: "PATCH", body: JSON.stringify({ is_lead }) },
+      ),
   },
 
   tasks: {

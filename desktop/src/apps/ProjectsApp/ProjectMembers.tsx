@@ -92,6 +92,14 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
                 <div className="truncate text-sm flex items-center gap-1" title={hint || m.member_id}>
                   {emoji && <span aria-hidden>{emoji}</span>}
                   <span>{label}</span>
+                  {!!m.is_lead && (
+                    <span
+                      className="ml-1 text-xs text-yellow-400 font-medium"
+                      aria-label="Lead agent"
+                    >
+                      ★ Lead
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-zinc-500">
                   {m.member_kind}
@@ -114,6 +122,24 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
                       }}
                     />
                     <span className="text-xs">Can edit canvas</span>
+                  </label>
+                )}
+                {(m.member_kind === "native" || m.member_kind === "clone") && (
+                  <label
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                    title="Lead agents see all messages in the project channel, even without being @mentioned."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!m.is_lead}
+                      aria-label={`Toggle lead for ${label}`}
+                      onChange={async (e) => {
+                        await projectsApi.members.setLead(project.id, m.member_id, e.target.checked);
+                        refresh();
+                        onChanged();
+                      }}
+                    />
+                    <span className="text-xs">Lead</span>
                   </label>
                 )}
                 <button

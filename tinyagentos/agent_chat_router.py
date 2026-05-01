@@ -72,6 +72,14 @@ class AgentChatRouter:
             if not candidates:
                 return
 
+            # Leads bypass the quiet filter: they see every message in the
+            # channel except their own. They are always added to recipients
+            # after the normal routing decision, de-duplicating if already present.
+            leads = [
+                m for m in (settings.get("leads") or [])
+                if m and m != author and m not in muted
+            ]
+
             force_by_slug: dict[str, bool] = {}
             if mentions.all:
                 for m in candidates:
@@ -89,6 +97,12 @@ class AgentChatRouter:
                 recipients = []
             else:
                 recipients = list(candidates)
+
+            # Always loop leads in regardless of mode/mentions (except author
+            # already excluded above, and muted already excluded from leads).
+            for lead in leads:
+                if lead not in recipients:
+                    recipients.append(lead)
 
             if not recipients:
                 return

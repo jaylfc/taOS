@@ -367,3 +367,109 @@ async def test_mention_routes_to_agent_in_a2a_channel():
     slug, enqueued = bridge.calls[0]
     assert slug == "john"
     assert enqueued["force_respond"] is True
+
+
+# ---------------------------------------------------------------------------
+# Lead agent — ensure_a2a_channel syncs settings.leads
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_populates_leads_from_is_lead_flag(stores):
+    """When a member has is_lead=1, their name appears in settings.leads."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(name="P", slug="lead-basic", created_by="u1")
+
+    coord_id = "aaaa11111111"
+    worker_id = "bbbb22222222"
+    config = _config(_agent("coord", coord_id), _agent("worker", worker_id))
+
+    await project_store.add_member(p["id"], coord_id, member_kind="native")
+    await project_store.add_member(p["id"], worker_id, member_kind="native")
+    await project_store.set_member_lead(p["id"], coord_id, True)
+
+    ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+
+    assert ch["settings"]["leads"] == ["coord"]
+    assert sorted(ch["members"]) == ["coord", "worker"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_leads_empty_when_no_leads(stores):
+    """settings.leads is an empty list when no member is marked as lead."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(name="P", slug="no-leads", created_by="u1")
+
+    agent_id = "cccc33333333"
+    config = _config(_agent("alice", agent_id))
+    await project_store.add_member(p["id"], agent_id, member_kind="native")
+
+    ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+
+    assert ch["settings"]["leads"] == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_updates_leads_on_subsequent_call(stores):
+    """Toggling is_lead and calling ensure again updates settings.leads."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(name="P", slug="lead-update", created_by="u1")
+
+    coord_id = "dddd44444444"
+    config = _config(_agent("coord", coord_id))
+    await project_store.add_member(p["id"], coord_id, member_kind="native")
+
+    ch1 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch1["settings"]["leads"] == []
+
+    await project_store.set_member_lead(p["id"], coord_id, True)
+    ch2 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch2["settings"]["leads"] == ["coord"]
+
+    await project_store.set_member_lead(p["id"], coord_id, False)
+    ch3 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch3["settings"]["leads"] == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_multiple_leads(stores):
+    """Multiple lead members all appear in settings.leads, sorted."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(name="P", slug="multi-lead", created_by="u1")
+
+    alpha_id = "eeee55555555"
+    beta_id = "ffff66666666"
+    config = _config(_agent("alpha", alpha_id), _agent("beta", beta_id))
+
+    await project_store.add_member(p["id"], alpha_id, member_kind="native")
+    await project_store.add_member(p["id"], beta_id, member_kind="native")
+    await project_store.set_member_lead(p["id"], alpha_id, True)
+    await project_store.set_member_lead(p["id"], beta_id, True)
+
+    ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+
+    assert ch["settings"]["leads"] == ["alpha", "beta"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_lead_removed_drops_from_leads(stores):
+    """Removing a lead member from the project naturally drops them from settings.leads."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(name="P", slug="lead-drop", created_by="u1")
+
+    coord_id = "gggg77777777"
+    worker_id = "hhhh88888888"
+    config = _config(_agent("coord", coord_id), _agent("worker", worker_id))
+
+    await project_store.add_member(p["id"], coord_id, member_kind="native")
+    await project_store.add_member(p["id"], worker_id, member_kind="native")
+    await project_store.set_member_lead(p["id"], coord_id, True)
+
+    ch1 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch1["settings"]["leads"] == ["coord"]
+
+    # Remove the lead from the project
+    await project_store.remove_member(p["id"], coord_id)
+    ch2 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch2["settings"]["leads"] == []
+    assert ch2["members"] == ["worker"]

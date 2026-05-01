@@ -107,3 +107,62 @@ async def test_project_delete_archives_a2a_channel(client):
     )
     archived = archived_res.json().get("channels", [])
     assert _a2a(archived) is not None
+
+
+# ---------------------------------------------------------------------------
+# Lead endpoint — PATCH /api/projects/{pid}/members/{mid}/lead
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_lead_updates_channel_settings(client):
+    """PATCHing the lead flag resynchronises settings.leads in the A2A channel."""
+    agent_id, agent_name = await _test_agent_id(client)
+    pid = (await client.post("/api/projects", json={"name": "P", "slug": "ra2a-lead1"})).json()["id"]
+    await client.post(f"/api/projects/{pid}/members", json={"mode": "native", "agent_id": agent_id})
+
+    # Verify leads starts empty
+    a2a_before = _a2a(await _list_channels(client, pid))
+    assert a2a_before is not None
+    assert a2a_before["settings"].get("leads") == []
+
+    # Promote to lead
+    res = await client.patch(
+        f"/api/projects/{pid}/members/{agent_id}/lead",
+        json={"is_lead": True},
+    )
+    assert res.status_code == 200
+    assert res.json()["is_lead"] is True
+
+    a2a_after = _a2a(await _list_channels(client, pid))
+    assert a2a_after is not None
+    assert agent_name in (a2a_after["settings"].get("leads") or [])
+
+
+@pytest.mark.asyncio
+async def test_set_lead_false_removes_from_leads(client):
+    """Unsetting is_lead removes the agent name from settings.leads."""
+    agent_id, agent_name = await _test_agent_id(client)
+    pid = (await client.post("/api/projects", json={"name": "P", "slug": "ra2a-lead2"})).json()["id"]
+    await client.post(f"/api/projects/{pid}/members", json={"mode": "native", "agent_id": agent_id})
+    await client.patch(f"/api/projects/{pid}/members/{agent_id}/lead", json={"is_lead": True})
+
+    res = await client.patch(
+        f"/api/projects/{pid}/members/{agent_id}/lead",
+        json={"is_lead": False},
+    )
+    assert res.status_code == 200
+
+    a2a = _a2a(await _list_channels(client, pid))
+    assert a2a is not None
+    assert agent_name not in (a2a["settings"].get("leads") or [])
+
+
+@pytest.mark.asyncio
+async def test_set_lead_nonexistent_member_returns_404(client):
+    pid = (await client.post("/api/projects", json={"name": "P", "slug": "ra2a-lead3"})).json()["id"]
+    res = await client.patch(
+        f"/api/projects/{pid}/members/nonexistent-id/lead",
+        json={"is_lead": True},
+    )
+    assert res.status_code == 404

@@ -242,6 +242,30 @@ async def list_members(project_id: str, request: Request):
     return {"items": await store.list_members(project_id)}
 
 
+class LeadIn(BaseModel):
+    is_lead: bool
+
+
+@router.patch("/api/projects/{project_id}/members/{member_id}/lead")
+async def set_lead(project_id: str, member_id: str, body: LeadIn, request: Request):
+    store = request.app.state.project_store
+    try:
+        await store.set_member_lead(project_id, member_id, body.is_lead)
+    except KeyError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    try:
+        from tinyagentos.projects.a2a import ensure_a2a_channel
+        await ensure_a2a_channel(
+            request.app.state.chat_channels,
+            store,
+            project_id,
+            config=getattr(request.app.state, "config", None),
+        )
+    except Exception:
+        logger.warning("a2a ensure failed for project %s on set_lead", project_id, exc_info=True)
+    return {"ok": True, "is_lead": body.is_lead}
+
+
 @router.delete("/api/projects/{project_id}/members/{member_id}")
 async def remove_member(project_id: str, member_id: str, request: Request):
     store = request.app.state.project_store
