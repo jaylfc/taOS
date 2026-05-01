@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "run_id": "2026-05-01T13:00:00Z",
+  "status": "in_progress",
+  "phase": "creative_loop",
+  "started_at": "2026-05-01T13:00:00Z",
+  "last_session_ended_at": null,
+  "session_count": 0,
+  "completed_steps": [
+    "login",
+    "project_create",
+    "agent_create_mira",
+    "agent_create_edgar",
+    "agent_create_iris",
+    "agent_create_wendell",
+    "agent_create_marlow"
+  ],
+  "project": {
+    "name": "Dumby the Dumbo",
+    "id": null,
+    "synopsis": "A clumsy, ditsy young elephant called Dumby learns that being yourself is enough, by accidentally saving a flock of flamingos one giggle at a time.",
+    "url_path": null
+  },
+  "agents": {
+    "mira":    { "id": null, "framework": "openclaw",         "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
+    "edgar":   { "id": null, "framework": "hermes",           "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
+    "iris":    { "id": null, "framework": "smolagents",       "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
+    "wendell": { "id": null, "framework": "langroid",         "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
+    "marlow":  { "id": null, "framework": "pocketflow",       "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null }
+  },
+  "artifacts": {
+    "story": {
+      "chapter_1_draft": null,
+      "chapter_1_critique": null,
+      "chapter_1_revision": null,
+      "chapter_2_draft": null,
+      "chapter_2_critique": null,
+      "chapter_2_revision": null,
+      "chapter_3_draft": null,
+      "chapter_3_critique": null,
+      "chapter_3_revision": null
+    },
+    "images": {
+      "cover": null,
+      "scene_1": null,
+      "scene_2": null,
+      "scene_3": null
+    },
+    "web": {
+      "index_html": null
+    },
+    "marketing": {
+      "strategy_md": null,
+      "social_md": null
+    },
+    "cross_review": {
+      "mira_on_web": null,
+      "iris_on_social": null,
+      "edgar_final_note": null
+    }
+  },
+  "blocks": [],
+  "transcript": "transcript.log",
+  "screenshots": "screenshots/"
+}
