@@ -52,7 +52,7 @@ describe("AgentShortcutRow", () => {
     expect(screen.getByRole("button", { name: "OpenClaw agent" })).toBeInTheDocument();
   });
 
-  it("renders icon-only buttons on narrow (mobile) viewport", () => {
+  it("renders icon-only buttons (labels are always in title/aria-label, not visible text)", () => {
     vi.mocked(useIsMobileModule.useIsMobile).mockReturnValue(true);
     vi.mocked(useAgentShortcutsModule.useAgentShortcuts).mockReturnValue({
       shortcuts: [
@@ -64,6 +64,7 @@ describe("AgentShortcutRow", () => {
     render(<AgentShortcutRow agentId="abc" onLaunch={vi.fn()} />);
     const btn = screen.getByRole("button", { name: "Container shell" });
     expect(btn).toBeInTheDocument();
+    // No visible label text — label is conveyed via aria-label/title only
     expect(btn.querySelector("[data-label]")).toBeNull();
   });
 
