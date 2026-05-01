@@ -350,7 +350,6 @@ function AgentRow({
       </span>
       <div className="flex items-center gap-1">
         {leftActions}
-        {leftActions && <span className="w-px h-4 bg-zinc-700/60 mx-0.5" aria-hidden="true" />}
         {actionButtons}
       </div>
     </Card>
@@ -2037,7 +2036,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                   onViewMessages={(name) => setDetail({ name, tab: "messages" })}
                   onDelete={handleDelete}
                   onResume={handleResume}
-                  leftActions={<AgentShortcutRow agentId={agent.name} onLaunch={handleShortcutLaunch} btnCls="h-8 w-8" />}
+                  leftActions={<AgentShortcutRow agentId={agent.name} onLaunch={handleShortcutLaunch} btnCls="h-11 w-11 md:h-8 md:w-8" />}
                 />
               ))}
             </div>
