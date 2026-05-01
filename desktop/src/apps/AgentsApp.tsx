@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { Bot, Box, Plus, Trash2, ScrollText, Play, Server, X, ChevronRight, ChevronLeft, Check, Wrench, MessageSquare, PauseCircle, RotateCcw, Archive, HardDrive } from "lucide-react";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
@@ -2058,17 +2057,21 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
         const agent = agents.find((a) => a.name === detail.name);
         if (!agent) return null;
         if (isMobile) {
-          return createPortal(
+          // Render in-place over the agent list, scoped to the AgentsApp's
+          // relative wrapper. The previous implementation portaled to
+          // document.body with fixed inset-0, which escaped the
+          // MobileAppWindow chrome and covered the whole viewport — the
+          // user lost the app's title bar and the safe-area insets had to
+          // be reapplied here. Inline absolute keeps the app window
+          // visible and matches how ProjectsApp renders its workspace.
+          return (
             <div
               role="dialog"
               aria-modal="true"
               aria-label={`Agent details — ${agent.display_name || agent.name}`}
-              className="fixed inset-0 z-50 flex flex-col bg-zinc-950 text-zinc-200"
+              className="absolute inset-0 z-30 flex flex-col bg-shell-bg text-zinc-200"
             >
-              <div
-                className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2"
-                style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.5rem)" }}
-              >
+              <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
                 <button
                   type="button"
                   aria-label="Back to agents"
@@ -2091,8 +2094,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                   fullHeight
                 />
               </div>
-            </div>,
-            document.body,
+            </div>
           );
         }
         return (
