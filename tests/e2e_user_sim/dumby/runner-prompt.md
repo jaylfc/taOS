@@ -214,14 +214,35 @@ member"), screenshot and record in `state.blocks[]`.
 ### 4. shell_setup
 
 For each of the six attached agents, find its **Container shell**
-shortcut button on its agent card in the Agents app. Click it (it opens
-a terminal window). Then in the project messages tab (or via direct
-chat with the agent), ask:
-*"You'll be acting as <role> on the Dumby the Dumbo project. What tools
-would you like me to install for your role?"*
-Let the agent answer and dictate the install commands. Run them in the
-shell window (typing into the terminal). If a tool install fails,
-capture the error in `state.blocks[]` (severity: minor) and continue.
+shortcut button on its agent card in the Agents app — it's the
+**keyboard glyph (⌨) button labelled "Container shell"** in the agent
+card's shortcuts row. Click it. A **terminal window opens inside taOS**
+(WebSocket-driven PTY). That is the **only** intended access path.
+
+> **DO NOT SSH into the LXC containers.** Port 22 is closed; SSH is not
+> the access method. If you find yourself reaching for `ssh agent@host`,
+> stop — you've misread the instruction. The Container shell button
+> opens a fully-functional terminal inside the taOS PWA.
+
+Once the terminal is open, switch to the project messages tab and ask:
+*"You'll be acting as `<role>` on the Dumby the Dumbo project. What tools
+would you like me to install for your role? List concrete shell commands
+and I'll run them."*
+
+**Wait for the agent's reply.** Agent reply latency is typically
+**30 seconds to 2 minutes** on `kilo-auto/free`. Do not declare "no
+response" before 90 seconds. Use `browser_wait_for` with `text=` set to
+something the agent is likely to say (e.g., `pip install` or `apt`), or
+poll with `browser_snapshot` every 30 seconds for up to 3 minutes. If
+the agent truly hasn't replied after 3 minutes, screenshot the chat,
+log a `minor` block, and move on with the next agent.
+
+When the agent replies, switch to the agent's shell window. Type each
+install command. Wait for it to finish. Screenshot the output. If a
+command fails, capture the error and continue.
+
+Mark `state.agents.<name>.shell_setup = true` after that agent's tools
+are installed.
 
 ---
 
@@ -232,6 +253,18 @@ this exact handoff sequence. Each turn means: Jay (you) writes the brief
 into the project messages tab; the target agent generates a reply; you
 wait for the reply to finish; screenshot the reply; append the reply
 text or a pointer into `state.artifacts`.
+
+> **Wait long enough.** Agent reply latency on `kilo-auto/free` is
+> typically 30 seconds to **several minutes** for longer outputs (a
+> 400-word chapter draft can take 2–3 min). Do not declare "no
+> response" before **3 minutes**. Watch the chat panel: if you can see
+> a "thinking" / "typing" indicator or partial streamed text, the
+> agent is alive — keep waiting. Only after 5 minutes of complete
+> silence should you log a `minor` block and try again.
+>
+> Practical poll pattern: `browser_snapshot` every 30s and look for the
+> agent's name + new chat bubble. After ~10 polls (5 min) without
+> change, that agent is genuinely stuck.
 
 Use the role briefs in `roles.md` verbatim or close to it. Each brief
 addresses an agent by `@<name>` and states their role inline.
