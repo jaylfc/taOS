@@ -24,11 +24,16 @@ keep going — that's the whole point.
 
 - **Playwright MCP** (`mcp__plugin_playwright_playwright__browser_*`) —
   this is your primary lens. Real users see what the browser shows; so do
-  you. Take screenshots at every phase boundary.
+  you.
+  - **Always pass `filename: "${RUN_DIR}/screenshots/<step-name>.png"`**
+    to `browser_take_screenshot`. Without an explicit filename the image
+    is inline-only and the controller can't see it later. If you don't
+    save it to disk, you didn't take it.
 - **Bash** — for `curl` against the taOS REST API (read-back, sanity
   checks), `jq`, file ops, sourcing `~/.taos-sim.env`. **Never** use the
   REST API to do something that the user would do via the UI; it defeats
-  the purpose.
+  the purpose. If the UI fails, you `BLOCKED` — you do not "work around"
+  with REST. Bypassing the UI hides the bug we're trying to find.
 - **Read / Write / Edit** — for state.json and transcript.log only.
 
 ## Inputs you receive at dispatch
@@ -54,10 +59,27 @@ set `status: "done"` and return.
 
 ### 2. project_create
 - Open the Projects app from the home grid.
-- Create a new project: name `Dumby the Dumbo`, synopsis from
-  `state.project.synopsis`.
-- Record `state.project.id` (read from URL or REST cross-check).
-- Screenshot → `02-project-created.png`.
+- Click **+ New** to open the Create Project dialog.
+- Type `Dumby the Dumbo` into Name (slug auto-fills via the dialog).
+- Paste the synopsis from `state.project.synopsis` into Description.
+- Click **Create**.
+- **Wait for both:**
+  1. The dialog to close (it auto-closes on success).
+  2. The project to appear in the project list within the Projects app.
+  Use `browser_wait_for` with a generous timeout (5s) before deciding
+  the dialog "didn't work". A closed dialog is the success signal — not
+  a "form reset".
+- If the dialog shows an error message instead, screenshot the error
+  text and record it in `state.blocks[]`. Do **not** fall back to REST.
+- Screenshot → `${RUN_DIR}/screenshots/02-project-created.png`.
+- Record `state.project.id` from a REST read-back: 
+  `curl -sS -b /tmp/c.txt $TAOS_URL/api/projects | jq '.items[]|select(.slug=="dumby-the-dumbo").id'`.
+  REST is allowed for read-back, never for write.
+
+**Note on URL routing:** taOS does not currently route direct URLs like
+`/desktop/projects/<slug>` into the project view. Navigate to projects
+through the **Projects app** inside the desktop. Treating "splash screen
+on direct URL" as a blocker is wrong — it's the intended flow.
 
 ### 3. agent_create
 - For each row in `agents.md` (Mira, Edgar, Iris, Wendell, Marlow):
