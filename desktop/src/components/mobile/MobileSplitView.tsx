@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft } from "lucide-react";
 
 /**
@@ -81,8 +81,29 @@ export function MobileSplitView({
 
   // Mobile: single-pane with slide transition
   const showingDetail = selectedId !== null;
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // The slider track is twice the viewport width with overflow:hidden on the
+  // outer container. When focus moves into a pane that's currently translated
+  // off-screen (e.g. an auto-selected detail view that mounts before the
+  // transform settles), the browser scrolls the outer container to bring the
+  // focused element into view — even with overflow:hidden, scrollLeft can be
+  // moved programmatically. That layers on top of the translateX, doubling
+  // the offset and pushing the active pane off-screen entirely. Reset
+  // scrollLeft to 0 whenever it drifts.
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const reset = () => {
+      if (node.scrollLeft !== 0) node.scrollLeft = 0;
+    };
+    reset();
+    node.addEventListener("scroll", reset, { passive: true });
+    return () => node.removeEventListener("scroll", reset);
+  }, [showingDetail]);
+
   return (
-    <div data-testid="mobile-split-view" style={{ position: "relative", height: "100%", width: "100%", overflow: "hidden" }}>
+    <div ref={containerRef} data-testid="mobile-split-view" style={{ position: "relative", height: "100%", width: "100%", overflow: "hidden" }}>
       {/* Slider track — two panes each 100%, translated by view state */}
       <div
         style={{
