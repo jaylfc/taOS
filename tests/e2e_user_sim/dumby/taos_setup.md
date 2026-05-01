@@ -26,11 +26,11 @@ mask the value in any log line.
 A REST shortcut is available for bulk read operations (no UI clicks):
 
 ```bash
-curl -sS -c /tmp/taos-cookies.txt -X POST "${TAOS_URL}/auth/login" \
+curl -sS -c ${RUN_DIR}/.cookies -X POST "${TAOS_URL}/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"username":"'"${TAOS_USER}"'","password":"'"${TAOS_PASS}"'","auto_login":true}'
 
-curl -sS -b /tmp/taos-cookies.txt "${TAOS_URL}/api/agents"
+curl -sS -b ${RUN_DIR}/.cookies "${TAOS_URL}/api/agents"
 ```
 
 Use REST for quick read-back checks (e.g., "did the project really get

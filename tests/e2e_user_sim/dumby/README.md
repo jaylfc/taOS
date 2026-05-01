@@ -87,7 +87,7 @@ See `state.example.json` for the full schema. Key fields:
 - `completed_steps` — append-only list of step IDs
 - `agents` — per-agent record (name, model, persona, last activity)
 - `artifacts` — paths to story chapters, images, web page, marketing docs
-- `blocks` — `{step, summary, evidence, time}` whenever the sim hits a wall
+- `blocks` — `{step, severity, summary, evidence}` whenever the sim hits a wall
 - `transcript` — relative path to the append-only run log
 
 ## Costs

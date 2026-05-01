@@ -140,10 +140,10 @@ After success, REST read-back records `state.project.id`:
 
 ```bash
 source ~/.taos-sim.env
-curl -sS -c /tmp/c.txt -X POST $TAOS_URL/auth/login \
+curl -sS -c ${RUN_DIR}/.cookies -X POST $TAOS_URL/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"$TAOS_USER\",\"password\":\"$TAOS_PASS\",\"auto_login\":true}" >/dev/null
-curl -sS -b /tmp/c.txt $TAOS_URL/api/projects \
+curl -sS -b ${RUN_DIR}/.cookies $TAOS_URL/api/projects \
   | jq -r '.items[] | select(.slug=="<your-slug>") | .id'
 ```
 
@@ -171,10 +171,10 @@ agent` → mode `Native`.
 
 ```bash
 source ~/.taos-sim.env
-curl -sS -c /tmp/c.txt -X POST $TAOS_URL/auth/login \
+curl -sS -c ${RUN_DIR}/.cookies -X POST $TAOS_URL/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"$TAOS_USER\",\"password\":\"$TAOS_PASS\",\"auto_login\":true}" >/dev/null
-curl -sS -b /tmp/c.txt $TAOS_URL/api/agents \
+curl -sS -b ${RUN_DIR}/.cookies $TAOS_URL/api/agents \
   | jq -r '.[] | select(.name=="john" or .name=="tom" or .name=="don" or .name=="linus" or .name=="pat" or .name=="olive") | "\(.name)\t\(.id)\t\(.framework)"'
 ```
 
