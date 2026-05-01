@@ -60,20 +60,37 @@ set `status: "done"` and return.
 ### 2. project_create
 - Open the Projects app from the home grid.
 - Click **+ New** to open the Create Project dialog.
-- Type `Dumby the Dumbo` into Name (slug auto-fills via the dialog).
+- Type `Dumby the Dumbo` into Name. The slug field auto-fills as
+  `dumby-the-dumbo`.
+- **Slug picking:** taOS does not free slugs when projects are archived
+  or deleted (their tombstones keep ownership). If a previous run left
+  a tombstone, the auto-filled slug will 409. Treat slug conflicts as
+  recoverable, not blocking:
+  1. Read the run-id from `state.run_id` (e.g. `2026-05-01T08-15-17Z`).
+  2. Compose a unique slug as
+     `dumby-the-dumbo-` + the run-id lowercased with `:` and `t`
+     stripped (e.g. `dumby-the-dumbo-20260501081517z`).
+  3. Edit the slug field to that value before submitting.
+  4. Save the value you used into `state.project.slug`.
+  Project **name** stays as `Dumby the Dumbo`. Only the slug varies.
 - Paste the synopsis from `state.project.synopsis` into Description.
 - Click **Create**.
 - **Wait for both:**
   1. The dialog to close (it auto-closes on success).
-  2. The project to appear in the project list within the Projects app.
+  2. The project name `Dumby the Dumbo` to appear in the project list.
   Use `browser_wait_for` with a generous timeout (5s) before deciding
   the dialog "didn't work". A closed dialog is the success signal — not
   a "form reset".
-- If the dialog shows an error message instead, screenshot the error
-  text and record it in `state.blocks[]`. Do **not** fall back to REST.
+- If the dialog shows a 409 slug error in the alert region, generate
+  a new slug (append `-2`, `-3`, …) and retry — log this as a `minor`
+  block noting that slugs aren't freed on archive.
+- If the dialog shows any other error, screenshot the error text and
+  record it in `state.blocks[]` as a blocker. Do **not** fall back to
+  REST.
 - Screenshot → `${RUN_DIR}/screenshots/02-project-created.png`.
-- Record `state.project.id` from a REST read-back: 
-  `curl -sS -b /tmp/c.txt $TAOS_URL/api/projects | jq '.items[]|select(.slug=="dumby-the-dumbo").id'`.
+- Record `state.project.id` and `state.project.slug` from a REST
+  read-back: 
+  `curl -sS -b /tmp/c.txt $TAOS_URL/api/projects | jq '.items[]|select(.name=="Dumby the Dumbo")'`.
   REST is allowed for read-back, never for write.
 
 **Note on URL routing:** taOS does not currently route direct URLs like

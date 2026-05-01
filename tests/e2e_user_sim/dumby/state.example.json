@@ -18,6 +18,7 @@
   "project": {
     "name": "Dumby the Dumbo",
     "id": null,
+    "slug": null,
     "synopsis": "A clumsy, ditsy young elephant called Dumby learns that being yourself is enough, by accidentally saving a flock of flamingos one giggle at a time.",
     "url_path": null
   },
