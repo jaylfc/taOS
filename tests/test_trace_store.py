@@ -402,14 +402,19 @@ async def test_seal_idempotent(tmp_path):
 @pytest.mark.asyncio
 async def test_late_event_writes_late_jsonl_not_db(tmp_path):
     """Writing to a sealed bucket creates .late.jsonl and leaves .db unchanged."""
+    # Use fixed timestamps so the test is deterministic regardless of when it
+    # runs. Previous versions computed old_ts from time.time() at test start,
+    # meaning the expected late_path bucket could diverge from the actually
+    # written bucket if time.time() moved across an hour boundary between the
+    # computation of old_ts and the record() call.
+    OLD_TS = 1700000000.0   # 2023-11-14T22:13:20Z — fixed point in the past
+    LATE_TS = OLD_TS + 60   # within the same UTC hour bucket
+
     store = AgentTraceStore(tmp_path, "agent-seal-c")
-    old_ts = time.time() - 3 * 3600
-    old_bucket = _bucket_key(old_ts)
+    old_bucket = _bucket_key(OLD_TS)
 
     # Populate and close the old bucket so the .db exists.
-    with patch("tinyagentos.trace_store.time") as mock_time:
-        mock_time.time.return_value = old_ts
-        await store.record("lifecycle", created_at=old_ts, payload={"event": "old"})
+    await store.record("lifecycle", created_at=OLD_TS, payload={"event": "old"})
     await store.close()
     # aiosqlite's worker thread can return from close() before the underlying
     # SQLite connection FD is fully released; yield long enough for the worker
@@ -425,10 +430,10 @@ async def test_late_event_writes_late_jsonl_not_db(tmp_path):
 
     # Now write another event with the same old bucket timestamp.
     store2 = AgentTraceStore(tmp_path, "agent-seal-c")
-    env = await store2.record("lifecycle", created_at=old_ts + 60, payload={"event": "late"})
+    env = await store2.record("lifecycle", created_at=LATE_TS, payload={"event": "late"})
     await store2.close()
 
-    assert late_path.exists(), ".late.jsonl should have been created"
+    assert late_path.exists(), f".late.jsonl should have been created at {late_path}"
     lines = [json.loads(l) for l in late_path.read_text().strip().splitlines()]
     assert len(lines) == 1
     assert lines[0]["payload"]["event"] == "late"
