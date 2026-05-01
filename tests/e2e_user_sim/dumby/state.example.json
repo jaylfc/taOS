@@ -1,20 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "run_id": "2026-05-01T13:00:00Z",
   "status": "in_progress",
   "phase": "creative_loop",
   "started_at": "2026-05-01T13:00:00Z",
   "last_session_ended_at": null,
   "session_count": 0,
-  "completed_steps": [
-    "login",
-    "project_create",
-    "agent_create_mira",
-    "agent_create_edgar",
-    "agent_create_iris",
-    "agent_create_wendell",
-    "agent_create_marlow"
-  ],
+  "completed_steps": [],
   "project": {
     "name": "Dumby the Dumbo",
     "id": null,
@@ -23,11 +15,12 @@
     "url_path": null
   },
   "agents": {
-    "mira":    { "id": null, "framework": "openclaw",         "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
-    "edgar":   { "id": null, "framework": "hermes",           "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
-    "iris":    { "id": null, "framework": "smolagents",       "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
-    "wendell": { "id": null, "framework": "langroid",         "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null },
-    "marlow":  { "id": null, "framework": "pocketflow",       "model": "kilo-auto/free", "persona_set": true,  "shell_setup": false, "last_artifact": null }
+    "john":   { "id": null, "framework": "openclaw",          "role": "writer",      "attached_to_project": false, "last_artifact": null },
+    "tom":    { "id": null, "framework": "hermes",            "role": "editor",      "attached_to_project": false, "last_artifact": null },
+    "don":    { "id": null, "framework": "smolagents",        "role": "illustrator", "attached_to_project": false, "last_artifact": null },
+    "linus":  { "id": null, "framework": "langroid",          "role": "web",         "attached_to_project": false, "last_artifact": null },
+    "pat":    { "id": null, "framework": "pocketflow",        "role": "marketing",   "attached_to_project": false, "last_artifact": null },
+    "olive":  { "id": null, "framework": "openai-agents-sdk", "role": "producer",    "attached_to_project": false, "last_artifact": null }
   },
   "artifacts": {
     "story": {
@@ -55,9 +48,9 @@
       "social_md": null
     },
     "cross_review": {
-      "mira_on_web": null,
-      "iris_on_social": null,
-      "edgar_final_note": null
+      "john_on_web": null,
+      "don_on_social": null,
+      "olive_final_note": null
     }
   },
   "blocks": [],

@@ -12,7 +12,9 @@ up an autonomous user across a multi-hour, multi-feature workflow.
 
 - Login flow, session persistence
 - Project creation + browsing
-- Per-project agent creation (5 specialists) with persona + model selection
+- Project Members tab — attaches the 6 existing Pi agents (one per
+  framework: openclaw, hermes, smolagents, langroid, pocketflow,
+  openai-agents-sdk) so the test exercises every framework end-to-end
 - Agent shell access (LXC tool installs)
 - Project chat + cross-agent handoff (A2A)
 - Images app (cover + scene illustrations)
@@ -45,7 +47,8 @@ up an autonomous user across a multi-hour, multi-feature workflow.
 ┌───────────────────▼─────────────────────────┐
 │ Pi taOS (192.168.6.123:6969)                │
 │  · Project: Dumby the Dumbo                 │
-│  · 5 specialist agents on kilo-auto/free    │
+│  · 6 existing agents on kilo-auto/free      │
+│    (one per framework, attached as Members) │
 └─────────────────────────────────────────────┘
 ```
 
@@ -54,7 +57,7 @@ up an autonomous user across a multi-hour, multi-feature workflow.
 | File                  | Purpose                                                  |
 |-----------------------|----------------------------------------------------------|
 | `runner-prompt.md`    | Instructions loaded into the Haiku user-sim subagent     |
-| `agents.md`           | Persona + handoff protocol for the 5 specialist agents   |
+| `roles.md`            | Role mapping: 6 existing Pi agents → 6 roles + briefs    |
 | `taos_setup.md`       | Pi URL, login flow, env file path                        |
 | `state.example.json`  | Schema reference for the resumable run state             |
 | `runs/`               | Gitignored; one directory per run (state, logs, exports) |
