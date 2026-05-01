@@ -50,6 +50,11 @@ HOST = os.environ.get("RKNN_SD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("RKNN_SD_PORT", "7863"))
 USE_LEGACY_WRAPPER = os.environ.get("RKNN_SD_LEGACY_WRAPPER", "").strip() == "1"
 
+# Idle-unload settings.  Set RKNN_SD_IDLE_UNLOAD_S=0 to disable entirely.
+_idle_unload_s_raw = os.environ.get("RKNN_SD_IDLE_UNLOAD_S", "600")
+IDLE_UNLOAD_THRESHOLD_S: float | None = None if _idle_unload_s_raw.strip() == "0" else float(_idle_unload_s_raw)
+IDLE_UNLOAD_INTERVAL_S: float = float(os.environ.get("RKNN_SD_IDLE_CHECK_S", "60"))
+
 
 def _load_wrapper_module():
     """Import darkbit1001's patched rknnlcm.py as a module, adding its dir to sys.path
@@ -111,6 +116,7 @@ _pipe = None
 _load_error: Optional[str] = None
 _runtime_name: str = "ez_rknn_async" if not USE_LEGACY_WRAPPER else "rknn-toolkit-lite2"
 _pipe_lock = asyncio.Lock()  # serialise lazy loads on the first concurrent request
+_last_activity_ts: float = 0.0  # time.monotonic() of last pipeline activity
 
 
 def _build_pipeline_ez():
@@ -131,9 +137,8 @@ def _ensure_pipeline_sync():
     The previous startup hook eagerly built the pipeline at boot,
     pinning ~5.5 GB of RAM permanently even when the user wasn't
     generating any images. Lazy loading frees the NPU memory budget
-    for chat models / TTS / etc when image gen is idle. Sequential
-    eviction is the next piece (Phase 1.5)."""
-    global _pipe, _load_error, _runtime_name
+    for chat models / TTS / etc when image gen is idle."""
+    global _pipe, _load_error, _runtime_name, _last_activity_ts
     if _pipe is not None:
         return
     try:
@@ -146,11 +151,36 @@ def _ensure_pipeline_sync():
         else:
             _pipe = _build_pipeline_ez()
             _runtime_name = "ez_rknn_async"
+        _last_activity_ts = time.monotonic()
         logger.info(f"Pipeline lazy-loaded in {time.time() - start:.1f}s (runtime={_runtime_name})")
     except Exception as exc:
         _load_error = str(exc)
         logger.exception("Failed to load RKNN pipeline")
         raise
+
+
+def _unload_pipeline() -> None:
+    """Release NPU memory held by the pipeline.
+
+    Calls any release()/close() methods the underlying runtime exposes
+    (best-effort; different impls vary). Always sets _pipe to None and
+    runs gc.collect() so memory is reclaimed even if release() throws.
+    """
+    import gc
+    global _pipe
+    pipe = _pipe
+    _pipe = None
+    if pipe is None:
+        return
+    for method_name in ("release", "close"):
+        method = getattr(pipe, method_name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception as exc:
+                logger.info(f"_unload_pipeline: {method_name}() raised (ignored): {exc}")
+    gc.collect()
+    logger.info("RKNN pipeline unloaded — NPU memory released")
 
 
 async def _ensure_pipeline():
@@ -165,13 +195,30 @@ async def _ensure_pipeline():
         await asyncio.get_running_loop().run_in_executor(None, _ensure_pipeline_sync)
 
 
+async def _idle_unload_loop() -> None:
+    """Background task: unload the pipeline after IDLE_UNLOAD_THRESHOLD_S of inactivity."""
+    if IDLE_UNLOAD_THRESHOLD_S is None:
+        logger.info("Idle-unload disabled (RKNN_SD_IDLE_UNLOAD_S=0)")
+        return
+    logger.info(
+        f"Idle-unload enabled: threshold={IDLE_UNLOAD_THRESHOLD_S}s "
+        f"check_interval={IDLE_UNLOAD_INTERVAL_S}s"
+    )
+    while True:
+        await asyncio.sleep(IDLE_UNLOAD_INTERVAL_S)
+        if _pipe is not None and _last_activity_ts > 0:
+            idle = time.monotonic() - _last_activity_ts
+            if idle >= IDLE_UNLOAD_THRESHOLD_S:
+                logger.info(f"Pipeline idle for {idle:.0f}s — unloading")
+                _unload_pipeline()
+
+
 @app.on_event("startup")
 async def _startup():
-    # Intentionally empty: the pipeline is now lazy-loaded on the first
-    # /generate request. Old behaviour was to build the full pipeline
-    # here, which pinned ~5.5 GB of RAM at boot for users who never
-    # actually used image gen.
+    # Pipeline is lazy-loaded on the first /generate request.
+    # Old behaviour was to build here, pinning ~5.5 GB of RAM at boot.
     logger.info("rknn_sd_server up — pipeline will lazy-load on first /generate request")
+    asyncio.create_task(_idle_unload_loop())
 
 
 @app.get("/health")
@@ -181,6 +228,7 @@ async def health():
     # tells callers whether the next /generate will pay the load
     # latency or hit a warm pipeline. 'runtime' shows which backend
     # will be (or was) used: "ez_rknn_async" (default) or "rknn-toolkit-lite2".
+    idle_s = (time.monotonic() - _last_activity_ts) if _last_activity_ts > 0 else None
     return {
         "status": "ok",
         "model": "lcm-dreamshaper-v7-rknn",
@@ -188,6 +236,8 @@ async def health():
         "runtime": _runtime_name,
         "pipeline_loaded": _pipe is not None,
         "load_error": _load_error,
+        "idle_seconds": round(idle_s, 1) if idle_s is not None else None,
+        "idle_unload_threshold_s": IDLE_UNLOAD_THRESHOLD_S,
     }
 
 
@@ -204,6 +254,21 @@ async def list_models():
         ],
         "object": "list",
     }
+
+
+@app.post("/admin/unload")
+async def admin_unload():
+    """Manually evict the pipeline from NPU memory.
+
+    Returns {ok: true, was_loaded: bool}.
+
+    NOTE: the rknn-sd server binds to RKNN_SD_HOST (default 0.0.0.0).
+    Auth scoping is a follow-up — do not expose this port externally
+    without a firewall rule or auth middleware.
+    """
+    was_loaded = _pipe is not None
+    _unload_pipeline()
+    return {"ok": True, "was_loaded": was_loaded}
 
 
 @app.post("/v1/images/generations")
@@ -240,6 +305,11 @@ async def generate(body: GenerateRequest):
     )
     elapsed = time.time() - start
     logger.info(f"generation complete in {elapsed:.1f}s")
+
+    # Touch activity timestamp at end of request so an in-flight generate
+    # doesn't reset the idle clock mid-call and an eviction can't race it.
+    global _last_activity_ts
+    _last_activity_ts = time.monotonic()
 
     image = result["images"][0]
     buf = io.BytesIO()

@@ -577,13 +577,16 @@ async def loaded_models(request: Request):
                                 "details": {},
                             })
                 elif backend_type == "rknn-sd":
-                    resp = await client.get(f"{base}/v1/models", timeout=5)
+                    # Use /health to determine actual pipeline load state.
+                    # /v1/models lists what the server *can* serve (always
+                    # populated) and does not reflect whether weights are
+                    # actually in NPU memory.
+                    resp = await client.get(f"{base}/health", timeout=5)
                     if resp.status_code == 200:
                         data = resp.json()
-                        for m in data.get("data", []) or []:
-                            model_id = m.get("id", "rknn-sd")
+                        if data.get("pipeline_loaded") is True:
                             loaded.append({
-                                "name": model_id,
+                                "name": data.get("model", "rknn-sd"),
                                 "backend": backend_name,
                                 "backend_type": backend_type,
                                 "backend_url": backend_url,
@@ -595,22 +598,12 @@ async def loaded_models(request: Request):
                                 "details": {},
                             })
                 elif backend_type == "sd-cpp":
-                    resp = await client.get(f"{base}/sdapi/v1/options", timeout=5)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        checkpoint = data.get("sd_model_checkpoint") or "unknown"
-                        loaded.append({
-                            "name": checkpoint,
-                            "backend": backend_name,
-                            "backend_type": backend_type,
-                            "backend_url": backend_url,
-                            "purpose": "image-generation",
-                            "size_mb": None,
-                            "vram_mb": None,
-                            "ram_mb": None,
-                            "expires_at": None,
-                            "details": {},
-                        })
+                    # sd-cpp's /sdapi/v1/options reports the configured
+                    # checkpoint but does not expose whether weights are
+                    # currently resident in memory. Reporting it as "loaded"
+                    # would be misleading. sd-cpp users see their installed
+                    # model in the Models app instead.
+                    pass
             except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError):
                 continue
             except Exception as e:
