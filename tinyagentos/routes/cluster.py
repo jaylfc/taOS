@@ -71,6 +71,13 @@ async def list_workers(request: Request):
     result = []
     for w in workers:
         d = asdict(w)
+        # signing_key is the worker's raw HMAC secret (bytes). Two reasons
+        # to strip it from API responses: (1) FastAPI's default encoder
+        # tries to utf-8 decode bytes fields, which crashes on random key
+        # material — the entire workers list 500s when any worker has a
+        # non-utf8 signing key, and (2) even when serialization didn't
+        # crash, the secret has no business being on the wire.
+        d.pop("signing_key", None)
         if registry is not None:
             tier_id, pot_caps = _potential_capabilities(w.hardware, registry)
             d["tier_id"] = tier_id
