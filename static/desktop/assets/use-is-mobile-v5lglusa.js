@@ -1,1 +1,0 @@
-import{r as i}from"./vendor-react-l6srOxy7.js";function r(e=768){const[o,s]=i.useState(()=>typeof window<"u"&&window.innerWidth<e);return i.useEffect(()=>{if(typeof window>"u")return;const t=window.matchMedia(`(max-width: ${e-1}px)`),n=()=>s(t.matches);return n(),t.addEventListener("change",n),()=>t.removeEventListener("change",n)},[e]),o}export{r as u};

@@ -3,6 +3,7 @@ import { Rnd } from "react-rnd";
 import { useProcessStore, type WindowState, type SnapPosition } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { getSnapBounds } from "@/hooks/use-snap-zones";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { WindowContent } from "./WindowContent";
 
 interface Props {
@@ -16,6 +17,7 @@ export function Window({ win, onDrag, onDragStop }: Props) {
     useProcessStore();
   const app = getApp(win.appId);
   const preSnapRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const isMobile = useIsMobile();
 
   // Dock is fixed at `bottom-3` (12px gap) with height 64px, plus a
   // little breathing room so the window doesn't visually collide with
@@ -32,7 +34,11 @@ export function Window({ win, onDrag, onDragStop }: Props) {
   let displayPos = win.position;
   let displaySize = win.size;
 
-  if (win.maximized) {
+  // On phone-sized viewports every window fills the screen between the
+  // top bar and the dock. Stored desktop sizes (e.g. 900x600) overflow
+  // an iPhone viewport, leaving the user looking at the empty space
+  // outside the window's content.
+  if (win.maximized || isMobile) {
     // Window renders INSIDE the Desktop container, which already sits
     // below the top bar. So y=0 here means "flush with the top bar".
     // Height subtracts the top bar (already removed by Desktop's flex-1)
@@ -97,8 +103,8 @@ export function Window({ win, onDrag, onDragStop }: Props) {
       minHeight={minSize.h}
       style={{ zIndex: win.zIndex }}
       dragHandleClassName="window-titlebar"
-      disableDragging={win.maximized}
-      enableResizing={!win.maximized && !win.snapped}
+      disableDragging={win.maximized || isMobile}
+      enableResizing={!win.maximized && !win.snapped && !isMobile}
       onDragStart={handleDragStart}
       onDrag={handleDrag}
       onDragStop={handleDragStop}
