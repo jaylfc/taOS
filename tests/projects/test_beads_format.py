@@ -212,3 +212,54 @@ def test_scan_task_ids_word_boundary():
 
 def test_scan_task_ids_none_in_body():
     assert scan_task_ids("nothing here") == []
+
+
+from tinyagentos.projects.beads_format import NewVerb, parse_new_verbs
+
+
+def test_parse_new_verbs_with_assignee():
+    result = parse_new_verbs('/new "Draft chapter 1" @john')
+    assert result == [NewVerb(title="Draft chapter 1", assignee="john")]
+
+
+def test_parse_new_verbs_no_assignee():
+    result = parse_new_verbs('/new "Plan release"')
+    assert result == [NewVerb(title="Plan release", assignee=None)]
+
+
+def test_parse_new_verbs_assignee_lowercased():
+    result = parse_new_verbs('/new "Fix bug" @John')
+    assert result == [NewVerb(title="Fix bug", assignee="john")]
+
+
+def test_parse_new_verbs_single_quoted_title():
+    result = parse_new_verbs("/new 'Draft chapter 2' @don")
+    assert result == [NewVerb(title="Draft chapter 2", assignee="don")]
+
+
+def test_parse_new_verbs_no_quotes_skipped():
+    assert parse_new_verbs("/new no quotes here") == []
+
+
+def test_parse_new_verbs_empty_body():
+    assert parse_new_verbs("") == []
+
+
+def test_parse_new_verbs_multiple_lines():
+    body = '/new "Task A" @alice\n/new "Task B"\n/new "Task C" @bob'
+    result = parse_new_verbs(body)
+    assert result == [
+        NewVerb(title="Task A", assignee="alice"),
+        NewVerb(title="Task B", assignee=None),
+        NewVerb(title="Task C", assignee="bob"),
+    ]
+
+
+def test_parse_new_verbs_indented_not_matched():
+    assert parse_new_verbs('  /new "indented title"') == []
+
+
+def test_parse_new_verbs_mixed_with_other_verbs():
+    body = '/claim tsk_abc\n/new "Fresh task" @tom\n/close tsk_def done'
+    result = parse_new_verbs(body)
+    assert result == [NewVerb(title="Fresh task", assignee="tom")]

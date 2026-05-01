@@ -5,6 +5,7 @@ No IO. No imports from other tinyagentos modules. Easy to test.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -13,7 +14,18 @@ _VERB_RE = re.compile(
     flags=re.MULTILINE,
 )
 _TASK_ID_RE = re.compile(r"\btsk[-_][a-z0-9]+\b")
+# /new "<title>" [@<assignee>]  — title may use single or double quotes
+_NEW_RE = re.compile(
+    r'^/new[ \t]+(?:"([^"]+)"|\'([^\']+)\')(?:[ \t]+@([A-Za-z0-9_-]+))?[ \t]*$',
+    flags=re.MULTILINE,
+)
 _PRIORITY_MAP = {0: "p3", 1: "p2", 2: "p1"}
+
+
+@dataclass
+class NewVerb:
+    title: str
+    assignee: str | None  # Raw @-name, lowercased; None if not specified
 
 
 def _isoformat(ts: float | None) -> str | None:
@@ -79,6 +91,10 @@ def format_ready(tsk_id: str, title: str, labels: list[str]) -> str:
     return head
 
 
+def format_created(author: str, tsk_id: str, title: str) -> str:
+    return f'✨ {author} created {tsk_id} — "{title}"'
+
+
 Verb = Literal["claim", "release", "close"]
 
 
@@ -93,6 +109,24 @@ def parse_verbs(body: str) -> list[tuple[Verb, str, str | None]]:
         tsk = m.group(2)
         note = m.group(3)
         out.append((verb, tsk, note if note else None))  # type: ignore[arg-type]
+    return out
+
+
+def parse_new_verbs(body: str) -> list[NewVerb]:
+    """Find lines matching `^/new "<title>" [@<assignee>]$`.
+
+    Double- or single-quoted titles accepted. Malformed lines (no quotes,
+    mismatched quotes) are silently skipped. Returns intents in document order.
+    """
+    out: list[NewVerb] = []
+    for m in _NEW_RE.finditer(body or ""):
+        # group 1 = double-quoted title, group 2 = single-quoted title
+        title = m.group(1) or m.group(2)
+        raw_assignee = m.group(3)
+        out.append(NewVerb(
+            title=title,
+            assignee=raw_assignee.lower() if raw_assignee else None,
+        ))
     return out
 
 

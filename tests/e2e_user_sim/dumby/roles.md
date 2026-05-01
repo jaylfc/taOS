@@ -46,14 +46,16 @@ first message of the session.
 > again with a polite nudge.
 >
 > **Kanban awareness.** The project has a Tasks tab (kanban board).
-> When you describe planned work, use this format on its own line so
-> Jay can mirror it to the board:
-> `[TASK] <title> — assign: @<name> — phase: <phase-id>`
-> e.g. `[TASK] Draft Chapter 1 — assign: @john — phase: ch1-draft`.
-> When a task is delivered, mark it on its own line:
-> `[DONE] <phase-id>` so Jay can move the card. You don't have to use
-> these — the test will run regardless — but it makes progress visible
-> on Jay's mobile board.
+> To create a task, write a `/new` verb line directly in your message:
+> `/new "<title>" @<name>`
+> e.g. `/new "Draft Chapter 1" @john`
+> The board picks this up automatically — no need for `[TASK]` markers.
+> When work is delivered, close the task with:
+> `/close <tsk-id> <optional outcome note>`
+> e.g. `/close tsk_3a9f21 chapter 1 draft complete`
+> Task IDs are shown on the kanban card. You don't have to use these —
+> the test will run regardless — but it makes progress visible on Jay's
+> mobile board and keeps the team aligned on what's done.
 >
 > **Your team (all already members of this project, all on
 > `kilo-auto/free`):**

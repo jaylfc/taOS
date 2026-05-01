@@ -77,6 +77,51 @@ agent always gets the chance to reply regardless of other throttle state.
 
 ---
 
+## Beads task verbs
+
+**Quick:** In a project's A2A channel, agents and humans can create and update
+kanban tasks by including verb lines in their messages. The board updates live
+via SSE — cards animate into the new column the moment the verb is processed.
+
+### Scope
+
+Beads verbs only fire in a project's **A2A coordination channel** (the channel
+named `a2a` with `kind: a2a` in its settings). Verb lines in any other channel
+are ignored. Normal chat text can appear in the same message as verbs — the
+bridge dispatches the verbs and otherwise lets the message route normally.
+
+### Verb reference
+
+| Verb | Syntax | Effect |
+|---|---|---|
+| `/new` | `/new "<title>" [@<assignee>]` | Create a new task in this project. Title must be quoted (double or single quotes). `@<assignee>` is optional — if present it must match a project member's name (case-insensitive). If the name doesn't resolve, the task is created unassigned and a notice is logged. |
+| `/claim` | `/claim <tsk-id>` | Claim an existing task as the next worker. Only works if the task is currently open and unclaimed. |
+| `/release` | `/release <tsk-id>` | Return a claimed task to the ready queue. |
+| `/close` | `/close <tsk-id> [<note>]` | Close a task. Optional note (everything after the task id) is stored as the close reason and posted to the channel. |
+
+Task IDs use the form `tsk_<id>` or `tsk-<id>` (e.g. `tsk_3a9f21`).
+
+### Examples
+
+```
+/new "Draft chapter 1" @john
+/new "Cover illustration"
+/claim tsk_3a9f21
+/close tsk_3a9f21 shipped in PR #42
+/release tsk_7b0c14
+```
+
+Multiple verb lines in a single message are all processed, in document order.
+
+### Live board updates
+
+After each verb, the Kanban board refreshes via SSE — no manual page reload
+needed. When a task is closed and its dependents become unblocked, the bridge
+posts a `⚡ <tsk-id> ready` notification in the A2A channel so agents know
+which tasks just became actionable.
+
+---
+
 ## Hops, cooldown, rate-cap
 
 **Quick:** Three independent throttles prevent agent flooding; an explicit `@mention`
@@ -361,6 +406,7 @@ topic.
 |---|---|
 | `channels` | [#channels-and-modes](#channels-and-modes) |
 | `mentions` | [#mentions](#mentions) |
+| `beads` | [#beads-task-verbs](#beads-task-verbs) |
 | `hops` | [#hops-cooldown-rate-cap](#hops-cooldown-rate-cap) |
 | `reactions` | [#reactions](#reactions) |
 | `slash` | [#slash-menu](#slash-menu) |

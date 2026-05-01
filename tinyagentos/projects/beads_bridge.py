@@ -358,6 +358,8 @@ class BeadsBridge:
             body = message.get("content") or ""
             author = message.get("author_id") or "agent"
             verb_ids = await self._dispatch_verbs(body, author)
+            new_ids = await self._dispatch_new_verbs(body, project_id, author)
+            verb_ids = verb_ids | new_ids
             await self._attach_mentions(
                 project_id=project_id,
                 message_id=message.get("id") or "",
@@ -391,6 +393,61 @@ class BeadsBridge:
                     verb, tsk_id, author, exc_info=True,
                 )
         return acted
+
+    def _resolve_assignee(self, project_id: str, name: str, members: list[dict]) -> str | None:
+        """Resolve a lowercased @name to a member_id from the project member list.
+
+        members is the result of project_store.list_members(project_id).
+        The member_id column stores the agent's hex id in production; in tests
+        (no config path) it stores the name directly. We do a case-insensitive
+        match against member_id so both paths resolve correctly.
+        """
+        for m in members:
+            mid = m.get("member_id", "")
+            if mid.lower() == name:
+                return mid
+        return None
+
+    async def _dispatch_new_verbs(
+        self, body: str, project_id: str, author: str
+    ) -> set[str]:
+        from tinyagentos.projects.beads_format import parse_new_verbs
+        created_ids: set[str] = set()
+        new_verbs = parse_new_verbs(body)
+        if not new_verbs:
+            return created_ids
+        # Fetch members once for all /new verbs in this message.
+        try:
+            members = await self._project_store.list_members(project_id)
+        except Exception:
+            logger.info(
+                "beads bridge: list_members failed for %s", project_id, exc_info=True,
+            )
+            members = []
+        for nv in new_verbs:
+            try:
+                assignee_id = None
+                if nv.assignee:
+                    assignee_id = self._resolve_assignee(project_id, nv.assignee, members)
+                    if assignee_id is None:
+                        logger.info(
+                            "beads bridge: /new assignee @%s not found in project %s"
+                            " — creating task unassigned",
+                            nv.assignee, project_id,
+                        )
+                task = await self._task_store.create_task(
+                    project_id=project_id,
+                    title=nv.title,
+                    created_by=author,
+                    assignee_id=assignee_id,
+                )
+                created_ids.add(task["id"])
+            except Exception:
+                logger.info(
+                    "beads bridge: /new '%s' by %s failed",
+                    nv.title, author, exc_info=True,
+                )
+        return created_ids
 
     async def _attach_mentions(
         self,

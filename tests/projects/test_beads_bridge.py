@@ -14,6 +14,7 @@ def _make_bridge(tmp_path: Path, **overrides) -> BeadsBridge:
     project_store = MagicMock()
     project_store.list_projects = AsyncMock(return_value=[])
     project_store.get_project = AsyncMock(return_value={"id": "prj_1", "slug": "demo"})
+    project_store.list_members = AsyncMock(return_value=[])
 
     task_store = MagicMock()
     task_store.list_tasks = AsyncMock(return_value=[])
@@ -25,6 +26,9 @@ def _make_bridge(tmp_path: Path, **overrides) -> BeadsBridge:
         return_value={"id": "cmt_1", "task_id": "tsk_a", "author_id": "u", "body": "x"}
     )
     task_store.get_task = AsyncMock(return_value=None)
+    task_store.create_task = AsyncMock(
+        return_value={"id": "tsk_new1", "project_id": "prj_1", "title": "New task"}
+    )
 
     channel_store = MagicMock()
     channel_store.list_channels = AsyncMock(return_value=[])
@@ -889,3 +893,104 @@ async def test_broker_event_triggers_on_event(tmp_path):
 
     # The subscriber loop should have called on_event, which posts a system msg
     assert bridge._msg_store.send_message.await_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# /new verb dispatch
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_chat_message_new_creates_task(tmp_path):
+    """/new "title" creates a task via task_store.create_task."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._project_store.list_members = AsyncMock(return_value=[])
+    bridge._task_store.create_task = AsyncMock(
+        return_value={"id": "tsk_new1", "project_id": "prj_1", "title": "Draft chapter 1"}
+    )
+    await bridge.on_chat_message(
+        "prj_1", "ch_1", _msg('/new "Draft chapter 1"')
+    )
+    bridge._task_store.create_task.assert_awaited_once()
+    kwargs = bridge._task_store.create_task.await_args.kwargs
+    assert kwargs["title"] == "Draft chapter 1"
+    assert kwargs["project_id"] == "prj_1"
+    assert kwargs["created_by"] == "alice"
+    assert kwargs["assignee_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_new_with_assignee_resolves(tmp_path):
+    """/new "title" @john assigns the task to john's member_id."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._project_store.list_members = AsyncMock(
+        return_value=[{"member_id": "john", "member_kind": "native"}]
+    )
+    bridge._task_store.create_task = AsyncMock(
+        return_value={"id": "tsk_new2", "project_id": "prj_1", "title": "Fix bug"}
+    )
+    await bridge.on_chat_message(
+        "prj_1", "ch_1", _msg('/new "Fix bug" @john')
+    )
+    bridge._task_store.create_task.assert_awaited_once()
+    kwargs = bridge._task_store.create_task.await_args.kwargs
+    assert kwargs["assignee_id"] == "john"
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_new_unresolved_assignee_creates_unassigned(tmp_path, caplog):
+    """/new "title" @nonexistent logs info and creates unassigned."""
+    import logging
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._project_store.list_members = AsyncMock(return_value=[])
+    bridge._task_store.create_task = AsyncMock(
+        return_value={"id": "tsk_new3", "project_id": "prj_1", "title": "T"}
+    )
+    with caplog.at_level(logging.INFO, logger="tinyagentos.projects.beads_bridge"):
+        await bridge.on_chat_message(
+            "prj_1", "ch_1", _msg('/new "T" @nobody')
+        )
+    bridge._task_store.create_task.assert_awaited_once()
+    kwargs = bridge._task_store.create_task.await_args.kwargs
+    assert kwargs["assignee_id"] is None
+    assert "nobody" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_new_human_author(tmp_path):
+    """A human (not agent) author is stored as created_by."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._project_store.list_members = AsyncMock(return_value=[])
+    bridge._task_store.create_task = AsyncMock(
+        return_value={"id": "tsk_new4", "project_id": "prj_1", "title": "Human task"}
+    )
+    msg = _msg('/new "Human task"', author_id="usr_jay", author_type="user")
+    await bridge.on_chat_message("prj_1", "ch_1", msg)
+    kwargs = bridge._task_store.create_task.await_args.kwargs
+    assert kwargs["created_by"] == "usr_jay"
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_new_malformed_no_quotes_skipped(tmp_path):
+    """/new without quotes is silently skipped — no task created."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._project_store.list_members = AsyncMock(return_value=[])
+    await bridge.on_chat_message(
+        "prj_1", "ch_1", _msg("/new no quotes at all")
+    )
+    bridge._task_store.create_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_chat_message_new_failure_is_silent(tmp_path):
+    """/new create_task failure must not propagate."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._project_store.list_members = AsyncMock(return_value=[])
+    bridge._task_store.create_task = AsyncMock(side_effect=ValueError("db error"))
+    # Should not raise
+    await bridge.on_chat_message("prj_1", "ch_1", _msg('/new "Fail silently"'))
