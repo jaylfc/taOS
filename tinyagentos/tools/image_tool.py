@@ -31,7 +31,7 @@ IMAGE_GENERATION_TOOL = {
             },
             "model": {
                 "type": "string",
-                "description": "Pick from list_image_models output. Omit to let the scheduler choose.",
+                "description": "Pick from list_image_models output. When supplied, routes through the controller's scheduler which picks the right backend (NPU first, CPU fallback). Omit to call the default backend directly with lcm-dreamshaper-v7 (legacy path; bypasses the scheduler).",
             },
             "guidance_scale": {
                 "type": "number",
