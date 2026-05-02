@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { displayAuthor, type AuthorContext } from "./format-author";
 
 interface ThreadSummary {
   id: string;
   author_id: string;
+  author_type?: "user" | "agent" | "system";
   content: string;
   reply_count: number;
   last_reply_at: number | null;
@@ -25,10 +27,12 @@ export function AllThreadsList({
   channelId,
   onClose,
   onJumpToThread,
+  authorCtx = { currentUserId: null, currentUserDisplayName: null },
 }: {
   channelId: string;
   onClose: () => void;
   onJumpToThread: (parentId: string) => void;
+  authorCtx?: AuthorContext;
 }) {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -88,7 +92,7 @@ export function AllThreadsList({
                 >
                   <span className="text-xs text-shell-text-secondary line-clamp-2">{t.content}</span>
                   <div className="flex items-center gap-2 text-[11px] text-shell-text-tertiary">
-                    <span>@{t.author_id}</span>
+                    <span>@{displayAuthor(t, authorCtx)}</span>
                     <span>·</span>
                     <span>{t.reply_count} {t.reply_count === 1 ? "reply" : "replies"}</span>
                     {t.last_reply_at && (

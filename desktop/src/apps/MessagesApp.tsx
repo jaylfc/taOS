@@ -64,6 +64,7 @@ import {
   readLastChannel,
   writeLastChannel,
 } from "./MessagesApp.a2aSelection";
+import { displayAuthor } from "./chat/format-author";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -284,6 +285,7 @@ export function MessagesApp({
   const [pinnedPopoverOpen, setPinnedPopoverOpen] = useState(false);
   const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const { openThread, openThreadFor, closeThread } = useThreadPanel();
 
@@ -575,9 +577,14 @@ export function MessagesApp({
 
   /* ---- fetch current user ---- */
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch("/auth/me")
       .then((r) => r.ok ? r.json() : null)
-      .then((u) => { if (u?.id) setCurrentUserId(u.id); })
+      .then((u) => {
+        if (u?.user?.id) {
+          setCurrentUserId(u.user.id);
+          setCurrentUserDisplayName(u.user.full_name || u.user.username || u.user.id);
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -1514,6 +1521,7 @@ export function MessagesApp({
                   {pinnedPopoverOpen && (
                     <PinnedMessagesPopover
                       pins={pinnedMessages}
+                      authorCtx={{ currentUserId, currentUserDisplayName }}
                       onJumpTo={(id) => {
                         setPinnedPopoverOpen(false);
                         const el = document.querySelector(`[data-message-id="${id}"]`) as HTMLElement | null;
@@ -1637,7 +1645,7 @@ export function MessagesApp({
                         style={isDeadAgent ? { opacity: 0.55 } : undefined}
                         title={authorTooltip}
                       >
-                        {msg.author_id}
+                        {displayAuthor(msg, { currentUserId, currentUserDisplayName })}
                       </span>
                       {isAgent && !isDeadAgent && (
                         <span className="text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-medium flex items-center gap-0.5">
@@ -2056,6 +2064,7 @@ export function MessagesApp({
           parentId={openThread.parentId}
           onClose={closeThread}
           isFullscreen={isMobile}
+          authorCtx={{ currentUserId, currentUserDisplayName }}
           onSend={async (content, attachments) => {
             const r = await fetch("/api/chat/messages", {
               method: "POST",

@@ -1,6 +1,9 @@
+import { displayAuthor, type AuthorContext } from "./format-author";
+
 export interface PinnedMessage {
   id: string;
   author_id: string;
+  author_type?: "user" | "agent" | "system";
   content: string;
   created_at: number;
   pinned_by: string;
@@ -8,11 +11,12 @@ export interface PinnedMessage {
 }
 
 export function PinnedMessagesPopover({
-  pins, onJumpTo, onClose,
+  pins, onJumpTo, onClose, authorCtx = { currentUserId: null, currentUserDisplayName: null },
 }: {
   pins: PinnedMessage[];
   onJumpTo: (messageId: string) => void;
   onClose: () => void;
+  authorCtx?: AuthorContext;
 }) {
   return (
     <div
@@ -30,7 +34,7 @@ export function PinnedMessagesPopover({
         <ul className="divide-y divide-white/5">
           {pins.map((p) => (
             <li key={p.id} className="p-2 text-sm">
-              <div className="text-xs opacity-60 mb-0.5">@{p.author_id}</div>
+              <div className="text-xs opacity-60 mb-0.5">@{displayAuthor(p, authorCtx)}</div>
               <div className="line-clamp-2">{p.content}</div>
               <button
                 onClick={() => onJumpTo(p.id)}

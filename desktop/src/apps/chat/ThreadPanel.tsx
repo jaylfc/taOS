@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentRecord } from "@/lib/chat-attachments-api";
+import { displayAuthor, type AuthorContext } from "./format-author";
 
 type Msg = {
   id: string;
   author_id: string;
+  author_type?: "user" | "agent" | "system";
   content: string;
   created_at?: number;
   [key: string]: unknown;
@@ -15,12 +17,14 @@ export function ThreadPanel({
   onClose,
   onSend,
   isFullscreen = false,
+  authorCtx = { currentUserId: null, currentUserDisplayName: null },
 }: {
   channelId: string;
   parentId: string;
   onClose: () => void;
   onSend: (content: string, attachments: AttachmentRecord[]) => Promise<void>;
   isFullscreen?: boolean;
+  authorCtx?: AuthorContext;
 }) {
   const [parent, setParent] = useState<Msg | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -103,13 +107,13 @@ export function ThreadPanel({
       <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
         {parent && (
           <div className="pb-3 border-b border-white/10">
-            <div className="text-xs text-white/50 mb-1">{parent.author_id}</div>
+            <div className="text-xs text-white/50 mb-1">{displayAuthor(parent, authorCtx)}</div>
             <div className="text-sm">{parent.content}</div>
           </div>
         )}
         {msgs.map((m) => (
           <div key={m.id}>
-            <div className="text-xs text-white/50 mb-0.5">{m.author_id}</div>
+            <div className="text-xs text-white/50 mb-0.5">{displayAuthor(m, authorCtx)}</div>
             <div className="text-sm">{m.content}</div>
           </div>
         ))}
