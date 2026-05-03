@@ -40,7 +40,7 @@ async def load_jar_for_request(
         raise ValueError("profile_id is required")
 
     rows = await cookie_store.get_cookies(
-        user_id=user_id, profile_id=profile_id, host=host,
+        user_id=user_id, profile_id=profile_id, host=host.lstrip("."),
     )
 
     jar = httpx.Cookies()
@@ -73,7 +73,7 @@ async def persist_response_cookies(
         await cookie_store.set_cookie(
             user_id=user_id,
             profile_id=profile_id,
-            host=cookie.domain or "",
+            host=(cookie.domain or "").lstrip("."),
             path=cookie.path or "/",
             name=cookie.name,
             value=cookie.value or "",

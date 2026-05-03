@@ -109,3 +109,43 @@ class TestPersistResponseCookies:
             cookie_store, user_id="u2", profile_id="personal", host="github.com",
         )
         assert len(list(u2_jar.jar)) == 0
+
+    async def test_persists_real_set_cookie_with_explicit_domain(self, cookie_store):
+        """Regression: real Set-Cookie with `Domain=github.com` produces a
+        cookie whose stored domain has the leading dot stripped — otherwise
+        next-request lookup misses it (because urlparse hostname has no dot).
+        """
+        from tinyagentos.routes.desktop_browser.cookie_jar import (
+            load_jar_for_request,
+            persist_response_cookies,
+        )
+        from http.cookiejar import Cookie
+
+        # Simulate what httpx does when it receives a real Set-Cookie response
+        # header. The Cookies.extract_cookies() path produces the leading-dot
+        # behaviour that the per-task tests' .set() shortcut hides.
+        response_cookies = httpx.Cookies()
+        # Build a real http.cookiejar.Cookie via the response-header path
+        real_cookie = Cookie(
+            version=0, name="sid", value="logged-in-token",
+            port=None, port_specified=False,
+            domain=".github.com",  # the leading-dot form httpx produces
+            domain_specified=True, domain_initial_dot=True,
+            path="/", path_specified=True,
+            secure=False, expires=None, discard=True,
+            comment=None, comment_url=None,
+            rest={}, rfc2109=False,
+        )
+        response_cookies.jar.set_cookie(real_cookie)
+
+        await persist_response_cookies(
+            cookie_store, response_cookies, user_id="u1", profile_id="personal",
+        )
+
+        # Lookup using the dot-less hostname — must find the cookie
+        jar = await load_jar_for_request(
+            cookie_store, user_id="u1", profile_id="personal", host="github.com",
+        )
+        cookies = list(jar.jar)
+        assert any(c.name == "sid" and c.value == "logged-in-token" for c in cookies), \
+            "leading-dot domain bug regression — cookie not retrievable by dot-less hostname"

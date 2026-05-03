@@ -17,6 +17,7 @@ Also exposes GET /__taos/copilot.js as a static asset.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,8 @@ from tinyagentos.routes.desktop_browser.ssrf import (
 _logger = logging.getLogger(__name__)
 
 _MAX_REDIRECTS = 5
-_FETCH_TIMEOUT = 15.0  # seconds — total deadline including redirects
+_FETCH_TIMEOUT = 15.0   # seconds — total deadline including all redirect hops
+_HOP_TIMEOUT = 5.0      # seconds — per-operation (connect + read) limit per hop
 
 # Headers we strip from upstream responses before returning to the client.
 _STRIP_RESPONSE_HEADERS = frozenset({
@@ -96,54 +98,75 @@ async def proxy_get(
         )
         return JSONResponse({"error": "URL blocked"}, status_code=403)
 
-    # Walk redirects manually so we can re-check SSRF on each step
+    # Walk redirects manually so we can re-check SSRF on each step.
+    # The whole walk is bounded by _FETCH_TIMEOUT (total); each individual
+    # hop is further bounded by _HOP_TIMEOUT so one slow server can't
+    # silently eat the entire budget.
     current_url = url
     response: httpx.Response | None = None
+    # Sentinel for SSRF blocks detected inside the inner coroutine.
+    _ssrf_blocked_url: list[str] = []
+    _too_many_redirects: list[bool] = []
 
-    async with httpx.AsyncClient(
-        follow_redirects=False, timeout=_FETCH_TIMEOUT,
-    ) as http:
-        for hop in range(_MAX_REDIRECTS + 1):
-            host = urlparse(current_url).hostname or ""
+    async def _fetch_with_redirects() -> httpx.Response | None:
+        nonlocal current_url
+        _resp: httpx.Response | None = None
+        async with httpx.AsyncClient(
+            follow_redirects=False, timeout=_HOP_TIMEOUT,
+        ) as http:
+            for hop in range(_MAX_REDIRECTS + 1):
+                host = urlparse(current_url).hostname or ""
 
-            jar = await load_jar_for_request(
-                cookie_store, user_id=user_id, profile_id=profile_id, host=host,
-            )
+                jar = await load_jar_for_request(
+                    cookie_store, user_id=user_id, profile_id=profile_id, host=host,
+                )
 
-            try:
-                response = await http.get(current_url, cookies=jar)
-            except httpx.HTTPError as e:
-                _logger.info("browser proxy fetch error: err=%s", e)
-                return JSONResponse({"error": "fetch failed"}, status_code=502)
-
-            # Persist any cookies set by this hop
-            await persist_response_cookies(
-                cookie_store, response.cookies,
-                user_id=user_id, profile_id=profile_id,
-            )
-
-            if response.status_code in (301, 302, 303, 307, 308):
-                location = response.headers.get("location")
-                if not location:
-                    break
-                next_url = urljoin(current_url, location)
                 try:
-                    validate_url_or_raise(next_url)
-                except SsrfBlockedError as e:
-                    parsed = urlsplit(next_url)
-                    _logger.info(
-                        "browser proxy SSRF block on redirect: scheme=%r host=%r reason=%s",
-                        parsed.scheme, parsed.hostname, e,
-                    )
-                    return JSONResponse({"error": "URL blocked"}, status_code=403)
-                current_url = next_url
-                continue
+                    _resp = await http.get(current_url, cookies=jar)
+                except httpx.HTTPError as e:
+                    _logger.info("browser proxy fetch error: err=%s", e)
+                    return None
 
-            # Non-redirect — done
-            break
-        else:
-            return JSONResponse({"error": "too many redirects"}, status_code=508)
+                # Persist any cookies set by this hop
+                await persist_response_cookies(
+                    cookie_store, _resp.cookies,
+                    user_id=user_id, profile_id=profile_id,
+                )
 
+                if _resp.status_code in (301, 302, 303, 307, 308):
+                    location = _resp.headers.get("location")
+                    if not location:
+                        break
+                    next_url = urljoin(current_url, location)
+                    try:
+                        validate_url_or_raise(next_url)
+                    except SsrfBlockedError as e:
+                        parsed = urlsplit(next_url)
+                        _logger.info(
+                            "browser proxy SSRF block on redirect: scheme=%r host=%r reason=%s",
+                            parsed.scheme, parsed.hostname, e,
+                        )
+                        _ssrf_blocked_url.append(next_url)
+                        return None
+                    current_url = next_url
+                    continue
+
+                # Non-redirect — done
+                break
+            else:
+                _too_many_redirects.append(True)
+                return None
+        return _resp
+
+    try:
+        response = await asyncio.wait_for(_fetch_with_redirects(), timeout=_FETCH_TIMEOUT)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "fetch timed out"}, status_code=504)
+
+    if _ssrf_blocked_url:
+        return JSONResponse({"error": "URL blocked"}, status_code=403)
+    if _too_many_redirects:
+        return JSONResponse({"error": "too many redirects"}, status_code=508)
     if response is None:
         return JSONResponse({"error": "fetch failed"}, status_code=502)
 

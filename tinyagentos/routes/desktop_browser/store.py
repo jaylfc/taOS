@@ -40,7 +40,7 @@ class BrowserStore(BaseStore):
             raise ValueError("profile_id is required")
         assert self._db is not None
         await self._db.execute(
-            "INSERT INTO profiles (user_id, profile_id, name, color, created_at) "
+            "INSERT OR IGNORE INTO profiles (user_id, profile_id, name, color, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
             (user_id, profile_id, name, color, created_at),
         )

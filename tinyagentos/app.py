@@ -294,6 +294,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # BrowserApp v2 stores. Cookie store key is currently a
         # process-wide placeholder; per-user Argon2 derivation from the
         # login password lands when auth integration catches up (PR 5+).
+        #
+        # MIGRATION HAZARD: when PR 5+ swaps this placeholder key for the
+        # per-user Argon2-derived key, SQLCipher will reject the existing
+        # browser_cookies.sqlite3 ("encrypted or not a database") because
+        # the key changes. PR 5+ MUST either:
+        #   (a) Detect placeholder-keyed databases (e.g. via a marker
+        #       file) and call PRAGMA rekey to re-encrypt with the
+        #       per-user key, or
+        #   (b) Wipe browser_cookies.sqlite3 on first per-user-key boot,
+        #       accepting the one-time logout for early adopters.
+        # Without one of these, every existing user's persisted cookies
+        # become unreadable garbage on PR 5 deploy.
         from tinyagentos.routes.desktop_browser.store import (
             BrowserStore,
             BrowserCookieStore,

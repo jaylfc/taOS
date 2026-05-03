@@ -1,7 +1,6 @@
 """Tests proving BrowserStore enforces (user_id, …) isolation between users."""
 from __future__ import annotations
 
-import sqlite3 as sync_sqlite
 import time
 
 import pytest
@@ -68,15 +67,25 @@ class TestProfileTenancy:
         with pytest.raises(ValueError, match="user_id"):
             await store.list_profiles(user_id="")
 
-    async def test_duplicate_profile_in_same_user_rejected(self, store):
-        # (user_id, profile_id) is a primary key — a second insert with the
-        # same pair must error
+    async def test_duplicate_profile_silently_ignored(self, store):
+        # (user_id, profile_id) is a primary key — a second insert with
+        # the same pair is silently ignored (INSERT OR IGNORE) so
+        # ensure_default_profiles can be called concurrently without
+        # racing on the PRIMARY KEY constraint.
         now = int(time.time())
         await store.add_profile(
-            user_id="user-a", profile_id="personal", name="Personal", created_at=now,
+            user_id="user-a", profile_id="personal",
+            name="Personal", created_at=now,
         )
 
-        with pytest.raises(sync_sqlite.IntegrityError):
-            await store.add_profile(
-                user_id="user-a", profile_id="personal", name="Personal", created_at=now,
-            )
+        # Second insert with the same pair must NOT raise — it's a no-op
+        await store.add_profile(
+            user_id="user-a", profile_id="personal",
+            name="Different Name",  # ignored
+            created_at=now + 100,
+        )
+
+        # Original row preserved (INSERT OR IGNORE = first wins)
+        profiles = await store.list_profiles(user_id="user-a")
+        assert len(profiles) == 1
+        assert profiles[0]["name"] == "Personal"
