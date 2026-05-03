@@ -37,6 +37,13 @@ The platform itself uses roughly 345 MB of RAM when idle, so it runs comfortably
 - **Network:** The device needs internet access to download models and framework packages.
 - **Browser:** On any other device on the same network (laptop, phone, tablet). The TinyAgentOS web GUI runs on your device; you access it from your browser.
 
+**SQLCipher (for the browser app's encrypted cookie jar)** — the browser app needs the SQLCipher C library installed at the system level before `pip install` can build its `sqlcipher3` Python binding:
+
+- **macOS:** `brew install sqlcipher`
+- **Debian / Ubuntu / Pi OS:** `sudo apt install libsqlcipher-dev`
+- **Fedora / RHEL:** `sudo dnf install sqlcipher-devel`
+- **Windows:** SQLCipher binaries via [vcpkg](https://vcpkg.io/) or run inside WSL
+
 ---
 
 ## 2. Installation

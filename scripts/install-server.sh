@@ -45,7 +45,7 @@ log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT qmd_port=$TAOS_QMD_
 
 ensure_linux_deps() {
     if command -v apt-get >/dev/null 2>&1; then
-        log "installing apt deps (python3, venv, git, curl, libtorrent, sqlite3)"
+        log "installing apt deps (python3, venv, git, curl, libtorrent, sqlite3, sqlcipher)"
         # nodejs/npm are intentionally excluded here: ensure_node22() installs
         # Node 22 via NodeSource immediately after. Including apt's nodejs/npm
         # causes "held broken packages" when NodeSource's nodejs is already
@@ -53,18 +53,18 @@ ensure_linux_deps() {
         sudo apt-get update -qq
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             python3 python3-venv python3-pip git curl ca-certificates \
-            libtorrent-rasterbar-dev libboost-python-dev sqlite3
+            libtorrent-rasterbar-dev libboost-python-dev sqlite3 libsqlcipher-dev
     elif command -v dnf >/dev/null 2>&1; then
-        log "installing dnf deps (python3, git, curl, libtorrent, nodejs)"
+        log "installing dnf deps (python3, git, curl, libtorrent, nodejs, sqlcipher)"
         sudo dnf install -y -q python3 python3-pip python3-virtualenv git curl \
-            libtorrent-rasterbar-devel boost-python3-devel sqlite nodejs npm
+            libtorrent-rasterbar-devel boost-python3-devel sqlite nodejs npm sqlcipher-devel
     elif command -v pacman >/dev/null 2>&1; then
         log "installing pacman deps"
         sudo pacman -Sy --noconfirm --needed python python-pip git curl \
-            libtorrent-rasterbar boost sqlite nodejs npm
+            libtorrent-rasterbar boost sqlite nodejs npm sqlcipher
     elif command -v apk >/dev/null 2>&1; then
         log "installing apk deps"
-        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm
+        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev
     else
         warn "unrecognised package manager — assuming python3/git/curl/libtorrent/nodejs already present"
     fi

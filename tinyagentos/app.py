@@ -915,6 +915,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.secrets import router as secrets_router
     app.include_router(secrets_router)
 
+    from tinyagentos.routes.desktop_browser import router as desktop_browser_router
+    app.include_router(desktop_browser_router)
+
     from tinyagentos.routes.channels import router as channels_router
     app.include_router(channels_router)
 

@@ -11,6 +11,8 @@ dependencies = [
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
     "aiosqlite>=0.20.0",
+    "argon2-cffi>=23.1.0",
+    "sqlcipher3>=0.6.2",
     "psutil>=5.9.0",
     "python-multipart>=0.0.9",
     # Project canvas board renders low-fidelity PNG snapshots for vision
