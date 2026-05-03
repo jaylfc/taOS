@@ -36,11 +36,17 @@ class TestCookieStoreEncryption:
         )
         await s.close()
 
+        from sqlcipher3 import dbapi2 as sqlcipher
+
         # Reopen with wrong key — read must fail (init may also fail
         # depending on SQLCipher version; either way, the data must
-        # not be retrievable with the wrong key)
+        # not be retrievable with the wrong key).
+        # Failure modes vary by SQLCipher version:
+        #   - DatabaseError / OperationalError: explicit key rejection
+        #   - MemoryError: corrupted page allocation when key is wrong
+        #     (observed on sqlcipher3 0.5.x / Python 3.14)
         s2 = BrowserCookieStore(tmp_path / "c.sqlite3", key_hex=WRONG_KEY)
-        with pytest.raises(Exception):
+        with pytest.raises((sqlcipher.DatabaseError, sqlcipher.OperationalError, MemoryError)):
             try:
                 await s2.init()
             except Exception:

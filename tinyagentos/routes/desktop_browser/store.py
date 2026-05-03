@@ -105,7 +105,7 @@ class BrowserCookieStore:
             finally:
                 conn.close()
 
-        await asyncio.get_event_loop().run_in_executor(None, _setup)
+        await asyncio.get_running_loop().run_in_executor(None, _setup)
         self._initialised = True
 
     async def close(self) -> None:
@@ -157,7 +157,7 @@ class BrowserCookieStore:
             finally:
                 conn.close()
 
-        await asyncio.get_event_loop().run_in_executor(None, _do)
+        await asyncio.get_running_loop().run_in_executor(None, _do)
 
     async def get_cookies(
         self,
@@ -200,4 +200,4 @@ class BrowserCookieStore:
             finally:
                 conn.close()
 
-        return await asyncio.get_event_loop().run_in_executor(None, _do)
+        return await asyncio.get_running_loop().run_in_executor(None, _do)

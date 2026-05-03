@@ -8,16 +8,44 @@ from __future__ import annotations
 
 
 def test_desktop_browser_router_present_in_app(app):
+    """Verify create_app() actually mounted the desktop_browser router.
+
+    The router is empty in PR 1 (PR 2+ adds routes), so we can't check
+    for specific paths yet. What we CAN check: the router object reachable
+    via `from tinyagentos.routes.desktop_browser import router` is the same
+    object that was passed to one of the app's `include_router` calls.
+    The cleanest detection is: `router.routes` (empty in PR 1) is iterable,
+    and after `include_router`, FastAPI copies those routes (currently zero)
+    into `app.routes`. Without `include_router` the test is no weaker than
+    the import test below — but with it, future PRs that add routes to the
+    desktop_browser router will see them appear in `app.routes`, which gives
+    us a regression marker for "someone deleted the include_router call".
+
+    For PR 1 (empty router), we assert that the router instance has a
+    `.routes` attribute (FastAPI APIRouter contract) and that the app
+    accepts our import without error — combined with the fact that PR 2+
+    will add routes that will then appear in app.routes, this gives a
+    real upgrade path for the assertion.
+    """
     from tinyagentos.routes.desktop_browser import router as browser_router
 
-    # Each include_router call wraps the router in a Mount or copies its
-    # routes into the app. Easiest check: the app's route paths include
-    # nothing for this prefix yet, but the router object has been imported
-    # without error and is wired in (see app.py change below). The
-    # router is empty in PR 1, so we just assert the import works and the
-    # FastAPI app has been built successfully (the fixture proves that).
-    assert browser_router is not None
-    assert app is not None
+    # APIRouter contract: must have a .routes attribute that is a list
+    assert hasattr(browser_router, "routes")
+    assert isinstance(browser_router.routes, list)
+
+    # The app must have been built without error — the fixture proves that.
+    # When PR 2 adds a route to browser_router, the assertion below will
+    # become non-vacuous because every router-route will be reflected in
+    # app.routes after include_router runs.
+    browser_route_paths = {
+        getattr(r, "path", None) for r in browser_router.routes
+    }
+    app_route_paths = {getattr(r, "path", None) for r in app.routes}
+
+    # In PR 1 both sets are likely empty for browser_router, so the
+    # assertion is trivially true. In PR 2+ this will catch deletion
+    # of the include_router call.
+    assert browser_route_paths.issubset(app_route_paths)
 
 
 def test_desktop_browser_module_importable():
