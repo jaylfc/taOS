@@ -3,6 +3,37 @@
  * Silent on 401 (matches other browser-* api wrappers).
  */
 
+export interface AgentDto {
+  id: string;
+  name: string;
+  emoji?: string;
+  framework?: string;
+  [key: string]: unknown;
+}
+
+/** Returns the agent list from /api/agents. Returns [] on any error or auth failure. */
+export async function listAgents(): Promise<AgentDto[]> {
+  try {
+    const resp = await fetch("/api/agents", { credentials: "include" });
+    if (!resp.ok) return [];
+    const body = await resp.json();
+    const list: unknown[] = Array.isArray(body) ? body : [];
+    return list.map((item) => {
+      const agent = item as Record<string, unknown>;
+      const id =
+        typeof agent.id === "string" && agent.id
+          ? agent.id
+          : typeof agent.name === "string"
+          ? agent.name
+          : "";
+      const name = typeof agent.name === "string" ? agent.name : id;
+      return { ...agent, id, name } as AgentDto;
+    });
+  } catch {
+    return [];
+  }
+}
+
 export interface PinDto {
   agent_id: string;
   pinned_at: string;

@@ -21,6 +21,19 @@ export interface KeyboardShortcutsOptions {
   onOpenFind: () => void;
 }
 
+/** True when a form control has keyboard focus (input, textarea, select, contenteditable). */
+function isInputFocused(): boolean {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = (el as HTMLElement).tagName.toLowerCase();
+  return (
+    tag === "input" ||
+    tag === "textarea" ||
+    tag === "select" ||
+    (el as HTMLElement).isContentEditable
+  );
+}
+
 const ZOOM_STEP = 0.1;
 
 function isModifierMatch(e: KeyboardEvent): boolean {
@@ -40,6 +53,20 @@ export function useBrowserKeyboardShortcuts(opts: KeyboardShortcutsOptions) {
 
     const handler = (e: KeyboardEvent) => {
       if (!isModifierMatch(e)) return;
+
+      // Cmd+Shift+A — open agent picker (check before the switch so we can
+      // guard input focus independently of the other shortcuts)
+      if (e.shiftKey && e.key.toLowerCase() === "a") {
+        if (isInputFocused()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent("taos-browser:open-agent-picker", {
+            detail: { windowId },
+          }),
+        );
+        return;
+      }
 
       const store = useBrowserStore.getState();
       const win = store.windows[windowId];

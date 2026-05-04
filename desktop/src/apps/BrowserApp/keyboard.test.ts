@@ -127,4 +127,60 @@ describe("useBrowserKeyboardShortcuts", () => {
     act(() => window.dispatchEvent(event));
     expect(addSpy).not.toHaveBeenCalled();
   });
+
+  it("Cmd+Shift+A dispatches taos-browser:open-agent-picker with windowId", () => {
+    renderHook(() =>
+      useBrowserKeyboardShortcuts({
+        windowId: TEST_WINDOW_ID,
+        hasFocus: true,
+        onOpenFind: () => {},
+      }),
+    );
+    const received: CustomEvent[] = [];
+    const listener = (e: Event) => received.push(e as CustomEvent);
+    window.addEventListener("taos-browser:open-agent-picker", listener);
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "A",
+          shiftKey: true,
+          ctrlKey: true,
+        } as any),
+      );
+    });
+
+    window.removeEventListener("taos-browser:open-agent-picker", listener);
+    expect(received).toHaveLength(1);
+    expect(received[0].detail?.windowId).toBe(TEST_WINDOW_ID);
+  });
+
+  it("Cmd+Shift+A is preventDefault'd", () => {
+    renderHook(() =>
+      useBrowserKeyboardShortcuts({
+        windowId: TEST_WINDOW_ID,
+        hasFocus: true,
+        onOpenFind: () => {},
+      }),
+    );
+    let prevented = false;
+    act(() => {
+      const event = new KeyboardEvent("keydown", {
+        key: "A",
+        shiftKey: true,
+        ctrlKey: true,
+        cancelable: true,
+      } as any);
+      Object.defineProperty(event, "defaultPrevented", {
+        get: () => prevented,
+      });
+      const origPreventDefault = event.preventDefault.bind(event);
+      event.preventDefault = () => {
+        prevented = true;
+        origPreventDefault();
+      };
+      window.dispatchEvent(event);
+      expect(prevented).toBe(true);
+    });
+  });
 });

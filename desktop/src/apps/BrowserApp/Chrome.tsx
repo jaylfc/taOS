@@ -15,6 +15,7 @@ import { listProfiles, type Profile } from "@/lib/browser-profile-api";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 import { ProfileManager } from "./ProfileManager";
 import { SettingsPanel } from "./SettingsPanel";
+import { AgentPickerPopover } from "./AgentPickerPopover";
 
 interface ChromeProps {
   windowId: string;
@@ -29,6 +30,7 @@ export function Chrome({ windowId }: ChromeProps) {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
 
   const currentProfileId = win?.profileId ?? "";
@@ -40,6 +42,20 @@ export function Chrome({ windowId }: ChromeProps) {
     });
     return () => { cancelled = true; };
   }, [currentProfileId]);
+
+  // Cmd+Shift+A keyboard shortcut → open agent picker
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ windowId: string }>;
+      if (ce.detail?.windowId !== windowId) return;
+      setSettingsOpen(false);
+      setSwitcherOpen(false);
+      setManagerOpen(false);
+      setPickerOpen(true);
+    };
+    window.addEventListener("taos-browser:open-agent-picker", handler);
+    return () => window.removeEventListener("taos-browser:open-agent-picker", handler);
+  }, [windowId]);
 
   if (!win) return null;
 
@@ -95,6 +111,38 @@ export function Chrome({ windowId }: ChromeProps) {
 
       {/* Spacer pushes the profile chip to the right */}
       <div className="flex-1" />
+
+      {/* Agent chip / picker */}
+      <div className="relative">
+        {activeTab.pinnedAgentIds.length === 0 ? (
+          <button
+            type="button"
+            aria-label="Add agent"
+            onClick={() => {
+              setSettingsOpen(false);
+              setSwitcherOpen(false);
+              setManagerOpen(false);
+              setPickerOpen((p) => !p);
+            }}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle text-xs hover:bg-shell-hover"
+          >
+            + agent
+          </button>
+        ) : (
+          <div aria-label={`${activeTab.pinnedAgentIds.length} agents pinned`} className="text-xs px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle">
+            {activeTab.pinnedAgentIds.length} agent{activeTab.pinnedAgentIds.length !== 1 ? "s" : ""}
+          </div>
+        )}
+        {pickerOpen && (
+          <AgentPickerPopover
+            windowId={windowId}
+            tabId={activeTab.id}
+            profileId={win.profileId}
+            pinnedAgentIds={activeTab.pinnedAgentIds}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
+      </div>
 
       {/* Settings button */}
       <div className="relative">

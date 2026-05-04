@@ -4,6 +4,7 @@ import {
   pinAgent,
   unpinAgent,
   mintCopilotTicket,
+  listAgents,
 } from "./browser-agent-api";
 
 const originalFetch = global.fetch;
@@ -155,6 +156,45 @@ describe("unpinAgent", () => {
   it("returns false on network error", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("offline"));
     expect(await unpinAgent("profile-1", "tab-1", "agent-1")).toBe(false);
+  });
+});
+
+describe("listAgents", () => {
+  it("returns array on 200", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [
+        { id: "agent-1", name: "Alpha" },
+        { id: "agent-2", name: "Beta" },
+      ],
+    });
+    const result = await listAgents();
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("agent-1");
+    expect(result[0].name).toBe("Alpha");
+  });
+
+  it("returns [] on 401", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    expect(await listAgents()).toEqual([]);
+  });
+
+  it("returns [] on network error", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+    expect(await listAgents()).toEqual([]);
+  });
+
+  it("normalises shape to { id, name } from agent dicts that have only name", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [{ name: "my-agent" }],
+    });
+    const result = await listAgents();
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("my-agent");
+    expect(result[0].name).toBe("my-agent");
   });
 });
 
