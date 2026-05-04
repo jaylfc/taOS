@@ -21,6 +21,9 @@ import { useEffect } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useBrowserSettingsStore } from "@/stores/browser-settings-store";
 import { useBrowserAgentStore } from "@/stores/browser-agent-store";
+import { mintCopilotTicket } from "@/lib/browser-agent-api";
+import { openParentWs } from "./agent-ws-bridge";
+import type { AgentWsHandle } from "./agent-ws-bridge";
 import { detectLiveExclusion } from "./live-exclusion";
 import { ReaderMode } from "./ReaderMode";
 import { AgentPanel } from "./AgentPanel";
@@ -100,6 +103,82 @@ export function TabRenderer({ windowId }: TabRendererProps) {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId, !!win]);
+
+  // WS lifecycle — for each pinned agent on the active tab:
+  //   1. Mint an iframe ticket and postMessage taos-copilot:open to the iframe.
+  //   2. Open the parent's own WS via openParentWs to receive page events and
+  //      bump AgentPresencePill's lastEventAt.
+  // Runs whenever the active tab, its pinned agents, or the profile changes.
+  // Cleanup closes all parent WS handles and posts taos-copilot:close to the
+  // iframe so copilot.js tears down the iframe-side WS.
+  const activeTabIdForEffect = win?.activeTabId;
+  const pinnedAgentIdsForEffect = win?.tabs.find((t) => t.id === win?.activeTabId)?.pinnedAgentIds ?? [];
+  const profileIdForEffect = win?.profileId;
+
+  useEffect(() => {
+    if (!activeTabIdForEffect || !profileIdForEffect) return;
+
+    const tabId = activeTabIdForEffect;
+    const profileId = profileIdForEffect;
+    const handles: AgentWsHandle[] = [];
+    let cancelled = false;
+
+    for (const agentId of pinnedAgentIdsForEffect) {
+      // 1. Mint a separate ticket for the iframe and post it
+      mintCopilotTicket(profileId, tabId, agentId).then((ticket) => {
+        if (cancelled || !ticket) return;
+        const iframe = document.querySelector(
+          `iframe[data-tab-id="${tabId}"]`,
+        ) as HTMLIFrameElement | null;
+        if (iframe?.contentWindow) {
+          iframe.contentWindow.postMessage(
+            { type: "taos-copilot:open", ticket: ticket.ticket, agentId },
+            "*",
+          );
+        }
+      });
+
+      // 2. Open the parent's own WS to receive page events
+      openParentWs({
+        windowId,
+        tabId,
+        agentId,
+        profileId,
+        onEvent: (event) => {
+          const store = useBrowserAgentStore.getState();
+          store.bumpEventAt(windowId, tabId, agentId);
+          store.appendEvent(windowId, tabId, agentId, event);
+        },
+      }).then((handle) => {
+        if (cancelled) {
+          handle.close();
+        } else {
+          handles.push(handle);
+        }
+      });
+    }
+
+    return () => {
+      cancelled = true;
+
+      // Close all parent WS handles
+      for (const handle of handles) handle.close();
+
+      // Tell the iframe-side copilot.js to close its WS for each agent
+      const iframe = document.querySelector(
+        `iframe[data-tab-id="${tabId}"]`,
+      ) as HTMLIFrameElement | null;
+      if (iframe?.contentWindow) {
+        for (const agentId of pinnedAgentIdsForEffect) {
+          iframe.contentWindow.postMessage(
+            { type: "taos-copilot:close", agentId },
+            "*",
+          );
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowId, activeTabIdForEffect, pinnedAgentIdsForEffect.join(","), profileIdForEffect]);
 
   // Subscribe to panel state so TabRenderer re-renders when panel opens/closes.
   // win?.activeTabId is safely undefined when win is undefined (hook must be
