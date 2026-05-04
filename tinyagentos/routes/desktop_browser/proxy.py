@@ -264,4 +264,8 @@ _COPILOT_JS = Path(__file__).parent / "copilot.js"
 
 @router.get("/__taos/copilot.js")
 async def copilot_js():
-    return FileResponse(_COPILOT_JS, media_type="application/javascript")
+    return FileResponse(
+        _COPILOT_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
