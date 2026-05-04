@@ -8,6 +8,7 @@
  *
  * Settings are persisted via useBrowserSettingsStore (localStorage).
  */
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import {
   useBrowserSettingsStore,
@@ -26,15 +27,37 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const setDiscardTimeoutMs = useBrowserSettingsStore((s) => s.setDiscardTimeoutMs);
   const setMaxLiveTabs = useBrowserSettingsStore((s) => s.setMaxLiveTabs);
   const setSearchEngine = useBrowserSettingsStore((s) => s.setSearchEngine);
+  const ref = useRef<HTMLDivElement | null>(null);
 
   const timeoutMinutes = Math.round(discardTimeoutMs / 60_000);
 
+  // Click-outside dismiss
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const id = setTimeout(() => window.addEventListener("mousedown", handler), 0);
+    return () => {
+      clearTimeout(id);
+      window.removeEventListener("mousedown", handler);
+    };
+  }, [onClose]);
+
+  // Escape key dismiss
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   return (
     <div
+      ref={ref}
       role="dialog"
       aria-label="Browser settings"
-      aria-modal="true"
-      className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-shell-border-subtle bg-shell-surface shadow-xl p-4 flex flex-col gap-4"
+      className="absolute right-0 top-full mt-1 z-[60] w-72 rounded-lg border border-shell-border-subtle bg-shell-surface shadow-xl p-4 flex flex-col gap-4"
     >
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -99,7 +122,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         <select
           id="search-engine-select"
           value={searchEngine}
-          onChange={(e) => setSearchEngine(e.target.value as SearchEngine)}
+          onChange={(e) => setSearchEngine(e.target.value)}
           className="bg-shell-bg-deep text-shell-text text-xs px-2 py-1 rounded border border-shell-border-subtle focus:border-accent focus:outline-none"
         >
           {(Object.keys(SEARCH_ENGINES) as SearchEngine[]).map((engine) => (

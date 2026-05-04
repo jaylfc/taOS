@@ -113,7 +113,7 @@ describe("SettingsPanel — TabRenderer wire-through (discard scheduler reads fr
     useBrowserSettingsStore.setState({ discardTimeoutMs: customTimeoutMs });
 
     const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
-    const tabB = useBrowserStore.getState().addTab(TEST_WINDOW_ID, "https://b.test/");
+    useBrowserStore.getState().addTab(TEST_WINDOW_ID, "https://b.test/");
 
     // tabA idle past the custom timeout but NOT past the default (10 min)
     // This proves TabRenderer reads from the store, not the DISCARD_TIMEOUT_MS constant
@@ -146,7 +146,7 @@ describe("SettingsPanel — TabRenderer wire-through (discard scheduler reads fr
     useBrowserSettingsStore.setState({ discardTimeoutMs: 30 * 60 * 1000 });
 
     const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
-    const tabB = useBrowserStore.getState().addTab(TEST_WINDOW_ID, "https://b.test/");
+    useBrowserStore.getState().addTab(TEST_WINDOW_ID, "https://b.test/");
 
     // tabA idle for only 11 minutes — past default (10 min) but within new 30 min timeout
     useBrowserStore.setState((s) => {

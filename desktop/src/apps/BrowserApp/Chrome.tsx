@@ -90,7 +90,12 @@ export function Chrome({ windowId }: ChromeProps) {
           type="button"
           aria-label="Settings"
           title="Settings"
-          onClick={() => setSettingsOpen((s) => !s)}
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+          onClick={() => {
+            setSwitcherOpen(false);
+            setSettingsOpen((s) => !s);
+          }}
           className="p-1 rounded hover:bg-shell-hover"
         >
           <Settings size={16} />
@@ -104,7 +109,10 @@ export function Chrome({ windowId }: ChromeProps) {
       <div className="relative">
         <button
           type="button"
-          onClick={() => setSwitcherOpen((s) => !s)}
+          onClick={() => {
+            setSettingsOpen(false);
+            setSwitcherOpen((s) => !s);
+          }}
           className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle text-xs hover:bg-shell-hover"
           aria-label={`Profile: ${win.profileId}`}
           aria-haspopup="menu"

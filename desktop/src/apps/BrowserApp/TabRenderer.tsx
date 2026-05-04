@@ -8,9 +8,10 @@
  *
  * The discard scheduler runs every 60s and:
  *  - Discards non-pinned, non-active tabs whose lastActiveAt is older
- *    than DISCARD_TIMEOUT_MS.
+ *    than DISCARD_TIMEOUT_MS (default; runtime value from useBrowserSettingsStore).
  *  - Enforces a hard cap of MAX_LIVE_TABS live tabs by discarding the
- *    oldest live tab (by lastActiveAt) if the cap is exceeded.
+ *    oldest live tab (by lastActiveAt) if the cap is exceeded (default;
+ *    runtime value from useBrowserSettingsStore).
  *
  * PR 5 (live exclusion) will further refine the discard rule — tabs
  * with playing audio/video, active form input, or in-flight upload

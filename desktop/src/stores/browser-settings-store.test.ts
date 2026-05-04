@@ -67,6 +67,11 @@ describe("browser-settings-store — setters", () => {
     useBrowserSettingsStore.getState().setSearchEngine("bing");
     expect(useBrowserSettingsStore.getState().searchEngine).toBe("bing");
   });
+
+  it("setSearchEngine ignores invalid engine values", () => {
+    useBrowserSettingsStore.getState().setSearchEngine("yahoo" as SearchEngine);
+    expect(useBrowserSettingsStore.getState().searchEngine).toBe("duckduckgo");
+  });
 });
 
 describe("searchUrlFor", () => {

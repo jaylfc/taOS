@@ -20,7 +20,7 @@ interface BrowserSettingsState {
   searchEngine: SearchEngine;
   setDiscardTimeoutMs: (ms: number) => void;
   setMaxLiveTabs: (n: number) => void;
-  setSearchEngine: (e: SearchEngine) => void;
+  setSearchEngine: (e: string) => void;
 }
 
 export const useBrowserSettingsStore = create<BrowserSettingsState>()(
@@ -28,7 +28,7 @@ export const useBrowserSettingsStore = create<BrowserSettingsState>()(
     (set) => ({
       discardTimeoutMs: 10 * 60 * 1000,
       maxLiveTabs: 12,
-      searchEngine: "duckduckgo" as SearchEngine,
+      searchEngine: "duckduckgo",
 
       setDiscardTimeoutMs(ms) {
         const clamped = Math.max(60_000, Math.min(60 * 60 * 1000, ms));
@@ -41,7 +41,7 @@ export const useBrowserSettingsStore = create<BrowserSettingsState>()(
       },
 
       setSearchEngine(e) {
-        set({ searchEngine: e });
+        if (e in SEARCH_ENGINES) set({ searchEngine: e as SearchEngine });
       },
     }),
     { name: "taos-browser-settings" },
