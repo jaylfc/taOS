@@ -48,3 +48,27 @@ class TestCopilotJsAsset:
         r = await client.get("/__taos/copilot.js")
         body = r.text
         assert "__taosCopilot" in body
+
+    @pytest.mark.asyncio
+    async def test_uses_named_handlers_for_cleanup(self, client):
+        """The scroll and submit listeners must be named functions so the close
+        handler can remove them. Verify by content inspection."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        # The cleanup pattern requires named functions or refs.
+        assert "function onScroll" in body
+        assert "function onSubmit" in body
+        assert "removeEventListener('scroll'" in body
+        assert "removeEventListener('submit'" in body
+
+    @pytest.mark.asyncio
+    async def test_uses_hasOwnProperty_guard_on_op_lookup(self, client):
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "hasOwnProperty.call" in body
+
+    @pytest.mark.asyncio
+    async def test_uses_css_escape_on_ids(self, client):
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "CSS.escape" in body or "CSS && CSS.escape" in body or "window.CSS.escape" in body

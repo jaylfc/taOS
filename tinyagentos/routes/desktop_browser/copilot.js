@@ -95,7 +95,7 @@
     while (el && el.nodeType === 1) {
       var s = el.nodeName.toLowerCase();
       if (el.id) {
-        s += '#' + el.id;
+        s += '#' + (window.CSS && window.CSS.escape ? window.CSS.escape(el.id) : el.id);
         path.unshift(s);
         break;
       }
@@ -145,7 +145,7 @@
     ws.addEventListener('message', function (evt) {
       var msg;
       try { msg = JSON.parse(evt.data); } catch (_e) { return; }
-      if (msg && msg.op && ops[msg.op]) {
+      if (msg && msg.op && Object.prototype.hasOwnProperty.call(ops, msg.op)) {
         var result;
         try {
           result = ops[msg.op](msg.args || {});
@@ -158,14 +158,10 @@
       }
     });
 
-    ws.addEventListener('close', function () {
-      delete _connections[agentId];
-    });
-
     // Page lifecycle events forwarded to the server.
     // Scroll is throttled to one event per animation frame.
     var scrollPending = false;
-    window.addEventListener('scroll', function () {
+    function onScroll() {
       if (scrollPending) return;
       scrollPending = true;
       requestAnimationFrame(function () {
@@ -174,17 +170,22 @@
           ws.send(JSON.stringify({ event: 'scroll', x: window.scrollX, y: window.scrollY }));
         }
       });
-    }, { passive: true });
+    }
 
-    document.addEventListener('submit', function (e) {
-      var form = e.target;
+    function onSubmit(e) {
       if (ws.readyState === 1) {
-        ws.send(JSON.stringify({
-          event: 'form-submit',
-          selector: cssPath(form),
-        }));
+        ws.send(JSON.stringify({ event: 'form-submit', selector: cssPath(e.target) }));
       }
-    }, true);
+    }
+
+    ws.addEventListener('close', function () {
+      window.removeEventListener('scroll', onScroll);
+      document.removeEventListener('submit', onSubmit, true);
+      delete _connections[agentId];
+    });
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('submit', onSubmit, true);
   }
 
   function closeConnection(agentId) {
