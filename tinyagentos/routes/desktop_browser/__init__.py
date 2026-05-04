@@ -14,3 +14,4 @@ router = APIRouter()
 from tinyagentos.routes.desktop_browser import proxy as _proxy  # noqa: E402,F401
 from tinyagentos.routes.desktop_browser import windows as _windows  # noqa: E402,F401
 from tinyagentos.routes.desktop_browser import suggest as _suggest  # noqa: E402,F401
+from tinyagentos.routes.desktop_browser import profile_routes as _profile_routes  # noqa: E402,F401

@@ -137,6 +137,54 @@ class BrowserStore(BaseStore):
         await self._db.commit()
         return cursor.rowcount > 0
 
+    async def update_profile(
+        self,
+        *,
+        user_id: str,
+        profile_id: str,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> bool:
+        """Patch an existing profile's name/color. Returns True if a row was updated."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        if not profile_id:
+            raise ValueError("profile_id is required")
+        if name is None and color is None:
+            return False
+        assert self._db is not None
+        # Build dynamic SET clause
+        sets: list[str] = []
+        params: list[object] = []
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if color is not None:
+            sets.append("color = ?")
+            params.append(color)
+        params.extend([user_id, profile_id])
+        cursor = await self._db.execute(
+            f"UPDATE profiles SET {', '.join(sets)} "
+            f"WHERE user_id = ? AND profile_id = ?",
+            params,
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def delete_profile(self, *, user_id: str, profile_id: str) -> bool:
+        """Delete a profile. Returns True if a row was deleted."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        if not profile_id:
+            raise ValueError("profile_id is required")
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "DELETE FROM profiles WHERE user_id = ? AND profile_id = ?",
+            (user_id, profile_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
     async def add_history(
         self,
         *,
@@ -416,3 +464,28 @@ class BrowserCookieStore:
                 conn.close()
 
         await asyncio.get_running_loop().run_in_executor(None, _do)
+
+    async def delete_profile_cookies(
+        self, *, user_id: str, profile_id: str,
+    ) -> int:
+        """Delete all cookies for a (user, profile). Returns row count."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        if not profile_id:
+            raise ValueError("profile_id is required")
+
+        import asyncio
+
+        def _do() -> int:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM cookies WHERE user_id = ? AND profile_id = ?",
+                    (user_id, profile_id),
+                )
+                conn.commit()
+                return cursor.rowcount or 0
+            finally:
+                conn.close()
+
+        return await asyncio.get_running_loop().run_in_executor(None, _do)
