@@ -54,16 +54,16 @@ class CopilotTicketStore:
         """Mint a single-use ticket. Returns the opaque token string."""
         if not all([user_id, profile_id, tab_id, agent_id]):
             raise ValueError("user_id, profile_id, tab_id, agent_id all required")
+        now = self._clock()
         token = secrets.token_urlsafe(32)
         self._tickets[token] = CopilotTicket(
             user_id=user_id,
             profile_id=profile_id,
             tab_id=tab_id,
             agent_id=agent_id,
-            issued_at=self._clock(),
+            issued_at=now,
         )
         # Opportunistic GC — sweep expired tickets to keep dict bounded.
-        now = self._clock()
         self._tickets = {
             k: v
             for k, v in self._tickets.items()

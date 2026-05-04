@@ -76,6 +76,30 @@ class TestCopilotTicketStore:
         # A is gone — consume returns None and the internal dict doesn't hold it
         assert store.consume(token_a) is None
 
+    def test_mint_single_clock_read_no_self_eviction(self):
+        """Regression: mint() must capture `now` once so GC cannot evict the
+        freshly minted ticket when the clock jumps exactly TTL between calls."""
+        from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore
+
+        # Clock returns 0.0 on first call, then 60.0 (exactly TTL) on every
+        # subsequent call — simulates the worst-case double-read scenario.
+        calls = iter([0.0, 60.0])
+        clock = lambda: next(calls)  # noqa: E731
+
+        store = CopilotTicketStore(clock=clock)
+        token = store.mint(user_id="u1", profile_id="p1", tab_id="t1", agent_id="a1")
+
+        # Token must still be present in the store — not evicted by its own mint.
+        assert token in store._tickets
+        # And must be consumable (using real time.time for consume, so patch
+        # issued_at to 0 is fine — consume's clock call will be >> 0 only if
+        # the ticket survived the GC sweep; here we pass a fixed consume clock).
+        consume_store = CopilotTicketStore(clock=lambda: 0.0)
+        consume_store._tickets = store._tickets
+        ticket = consume_store.consume(token)
+        assert ticket is not None
+        assert ticket.agent_id == "a1"
+
 
 # ---------------------------------------------------------------------------
 # HTTP endpoint tests
@@ -156,6 +180,14 @@ class TestMintTicketEndpoint:
                 json={"profile_id": "p1", "tab_id": "t1", "agent_id": "agent-iso"},
             )
             assert resp.status_code == 403
+
+    async def test_mint_ticket_422_on_missing_field(self, client):
+        """Pydantic returns 422 when a required body field is omitted."""
+        resp = await client.post(
+            "/api/desktop/browser/copilot/ticket",
+            json={"profile_id": "p1", "tab_id": "t1"},  # agent_id missing
+        )
+        assert resp.status_code == 422
 
     async def test_minted_ticket_can_be_consumed_via_app_state(self, client, app):
         _add_agent(app, "agent-consume")
