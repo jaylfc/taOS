@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -305,7 +305,7 @@ async def test_check_capability_star_matches_any_host(store):
 
 @pytest.mark.asyncio
 async def test_check_capability_expired_grant_returns_false(store):
-    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     await store.add_capability(
         user_id="u1", profile_id="p1", agent_id="agent-a",
         host_pattern="*", permissions="read_dom", expires_at=past,
@@ -319,7 +319,7 @@ async def test_check_capability_expired_grant_returns_false(store):
 
 @pytest.mark.asyncio
 async def test_check_capability_future_expiry_returns_true(store):
-    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
     await store.add_capability(
         user_id="u1", profile_id="p1", agent_id="agent-a",
         host_pattern="*", permissions="read_dom", expires_at=future,

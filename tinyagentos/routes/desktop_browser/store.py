@@ -8,7 +8,7 @@ The query helpers refuse to operate without a user_id argument.
 """
 from __future__ import annotations
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyagentos.base_store import BaseStore
@@ -349,7 +349,7 @@ class BrowserStore(BaseStore):
         if not agent_id:
             raise ValueError("agent_id is required")
         assert self._db is not None
-        pinned_at = datetime.now(UTC).isoformat()
+        pinned_at = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
             "INSERT OR IGNORE INTO agent_pins "
             "(user_id, profile_id, tab_id, agent_id, pinned_at) "
@@ -386,7 +386,7 @@ class BrowserStore(BaseStore):
         if not agent_id:
             raise ValueError("agent_id is required")
         assert self._db is not None
-        pinned_at = datetime.now(UTC).isoformat()
+        pinned_at = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
             """
             INSERT OR IGNORE INTO agent_pins
@@ -516,7 +516,7 @@ class BrowserStore(BaseStore):
         if not permissions:
             raise ValueError("permissions is required")
         assert self._db is not None
-        granted_at = datetime.now(UTC).isoformat()
+        granted_at = datetime.now(timezone.utc).isoformat()
         await self._db.execute(
             "INSERT OR REPLACE INTO agent_capabilities "
             "(user_id, profile_id, agent_id, host_pattern, permissions, granted_at, expires_at) "
@@ -607,7 +607,7 @@ class BrowserStore(BaseStore):
         rows = await self.list_capabilities(
             user_id=user_id, profile_id=profile_id, agent_id=agent_id,
         )
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         for row in rows:
             # Expiry check
             expires = row["expires_at"]
