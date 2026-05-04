@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { AddressBar } from "./AddressBar";
 import { useBrowserStore } from "@/stores/browser-store";
+import * as extractApi from "@/lib/browser-extract-api";
 
 const TEST_WINDOW_ID = "win-test";
 const originalFetch = global.fetch;
@@ -171,5 +172,105 @@ describe("AddressBar — focus event", () => {
 
     await new Promise((r) => setTimeout(r, 0));
     expect(document.activeElement).not.toBe(input);
+  });
+});
+
+describe("AddressBar — reader toggle", () => {
+  it("does NOT render reader toggle when readerAvailable is not true", () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://a.test/");
+    // readerAvailable is undefined by default after navigateTab
+
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    expect(
+      screen.queryByRole("button", { name: /toggle reader mode/i }),
+    ).toBeNull();
+  });
+
+  it("renders reader toggle when readerAvailable is true", () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://a.test/");
+    useBrowserStore.getState().setTabReader(TEST_WINDOW_ID, tabId, {
+      readerAvailable: true,
+      readerExtract: {
+        title: "Test",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 300,
+      },
+    });
+
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    expect(
+      screen.getByRole("button", { name: /toggle reader mode/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking the reader toggle flips readerActive in the store", () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://a.test/");
+    useBrowserStore.getState().setTabReader(TEST_WINDOW_ID, tabId, {
+      readerAvailable: true,
+      readerActive: false,
+      readerExtract: {
+        title: "Test",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 300,
+      },
+    });
+
+    const setTabReaderSpy = vi.spyOn(useBrowserStore.getState(), "setTabReader");
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    fireEvent.click(screen.getByRole("button", { name: /toggle reader mode/i }));
+
+    expect(setTabReaderSpy).toHaveBeenCalledWith(
+      TEST_WINDOW_ID,
+      tabId,
+      { readerActive: true },
+    );
+  });
+
+  it("focusing address bar with readerAvailable=undefined triggers extractReadable", async () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://a.test/");
+
+    const extractSpy = vi.spyOn(extractApi, "extractReadable").mockResolvedValue({
+      title: "Article",
+      text: "some content",
+      html: "<p>some content</p>",
+      word_count: 250,
+    });
+
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    const input = screen.getByLabelText("Address") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.focus(input);
+    });
+
+    expect(extractSpy).toHaveBeenCalledWith("personal", "https://a.test/");
+  });
+
+  it("focusing address bar with readerAvailable already set does NOT re-trigger extractReadable", async () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://a.test/");
+    useBrowserStore.getState().setTabReader(TEST_WINDOW_ID, tabId, {
+      readerAvailable: true,
+      readerExtract: {
+        title: "Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 300,
+      },
+    });
+
+    const extractSpy = vi.spyOn(extractApi, "extractReadable").mockResolvedValue(null);
+
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    const input = screen.getByLabelText("Address") as HTMLInputElement;
+    fireEvent.focus(input);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(extractSpy).not.toHaveBeenCalled();
   });
 });

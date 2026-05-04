@@ -21,6 +21,7 @@ import { useEffect } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useBrowserSettingsStore } from "@/stores/browser-settings-store";
 import { detectLiveExclusion } from "./live-exclusion";
+import { ReaderMode } from "./ReaderMode";
 import type { Tab } from "./types";
 
 export const DISCARD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -114,30 +115,40 @@ export function TabRenderer({ windowId }: TabRendererProps) {
           ) : null;
         }
 
+        const showReader = isActive && !!tab.readerActive && !!tab.readerExtract;
+
         return (
-          <iframe
+          <div
             key={tab.id}
-            title={tab.title || tab.url || "Browser tab"}
-            src={proxiedSrc(win.profileId, tab.url)}
-            data-tab-id={tab.id}
-            // sandbox: allow-same-origin intentionally OMITTED. The proxy
-            // serves on the same origin as the shell; combining
-            // allow-same-origin + allow-scripts would let proxied JS reach
-            // up into the parent and remove this attribute. The HTTPS+DNS
-            // Foundations brainstorm will land an isolated subdomain that
-            // makes allow-same-origin safe to add back.
-            sandbox="allow-scripts allow-forms allow-popups allow-downloads"
-            style={{
-              display: isActive ? "block" : "none",
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              border: "none",
-              transform: tab.zoom !== 1 ? `scale(${tab.zoom})` : undefined,
-              transformOrigin: "top left",
-            }}
-          />
+            style={{ display: isActive ? "contents" : "none" }}
+            data-window-tab={tab.id}
+          >
+            <iframe
+              title={tab.title || tab.url || "Browser tab"}
+              src={proxiedSrc(win.profileId, tab.url)}
+              data-tab-id={tab.id}
+              // sandbox: allow-same-origin intentionally OMITTED. The proxy
+              // serves on the same origin as the shell; combining
+              // allow-same-origin + allow-scripts would let proxied JS reach
+              // up into the parent and remove this attribute. The HTTPS+DNS
+              // Foundations brainstorm will land an isolated subdomain that
+              // makes allow-same-origin safe to add back.
+              sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+              style={{
+                display: showReader ? "none" : isActive ? "block" : "none",
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                border: "none",
+                transform: tab.zoom !== 1 ? `scale(${tab.zoom})` : undefined,
+                transformOrigin: "top left",
+              }}
+            />
+            {showReader && (
+              <ReaderMode tab={tab} windowId={windowId} />
+            )}
+          </div>
         );
       })}
     </div>

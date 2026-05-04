@@ -285,6 +285,79 @@ describe("browser-store: zoom", () => {
   });
 });
 
+describe("browser-store: setTabReader", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("patches reader fields onto the tab", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabReader("win-1", tabId, {
+      readerAvailable: true,
+      readerActive: false,
+      readerExtract: {
+        title: "Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 300,
+      },
+    });
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.readerAvailable).toBe(true);
+    expect(tab?.readerActive).toBe(false);
+    expect(tab?.readerExtract?.title).toBe("Article");
+  });
+
+  it("partial patch only updates specified fields", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabReader("win-1", tabId, { readerAvailable: true });
+    s.setTabReader("win-1", tabId, { readerActive: true });
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.readerAvailable).toBe(true);
+    expect(tab?.readerActive).toBe(true);
+  });
+});
+
+describe("browser-store: navigateTab reader reset", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("resets reader fields when navigating to a new URL", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabReader("win-1", tabId, {
+      readerAvailable: true,
+      readerActive: true,
+      readerExtract: {
+        title: "Old article",
+        text: "old",
+        html: "<p>old</p>",
+        word_count: 500,
+      },
+    });
+
+    s.navigateTab("win-1", tabId, "https://new-page.test/");
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.readerAvailable).toBeUndefined();
+    expect(tab?.readerActive).toBeUndefined();
+    expect(tab?.readerExtract).toBeNull();
+  });
+});
+
 describe("browser-store: switchProfile", () => {
   beforeEach(async () => {
     const mod = await import("./browser-store");

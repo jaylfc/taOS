@@ -15,9 +15,11 @@
  * Settings.
  */
 import { useEffect, useRef, useState } from "react";
+import { BookOpen } from "lucide-react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useBrowserSettingsStore, searchUrlFor } from "@/stores/browser-settings-store";
 import { fetchSuggestions, type Suggestion } from "@/lib/browser-suggest-api";
+import { extractReadable } from "@/lib/browser-extract-api";
 import { AddressSuggest } from "./AddressSuggest";
 
 const SUGGEST_DEBOUNCE_MS = 150;
@@ -32,12 +34,16 @@ export function AddressBar({ windowId }: AddressBarProps) {
 
   const activeTab = win?.tabs.find((t) => t.id === win?.activeTabId);
 
+  const setTabReader = useBrowserStore((s) => s.setTabReader);
+
   const [inputValue, setInputValue] = useState(activeTab?.url ?? "");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [hasFocus, setHasFocus] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const suggestTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guard against duplicate in-flight extract requests for the same URL
+  const inflightUrlRef = useRef<string | null>(null);
 
   // Focus the address bar when Cmd+L fires for this window
   useEffect(() => {
@@ -107,6 +113,31 @@ export function AddressBar({ windowId }: AddressBarProps) {
           setHasFocus(true);
           // Select all on focus (Safari / Chrome behavior)
           e.currentTarget.select();
+          // Lazy reader extract — fire once per URL when the address bar is opened
+          if (
+            activeTab &&
+            activeTab.readerAvailable === undefined &&
+            !activeTab.readerExtract &&
+            /^https?:\/\//i.test(activeTab.url) &&
+            inflightUrlRef.current !== activeTab.url
+          ) {
+            const targetUrl = activeTab.url;
+            inflightUrlRef.current = targetUrl;
+            extractReadable(win.profileId, targetUrl)
+              .then((result) => {
+                if (result) {
+                  setTabReader(windowId, activeTab.id, {
+                    readerAvailable: result.word_count > 200,
+                    readerExtract: result,
+                  });
+                } else {
+                  setTabReader(windowId, activeTab.id, { readerAvailable: false });
+                }
+              })
+              .finally(() => {
+                inflightUrlRef.current = null;
+              });
+          }
         }}
         onBlur={() => {
           setHasFocus(false);
@@ -135,8 +166,30 @@ export function AddressBar({ windowId }: AddressBarProps) {
             setSelectedIndex((i) => Math.max(i - 1, -1));
           }
         }}
-        className="w-full bg-shell-bg-deep text-shell-text px-2 py-0.5 rounded text-xs border border-shell-border-subtle focus:border-accent focus:outline-none"
+        className={`w-full bg-shell-bg-deep text-shell-text px-2 py-0.5 rounded text-xs border border-shell-border-subtle focus:border-accent focus:outline-none ${
+          activeTab?.readerAvailable ? "pr-7" : ""
+        }`}
       />
+      {activeTab?.readerAvailable && (
+        <button
+          type="button"
+          aria-label="Toggle Reader mode"
+          aria-pressed={!!activeTab?.readerActive}
+          onClick={() => {
+            if (!activeTab) return;
+            setTabReader(windowId, activeTab.id, {
+              readerActive: !activeTab.readerActive,
+            });
+          }}
+          className={`absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded ${
+            activeTab?.readerActive
+              ? "text-accent"
+              : "text-shell-text-secondary hover:text-shell-text"
+          }`}
+        >
+          <BookOpen size={12} />
+        </button>
+      )}
       {hasFocus && (
         <AddressSuggest
           suggestions={suggestions}

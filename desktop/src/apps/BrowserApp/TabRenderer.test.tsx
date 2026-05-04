@@ -198,6 +198,83 @@ describe("TabRenderer — graceful handling", () => {
   });
 });
 
+describe("TabRenderer — reader mode", () => {
+  it("renders ReaderMode for active tab when readerActive is true", () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.activeTabId;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://article.test/story",
+    );
+    useBrowserStore.getState().setTabReader(TEST_WINDOW_ID, tabId, {
+      readerAvailable: true,
+      readerActive: true,
+      readerExtract: {
+        title: "Amazing Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 500,
+      },
+    });
+
+    render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    expect(screen.getByTestId("reader-mode")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Amazing Article",
+    );
+  });
+
+  it("renders iframe normally when readerActive is false", () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.activeTabId;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://article.test/story",
+    );
+    useBrowserStore.getState().setTabReader(TEST_WINDOW_ID, tabId, {
+      readerAvailable: true,
+      readerActive: false,
+      readerExtract: {
+        title: "Amazing Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 500,
+      },
+    });
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    expect(screen.queryByTestId("reader-mode")).toBeNull();
+    const iframe = container.querySelector("iframe");
+    expect(iframe).toBeTruthy();
+    expect((iframe as HTMLIFrameElement).style.display).toBe("block");
+  });
+
+  it("iframe stays in DOM when reader mode is active (toggling off preserves iframe state)", () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.activeTabId;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://article.test/story",
+    );
+    useBrowserStore.getState().setTabReader(TEST_WINDOW_ID, tabId, {
+      readerAvailable: true,
+      readerActive: true,
+      readerExtract: {
+        title: "Amazing Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 500,
+      },
+    });
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    // iframe should still be in DOM even with reader active (display:none)
+    const iframe = container.querySelector("iframe");
+    expect(iframe).toBeTruthy();
+    expect((iframe as HTMLIFrameElement).style.display).toBe("none");
+  });
+});
+
 describe("TabRenderer — live exclusion exempts discard", () => {
   it("does NOT discard a tab whose iframe has a playing video", () => {
     const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;

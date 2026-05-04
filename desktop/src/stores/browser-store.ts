@@ -12,6 +12,7 @@ import { create } from "zustand";
 import type {
   BrowserWindowState,
   LiveExclusion,
+  ReaderExtract,
   RecentlyClosedTab,
   Tab,
 } from "@/apps/BrowserApp/types";
@@ -81,6 +82,13 @@ interface BrowserStore {
   // Profile switching — Task 4: minimal (updates profileId only).
   // Task 6 will enhance to snapshot/restore tabs per (window, profile).
   switchProfile: (windowId: string, newProfileId: string) => void;
+
+  // Reader mode
+  setTabReader: (
+    windowId: string,
+    tabId: string,
+    patch: Partial<Pick<Tab, "readerAvailable" | "readerActive" | "readerExtract">>,
+  ) => void;
 }
 
 export const useBrowserStore = create<BrowserStore>((set, get) => ({
@@ -211,6 +219,10 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
         historyIndex: newHistory.length - 1,
         state: "live",
         lastActiveAt: Date.now(),
+        // Reset reader state on navigation — new URL invalidates the extract
+        readerAvailable: undefined,
+        readerActive: undefined,
+        readerExtract: null,
       };
     }));
   },
@@ -299,6 +311,10 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
       };
     });
   },
+  setTabReader(windowId, tabId, patch) {
+    set((s) => updateTab(s, windowId, tabId, (t) => ({ ...t, ...patch })));
+  },
+
   switchProfile(windowId, newProfileId) {
     set((s) => {
       const win = s.windows[windowId];

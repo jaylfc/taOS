@@ -8,6 +8,13 @@
 
 export type LiveExclusion = "audio" | "video" | "form-active" | "upload" | "pinned";
 
+export interface ReaderExtract {
+  title: string;
+  text: string;
+  html: string;
+  word_count: number;
+}
+
 export interface Tab {
   id: string;
   url: string;
@@ -21,6 +28,12 @@ export interface Tab {
   state: "live" | "discarded";
   lastActiveAt: number;
   liveExclusion?: LiveExclusion;
+  /** true when the last extract returned word_count > 200 */
+  readerAvailable?: boolean;
+  /** true when the user has toggled reader mode on */
+  readerActive?: boolean;
+  /** cached extract — avoids re-fetching when toggling */
+  readerExtract?: ReaderExtract | null;
 }
 
 export interface RecentlyClosedTab {
