@@ -49,16 +49,21 @@ export function AddressSuggest({
         const Icon = SOURCE_ICON[s.source] ?? Globe;
         const isSelected = i === selectedIndex;
         return (
-          <button
+          <div
             key={`${s.source}-${s.url}-${i}`}
-            type="button"
             role="option"
             aria-selected={isSelected}
             data-suggest-index={i}
+            tabIndex={-1}
             onMouseEnter={() => onHighlight(i)}
+            onMouseDown={(e) => {
+              // mousedown fires before blur on the input; preventDefault
+              // keeps the input focused so the subsequent click still fires.
+              e.preventDefault();
+            }}
             onClick={() => onSelect(s)}
             className={[
-              "w-full text-left px-2 py-1 flex items-center gap-2 text-xs",
+              "w-full text-left px-2 py-1 flex items-center gap-2 text-xs cursor-pointer",
               isSelected
                 ? "bg-shell-hover"
                 : "hover:bg-shell-hover/50",
@@ -69,7 +74,7 @@ export function AddressSuggest({
             <span className="text-shell-text-tertiary text-[10px] truncate max-w-[200px]">
               {s.url}
             </span>
-          </button>
+          </div>
         );
       })}
     </div>

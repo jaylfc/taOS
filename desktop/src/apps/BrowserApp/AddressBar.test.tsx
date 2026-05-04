@@ -101,6 +101,24 @@ describe("AddressBar — suggest popover", () => {
     });
   });
 
+  it("does NOT navigate when input starts with @ (PR 4 stub)", () => {
+    const navSpy = vi.spyOn(useBrowserStore.getState(), "navigateTab");
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    const input = screen.getByLabelText("Address") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "@john" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(navSpy).not.toHaveBeenCalled();
+  });
+
+  it("does NOT navigate when input starts with ! (PR 4 stub)", () => {
+    const navSpy = vi.spyOn(useBrowserStore.getState(), "navigateTab");
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    const input = screen.getByLabelText("Address") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "!work" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(navSpy).not.toHaveBeenCalled();
+  });
+
   it("@-prefixed query does NOT fire suggest fetch (PR 4 stub)", async () => {
     const fetchMock = vi.fn();
     global.fetch = fetchMock;

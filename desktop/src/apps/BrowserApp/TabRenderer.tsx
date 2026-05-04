@@ -97,7 +97,13 @@ export function TabRenderer({ windowId }: TabRendererProps) {
             title={tab.title || tab.url || "Browser tab"}
             src={proxiedSrc(win.profileId, tab.url)}
             data-tab-id={tab.id}
-            sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-downloads"
+            // sandbox: allow-same-origin intentionally OMITTED. The proxy
+            // serves on the same origin as the shell; combining
+            // allow-same-origin + allow-scripts would let proxied JS reach
+            // up into the parent and remove this attribute. The HTTPS+DNS
+            // Foundations brainstorm will land an isolated subdomain that
+            // makes allow-same-origin safe to add back.
+            sandbox="allow-scripts allow-forms allow-popups allow-downloads"
             style={{
               display: isActive ? "block" : "none",
               position: "absolute",

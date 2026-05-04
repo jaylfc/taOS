@@ -44,11 +44,11 @@ export function TabOverview({ windowId, onSelect, onClose }: TabOverviewProps) {
       </header>
 
       {pinned.length > 0 && (
-        <section aria-label="Pinned tabs" className="mb-4">
+        <section className="mb-4">
           <div className="text-[10px] uppercase tracking-wide text-shell-text-tertiary mb-2">
             Pinned
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div role="tablist" aria-label="Pinned tabs" className="grid grid-cols-2 gap-2">
             {pinned.map((tab) => (
               <TabCard
                 key={tab.id}
@@ -65,8 +65,8 @@ export function TabOverview({ windowId, onSelect, onClose }: TabOverviewProps) {
         </section>
       )}
 
-      <section aria-label="Open tabs">
-        <div className="grid grid-cols-2 gap-2">
+      <section>
+        <div role="tablist" aria-label="Open tabs" className="grid grid-cols-2 gap-2">
           {unpinned.map((tab) => (
             <TabCard
               key={tab.id}

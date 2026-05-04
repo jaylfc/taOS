@@ -21,12 +21,15 @@ async def suggest(
     q: str,
     request: Request,
     limit: int = 8,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
 ) -> dict:
     """Return up to `limit` autocomplete suggestions for `q`."""
     user_id = str(current_user.get("id") or "")
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    # Cap limit to avoid abuse — a caller could pass limit=1_000_000.
+    limit = max(1, min(50, limit))
 
     if not q.strip():
         return {"suggestions": []}

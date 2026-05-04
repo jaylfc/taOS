@@ -115,6 +115,7 @@ function TabItem({ tab, isActive, onActivate, onClose, onContextMenu }: TabItemP
       onContextMenu={onContextMenu}
       className={[
         widthClass,
+        "group",
         "h-[28px] px-2 flex items-center gap-1.5 rounded-t cursor-pointer",
         "border-t border-l border-r border-shell-border-subtle",
         isActive

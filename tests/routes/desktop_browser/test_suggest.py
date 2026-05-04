@@ -119,7 +119,7 @@ class TestSuggestSources:
             params={"profile_id": "personal", "q": "example", "limit": 5},
         )
         suggestions = resp.json()["suggestions"]
-        assert len(suggestions) <= 5
+        assert len(suggestions) == 5
 
 
 @pytest.mark.asyncio

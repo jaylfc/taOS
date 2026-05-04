@@ -7,8 +7,8 @@
  * autocomplete (debounced 150ms).
  *
  * Special prefix handling (PR 4 stubs; PR 5/6 wires real behavior):
- *  - "@..." → no-op (PR 6 will route to agent picker)
- *  - "!..." → no-op (PR 5 will route to profile switch for this nav)
+ *  - "@..." → genuine no-op; commitNavigation early-returns (PR 6 will wire)
+ *  - "!..." → genuine no-op; commitNavigation early-returns (PR 5 will wire)
  *  - text with no "." → search query, prepend search-engine URL
  *
  * Default search engine: DuckDuckGo. Per-user override lands in PR 5
@@ -84,6 +84,10 @@ export function AddressBar({ windowId }: AddressBarProps) {
   function commitNavigation(target: string) {
     const trimmed = target.trim();
     if (!trimmed) return;
+    // @<agent> and !<profile> prefixes are reserved for PR 5/6.
+    // PR 4 makes them genuine no-ops to prevent failed navigations
+    // (and to defend against constructions like "@javascript:alert(1)").
+    if (trimmed.startsWith("@") || trimmed.startsWith("!")) return;
     if (!activeTab) return;
     const finalUrl = resolveFinalUrl(trimmed);
     navigateTab(windowId, activeTab.id, finalUrl);
@@ -154,7 +158,8 @@ export function AddressBar({ windowId }: AddressBarProps) {
  */
 function resolveFinalUrl(input: string): string {
   if (input.startsWith("@") || input.startsWith("!")) {
-    // No-op for PR 4 — PR 5/6 will replace this branch
+    // Defensive: commitNavigation should have early-returned for these.
+    // If we get here it's a logic bug — return as-is to fail loudly downstream.
     return input;
   }
   if (/^https?:\/\//i.test(input)) return input;

@@ -77,7 +77,7 @@ export function WindowChooser({
         </button>
       </header>
 
-      <ul role="list" className="max-h-[60vh] overflow-y-auto py-1">
+      <ul role="listbox" aria-label="Browser windows" className="max-h-[60vh] overflow-y-auto py-1">
         {windowList.length === 0 && (
           <li className="px-3 py-2 text-xs opacity-60">No windows</li>
         )}

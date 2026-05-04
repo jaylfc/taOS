@@ -55,11 +55,10 @@ export function FindInPage({ windowId, onClose }: FindInPageProps) {
             query: q,
             direction,
           },
-          "*",
+          window.location.origin,
         );
       } catch {
-        // Cross-origin iframes can't be messaged; PR 6's copilot.js
-        // is same-origin so this works for proxied tabs.
+        // postMessage throws if the target window is gone; safe to ignore.
       }
     }
   }

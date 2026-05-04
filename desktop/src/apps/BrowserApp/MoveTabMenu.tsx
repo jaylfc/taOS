@@ -54,10 +54,16 @@ export function MoveTabMenu({
     const browserApp = getApp("browser");
     if (!browserApp) return;
     const newWindowId = openWindow("browser", browserApp.defaultSize);
-    // After the new window mounts, its BrowserApp.useEffect will create
-    // the entry in browser-store. We need to wait one tick before moving.
-    queueMicrotask(() => {
-      moveTab(fromWindowId, tabId, newWindowId);
+
+    // openWindow enqueues a React render. The new BrowserApp's mount
+    // effect will call createWindow(newWindowId). queueMicrotask fires
+    // BEFORE React effects — so we subscribe to the store and perform
+    // the move once the new window entry materialises.
+    const unsub = useBrowserStore.subscribe((state) => {
+      if (state.windows[newWindowId]) {
+        unsub();
+        moveTab(fromWindowId, tabId, newWindowId);
+      }
     });
     onClose();
   }

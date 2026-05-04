@@ -30,7 +30,7 @@ class WindowsPutBody(BaseModel):
 @router.get("/api/desktop/browser/windows")
 async def list_browser_windows(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
 ) -> dict:
     """Return persisted browser windows for the authenticated user."""
     user_id = str(current_user.get("id") or "")
@@ -46,7 +46,7 @@ async def list_browser_windows(
 async def put_browser_windows(
     body: WindowsPutBody,
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
 ) -> dict:
     """Upsert all windows in the body. Caller manages full snapshot."""
     user_id = str(current_user.get("id") or "")
@@ -69,7 +69,7 @@ async def put_browser_windows(
 async def delete_browser_window(
     window_id: str,
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
 ) -> Response:
     """Remove one persisted browser window."""
     user_id = str(current_user.get("id") or "")

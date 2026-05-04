@@ -84,7 +84,6 @@ export function Chrome({ windowId }: ChromeProps) {
       <div
         className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle text-xs"
         aria-label={`Profile: ${win.profileId}`}
-        role="status"
       >
         <span
           className="inline-block w-2 h-2 rounded-full"

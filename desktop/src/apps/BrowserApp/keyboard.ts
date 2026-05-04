@@ -75,14 +75,16 @@ export function useBrowserKeyboardShortcuts(opts: KeyboardShortcutsOptions) {
         case "=":
           if (activeTab) {
             e.preventDefault();
-            store.setTabZoom(windowId, activeTab.id, activeTab.zoom + ZOOM_STEP);
+            const next = Math.round((activeTab.zoom + ZOOM_STEP) * 10) / 10;
+            store.setTabZoom(windowId, activeTab.id, next);
           }
           break;
         case "-":
         case "_":
           if (activeTab) {
             e.preventDefault();
-            store.setTabZoom(windowId, activeTab.id, activeTab.zoom - ZOOM_STEP);
+            const next = Math.round((activeTab.zoom - ZOOM_STEP) * 10) / 10;
+            store.setTabZoom(windowId, activeTab.id, next);
           }
           break;
         case "0":
