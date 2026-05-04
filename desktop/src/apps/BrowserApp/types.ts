@@ -35,12 +35,16 @@ export interface Tab {
   readerActive?: boolean;
   /** cached extract — avoids re-fetching when toggling */
   readerExtract?: ReaderExtract | null;
+  /** Agent IDs pinned to this tab — sticky across navigation and discard. */
+  pinnedAgentIds: string[];
 }
 
 export interface RecentlyClosedTab {
   url: string;
   title: string;
   closedAt: number;
+  /** Preserved so restore brings agents back. */
+  pinnedAgentIds?: string[];
 }
 
 export interface SavedProfileTabs {

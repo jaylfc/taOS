@@ -37,6 +37,7 @@ function makeTab(url: string = NEW_TAB_URL): Tab {
     zoom: 1.0,
     state: "live",
     lastActiveAt: Date.now(),
+    pinnedAgentIds: [],
   };
 }
 
@@ -51,6 +52,7 @@ interface BrowserStore {
   // Tab lifecycle
   addTab: (windowId: string, url?: string) => string;
   closeTab: (windowId: string, tabId: string) => void;
+  restoreClosedTab: (windowId: string) => void;
   setActiveTab: (windowId: string, tabId: string) => void;
   pinTab: (windowId: string, tabId: string) => void;
   unpinTab: (windowId: string, tabId: string) => void;
@@ -88,6 +90,10 @@ interface BrowserStore {
     tabId: string,
     patch: Partial<Pick<Tab, "readerAvailable" | "readerActive" | "readerExtract">>,
   ) => void;
+
+  // Agent pin set — local state mutations; server calls happen via browser-agent-api.ts
+  addPinnedAgent: (windowId: string, tabId: string, agentId: string) => void;
+  removePinnedAgent: (windowId: string, tabId: string, agentId: string) => void;
 }
 
 export const useBrowserStore = create<BrowserStore>((set, get) => ({
@@ -150,6 +156,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
         url: closing.url,
         title: closing.title,
         closedAt: Date.now(),
+        pinnedAgentIds: closing.pinnedAgentIds ?? [],
       };
 
       const remainingTabs = win.tabs.filter((_, i) => i !== closingIdx);
@@ -176,6 +183,30 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
         tabs: tabsAfter,
         activeTabId: newActiveId,
         recentlyClosed: [closedEntry, ...win.recentlyClosed].slice(0, MAX_RECENTLY_CLOSED),
+      };
+      return { windows: { ...s.windows, [windowId]: updated } };
+    });
+  },
+
+  restoreClosedTab(windowId) {
+    set((s) => {
+      const win = s.windows[windowId];
+      if (!win || win.recentlyClosed.length === 0) return s;
+
+      const entry = win.recentlyClosed[0];
+      const remaining = win.recentlyClosed.slice(1);
+      if (!entry) return s;
+
+      const restored = makeTab(entry.url);
+      // Carry forward the pinned agents from the snapshot
+      restored.pinnedAgentIds = entry.pinnedAgentIds ?? [];
+      restored.title = entry.title;
+
+      const updated: BrowserWindowState = {
+        ...win,
+        tabs: [...win.tabs, restored],
+        activeTabId: restored.id,
+        recentlyClosed: remaining,
       };
       return { windows: { ...s.windows, [windowId]: updated } };
     });
@@ -326,6 +357,20 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   },
   setTabReader(windowId, tabId, patch) {
     set((s) => updateTab(s, windowId, tabId, (t) => ({ ...t, ...patch })));
+  },
+
+  addPinnedAgent(windowId, tabId, agentId) {
+    set((s) => updateTab(s, windowId, tabId, (t) => {
+      if (t.pinnedAgentIds.includes(agentId)) return t;
+      return { ...t, pinnedAgentIds: [...t.pinnedAgentIds, agentId] };
+    }));
+  },
+
+  removePinnedAgent(windowId, tabId, agentId) {
+    set((s) => updateTab(s, windowId, tabId, (t) => ({
+      ...t,
+      pinnedAgentIds: t.pinnedAgentIds.filter((id) => id !== agentId),
+    })));
   },
 
   switchProfile(windowId, newProfileId) {

@@ -536,3 +536,105 @@ describe("browser-store: switchProfile snapshot/restore", () => {
     expect(win2?._savedTabsByProfile?.personal).toBeUndefined(); // Just restored
   });
 });
+
+describe("browser-store: pinnedAgentIds", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("addTab initialises pinnedAgentIds as []", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.addTab("win-1", "https://example.test/");
+    const tab = s.getWindow("win-1")!.tabs.find((t) => t.id === tabId);
+    expect(tab?.pinnedAgentIds).toEqual([]);
+  });
+
+  it("addPinnedAgent appends an id", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.pinnedAgentIds).toEqual(["agent-1"]);
+  });
+
+  it("addPinnedAgent dedupes if already present", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.pinnedAgentIds).toEqual(["agent-1"]);
+  });
+
+  it("removePinnedAgent removes an id", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    s.addPinnedAgent("win-1", tabId, "agent-2");
+    s.removePinnedAgent("win-1", tabId, "agent-1");
+
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.pinnedAgentIds).toEqual(["agent-2"]);
+  });
+
+  it("navigateTab preserves pinnedAgentIds (sticky pin)", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    s.navigateTab("win-1", tabId, "https://new-page.test/");
+
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.pinnedAgentIds).toEqual(["agent-1"]);
+  });
+
+  it("markTabDiscarded preserves pinnedAgentIds", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    s.markTabDiscarded("win-1", tabId);
+
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.pinnedAgentIds).toEqual(["agent-1"]);
+  });
+
+  it("closeTab snapshot includes pinnedAgentIds in recentlyClosed", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.addTab("win-1", "https://pinned.test/");
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    s.closeTab("win-1", tabId);
+
+    const win = s.getWindow("win-1");
+    expect(win?.recentlyClosed[0].pinnedAgentIds).toEqual(["agent-1"]);
+  });
+
+  it("restoring a closed tab preserves pinnedAgentIds", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.addTab("win-1", "https://pinned.test/");
+
+    s.addPinnedAgent("win-1", tabId, "agent-1");
+    s.addPinnedAgent("win-1", tabId, "agent-2");
+    s.closeTab("win-1", tabId);
+
+    s.restoreClosedTab("win-1");
+
+    const win = s.getWindow("win-1");
+    const restored = win?.tabs.find((t) => t.url === "https://pinned.test/");
+    expect(restored).toBeDefined();
+    expect(restored?.pinnedAgentIds).toEqual(["agent-1", "agent-2"]);
+  });
+});
