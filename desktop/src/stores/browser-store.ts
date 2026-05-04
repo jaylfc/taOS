@@ -245,6 +245,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
       if (!tab) return s;
 
       // Remove from source
+      const closingIdx = fromWin.tabs.findIndex((t) => t.id === tabId);
       const fromTabs = fromWin.tabs.filter((t) => t.id !== tabId);
       const replacementTab = fromTabs.length === 0 ? makeTab() : null;
       const sourceAfter: BrowserWindowState = {
@@ -253,7 +254,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
         activeTabId: replacementTab
           ? replacementTab.id
           : (fromWin.activeTabId === tabId
-              ? fromTabs[Math.min(0, fromTabs.length - 1)].id
+              ? fromTabs[Math.min(closingIdx, fromTabs.length - 1)].id
               : fromWin.activeTabId),
       };
 

@@ -238,6 +238,23 @@ describe("browser-store: moveTab", () => {
 
     expect(s.getWindow("win-a")?.tabs.find((t) => t.id === tabId)).toBeDefined();
   });
+
+  it("activates next-by-original-index when active tab moved out of multi-tab source", async () => {
+    const s = await freshStore();
+    s.createWindow("win-a", "personal");
+    s.createWindow("win-b", "personal");
+    const tabA = s.getWindow("win-a")!.tabs[0].id;
+    const tabB = s.addTab("win-a", "https://b.test/");
+    const tabC = s.addTab("win-a", "https://c.test/");
+    // tabC is now active (last added)
+    expect(s.getWindow("win-a")?.activeTabId).toBe(tabC);
+
+    // Move tabC (active, index 2) out
+    s.moveTab("win-a", tabC, "win-b");
+
+    // win-a should activate the tab at clamp(closingIdx=2, len=2-1=1) = index 1 = tabB
+    expect(s.getWindow("win-a")?.activeTabId).toBe(tabB);
+  });
 });
 
 describe("browser-store: zoom", () => {

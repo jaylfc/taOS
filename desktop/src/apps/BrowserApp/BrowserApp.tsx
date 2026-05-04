@@ -16,6 +16,7 @@
 import { useEffect, useState } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useProcessStore } from "@/stores/process-store";
+import { deleteWindow as deleteServerWindow } from "@/lib/browser-windows-api";
 import { Chrome } from "./Chrome";
 import { TabStrip } from "./TabStrip";
 import { AddressBar } from "./AddressBar";
@@ -38,6 +39,9 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
   const createWindow = useBrowserStore((s) => s.createWindow);
   const setActiveTab = useBrowserStore((s) => s.setActiveTab);
   const focusWindow = useProcessStore((s) => s.focusWindow);
+  const isFocused = useProcessStore(
+    (s) => s.windows.find((w) => w.id === windowId)?.focused ?? false,
+  );
   const isMobile = useIsMobile(600);
   const [findOpen, setFindOpen] = useState(false);
   const [tabOverviewOpen, setTabOverviewOpen] = useState(false);
@@ -50,9 +54,17 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
     createWindow(windowId, DEFAULT_PROFILE_ID);
   }, [windowId, createWindow]);
 
+  // Cleanup on unmount: remove the window from browser-store + delete server row
+  useEffect(() => {
+    return () => {
+      useBrowserStore.getState().removeWindow(windowId);
+      deleteServerWindow(windowId).catch(() => {});
+    };
+  }, [windowId]);
+
   useBrowserKeyboardShortcuts({
     windowId,
-    hasFocus: true, // PR 4: always-on while mounted; PR 5+ may scope to focused window
+    hasFocus: isFocused,
     onOpenFind: () => setFindOpen(true),
   });
 

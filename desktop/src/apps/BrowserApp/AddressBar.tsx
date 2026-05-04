@@ -36,7 +36,20 @@ export function AddressBar({ windowId }: AddressBarProps) {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [hasFocus, setHasFocus] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const suggestTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Focus the address bar when Cmd+L fires for this window
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ windowId: string }>;
+      if (ce.detail?.windowId !== windowId) return;
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+    window.addEventListener("taos-browser:focus-address", handler);
+    return () => window.removeEventListener("taos-browser:focus-address", handler);
+  }, [windowId]);
 
   // Sync input when the active tab's URL changes from outside (back/forward,
   // tab switch). Only when the input isn't focused — don't clobber typing.
@@ -81,6 +94,7 @@ export function AddressBar({ windowId }: AddressBarProps) {
   return (
     <div className="relative flex-1">
       <input
+        ref={inputRef}
         type="text"
         aria-label="Address"
         value={inputValue}

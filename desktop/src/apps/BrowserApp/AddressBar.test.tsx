@@ -122,3 +122,36 @@ describe("AddressBar — graceful handling", () => {
     expect(container.querySelector("input")).toBeNull();
   });
 });
+
+describe("AddressBar — focus event", () => {
+  it("focuses the input when taos-browser:focus-address fires for this window", async () => {
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    const input = screen.getByLabelText("Address");
+    expect(document.activeElement).not.toBe(input);
+
+    window.dispatchEvent(
+      new CustomEvent("taos-browser:focus-address", {
+        detail: { windowId: TEST_WINDOW_ID },
+      }),
+    );
+
+    // React batches the focus call into the effect cycle
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("ignores focus events for other windows", async () => {
+    render(<AddressBar windowId={TEST_WINDOW_ID} />);
+    const input = screen.getByLabelText("Address");
+    expect(document.activeElement).not.toBe(input);
+
+    window.dispatchEvent(
+      new CustomEvent("taos-browser:focus-address", {
+        detail: { windowId: "other-window" },
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.activeElement).not.toBe(input);
+  });
+});
