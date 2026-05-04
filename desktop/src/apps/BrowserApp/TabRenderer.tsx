@@ -18,6 +18,7 @@
  */
 import { useEffect } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
+import { detectLiveExclusion } from "./live-exclusion";
 import type { Tab } from "./types";
 
 export const DISCARD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -43,10 +44,24 @@ export function TabRenderer({ windowId }: TabRendererProps) {
       const now = Date.now();
       const liveTabs = current.tabs.filter((t) => t.state === "live");
 
-      // Pass 1: idle-based discard
+      // Pass 1: idle-based discard with live-exclusion respect
       for (const tab of liveTabs) {
         if (tab.id === current.activeTabId) continue;
-        if (tab.pinned) continue;
+        // Detect any live activity in the iframe — playing media, active
+        // form input, in-flight upload — and exempt those tabs.
+        const iframe = document.querySelector(
+          `iframe[data-tab-id="${tab.id}"]`,
+        ) as HTMLIFrameElement | null;
+        const exclusion = iframe
+          ? detectLiveExclusion(iframe, tab.pinned)
+          : (tab.pinned ? "pinned" : undefined);
+        // Update the tab so the UI can surface "kept alive: video"
+        if (exclusion !== tab.liveExclusion) {
+          useBrowserStore.getState().setTabLiveExclusion(
+            windowId, tab.id, exclusion,
+          );
+        }
+        if (exclusion) continue; // exempt
         if (now - tab.lastActiveAt > DISCARD_TIMEOUT_MS) {
           useBrowserStore.getState().markTabDiscarded(windowId, tab.id);
         }
@@ -60,7 +75,11 @@ export function TabRenderer({ windowId }: TabRendererProps) {
       if (overflowCount > 0) {
         // Discard oldest non-pinned non-active until at cap
         const candidates = stillLive
-          .filter((t) => !t.pinned && t.id !== refreshed.activeTabId)
+          .filter((t) =>
+            !t.pinned
+            && t.id !== refreshed.activeTabId
+            && !t.liveExclusion
+          )
           .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
         for (let i = 0; i < overflowCount && i < candidates.length; i++) {
           useBrowserStore.getState().markTabDiscarded(

@@ -197,3 +197,49 @@ describe("TabRenderer — graceful handling", () => {
     expect(container.querySelector("iframe")).toBeNull();
   });
 });
+
+describe("TabRenderer — live exclusion exempts discard", () => {
+  it("does NOT discard a tab whose iframe has a playing video", () => {
+    const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    const tabB = useBrowserStore.getState().addTab(
+      TEST_WINDOW_ID,
+      "https://b.test/",
+    );
+
+    // Make tabA idle (long past discard timeout)
+    useBrowserStore.setState((s) => {
+      const win = s.windows[TEST_WINDOW_ID];
+      const tabs = win.tabs.map((t) =>
+        t.id === tabA
+          ? { ...t, lastActiveAt: Date.now() - DISCARD_TIMEOUT_MS - 1000 }
+          : t,
+      );
+      return { windows: { ...s.windows, [TEST_WINDOW_ID]: { ...win, tabs } } };
+    });
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+
+    // Plant a "playing video" in tabA's iframe
+    const iframe = container.querySelector(
+      `iframe[data-tab-id="${tabA}"]`,
+    ) as HTMLIFrameElement | null;
+    if (iframe?.contentDocument) {
+      const video = iframe.contentDocument.createElement("video");
+      iframe.contentDocument.body.appendChild(video);
+      Object.defineProperty(video, "paused", { value: false, configurable: true });
+      Object.defineProperty(video, "ended", { value: false, configurable: true });
+    }
+
+    // Tick the scheduler
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    const tab = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs.find(
+      (t) => t.id === tabA,
+    );
+    // Should remain live + have the exclusion reason set
+    expect(tab?.state).toBe("live");
+    expect(tab?.liveExclusion).toBe("video");
+  });
+});

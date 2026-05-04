@@ -11,6 +11,7 @@
 import { create } from "zustand";
 import type {
   BrowserWindowState,
+  LiveExclusion,
   RecentlyClosedTab,
   Tab,
 } from "@/apps/BrowserApp/types";
@@ -65,6 +66,13 @@ interface BrowserStore {
 
   // Per-tab zoom
   setTabZoom: (windowId: string, tabId: string, zoom: number) => void;
+
+  // Live-exclusion tracking
+  setTabLiveExclusion: (
+    windowId: string,
+    tabId: string,
+    exclusion: LiveExclusion | undefined,
+  ) => void;
 
   // Cross-window tab move (PR 4: menu-driven; native drag-and-drop with
   // DOM-portal iframe preservation is deferred to a future enhancement)
@@ -236,6 +244,13 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   setTabZoom(windowId, tabId, zoom) {
     const clamped = Math.max(0.5, Math.min(3.0, zoom));
     set((s) => updateTab(s, windowId, tabId, (t) => ({ ...t, zoom: clamped })));
+  },
+
+  setTabLiveExclusion(windowId, tabId, exclusion) {
+    set((s) => updateTab(s, windowId, tabId, (t) => ({
+      ...t,
+      liveExclusion: exclusion,
+    })));
   },
 
   moveTab(fromWindowId, tabId, toWindowId, toIndex) {
