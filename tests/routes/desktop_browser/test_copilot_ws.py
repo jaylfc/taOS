@@ -1,8 +1,14 @@
-"""Tests for CopilotTicketStore and the /api/desktop/browser/copilot/ticket endpoint."""
+"""Tests for CopilotTicketStore, CopilotHub, and the copilot WebSocket endpoint."""
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
+import yaml
+from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+from starlette.websockets import WebSocketDisconnect
 
 
 # ---------------------------------------------------------------------------
@@ -207,3 +213,249 @@ class TestMintTicketEndpoint:
         assert ticket is not None
         assert ticket.agent_id == "agent-consume"
         assert ticket.tab_id == "t1"
+
+
+# ---------------------------------------------------------------------------
+# CopilotHub unit tests
+# ---------------------------------------------------------------------------
+
+class TestCopilotHub:
+    def _make_hub(self):
+        from tinyagentos.routes.desktop_browser.copilot_ws import CopilotHub
+        return CopilotHub()
+
+    @pytest.mark.asyncio
+    async def test_add_iframe_replaces_prior_connection_for_same_key(self):
+        """Same key + new ws → old ws scheduled for close, new one is registered."""
+        hub = self._make_hub()
+        old_ws = AsyncMock()
+        new_ws = AsyncMock()
+
+        hub._iframe_conns[("u1", "p1", "t1", "agent-a")] = old_ws
+        hub.add_iframe(user_id="u1", profile_id="p1", tab_id="t1", agent_id="agent-a", ws=new_ws)
+
+        assert hub._iframe_conns[("u1", "p1", "t1", "agent-a")] is new_ws
+        assert ("u1", "p1", "t1", "agent-a") in hub._iframe_conns
+
+    def test_remove_iframe_is_noop_when_not_present(self):
+        hub = self._make_hub()
+        # Must not raise even if the key was never registered.
+        hub.remove_iframe(user_id="u1", profile_id="p1", tab_id="t1", agent_id="no-such")
+
+    @pytest.mark.asyncio
+    async def test_push_event_to_pinned_fans_out_to_all_agents_on_tab(self):
+        """Add 3 iframes for same (user, profile, tab) different agents.
+        push_event_to_pinned → all 3 receive the event."""
+        hub = self._make_hub()
+        ws_a = AsyncMock()
+        ws_b = AsyncMock()
+        ws_c = AsyncMock()
+
+        hub._iframe_conns[("u1", "p1", "t1", "agent-a")] = ws_a
+        hub._iframe_conns[("u1", "p1", "t1", "agent-b")] = ws_b
+        hub._iframe_conns[("u1", "p1", "t1", "agent-c")] = ws_c
+
+        event = {"event": "page-changed", "url": "https://example.com"}
+        await hub.push_event_to_pinned(user_id="u1", profile_id="p1", tab_id="t1", event=event)
+
+        ws_a.send_json.assert_awaited_once_with(event)
+        ws_b.send_json.assert_awaited_once_with(event)
+        ws_c.send_json.assert_awaited_once_with(event)
+
+    @pytest.mark.asyncio
+    async def test_push_event_to_pinned_skips_other_tabs(self):
+        """Add iframe for tab A and tab B. Push to tab A → only A's iframe gets the event."""
+        hub = self._make_hub()
+        ws_tab_a = AsyncMock()
+        ws_tab_b = AsyncMock()
+
+        hub._iframe_conns[("u1", "p1", "tab-a", "agent-a")] = ws_tab_a
+        hub._iframe_conns[("u1", "p1", "tab-b", "agent-a")] = ws_tab_b
+
+        event = {"event": "scroll", "x": 0, "y": 100}
+        await hub.push_event_to_pinned(user_id="u1", profile_id="p1", tab_id="tab-a", event=event)
+
+        ws_tab_a.send_json.assert_awaited_once_with(event)
+        ws_tab_b.send_json.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_push_event_to_pinned_swallows_send_failures(self):
+        """Fake WS whose send_json raises. push_event_to_pinned doesn't propagate."""
+        hub = self._make_hub()
+        ws_bad = AsyncMock()
+        ws_bad.send_json.side_effect = RuntimeError("connection lost")
+
+        hub._iframe_conns[("u1", "p1", "t1", "agent-a")] = ws_bad
+
+        event = {"event": "page-changed", "url": "https://example.com"}
+        # Must not raise
+        await hub.push_event_to_pinned(user_id="u1", profile_id="p1", tab_id="t1", event=event)
+
+
+# ---------------------------------------------------------------------------
+# Sync TestClient + browser_store fixture for WS endpoint tests
+# ---------------------------------------------------------------------------
+
+def _make_ws_app(tmp_path):
+    """Create a minimal app with browser_store initialized (sync-compatible)."""
+    from tinyagentos.app import create_app
+    from tinyagentos.routes.desktop_browser.store import BrowserStore
+
+    config = {
+        "server": {"host": "0.0.0.0", "port": 6969},
+        "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(config))
+    (tmp_path / ".setup_complete").touch()
+
+    app = create_app(data_dir=tmp_path)
+
+    # Initialize the browser_store synchronously so the WS endpoint can call
+    # list_pins_for_tab without hitting an uninitialised store.
+    browser_store = BrowserStore(tmp_path / "browser.sqlite3")
+    asyncio.run(browser_store.init())
+    app.state.browser_store = browser_store
+
+    # Auth setup for the ticket-minting HTTP endpoint
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+
+    return app
+
+
+@pytest.fixture
+def ws_app(tmp_path):
+    """App fixture with browser_store ready for WS tests."""
+    return _make_ws_app(tmp_path)
+
+
+@pytest.fixture
+def ws_client(ws_app):
+    """Sync TestClient for WS endpoint tests. Sets auth cookie."""
+    record = ws_app.state.auth.find_user("admin")
+    token = ws_app.state.auth.create_session(user_id=record["id"], long_lived=True)
+    with TestClient(ws_app, raise_server_exceptions=False) as c:
+        c.cookies.set("taos_session", token)
+        yield c
+
+
+def _add_agent_to(app, agent_id: str):
+    app.state.config.agents.append({
+        "id": agent_id,
+        "name": agent_id,
+        "host": "127.0.0.1",
+        "qmd_index": "test",
+        "color": "#000000",
+    })
+
+
+def _mint_ticket_via_http(client, app, profile_id, tab_id, agent_id):
+    """Pin agent then mint ticket via HTTP endpoint."""
+    _add_agent_to(app, agent_id)
+    client.post(
+        "/api/desktop/browser/pins",
+        json={"profile_id": profile_id, "tab_id": tab_id, "agent_id": agent_id},
+    )
+    resp = client.post(
+        "/api/desktop/browser/copilot/ticket",
+        json={"profile_id": profile_id, "tab_id": tab_id, "agent_id": agent_id},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["ticket"]
+
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestCopilotWS:
+    def test_ws_4401_on_invalid_ticket(self, ws_client):
+        """Connect with random ticket → close code 4401."""
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with ws_client.websocket_connect(
+                "/api/desktop/browser/copilot?ticket=totally-invalid-token"
+            ) as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4401
+
+    def test_ws_4401_on_consumed_ticket(self, ws_client, ws_app):
+        """Mint, consume in-process, then try to connect → close code 4401."""
+        ticket = _mint_ticket_via_http(ws_client, ws_app, "p1", "t1", "agent-consumed")
+        # Consume the ticket before connecting
+        ws_app.state.copilot_ticket_store.consume(ticket)
+
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with ws_client.websocket_connect(
+                f"/api/desktop/browser/copilot?ticket={ticket}"
+            ) as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4401
+
+    def test_ws_4403_when_unpinned_after_mint(self, ws_client, ws_app):
+        """Pin agent, mint ticket, unpin, then connect → close code 4403."""
+        ticket = _mint_ticket_via_http(ws_client, ws_app, "p1", "t1", "agent-unpin")
+        # Unpin the agent
+        ws_client.delete(
+            "/api/desktop/browser/pins",
+            params={"profile_id": "p1", "tab_id": "t1", "agent_id": "agent-unpin"},
+        )
+
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with ws_client.websocket_connect(
+                f"/api/desktop/browser/copilot?ticket={ticket}"
+            ) as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4403
+
+    def test_ws_happy_path_registers_iframe_in_hub(self, ws_client, ws_app):
+        """Pin, mint, connect. Inside the connection: hub has the iframe registered.
+        Disconnect: hub no longer has it."""
+        ticket = _mint_ticket_via_http(ws_client, ws_app, "p1", "t1", "agent-happy")
+
+        # Find the user_id for the admin user
+        record = ws_app.state.auth.find_user("admin")
+        user_id = record["id"]
+
+        with ws_client.websocket_connect(
+            f"/api/desktop/browser/copilot?ticket={ticket}"
+        ) as ws:
+            # While connected: hub must have the iframe registered
+            key = (user_id, "p1", "t1", "agent-happy")
+            assert key in ws_app.state.copilot_hub._iframe_conns
+
+        # After disconnect: hub must have removed the iframe
+        assert key not in ws_app.state.copilot_hub._iframe_conns
+
+    def test_ws_disconnect_cleans_up(self, ws_client, ws_app):
+        """Connect then close from client side. Hub entry removed."""
+        ticket = _mint_ticket_via_http(ws_client, ws_app, "p1", "t1", "agent-cleanup")
+        record = ws_app.state.auth.find_user("admin")
+        user_id = record["id"]
+
+        key = (user_id, "p1", "t1", "agent-cleanup")
+        with ws_client.websocket_connect(
+            f"/api/desktop/browser/copilot?ticket={ticket}"
+        ):
+            assert key in ws_app.state.copilot_hub._iframe_conns
+
+        assert key not in ws_app.state.copilot_hub._iframe_conns
+
+    def test_ws_drops_unknown_event_kinds(self, ws_client, ws_app):
+        """Connect, send unknown event kind and a known one — no crash."""
+        ticket = _mint_ticket_via_http(ws_client, ws_app, "p1", "t1", "agent-drop")
+
+        with ws_client.websocket_connect(
+            f"/api/desktop/browser/copilot?ticket={ticket}"
+        ) as ws:
+            # Unknown event — silently dropped
+            ws.send_json({"event": "definitely-not-real", "data": "x"})
+            # Known event — also silently accepted (not echoed back)
+            ws.send_json({"event": "scroll", "x": 0, "y": 100})
+            # Connection still alive — hub still has the entry
+            record = ws_app.state.auth.find_user("admin")
+            user_id = record["id"]
+            key = (user_id, "p1", "t1", "agent-drop")
+            assert key in ws_app.state.copilot_hub._iframe_conns
