@@ -40,7 +40,6 @@ interface TabRendererProps {
 
 export function TabRenderer({ windowId }: TabRendererProps) {
   const win = useBrowserStore((s) => s.windows[windowId]);
-  const markTabDiscarded = useBrowserStore((s) => s.markTabDiscarded);
   const markTabLive = useBrowserStore((s) => s.markTabLive);
 
   // Discard scheduler — ticks every 60s while the window is mounted.
@@ -93,10 +92,9 @@ export function TabRenderer({ windowId }: TabRendererProps) {
           )
           .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
         for (let i = 0; i < overflowCount && i < candidates.length; i++) {
-          useBrowserStore.getState().markTabDiscarded(
-            windowId,
-            candidates[i].id,
-          );
+          const candidate = candidates[i];
+          if (!candidate) continue;
+          useBrowserStore.getState().markTabDiscarded(windowId, candidate.id);
         }
       }
     }, SCHEDULER_INTERVAL_MS);
