@@ -94,6 +94,7 @@ export function Chrome({ windowId }: ChromeProps) {
           aria-expanded={settingsOpen}
           onClick={() => {
             setSwitcherOpen(false);
+            setManagerOpen(false);
             setSettingsOpen((s) => !s);
           }}
           className="p-1 rounded hover:bg-shell-hover"
@@ -111,6 +112,7 @@ export function Chrome({ windowId }: ChromeProps) {
           type="button"
           onClick={() => {
             setSettingsOpen(false);
+            setManagerOpen(false);
             setSwitcherOpen((s) => !s);
           }}
           className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle text-xs hover:bg-shell-hover"

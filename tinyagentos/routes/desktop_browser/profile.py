@@ -38,18 +38,15 @@ async def ensure_default_profiles(store: BrowserStore, *, user_id: str) -> None:
 
     Uses a profile_init table to record that defaults were seeded — subsequent
     calls are a no-op even if the user later deletes those default profiles.
+    The INSERT OR IGNORE on the PRIMARY KEY (user_id) column makes the claim
+    atomic: two concurrent first requests both attempt the insert; only one
+    succeeds (rowcount == 1) and that caller seeds the defaults.
     """
     if not user_id:
         raise ValueError("user_id is required")
 
-    assert store._db is not None
-    cursor = await store._db.execute(
-        "SELECT initialized_at FROM profile_init WHERE user_id = ?",
-        (user_id,),
-    )
-    row = await cursor.fetchone()
-    if row is not None:
-        return  # Already bootstrapped; respect any deletions the user made.
+    if not await store.claim_profile_init(user_id=user_id):
+        return  # Another caller already seeded defaults.
 
     now = int(time.time())
     for default in _DEFAULTS:
@@ -60,11 +57,6 @@ async def ensure_default_profiles(store: BrowserStore, *, user_id: str) -> None:
             color=default["color"],
             created_at=now,
         )
-    await store._db.execute(
-        "INSERT OR IGNORE INTO profile_init (user_id, initialized_at) VALUES (?, ?)",
-        (user_id, now),
-    )
-    await store._db.commit()
 
 
 async def get_profile_or_404(
@@ -155,6 +147,11 @@ async def rename_profile(
         raise ValueError("user_id is required")
     if not profile_id:
         raise ValueError("profile_id is required")
+    if name is not None:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("name must not be blank")
+        name = normalized
 
     updated = await store.update_profile(
         user_id=user_id, profile_id=profile_id, name=name, color=color,
@@ -191,27 +188,30 @@ async def delete_profile_cascade(
 
     Refuses to delete the user's last profile (raises LastProfileError).
     Returns True if the profile was deleted, False if it didn't exist.
+
+    The last-profile check is performed atomically inside delete_profile via
+    a single SQL statement, so two concurrent deletes cannot both pass the
+    guard.
     """
     if not user_id:
         raise ValueError("user_id is required")
     if not profile_id:
         raise ValueError("profile_id is required")
 
-    profiles = await browser_store.list_profiles(user_id=user_id)
-    # Check if the profile being deleted actually exists
-    profile_exists = any(p["profile_id"] == profile_id for p in profiles)
-    if not profile_exists:
-        return False
-    if len(profiles) <= 1:
-        raise LastProfileError(
-            "cannot delete the last profile — every user needs at least one"
-        )
-
     deleted = await browser_store.delete_profile(
         user_id=user_id, profile_id=profile_id,
     )
-    if deleted:
-        await cookie_store.delete_profile_cookies(
-            user_id=user_id, profile_id=profile_id,
-        )
-    return deleted
+    if not deleted:
+        # Either the profile didn't exist, or it was the last one.
+        # Distinguish by checking whether the profile_id still appears in the list.
+        profiles = await browser_store.list_profiles(user_id=user_id)
+        if any(p["profile_id"] == profile_id for p in profiles):
+            raise LastProfileError(
+                "cannot delete the last profile — every user needs at least one"
+            )
+        return False  # didn't exist
+
+    await cookie_store.delete_profile_cookies(
+        user_id=user_id, profile_id=profile_id,
+    )
+    return True

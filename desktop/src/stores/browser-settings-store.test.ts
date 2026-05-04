@@ -3,6 +3,7 @@ import {
   useBrowserSettingsStore,
   searchUrlFor,
   SEARCH_ENGINES,
+  type SearchEngine,
 } from "./browser-settings-store";
 
 beforeEach(() => {

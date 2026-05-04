@@ -8,7 +8,7 @@
  * - Delete confirmation includes explicit cookie-cascade warning
  * - Create form has 8 preset color swatches matching the chrome palette
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2, Edit2, Plus, X, Check } from "lucide-react";
 import {
   listProfiles,
@@ -44,6 +44,11 @@ export function ProfileManager({ activeProfileId, onClose }: ProfileManagerProps
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(COLOR_SWATCHES[0]);
   const [error, setError] = useState<string | null>(null);
+  // Tracks the profile currently being renamed to prevent double-fire:
+  // pressing Enter triggers handleRename → setEditingId(null) → input unmounts
+  // → native blur fires → onBlur calls handleRename again. The ref guard
+  // makes the second call a no-op.
+  const renamingRef = useRef<string | null>(null);
 
   async function reload() {
     const fresh = await listProfiles();
@@ -55,69 +60,87 @@ export function ProfileManager({ activeProfileId, onClose }: ProfileManagerProps
   }, []);
 
   async function handleRename(id: string) {
+    if (renamingRef.current === id) return;
+    setError(null);
     if (!editName.trim()) {
       setEditingId(null);
       return;
     }
-    const updated = await renameProfile(id, { name: editName.trim() });
-    if (updated) {
-      await reload();
-    } else {
-      setError("Rename failed");
+    renamingRef.current = id;
+    try {
+      const updated = await renameProfile(id, { name: editName.trim() });
+      if (updated) {
+        await reload();
+      } else {
+        setError("Rename failed");
+      }
+    } catch {
+      setError("Network error — could not rename profile");
+    } finally {
+      renamingRef.current = null;
+      setEditingId(null);
     }
-    setEditingId(null);
   }
 
   async function handleDelete(id: string) {
-    const ok = await deleteProfile(id);
-    if (!ok) {
-      setError("Delete failed (cannot delete last profile)");
-      setConfirmDeleteId(null);
-      return;
-    }
+    setError(null);
+    setConfirmDeleteId(null);
+    try {
+      const ok = await deleteProfile(id);
+      if (!ok) {
+        setError("Delete failed (cannot delete last profile)");
+        return;
+      }
 
-    // Re-read profiles from server (UI list update + fallback computation)
-    const fresh = await listProfiles();
-    setProfiles(fresh);
+      // Re-read profiles from server (UI list update + fallback computation)
+      const fresh = await listProfiles();
+      setProfiles(fresh);
 
-    // Recover any windows that were pointing at the just-deleted profile.
-    // Without this, those windows would orphan onto a non-existent profile_id
-    // and the proxy + profile chip would silently break.
-    const fallback = fresh?.[0]?.profile_id;
-    if (fallback) {
-      const windows = useBrowserStore.getState().windows;
-      for (const win of Object.values(windows)) {
-        if (win.profileId === id) {
-          useBrowserStore.getState().switchProfile(win.windowId, fallback);
+      // Recover any windows that were pointing at the just-deleted profile.
+      // Without this, those windows would orphan onto a non-existent profile_id
+      // and the proxy + profile chip would silently break.
+      const fallback = fresh?.[0]?.profile_id;
+      if (fallback) {
+        const windows = useBrowserStore.getState().windows;
+        for (const win of Object.values(windows)) {
+          if (win.profileId === id) {
+            useBrowserStore.getState().switchProfile(win.windowId, fallback);
+          }
         }
       }
+    } catch {
+      setError("Network error — could not delete profile");
     }
-
-    setConfirmDeleteId(null);
   }
 
   async function handleCreate() {
+    setError(null);
     if (!newName.trim()) return;
-    const created = await createProfile({ name: newName.trim(), color: newColor });
-    if (created) {
-      setNewName("");
-      setNewColor(COLOR_SWATCHES[0]);
-      setAdding(false);
-      await reload();
-    } else {
-      setError("Create failed");
+    try {
+      const created = await createProfile({ name: newName.trim(), color: newColor });
+      if (created) {
+        setNewName("");
+        setNewColor(COLOR_SWATCHES[0]);
+        setAdding(false);
+        await reload();
+      } else {
+        setError("Create failed");
+      }
+    } catch {
+      setError("Network error — could not create profile");
     }
   }
 
   return (
     <div
       role="dialog"
+      aria-modal="true"
       aria-label="Manage profiles"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
       onClick={onClose}
     >
       <div
-        className="bg-shell-surface rounded-md shadow-xl border border-shell-border w-[420px] max-w-full max-h-[80vh] flex flex-col"
+        className="relative bg-shell-surface rounded-md shadow-xl border border-shell-border w-[420px] max-w-full max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between px-4 py-3 border-b border-shell-border-subtle">

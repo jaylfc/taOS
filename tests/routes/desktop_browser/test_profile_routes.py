@@ -84,6 +84,19 @@ class TestPatchProfile:
         )
         assert resp.status_code == 404
 
+    async def test_patch_blank_name_returns_400(self, client):
+        """Blank/whitespace-only name is rejected; existing name unchanged."""
+        resp = await client.patch(
+            "/api/desktop/browser/profiles/personal",
+            json={"name": "   "},
+        )
+        assert resp.status_code == 400
+
+        # Profile name must not have changed
+        list_resp = await client.get("/api/desktop/browser/profiles")
+        profiles = {p["profile_id"]: p for p in list_resp.json()["profiles"]}
+        assert profiles["personal"]["name"] == "Personal"
+
 
 @pytest.mark.asyncio
 class TestDeleteProfile:

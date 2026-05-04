@@ -193,6 +193,94 @@ describe("ProfileManager — close", () => {
   });
 });
 
+describe("ProfileManager — rename double-fire prevention", () => {
+  it("pressing Enter calls renameProfile exactly once, not twice", async () => {
+    let patchCount = 0;
+    // First GET returns original names; PATCH increments counter; subsequent GETs return renamed
+    global.fetch = vi.fn()
+      .mockImplementationOnce(() =>
+        Promise.resolve(mockListResponse([
+          { profile_id: "personal", name: "Personal", color: "#6c8df0", created_at: 0 },
+          { profile_id: "work", name: "Work", color: "#f5b86b", created_at: 0 },
+        ])),
+      )
+      .mockImplementation((url: string, opts: any) => {
+        if (opts?.method === "PATCH") {
+          patchCount++;
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              profile_id: "work",
+              name: "Work Renamed",
+              color: "#f5b86b",
+              created_at: 0,
+            }),
+          });
+        }
+        return Promise.resolve(mockListResponse([
+          { profile_id: "personal", name: "Personal", color: "#6c8df0", created_at: 0 },
+          { profile_id: "work", name: "Work Renamed", color: "#f5b86b", created_at: 0 },
+        ]));
+      });
+
+    render(
+      <ProfileManager
+        activeProfileId="personal"
+        onClose={() => {}}
+      />,
+    );
+    await waitFor(() => screen.getByText("Work"));
+
+    // Click rename on Work
+    const renameBtns = screen.getAllByLabelText(/rename work/i);
+    fireEvent.click(renameBtns[0]);
+
+    // Type new name and press Enter
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Work Renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // Wait for the rename to complete — patchCount must be exactly 1
+    await waitFor(() => {
+      expect(patchCount).toBe(1);
+    });
+  });
+});
+
+describe("ProfileManager — network error handling", () => {
+  it("shows error banner when delete throws a network error", async () => {
+    global.fetch = vi.fn().mockImplementation((url: string, opts: any) => {
+      if (opts?.method === "DELETE") {
+        return Promise.reject(new Error("Network failure"));
+      }
+      return Promise.resolve(mockListResponse([
+        { profile_id: "personal", name: "Personal", color: "#6c8df0", created_at: 0 },
+        { profile_id: "work", name: "Work", color: "#f5b86b", created_at: 0 },
+      ]));
+    });
+
+    render(
+      <ProfileManager
+        activeProfileId="personal"
+        onClose={() => {}}
+      />,
+    );
+    await waitFor(() => screen.getByText("Work"));
+
+    // Click delete on Work
+    const deleteBtns = screen.getAllByLabelText(/delete profile work/i);
+    fireEvent.click(deleteBtns[0]);
+
+    await waitFor(() => screen.getByText(/this also clears all saved cookies/i));
+    fireEvent.click(screen.getByLabelText(/confirm delete/i));
+
+    // Error banner must appear
+    await waitFor(() => {
+      expect(screen.getByText(/network error/i)).toBeTruthy();
+    });
+  });
+});
+
 describe("ProfileManager — orphan recovery", () => {
   beforeEach(() => {
     // Reset browser store to a clean slate before each test
