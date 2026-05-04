@@ -355,6 +355,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_cookie_store.init()
         app.state.browser_cookie_store = browser_cookie_store
 
+        from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore
+        app.state.copilot_ticket_store = CopilotTicketStore()
+
         await benchmark_store.init()
         await scheduler_history_store.init()
         app.state.config = config
@@ -887,6 +890,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         chat_hub=chat_hub,
         archive=getattr(app.state, "archive", None),
     )
+
+    from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore as _CopilotTicketStore
+    app.state.copilot_ticket_store = _CopilotTicketStore()
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
