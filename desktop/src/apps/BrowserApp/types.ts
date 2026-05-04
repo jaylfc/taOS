@@ -29,10 +29,22 @@ export interface RecentlyClosedTab {
   closedAt: number;
 }
 
+export interface SavedProfileTabs {
+  tabs: Tab[];
+  activeTabId: string;
+}
+
 export interface BrowserWindowState {
   windowId: string;
   profileId: string;
   tabs: Tab[];
   activeTabId: string;
   recentlyClosed: RecentlyClosedTab[];
+  /**
+   * Per-(window, profile) snapshot of tabs + activeTabId.
+   * switchProfile snapshots the current state under the OLD profileId
+   * before swapping; restores from this map on switch back.
+   * Keyed by profile_id.
+   */
+  _savedTabsByProfile?: Record<string, SavedProfileTabs>;
 }

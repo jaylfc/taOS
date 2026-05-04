@@ -306,3 +306,97 @@ describe("browser-store: switchProfile", () => {
     expect(s.getWindow("missing")).toBeUndefined();
   });
 });
+
+describe("browser-store: switchProfile snapshot/restore", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("snapshots current tabs under the old profileId on switch", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.addTab("win-1", "https://a.test/");
+    const tabB = s.addTab("win-1", "https://b.test/");
+    expect(s.getWindow("win-1")?.tabs.length).toBe(3);
+
+    s.switchProfile("win-1", "work");
+
+    // After switch: profileId is "work", tabs reset to one fresh new-tab,
+    // and the old "personal" tabs are saved under _savedTabsByProfile
+    const win = s.getWindow("win-1");
+    expect(win?.profileId).toBe("work");
+    expect(win?.tabs.length).toBe(1);
+    expect(win?._savedTabsByProfile?.personal).toBeDefined();
+    expect(win?._savedTabsByProfile?.personal.tabs.length).toBe(3);
+  });
+
+  it("restores tabs from the snapshot on switch back", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.addTab("win-1", "https://a.test/");
+    const tabB = s.addTab("win-1", "https://b.test/");
+
+    s.switchProfile("win-1", "work");
+    expect(s.getWindow("win-1")?.tabs.length).toBe(1); // Fresh new-tab for "work"
+
+    s.switchProfile("win-1", "personal");
+
+    const win = s.getWindow("win-1");
+    expect(win?.profileId).toBe("personal");
+    expect(win?.tabs.length).toBe(3);
+    // The original tabs are restored
+    expect(win?.tabs.find((t) => t.id === tabA)).toBeDefined();
+    expect(win?.tabs.find((t) => t.id === tabB)).toBeDefined();
+  });
+
+  it("creates fresh new-tab when destination profile has no snapshot", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    s.switchProfile("win-1", "work");
+
+    // Work has no prior snapshot — should init with one fresh new-tab
+    const win = s.getWindow("win-1");
+    expect(win?.tabs.length).toBe(1);
+    expect(win?.profileId).toBe("work");
+  });
+
+  it("noop when switching to the already-active profile", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.addTab("win-1", "https://a.test/");
+    const before = s.getWindow("win-1");
+
+    s.switchProfile("win-1", "personal");
+
+    const after = s.getWindow("win-1");
+    expect(after?.tabs.length).toBe(before?.tabs.length);
+    expect(after?._savedTabsByProfile).toBeUndefined();
+  });
+
+  it("preserves snapshots for OTHER profiles when switching between two", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    s.addTab("win-1", "https://personal-a.test/");
+
+    s.switchProfile("win-1", "work");
+    s.addTab("win-1", "https://work-a.test/");
+
+    s.switchProfile("win-1", "research");
+    s.addTab("win-1", "https://research-a.test/");
+
+    // Now both personal AND work snapshots should be in the saved map
+    const win = s.getWindow("win-1");
+    expect(win?.profileId).toBe("research");
+    expect(win?._savedTabsByProfile?.personal).toBeDefined();
+    expect(win?._savedTabsByProfile?.work).toBeDefined();
+    expect(win?._savedTabsByProfile?.research).toBeUndefined(); // Active
+
+    // Switch back to personal — work snapshot should still be preserved
+    s.switchProfile("win-1", "personal");
+    const win2 = s.getWindow("win-1");
+    expect(win2?._savedTabsByProfile?.work).toBeDefined();
+    expect(win2?._savedTabsByProfile?.research).toBeDefined(); // Just snapshotted
+    expect(win2?._savedTabsByProfile?.personal).toBeUndefined(); // Just restored
+  });
+});

@@ -288,12 +288,38 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
     set((s) => {
       const win = s.windows[windowId];
       if (!win) return s;
-      // PR 5 Task 4: minimal — just update profileId. Task 6 will
-      // enhance to snapshot/restore tabs per (window, profile).
+      if (win.profileId === newProfileId) return s; // No-op if already active
+
+      // Snapshot current state under the OLD profileId
+      const savedMap = win._savedTabsByProfile ?? {};
+      const updatedSavedMap = {
+        ...savedMap,
+        [win.profileId]: {
+          tabs: win.tabs,
+          activeTabId: win.activeTabId,
+        },
+      };
+
+      // Restore from snapshot if one exists for the new profile,
+      // otherwise initialise with a fresh new-tab page
+      const restoredSnapshot = updatedSavedMap[newProfileId];
+      const restoredTabs = restoredSnapshot?.tabs ?? [makeTab()];
+      const restoredActiveId =
+        restoredSnapshot?.activeTabId ?? restoredTabs[0].id;
+
+      // Drop the new profile's snapshot from the saved map (it's now active)
+      const { [newProfileId]: _consumed, ...remainingSnapshots } = updatedSavedMap;
+
       return {
         windows: {
           ...s.windows,
-          [windowId]: { ...win, profileId: newProfileId },
+          [windowId]: {
+            ...win,
+            profileId: newProfileId,
+            tabs: restoredTabs,
+            activeTabId: restoredActiveId,
+            _savedTabsByProfile: remainingSnapshots,
+          },
         },
       };
     });
