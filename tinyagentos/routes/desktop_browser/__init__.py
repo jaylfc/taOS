@@ -16,3 +16,4 @@ from tinyagentos.routes.desktop_browser import windows as _windows  # noqa: E402
 from tinyagentos.routes.desktop_browser import suggest as _suggest  # noqa: E402,F401
 from tinyagentos.routes.desktop_browser import profile_routes as _profile_routes  # noqa: E402,F401
 from tinyagentos.routes.desktop_browser import extract as _extract  # noqa: E402,F401
+from tinyagentos.routes.desktop_browser import agent_pin_routes as _agent_pin_routes  # noqa: E402,F401
