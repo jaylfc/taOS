@@ -13,12 +13,14 @@
  * default profile if it doesn't exist. Idempotent — preserves any
  * existing entry (e.g. restored by useSessionPersistence on app boot).
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { Chrome } from "./Chrome";
 import { TabStrip } from "./TabStrip";
 import { AddressBar } from "./AddressBar";
 import { TabRenderer } from "./TabRenderer";
+import { useBrowserKeyboardShortcuts } from "./keyboard";
+import { FindInPage } from "./FindInPage";
 
 const DEFAULT_PROFILE_ID = "personal";
 
@@ -29,6 +31,7 @@ interface BrowserAppProps {
 export function BrowserApp({ windowId }: BrowserAppProps) {
   const win = useBrowserStore((s) => s.windows[windowId]);
   const createWindow = useBrowserStore((s) => s.createWindow);
+  const [findOpen, setFindOpen] = useState(false);
 
   // Auto-create on first mount. createWindow is idempotent so calling
   // it when the window already exists (e.g. restored by persistence)
@@ -37,6 +40,12 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
     createWindow(windowId, DEFAULT_PROFILE_ID);
   }, [windowId, createWindow]);
 
+  useBrowserKeyboardShortcuts({
+    windowId,
+    hasFocus: true, // PR 4: always-on while mounted; PR 5+ may scope to focused window
+    onOpenFind: () => setFindOpen(true),
+  });
+
   // Wait for the window entry to materialise (one render tick after
   // the createWindow set call). Until then render an empty placeholder.
   if (!win) {
@@ -44,13 +53,19 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-shell-bg overflow-hidden">
+    <div className="relative flex flex-col h-full bg-shell-bg overflow-hidden">
       <Chrome windowId={windowId} />
       <div className="flex items-center gap-1 px-2 py-1 bg-shell-surface border-b border-shell-border-subtle">
         <AddressBar windowId={windowId} />
       </div>
       <TabStrip windowId={windowId} />
       <TabRenderer windowId={windowId} />
+      {findOpen && (
+        <FindInPage
+          windowId={windowId}
+          onClose={() => setFindOpen(false)}
+        />
+      )}
     </div>
   );
 }

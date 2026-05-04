@@ -186,3 +186,31 @@ describe("browser-store: removeWindow", () => {
     expect(s.getWindow("win-1")).toBeUndefined();
   });
 });
+
+describe("browser-store: zoom", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("setTabZoom updates the tab zoom field", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabZoom("win-1", tabId, 1.5);
+    expect(s.getWindow("win-1")?.tabs[0].zoom).toBeCloseTo(1.5);
+  });
+
+  it("setTabZoom clamps to [0.5, 3.0]", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabZoom("win-1", tabId, 10);
+    expect(s.getWindow("win-1")?.tabs[0].zoom).toBeCloseTo(3.0);
+
+    s.setTabZoom("win-1", tabId, 0.1);
+    expect(s.getWindow("win-1")?.tabs[0].zoom).toBeCloseTo(0.5);
+  });
+});

@@ -62,6 +62,9 @@ interface BrowserStore {
   // Discard policy
   markTabDiscarded: (windowId: string, tabId: string) => void;
   markTabLive: (windowId: string, tabId: string) => void;
+
+  // Per-tab zoom
+  setTabZoom: (windowId: string, tabId: string, zoom: number) => void;
 }
 
 export const useBrowserStore = create<BrowserStore>((set, get) => ({
@@ -220,6 +223,11 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
     set((s) => updateTab(s, windowId, tabId, (t) => ({
       ...t, state: "live", lastActiveAt: Date.now(),
     })));
+  },
+
+  setTabZoom(windowId, tabId, zoom) {
+    const clamped = Math.max(0.5, Math.min(3.0, zoom));
+    set((s) => updateTab(s, windowId, tabId, (t) => ({ ...t, zoom: clamped })));
   },
 }));
 
