@@ -291,6 +291,23 @@ class TestCopilotHub:
         # Must not raise
         await hub.push_event_to_pinned(user_id="u1", profile_id="p1", tab_id="t1", event=event)
 
+    @pytest.mark.asyncio
+    async def test_push_event_to_pinned_isolates_users(self):
+        """User A's push must not reach user B's iframe even when (profile, tab) IDs collide."""
+        hub = self._make_hub()
+        ws_user_a = AsyncMock()
+        ws_user_b = AsyncMock()
+
+        # Same profile/tab/agent IDs but different users — the keys differ on user_id only.
+        hub._iframe_conns[("user-a", "p1", "t1", "agent-x")] = ws_user_a
+        hub._iframe_conns[("user-b", "p1", "t1", "agent-x")] = ws_user_b
+
+        event = {"event": "page-changed", "url": "https://example.com"}
+        await hub.push_event_to_pinned(user_id="user-a", profile_id="p1", tab_id="t1", event=event)
+
+        ws_user_a.send_json.assert_awaited_once_with(event)
+        ws_user_b.send_json.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Sync TestClient + browser_store fixture for WS endpoint tests
