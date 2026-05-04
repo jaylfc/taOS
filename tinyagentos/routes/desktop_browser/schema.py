@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS profiles (
   PRIMARY KEY (user_id, profile_id)
 );
 
+CREATE TABLE IF NOT EXISTS profile_init (
+  user_id        TEXT NOT NULL PRIMARY KEY,
+  initialized_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS history (
   user_id        TEXT NOT NULL,
   profile_id     TEXT NOT NULL,

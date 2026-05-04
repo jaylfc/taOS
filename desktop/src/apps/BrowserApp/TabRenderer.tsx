@@ -8,9 +8,10 @@
  *
  * The discard scheduler runs every 60s and:
  *  - Discards non-pinned, non-active tabs whose lastActiveAt is older
- *    than DISCARD_TIMEOUT_MS.
+ *    than DISCARD_TIMEOUT_MS (default; runtime value from useBrowserSettingsStore).
  *  - Enforces a hard cap of MAX_LIVE_TABS live tabs by discarding the
- *    oldest live tab (by lastActiveAt) if the cap is exceeded.
+ *    oldest live tab (by lastActiveAt) if the cap is exceeded (default;
+ *    runtime value from useBrowserSettingsStore).
  *
  * PR 5 (live exclusion) will further refine the discard rule — tabs
  * with playing audio/video, active form input, or in-flight upload
@@ -18,6 +19,9 @@
  */
 import { useEffect } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
+import { useBrowserSettingsStore } from "@/stores/browser-settings-store";
+import { detectLiveExclusion } from "./live-exclusion";
+import { ReaderMode } from "./ReaderMode";
 import type { Tab } from "./types";
 
 export const DISCARD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -43,11 +47,26 @@ export function TabRenderer({ windowId }: TabRendererProps) {
       const now = Date.now();
       const liveTabs = current.tabs.filter((t) => t.state === "live");
 
-      // Pass 1: idle-based discard
+      // Pass 1: idle-based discard with live-exclusion respect
       for (const tab of liveTabs) {
         if (tab.id === current.activeTabId) continue;
-        if (tab.pinned) continue;
-        if (now - tab.lastActiveAt > DISCARD_TIMEOUT_MS) {
+        // Detect any live activity in the iframe — playing media, active
+        // form input, in-flight upload — and exempt those tabs.
+        const iframe = document.querySelector(
+          `iframe[data-tab-id="${tab.id}"]`,
+        ) as HTMLIFrameElement | null;
+        const exclusion = iframe
+          ? detectLiveExclusion(iframe, tab.pinned)
+          : (tab.pinned ? "pinned" : undefined);
+        // Update the tab so the UI can surface "kept alive: video"
+        if (exclusion !== tab.liveExclusion) {
+          useBrowserStore.getState().setTabLiveExclusion(
+            windowId, tab.id, exclusion,
+          );
+        }
+        if (exclusion) continue; // exempt
+        const { discardTimeoutMs } = useBrowserSettingsStore.getState();
+        if (now - tab.lastActiveAt > discardTimeoutMs) {
           useBrowserStore.getState().markTabDiscarded(windowId, tab.id);
         }
       }
@@ -56,11 +75,16 @@ export function TabRenderer({ windowId }: TabRendererProps) {
       const refreshed = useBrowserStore.getState().windows[windowId];
       if (!refreshed) return;
       const stillLive = refreshed.tabs.filter((t) => t.state === "live");
-      const overflowCount = stillLive.length - MAX_LIVE_TABS;
+      const { maxLiveTabs } = useBrowserSettingsStore.getState();
+      const overflowCount = stillLive.length - maxLiveTabs;
       if (overflowCount > 0) {
         // Discard oldest non-pinned non-active until at cap
         const candidates = stillLive
-          .filter((t) => !t.pinned && t.id !== refreshed.activeTabId)
+          .filter((t) =>
+            !t.pinned
+            && t.id !== refreshed.activeTabId
+            && !t.liveExclusion
+          )
           .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
         for (let i = 0; i < overflowCount && i < candidates.length; i++) {
           useBrowserStore.getState().markTabDiscarded(
@@ -91,30 +115,40 @@ export function TabRenderer({ windowId }: TabRendererProps) {
           ) : null;
         }
 
+        const showReader = isActive && !!tab.readerActive && !!tab.readerExtract;
+
         return (
-          <iframe
+          <div
             key={tab.id}
-            title={tab.title || tab.url || "Browser tab"}
-            src={proxiedSrc(win.profileId, tab.url)}
-            data-tab-id={tab.id}
-            // sandbox: allow-same-origin intentionally OMITTED. The proxy
-            // serves on the same origin as the shell; combining
-            // allow-same-origin + allow-scripts would let proxied JS reach
-            // up into the parent and remove this attribute. The HTTPS+DNS
-            // Foundations brainstorm will land an isolated subdomain that
-            // makes allow-same-origin safe to add back.
-            sandbox="allow-scripts allow-forms allow-popups allow-downloads"
-            style={{
-              display: isActive ? "block" : "none",
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              border: "none",
-              transform: tab.zoom !== 1 ? `scale(${tab.zoom})` : undefined,
-              transformOrigin: "top left",
-            }}
-          />
+            style={{ display: isActive ? "contents" : "none" }}
+            data-window-tab={tab.id}
+          >
+            <iframe
+              title={tab.title || tab.url || "Browser tab"}
+              src={proxiedSrc(win.profileId, tab.url)}
+              data-tab-id={tab.id}
+              // sandbox: allow-same-origin intentionally OMITTED. The proxy
+              // serves on the same origin as the shell; combining
+              // allow-same-origin + allow-scripts would let proxied JS reach
+              // up into the parent and remove this attribute. The HTTPS+DNS
+              // Foundations brainstorm will land an isolated subdomain that
+              // makes allow-same-origin safe to add back.
+              sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+              style={{
+                display: isActive && !showReader ? "block" : "none",
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                border: "none",
+                transform: tab.zoom !== 1 ? `scale(${tab.zoom})` : undefined,
+                transformOrigin: "top left",
+              }}
+            />
+            {showReader && (
+              <ReaderMode tab={tab} windowId={windowId} />
+            )}
+          </div>
         );
       })}
     </div>

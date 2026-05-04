@@ -1,7 +1,14 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Chrome } from "./Chrome";
 import { useBrowserStore } from "@/stores/browser-store";
+
+vi.mock("@/lib/browser-profile-api", () => ({
+  listProfiles: vi.fn().mockResolvedValue([
+    { profile_id: "personal", name: "Personal", color: "#6c8df0", created_at: 0 },
+    { profile_id: "work",     name: "Work",     color: "#f5b86b", created_at: 1 },
+  ]),
+}));
 
 const TEST_WINDOW_ID = "win-test";
 
@@ -70,6 +77,23 @@ describe("Chrome — profile chip", () => {
     const chip = screen.getByLabelText(/profile|personal/i);
     expect(chip).toBeTruthy();
     expect(chip.textContent?.toLowerCase()).toContain("personal");
+  });
+
+  it("shows the custom color from the loaded profiles list on the chip dot", async () => {
+    const { listProfiles } = await import("@/lib/browser-profile-api");
+    (listProfiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { profile_id: "personal", name: "Personal", color: "#abcdef", created_at: 0 },
+    ]);
+
+    render(<Chrome windowId={TEST_WINDOW_ID} />);
+
+    // Wait for the async listProfiles call to resolve and the color dot to appear
+    await waitFor(() => {
+      const chip = screen.getByLabelText(/profile: personal/i);
+      const dot = chip.querySelector("span[aria-hidden='true']") as HTMLElement | null;
+      expect(dot).not.toBeNull();
+      expect(dot!.style.backgroundColor).toBe("rgb(171, 205, 239)"); // #abcdef in rgb
+    });
   });
 });
 

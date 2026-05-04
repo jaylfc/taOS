@@ -11,6 +11,7 @@
 import { create } from "zustand";
 import type {
   BrowserWindowState,
+  LiveExclusion,
   RecentlyClosedTab,
   Tab,
 } from "@/apps/BrowserApp/types";
@@ -66,9 +67,27 @@ interface BrowserStore {
   // Per-tab zoom
   setTabZoom: (windowId: string, tabId: string, zoom: number) => void;
 
+  // Live-exclusion tracking
+  setTabLiveExclusion: (
+    windowId: string,
+    tabId: string,
+    exclusion: LiveExclusion | undefined,
+  ) => void;
+
   // Cross-window tab move (PR 4: menu-driven; native drag-and-drop with
   // DOM-portal iframe preservation is deferred to a future enhancement)
   moveTab: (fromWindowId: string, tabId: string, toWindowId: string, toIndex?: number) => void;
+
+  // Profile switching — Task 4: minimal (updates profileId only).
+  // Task 6 will enhance to snapshot/restore tabs per (window, profile).
+  switchProfile: (windowId: string, newProfileId: string) => void;
+
+  // Reader mode
+  setTabReader: (
+    windowId: string,
+    tabId: string,
+    patch: Partial<Pick<Tab, "readerAvailable" | "readerActive" | "readerExtract">>,
+  ) => void;
 }
 
 export const useBrowserStore = create<BrowserStore>((set, get) => ({
@@ -199,6 +218,10 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
         historyIndex: newHistory.length - 1,
         state: "live",
         lastActiveAt: Date.now(),
+        // Reset reader state on navigation — new URL invalidates the extract
+        readerAvailable: undefined,
+        readerActive: undefined,
+        readerExtract: null,
       };
     }));
   },
@@ -207,7 +230,14 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
     set((s) => updateTab(s, windowId, tabId, (t) => {
       if (t.historyIndex <= 0) return t;
       const newIdx = t.historyIndex - 1;
-      return { ...t, historyIndex: newIdx, url: t.history[newIdx] };
+      return {
+        ...t,
+        historyIndex: newIdx,
+        url: t.history[newIdx],
+        readerAvailable: undefined,
+        readerActive: undefined,
+        readerExtract: null,
+      };
     }));
   },
 
@@ -215,7 +245,14 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
     set((s) => updateTab(s, windowId, tabId, (t) => {
       if (t.historyIndex >= t.history.length - 1) return t;
       const newIdx = t.historyIndex + 1;
-      return { ...t, historyIndex: newIdx, url: t.history[newIdx] };
+      return {
+        ...t,
+        historyIndex: newIdx,
+        url: t.history[newIdx],
+        readerAvailable: undefined,
+        readerActive: undefined,
+        readerExtract: null,
+      };
     }));
   },
 
@@ -232,6 +269,13 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   setTabZoom(windowId, tabId, zoom) {
     const clamped = Math.max(0.5, Math.min(3.0, zoom));
     set((s) => updateTab(s, windowId, tabId, (t) => ({ ...t, zoom: clamped })));
+  },
+
+  setTabLiveExclusion(windowId, tabId, exclusion) {
+    set((s) => updateTab(s, windowId, tabId, (t) => ({
+      ...t,
+      liveExclusion: exclusion,
+    })));
   },
 
   moveTab(fromWindowId, tabId, toWindowId, toIndex) {
@@ -276,6 +320,50 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
           ...s.windows,
           [fromWindowId]: sourceAfter,
           [toWindowId]: destAfter,
+        },
+      };
+    });
+  },
+  setTabReader(windowId, tabId, patch) {
+    set((s) => updateTab(s, windowId, tabId, (t) => ({ ...t, ...patch })));
+  },
+
+  switchProfile(windowId, newProfileId) {
+    set((s) => {
+      const win = s.windows[windowId];
+      if (!win) return s;
+      if (win.profileId === newProfileId) return s; // No-op if already active
+
+      // Snapshot current state under the OLD profileId
+      const savedMap = win._savedTabsByProfile ?? {};
+      const updatedSavedMap = {
+        ...savedMap,
+        [win.profileId]: {
+          tabs: win.tabs,
+          activeTabId: win.activeTabId,
+        },
+      };
+
+      // Restore from snapshot if one exists for the new profile,
+      // otherwise initialise with a fresh new-tab page
+      const restoredSnapshot = updatedSavedMap[newProfileId];
+      const restoredTabs = restoredSnapshot?.tabs ?? [makeTab()];
+      const restoredActiveId =
+        restoredSnapshot?.activeTabId ?? restoredTabs[0].id;
+
+      // Drop the new profile's snapshot from the saved map (it's now active)
+      const { [newProfileId]: _consumed, ...remainingSnapshots } = updatedSavedMap;
+
+      return {
+        windows: {
+          ...s.windows,
+          [windowId]: {
+            ...win,
+            profileId: newProfileId,
+            tabs: restoredTabs,
+            activeTabId: restoredActiveId,
+            _savedTabsByProfile: remainingSnapshots,
+          },
         },
       };
     });

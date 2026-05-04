@@ -7,12 +7,14 @@
  * NOTE: The OS-level traffic lights (close / minimize / maximize) live in
  * `desktop/src/components/Window.tsx` — every window in taOS gets them
  * automatically. This component does NOT render its own traffic lights.
- *
- * For PR 4 the profile chip is display-only; PR 5's ProfileSwitcher will
- * wire the click-to-open-dropdown behavior.
  */
-import { ArrowLeft, ArrowRight, RotateCw } from "lucide-react";
+import { useState, useEffect } from "react";
+import { ArrowLeft, ArrowRight, RotateCw, Settings } from "lucide-react";
 import { useBrowserStore } from "@/stores/browser-store";
+import { listProfiles, type Profile } from "@/lib/browser-profile-api";
+import { ProfileSwitcher } from "./ProfileSwitcher";
+import { ProfileManager } from "./ProfileManager";
+import { SettingsPanel } from "./SettingsPanel";
 
 interface ChromeProps {
   windowId: string;
@@ -24,6 +26,20 @@ export function Chrome({ windowId }: ChromeProps) {
   const goBack = useBrowserStore((s) => s.goBack);
   const goForward = useBrowserStore((s) => s.goForward);
   const navigateTab = useBrowserStore((s) => s.navigateTab);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [profiles, setProfiles] = useState<Profile[] | null>(null);
+
+  const currentProfileId = win?.profileId ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+    listProfiles().then((list) => {
+      if (!cancelled) setProfiles(list);
+    });
+    return () => { cancelled = true; };
+  }, [currentProfileId]);
 
   if (!win) return null;
 
@@ -80,31 +96,74 @@ export function Chrome({ windowId }: ChromeProps) {
       {/* Spacer pushes the profile chip to the right */}
       <div className="flex-1" />
 
-      {/* Profile chip — display-only for PR 4; PR 5 wires the dropdown */}
-      <div
-        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle text-xs"
-        aria-label={`Profile: ${win.profileId}`}
-      >
-        <span
-          className="inline-block w-2 h-2 rounded-full"
-          style={{ backgroundColor: profileColor(win.profileId) }}
-          aria-hidden="true"
-        />
-        <span className="capitalize">{win.profileId}</span>
+      {/* Settings button */}
+      <div className="relative">
+        <button
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+          onClick={() => {
+            setSwitcherOpen(false);
+            setManagerOpen(false);
+            setSettingsOpen((s) => !s);
+          }}
+          className="p-1 rounded hover:bg-shell-hover"
+        >
+          <Settings size={16} />
+        </button>
+        {settingsOpen && (
+          <SettingsPanel onClose={() => setSettingsOpen(false)} />
+        )}
       </div>
+
+      {/* Profile chip — clicking opens the ProfileSwitcher dropdown */}
+      <div className="relative">
+        {(() => {
+          const activeProfile = profiles?.find((p) => p.profile_id === win.profileId);
+          const chipColor = activeProfile?.color ?? "#8b92a3";
+          const chipName = activeProfile?.name ?? win.profileId;
+          return (
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsOpen(false);
+                setManagerOpen(false);
+                setSwitcherOpen((s) => !s);
+              }}
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-shell-bg-deep border border-shell-border-subtle text-xs hover:bg-shell-hover"
+              aria-label={`Profile: ${win.profileId}`}
+              aria-haspopup="menu"
+              aria-expanded={switcherOpen}
+            >
+              <span
+                className="inline-block w-2 h-2 rounded-full"
+                style={{ backgroundColor: chipColor }}
+                aria-hidden="true"
+              />
+              <span className="capitalize">{chipName}</span>
+            </button>
+          );
+        })()}
+        {switcherOpen && (
+          <ProfileSwitcher
+            windowId={windowId}
+            onClose={() => setSwitcherOpen(false)}
+            onManage={() => {
+              setSwitcherOpen(false);
+              setManagerOpen(true);
+            }}
+          />
+        )}
+      </div>
+      {managerOpen && (
+        <ProfileManager
+          activeProfileId={win.profileId}
+          onClose={() => setManagerOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
-// Default colors for the two seeded profiles. PR 5's ProfileSwitcher will
-// fetch real per-profile colors from the backend.
-function profileColor(profileId: string): string {
-  switch (profileId) {
-    case "personal":
-      return "#6c8df0";
-    case "work":
-      return "#f5b86b";
-    default:
-      return "#8b92a3";
-  }
-}

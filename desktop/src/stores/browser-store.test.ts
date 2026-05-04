@@ -284,3 +284,255 @@ describe("browser-store: zoom", () => {
     expect(s.getWindow("win-1")?.tabs[0].zoom).toBeCloseTo(0.5);
   });
 });
+
+describe("browser-store: setTabReader", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("patches reader fields onto the tab", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabReader("win-1", tabId, {
+      readerAvailable: true,
+      readerActive: false,
+      readerExtract: {
+        title: "Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 300,
+      },
+    });
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.readerAvailable).toBe(true);
+    expect(tab?.readerActive).toBe(false);
+    expect(tab?.readerExtract?.title).toBe("Article");
+  });
+
+  it("partial patch only updates specified fields", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabReader("win-1", tabId, { readerAvailable: true });
+    s.setTabReader("win-1", tabId, { readerActive: true });
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.readerAvailable).toBe(true);
+    expect(tab?.readerActive).toBe(true);
+  });
+});
+
+describe("browser-store: navigateTab reader reset", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("resets reader fields when navigating to a new URL", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabReader("win-1", tabId, {
+      readerAvailable: true,
+      readerActive: true,
+      readerExtract: {
+        title: "Old article",
+        text: "old",
+        html: "<p>old</p>",
+        word_count: 500,
+      },
+    });
+
+    s.navigateTab("win-1", tabId, "https://new-page.test/");
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.readerAvailable).toBeUndefined();
+    expect(tab?.readerActive).toBeUndefined();
+    expect(tab?.readerExtract).toBeNull();
+  });
+});
+
+describe("browser-store: goBack/goForward reader reset", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("goBack clears all three reader fields", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.navigateTab("win-1", tabId, "https://a.test/");
+    s.navigateTab("win-1", tabId, "https://b.test/");
+    s.setTabReader("win-1", tabId, {
+      readerAvailable: true,
+      readerActive: true,
+      readerExtract: {
+        title: "Article",
+        text: "content",
+        html: "<p>content</p>",
+        word_count: 300,
+      },
+    });
+
+    s.goBack("win-1", tabId);
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.url).toBe("https://a.test/");
+    expect(tab?.readerAvailable).toBeUndefined();
+    expect(tab?.readerActive).toBeUndefined();
+    expect(tab?.readerExtract).toBeNull();
+  });
+
+  it("goForward clears all three reader fields", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.navigateTab("win-1", tabId, "https://a.test/");
+    s.navigateTab("win-1", tabId, "https://b.test/");
+    s.goBack("win-1", tabId);
+    // Now set reader state at https://a.test/
+    s.setTabReader("win-1", tabId, {
+      readerAvailable: true,
+      readerActive: true,
+      readerExtract: {
+        title: "Article A",
+        text: "content a",
+        html: "<p>content a</p>",
+        word_count: 300,
+      },
+    });
+
+    s.goForward("win-1", tabId);
+
+    const tab = s.getWindow("win-1")?.tabs[0];
+    expect(tab?.url).toBe("https://b.test/");
+    expect(tab?.readerAvailable).toBeUndefined();
+    expect(tab?.readerActive).toBeUndefined();
+    expect(tab?.readerExtract).toBeNull();
+  });
+});
+
+describe("browser-store: switchProfile", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("updates the window's profileId (basic — Task 6 adds tab snapshot)", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    expect(s.getWindow("win-1")?.profileId).toBe("personal");
+
+    s.switchProfile("win-1", "work");
+    expect(s.getWindow("win-1")?.profileId).toBe("work");
+  });
+
+  it("noop when window doesn't exist", async () => {
+    const s = await freshStore();
+    s.switchProfile("missing", "work");
+    expect(s.getWindow("missing")).toBeUndefined();
+  });
+});
+
+describe("browser-store: switchProfile snapshot/restore", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("snapshots current tabs under the old profileId on switch", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.addTab("win-1", "https://a.test/");
+    const tabB = s.addTab("win-1", "https://b.test/");
+    expect(s.getWindow("win-1")?.tabs.length).toBe(3);
+
+    s.switchProfile("win-1", "work");
+
+    // After switch: profileId is "work", tabs reset to one fresh new-tab,
+    // and the old "personal" tabs are saved under _savedTabsByProfile
+    const win = s.getWindow("win-1");
+    expect(win?.profileId).toBe("work");
+    expect(win?.tabs.length).toBe(1);
+    expect(win?._savedTabsByProfile?.personal).toBeDefined();
+    expect(win?._savedTabsByProfile?.personal.tabs.length).toBe(3);
+  });
+
+  it("restores tabs from the snapshot on switch back", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.addTab("win-1", "https://a.test/");
+    const tabB = s.addTab("win-1", "https://b.test/");
+
+    s.switchProfile("win-1", "work");
+    expect(s.getWindow("win-1")?.tabs.length).toBe(1); // Fresh new-tab for "work"
+
+    s.switchProfile("win-1", "personal");
+
+    const win = s.getWindow("win-1");
+    expect(win?.profileId).toBe("personal");
+    expect(win?.tabs.length).toBe(3);
+    // The original tabs are restored
+    expect(win?.tabs.find((t) => t.id === tabA)).toBeDefined();
+    expect(win?.tabs.find((t) => t.id === tabB)).toBeDefined();
+  });
+
+  it("creates fresh new-tab when destination profile has no snapshot", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    s.switchProfile("win-1", "work");
+
+    // Work has no prior snapshot — should init with one fresh new-tab
+    const win = s.getWindow("win-1");
+    expect(win?.tabs.length).toBe(1);
+    expect(win?.profileId).toBe("work");
+  });
+
+  it("noop when switching to the already-active profile", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.addTab("win-1", "https://a.test/");
+    const before = s.getWindow("win-1");
+
+    s.switchProfile("win-1", "personal");
+
+    const after = s.getWindow("win-1");
+    expect(after?.tabs.length).toBe(before?.tabs.length);
+    expect(after?._savedTabsByProfile).toBeUndefined();
+  });
+
+  it("preserves snapshots for OTHER profiles when switching between two", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    s.addTab("win-1", "https://personal-a.test/");
+
+    s.switchProfile("win-1", "work");
+    s.addTab("win-1", "https://work-a.test/");
+
+    s.switchProfile("win-1", "research");
+    s.addTab("win-1", "https://research-a.test/");
+
+    // Now both personal AND work snapshots should be in the saved map
+    const win = s.getWindow("win-1");
+    expect(win?.profileId).toBe("research");
+    expect(win?._savedTabsByProfile?.personal).toBeDefined();
+    expect(win?._savedTabsByProfile?.work).toBeDefined();
+    expect(win?._savedTabsByProfile?.research).toBeUndefined(); // Active
+
+    // Switch back to personal — work snapshot should still be preserved
+    s.switchProfile("win-1", "personal");
+    const win2 = s.getWindow("win-1");
+    expect(win2?._savedTabsByProfile?.work).toBeDefined();
+    expect(win2?._savedTabsByProfile?.research).toBeDefined(); // Just snapshotted
+    expect(win2?._savedTabsByProfile?.personal).toBeUndefined(); // Just restored
+  });
+});

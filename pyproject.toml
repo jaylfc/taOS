@@ -24,6 +24,7 @@ dependencies = [
     # libtorrent-rasterbar as a prerequisite on each platform.
     "libtorrent>=2.0.9",
     "lxml>=5.0.0",
+    "readability-lxml>=0.8.1",
     # Memory system — standalone package, pulled from GitHub
     "taosmd @ git+https://github.com/jaylfc/taosmd.git@master",
     # WebSocket client for dashboard proxy (shortcut_proxy.py)
