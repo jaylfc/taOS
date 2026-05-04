@@ -101,9 +101,13 @@ export function TabRenderer({ windowId }: TabRendererProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId, !!win]);
 
-  // Subscribe to panel state so TabRenderer re-renders when panel opens/closes
-  const panel = useBrowserAgentStore((s) => s.panels[`${windowId}:${win?.activeTabId}`]);
-  const panelIsOpen = panel?.isOpen ?? false;
+  // Subscribe to panel state so TabRenderer re-renders when panel opens/closes.
+  // win?.activeTabId is safely undefined when win is undefined (hook must be
+  // called unconditionally, so the guard comes after).
+  const panelIsOpen =
+    useBrowserAgentStore(
+      (s) => (win ? s.panels[`${windowId}:${win.activeTabId}`]?.isOpen : false),
+    ) ?? false;
 
   if (!win) return null;
 

@@ -83,6 +83,17 @@ export function AgentPanel({ windowId, tabId, pinnedAgentIds }: AgentPanelProps)
 
   // Drag handle logic
   const isDraggingRef = useRef(false);
+  const onMoveRef = useRef<((ev: MouseEvent) => void) | null>(null);
+  const onUpRef = useRef<(() => void) | null>(null);
+
+  // Remove any lingering drag listeners on unmount (e.g. panel closed mid-drag)
+  useEffect(() => {
+    return () => {
+      isDraggingRef.current = false;
+      if (onMoveRef.current) window.removeEventListener("mousemove", onMoveRef.current);
+      if (onUpRef.current) window.removeEventListener("mouseup", onUpRef.current);
+    };
+  }, []);
 
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {
@@ -98,10 +109,14 @@ export function AgentPanel({ windowId, tabId, pinnedAgentIds }: AgentPanelProps)
 
       const onUp = () => {
         isDraggingRef.current = false;
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
+        if (onMoveRef.current) window.removeEventListener("mousemove", onMoveRef.current);
+        if (onUpRef.current) window.removeEventListener("mouseup", onUpRef.current);
+        onMoveRef.current = null;
+        onUpRef.current = null;
       };
 
+      onMoveRef.current = onMove;
+      onUpRef.current = onUp;
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
@@ -154,7 +169,7 @@ export function AgentPanel({ windowId, tabId, pinnedAgentIds }: AgentPanelProps)
       ? ` (page: ${lastPageEvent.title ?? lastPageEvent.url ?? "unknown"})`
       : "";
     appendMessage(windowId, tabId, activeAgentId, {
-      id: `msg-${Date.now()}-summarise`,
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       author: "user",
       content: `Please summarise this page${context}.`,
       timestamp: Date.now(),

@@ -188,6 +188,52 @@ describe("AgentPanel", () => {
     );
   });
 
+  it("removes drag listeners on unmount during active drag (no leak)", () => {
+    openPanel("agent-1");
+    const setPanelWidthSpy = vi.spyOn(useBrowserAgentStore.getState(), "setPanelWidth");
+    const { unmount } = render(
+      <AgentPanel windowId={WINDOW_ID} tabId={TAB_ID} pinnedAgentIds={PINNED} />,
+    );
+    const handle = screen.getByRole("separator");
+
+    // Start drag but do NOT fire mouseup
+    fireEvent.mouseDown(handle, { clientX: 1000 });
+
+    // Capture call count after mousedown (before mousemove)
+    const callsBefore = setPanelWidthSpy.mock.calls.length;
+
+    // Unmount mid-drag — listeners should be cleaned up
+    unmount();
+
+    // Fire a mousemove on window — should NOT trigger setPanelWidth
+    fireEvent.mouseMove(window, { clientX: 700 });
+
+    expect(setPanelWidthSpy.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("two rapid Summarise clicks produce two distinct messages", () => {
+    openPanel("agent-1");
+    useBrowserAgentStore.getState().appendEvent(WINDOW_ID, TAB_ID, "agent-1", {
+      kind: "page-changed",
+      title: "Some Article",
+      url: "https://some.test/article",
+      timestamp: Date.now(),
+    });
+    render(
+      <AgentPanel windowId={WINDOW_ID} tabId={TAB_ID} pinnedAgentIds={PINNED} />,
+    );
+    const btn = screen.getByText("Summarise this page");
+
+    // Click twice in the same render cycle
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+
+    const msgs = useBrowserAgentStore.getState().messages["win-1:tab-1:agent-1"];
+    expect(msgs).toHaveLength(2);
+    // IDs must be distinct
+    expect(msgs[0].id).not.toBe(msgs[1].id);
+  });
+
   it("role='complementary' + aria-label='Agent panel'", () => {
     openPanel();
     render(
