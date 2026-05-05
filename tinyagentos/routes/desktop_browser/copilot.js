@@ -102,6 +102,100 @@
       el.focus();
       return { ok: true };
     },
+
+    // ─── Annotation ops ────────────────────────────────────────────────────────
+    // In-iframe annotations drawn directly into the proxied DOM. Anchored
+    // elements survive iframe scroll natively. Free-floating cursor + arrows
+    // are drawn by the parent's AnnotationLayer.tsx (this op returns a
+    // sentinel so the parent knows to draw them).
+    //
+    // Annotations are tagged with data-taos-annotation-id so 'clear' can
+    // remove them by id.
+
+    highlight: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      var color = args.color || 'yellow';
+      var id = 'h-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+      // Stash original background so 'clear' can restore it
+      el.dataset.taosAnnotationOrigBg = el.style.background || '';
+      el.style.background = color;
+      el.dataset.taosAnnotation = 'highlight';
+      el.dataset.taosAnnotationId = id;
+      return { ok: true, annotationId: id };
+    },
+
+    sticky: function (args) {
+      if (!args || !args.anchorSelector) return { error: 'missing anchorSelector' };
+      var anchor = document.querySelector(args.anchorSelector);
+      if (!anchor) return { error: 'not-found' };
+      var id = 'sticky-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+      var note = document.createElement('div');
+      note.textContent = (args.text !== undefined && args.text !== null) ? String(args.text) : '';
+      note.dataset.taosAnnotation = 'sticky';
+      note.dataset.taosAnnotationId = id;
+      note.style.cssText = 'position:absolute;'
+        + 'background:' + (args.color || '#fff8b0') + ';'
+        + 'border:1px solid #999;'
+        + 'padding:6px;'
+        + 'font:13px sans-serif;'
+        + 'border-radius:4px;'
+        + 'z-index:2147483647;'
+        + 'max-width:240px;'
+        + 'box-shadow:0 2px 8px rgba(0,0,0,0.15);';
+      // Position below the anchor in document coordinates
+      var rect = anchor.getBoundingClientRect();
+      note.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+      note.style.left = (window.scrollX + rect.left) + 'px';
+      document.body.appendChild(note);
+      return { ok: true, annotationId: id };
+    },
+
+    arrow: function (args) {
+      // Parent-overlay path — see AnnotationLayer.tsx (PR 7 Task 8). The agent
+      // sees this sentinel and re-issues via the parent's annotation channel.
+      return { error: 'use-parent-overlay' };
+    },
+
+    cursor: function (args) {
+      // Same: parent-overlay only. The cursor follows mouse coords from the
+      // parent's perspective and the iframe doesn't have those.
+      return { error: 'use-parent-overlay' };
+    },
+
+    clear: function (args) {
+      if (args && args.annotationId) {
+        var el = document.querySelector(
+          '[data-taos-annotation-id="' + args.annotationId + '"]'
+        );
+        if (el) {
+          if (el.dataset.taosAnnotation === 'highlight') {
+            el.style.background = el.dataset.taosAnnotationOrigBg || '';
+            delete el.dataset.taosAnnotation;
+            delete el.dataset.taosAnnotationId;
+            delete el.dataset.taosAnnotationOrigBg;
+          } else {
+            el.parentNode && el.parentNode.removeChild(el);
+          }
+        }
+        return { ok: true };
+      }
+      // Clear all annotations
+      var all = document.querySelectorAll('[data-taos-annotation]');
+      for (var i = 0; i < all.length; i++) {
+        var a = all[i];
+        if (a.dataset.taosAnnotation === 'highlight') {
+          a.style.background = a.dataset.taosAnnotationOrigBg || '';
+          delete a.dataset.taosAnnotation;
+          delete a.dataset.taosAnnotationId;
+          delete a.dataset.taosAnnotationOrigBg;
+        } else if (a.parentNode) {
+          a.parentNode.removeChild(a);
+        }
+      }
+      return { ok: true };
+    },
   };
 
   function extractReadable(args) {

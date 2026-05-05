@@ -96,3 +96,27 @@ class TestCopilotJsAsset:
         body = r.text
         assert "new Event('input'" in body
         assert "new Event('change'" in body
+
+    @pytest.mark.asyncio
+    async def test_annotation_ops_present(self, client):
+        """All annotation ops appear in the served file."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        for op in ["highlight", "sticky", "arrow", "cursor", "clear"]:
+            assert op in body, f"missing op {op}"
+
+    @pytest.mark.asyncio
+    async def test_arrow_and_cursor_return_parent_overlay_sentinel(self, client):
+        """Arrow + cursor in copilot.js return the use-parent-overlay sentinel
+        so the agent knows to re-issue via AnnotationLayer."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "use-parent-overlay" in body
+
+    @pytest.mark.asyncio
+    async def test_annotations_use_data_attribute_for_tracking(self, client):
+        """clear op needs data-taos-annotation-id to find/remove specific annotations."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "taosAnnotationId" in body
+        assert "taosAnnotation" in body
