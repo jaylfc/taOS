@@ -340,8 +340,14 @@ async def _maybe_send_chat_push(
         return
     # Check focus
     focused = hub.get_focused_tab(user_id)
-    if focused == (window_id, tab_id):
-        return  # User is looking right at this tab — don't push
+    if focused is not None:
+        if window_id:
+            if focused == (window_id, tab_id):
+                return
+        else:
+            # window_id unknown at the agent WS — fall back to tab_id match.
+            if focused[1] == tab_id:
+                return
     payload = {
         "title": agent_name or "Agent",
         "body": msg_text[:200],

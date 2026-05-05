@@ -176,6 +176,56 @@ class TestChatPushTrigger:
         mock_send.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_suppressed_by_tab_id_when_window_id_empty(self, store):
+        """Chat push suppressed when window_id is empty but tab_id matches focused tab."""
+        from tinyagentos.routes.desktop_browser.copilot_ws import _maybe_send_chat_push
+
+        hub = _make_hub()
+        # Focused tab is known with full (window_id, tab_id)
+        hub.set_focused_tab("user_a", "real-window", "tab-X")
+
+        with _patch_push_send() as mock_send:
+            # window_id="" but tab_id matches focused tab's tab_id — should suppress
+            await _maybe_send_chat_push(
+                user_id="user_a",
+                agent_id="agent-1",
+                agent_name="Agent",
+                msg_text="hello",
+                window_id="",
+                tab_id="tab-X",
+                store=store,
+                hub=hub,
+                vapid=FAKE_VAPID,
+            )
+
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fires_when_window_id_empty_and_tab_id_no_match(self, store):
+        """Chat push fires when window_id is empty and tab_id does NOT match focused tab."""
+        from tinyagentos.routes.desktop_browser.copilot_ws import _maybe_send_chat_push
+
+        hub = _make_hub()
+        # Focused tab has tab_id "tab-X"; agent is on a different tab "tab-Y"
+        hub.set_focused_tab("user_a", "real-window", "tab-X")
+
+        with _patch_push_send() as mock_send:
+            mock_send.return_value = {"sent": 1, "failed": 0, "removed": 0}
+            await _maybe_send_chat_push(
+                user_id="user_a",
+                agent_id="agent-1",
+                agent_name="Agent",
+                msg_text="hello",
+                window_id="",
+                tab_id="tab-Y",
+                store=store,
+                hub=hub,
+                vapid=FAKE_VAPID,
+            )
+
+        mock_send.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_body_truncated_to_200_chars(self, store):
         """Long messages are truncated to 200 chars in the push body."""
         from tinyagentos.routes.desktop_browser.copilot_ws import _maybe_send_chat_push
