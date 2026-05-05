@@ -184,7 +184,13 @@ phase1_host_prep() {
         die "unsupported package manager"
     fi
     sudo systemctl enable --now incus
-    sudo incus admin init --minimal < /dev/null 2>/dev/null || true
+    # Idempotency: only run init if incus isn't already initialized.
+    # `incus storage list` on uninitialized incus exits non-zero with a
+    # specific message about needing 'incus admin init'. On a usable incus
+    # it returns the (possibly empty) storage table cleanly.
+    if ! sudo incus storage list >/dev/null 2>&1; then
+        sudo incus admin init --minimal
+    fi
     create_btrfs_loopback
     launch_worker_lxc
 }
@@ -208,7 +214,7 @@ setup_port_forward() {
     sudo nft 'add chain ip taos prerouting { type nat hook prerouting priority -100 ; }' 2>/dev/null || true
     sudo nft 'flush chain ip taos prerouting' 2>/dev/null || true
     sudo nft "add rule ip taos prerouting tcp dport 8443 dnat to ${worker_ip}:8443"
-    sudo bash -c 'nft list ruleset > /etc/nftables.conf'
+    sudo bash -c 'nft list ruleset > /etc/nftables.conf.tmp && mv /etc/nftables.conf.tmp /etc/nftables.conf'
     sudo systemctl enable --now nftables 2>/dev/null || true
 }
 

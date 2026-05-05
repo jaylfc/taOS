@@ -104,6 +104,18 @@ def _dedup(args) -> int:
     return r.returncode
 
 
+def _parse_iec_bytes(s: str) -> int:
+    """Parse '500G', '1T', '512M', or raw bytes into integer bytes.
+    Accepts the same forms as truncate(1)."""
+    s = s.strip()
+    units = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    if not s:
+        raise ValueError("empty size")
+    if s[-1].upper() in units:
+        return int(float(s[:-1]) * units[s[-1].upper()])
+    return int(s)
+
+
 def _resize_storage(args) -> int:
     """Resize the worker LXC's btrfs loopback file in place.
 
@@ -114,13 +126,36 @@ def _resize_storage(args) -> int:
       4. Grow the btrfs filesystem inside via ``btrfs filesystem resize max``.
     """
     pool_img = "/var/lib/incus/disks/taos-worker-pool.img"
-    new_size = args.size
+    new_size_str = args.size
+
+    try:
+        new_bytes = _parse_iec_bytes(new_size_str)
+    except ValueError as exc:
+        print(f"Invalid --size: {exc}", file=sys.stderr)
+        return 2
+
+    # Pre-flight: refuse to shrink (would destroy data).
+    try:
+        current_bytes = int(subprocess.check_output(
+            ["sudo", "stat", "-c", "%s", pool_img], text=True
+        ).strip())
+    except subprocess.CalledProcessError:
+        print(f"Could not stat {pool_img}; is the worker installed?", file=sys.stderr)
+        return 2
+    if new_bytes <= current_bytes:
+        print(
+            f"Refusing to shrink: current size is {current_bytes} bytes, "
+            f"requested {new_bytes} bytes ({new_size_str}). "
+            f"Shrinking would destroy data.",
+            file=sys.stderr,
+        )
+        return 2
 
     print("Stopping taos-worker...")
     subprocess.run(["sudo", "incus", "stop", "taos-worker"], check=True)
 
-    print(f"Resizing {pool_img} to {new_size}...")
-    subprocess.run(["sudo", "truncate", "-s", new_size, pool_img], check=True)
+    print(f"Resizing {pool_img} to {new_size_str}...")
+    subprocess.run(["sudo", "truncate", "-s", new_size_str, pool_img], check=True)
 
     print("Starting taos-worker...")
     subprocess.run(["sudo", "incus", "start", "taos-worker"], check=True)
@@ -134,7 +169,7 @@ def _resize_storage(args) -> int:
         ],
         check=True,
     )
-    print(f"Resize to {new_size} complete.")
+    print(f"Resize to {new_size_str} complete.")
     return 0
 
 

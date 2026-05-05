@@ -72,6 +72,21 @@ def test_no_subcommand_exits():
         parser.parse_args([])
 
 
+def test_parse_iec_bytes_handles_units():
+    from tinyagentos.cli.worker import _parse_iec_bytes
+    assert _parse_iec_bytes("500G") == 500 * 1024**3
+    assert _parse_iec_bytes("1T") == 1024**4
+    assert _parse_iec_bytes("512M") == 512 * 1024**2
+    assert _parse_iec_bytes("4096") == 4096
+
+
+def test_parse_iec_bytes_rejects_invalid():
+    import pytest as _pytest
+    from tinyagentos.cli.worker import _parse_iec_bytes
+    with _pytest.raises(ValueError):
+        _parse_iec_bytes("")
+
+
 def test_each_subcommand_has_func():
     """Every parsed namespace must carry a callable .func for dispatch."""
     parser = build_parser()
