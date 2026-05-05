@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import subprocess
 from dataclasses import asdict
 
 from fastapi import APIRouter, Request
@@ -105,6 +107,13 @@ async def register_worker(request: Request, body: WorkerRegister):
     cluster = request.app.state.cluster_manager
     if not body.name or not body.url:
         return JSONResponse({"error": "name and url are required"}, status_code=400)
+    if body.host_lan_ip:
+        existing = cluster.find_worker_by_host_lan_ip(body.host_lan_ip)
+        if existing is not None and existing.name != body.name:
+            return JSONResponse(
+                {"error": f"Worker '{existing.name}' already registered for host {body.host_lan_ip}; only one worker LXC per host is supported"},
+                status_code=409,
+            )
     info = WorkerInfo(
         name=body.name,
         url=body.url,
@@ -343,6 +352,38 @@ async def incus_enroll(request: Request, name: str, body: IncusEnrollRequest):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
     if result["success"]:
+        # Verify the worker LXC was launched with security.privileged=true and
+        # security.nesting=true. If either is missing, mark the worker as
+        # degraded so the cluster UI surfaces the warning. Don't fail the enroll
+        # itself — registration is already complete.
+        try:
+            info_proc = await asyncio.to_thread(
+                subprocess.run,
+                ["incus", "info", "taos-worker", "--remote", name],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if info_proc.returncode == 0:
+                privileged = "security.privileged: \"true\"" in info_proc.stdout
+                nesting = "security.nesting: \"true\"" in info_proc.stdout
+                if not (privileged and nesting):
+                    worker.degraded = True
+                    missing = []
+                    if not privileged:
+                        missing.append("security.privileged=true")
+                    if not nesting:
+                        missing.append("security.nesting=true")
+                    worker.degraded_reason = (
+                        f"worker LXC missing {', '.join(missing)}; "
+                        "nested incus operations may fail"
+                    )
+                    logger.warning("worker %s degraded: %s", name, worker.degraded_reason)
+            # If incus info fails (returncode != 0), don't flag — could just be that
+            # the worker is at incus-only state without the LXC yet (during initial
+            # enrollment). Worth a debug log only.
+        except Exception as exc:
+            logger.warning("could not verify worker LXC privilege for %s: %s", name, exc)
         return {"ok": True}
     return JSONResponse({"ok": False, "error": result["output"]}, status_code=500)
 

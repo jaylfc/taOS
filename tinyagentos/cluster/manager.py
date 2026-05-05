@@ -211,6 +211,17 @@ class ClusterManager:
     def get_worker(self, name: str) -> WorkerInfo | None:
         return self._workers.get(name)
 
+    def find_worker_by_host_lan_ip(self, host_lan_ip: str) -> WorkerInfo | None:
+        """Return the worker registered for this bare host's LAN IP, or None.
+
+        Only worker-LXC mode workers send host_lan_ip; legacy flat-mode workers
+        have host_lan_ip=None and don't collide via this check.
+        """
+        for w in self._workers.values():
+            if w.host_lan_ip == host_lan_ip:
+                return w
+        return None
+
     def get_workers_for_capability(self, capability: str) -> list[WorkerInfo]:
         """Get online workers that support a capability, sorted by priority (lowest load first)."""
         eligible = [

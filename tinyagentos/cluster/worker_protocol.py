@@ -56,3 +56,5 @@ class WorkerInfo:
     storage_used_bytes: int = 0             # Current actual usage across agent containers
     bytes_deduped_total: int = 0            # Cumulative bytes reclaimed by bees dedup
     worker_lxc_image_version: str | None = None  # Ubuntu image version, e.g. "ubuntu/24.04/amd64"
+    degraded: bool = False
+    degraded_reason: str | None = None
