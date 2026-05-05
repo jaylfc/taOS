@@ -220,6 +220,70 @@ reexec_into_worker_lxc() {
     "
 }
 
+# --- phase 2: nested incus + bees + register (runs inside worker LXC) -----
+
+phase2_inside_lxc() {
+    log "phase 2: nested incus + bees + register"
+
+    # 1. Nested incus + bees
+    apt update -y
+    apt install -y incus bees curl
+
+    if incus list >/dev/null 2>&1; then
+        log "nested incus already initialised"
+    else
+        incus admin init --minimal
+    fi
+
+    # 2. bees systemd unit (default-on; opt-out via TAOS_NO_DEDUP)
+    if [[ -z "${TAOS_NO_DEDUP:-}" ]]; then
+        # bees needs UUID of the storage pool's btrfs filesystem.
+        # The nested incus default pool is at /var/lib/incus/storage-pools/default.
+        local pool_uuid
+        pool_uuid="$(blkid -s UUID -o value /var/lib/incus/storage-pools/default 2>/dev/null || echo default)"
+        mkdir -p /etc/bees /var/lib/bees
+        cat > /etc/bees/${pool_uuid}.conf <<EOF
+DB_SIZE=33554432
+WORKAROUND_BTRFS_SEND=1
+EOF
+        cat > /etc/systemd/system/bees.service <<'BEESEOF'
+[Unit]
+Description=bees - btrfs deduplication daemon
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bees /var/lib/incus/storage-pools/default
+Restart=on-failure
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+
+[Install]
+WantedBy=multi-user.target
+BEESEOF
+        systemctl daemon-reload
+        systemctl enable --now bees.service || warn "bees enable failed (ok if storage not ready yet)"
+    else
+        log "TAOS_NO_DEDUP set; skipping bees"
+    fi
+
+    # 3. Determine host LAN IP (the bare host's IP, used for registration).
+    #    The worker LXC sees its enclosing host via the gateway address on
+    #    incusbr0 (typically the .1 of the bridge subnet). We use that as the
+    #    host_lan_ip — it's how the controller's port-forward reaches us.
+    local host_lan_ip
+    host_lan_ip="$(ip route show default 2>/dev/null | awk '/via/ {print $3; exit}')"
+    if [[ -z "$host_lan_ip" ]]; then
+        host_lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
+    export TAOS_HOST_LAN_IP="$host_lan_ip"
+
+    # 4. Register with controller (reuse existing function from the rest of
+    #    install-worker.sh; it does POST /api/cluster/workers + /incus-enroll).
+    install_and_enroll_incus
+}
+
 # --- phase 1 entry-point --------------------------------------------------
 # On a bare host (PHASE=host, Linux only) run host prep and exit.
 # Phase 2 (inside the worker LXC) falls through to the rest of the script.
@@ -227,10 +291,14 @@ reexec_into_worker_lxc() {
 if [[ "$os_name" == "Linux" && "$PHASE" == "host" ]]; then
     phase1_host_prep
     setup_port_forward
-    # NOTE: reexec_into_worker_lxc is called after T8 lands.
-    # For now, log that phase 1 is complete.
-    log "Phase 1 complete (worker LXC launched + port-forward set up)"
-    log "Phase 2 will run inside the worker LXC once T8 lands."
+    reexec_into_worker_lxc
+    log "install complete (phase 1 + phase 2)"
+    exit 0
+fi
+
+if [[ "$os_name" == "Linux" && "$PHASE" == "inside" ]]; then
+    phase2_inside_lxc
+    log "phase 2 complete; worker LXC registered with controller"
     exit 0
 fi
 
@@ -546,18 +614,25 @@ install_and_enroll_incus() {
     fi
 
     # ── 2. Add user to incus-admin group ───────────────────────────────
-    if groups "$USER" 2>/dev/null | grep -qw incus-admin; then
-        log "user already in incus-admin group"
+    # Skip group management when running as root (e.g. inside the worker LXC);
+    # root can reach the incus socket directly without group membership.
+    local sg_incus
+    if [[ "$(id -u)" == "0" ]]; then
+        log "running as root — incus-admin group not needed"
+        sg_incus="bash -c"
     else
-        log "adding $USER to incus-admin group"
-        sudo usermod -aG incus-admin "$USER"
-        log "  NOTE: group change takes effect on next login"
-        log "  using sg to run remaining incus commands in this session"
+        if groups "$USER" 2>/dev/null | grep -qw incus-admin; then
+            log "user already in incus-admin group"
+        else
+            log "adding $USER to incus-admin group"
+            sudo usermod -aG incus-admin "$USER"
+            log "  NOTE: group change takes effect on next login"
+            log "  using sg to run remaining incus commands in this session"
+        fi
+        # Run incus commands via sg so the group membership is effective
+        # within this script session (avoids the user needing to re-login).
+        sg_incus="sg incus-admin -c"
     fi
-
-    # Run incus commands via sg so the group membership is effective
-    # within this script session (avoids the user needing to re-login).
-    local sg_incus="sg incus-admin -c"
 
     # ── 3. First-time minimal init ──────────────────────────────────────
     if $sg_incus "incus list" >/dev/null 2>&1; then
@@ -623,7 +698,39 @@ install_and_enroll_incus() {
 
     log "LAN IP: $LAN_IP"
 
-    # ── 7. POST to controller ───────────────────────────────────────────
+    # ── 7. Register worker with controller ─────────────────────────────
+    # POST /api/cluster/workers so the controller knows this worker exists
+    # before we try to /incus-enroll (that endpoint 404s for unknown workers).
+    # Includes the new LXC-mode fields: host_lan_ip and worker_lxc_image_version.
+    log "registering worker '${WORKER_NAME}' with controller at $CONTROLLER_URL"
+    local reg_code
+    reg_code="$(curl -sS -o /tmp/taos-worker-register.out -w "%{http_code}" \
+        -X POST "$CONTROLLER_URL/api/cluster/workers" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"name\": \"${WORKER_NAME}\",
+            \"url\": \"https://${LAN_IP}:8443\",
+            \"hardware\": {},
+            \"backends\": [],
+            \"capabilities\": [],
+            \"platform\": \"linux\",
+            \"models\": [],
+            \"host_lan_ip\": \"${TAOS_HOST_LAN_IP:-${LAN_IP}}\",
+            \"worker_lxc_image_version\": \"ubuntu/24.04/amd64\"
+        }" \
+        2>/tmp/taos-worker-register.err || true)"
+
+    if [[ "$reg_code" == 2* ]]; then
+        log "worker registered successfully (HTTP $reg_code)"
+    elif [[ "$reg_code" == "409" ]]; then
+        log "worker already registered (HTTP 409) — continuing to incus-enroll"
+    else
+        warn "worker registration returned HTTP $reg_code"
+        warn "  response: $(cat /tmp/taos-worker-register.out 2>/dev/null)"
+        warn "  continuing to incus-enroll anyway"
+    fi
+
+    # ── 8. POST to controller ───────────────────────────────────────────
     log "enrolling incus remote with controller at $CONTROLLER_URL"
     local http_code
     http_code="$(curl -sS -o /tmp/taos-incus-enroll.out -w "%{http_code}" \
