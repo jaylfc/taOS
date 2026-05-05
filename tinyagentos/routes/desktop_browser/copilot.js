@@ -13,6 +13,39 @@
   if (window.__taosCopilot) return;
   window.__taosCopilot = true;
 
+  // ─── Service Worker note ────────────────────────────────────────────────────
+  // SW registration moved to the parent shell (BrowserApp.tsx). This iframe
+  // runs with sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+  // (no allow-same-origin), so navigator.serviceWorker is unavailable here.
+  // The parent registers /__taos/sw.js and primes it via postMessage after
+  // each tab navigation (TabRenderer.tsx).
+
+  // ─── WebSocket constructor patch ─────────────────────────────────────────────
+  // PR 8 ships a no-op patch that logs cross-origin WS attempts. PR 9 (or
+  // follow-up) will add real WS proxying through the server. The hook is in
+  // place now so future code can extend the wrapper.
+  (function patchWebSocket() {
+    if (!window.WebSocket || window.WebSocket.__taosPatched) return;
+    var OriginalWebSocket = window.WebSocket;
+
+    function PatchedWebSocket(url, protocols) {
+      var u;
+      try { u = new URL(url, window.location.href); } catch (_e) {
+        return new OriginalWebSocket(url, protocols);
+      }
+      if (u.origin !== window.location.origin) {
+        // Cross-origin WS — would need server-side WS proxying (PR 9)
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[taos] WebSocket to', url, 'is not proxied — PR 9 will add support');
+        }
+      }
+      return new OriginalWebSocket(url, protocols);
+    }
+    PatchedWebSocket.prototype = OriginalWebSocket.prototype;
+    PatchedWebSocket.__taosPatched = true;
+    window.WebSocket = PatchedWebSocket;
+  })();
+
   var meta = document.querySelector('meta[name="taos-copilot-ws"]');
   if (!meta) return; // injector didn't run; bail silently
 

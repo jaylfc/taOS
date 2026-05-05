@@ -120,3 +120,20 @@ class TestCopilotJsAsset:
         body = r.text
         assert "taosAnnotationId" in body
         assert "taosAnnotation" in body
+
+    @pytest.mark.asyncio
+    async def test_does_not_register_sw_in_iframe_context(self, client):
+        """SW registration moved to parent shell — copilot.js (which runs in
+        the sandboxed iframe) should NOT call serviceWorker.register since
+        navigator.serviceWorker is unavailable in the sandbox."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "serviceWorker.register" not in body
+
+    @pytest.mark.asyncio
+    async def test_websocket_constructor_patched(self, client):
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "OriginalWebSocket" in body
+        assert "patchWebSocket" in body
+        assert "__taosPatched" in body

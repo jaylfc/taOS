@@ -55,6 +55,17 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
     createWindow(windowId, DEFAULT_PROFILE_ID);
   }, [windowId, createWindow]);
 
+  // Register the Service Worker from the parent shell. copilot.js runs in
+  // a sandboxed iframe (no allow-same-origin) where navigator.serviceWorker
+  // is unavailable. Registration must happen here so the SW is active before
+  // any proxied iframes load. Guarded so test/SSR environments don't throw.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register("/__taos/sw.js", { scope: "/" }).catch(() => {
+      // SW registration can fail in test/HTTP contexts — ignore
+    });
+  }, []);
+
   // Cleanup on unmount: remove the window from browser-store + delete server row
   useEffect(() => {
     return () => {

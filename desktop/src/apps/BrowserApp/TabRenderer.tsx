@@ -174,6 +174,28 @@ export function TabRenderer({ windowId }: TabRendererProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId, activeTabIdForEffect, pinnedAgentIdsForEffect.join(","), profileIdForEffect]);
 
+  // Prime the Service Worker with the active tab's page base URL + profile ID
+  // so it can rewrite relative SPA fetch calls through the proxy.
+  // Registration moved to BrowserApp.tsx (parent shell) since copilot.js runs
+  // in a sandboxed iframe where navigator.serviceWorker is unavailable.
+  // Uses .ready so the message is delivered whether or not the SW has claimed
+  // this client yet.
+  const activeTabUrlForSW = win?.tabs.find((t) => t.id === win?.activeTabId)?.url;
+  useEffect(() => {
+    if (!win || !activeTabUrlForSW) return;
+    if (!('serviceWorker' in navigator)) return;
+    if (!activeTabUrlForSW || activeTabUrlForSW === "about:blank" || activeTabUrlForSW.startsWith("about:")) return;
+    navigator.serviceWorker.ready.then((reg) => {
+      if (reg.active) {
+        reg.active.postMessage({
+          type: "taos-sw:prime",
+          pageBaseUrl: activeTabUrlForSW,
+          profileId: win.profileId,
+        });
+      }
+    });
+  }, [activeTabUrlForSW, win?.profileId, win?.activeTabId]);
+
   // Subscribe to panel state so TabRenderer re-renders when panel opens/closes.
   // win?.activeTabId is safely undefined when win is undefined (hook must be
   // called unconditionally, so the guard comes after).
