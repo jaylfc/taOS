@@ -44,7 +44,7 @@ def read_btrfs_pool_size(pool_path: str) -> tuple[int, int]:
         if proc.returncode != 0:
             logger.warning("btrfs filesystem show failed: %s", proc.stderr.strip())
             return (0, 0)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("btrfs filesystem show error: %s", exc)
         return (0, 0)
 
@@ -68,7 +68,7 @@ def read_bees_deduped_total(status_path: Path = DEFAULT_BEES_STATUS) -> int:
     Missing file or parse failure returns 0 (best-effort).
     """
     try:
-        text = Path(status_path).read_text()
+        text = status_path.read_text()
     except FileNotFoundError:
         return 0
     except OSError as exc:

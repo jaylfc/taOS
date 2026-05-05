@@ -1,10 +1,14 @@
 """Task 2: Tests for worker_capacity — btrfs pool size + bees dedup reporting."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tinyagentos.cluster.worker_capacity import (
+    _parse_size,
     read_btrfs_pool_size,
     read_bees_deduped_total,
     capacity_snapshot,
@@ -73,3 +77,33 @@ def test_capacity_snapshot_returns_dict(tmp_path):
         "storage_used_bytes": 1 * 1024**3,
         "bytes_deduped_total": 100,
     }
+
+
+def test_read_btrfs_pool_size_handles_timeout():
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="btrfs", timeout=5)):
+        cap, used = read_btrfs_pool_size("/anywhere")
+    assert cap == 0
+    assert used == 0
+
+
+@pytest.mark.parametrize("input_str, expected_bytes", [
+    ("500.00GiB", 500 * 1024**3),
+    ("12.34TiB", int(12.34 * 1024**4)),
+    ("1.5MiB", int(1.5 * 1024**2)),
+    ("512KiB", 512 * 1024),
+    ("0B", 0),
+])
+def test_parse_size_handles_all_btrfs_units(input_str, expected_bytes):
+    assert _parse_size(input_str) == expected_bytes
+
+
+def test_read_btrfs_pool_size_returns_zeros_on_unparsable_size():
+    fake_output = """Label: 'p' uuid: x
+        devid 1 size UNKNOWN used UNKNOWN path /dev/loop0
+"""
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = fake_output
+        mock_run.return_value.returncode = 0
+        cap, used = read_btrfs_pool_size("/anywhere")
+    assert cap == 0
+    assert used == 0
