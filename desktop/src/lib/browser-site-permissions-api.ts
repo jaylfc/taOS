@@ -1,6 +1,9 @@
 /**
  * Fetch wrappers for /api/desktop/browser/site-permissions.
- * All functions are silent on errors (return empty/false).
+ *
+ * Reads throw on non-2xx / network failure so callers can show a real
+ * error UX rather than collapsing failures into an empty list. Writes
+ * return a boolean to keep call sites simple.
  *
  * Backend: tinyagentos/routes/desktop_browser/site_permission_routes.py
  *
@@ -19,16 +22,14 @@ export interface SitePermissionGrant {
 
 export async function listSitePermissions(profileId: string): Promise<SitePermissionGrant[]> {
   const params = new URLSearchParams({ profile_id: profileId });
-  try {
-    const resp = await fetch(`/api/desktop/browser/site-permissions?${params}`, {
-      credentials: "include",
-    });
-    if (!resp.ok) return [];
-    const body = await resp.json();
-    return Array.isArray(body?.grants) ? body.grants : [];
-  } catch {
-    return [];
+  const resp = await fetch(`/api/desktop/browser/site-permissions?${params}`, {
+    credentials: "include",
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
   }
+  const body = await resp.json();
+  return Array.isArray(body?.grants) ? body.grants : [];
 }
 
 export async function revokeSitePermission(

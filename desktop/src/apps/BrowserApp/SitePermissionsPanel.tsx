@@ -22,7 +22,10 @@ interface SitePermissionsPanelProps {
 export function SitePermissionsPanel({ profileId, onClose }: SitePermissionsPanelProps) {
   const [grants, setGrants] = useState<SitePermissionGrant[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [revokingKey, setRevokingKey] = useState<string | null>(null);
   const loadSeqRef = useRef(0);
+
+  const revokeKey = (g: SitePermissionGrant) => `${g.host_pattern}|${g.permission}`;
 
   async function load() {
     const seq = ++loadSeqRef.current;
@@ -51,6 +54,9 @@ export function SitePermissionsPanel({ profileId, onClose }: SitePermissionsPane
   }, [onClose]);
 
   async function handleRevoke(grant: SitePermissionGrant) {
+    const key = revokeKey(grant);
+    if (revokingKey) return; // already revoking another (or same) row
+    setRevokingKey(key);
     setError(null);
     try {
       const ok = await revokeSitePermission(profileId, grant.host_pattern, grant.permission);
@@ -61,6 +67,8 @@ export function SitePermissionsPanel({ profileId, onClose }: SitePermissionsPane
       await load();
     } catch {
       setError("Failed to revoke permission. Please try again.");
+    } finally {
+      setRevokingKey(null);
     }
   }
 
@@ -134,7 +142,8 @@ export function SitePermissionsPanel({ profileId, onClose }: SitePermissionsPane
                         type="button"
                         aria-label={`Revoke ${grant.permission} on ${grant.host_pattern}`}
                         onClick={() => handleRevoke(grant)}
-                        className="p-1 rounded hover:bg-red-500/20 text-shell-text-secondary hover:text-red-400"
+                        disabled={revokingKey !== null}
+                        className="p-1 rounded hover:bg-red-500/20 text-shell-text-secondary hover:text-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <X size={12} />
                       </button>
