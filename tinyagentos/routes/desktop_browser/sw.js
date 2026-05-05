@@ -71,3 +71,51 @@ self.addEventListener('message', function (event) {
     self.__taosProfileId = data.profileId;
   }
 });
+
+self.addEventListener('push', function (event) {
+  // Server pushes a JSON payload {title, body, tag?, icon?, data?}.
+  // We forward to showNotification, falling back to a generic message
+  // if parsing fails or the push has no payload.
+  var payload;
+  try {
+    payload = event.data ? event.data.json() : null;
+  } catch (_e) {
+    payload = null;
+  }
+  if (!payload || typeof payload !== 'object') {
+    payload = { title: 'taOS', body: 'New activity' };
+  }
+  var title = (typeof payload.title === 'string') ? payload.title : 'taOS';
+  var options = {
+    body: (typeof payload.body === 'string') ? payload.body : '',
+    tag: (typeof payload.tag === 'string') ? payload.tag : undefined,
+    icon: (typeof payload.icon === 'string') ? payload.icon : undefined,
+    data: (payload.data && typeof payload.data === 'object') ? payload.data : {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', function (event) {
+  // Close the notification, then either focus an existing same-origin
+  // taOS window (postMessage so the shell can route to the right tab)
+  // or open a new one.
+  event.notification.close();
+  var data = event.notification.data || {};
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientsList) {
+      for (var i = 0; i < clientsList.length; i++) {
+        var client = clientsList[i];
+        if (client.url && new URL(client.url).origin === self.location.origin) {
+          // Found a same-origin client — focus it and forward the click data.
+          client.postMessage({ type: 'taos-push:click', data: data });
+          return client.focus();
+        }
+      }
+      // No matching window — open a new one at root.
+      if (self.clients.openWindow) {
+        return self.clients.openWindow('/');
+      }
+      return null;
+    })
+  );
+});
