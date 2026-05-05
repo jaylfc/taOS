@@ -22,6 +22,20 @@
 #     TAOS_SERVICE            install as system service: auto (default), user, skip
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Phase detection (worker-as-LXC).
+#
+# install-worker.sh runs in two phases:
+#   1. Bare host: creates the privileged worker LXC, port-forwards :8443,
+#      and incus exec's itself into the LXC for phase 2.
+#   2. Inside worker LXC: installs nested incus + bees + registers with
+#      controller.
+#
+# TAOS_INSIDE_WORKER=1 in the environment means "we're in phase 2".
+# ---------------------------------------------------------------------------
+PHASE="${TAOS_INSIDE_WORKER:+inside}"
+PHASE="${PHASE:-host}"
+
 CONTROLLER_URL="${TAOS_CONTROLLER_URL:-${1:-}}"
 if [[ -z "$CONTROLLER_URL" ]]; then
     echo "usage: install-worker.sh <controller_url>" >&2
@@ -55,6 +69,31 @@ have_root_or_sudo() {
         return 0
     fi
     return 1
+}
+
+# --- flat-mode refusal ----------------------------------------------------
+
+refuse_flat_mode_install() {
+    if ! command -v incus >/dev/null 2>&1; then
+        return 0
+    fi
+    local existing
+    existing="$(incus list --format=csv -c n 2>/dev/null | grep '^taos-agent-' || true)"
+    if [[ -n "$existing" ]]; then
+        die "$(cat <<EOF
+Existing flat-mode install detected. Worker-LXC mode is the new default.
+Found existing flat-mode agent containers:
+
+$(echo "$existing" | sed 's/^/  /')
+
+To convert: stop all agents, run 'taos worker convert-to-lxc' on the
+controller, then re-run install-worker.sh on a clean host.
+
+This is destructive — agent containers will be recreated, but agent
+identity and memory on shared cluster storage survive.
+EOF
+)"
+    fi
 }
 
 # --- system dependencies --------------------------------------------------
