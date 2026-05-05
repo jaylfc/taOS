@@ -28,6 +28,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from tinyagentos.auth import get_current_user
 from tinyagentos.routes.desktop_browser import push, router
+from tinyagentos.routes.desktop_browser.copilot_agent_ws import (
+    _BACKGROUND_TASKS,
+    _log_task_exception,
+)
 from tinyagentos.routes.desktop_browser.cookie_jar import (
     load_jar_for_request,
     persist_response_cookies,
@@ -213,9 +217,12 @@ async def download_endpoint(
                                 "tab_id": tab_id or "",
                             },
                         }
-                        asyncio.create_task(
+                        _task = asyncio.create_task(
                             push.send(user_id, payload, store=_store, vapid=_vapid)
                         )
+                        _BACKGROUND_TASKS.add(_task)
+                        _task.add_done_callback(_BACKGROUND_TASKS.discard)
+                        _task.add_done_callback(_log_task_exception)
                 except Exception:
                     _logger.warning("download push trigger failed", exc_info=True)
 

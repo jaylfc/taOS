@@ -543,7 +543,7 @@ class TestNonBlockingPushTriggers:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
 
     @pytest.mark.asyncio
@@ -579,7 +579,7 @@ class TestNonBlockingPushTriggers:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
 
 

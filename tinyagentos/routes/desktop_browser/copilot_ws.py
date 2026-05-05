@@ -180,6 +180,15 @@ class CopilotHub:
         """Return (window_id, tab_id) of the user's focused tab, or None if unknown."""
         return self._focused_tabs.get(user_id)
 
+    def clear_focused_tab_if_matches(
+        self, user_id: str, window_id: str, tab_id: str,
+    ) -> None:
+        """Clear focused-tab cache if it matches the disconnecting tab. Prevents
+        stale focus state from suppressing pushes after a tab/window closes."""
+        current = self._focused_tabs.get(user_id)
+        if current == (window_id, tab_id):
+            del self._focused_tabs[user_id]
+
     def set_tab_url(
         self, *, user_id: str, profile_id: str, tab_id: str, url: str,
     ) -> None:
@@ -389,6 +398,9 @@ async def copilot_ws(websocket: WebSocket, ticket: str):
         agent_id=consumed.agent_id,
         ws=websocket,
     )
+    # Track the (window_id, tab_id) this connection last reported as focused,
+    # so we can clear stale focus state when this connection closes.
+    _last_focus: tuple[str, str] | None = None
     try:
         while True:
             message = await websocket.receive_json()
@@ -409,6 +421,7 @@ async def copilot_ws(websocket: WebSocket, ticket: str):
                 tab_id = message.get("tab_id", "")
                 if window_id and tab_id:
                     hub.set_focused_tab(consumed.user_id, window_id, tab_id)
+                    _last_focus = (window_id, tab_id)
     except WebSocketDisconnect:
         pass
     finally:
@@ -418,3 +431,7 @@ async def copilot_ws(websocket: WebSocket, ticket: str):
             tab_id=consumed.tab_id,
             agent_id=consumed.agent_id,
         )
+        if _last_focus is not None:
+            hub.clear_focused_tab_if_matches(
+                consumed.user_id, _last_focus[0], _last_focus[1],
+            )

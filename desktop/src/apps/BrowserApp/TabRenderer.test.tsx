@@ -331,9 +331,6 @@ describe("TabRenderer — tab-focus postMessage", () => {
       "https://b.test/",
     );
     // tabB is now active. Render while capturing postMessages.
-    const messages: any[] = [];
-    const origPostMessage = window.postMessage.bind(window);
-
     const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
 
     // Attach a spy to each iframe's contentWindow.postMessage.

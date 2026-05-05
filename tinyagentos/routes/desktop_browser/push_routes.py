@@ -1,7 +1,6 @@
 """HTTP endpoints for Web Push subscription CRUD and mute management."""
 from __future__ import annotations
 
-import pathlib
 from typing import Any, Literal
 
 from fastapi import Depends, Request
@@ -10,20 +9,6 @@ from pydantic import BaseModel, field_validator
 
 from tinyagentos.auth import get_current_user
 from tinyagentos.routes.desktop_browser import router
-from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
-
-# ---------------------------------------------------------------------------
-# Module-level VAPID cache — loaded once, never re-read from disk per request.
-# ---------------------------------------------------------------------------
-
-_vapid_cache: tuple[str, str] | None = None
-
-
-def _get_vapid(data_dir: pathlib.Path) -> tuple[str, str]:
-    global _vapid_cache
-    if _vapid_cache is None:
-        _vapid_cache = load_or_create_vapid_keypair(data_dir)
-    return _vapid_cache
 
 
 # ---------------------------------------------------------------------------
@@ -32,10 +17,9 @@ def _get_vapid(data_dir: pathlib.Path) -> tuple[str, str]:
 
 
 @router.get("/api/desktop/browser/push/vapid-public-key")
-async def get_vapid_public_key(request: Request):
+async def get_vapid_public_key(request: Request) -> dict[str, str]:
     """Return the server's VAPID public key for use in PushManager.subscribe()."""
-    data_dir: pathlib.Path = request.app.state.data_dir
-    public_key, _ = _get_vapid(data_dir)
+    public_key, _ = request.app.state.vapid_keypair
     return {"public_key": public_key}
 
 

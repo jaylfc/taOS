@@ -21,6 +21,19 @@ from tinyagentos.routes.desktop_browser.copilot_ws import _maybe_send_chat_push
 
 _logger = logging.getLogger(__name__)
 
+# Strong references to fire-and-forget background tasks. Without this, CPython
+# may GC a task before it completes; exceptions would also be silently swallowed.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _logger.warning("background push task failed: %s", exc)
+
+
 _DRIVE_OPS = {"scrollTo", "click", "type", "navigate", "focus"}
 
 # Privileged ops and the permission required to execute them.
@@ -223,7 +236,7 @@ async def copilot_agent_ws(websocket: WebSocket, ticket: str):
                 vapid = getattr(websocket.app.state, "vapid_keypair", None)
                 if vapid is not None:
                     try:
-                        asyncio.create_task(_maybe_send_chat_push(
+                        _task = asyncio.create_task(_maybe_send_chat_push(
                             user_id=consumed.user_id,
                             agent_id=consumed.agent_id,
                             agent_name=consumed.agent_id,
@@ -234,6 +247,9 @@ async def copilot_agent_ws(websocket: WebSocket, ticket: str):
                             hub=hub,
                             vapid=vapid,
                         ))
+                        _BACKGROUND_TASKS.add(_task)
+                        _task.add_done_callback(_BACKGROUND_TASKS.discard)
+                        _task.add_done_callback(_log_task_exception)
                     except Exception:
                         _logger.warning(
                             "chat push trigger setup failed", exc_info=True
@@ -264,7 +280,7 @@ async def copilot_agent_ws(websocket: WebSocket, ticket: str):
                     vapid = getattr(websocket.app.state, "vapid_keypair", None)
                     if vapid is not None:
                         try:
-                            asyncio.create_task(_maybe_send_drive_push(
+                            _task = asyncio.create_task(_maybe_send_drive_push(
                                 user_id=consumed.user_id,
                                 agent_id=consumed.agent_id,
                                 agent_name=agent_name,
@@ -275,6 +291,9 @@ async def copilot_agent_ws(websocket: WebSocket, ticket: str):
                                 hub=hub,
                                 vapid=vapid,
                             ))
+                            _BACKGROUND_TASKS.add(_task)
+                            _task.add_done_callback(_BACKGROUND_TASKS.discard)
+                            _task.add_done_callback(_log_task_exception)
                         except Exception:
                             _logger.warning(
                                 "drive push trigger setup failed", exc_info=True

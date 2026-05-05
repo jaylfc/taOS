@@ -1045,6 +1045,11 @@ class BrowserStore(BaseStore):
         """Insert-or-replace a push subscription. Updates last_seen_at to now.
 
         created_at is set on first insert and NOT touched on conflict.
+
+        Deduplicates by endpoint within the same user: if an existing row for
+        this user has the same endpoint but a different device_id (e.g. the
+        browser regenerated its device_id), the old row is removed before the
+        upsert so the user doesn't accumulate duplicate notification targets.
         """
         if not user_id:
             raise ValueError("user_id is required")
@@ -1053,6 +1058,12 @@ class BrowserStore(BaseStore):
         import time
         assert self._db is not None
         now = int(time.time())
+        # Remove stale rows for the same (user, endpoint) with a different device_id.
+        await self._db.execute(
+            "DELETE FROM push_subscriptions "
+            "WHERE user_id = ? AND endpoint = ? AND device_id != ?",
+            (user_id, endpoint, device_id),
+        )
         await self._db.execute(
             "INSERT INTO push_subscriptions "
             "(user_id, device_id, endpoint, p256dh_key, auth_key, user_agent, created_at, last_seen_at) "

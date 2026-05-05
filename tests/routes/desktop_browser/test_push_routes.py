@@ -4,14 +4,6 @@ from __future__ import annotations
 import base64
 
 import pytest
-from tinyagentos.routes.desktop_browser import push_routes
-
-
-@pytest.fixture(autouse=True)
-def reset_vapid_cache():
-    push_routes._vapid_cache = None
-    yield
-    push_routes._vapid_cache = None
 
 
 # ---------------------------------------------------------------------------

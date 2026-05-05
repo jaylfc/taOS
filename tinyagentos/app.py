@@ -899,6 +899,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.copilot_ticket_store = _CopilotTicketStore()
     app.state.copilot_hub = _CopilotHub()
 
+    from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair as _load_vapid
+    app.state.vapid_keypair = _load_vapid(data_dir)
+
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
         from tinyagentos.containers.backend import detect_runtime, set_backend

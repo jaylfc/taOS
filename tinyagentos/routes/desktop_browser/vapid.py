@@ -41,11 +41,16 @@ def load_or_create_vapid_keypair(data_dir: pathlib.Path) -> tuple[str, str]:
         pem_bytes = vapid.private_pem()
         # Write with mode 0600 atomically using os.open so no window exists
         # where the file is readable by other users.
-        fd = os.open(str(pem_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            os.write(fd, pem_bytes)
-        finally:
-            os.close(fd)
+            fd = os.open(str(pem_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, pem_bytes)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            # Lost the race with a concurrent process — load the file that the
+            # winner wrote instead of using the in-memory keypair.
+            vapid = Vapid01.from_pem(pem_path.read_bytes())
 
     pub_bytes = vapid.public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
     public_key_b64url = base64.urlsafe_b64encode(pub_bytes).rstrip(b"=").decode("ascii")

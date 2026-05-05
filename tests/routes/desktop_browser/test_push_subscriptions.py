@@ -217,3 +217,72 @@ async def test_list_ordering_by_last_seen_at_desc(store):
     assert rows[0]["device_id"] == "device_new", "most recently seen device must be first"
     assert rows[1]["device_id"] == "device_old"
     assert rows[0]["last_seen_at"] >= rows[1]["last_seen_at"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Endpoint dedup — same endpoint, different device_id, same user
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_endpoint_dedup_same_user(store):
+    """Re-subscribing with a new device_id but the same endpoint removes the old row."""
+    shared_endpoint = "https://push.example.com/dedup-test"
+
+    # First subscription: device_x with endpoint E.
+    await store.upsert_push_subscription(
+        "user_a", "device_x",
+        endpoint=shared_endpoint,
+        p256dh_key="k1",
+        auth_key="a1",
+    )
+
+    # Second subscription: device_y with same endpoint E — old row must be removed.
+    await store.upsert_push_subscription(
+        "user_a", "device_y",
+        endpoint=shared_endpoint,
+        p256dh_key="k2",
+        auth_key="a2",
+    )
+
+    rows = await store.list_push_subscriptions("user_a")
+    assert len(rows) == 1, "duplicate endpoint rows must be removed"
+    assert rows[0]["device_id"] == "device_y"
+    assert rows[0]["endpoint"] == shared_endpoint
+
+
+@pytest.mark.asyncio
+async def test_endpoint_dedup_does_not_affect_other_users(store):
+    """Dedup within user_a must not remove user_b's row with the same endpoint."""
+    shared_endpoint = "https://push.example.com/cross-user-dedup"
+
+    # user_b subscribes with device_b.
+    await store.upsert_push_subscription(
+        "user_b", "device_b",
+        endpoint=shared_endpoint,
+        p256dh_key="kb",
+        auth_key="ab",
+    )
+
+    # user_a subscribes with device_x, then device_y (same endpoint).
+    await store.upsert_push_subscription(
+        "user_a", "device_x",
+        endpoint=shared_endpoint,
+        p256dh_key="k1",
+        auth_key="a1",
+    )
+    await store.upsert_push_subscription(
+        "user_a", "device_y",
+        endpoint=shared_endpoint,
+        p256dh_key="k2",
+        auth_key="a2",
+    )
+
+    # user_a ends up with exactly one row (device_y).
+    rows_a = await store.list_push_subscriptions("user_a")
+    assert len(rows_a) == 1
+    assert rows_a[0]["device_id"] == "device_y"
+
+    # user_b's row is untouched.
+    rows_b = await store.list_push_subscriptions("user_b")
+    assert len(rows_b) == 1
+    assert rows_b[0]["device_id"] == "device_b"
