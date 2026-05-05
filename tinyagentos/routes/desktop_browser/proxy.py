@@ -216,10 +216,13 @@ async def proxy_get(
         # Page-change broadcast for any agents pinned to this tab.
         # Non-blocking — never delay the user's page load on agent fan-out.
         if tab_id:
-            # Record authoritative current URL for this tab. Agent-side capability
-            # checks read from this rather than trusting agent-supplied msg["host"].
+            # Record authoritative current URL for this tab. Use the FINAL URL
+            # after redirects (`response.url`), not the requested URL — the
+            # iframe is showing whatever the redirects landed on, and capability
+            # checks against the wrong host would mis-authorize ops.
+            final_url = str(response.url)
             request.app.state.copilot_hub.set_tab_url(
-                user_id=user_id, profile_id=profile_id, tab_id=tab_id, url=url,
+                user_id=user_id, profile_id=profile_id, tab_id=tab_id, url=final_url,
             )
             extract_text = ""
             extract_title = ""
