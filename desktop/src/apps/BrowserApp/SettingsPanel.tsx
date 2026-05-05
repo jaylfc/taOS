@@ -47,14 +47,20 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
     };
   }, [onClose]);
 
-  // Escape key dismiss
+  // Escape key dismiss — when the capabilities sub-modal is open, Escape
+  // should close it first; a second Escape then closes the settings panel.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (capsOpen) {
+        setCapsOpen(false);
+        return;
+      }
+      onClose();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, capsOpen]);
 
   return (
     <div

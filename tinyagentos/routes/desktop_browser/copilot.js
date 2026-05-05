@@ -86,11 +86,20 @@
       if (!args || typeof args.url !== 'string' || !args.url) {
         return { error: 'missing url' };
       }
+      var parsed;
+      try {
+        parsed = new URL(args.url, location.href);
+      } catch (_e) {
+        return { error: 'invalid url' };
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { error: 'unsupported scheme' };
+      }
       // The proxied iframe is sandboxed; setting location.href triggers a
       // navigation through the proxy (the rewriter has already prefixed
       // anchor hrefs but a synthetic navigate uses the raw URL — the browser
       // shell picks this up via the navigation event).
-      location.href = args.url;
+      location.href = parsed.href;
       return { ok: true };
     },
 

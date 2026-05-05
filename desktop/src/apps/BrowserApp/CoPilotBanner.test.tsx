@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { CoPilotBanner } from "./CoPilotBanner";
 import { useBrowserAgentStore } from "@/stores/browser-agent-store";

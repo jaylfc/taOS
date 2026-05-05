@@ -296,7 +296,7 @@ class CopilotHub:
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 
-# Allowed event kinds from iframe → server. Drive ack events come in PR 7.
+# Allowed event kinds from iframe → server. 'ack' is routed back to the agent runtime.
 _ALLOWED_EVENT_KINDS = {
     "page-changed", "url-changed", "scroll", "form-submit",
     "download-started", "ack",

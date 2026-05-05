@@ -121,6 +121,7 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
             <ListChecks size={14} />
           </button>
         </div>
+        <CapabilityPromptModal />
       </div>
     );
   }

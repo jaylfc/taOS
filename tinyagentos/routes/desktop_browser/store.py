@@ -8,7 +8,7 @@ The query helpers refuse to operate without a user_id argument.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tinyagentos.base_store import BaseStore
@@ -683,28 +683,15 @@ class BrowserStore(BaseStore):
         *,
         idle_timeout_s: float = 30.0,
     ) -> int:
-        """DELETE all rows where (now - last_op_at) >= idle_timeout_s. Returns rowcount."""
+        """Atomically delete rows idle for >= idle_timeout_s. Returns rowcount."""
         assert self._db is not None
-        now = datetime.now(timezone.utc)
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=idle_timeout_s)).isoformat()
         cursor = await self._db.execute(
-            "SELECT user_id, profile_id, tab_id, agent_id, last_op_at FROM drive_sessions",
+            "DELETE FROM drive_sessions WHERE last_op_at <= ?",
+            (cutoff,),
         )
-        rows = await cursor.fetchall()
-        expired = [
-            (r[0], r[1], r[2], r[3])
-            for r in rows
-            if (now - datetime.fromisoformat(r[4])).total_seconds() >= idle_timeout_s
-        ]
-        if not expired:
-            return 0
-        for (uid, pid, tid, aid) in expired:
-            await self._db.execute(
-                "DELETE FROM drive_sessions "
-                "WHERE user_id = ? AND profile_id = ? AND tab_id = ? AND agent_id = ?",
-                (uid, pid, tid, aid),
-            )
         await self._db.commit()
-        return len(expired)
+        return cursor.rowcount or 0
 
     # ------------------------------------------------------------------
     # Capability-check wrappers

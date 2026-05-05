@@ -35,21 +35,21 @@ export function CoPilotBanner({
   };
 
   const handleTakeBack = async () => {
-    // 1. Revoke drive capability (idempotent on both "*" and the host wildcard)
-    await revokeCapability(profileId, agentId, "*");
+    try {
+      // 1. Revoke drive capability (idempotent on both "*" and the host wildcard)
+      await revokeCapability(profileId, agentId, "*");
 
-    // 2. Unpin the agent from the tab
-    await unpinAgent(profileId, tabId, agentId);
+      // 2. Unpin the agent from the tab
+      await unpinAgent(profileId, tabId, agentId);
 
-    // 3. Remove from local pin state
-    const browserStore = await import("@/stores/browser-store");
-    browserStore.useBrowserStore.getState().removePinnedAgent(windowId, tabId, agentId);
-
-    // 4. Flip driving state to idle locally
-    useBrowserAgentStore.getState().setDrivingState(windowId, tabId, agentId, "idle");
-
-    // 5. Notify parent
-    onTakeBack?.();
+      // 3. Remove from local pin state
+      const browserStore = await import("@/stores/browser-store");
+      browserStore.useBrowserStore.getState().removePinnedAgent(windowId, tabId, agentId);
+    } finally {
+      // Always flip driving state and notify parent, even if the API calls fail.
+      useBrowserAgentStore.getState().setDrivingState(windowId, tabId, agentId, "idle");
+      onTakeBack?.();
+    }
   };
 
   return (

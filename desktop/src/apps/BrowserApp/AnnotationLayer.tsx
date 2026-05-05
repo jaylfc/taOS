@@ -10,9 +10,12 @@
 import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 import type { Annotation, AnnotationCursor, AnnotationArrow } from "@/stores/browser-agent-store";
 
-const MARKER_ID = "annotation-arrowhead";
 const DEFAULT_COLOR = "#6c8df0";
 const EMPTY: Annotation[] = [];
+
+/** Stable marker id per color — avoids collisions between AnnotationLayer instances. */
+const markerIdFor = (color: string) =>
+  `annotation-arrowhead-${color.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
 export interface AnnotationLayerProps {
   windowId: string;
@@ -43,16 +46,19 @@ export function AnnotationLayer({ windowId, tabId }: AnnotationLayerProps) {
     >
       {arrows.length > 0 && (
         <defs>
-          <marker
-            id={MARKER_ID}
-            markerWidth="8"
-            markerHeight="8"
-            refX="6"
-            refY="3"
-            orient="auto"
-          >
-            <path d="M0,0 L0,6 L8,3 z" fill={DEFAULT_COLOR} />
-          </marker>
+          {[...new Set(arrows.map((a) => a.color ?? DEFAULT_COLOR))].map((color) => (
+            <marker
+              key={color}
+              id={markerIdFor(color)}
+              markerWidth="8"
+              markerHeight="8"
+              refX="6"
+              refY="3"
+              orient="auto"
+            >
+              <path d="M0,0 L0,6 L8,3 z" fill={color} />
+            </marker>
+          ))}
         </defs>
       )}
 
@@ -100,7 +106,7 @@ export function AnnotationLayer({ windowId, tabId }: AnnotationLayerProps) {
             y2={arrow.to.y}
             stroke={color}
             strokeWidth={2}
-            markerEnd={`url(#${MARKER_ID})`}
+            markerEnd={`url(#${markerIdFor(color)})`}
           />
         );
       })}

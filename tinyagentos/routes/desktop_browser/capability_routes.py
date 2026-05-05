@@ -1,6 +1,7 @@
 """HTTP endpoints for agent capability grant/revoke."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import Depends, Request
@@ -60,6 +61,8 @@ async def grant_capability_route(
         return JSONResponse({"error": "session has no user id"}, status_code=401)
     try:
         _validate_permissions(body.permissions)
+        if body.expires_at is not None:
+            datetime.fromisoformat(body.expires_at)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     try:

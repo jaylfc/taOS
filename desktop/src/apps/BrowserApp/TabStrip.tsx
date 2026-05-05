@@ -102,7 +102,7 @@ function TabItem({ windowId, tab, isActive, onActivate, onClose, onContextMenu }
 
   // Green underline when any pinned agent on this tab is in driving state
   const tabDriving = useBrowserAgentStore((s) => {
-    for (const aid of tab.pinnedAgentIds) {
+    for (const aid of tab.pinnedAgentIds ?? []) {
       if (s.drivingState[`${windowId}:${tab.id}:${aid}`] === "driving") return true;
     }
     return false;

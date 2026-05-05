@@ -405,7 +405,7 @@ describe("browser-agent-store: drivingState", () => {
     expect(useBrowserAgentStore.getState().isAnyDriving("win-2", "tab-2")).toBe("agent-b");
   });
 
-  it("isAnyDriving returns one of multiple driving agents", () => {
+  it("isAnyDriving picks the driving agent when others are idle", () => {
     const s = useBrowserAgentStore.getState();
     s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
     s.setDrivingState("win-1", "tab-1", "agent-b", "driving");

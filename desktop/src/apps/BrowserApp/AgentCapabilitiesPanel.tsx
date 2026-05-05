@@ -4,7 +4,7 @@
  *
  * Table columns: Agent | Host pattern | Permissions | Expires | Revoke
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { listCapabilities, revokeCapability, type CapabilityGrant } from "@/lib/browser-capability-api";
 import { listAgents, type AgentDto } from "@/lib/browser-agent-api";
@@ -16,7 +16,9 @@ export interface AgentCapabilitiesPanelProps {
 
 function formatExpiry(iso: string | null): string {
   if (!iso) return "Never";
-  const ms = new Date(iso).getTime() - Date.now();
+  const parsed = new Date(iso).getTime();
+  if (Number.isNaN(parsed)) return "Invalid";
+  const ms = parsed - Date.now();
   if (ms < 0) return "Expired";
   const hours = Math.floor(ms / (60 * 60 * 1000));
   if (hours < 1) return "<1h";
@@ -29,14 +31,25 @@ export function AgentCapabilitiesPanel({ profileId, onClose }: AgentCapabilities
   const [grants, setGrants] = useState<CapabilityGrant[] | null>(null);
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const loadSeqRef = useRef(0);
 
   async function load() {
-    const [fetchedGrants, fetchedAgents] = await Promise.all([
-      listCapabilities(profileId),
-      listAgents(),
-    ]);
-    setGrants(fetchedGrants);
-    setAgents(fetchedAgents);
+    const seq = ++loadSeqRef.current;
+    setError(null);
+    try {
+      const [fetchedGrants, fetchedAgents] = await Promise.all([
+        listCapabilities(profileId),
+        listAgents(),
+      ]);
+      if (seq !== loadSeqRef.current) return;
+      setGrants(fetchedGrants);
+      setAgents(fetchedAgents);
+    } catch {
+      if (seq !== loadSeqRef.current) return;
+      setError("Failed to load capabilities. Please try again.");
+      setGrants([]);
+      setAgents([]);
+    }
   }
 
   useEffect(() => {
@@ -53,14 +66,18 @@ export function AgentCapabilitiesPanel({ profileId, onClose }: AgentCapabilities
 
   async function handleRevoke(grant: CapabilityGrant) {
     setError(null);
-    const ok = await revokeCapability(profileId, grant.agent_id, grant.host_pattern);
-    if (!ok) {
+    try {
+      const ok = await revokeCapability(profileId, grant.agent_id, grant.host_pattern);
+      if (!ok) {
+        setError("Failed to revoke capability. Please try again.");
+        return;
+      }
+      // Refresh list
+      const fresh = await listCapabilities(profileId);
+      setGrants(fresh);
+    } catch {
       setError("Failed to revoke capability. Please try again.");
-      return;
     }
-    // Refresh list
-    const fresh = await listCapabilities(profileId);
-    setGrants(fresh);
   }
 
   function agentName(agentId: string): string {
