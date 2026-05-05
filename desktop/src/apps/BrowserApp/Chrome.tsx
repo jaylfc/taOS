@@ -180,7 +180,7 @@ export function Chrome({ windowId }: ChromeProps) {
           <Settings size={16} />
         </button>
         {settingsOpen && (
-          <SettingsPanel onClose={() => setSettingsOpen(false)} />
+          <SettingsPanel profileId={currentProfileId} onClose={() => setSettingsOpen(false)} />
         )}
       </div>
 

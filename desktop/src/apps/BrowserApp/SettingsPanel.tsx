@@ -5,22 +5,25 @@
  *  - Discard timeout (slider 1–60 minutes)
  *  - Hard cap of live tabs (number input 1–50)
  *  - Default search engine (dropdown)
+ *  - Agent capabilities (sub-modal)
  *
  * Settings are persisted via useBrowserSettingsStore (localStorage).
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
   useBrowserSettingsStore,
   SEARCH_ENGINES,
   type SearchEngine,
 } from "@/stores/browser-settings-store";
+import { AgentCapabilitiesPanel } from "./AgentCapabilitiesPanel";
 
 interface SettingsPanelProps {
+  profileId: string;
   onClose: () => void;
 }
 
-export function SettingsPanel({ onClose }: SettingsPanelProps) {
+export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
   const discardTimeoutMs = useBrowserSettingsStore((s) => s.discardTimeoutMs);
   const maxLiveTabs = useBrowserSettingsStore((s) => s.maxLiveTabs);
   const searchEngine = useBrowserSettingsStore((s) => s.searchEngine);
@@ -28,6 +31,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const setMaxLiveTabs = useBrowserSettingsStore((s) => s.setMaxLiveTabs);
   const setSearchEngine = useBrowserSettingsStore((s) => s.setSearchEngine);
   const ref = useRef<HTMLDivElement | null>(null);
+  const [capsOpen, setCapsOpen] = useState(false);
 
   const timeoutMinutes = Math.round(discardTimeoutMs / 60_000);
 
@@ -132,6 +136,25 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           ))}
         </select>
       </div>
+
+      {/* Agent capabilities */}
+      <div className="border-t border-shell-border-subtle pt-3">
+        <button
+          type="button"
+          onClick={() => setCapsOpen(true)}
+          className="w-full text-left text-xs text-shell-text hover:text-accent flex items-center justify-between"
+        >
+          <span>Agent capabilities</span>
+          <span className="text-shell-text-secondary">›</span>
+        </button>
+      </div>
+
+      {capsOpen && (
+        <AgentCapabilitiesPanel
+          profileId={profileId}
+          onClose={() => setCapsOpen(false)}
+        />
+      )}
     </div>
   );
 }
