@@ -151,10 +151,13 @@ launch_worker_lxc() {
         return 0
     fi
     log "launching taos-worker (Ubuntu 24.04, privileged, nesting)"
+    # Redirect stdin from /dev/null: when invoked via "curl | bash", the
+    # script's stdin is the curl pipe; incus launch reads from stdin for YAML
+    # config and would slurp the rest of the script, causing a parse error.
     sudo incus launch images:ubuntu/24.04 taos-worker \
         --storage taos-worker-pool \
         --config security.privileged=true \
-        --config security.nesting=true
+        --config security.nesting=true < /dev/null
     log "waiting for taos-worker to come up..."
     for _i in $(seq 1 30); do
         if sudo incus exec taos-worker -- true 2>/dev/null; then
@@ -181,7 +184,7 @@ phase1_host_prep() {
         die "unsupported package manager"
     fi
     sudo systemctl enable --now incus
-    sudo incus admin init --minimal 2>/dev/null || true
+    sudo incus admin init --minimal < /dev/null 2>/dev/null || true
     create_btrfs_loopback
     launch_worker_lxc
 }
@@ -232,7 +235,7 @@ phase2_inside_lxc() {
     if incus list >/dev/null 2>&1; then
         log "nested incus already initialised"
     else
-        incus admin init --minimal
+        incus admin init --minimal < /dev/null
     fi
 
     # 2. bees systemd unit (default-on; opt-out via TAOS_NO_DEDUP)
@@ -639,7 +642,7 @@ install_and_enroll_incus() {
         log "incus daemon already initialised"
     else
         log "running incus admin init --minimal (first-time setup)"
-        $sg_incus "incus admin init --minimal"
+        $sg_incus "incus admin init --minimal < /dev/null"
     fi
 
     # ── 4. Enable HTTPS listener on :8443 ──────────────────────────────
