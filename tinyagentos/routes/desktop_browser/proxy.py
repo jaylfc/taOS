@@ -270,6 +270,7 @@ async def proxy_get(
 
 # Static asset serve for the copilot script.
 _COPILOT_JS = Path(__file__).parent / "copilot.js"
+_SW_JS = Path(__file__).parent / "sw.js"
 
 
 @router.get("/__taos/copilot.js")
@@ -278,4 +279,18 @@ async def copilot_js():
         _COPILOT_JS,
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
+@router.get("/__taos/sw.js")
+async def service_worker_js():
+    return FileResponse(
+        _SW_JS,
+        media_type="application/javascript",
+        headers={
+            # Must be set so the SW can claim the root scope, not just /__taos/
+            "Service-Worker-Allowed": "/",
+            # Don't cache long; one hour is plenty so updates roll out fast
+            "Cache-Control": "public, max-age=3600",
+        },
     )
