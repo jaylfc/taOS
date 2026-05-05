@@ -21,19 +21,19 @@ afterEach(() => {
 
 describe("SettingsPanel — rendering", () => {
   it("renders with role=dialog and aria-label", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const dialog = screen.getByRole("dialog");
     expect(dialog).toBeTruthy();
     expect(dialog.getAttribute("aria-label")).toMatch(/browser settings/i);
   });
 
   it("renders close button", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     expect(screen.getByRole("button", { name: /close/i })).toBeTruthy();
   });
 
   it("renders discard timeout slider with accessible label", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const slider = screen.getByRole("slider");
     expect(slider).toBeTruthy();
     expect(slider.getAttribute("aria-label") ?? "").toMatch(/discard timeout/i);
@@ -42,13 +42,13 @@ describe("SettingsPanel — rendering", () => {
   });
 
   it("renders max live tabs number input", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const input = screen.getByRole("spinbutton");
     expect(input).toBeTruthy();
   });
 
   it("renders search engine dropdown", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const select = screen.getByRole("combobox");
     expect(select).toBeTruthy();
   });
@@ -56,7 +56,7 @@ describe("SettingsPanel — rendering", () => {
 
 describe("SettingsPanel — interactions", () => {
   it("moving slider updates discardTimeoutMs in the store", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const slider = screen.getByRole("slider");
     // slider is in minutes (1–60); setting to 5 → 5*60*1000 ms
     fireEvent.change(slider, { target: { value: "5" } });
@@ -65,28 +65,28 @@ describe("SettingsPanel — interactions", () => {
 
   it("slider reflects current store value", () => {
     useBrowserSettingsStore.setState({ discardTimeoutMs: 3 * 60 * 1000 });
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const slider = screen.getByRole("slider");
     expect(slider.getAttribute("aria-valuenow")).toBe("3");
     expect((slider as HTMLInputElement).value).toBe("3");
   });
 
   it("number input updates maxLiveTabs in the store", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const input = screen.getByRole("spinbutton");
     fireEvent.change(input, { target: { value: "20" } });
     expect(useBrowserSettingsStore.getState().maxLiveTabs).toBe(20);
   });
 
   it("number input clamped via store setter: value > 50 becomes 50", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const input = screen.getByRole("spinbutton");
     fireEvent.change(input, { target: { value: "99" } });
     expect(useBrowserSettingsStore.getState().maxLiveTabs).toBe(50);
   });
 
   it("dropdown updates searchEngine in the store", () => {
-    render(<SettingsPanel onClose={() => {}} />);
+    render(<SettingsPanel profileId="prof-test" onClose={() => {}} />);
     const select = screen.getByRole("combobox");
     fireEvent.change(select, { target: { value: "google" } });
     expect(useBrowserSettingsStore.getState().searchEngine).toBe("google");
@@ -94,7 +94,7 @@ describe("SettingsPanel — interactions", () => {
 
   it("close button calls onClose", () => {
     const onClose = vi.fn();
-    render(<SettingsPanel onClose={onClose} />);
+    render(<SettingsPanel profileId="prof-test" onClose={onClose} />);
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(onClose).toHaveBeenCalledOnce();
   });

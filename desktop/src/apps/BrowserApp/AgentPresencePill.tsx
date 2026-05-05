@@ -41,6 +41,11 @@ export function AgentPresencePill({
   const togglePanel = useBrowserAgentStore((s) => s.togglePanel);
   const isWatching = useBrowserAgentStore((s) => s.isWatching);
 
+  // Subscribe to drivingState so the pill reflects driving visual
+  const isDriving = useBrowserAgentStore((s) =>
+    pinnedAgentIds.some((aid) => s.drivingState[`${windowId}:${tabId}:${aid}`] === "driving"),
+  );
+
   const panelKey = `${windowId}:${tabId}`;
   const panelIsOpen = panels[panelKey]?.isOpen ?? false;
 
@@ -144,14 +149,19 @@ export function AgentPresencePill({
         ))}
       </div>
 
-      {/* Presence dot */}
+      {/* Presence dot — three states:
+           driving: brighter green + faster pulse (animate-ping approximates fast)
+           watching: standard green + pulse
+           idle: dark green, static */}
       <span
         data-testid="presence-dot"
         aria-hidden="true"
         className={[
           "absolute -top-0.5 -right-0.5",
           "w-2 h-2 rounded-full ring-1 ring-shell-surface",
-          anyWatching
+          isDriving
+            ? "bg-green-400 animate-ping"
+            : anyWatching
             ? "bg-green-400 animate-pulse"
             : "bg-green-600",
         ].join(" ")}

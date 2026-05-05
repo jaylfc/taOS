@@ -11,12 +11,14 @@
 import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, ArrowRight, RotateCw, Settings } from "lucide-react";
 import { useBrowserStore } from "@/stores/browser-store";
+import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 import { listProfiles, type Profile } from "@/lib/browser-profile-api";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 import { ProfileManager } from "./ProfileManager";
 import { SettingsPanel } from "./SettingsPanel";
 import { AgentPickerPopover } from "./AgentPickerPopover";
 import { AgentPresencePill } from "./AgentPresencePill";
+import { CoPilotBanner } from "./CoPilotBanner";
 
 interface ChromeProps {
   windowId: string;
@@ -59,6 +61,13 @@ export function Chrome({ windowId }: ChromeProps) {
     return () => window.removeEventListener("taos-browser:open-agent-picker", handler);
   }, [windowId]);
 
+  // Subscribe to drivingState so the banner mounts/unmounts reactively.
+  const drivingAgentId = useBrowserAgentStore((s) => {
+    if (!win) return null;
+    const activeTabId = win.activeTabId;
+    return s.isAnyDriving(windowId, activeTabId);
+  });
+
   if (!win) return null;
 
   const activeTab = win.tabs.find((t) => t.id === win.activeTabId);
@@ -76,6 +85,15 @@ export function Chrome({ windowId }: ChromeProps) {
   };
 
   return (
+    <div className="flex flex-col">
+      {drivingAgentId && (
+        <CoPilotBanner
+          windowId={windowId}
+          tabId={activeTab.id}
+          profileId={win.profileId}
+          agentId={drivingAgentId}
+        />
+      )}
     <div
       className="flex items-center gap-2 px-2 py-1 bg-shell-surface border-b border-shell-border-subtle"
       role="toolbar"
@@ -180,7 +198,7 @@ export function Chrome({ windowId }: ChromeProps) {
           <Settings size={16} />
         </button>
         {settingsOpen && (
-          <SettingsPanel onClose={() => setSettingsOpen(false)} />
+          <SettingsPanel profileId={currentProfileId} onClose={() => setSettingsOpen(false)} />
         )}
       </div>
 
@@ -230,6 +248,7 @@ export function Chrome({ windowId }: ChromeProps) {
           onClose={() => setManagerOpen(false)}
         />
       )}
+    </div>
     </div>
   );
 }

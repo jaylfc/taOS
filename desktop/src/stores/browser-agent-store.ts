@@ -5,6 +5,27 @@ const MAX_PANEL_WIDTH = 480;
 const DEFAULT_PANEL_WIDTH = 280;
 const WATCHING_DECAY_MS = 3000;
 
+export interface AnnotationCursor {
+  kind: "cursor";
+  id: string;
+  agentId: string;
+  x: number;
+  y: number;
+  label?: string;
+  color?: string;
+}
+
+export interface AnnotationArrow {
+  kind: "arrow";
+  id: string;
+  agentId: string;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  color?: string;
+}
+
+export type Annotation = AnnotationCursor | AnnotationArrow;
+
 export interface AgentPanelState {
   isOpen: boolean;
   activeAgentId: string | null;
@@ -44,6 +65,12 @@ export interface BrowserAgentState {
   /** Recent page events per (tab, agent). Key: same. Capped at last 5 per key. */
   recentEvents: Record<string, AgentEvent[]>;
 
+  /** Per-(window, tab) annotation overlay. Key: `${windowId}:${tabId}` */
+  annotations: Record<string, Annotation[]>;
+
+  /** Per-(window, tab, agent) driving state. Key: `${windowId}:${tabId}:${agentId}`. */
+  drivingState: Record<string, "idle" | "driving">;
+
   openPanel(windowId: string, tabId: string, agentId: string): void;
   closePanel(windowId: string, tabId: string): void;
   togglePanel(windowId: string, tabId: string, agentId: string): void;
@@ -56,6 +83,16 @@ export interface BrowserAgentState {
 
   appendMessage(windowId: string, tabId: string, agentId: string, message: AgentMessage): void;
   appendEvent(windowId: string, tabId: string, agentId: string, event: AgentEvent): void;
+
+  addAnnotation(windowId: string, tabId: string, ann: Annotation): void;
+  clearAnnotation(windowId: string, tabId: string, id: string): void;
+  clearAnnotations(windowId: string, tabId: string, agentId?: string): void;
+
+  setDrivingState(windowId: string, tabId: string, agentId: string, state: "idle" | "driving"): void;
+
+  /** Returns the agent_id of the first driving agent for the (window, tab),
+   * or null if none. Used by chrome components to decide visual state. */
+  isAnyDriving(windowId: string, tabId: string): string | null;
 }
 
 export const useBrowserAgentStore = create<BrowserAgentState>((set, get) => ({
@@ -63,6 +100,8 @@ export const useBrowserAgentStore = create<BrowserAgentState>((set, get) => ({
   lastEventAt: {},
   messages: {},
   recentEvents: {},
+  annotations: {},
+  drivingState: {},
 
   openPanel(windowId, tabId, agentId) {
     set((state) => {
@@ -174,6 +213,72 @@ export const useBrowserAgentStore = create<BrowserAgentState>((set, get) => ({
         },
       };
     });
+  },
+
+  addAnnotation(windowId, tabId, ann) {
+    set((state) => {
+      const key = `${windowId}:${tabId}`;
+      const existing = state.annotations[key] ?? [];
+      const idx = existing.findIndex((a) => a.id === ann.id);
+      const updated = idx >= 0
+        ? existing.map((a) => (a.id === ann.id ? ann : a))
+        : [...existing, ann];
+      return {
+        annotations: {
+          ...state.annotations,
+          [key]: updated,
+        },
+      };
+    });
+  },
+
+  clearAnnotation(windowId, tabId, id) {
+    set((state) => {
+      const key = `${windowId}:${tabId}`;
+      const existing = state.annotations[key] ?? [];
+      return {
+        annotations: {
+          ...state.annotations,
+          [key]: existing.filter((a) => a.id !== id),
+        },
+      };
+    });
+  },
+
+  clearAnnotations(windowId, tabId, agentId) {
+    set((state) => {
+      const key = `${windowId}:${tabId}`;
+      const existing = state.annotations[key] ?? [];
+      const updated = agentId
+        ? existing.filter((a) => a.agentId !== agentId)
+        : [];
+      return {
+        annotations: {
+          ...state.annotations,
+          [key]: updated,
+        },
+      };
+    });
+  },
+
+  setDrivingState(windowId, tabId, agentId, state) {
+    set((s) => ({
+      drivingState: {
+        ...s.drivingState,
+        [`${windowId}:${tabId}:${agentId}`]: state,
+      },
+    }));
+  },
+
+  isAnyDriving(windowId, tabId) {
+    const ds = get().drivingState;
+    const prefix = `${windowId}:${tabId}:`;
+    for (const key of Object.keys(ds)) {
+      if (key.startsWith(prefix) && ds[key] === "driving") {
+        return key.slice(prefix.length);
+      }
+    }
+    return null;
   },
 }));
 

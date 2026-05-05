@@ -18,6 +18,7 @@
  * `message` is the raw server payload — { event: "page-changed", url, title, ... }
  */
 import type { AgentEvent } from "@/stores/browser-agent-store";
+import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 
 export interface AgentWsBridgeOptions {
   windowId: string;
@@ -39,10 +40,16 @@ export interface AgentWsHandle {
   readonly isOpen: boolean;
 }
 
-const ALLOWED_EVENT_KINDS: ReadonlyArray<AgentEvent["kind"]> = [
+/** Milliseconds before a "driving" state auto-decays to "idle" if no further
+ * driving-state event arrives. Matches the server-side drive_sessions TTL. */
+export const DRIVING_DECAY_MS = 30_000;
+
+const ALLOWED_EVENT_KINDS: ReadonlyArray<string> = [
   "page-changed",
   "url-changed",
   "scroll",
+  "driving-state",
+  "capability-needed",
 ];
 
 /** Register a window-level postMessage listener filtered to events forwarded
@@ -54,6 +61,7 @@ const ALLOWED_EVENT_KINDS: ReadonlyArray<AgentEvent["kind"]> = [
  */
 export function openParentWs(opts: AgentWsBridgeOptions): AgentWsHandle {
   let isOpen = true;
+  let drivingDecayTimer: ReturnType<typeof setTimeout> | null = null;
 
   function handleMessage(e: MessageEvent) {
     // SECURITY: only accept messages from this specific iframe. The iframe
@@ -70,19 +78,64 @@ export function openParentWs(opts: AgentWsBridgeOptions): AgentWsHandle {
     if (!msg || typeof msg !== "object") return;
 
     const serverKind = typeof msg.event === "string" ? msg.event : null;
-    if (!serverKind) return;
+    if (!serverKind || !ALLOWED_EVENT_KINDS.includes(serverKind)) return;
 
-    const kind = serverKind as AgentEvent["kind"];
-    if (!ALLOWED_EVENT_KINDS.includes(kind)) return;
+    if (serverKind === "driving-state") {
+      handleDrivingState(msg);
+      return;
+    }
 
+    if (serverKind === "capability-needed") {
+      handleCapabilityNeeded(msg);
+      return;
+    }
+
+    // The remaining kinds are AgentEvent shapes — forward to onEvent.
     const event: AgentEvent = {
-      kind,
+      kind: serverKind as AgentEvent["kind"],
       url: typeof msg.url === "string" ? msg.url : undefined,
       title: typeof msg.title === "string" ? msg.title : undefined,
       timestamp: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
     };
 
     opts.onEvent(event);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function handleDrivingState(msg: any) {
+    const state = msg.state === "driving" ? "driving" : "idle";
+    useBrowserAgentStore.getState().setDrivingState(
+      opts.windowId, opts.tabId, opts.agentId, state,
+    );
+
+    if (drivingDecayTimer !== null) {
+      clearTimeout(drivingDecayTimer);
+      drivingDecayTimer = null;
+    }
+    if (state === "driving") {
+      // 30s idle decay — if no further driving event arrives within this
+      // window, flip back to idle. Mirrors server-side drive_sessions TTL.
+      drivingDecayTimer = setTimeout(() => {
+        drivingDecayTimer = null;
+        useBrowserAgentStore.getState().setDrivingState(
+          opts.windowId, opts.tabId, opts.agentId, "idle",
+        );
+      }, DRIVING_DECAY_MS);
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function handleCapabilityNeeded(msg: any) {
+    // Dispatch a window event for CapabilityPromptModal (Task 6) to consume.
+    const detail = {
+      profileId: typeof msg.profile_id === "string" ? msg.profile_id : "",
+      agentId: opts.agentId,
+      agentName: typeof msg.agent_name === "string" ? msg.agent_name : undefined,
+      permission: typeof msg.permission === "string" ? msg.permission : "",
+      host: typeof msg.host === "string" ? msg.host : "",
+      fullUrl: typeof msg.full_url === "string" ? msg.full_url : (typeof msg.url === "string" ? msg.url : ""),
+    };
+    window.dispatchEvent(new CustomEvent("taos-browser:capability-prompt", { detail }));
   }
 
   window.addEventListener("message", handleMessage);
@@ -92,6 +145,10 @@ export function openParentWs(opts: AgentWsBridgeOptions): AgentWsHandle {
     close() {
       if (!isOpen) return;
       isOpen = false;
+      if (drivingDecayTimer !== null) {
+        clearTimeout(drivingDecayTimer);
+        drivingDecayTimer = null;
+      }
       window.removeEventListener("message", handleMessage);
       if (opts.onClose) opts.onClose();
     },

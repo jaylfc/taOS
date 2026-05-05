@@ -18,3 +18,5 @@ from tinyagentos.routes.desktop_browser import profile_routes as _profile_routes
 from tinyagentos.routes.desktop_browser import extract as _extract  # noqa: E402,F401
 from tinyagentos.routes.desktop_browser import agent_pin_routes as _agent_pin_routes  # noqa: E402,F401
 from tinyagentos.routes.desktop_browser import copilot_ws as _copilot_ws  # noqa: E402,F401
+from tinyagentos.routes.desktop_browser import copilot_agent_ws as _copilot_agent_ws  # noqa: E402,F401
+from tinyagentos.routes.desktop_browser import capability_routes as _capability_routes  # noqa: E402,F401

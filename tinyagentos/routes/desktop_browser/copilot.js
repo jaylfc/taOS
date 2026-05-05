@@ -34,6 +34,177 @@
       };
     },
     findElement: findElement,
+
+    // ─── Drive ops ─────────────────────────────────────────────────────────────
+    // These require server-side capability check (server enforces in Task 11).
+    // copilot.js runs them unconditionally — server is responsible for not
+    // dispatching them without a grant.
+
+    scrollTo: function (args) {
+      if (args && args.selector) {
+        var el = document.querySelector(args.selector);
+        if (!el) return { error: 'not-found' };
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return { ok: true };
+      }
+      if (args && typeof args.y === 'number') {
+        window.scrollTo({ top: args.y, behavior: 'smooth' });
+        return { ok: true };
+      }
+      return { error: 'missing selector or y' };
+    },
+
+    click: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      // Synthetic click works for buttons/links and bubbles like a user click.
+      el.click();
+      return { ok: true };
+    },
+
+    type: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      if (!('value' in el)) return { error: 'not-input' };
+      el.value = (args.value !== undefined && args.value !== null) ? String(args.value) : '';
+      // Fire input + change so React/Vue/etc. controlled inputs notice
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      if (args.submit && el.form) {
+        if (typeof el.form.requestSubmit === 'function') {
+          el.form.requestSubmit();
+        } else {
+          el.form.submit();
+        }
+      }
+      return { ok: true };
+    },
+
+    navigate: function (args) {
+      if (!args || typeof args.url !== 'string' || !args.url) {
+        return { error: 'missing url' };
+      }
+      var parsed;
+      try {
+        parsed = new URL(args.url, location.href);
+      } catch (_e) {
+        return { error: 'invalid url' };
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { error: 'unsupported scheme' };
+      }
+      // The proxied iframe is sandboxed; setting location.href triggers a
+      // navigation through the proxy (the rewriter has already prefixed
+      // anchor hrefs but a synthetic navigate uses the raw URL — the browser
+      // shell picks this up via the navigation event).
+      location.href = parsed.href;
+      return { ok: true };
+    },
+
+    focus: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      if (typeof el.focus !== 'function') return { error: 'not-focusable' };
+      el.focus();
+      return { ok: true };
+    },
+
+    // ─── Annotation ops ────────────────────────────────────────────────────────
+    // In-iframe annotations drawn directly into the proxied DOM. Anchored
+    // elements survive iframe scroll natively. Free-floating cursor + arrows
+    // are drawn by the parent's AnnotationLayer.tsx (this op returns a
+    // sentinel so the parent knows to draw them).
+    //
+    // Annotations are tagged with data-taos-annotation-id so 'clear' can
+    // remove them by id.
+
+    highlight: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      var color = args.color || 'yellow';
+      var id = 'h-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+      // Stash original background so 'clear' can restore it
+      el.dataset.taosAnnotationOrigBg = el.style.background || '';
+      el.style.background = color;
+      el.dataset.taosAnnotation = 'highlight';
+      el.dataset.taosAnnotationId = id;
+      return { ok: true, annotationId: id };
+    },
+
+    sticky: function (args) {
+      if (!args || !args.anchorSelector) return { error: 'missing anchorSelector' };
+      var anchor = document.querySelector(args.anchorSelector);
+      if (!anchor) return { error: 'not-found' };
+      var id = 'sticky-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+      var note = document.createElement('div');
+      note.textContent = (args.text !== undefined && args.text !== null) ? String(args.text) : '';
+      note.dataset.taosAnnotation = 'sticky';
+      note.dataset.taosAnnotationId = id;
+      note.style.cssText = 'position:absolute;'
+        + 'background:' + (args.color || '#fff8b0') + ';'
+        + 'border:1px solid #999;'
+        + 'padding:6px;'
+        + 'font:13px sans-serif;'
+        + 'border-radius:4px;'
+        + 'z-index:2147483647;'
+        + 'max-width:240px;'
+        + 'box-shadow:0 2px 8px rgba(0,0,0,0.15);';
+      // Position below the anchor in document coordinates
+      var rect = anchor.getBoundingClientRect();
+      note.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+      note.style.left = (window.scrollX + rect.left) + 'px';
+      document.body.appendChild(note);
+      return { ok: true, annotationId: id };
+    },
+
+    arrow: function (args) {
+      // Parent-overlay path — see AnnotationLayer.tsx (PR 7 Task 8). The agent
+      // sees this sentinel and re-issues via the parent's annotation channel.
+      return { error: 'use-parent-overlay' };
+    },
+
+    cursor: function (args) {
+      // Same: parent-overlay only. The cursor follows mouse coords from the
+      // parent's perspective and the iframe doesn't have those.
+      return { error: 'use-parent-overlay' };
+    },
+
+    clear: function (args) {
+      if (args && args.annotationId) {
+        var el = document.querySelector(
+          '[data-taos-annotation-id="' + args.annotationId + '"]'
+        );
+        if (el) {
+          if (el.dataset.taosAnnotation === 'highlight') {
+            el.style.background = el.dataset.taosAnnotationOrigBg || '';
+            delete el.dataset.taosAnnotation;
+            delete el.dataset.taosAnnotationId;
+            delete el.dataset.taosAnnotationOrigBg;
+          } else {
+            el.parentNode && el.parentNode.removeChild(el);
+          }
+        }
+        return { ok: true };
+      }
+      // Clear all annotations
+      var all = document.querySelectorAll('[data-taos-annotation]');
+      for (var i = 0; i < all.length; i++) {
+        var a = all[i];
+        if (a.dataset.taosAnnotation === 'highlight') {
+          a.style.background = a.dataset.taosAnnotationOrigBg || '';
+          delete a.dataset.taosAnnotation;
+          delete a.dataset.taosAnnotationId;
+          delete a.dataset.taosAnnotationOrigBg;
+        } else if (a.parentNode) {
+          a.parentNode.removeChild(a);
+        }
+      }
+      return { ok: true };
+    },
   };
 
   function extractReadable(args) {
@@ -171,6 +342,17 @@
           result = ops[msg.op](msg.args || {});
         } catch (err) {
           result = { error: String(err) };
+        }
+        // Drive ops flip the chrome to "driving" — tell the parent
+        var DRIVE_OPS = { scrollTo: 1, click: 1, type: 1, navigate: 1, focus: 1 };
+        if (DRIVE_OPS[msg.op] && window.parent && window.parent !== window) {
+          try {
+            window.parent.postMessage({
+              type: 'taos-copilot:server-event',
+              agentId: agentId,
+              message: { event: 'driving-state', state: 'driving', timestamp: Date.now() / 1000 },
+            }, '*');
+          } catch (_e) { /* parent gone — ignore */ }
         }
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'ack', op_id: msg.op_id, result: result }));

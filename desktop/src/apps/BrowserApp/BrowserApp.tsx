@@ -25,6 +25,7 @@ import { useBrowserKeyboardShortcuts } from "./keyboard";
 import { FindInPage } from "./FindInPage";
 import { TabOverview } from "./TabOverview";
 import { WindowChooser } from "./WindowChooser";
+import { CapabilityPromptModal } from "./CapabilityPromptModal";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { Layers, ListChecks } from "lucide-react";
 
@@ -120,6 +121,7 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
             <ListChecks size={14} />
           </button>
         </div>
+        <CapabilityPromptModal />
       </div>
     );
   }
@@ -138,6 +140,10 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
           onClose={() => setFindOpen(false)}
         />
       )}
+      {/* Listens for `taos-browser:capability-prompt` window events from
+           agent-ws-bridge. Mounted at top of BrowserApp so any window's
+           agents can trigger it; the modal is global per shell. */}
+      <CapabilityPromptModal />
     </div>
   );
 }

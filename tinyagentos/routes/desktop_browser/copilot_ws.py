@@ -155,6 +155,28 @@ class CopilotHub:
 
     def __init__(self) -> None:
         self._iframe_conns: dict[tuple[str, str, str, str], WebSocket] = {}
+        # Agent connections: one per (user_id, agent_id) tuple. An agent's runtime
+        # talks to the server through this single WS regardless of how many tabs
+        # it's pinned to.
+        self._agent_conns: dict[tuple[str, str], WebSocket] = {}
+        # Authoritative current URL per (user_id, profile_id, tab_id) — written
+        # by proxy.py on every successful HTML fetch, read by capability checks
+        # in copilot_agent_ws.py. The agent-supplied msg["host"] is NOT trusted
+        # for authorization; this tracker is the source of truth.
+        self._tab_urls: dict[tuple[str, str, str], str] = {}
+
+    def set_tab_url(
+        self, *, user_id: str, profile_id: str, tab_id: str, url: str,
+    ) -> None:
+        """Record the current URL the iframe is serving for this tab.
+        Called from proxy.py on every successful HTML fetch."""
+        self._tab_urls[(user_id, profile_id, tab_id)] = url
+
+    def get_tab_url(
+        self, *, user_id: str, profile_id: str, tab_id: str,
+    ) -> str | None:
+        """Return the last recorded URL for this tab, or None if unknown."""
+        return self._tab_urls.get((user_id, profile_id, tab_id))
 
     def add_iframe(
         self, *, user_id: str, profile_id: str, tab_id: str, agent_id: str,
@@ -173,6 +195,84 @@ class CopilotHub:
     ) -> None:
         """Remove a registered iframe WS. No-op if not present."""
         self._iframe_conns.pop((user_id, profile_id, tab_id, agent_id), None)
+
+    def add_agent(self, *, user_id: str, agent_id: str, ws: WebSocket) -> None:
+        """Register agent connection. Replaces prior connection for the same key
+        (closes the old one async-style, mirrors add_iframe pattern)."""
+        key = (user_id, agent_id)
+        old = self._agent_conns.pop(key, None)
+        if old is not None:
+            asyncio.create_task(_close_safely(old))
+        self._agent_conns[key] = ws
+
+    def remove_agent(self, *, user_id: str, agent_id: str) -> None:
+        self._agent_conns.pop((user_id, agent_id), None)
+
+    async def route_op_to_iframe(
+        self, *, user_id: str, profile_id: str, tab_id: str, agent_id: str, op: dict,
+    ) -> bool:
+        """Forward an op to the iframe-side WS. Returns True iff the iframe was reachable."""
+        key = (user_id, profile_id, tab_id, agent_id)
+        ws = self._iframe_conns.get(key)
+        if ws is None:
+            return False
+        try:
+            await ws.send_json(op)
+            return True
+        except Exception as e:
+            _logger.debug("copilot route_op_to_iframe failed: %s", e)
+            return False
+
+    async def route_ack_to_agent(
+        self, *, user_id: str, agent_id: str, ack: dict,
+    ) -> bool:
+        """Forward an ack from iframe → agent. Returns True iff the agent was reachable."""
+        ws = self._agent_conns.get((user_id, agent_id))
+        if ws is None:
+            return False
+        try:
+            await ws.send_json(ack)
+            return True
+        except Exception as e:
+            _logger.debug("copilot route_ack_to_agent failed: %s", e)
+            return False
+
+    async def notify_capability_needed(
+        self,
+        *,
+        user_id: str,
+        profile_id: str,
+        tab_id: str,
+        agent_id: str,
+        permission: str,
+        host: str,
+        full_url: str = "",
+    ) -> bool:
+        """Push a capability-needed event to the iframe-side WS for the
+        (user, profile, tab, agent) tuple. The iframe's copilot.js forwards
+        it to the parent via postMessage; the parent's agent-ws-bridge
+        catches it and dispatches taos-browser:capability-prompt for the
+        CapabilityPromptModal.
+
+        Returns True iff the iframe was reachable.
+        """
+        key = (user_id, profile_id, tab_id, agent_id)
+        ws = self._iframe_conns.get(key)
+        if ws is None:
+            return False
+        payload = {
+            "event": "capability-needed",
+            "profile_id": profile_id,
+            "permission": permission,
+            "host": host,
+            "full_url": full_url,
+        }
+        try:
+            await ws.send_json(payload)
+            return True
+        except Exception as e:
+            _logger.debug("notify_capability_needed failed: %s", e)
+            return False
 
     async def push_event_to_pinned(
         self, *, user_id: str, profile_id: str, tab_id: str, event: dict,
@@ -196,7 +296,7 @@ class CopilotHub:
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 
-# Allowed event kinds from iframe → server. Drive ack events come in PR 7.
+# Allowed event kinds from iframe → server. 'ack' is routed back to the agent runtime.
 _ALLOWED_EVENT_KINDS = {
     "page-changed", "url-changed", "scroll", "form-submit",
     "download-started", "ack",
@@ -240,11 +340,16 @@ async def copilot_ws(websocket: WebSocket, ticket: str):
             message = await websocket.receive_json()
             event_kind = message.get("event")
             if event_kind not in _ALLOWED_EVENT_KINDS:
-                # Don't crash on unknown events; just drop. PR 7 will route
-                # 'ack' events back to the agent connection.
+                # Don't crash on unknown events; just drop.
                 continue
-            # PR 6: iframe → server events accepted but not routed.
-            # PR 7 wires 'ack' to the agent-side connection.
+            # Iframe → server events. 'ack' messages get routed to the agent runtime.
+            # Other events (page-changed etc.) are broadcast by proxy.py via push_event_to_pinned.
+            if event_kind == "ack":
+                await hub.route_ack_to_agent(
+                    user_id=consumed.user_id,
+                    agent_id=consumed.agent_id,
+                    ack=message,
+                )
     except WebSocketDisconnect:
         pass
     finally:

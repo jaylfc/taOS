@@ -182,6 +182,11 @@ export function TabRenderer({ windowId }: TabRendererProps) {
       (s) => (win ? s.panels[`${windowId}:${win.activeTabId}`]?.isOpen : false),
     ) ?? false;
 
+  // Driving tint — show subtle green overlay on the iframe when an agent is driving.
+  const drivingAgentId = useBrowserAgentStore((s) =>
+    win ? s.isAnyDriving(windowId, win.activeTabId) : null,
+  );
+
   // Context menu state — position where the user right-clicked.
   // PR 6 limitation: only fires when right-clicking on the iframe wrapper border,
   // not on the iframe content itself (sandbox blocks contextmenu propagation to
@@ -255,6 +260,14 @@ export function TabRenderer({ windowId }: TabRendererProps) {
             </div>
           );
         })}
+
+        {/* Driving tint — semi-transparent green overlay when an agent is driving */}
+        {drivingAgentId && (
+          <div
+            className="absolute inset-0 bg-green-500/10 pointer-events-none"
+            aria-hidden="true"
+          />
+        )}
 
         {/* Page context menu — shown when user right-clicks the iframe wrapper */}
         {contextMenu && activeTab && (

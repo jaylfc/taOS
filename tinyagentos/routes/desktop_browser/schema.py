@@ -94,6 +94,16 @@ CREATE TABLE IF NOT EXISTS agent_pins (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_pins_lookup
   ON agent_pins (user_id, profile_id, tab_id);
+
+CREATE TABLE IF NOT EXISTS drive_sessions (
+  user_id        TEXT NOT NULL,
+  profile_id     TEXT NOT NULL,
+  tab_id         TEXT NOT NULL,
+  agent_id       TEXT NOT NULL,
+  started_at     TEXT NOT NULL,
+  last_op_at     TEXT NOT NULL,
+  PRIMARY KEY (user_id, profile_id, tab_id, agent_id)
+);
 """
 
 

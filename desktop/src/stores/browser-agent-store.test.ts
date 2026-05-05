@@ -14,6 +14,8 @@ beforeEach(() => {
     lastEventAt: {},
     messages: {},
     recentEvents: {},
+    annotations: {},
+    drivingState: {},
   });
 });
 
@@ -264,5 +266,151 @@ describe("browser-agent-store: appendEvent", () => {
     expect(eventsB).toHaveLength(1);
     expect(eventsA[0].kind).toBe("scroll");
     expect(eventsB[0].kind).toBe("page-changed");
+  });
+});
+
+describe("browser-agent-store: annotations", () => {
+  it("addAnnotation appends a new entry", () => {
+    const s = useBrowserAgentStore.getState();
+    s.addAnnotation("win-1", "tab-1", {
+      kind: "cursor",
+      id: "ann-1",
+      agentId: "agent-a",
+      x: 100,
+      y: 200,
+    });
+
+    const anns = useBrowserAgentStore.getState().annotations["win-1:tab-1"];
+    expect(anns).toHaveLength(1);
+    expect(anns[0].id).toBe("ann-1");
+  });
+
+  it("addAnnotation with same id replaces existing entry in place", () => {
+    const s = useBrowserAgentStore.getState();
+    s.addAnnotation("win-1", "tab-1", {
+      kind: "cursor",
+      id: "ann-1",
+      agentId: "agent-a",
+      x: 100,
+      y: 200,
+    });
+    s.addAnnotation("win-1", "tab-1", {
+      kind: "cursor",
+      id: "ann-1",
+      agentId: "agent-a",
+      x: 300,
+      y: 400,
+    });
+
+    const anns = useBrowserAgentStore.getState().annotations["win-1:tab-1"];
+    expect(anns).toHaveLength(1);
+    const cursor = anns[0];
+    expect(cursor.kind).toBe("cursor");
+    if (cursor.kind === "cursor") {
+      expect(cursor.x).toBe(300);
+      expect(cursor.y).toBe(400);
+    }
+  });
+
+  it("clearAnnotation removes by id", () => {
+    const s = useBrowserAgentStore.getState();
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-1", agentId: "agent-a", x: 10, y: 20 });
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-2", agentId: "agent-a", x: 30, y: 40 });
+    s.clearAnnotation("win-1", "tab-1", "ann-1");
+
+    const anns = useBrowserAgentStore.getState().annotations["win-1:tab-1"];
+    expect(anns).toHaveLength(1);
+    expect(anns[0].id).toBe("ann-2");
+  });
+
+  it("clearAnnotations clears all for (window, tab)", () => {
+    const s = useBrowserAgentStore.getState();
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-1", agentId: "agent-a", x: 10, y: 20 });
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-2", agentId: "agent-b", x: 30, y: 40 });
+    s.clearAnnotations("win-1", "tab-1");
+
+    const anns = useBrowserAgentStore.getState().annotations["win-1:tab-1"];
+    expect(anns).toHaveLength(0);
+  });
+
+  it("clearAnnotations(agentId) clears only that agent's annotations", () => {
+    const s = useBrowserAgentStore.getState();
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-1", agentId: "agent-a", x: 10, y: 20 });
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-2", agentId: "agent-b", x: 30, y: 40 });
+    s.clearAnnotations("win-1", "tab-1", "agent-a");
+
+    const anns = useBrowserAgentStore.getState().annotations["win-1:tab-1"];
+    expect(anns).toHaveLength(1);
+    expect(anns[0].agentId).toBe("agent-b");
+  });
+
+  it("annotations are scoped per (window, tab) key", () => {
+    const s = useBrowserAgentStore.getState();
+    s.addAnnotation("win-1", "tab-1", { kind: "cursor", id: "ann-1", agentId: "agent-a", x: 10, y: 20 });
+    s.addAnnotation("win-1", "tab-2", { kind: "cursor", id: "ann-2", agentId: "agent-a", x: 50, y: 60 });
+
+    const annsTab1 = useBrowserAgentStore.getState().annotations["win-1:tab-1"];
+    const annsTab2 = useBrowserAgentStore.getState().annotations["win-1:tab-2"];
+    expect(annsTab1).toHaveLength(1);
+    expect(annsTab2).toHaveLength(1);
+    expect(annsTab1[0].id).toBe("ann-1");
+    expect(annsTab2[0].id).toBe("ann-2");
+  });
+});
+
+describe("browser-agent-store: drivingState", () => {
+  it("setDrivingState writes the right key", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "driving");
+
+    const state = useBrowserAgentStore.getState().drivingState;
+    expect(state["win-1:tab-1:agent-a"]).toBe("driving");
+  });
+
+  it("setDrivingState can flip back to idle", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "driving");
+    s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
+
+    const state = useBrowserAgentStore.getState().drivingState;
+    expect(state["win-1:tab-1:agent-a"]).toBe("idle");
+  });
+
+  it("isAnyDriving returns the first driving agentId for the (window, tab)", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "driving");
+
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBe("agent-a");
+  });
+
+  it("isAnyDriving returns null when no agents driving", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
+
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBeNull();
+  });
+
+  it("isAnyDriving returns null when nothing set", () => {
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBeNull();
+  });
+
+  it("isAnyDriving is correctly scoped to (window, tab)", () => {
+    const s = useBrowserAgentStore.getState();
+    // Set driving on a different window+tab
+    s.setDrivingState("win-2", "tab-2", "agent-b", "driving");
+
+    // win-1:tab-1 should not report any driving
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBeNull();
+    // win-2:tab-2 should return agent-b
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-2", "tab-2")).toBe("agent-b");
+  });
+
+  it("isAnyDriving picks the driving agent when others are idle", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
+    s.setDrivingState("win-1", "tab-1", "agent-b", "driving");
+
+    const result = useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1");
+    expect(result).toBe("agent-b");
   });
 });
