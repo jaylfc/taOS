@@ -20,6 +20,7 @@
 import { useState } from "react";
 import { Plus, X, Globe } from "lucide-react";
 import { useBrowserStore } from "@/stores/browser-store";
+import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 import { MoveTabMenu } from "./MoveTabMenu";
 import type { Tab } from "./types";
 
@@ -54,6 +55,7 @@ export function TabStrip({ windowId }: TabStripProps) {
       {ordered.map((tab) => (
         <TabItem
           key={tab.id}
+          windowId={windowId}
           tab={tab}
           isActive={tab.id === win.activeTabId}
           onActivate={() => setActiveTab(windowId, tab.id)}
@@ -87,6 +89,7 @@ export function TabStrip({ windowId }: TabStripProps) {
 }
 
 interface TabItemProps {
+  windowId: string;
   tab: Tab;
   isActive: boolean;
   onActivate: () => void;
@@ -94,8 +97,16 @@ interface TabItemProps {
   onContextMenu: (e: React.MouseEvent) => void;
 }
 
-function TabItem({ tab, isActive, onActivate, onClose, onContextMenu }: TabItemProps) {
+function TabItem({ windowId, tab, isActive, onActivate, onClose, onContextMenu }: TabItemProps) {
   const titleText = tab.title || tab.url || "New tab";
+
+  // Green underline when any pinned agent on this tab is in driving state
+  const tabDriving = useBrowserAgentStore((s) => {
+    for (const aid of tab.pinnedAgentIds) {
+      if (s.drivingState[`${windowId}:${tab.id}:${aid}`] === "driving") return true;
+    }
+    return false;
+  });
 
   // Width per Q8 layout A. Pinned: 32px (favicon-only). Inactive: 140px.
   // Active: 360px (will host the embedded AddressBar in Task 7).
@@ -121,6 +132,7 @@ function TabItem({ tab, isActive, onActivate, onClose, onContextMenu }: TabItemP
         isActive
           ? "bg-shell-surface text-shell-text"
           : "bg-shell-bg-deep text-shell-text-secondary hover:bg-shell-hover",
+        tabDriving ? "border-b-2 border-green-500" : "",
       ].join(" ")}
     >
       {/* Drag handle — Task 11 wires drag events on this child */}

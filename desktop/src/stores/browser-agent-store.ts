@@ -68,6 +68,9 @@ export interface BrowserAgentState {
   /** Per-(window, tab) annotation overlay. Key: `${windowId}:${tabId}` */
   annotations: Record<string, Annotation[]>;
 
+  /** Per-(window, tab, agent) driving state. Key: `${windowId}:${tabId}:${agentId}`. */
+  drivingState: Record<string, "idle" | "driving">;
+
   openPanel(windowId: string, tabId: string, agentId: string): void;
   closePanel(windowId: string, tabId: string): void;
   togglePanel(windowId: string, tabId: string, agentId: string): void;
@@ -84,6 +87,12 @@ export interface BrowserAgentState {
   addAnnotation(windowId: string, tabId: string, ann: Annotation): void;
   clearAnnotation(windowId: string, tabId: string, id: string): void;
   clearAnnotations(windowId: string, tabId: string, agentId?: string): void;
+
+  setDrivingState(windowId: string, tabId: string, agentId: string, state: "idle" | "driving"): void;
+
+  /** Returns the agent_id of the first driving agent for the (window, tab),
+   * or null if none. Used by chrome components to decide visual state. */
+  isAnyDriving(windowId: string, tabId: string): string | null;
 }
 
 export const useBrowserAgentStore = create<BrowserAgentState>((set, get) => ({
@@ -92,6 +101,7 @@ export const useBrowserAgentStore = create<BrowserAgentState>((set, get) => ({
   messages: {},
   recentEvents: {},
   annotations: {},
+  drivingState: {},
 
   openPanel(windowId, tabId, agentId) {
     set((state) => {
@@ -249,6 +259,26 @@ export const useBrowserAgentStore = create<BrowserAgentState>((set, get) => ({
         },
       };
     });
+  },
+
+  setDrivingState(windowId, tabId, agentId, state) {
+    set((s) => ({
+      drivingState: {
+        ...s.drivingState,
+        [`${windowId}:${tabId}:${agentId}`]: state,
+      },
+    }));
+  },
+
+  isAnyDriving(windowId, tabId) {
+    const ds = get().drivingState;
+    const prefix = `${windowId}:${tabId}:`;
+    for (const key of Object.keys(ds)) {
+      if (key.startsWith(prefix) && ds[key] === "driving") {
+        return key.slice(prefix.length);
+      }
+    }
+    return null;
   },
 }));
 

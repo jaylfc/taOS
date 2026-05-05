@@ -15,6 +15,7 @@ beforeEach(() => {
     messages: {},
     recentEvents: {},
     annotations: {},
+    drivingState: {},
   });
 });
 
@@ -354,5 +355,62 @@ describe("browser-agent-store: annotations", () => {
     expect(annsTab2).toHaveLength(1);
     expect(annsTab1[0].id).toBe("ann-1");
     expect(annsTab2[0].id).toBe("ann-2");
+  });
+});
+
+describe("browser-agent-store: drivingState", () => {
+  it("setDrivingState writes the right key", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "driving");
+
+    const state = useBrowserAgentStore.getState().drivingState;
+    expect(state["win-1:tab-1:agent-a"]).toBe("driving");
+  });
+
+  it("setDrivingState can flip back to idle", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "driving");
+    s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
+
+    const state = useBrowserAgentStore.getState().drivingState;
+    expect(state["win-1:tab-1:agent-a"]).toBe("idle");
+  });
+
+  it("isAnyDriving returns the first driving agentId for the (window, tab)", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "driving");
+
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBe("agent-a");
+  });
+
+  it("isAnyDriving returns null when no agents driving", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
+
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBeNull();
+  });
+
+  it("isAnyDriving returns null when nothing set", () => {
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBeNull();
+  });
+
+  it("isAnyDriving is correctly scoped to (window, tab)", () => {
+    const s = useBrowserAgentStore.getState();
+    // Set driving on a different window+tab
+    s.setDrivingState("win-2", "tab-2", "agent-b", "driving");
+
+    // win-1:tab-1 should not report any driving
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1")).toBeNull();
+    // win-2:tab-2 should return agent-b
+    expect(useBrowserAgentStore.getState().isAnyDriving("win-2", "tab-2")).toBe("agent-b");
+  });
+
+  it("isAnyDriving returns one of multiple driving agents", () => {
+    const s = useBrowserAgentStore.getState();
+    s.setDrivingState("win-1", "tab-1", "agent-a", "idle");
+    s.setDrivingState("win-1", "tab-1", "agent-b", "driving");
+
+    const result = useBrowserAgentStore.getState().isAnyDriving("win-1", "tab-1");
+    expect(result).toBe("agent-b");
   });
 });
