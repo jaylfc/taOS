@@ -23,18 +23,21 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=jay
-Group=jay
+# User=/Group= are substituted by install-server.sh based on $SUDO_USER
+# (or left as 'root' if the script ran as a real root login). Edit
+# /etc/systemd/system/qmd.service directly to change.
+User=__TAOS_USER__
+Group=__TAOS_GROUP__
 EnvironmentFile=-/etc/default/qmd
 Environment=QMD_PORT=7832
 Environment=QMD_BIND=0.0.0.0
-Environment=QMD_BACKEND=rkllama
-Environment=QMD_RKLLAMA_URL=http://localhost:8080
-ExecStart=/usr/bin/node /home/jay/qmd-server/dist/cli/qmd.js serve \
+# Backend defaults: empty for CPU-only fallback (node-llama-cpp). Edit
+# /etc/default/qmd to point at a remote backend like rkllama on a Pi NPU
+# or an Ollama server elsewhere on the LAN.
+Environment=QMD_BACKEND=
+ExecStart=/usr/bin/qmd serve \
     --port ${QMD_PORT} \
-    --bind ${QMD_BIND} \
-    --backend ${QMD_BACKEND} \
-    --rkllama-url ${QMD_RKLLAMA_URL}
+    --bind ${QMD_BIND}
 Restart=always
 RestartSec=3
 

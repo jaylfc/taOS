@@ -408,7 +408,19 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             fi
             if [[ -f scripts/systemd/qmd.service ]]; then
                 log "installing /etc/systemd/system/qmd.service"
-                $local_sudo cp scripts/systemd/qmd.service /etc/systemd/system/qmd.service
+                # The unit ships with __TAOS_USER__ / __TAOS_GROUP__ placeholders.
+                # Substitute the real user/group at install time. Prefer the
+                # invoking sudo user (so the service runs as them), falling
+                # back to 'root' if the script was run by root directly.
+                local taos_user="${SUDO_USER:-root}"
+                local taos_group
+                taos_group=$(id -gn "$taos_user" 2>/dev/null || echo "$taos_user")
+                $local_sudo sed \
+                    -e "s|__TAOS_USER__|${taos_user}|g" \
+                    -e "s|__TAOS_GROUP__|${taos_group}|g" \
+                    scripts/systemd/qmd.service > /tmp/qmd.service.rendered
+                $local_sudo install -m 0644 /tmp/qmd.service.rendered /etc/systemd/system/qmd.service
+                $local_sudo rm -f /tmp/qmd.service.rendered
                 $local_sudo systemctl daemon-reload
                 $local_sudo systemctl enable --now qmd.service
                 log "waiting for qmd to become ready on port $TAOS_QMD_PORT (up to 60 s)..."
