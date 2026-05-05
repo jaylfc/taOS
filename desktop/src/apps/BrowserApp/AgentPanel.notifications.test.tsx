@@ -170,6 +170,30 @@ describe("AgentPanel — Notifications section", () => {
     expect((checkboxes[0] as HTMLInputElement).checked).toBe(true);
   });
 
+  it("reverts optimistic update when setPushMute fails", async () => {
+    vi.spyOn(pushApi, "listPushMutes").mockResolvedValue([]);
+    vi.spyOn(pushApi, "setPushMute").mockRejectedValue(new Error("500"));
+    openPanel();
+    render(
+      <AgentPanel windowId={WINDOW_ID} tabId={TAB_ID} profileId="personal" pinnedAgentIds={PINNED} />,
+    );
+    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+
+    const chatToggle = screen.getByLabelText("Chat messages notifications for Alice");
+    // Starts checked (not muted)
+    expect((chatToggle as HTMLInputElement).checked).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(chatToggle);
+    });
+
+    // The optimistic update flipped it to unchecked, but the API rejected,
+    // so the revert path should restore it to checked.
+    await waitFor(() =>
+      expect((screen.getByLabelText("Chat messages notifications for Alice") as HTMLInputElement).checked).toBe(true),
+    );
+  });
+
   it("renders single pinned agent without agent name header", async () => {
     vi.spyOn(pushApi, "listPushMutes").mockResolvedValue([]);
     openPanel();

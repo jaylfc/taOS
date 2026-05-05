@@ -1,6 +1,6 @@
 /**
  * Fetch wrappers for /api/desktop/browser/push/*.
- * Silent on errors (returns sensible defaults) to match other browser-* api wrappers.
+ * Read operations return empty/false on error; write operations throw.
  */
 
 export interface PushSubscriptionInfo {

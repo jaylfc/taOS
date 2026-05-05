@@ -69,7 +69,7 @@ export function AgentPanel({ windowId, tabId, profileId, pinnedAgentIds }: Agent
     return () => { cancelled = true; };
   }, []);
 
-  // Load mutes once when panel opens
+  // Load mutes once on mount.
   useEffect(() => {
     let cancelled = false;
     setMutesLoading(true);
