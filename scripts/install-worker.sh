@@ -96,6 +96,101 @@ EOF
     fi
 }
 
+# --- phase 1: kernel / host checks ----------------------------------------
+
+check_kernel_features() {
+    local missing=()
+    [[ -f /sys/fs/cgroup/cgroup.controllers ]] || missing+=("cgroup v2")
+    if ! grep -qE '^[a-z]+ +btrfs' /proc/filesystems && ! modprobe -n btrfs >/dev/null 2>&1; then
+        missing+=("btrfs (in-kernel module or btrfs-progs)")
+    fi
+    command -v nft >/dev/null 2>&1 || missing+=("nftables")
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        die "Missing kernel/system features: ${missing[*]}"
+    fi
+    log "kernel features OK (cgroup v2, btrfs, nftables)"
+}
+
+worker_disk_cap() {
+    local override="${TAOS_WORKER_DISK_CAP:-}"
+    if [[ -n "$override" ]]; then
+        local value="${override%[GTM]B}"
+        local unit="${override#"$value"}"
+        case "$unit" in
+            "GB") echo $((value * 1024**3)) ;;
+            "TB") echo $((value * 1024**4)) ;;
+            "MB") echo $((value * 1024**2)) ;;
+            "")   echo "$value" ;;
+            *)    die "unsupported worker-disk-cap unit: $unit" ;;
+        esac
+        return
+    fi
+    local free_kb
+    free_kb="$(df -k --output=avail /var/lib 2>/dev/null | tail -1)"
+    echo $(( free_kb * 1024 * 90 / 100 ))
+}
+
+create_btrfs_loopback() {
+    local img=/var/lib/taos/worker-storage.img
+    local cap_bytes
+    cap_bytes="$(worker_disk_cap)"
+    log "creating btrfs loopback at $img (cap=$cap_bytes bytes)"
+    sudo mkdir -p /var/lib/taos
+    if [[ ! -f "$img" ]]; then
+        sudo truncate -s "$cap_bytes" "$img"
+        sudo mkfs.btrfs -f "$img" >/dev/null
+    else
+        log "loopback already exists; reusing"
+    fi
+    if ! sudo incus storage list --format=csv -c name 2>/dev/null | grep -q '^taos-worker-pool$'; then
+        sudo incus storage create taos-worker-pool btrfs source="$img"
+    else
+        log "incus storage pool 'taos-worker-pool' already exists; reusing"
+    fi
+}
+
+launch_worker_lxc() {
+    if sudo incus list --format=csv -c name 2>/dev/null | grep -q '^taos-worker$'; then
+        log "worker LXC 'taos-worker' already exists; reusing"
+        sudo incus start taos-worker 2>/dev/null || true
+        return 0
+    fi
+    log "launching taos-worker (Ubuntu 24.04, privileged, nesting)"
+    sudo incus launch images:ubuntu/24.04 taos-worker \
+        --storage taos-worker-pool \
+        --config security.privileged=true \
+        --config security.nesting=true
+    log "waiting for taos-worker to come up..."
+    for _i in $(seq 1 30); do
+        if sudo incus exec taos-worker -- true 2>/dev/null; then
+            log "taos-worker reachable"
+            return 0
+        fi
+        sleep 2
+    done
+    die "taos-worker did not become reachable in 60 seconds"
+}
+
+phase1_host_prep() {
+    check_kernel_features
+    refuse_flat_mode_install
+    log "installing host packages (incus, nftables)"
+    if command -v apt >/dev/null 2>&1; then
+        sudo apt update -y
+        sudo apt install -y incus nftables curl btrfs-progs
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y incus nftables curl btrfs-progs
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Sy --noconfirm incus nftables curl btrfs-progs
+    else
+        die "unsupported package manager"
+    fi
+    sudo systemctl enable --now incus
+    sudo incus admin init --minimal 2>/dev/null || true
+    create_btrfs_loopback
+    launch_worker_lxc
+}
+
 # --- system dependencies --------------------------------------------------
 
 ensure_linux_deps() {
