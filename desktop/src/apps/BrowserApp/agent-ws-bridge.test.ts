@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { openParentWs, type AgentWsBridgeOptions } from "./agent-ws-bridge";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { openParentWs, DRIVING_DECAY_MS, type AgentWsBridgeOptions } from "./agent-ws-bridge";
+import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 
 /**
  * In the new architecture (post-Opus whole-branch review), the parent does
@@ -212,5 +213,181 @@ describe("openParentWs (postMessage-based)", () => {
     handle.close();
     handle.close();
     expect(opts.onClose).toHaveBeenCalledOnce();
+  });
+});
+
+// ─── driving-state event ──────────────────────────────────────────────────────
+
+describe("driving-state event", () => {
+  beforeEach(() => {
+    // Reset the store's drivingState before each test.
+    useBrowserAgentStore.setState({ drivingState: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("flips drivingState to driving when state=driving received", () => {
+    const opts = makeOpts();
+    openParentWs(opts);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: { event: "driving-state", state: "driving" },
+    });
+
+    const key = "win-1:tab-1:agent-1";
+    expect(useBrowserAgentStore.getState().drivingState[key]).toBe("driving");
+  });
+
+  it("flips drivingState to idle when state=idle received", () => {
+    const opts = makeOpts();
+    // Pre-seed store with driving state.
+    useBrowserAgentStore.setState({
+      drivingState: { "win-1:tab-1:agent-1": "driving" },
+    });
+    openParentWs(opts);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: { event: "driving-state", state: "idle" },
+    });
+
+    const key = "win-1:tab-1:agent-1";
+    expect(useBrowserAgentStore.getState().drivingState[key]).toBe("idle");
+  });
+
+  it("auto-decays back to idle after DRIVING_DECAY_MS", () => {
+    vi.useFakeTimers();
+    const opts = makeOpts();
+    openParentWs(opts);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: { event: "driving-state", state: "driving" },
+    });
+
+    const key = "win-1:tab-1:agent-1";
+    expect(useBrowserAgentStore.getState().drivingState[key]).toBe("driving");
+
+    vi.advanceTimersByTime(DRIVING_DECAY_MS + 100);
+    expect(useBrowserAgentStore.getState().drivingState[key]).toBe("idle");
+  });
+
+  it("rapid successive driving events reset the decay timer", () => {
+    vi.useFakeTimers();
+    const opts = makeOpts();
+    openParentWs(opts);
+
+    const drivingMsg = {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: { event: "driving-state", state: "driving" },
+    };
+
+    dispatchMessageFrom(opts.iframe.contentWindow, drivingMsg);
+    // Advance 25 000 ms (< 30 000 ms decay)
+    vi.advanceTimersByTime(25_000);
+    // Re-dispatch — resets the timer
+    dispatchMessageFrom(opts.iframe.contentWindow, drivingMsg);
+    // Advance another 10 000 ms (35 000 total but only 10 000 since last event)
+    vi.advanceTimersByTime(10_000);
+
+    const key = "win-1:tab-1:agent-1";
+    // Timer was reset at 25s, so 10s since last event < 30s → still driving
+    expect(useBrowserAgentStore.getState().drivingState[key]).toBe("driving");
+  });
+
+  it("close() cancels the decay timer — no setDrivingState after close", () => {
+    vi.useFakeTimers();
+    const opts = makeOpts();
+    const handle = openParentWs(opts);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: { event: "driving-state", state: "driving" },
+    });
+
+    handle.close();
+
+    const key = "win-1:tab-1:agent-1";
+    const stateBeforeAdvance = useBrowserAgentStore.getState().drivingState[key];
+
+    vi.advanceTimersByTime(DRIVING_DECAY_MS + 100);
+
+    // State should not have been changed to idle after close
+    expect(useBrowserAgentStore.getState().drivingState[key]).toBe(stateBeforeAdvance);
+  });
+
+  it("does NOT call opts.onEvent for driving-state (handled separately)", () => {
+    const opts = makeOpts();
+    openParentWs(opts);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: { event: "driving-state", state: "driving" },
+    });
+
+    expect(opts.onEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ─── capability-needed event ──────────────────────────────────────────────────
+
+describe("capability-needed event", () => {
+  it("dispatches taos-browser:capability-prompt with the right detail", () => {
+    const opts = makeOpts();
+    openParentWs(opts);
+
+    let capturedEvent: CustomEvent | null = null;
+    const handler = (e: Event) => { capturedEvent = e as CustomEvent; };
+    window.addEventListener("taos-browser:capability-prompt", handler);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: {
+        event: "capability-needed",
+        profile_id: "profile-42",
+        agent_name: "TestAgent",
+        permission: "clipboard-read",
+        host: "example.com",
+        full_url: "https://example.com/page",
+      },
+    });
+
+    window.removeEventListener("taos-browser:capability-prompt", handler);
+
+    expect(capturedEvent).not.toBeNull();
+    const detail = (capturedEvent as CustomEvent).detail;
+    expect(detail.profileId).toBe("profile-42");
+    expect(detail.agentId).toBe("agent-1");
+    expect(detail.agentName).toBe("TestAgent");
+    expect(detail.permission).toBe("clipboard-read");
+    expect(detail.host).toBe("example.com");
+    expect(detail.fullUrl).toBe("https://example.com/page");
+  });
+
+  it("does NOT call opts.onEvent for capability-needed (it's not an AgentEvent)", () => {
+    const opts = makeOpts();
+    openParentWs(opts);
+
+    dispatchMessageFrom(opts.iframe.contentWindow, {
+      type: "taos-copilot:server-event",
+      agentId: "agent-1",
+      message: {
+        event: "capability-needed",
+        permission: "camera",
+        host: "example.com",
+      },
+    });
+
+    expect(opts.onEvent).not.toHaveBeenCalled();
   });
 });
