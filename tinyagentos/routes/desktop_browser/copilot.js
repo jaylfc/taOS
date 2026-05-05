@@ -34,6 +34,74 @@
       };
     },
     findElement: findElement,
+
+    // ─── Drive ops ─────────────────────────────────────────────────────────────
+    // These require server-side capability check (server enforces in Task 11).
+    // copilot.js runs them unconditionally — server is responsible for not
+    // dispatching them without a grant.
+
+    scrollTo: function (args) {
+      if (args && args.selector) {
+        var el = document.querySelector(args.selector);
+        if (!el) return { error: 'not-found' };
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return { ok: true };
+      }
+      if (args && typeof args.y === 'number') {
+        window.scrollTo({ top: args.y, behavior: 'smooth' });
+        return { ok: true };
+      }
+      return { error: 'missing selector or y' };
+    },
+
+    click: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      // Synthetic click works for buttons/links and bubbles like a user click.
+      el.click();
+      return { ok: true };
+    },
+
+    type: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      if (!('value' in el)) return { error: 'not-input' };
+      el.value = (args.value !== undefined && args.value !== null) ? String(args.value) : '';
+      // Fire input + change so React/Vue/etc. controlled inputs notice
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      if (args.submit && el.form) {
+        if (typeof el.form.requestSubmit === 'function') {
+          el.form.requestSubmit();
+        } else {
+          el.form.submit();
+        }
+      }
+      return { ok: true };
+    },
+
+    navigate: function (args) {
+      if (!args || typeof args.url !== 'string' || !args.url) {
+        return { error: 'missing url' };
+      }
+      // The proxied iframe is sandboxed; setting location.href triggers a
+      // navigation through the proxy (the rewriter has already prefixed
+      // anchor hrefs but a synthetic navigate uses the raw URL — the browser
+      // shell picks this up via the navigation event).
+      location.href = args.url;
+      return { ok: true };
+    },
+
+    focus: function (args) {
+      if (!args || !args.selector) return { error: 'missing selector' };
+      var el = document.querySelector(args.selector);
+      if (!el) return { error: 'not-found' };
+      if (typeof el.focus !== 'function') return { error: 'not-focusable' };
+      el.focus();
+      return { ok: true };
+    },
   };
 
   function extractReadable(args) {
@@ -171,6 +239,17 @@
           result = ops[msg.op](msg.args || {});
         } catch (err) {
           result = { error: String(err) };
+        }
+        // Drive ops flip the chrome to "driving" — tell the parent
+        var DRIVE_OPS = { scrollTo: 1, click: 1, type: 1, navigate: 1, focus: 1 };
+        if (DRIVE_OPS[msg.op] && window.parent && window.parent !== window) {
+          try {
+            window.parent.postMessage({
+              type: 'taos-copilot:server-event',
+              agentId: agentId,
+              message: { event: 'driving-state', state: 'driving', timestamp: Date.now() / 1000 },
+            }, '*');
+          } catch (_e) { /* parent gone — ignore */ }
         }
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ event: 'ack', op_id: msg.op_id, result: result }));

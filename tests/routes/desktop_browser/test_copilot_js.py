@@ -72,3 +72,27 @@ class TestCopilotJsAsset:
         r = await client.get("/__taos/copilot.js")
         body = r.text
         assert "CSS.escape" in body or "CSS && CSS.escape" in body or "window.CSS.escape" in body
+
+    @pytest.mark.asyncio
+    async def test_drive_ops_present(self, client):
+        """All five drive ops appear in the served file."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        for op in ["scrollTo", "click", "type", "navigate", "focus"]:
+            assert op in body, f"missing op {op}"
+
+    @pytest.mark.asyncio
+    async def test_drive_ops_table_includes_DRIVE_OPS(self, client):
+        """DRIVE_OPS map exists for the driving-state postMessage trigger."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "DRIVE_OPS" in body
+        assert "driving-state" in body
+
+    @pytest.mark.asyncio
+    async def test_input_dispatch_fires_input_and_change_events(self, client):
+        """type op fires both input and change events for React controlled inputs."""
+        r = await client.get("/__taos/copilot.js")
+        body = r.text
+        assert "new Event('input'" in body
+        assert "new Event('change'" in body
