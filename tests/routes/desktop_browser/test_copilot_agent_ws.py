@@ -217,6 +217,11 @@ class TestRoundTripOpAck:
         mock_iframe_ws = AsyncMock()
         iframe_key = (user_id, "p1", "t1", "agent-rt")
         ws_app.state.copilot_hub._iframe_conns[iframe_key] = mock_iframe_ws
+        # Trusted current URL for capability check (server-tracked, not agent-supplied)
+        ws_app.state.copilot_hub.set_tab_url(
+            user_id=user_id, profile_id="p1", tab_id="t1",
+            url="https://example.com/page",
+        )
 
         op_msg = {"op": "click", "selector": "#submit", "op_id": "op-1", "host": "example.com"}
 
@@ -260,6 +265,10 @@ class TestDriveOpBumpsSession:
         mock_iframe_ws = AsyncMock()
         iframe_key = (user_id, "p1", "t1", "agent-drive")
         ws_app.state.copilot_hub._iframe_conns[iframe_key] = mock_iframe_ws
+        ws_app.state.copilot_hub.set_tab_url(
+            user_id=user_id, profile_id="p1", tab_id="t1",
+            url="https://example.com/",
+        )
 
         with ws_client.websocket_connect(
             f"/api/desktop/browser/copilot-agent?ticket={ticket}"
@@ -340,6 +349,11 @@ class TestOpMissingIframe:
                 host_pattern="example.com",
                 permissions="drive",
             )
+        )
+        # Trusted current URL so capability check sees example.com (server-tracked)
+        ws_app.state.copilot_hub.set_tab_url(
+            user_id=user_id, profile_id="p1", tab_id="t1",
+            url="https://example.com/",
         )
 
         with ws_client.websocket_connect(
@@ -524,6 +538,11 @@ class TestCapabilityEnforcement:
         mock_iframe_ws = AsyncMock()
         iframe_key = (user_id, "p1", "t1", "agent-cap-deny")
         ws_app.state.copilot_hub._iframe_conns[iframe_key] = mock_iframe_ws
+        # Server-tracked URL — capability check uses this, NOT agent-supplied msg["host"]
+        ws_app.state.copilot_hub.set_tab_url(
+            user_id=user_id, profile_id="p1", tab_id="t1",
+            url="https://example.com/page",
+        )
 
         with ws_client.websocket_connect(
             f"/api/desktop/browser/copilot-agent?ticket={ticket}"
@@ -541,7 +560,7 @@ class TestCapabilityEnforcement:
         assert reply["reason"] == "capability-needed"
         assert reply["permission"] == "drive"
 
-        # iframe should have received capability-needed
+        # iframe should have received capability-needed (host from server-tracked URL)
         mock_iframe_ws.send_json.assert_awaited_once()
         sent = mock_iframe_ws.send_json.call_args[0][0]
         assert sent["event"] == "capability-needed"
@@ -562,6 +581,11 @@ class TestCapabilityEnforcement:
         mock_iframe_ws = AsyncMock()
         iframe_key = (user_id, "p1", "t1", "agent-cap-ok")
         ws_app.state.copilot_hub._iframe_conns[iframe_key] = mock_iframe_ws
+        # Server-tracked URL for capability check
+        ws_app.state.copilot_hub.set_tab_url(
+            user_id=user_id, profile_id="p1", tab_id="t1",
+            url="https://example.com/",
+        )
 
         op_msg = {"op": "click", "selector": "#submit", "op_id": "op-ok-1", "host": "example.com"}
 
@@ -652,3 +676,75 @@ class TestCapabilityEnforcement:
         assert reply["event"] == "denied"
         assert reply["reason"] == "capability-needed"
         assert reply["permission"] == "drive"
+
+
+# ---------------------------------------------------------------------------
+# Security: agent-supplied msg["host"] is NOT trusted for capability checks
+# ---------------------------------------------------------------------------
+
+class TestTrustedHostOnly:
+    def test_capability_uses_server_tracked_url_not_msg_host(self, ws_client, ws_app):
+        """Agent claims host=allowed-site.com but server-tracked URL is
+        actually-different.com. Capability check must use the server URL
+        (no grant for actually-different.com → denied)."""
+        ticket = _pin_and_mint(ws_client, ws_app, "p1", "t1", "agent-spoof")
+        record = ws_app.state.auth.find_user("admin")
+        user_id = record["id"]
+
+        # User granted drive ONLY for the actual server-tracked URL host
+        _grant_capability(ws_app, user_id, "p1", "agent-spoof", "trusted.com", "drive")
+
+        mock_iframe_ws = AsyncMock()
+        iframe_key = (user_id, "p1", "t1", "agent-spoof")
+        ws_app.state.copilot_hub._iframe_conns[iframe_key] = mock_iframe_ws
+        # Server says the iframe is on attacker.com, not trusted.com
+        ws_app.state.copilot_hub.set_tab_url(
+            user_id=user_id, profile_id="p1", tab_id="t1",
+            url="https://attacker.com/page",
+        )
+
+        with ws_client.websocket_connect(
+            f"/api/desktop/browser/copilot-agent?ticket={ticket}"
+        ) as ws:
+            # Agent LIES: claims host=trusted.com to try to bypass
+            ws.send_json({
+                "op": "click", "selector": "#x", "op_id": "spoof-1",
+                "host": "trusted.com",  # ← agent's claim, must be ignored
+            })
+            reply = ws.receive_json()
+
+        # Server should use the trusted URL (attacker.com → no grant) and deny
+        assert reply["event"] == "denied"
+        assert reply["reason"] == "capability-needed"
+        # The iframe was notified with the REAL host (attacker.com), not the spoof
+        sent = mock_iframe_ws.send_json.call_args[0][0]
+        assert sent["host"] == "attacker.com"
+
+        ws_app.state.copilot_hub._iframe_conns.pop(iframe_key, None)
+
+
+# ---------------------------------------------------------------------------
+# Security: per-op tab_id override re-checks pin
+# ---------------------------------------------------------------------------
+
+class TestPerOpTargetReauthorization:
+    def test_op_targeting_unpinned_tab_is_denied(self, ws_client, ws_app):
+        """Agent connects with ticket bound to (p1, t1) where it IS pinned,
+        then sends an op targeting tab t2 where it is NOT pinned. Server
+        must reject with 'agent not pinned for target tab'."""
+        ticket = _pin_and_mint(ws_client, ws_app, "p1", "t1", "agent-cross")
+        # Note: agent is pinned to t1 via _pin_and_mint, but NOT to t2
+
+        with ws_client.websocket_connect(
+            f"/api/desktop/browser/copilot-agent?ticket={ticket}"
+        ) as ws:
+            ws.send_json({
+                "op": "extract",     # non-privileged, so capability isn't the gate
+                "op_id": "cross-1",
+                "tab_id": "t2",      # ← target tab where agent is NOT pinned
+            })
+            reply = ws.receive_json()
+
+        assert reply["event"] == "denied"
+        assert reply["op_id"] == "cross-1"
+        assert "not pinned for target tab" in reply["reason"]

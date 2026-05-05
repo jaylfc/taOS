@@ -159,6 +159,24 @@ class CopilotHub:
         # talks to the server through this single WS regardless of how many tabs
         # it's pinned to.
         self._agent_conns: dict[tuple[str, str], WebSocket] = {}
+        # Authoritative current URL per (user_id, profile_id, tab_id) — written
+        # by proxy.py on every successful HTML fetch, read by capability checks
+        # in copilot_agent_ws.py. The agent-supplied msg["host"] is NOT trusted
+        # for authorization; this tracker is the source of truth.
+        self._tab_urls: dict[tuple[str, str, str], str] = {}
+
+    def set_tab_url(
+        self, *, user_id: str, profile_id: str, tab_id: str, url: str,
+    ) -> None:
+        """Record the current URL the iframe is serving for this tab.
+        Called from proxy.py on every successful HTML fetch."""
+        self._tab_urls[(user_id, profile_id, tab_id)] = url
+
+    def get_tab_url(
+        self, *, user_id: str, profile_id: str, tab_id: str,
+    ) -> str | None:
+        """Return the last recorded URL for this tab, or None if unknown."""
+        return self._tab_urls.get((user_id, profile_id, tab_id))
 
     def add_iframe(
         self, *, user_id: str, profile_id: str, tab_id: str, agent_id: str,

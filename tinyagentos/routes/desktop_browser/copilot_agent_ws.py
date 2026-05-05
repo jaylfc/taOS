@@ -38,19 +38,16 @@ def _required_permission(op: str) -> str | None:
     return OP_TO_PERMISSION.get(op)
 
 
-def _extract_host(msg: dict) -> str:
-    """Extract the host the agent claims to operate on. Falls back to
-    parsing the url field if no explicit host."""
-    host = msg.get("host")
-    if isinstance(host, str) and host:
-        return host
-    url = msg.get("url")
-    if isinstance(url, str) and url:
-        try:
-            return urlparse(url).hostname or ""
-        except Exception:
-            return ""
-    return ""
+def _trusted_host(server_url: str | None) -> str:
+    """Derive the host from an authoritative server-tracked URL. Returns
+    empty string if the URL is missing or unparseable. Never trust
+    agent-supplied msg["host"] for authorization."""
+    if not server_url:
+        return ""
+    try:
+        return urlparse(server_url).hostname or ""
+    except Exception:
+        return ""
 
 
 @router.websocket("/api/desktop/browser/copilot-agent")
@@ -88,10 +85,35 @@ async def copilot_agent_ws(websocket: WebSocket, ticket: str):
             target_profile = msg.get("profile_id", consumed.profile_id)
             target_tab = msg.get("tab_id", consumed.tab_id)
 
-            # Capability check for privileged ops
+            # If the agent overrides the target tab/profile, re-verify the pin.
+            # The connect-time check only proves the ticket-bound (profile, tab) is pinned.
+            if target_profile != consumed.profile_id or target_tab != consumed.tab_id:
+                target_pinned = await store.list_pins_for_tab(
+                    user_id=consumed.user_id,
+                    profile_id=target_profile,
+                    tab_id=target_tab,
+                )
+                if not any(p["agent_id"] == consumed.agent_id for p in target_pinned):
+                    await websocket.send_json({
+                        "event": "denied",
+                        "op_id": msg.get("op_id"),
+                        "reason": "agent not pinned for target tab",
+                    })
+                    continue
+
+            # Capability check for privileged ops. The host comes from the
+            # SERVER-tracked current URL for this tab (set by proxy.py on every
+            # successful HTML fetch). Agent-supplied msg["host"] is NOT trusted —
+            # otherwise a malicious agent could claim it's operating on an allowed
+            # host while actually driving on a different one.
             required = _required_permission(op)
             if required is not None:
-                host = _extract_host(msg)
+                trusted_url = hub.get_tab_url(
+                    user_id=consumed.user_id,
+                    profile_id=target_profile,
+                    tab_id=target_tab,
+                )
+                host = _trusted_host(trusted_url)
                 granted = await store.check_capability(
                     user_id=consumed.user_id,
                     profile_id=target_profile,
@@ -108,7 +130,7 @@ async def copilot_agent_ws(websocket: WebSocket, ticket: str):
                         agent_id=consumed.agent_id,
                         permission=required,
                         host=host,
-                        full_url=msg.get("url", ""),
+                        full_url=trusted_url or "",
                     )
                     # Tell agent the op was denied
                     await websocket.send_json({
