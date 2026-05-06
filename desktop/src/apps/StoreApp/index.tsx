@@ -1,8 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { ShoppingBag, Search, Download, Trash2, Check, Package, Loader2, Bot, Brain, Plug, Wrench, Image, Music, Video, Globe, Home, Cpu, Sparkles, Workflow, ClipboardList, Server } from "lucide-react";
 import { Button, Card, CardContent, CardFooter, CardHeader, Input } from "@/components/ui";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
 import type { CatalogApp, InstallTarget, InstalledEntry } from "./types";
+import { DevicePillBar } from "./DevicePillBar";
+import { BackendPillBar } from "./BackendPillBar";
+import { IncompatibleToggle } from "./IncompatibleToggle";
+import { filterModels } from "./filter";
+import { loadFilter, saveFilter } from "./storage";
 
 /* ------------------------------------------------------------------ */
 /*  Categories                                                         */
@@ -566,6 +571,16 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     { name: "local", label: "This controller", type: "local" },
   ]);
   const [runtimeHosts, setRuntimeHosts] = useState<Record<string, string | null>>({});
+  const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
+  const [selectedBackends, setSelectedBackends] = useState<string[]>([]);
+  // User identity for per-user filter persistence. Use an "anon" fallback
+  // so single-user setups still work; profile defaults to "default".
+  const userId = (typeof window !== "undefined"
+    ? window.localStorage.getItem("taos.user.id") || "anon"
+    : "anon");
+  const profileId = (typeof window !== "undefined"
+    ? window.localStorage.getItem("taos.profile.id") || "default"
+    : "default");
 
   const refreshInstalled = useCallback(() => {
     fetch("/api/store/installed-v2", { headers: { Accept: "application/json" } })
@@ -639,18 +654,105 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     refreshInstalled();
   }, [refreshInstalled]);
 
+  const hydrated = useRef(false);
+  useEffect(() => {
+    if (hydrated.current) return;
+    if (installTargets.length === 0 || apps.length === 0) return;
+    const validDevices = installTargets.map((t) => t.name);
+    const validBackends = Array.from(
+      new Set(
+        apps.flatMap((a) =>
+          (a.variants ?? []).flatMap((v) => v.backend ?? []).concat(
+            a.install_method ? [a.install_method] : []
+          )
+        )
+      )
+    );
+    const persisted = loadFilter(userId, profileId, validDevices, validBackends);
+    setSelectedDevices(persisted.devices);
+    setSelectedBackends(persisted.backends);
+    hydrated.current = true;
+  }, [installTargets, apps, userId, profileId]);
+
+  useEffect(() => {
+    saveFilter(userId, profileId, {
+      devices: selectedDevices,
+      backends: selectedBackends,
+    });
+  }, [selectedDevices, selectedBackends, userId, profileId]);
+
   const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
-  const filtered = apps.filter((app) => {
+  const categoryFiltered = apps.filter((app) => {
     if (activeCategory !== "all" && activeCat) {
       if (!activeCat.types.includes(appGroup(app))) return false;
     }
     if (search) {
       const q = search.toLowerCase();
-      return app.name.toLowerCase().includes(q) || app.description.toLowerCase().includes(q);
+      return (
+        app.name.toLowerCase().includes(q) ||
+        app.description.toLowerCase().includes(q)
+      );
     }
     return true;
   });
+
+  // Device + backend filter only applies when the user is in the Models
+  // category. Other categories use the existing list as-is.
+  const isModels = activeCategory === "models";
+  const selectedDeviceObjs = installTargets.filter((t) =>
+    selectedDevices.includes(t.name)
+  );
+  const filterResult = isModels
+    ? filterModels(categoryFiltered, selectedDeviceObjs, selectedBackends)
+    : { compatible: categoryFiltered, incompatible: [] };
+  const filtered = filterResult.compatible;
+  const incompatible = filterResult.incompatible;
+
+  // Backends shown in the BackendPillBar are the union of variants[].backend
+  // across all manifests where any selected device's tier_id is supported.
+  const availableBackends = useMemo(() => {
+    if (!isModels || selectedDevices.length === 0) return [];
+    const memoSelectedDevices = installTargets.filter((t) =>
+      selectedDevices.includes(t.name)
+    );
+    const tiers = new Set(
+      memoSelectedDevices.map((d) => d.tier_id).filter(Boolean) as string[]
+    );
+    const out = new Set<string>();
+    for (const app of apps) {
+      if (!app.hardware_tiers) continue;
+      const tierMatch = [...tiers].some(
+        (t) =>
+          app.hardware_tiers![t] !== undefined &&
+          app.hardware_tiers![t] !== "unsupported"
+      );
+      if (!tierMatch) continue;
+      for (const v of app.variants ?? []) {
+        for (const b of v.backend ?? []) out.add(b);
+      }
+      if ((app.variants ?? []).length === 0 && app.install_method) {
+        out.add(app.install_method);
+      }
+    }
+    return Array.from(out).sort();
+  }, [isModels, selectedDevices, installTargets, apps]);
+
+  useEffect(() => {
+    if (!isModels) return;
+    if (availableBackends.length === 0) return; // bar is hidden, leave state alone
+    const availSet = new Set(availableBackends);
+    const dropped = selectedBackends.filter((b) => !availSet.has(b));
+    if (dropped.length > 0) {
+      setSelectedBackends((prev) => prev.filter((b) => availSet.has(b)));
+      // Surface a toast — for now use a simple console warning since this
+      // codebase's toast helper is not yet wired into StoreApp. Adding a
+      // toast call here is a follow-up.
+      console.info(
+        `[store-filter] auto-deselected backend(s): ${dropped.join(", ")}`
+      );
+    }
+  }, [availableBackends, isModels, selectedBackends]);
 
   const handleInstall = useCallback((id: string) => {
     setApps((prev) => prev.map((a) => (a.id === id ? { ...a, installed: true } : a)));
@@ -746,6 +848,22 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
 
         {/* Grid */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {isModels && (
+            <>
+              <DevicePillBar
+                devices={installTargets}
+                selected={selectedDevices}
+                onChange={setSelectedDevices}
+                showSkeleton={installTargets.length === 0 && loading}
+              />
+              <BackendPillBar
+                available={availableBackends}
+                selected={selectedBackends}
+                onChange={setSelectedBackends}
+                disabled={selectedDevices.length === 0}
+              />
+            </>
+          )}
           {loading ? (
             <div className="flex items-center justify-center h-40">
               <Loader2 className="w-6 h-6 text-shell-text-tertiary animate-spin" />
@@ -785,6 +903,23 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                 );
               })}
             </div>
+          )}
+          {isModels && (
+            <IncompatibleToggle count={incompatible.length}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {incompatible.map((app) => (
+                  <AppCard
+                    key={app.id}
+                    app={app}
+                    affected={0}
+                    onInstall={handleInstall}
+                    onUninstall={handleUninstall}
+                    installTargets={installTargets}
+                    runtimeHost={runtimeHosts[app.id] ?? null}
+                  />
+                ))}
+              </div>
+            </IncompatibleToggle>
           )}
         </div>
       </div>
