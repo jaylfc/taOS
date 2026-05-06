@@ -92,6 +92,77 @@ async def install_app(request: Request):
                 status_code=400,
             )
 
+    if backend == "rkllama":
+        # Models served by rkllama are pulled by rkllama itself via its
+        # /api/pull endpoint — no file transfer from the controller. We
+        # need to know which device is hosting rkllama; default is the
+        # controller, override via target_remote.
+        from tinyagentos.installers.rkllama_installer import (
+            RkllamaInstaller,
+            resolve_rkllama_url,
+        )
+
+        raw_remote = body.get("target_remote") or install_config.get("target_remote") or ""
+        target_remote: str | None = raw_remote if raw_remote and raw_remote != "local" else None
+        rkllama_url = resolve_rkllama_url(target_remote)
+
+        # Pick the right variant: explicit body override → manifest's
+        # recommended for this hardware tier → first variant.
+        variant_id = body.get("variant_id")
+        variants = list(getattr(manifest, "variants", []) or [])
+        chosen_variant: dict | None = None
+        if variant_id:
+            chosen_variant = next(
+                (v for v in variants if v.get("id") == variant_id), None
+            )
+        if chosen_variant is None and variants:
+            chosen_variant = variants[0]
+        if chosen_variant is None:
+            return JSONResponse(
+                {"error": f"manifest for {app_id!r} declares method=rkllama but has no variants"},
+                status_code=400,
+            )
+
+        installer = RkllamaInstaller(rkllama_url=rkllama_url)
+        try:
+            result = await installer.install(
+                app_id, install_config, variant=chosen_variant
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("rkllama install failed for %s", app_id)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+        if not result.get("success"):
+            return JSONResponse(
+                {"error": result.get("error", "rkllama install failed")},
+                status_code=500,
+            )
+
+        # Persist install state.
+        store = getattr(request.app.state, "installed_apps", None)
+        if store is not None:
+            await store.install(app_id, body.get("version", ""), meta)
+            # rkllama always serves on 8080; the runtime location is the
+            # rkllama host itself — that's where the model lives.
+            await store.update_runtime_location(
+                app_id,
+                host=urlparse(rkllama_url).hostname or "localhost",
+                port=urlparse(rkllama_url).port or 8080,
+                backend="rkllama",
+                ui_path="/",
+            )
+        if registry is not None:
+            version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
+            registry.mark_installed(app_id, version)
+
+        return JSONResponse({
+            "ok": True,
+            "app_id": app_id,
+            "status": "installed",
+            "rkllama_url": rkllama_url,
+            **result,
+        })
+
     if backend == "lxc":
         # LXC installs require admin_password.
         admin_password = body.get("admin_password", "")

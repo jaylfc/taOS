@@ -1,0 +1,24 @@
+id: qwen2.5-coder-1.5b-rkllm
+name: Qwen 2.5 Coder 1.5B Instruct (RKLLM)
+type: model
+version: 2.5.0
+description: "RK3588 NPU-accelerated Qwen 2.5 Coder 1.5B — fast, small code-focused model for Orange Pi NPU"
+homepage: https://huggingface.co/c01zaut/Qwen2.5-Coder-1.5B-Instruct-RK3588-1.1.4
+license: "Qwen Research License"
+capabilities: [chat, tool-calling, code]
+install: {method: rkllama}
+
+variants:
+  - id: w8a8
+    name: "W8A8 RKLLM (2GB, NPU)"
+    format: rkllm
+    size_mb: 2048
+    min_ram_mb: 0
+    download_url: https://huggingface.co/c01zaut/Qwen2.5-Coder-1.5B-Instruct-RK3588-1.1.4/resolve/main/Qwen2.5-Coder-1.5B-Instruct-rk3588-w8a8-opt-1-hybrid-ratio-1.0.rkllm
+    backend: [rkllama]
+    requires_npu: [rk3588, rk3576]
+    quality: good
+
+hardware_tiers:
+  arm-npu-16gb: {recommended: w8a8}
+  arm-npu-32gb: {recommended: w8a8}

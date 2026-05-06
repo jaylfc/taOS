@@ -1,0 +1,24 @@
+id: qwen3-4b-rkllm
+name: Qwen 3 4B Instruct (RKLLM)
+type: model
+version: 3.0.0
+description: "RK3588 NPU-accelerated Qwen 3 4B (Instruct-2507) — strong general-purpose chat model for Orange Pi NPU"
+homepage: https://huggingface.co/thanhtantran/Qwen3-4B-Instruct-2507-RKLLM
+license: Apache-2.0
+capabilities: [chat, tool-calling, code]
+install: {method: rkllama}
+
+variants:
+  - id: w8a8
+    name: "W8A8 RKLLM (4.9GB, NPU)"
+    format: rkllm
+    size_mb: 4850
+    min_ram_mb: 0
+    download_url: https://huggingface.co/thanhtantran/Qwen3-4B-Instruct-2507-RKLLM/resolve/main/qwen3-4b-instruct-2507_w8a8_rk3588.rkllm
+    backend: [rkllama]
+    requires_npu: [rk3588]
+    quality: good
+
+hardware_tiers:
+  arm-npu-16gb: {recommended: w8a8}
+  arm-npu-32gb: {recommended: w8a8}

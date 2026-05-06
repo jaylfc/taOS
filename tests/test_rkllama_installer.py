@@ -1,0 +1,83 @@
+"""Tests for the rkllama installer.
+
+Most coverage is around the HF URL parser since that's where install
+failures will manifest if a manifest URL changes shape. The actual HTTP
+roundtrip to /api/pull is exercised manually on the Pi (see PR description).
+"""
+from __future__ import annotations
+
+import pytest
+
+from tinyagentos.installers.rkllama_installer import (
+    parse_hf_resolve_url,
+    resolve_rkllama_url,
+)
+
+
+class TestParseHfResolveUrl:
+    def test_standard_main_branch(self):
+        url = (
+            "https://huggingface.co/c01zaut/Qwen2.5-3B-Instruct-rk3588-1.1.1/"
+            "resolve/main/Qwen2.5-3B-Instruct-rk3588-w8a8-opt-1-hybrid-ratio-1.0.rkllm"
+        )
+        user, repo, filename = parse_hf_resolve_url(url)
+        assert user == "c01zaut"
+        assert repo == "Qwen2.5-3B-Instruct-rk3588-1.1.1"
+        assert filename == "Qwen2.5-3B-Instruct-rk3588-w8a8-opt-1-hybrid-ratio-1.0.rkllm"
+
+    def test_non_main_branch(self):
+        url = (
+            "https://huggingface.co/user/repo-name/resolve/v2/model.rkllm"
+        )
+        user, repo, filename = parse_hf_resolve_url(url)
+        assert user == "user"
+        assert repo == "repo-name"
+        assert filename == "model.rkllm"
+
+    def test_http_scheme_accepted(self):
+        url = "http://huggingface.co/u/r/resolve/main/f.rkllm"
+        user, repo, filename = parse_hf_resolve_url(url)
+        assert (user, repo, filename) == ("u", "r", "f.rkllm")
+
+    def test_filename_with_dashes_and_underscores(self):
+        url = (
+            "https://huggingface.co/GatekeeperZA/Qwen3-1.7B-RKLLM-v1.2.3/"
+            "resolve/main/Qwen3-1.7B-w8a8-rk3588.rkllm"
+        )
+        _, _, filename = parse_hf_resolve_url(url)
+        assert filename == "Qwen3-1.7B-w8a8-rk3588.rkllm"
+
+    def test_non_huggingface_url_raises(self):
+        with pytest.raises(ValueError, match="HuggingFace"):
+            parse_hf_resolve_url("https://example.com/foo/bar/baz.rkllm")
+
+    def test_missing_resolve_segment_raises(self):
+        # Direct file URL without /resolve/<branch>/ — common malformed case.
+        with pytest.raises(ValueError, match="HuggingFace"):
+            parse_hf_resolve_url("https://huggingface.co/user/repo/main/file.rkllm")
+
+    def test_query_string_or_fragment_rejected(self):
+        # The model field that gets POSTed to rkllama can't contain ? or #
+        # since rkllama splits on / and uses parts directly. Any URL with
+        # those should fail validation up front.
+        with pytest.raises(ValueError):
+            parse_hf_resolve_url(
+                "https://huggingface.co/u/r/resolve/main/f.rkllm?x=1"
+            )
+
+
+class TestResolveRkllamaUrl:
+    def test_none_returns_loopback(self):
+        assert resolve_rkllama_url(None) == "http://localhost:8080"
+
+    def test_empty_returns_loopback(self):
+        assert resolve_rkllama_url("") == "http://localhost:8080"
+
+    def test_local_returns_loopback(self):
+        assert resolve_rkllama_url("local") == "http://localhost:8080"
+
+    def test_remote_name_becomes_url(self):
+        assert resolve_rkllama_url("orange-pi") == "http://orange-pi:8080"
+
+    def test_ip_address(self):
+        assert resolve_rkllama_url("192.168.1.10") == "http://192.168.1.10:8080"
