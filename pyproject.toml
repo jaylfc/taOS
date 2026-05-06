@@ -3,7 +3,7 @@ name = "tinyagentos"
 version = "0.1.0"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { text = "AGPL-3.0-or-later" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -62,4 +62,12 @@ taos-worker-ctl = "tinyagentos.cli.worker:main"
 markers = [
     "e2e: End-to-end browser tests (require running server)",
     "slow: Tests requiring a live stack (skipped in local CI; run with pytest -m slow)",
+]
+filterwarnings = [
+    # Silence noisy "Event loop is closed" RuntimeError emitted from
+    # asyncio finalisers (httpx clients, aiosqlite connections) during
+    # interpreter shutdown. Harmless — the tests have already passed by
+    # the time these fire — but they trip GitHub Actions log parser into
+    # marking the step as having errors. Filter at the warning level.
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
