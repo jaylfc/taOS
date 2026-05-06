@@ -205,3 +205,42 @@ class TestResolveUnknownVariant:
         r = resolve(m, "does-not-exist", pi_device())
         assert isinstance(r, ResolveErr)
         assert "does-not-exist" in r.reason
+
+
+class TestResolveAutoVariant:
+    def test_auto_picks_largest_fitting_variant(self):
+        # Pi has 16 GB total RAM — q8_0 (needs 6144) fits, so quality-first
+        # should return q8_0 over q4_k_m.
+        m = make_qwen_manifest()
+        r = resolve(m, "auto", pi_device(installed=("rk-llama-cpp",)))
+        assert isinstance(r, ResolveOk)
+        assert r.variant_id == "q8_0"
+        assert r.backend_id == "rk-llama-cpp"
+
+    def test_auto_falls_through_to_smaller_when_larger_blocked(self):
+        m = make_qwen_manifest()
+        small_pi = DeviceCapability(
+            device_id="pi",
+            targets=("rockchip-rk3588", "cpu"),
+            total_ram_mb=4096,  # q8_0's 6144 doesn't fit, q4_k_m's 4096 does
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=("rk-llama-cpp",),
+        )
+        r = resolve(m, "auto", small_pi)
+        assert isinstance(r, ResolveOk)
+        assert r.variant_id == "q4_k_m"
+
+    def test_auto_returns_err_when_nothing_fits(self):
+        m = make_qwen_manifest()
+        tiny = DeviceCapability(
+            device_id="tiny",
+            targets=("rockchip-rk3588", "cpu"),
+            total_ram_mb=1024,  # below every variant's floor
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=(),
+        )
+        r = resolve(m, "auto", tiny)
+        assert isinstance(r, ResolveErr)
+        assert r.near_miss["blocked_by"] in ("ram", "target")

@@ -232,5 +232,23 @@ def resolve(
             suggestions=[f"Available variants: {[v.get('id') for v in variants]}"],
         )
 
-    # auto branch is wired up in Task 4 — this path is unreachable until then.
-    raise NotImplementedError("variant_id='auto' is added in Task 4")
+    # auto: walk variants by size_mb descending, return first Ok.
+    sorted_variants = sorted(
+        (v for v in variants if isinstance(v, dict)),
+        key=lambda v: int(v.get("size_mb", 0) or 0),
+        reverse=True,
+    )
+    last_err: ResolveErr | None = None
+    for v in sorted_variants:
+        result = _check_variant(v, device, force=force)
+        if isinstance(result, ResolveOk):
+            return result
+        last_err = result
+
+    if last_err is not None:
+        return last_err
+    return ResolveErr(
+        reason="no variants in manifest could be evaluated",
+        near_miss={"blocked_by": "schema"},
+        suggestions=["Fix the manifest"],
+    )
