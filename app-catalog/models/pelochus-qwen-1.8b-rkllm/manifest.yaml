@@ -6,6 +6,7 @@ description: "Pelochus' original Qwen 1.8B rkllm port for RK3588 — the classic
 homepage: https://huggingface.co/Pelochus/qwen-1_8B-rk3588
 license: "Tongyi Qianwen License"
 capabilities: [chat]
+install: {method: rkllama}
 
 variants:
   - id: rkllm
