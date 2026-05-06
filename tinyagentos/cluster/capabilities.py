@@ -118,7 +118,8 @@ def hardware_to_targets(hardware: dict) -> list[str]:
     elif (gpu_type in ("amd", "intel") and gpu.get("vulkan")) or (
         gpu_type != "none" and gpu.get("vulkan")
     ):
-        targets.append(f"{arch}-vulkan" if arch == "x86" else "x86-vulkan")
+        # Vulkan target is x86-only in the current catalog enum.
+        targets.append("x86-vulkan")
 
     targets.append("cpu")
     return targets
