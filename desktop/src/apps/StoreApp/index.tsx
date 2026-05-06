@@ -2,36 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ShoppingBag, Search, Download, Trash2, Check, Package, Loader2, Bot, Brain, Plug, Wrench, Image, Music, Video, Globe, Home, Cpu, Sparkles, Workflow, ClipboardList, Server } from "lucide-react";
 import { Button, Card, CardContent, CardFooter, CardHeader, Input } from "@/components/ui";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
-
-interface CatalogApp {
-  id: string;
-  name: string;
-  type: string;
-  version: string;
-  description: string;
-  installed: boolean;
-  compat: "green" | "yellow" | "red";
-  category?: string;
-  install_method?: string;
-}
-
-interface InstallTarget {
-  name: string;
-  label: string;
-  type: "local" | "remote";
-  addr?: string;
-}
-
-interface InstalledEntry {
-  app_id: string;
-  runtime_host: string | null;
-  runtime_port: number | null;
-  runtime_backend: string | null;
-}
+import type { CatalogApp, InstallTarget, InstalledEntry } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Categories                                                         */
@@ -628,6 +599,8 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             installed: Boolean(a.installed),
             compat: (a.compat as CatalogApp["compat"]) ?? "green",
             install_method: a.install_method ? String(a.install_method) : undefined,
+            hardware_tiers: (a.hardware_tiers as Record<string, unknown>) ?? undefined,
+            variants: (a.variants as CatalogApp["variants"]) ?? undefined,
           }));
           setApps(normalized);
           setLoading(false);
