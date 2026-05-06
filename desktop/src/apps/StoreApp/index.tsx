@@ -409,18 +409,25 @@ function resolveIconUrl(appId: string): string | null {
 /*  AppCard                                                            */
 /* ------------------------------------------------------------------ */
 
-function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtimeHost }: {
+function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote }: {
   app: CatalogApp;
   affected: number;
   onInstall: (id: string) => void;
   onUninstall: (id: string) => void;
   installTargets: InstallTarget[];
   runtimeHost: string | null;
+  defaultTargetRemote?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [iconFailed, setIconFailed] = useState(false);
-  const [selectedTarget, setSelectedTarget] = useState("local");
+  const [selectedTarget, setSelectedTarget] = useState<string>(
+    defaultTargetRemote ?? "local"
+  );
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (defaultTargetRemote !== undefined) setSelectedTarget(defaultTargetRemote);
+  }, [defaultTargetRemote]);
   const iconUrl = resolveIconUrl(app.id);
   const isLxc = app.install_method === "lxc";
 
@@ -443,8 +450,7 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
         }
         onUninstall(app.id);
       } else {
-        const body: Record<string, unknown> = { app_id: app.id };
-        if (isLxc) body.target_remote = selectedTarget;
+        const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
         const res = await fetch("/api/store/install-v2", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -899,6 +905,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                     onUninstall={handleUninstall}
                     installTargets={installTargets}
                     runtimeHost={runtimeHosts[app.id] ?? null}
+                    defaultTargetRemote={
+                      isModels && selectedDevices.length === 1 ? selectedDevices[0] : undefined
+                    }
                   />
                 );
               })}
@@ -916,6 +925,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                     onUninstall={handleUninstall}
                     installTargets={installTargets}
                     runtimeHost={runtimeHosts[app.id] ?? null}
+                    defaultTargetRemote={
+                      isModels && selectedDevices.length === 1 ? selectedDevices[0] : undefined
+                    }
                   />
                 ))}
               </div>
