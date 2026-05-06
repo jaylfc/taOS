@@ -191,6 +191,33 @@ class TestInstallV2PersistsAcrossReload:
         smol = next(a for a in rows if a["id"] == "smolagents")
         assert smol["installed"] is False
 
+    async def test_install_v2_default_backend_records_target_remote(
+        self, app_with_store, store_client, monkeypatch
+    ):
+        """When target_remote is provided to a default-backend install, the
+        runtime location is recorded against that remote so /installed-v2
+        reports the right host."""
+        # Patch remote_list so the registered-remote validation passes.
+        async def _fake_remote_list():
+            return [{"name": "orange-pi", "addr": "https://192.168.1.10:8443", "protocol": "incus"}]
+
+        import tinyagentos.containers as containers
+        monkeypatch.setattr(containers, "remote_list", _fake_remote_list)
+
+        await app_with_store.state.installed_apps.init()
+        resp = await store_client.post(
+            "/api/store/install-v2",
+            json={"app_id": "smolagents", "target_remote": "orange-pi"},
+        )
+        assert resp.status_code == 200
+
+        listed = await store_client.get("/api/store/installed-v2")
+        rows = listed.json()["installed"]
+        smol = next(r for r in rows if r["app_id"] == "smolagents")
+        # _resolve_host parses the registered remote's URL; for
+        # https://192.168.1.10:8443 it returns "192.168.1.10".
+        assert smol["runtime_host"] == "192.168.1.10"
+
 
 @pytest.mark.asyncio
 class TestInstallV2UpdatesRuntimeLocation:

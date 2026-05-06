@@ -178,6 +178,54 @@ async def install_app(request: Request):
     # Default: delegate to InstalledAppsStore (docker/pip/download).
     store = request.app.state.installed_apps
     await store.install(app_id, body.get("version", ""), meta)
+
+    # If the caller specified a target_remote (e.g. from the Store
+    # filter when exactly one device is selected), record the runtime
+    # location against that remote. Models live on the device that runs
+    # them — without this the controller is implied.
+    raw_remote = body.get("target_remote") or ""
+    target_remote: str | None = (
+        raw_remote if raw_remote and raw_remote != "local" else None
+    )
+    if target_remote is not None:
+        # Validate the remote is registered, same check as the LXC branch.
+        try:
+            import tinyagentos.containers as containers
+            registered = await containers.remote_list()
+            known = {r.get("name") for r in registered}
+            if target_remote not in known:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"incus remote '{target_remote}' is not registered."
+                            f" Register it first via POST /api/cluster/remotes."
+                        )
+                    },
+                    status_code=400,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "install-v2 default: could not verify remote %r: %s",
+                target_remote, exc,
+            )
+        runtime_host = await _resolve_host(target_remote)
+        # Default-branch installs don't expose a stable proxy port (they
+        # run in-process on the controller or via per-backend daemons).
+        # Use 0 as a "no proxy port" sentinel; the runtime_host is still
+        # recorded so /installed-v2 reports the correct device. Note: the
+        # /apps/<id>/ proxy in service_proxy.py does NOT yet guard on
+        # port=0 — accessing the proxy URL for a port=0 entry will 502.
+        # Non-LXC apps are accessed via their native URL, not the /apps/
+        # proxy, so this is acceptable today; tracked as a follow-up.
+        await store.update_runtime_location(
+            app_id,
+            host=runtime_host,
+            port=0,
+            backend=meta.get("backend", "") if isinstance(meta, dict) else "",
+            ui_path=(install_config.get("ui_path", "/")
+                     if isinstance(install_config, dict) else "/"),
+        )
+
     if registry is not None:
         version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
         registry.mark_installed(app_id, version)
