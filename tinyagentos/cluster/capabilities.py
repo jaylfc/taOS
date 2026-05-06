@@ -80,6 +80,50 @@ def worker_tier_id(hardware: dict) -> str:
     return f"{arch}-cpu-{gb}gb"
 
 
+def hardware_to_targets(hardware: dict) -> list[str]:
+    """Derive the resolver's catalog-targets list from a worker hardware dict.
+
+    Catalog targets are an enumeration the manifest schema uses to declare
+    which hardware classes a backend can run on. Distinct from the
+    fuzzy ``tier_id`` used by the legacy ``hardware_tiers`` filter — this
+    list is what the new resolver consumes.
+
+    Returns
+    -------
+    list[str]
+        Targets in priority order. Always includes ``"cpu"`` as the fallback.
+    """
+    targets: list[str] = []
+    if not hardware:
+        return ["cpu"]
+
+    cpu_raw = hardware.get("cpu") or {}
+    cpu = cpu_raw if isinstance(cpu_raw, dict) else {}
+    arch_raw = cpu.get("arch", "")
+    arch = "arm" if arch_raw in ("aarch64", "armv7l", "arm64") else "x86"
+
+    npu = hardware.get("npu") or {}
+    gpu = hardware.get("gpu") or {}
+
+    npu_type = npu.get("type", "none") or "none"
+    gpu_type = gpu.get("type", "none") or "none"
+
+    # NPU takes priority over GPU when both are present.
+    if npu_type == "rk3588":
+        targets.append("rockchip-rk3588")
+    elif gpu_type == "apple":
+        targets.append("apple-silicon")
+    elif gpu_type == "nvidia" and gpu.get("cuda"):
+        targets.append("x86-cuda")
+    elif (gpu_type in ("amd", "intel") and gpu.get("vulkan")) or (
+        gpu_type != "none" and gpu.get("vulkan")
+    ):
+        targets.append(f"{arch}-vulkan" if arch == "x86" else "x86-vulkan")
+
+    targets.append("cpu")
+    return targets
+
+
 def potential_capabilities(hardware: dict, registry: "AppRegistry") -> tuple[str, list[str]]:
     """Return the tier id and list of capabilities the hardware *could* support.
 
