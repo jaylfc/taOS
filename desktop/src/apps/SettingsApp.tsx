@@ -633,6 +633,7 @@ function RestartProgressModal({
 function UpdatesSection() {
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true, auto_apply: false, auto_restart: false });
@@ -724,6 +725,23 @@ function UpdatesSection() {
     setApplying(false);
   };
 
+  const rebuildFrontend = async () => {
+    setRebuilding(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/settings/rebuild-frontend", { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+      if (res.ok) {
+        setStatus(data.message ?? "Frontend rebuilt — hard-refresh the browser to see changes.");
+      } else {
+        setStatus(data.error ?? "Frontend rebuild failed.");
+      }
+    } catch {
+      setStatus("Could not reach rebuild endpoint.");
+    }
+    setRebuilding(false);
+  };
+
   const triggerRestart = async () => {
     setShowRestartModal(true);
     try {
@@ -792,6 +810,17 @@ function UpdatesSection() {
               {applying ? "Installing..." : "Install Update"}
             </Button>
           ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={rebuildFrontend}
+            disabled={rebuilding}
+            aria-label="Force rebuild of the desktop frontend bundle"
+            title="Rebuild the desktop bundle from source. Use after a source-only update or when the UI looks stale."
+          >
+            <RefreshCw size={14} className={rebuilding ? "animate-spin" : ""} />
+            {rebuilding ? "Rebuilding..." : "Rebuild Frontend"}
+          </Button>
         </div>
 
         {status && (

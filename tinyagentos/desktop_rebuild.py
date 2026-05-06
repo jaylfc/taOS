@@ -36,8 +36,9 @@ async def rebuild_desktop_bundle_if_stale(
     project_root: Path,
     *,
     timeout_seconds: int = 600,
+    force: bool = False,
 ) -> tuple[bool, str]:
-    """Run npm install + npm run build if the bundle is stale.
+    """Run npm install + npm run build if the bundle is stale (or always, if force=True).
 
     Returns ``(rebuilt, message)``.  ``rebuilt=False`` means skipped (bundle is
     current or npm unavailable).  ``rebuilt=True`` means a rebuild was attempted;
@@ -45,8 +46,13 @@ async def rebuild_desktop_bundle_if_stale(
 
     On hosts where npm/node aren't installed the rebuild fails gracefully with a
     clear log message.  The caller can decide whether to surface it to the user.
+
+    Use ``force=True`` for explicit user-initiated rebuilds (e.g. the
+    ``/api/settings/rebuild-frontend`` endpoint or applied updates) where the
+    staleness heuristic isn't trustworthy — committed bundles can lie about
+    their freshness when a PR landed source-only.
     """
-    if not _is_bundle_stale(project_root):
+    if not force and not _is_bundle_stale(project_root):
         return False, "Desktop bundle is current — skipping rebuild."
 
     desktop_dir = project_root / "desktop"

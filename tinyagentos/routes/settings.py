@@ -646,10 +646,14 @@ async def apply_update(request: Request):
                 status_code=500,
             )
 
-    # Rebuild the desktop bundle if new source files landed (belt-and-braces on
-    # non-systemd hosts where ExecStartPre doesn't run: Mac .app, Docker, dev).
+    # Force a desktop bundle rebuild on every applied update. The mtime-based
+    # staleness check in rebuild_desktop_bundle_if_stale is unreliable when
+    # static/desktop/ is committed and a PR lands source-only (no rebuilt
+    # bundle in the commit) — git pull touches both source and bundle in the
+    # same instant and the heuristic can pick the wrong winner. Force-rebuilding
+    # is the only reliable path; the cost is one ~30s npm build on Update click.
     from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
-    _rebuilt, _rebuild_msg = await rebuild_desktop_bundle_if_stale(project_dir)
+    _rebuilt, _rebuild_msg = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
     if _rebuilt:
         logger.info("Desktop rebuild: %s", _rebuild_msg)
 
@@ -698,4 +702,28 @@ async def apply_update(request: Request):
         "status": "updated",
         "output": output.strip(),
         "message": "Update pulled. Restart TinyAgentOS to apply changes.",
+    }
+
+
+@router.post("/api/settings/rebuild-frontend")
+async def rebuild_frontend(request: Request):
+    """Force a fresh `npm install` + `npm run build` of the desktop bundle.
+
+    The auto-rebuild during `/api/settings/update` uses an mtime heuristic that
+    can miss source-only PRs (where committed bundle and new source files end
+    up with identical mtimes after `git pull`). This endpoint is a manual
+    escape hatch — always rebuilds, regardless of staleness.
+    """
+    project_dir = Path(__file__).parent.parent.parent
+    from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+
+    rebuilt, message = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
+    if not rebuilt:
+        return JSONResponse({"error": message}, status_code=500)
+    if "failed" in message.lower() or "error" in message.lower() or "timed out" in message.lower():
+        return JSONResponse({"error": message}, status_code=500)
+
+    return {
+        "status": "rebuilt",
+        "message": "Desktop bundle rebuilt. Hard-refresh the browser to see new components.",
     }
