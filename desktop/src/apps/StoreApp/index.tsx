@@ -664,8 +664,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
           batch.map((id) => resolveModel(id, "auto")),
         );
         results.forEach((r, idx) => {
-          if (r.status === "fulfilled" && r.value && "compat" in r.value) {
-            next.set(batch[idx], r.value.compat);
+          const id = batch[idx];
+          if (id && r.status === "fulfilled" && r.value && "compat" in r.value) {
+            next.set(id, r.value.compat);
           }
         });
         if (!cancelled) setCompatMap(new Map(next));
