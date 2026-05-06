@@ -1,5 +1,6 @@
 // desktop/src/apps/StoreApp/filter.ts
 import type { CatalogApp, InstallTarget } from "./types";
+import type { Compat } from "./resolver-types";
 
 export interface FilterResult {
   compatible: CatalogApp[];
@@ -47,6 +48,28 @@ export function filterModels(
   }
 
   return { compatible, incompatible };
+}
+
+/**
+ * Decide whether a model card should be shown given the resolver's
+ * green/amber/red classification.
+ *
+ * - `green` and `amber` are always shown — the user's cluster can run
+ *   the model (with or without acceleration).
+ * - `red` is hidden by default but shown when the IncompatibleToggle is on.
+ * - When the resolver hasn't classified the manifest yet (no entry in
+ *   `compatMap`), default to showing it — incompatibility is an explicit
+ *   negative signal, not a default.
+ */
+export function compatFromResolver(
+  manifestId: string,
+  compatMap: Map<string, Compat>,
+  showIncompatible: boolean,
+): boolean {
+  const c = compatMap.get(manifestId);
+  if (c === undefined) return true;
+  if (c === "red") return showIncompatible;
+  return true;
 }
 
 function appMatchesAnyTier(app: CatalogApp, tiers: Set<string>): boolean {

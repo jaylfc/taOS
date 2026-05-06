@@ -1,6 +1,6 @@
 // desktop/src/apps/StoreApp/filter.test.ts
 import { describe, it, expect } from "vitest";
-import { filterModels } from "./filter";
+import { filterModels, compatFromResolver } from "./filter";
 import type { CatalogApp, InstallTarget } from "./types";
 
 const piDevice: InstallTarget = {
@@ -195,5 +195,36 @@ describe("filterModels", () => {
     // device has no tier_id → contributes nothing to the tier set;
     // selectedDevices is non-empty so deviceOk=false except for universal
     expect(compatible.map((a) => a.id)).toEqual(["small-tool"]);
+  });
+});
+
+describe("compatFromResolver", () => {
+  it("treats green resolver result as compatible", () => {
+    const compatMap = new Map<string, "green" | "amber" | "red">();
+    compatMap.set("qwen2.5-3b", "green");
+    expect(compatFromResolver("qwen2.5-3b", compatMap, false)).toBe(true);
+  });
+
+  it("treats amber as compatible", () => {
+    const compatMap = new Map<string, "green" | "amber" | "red">();
+    compatMap.set("qwen2.5-3b", "amber");
+    expect(compatFromResolver("qwen2.5-3b", compatMap, false)).toBe(true);
+  });
+
+  it("treats red as incompatible by default", () => {
+    const compatMap = new Map<string, "green" | "amber" | "red">();
+    compatMap.set("qwen2.5-3b", "red");
+    expect(compatFromResolver("qwen2.5-3b", compatMap, false)).toBe(false);
+  });
+
+  it("shows red when showIncompatible toggle is on", () => {
+    const compatMap = new Map<string, "green" | "amber" | "red">();
+    compatMap.set("qwen2.5-3b", "red");
+    expect(compatFromResolver("qwen2.5-3b", compatMap, true)).toBe(true);
+  });
+
+  it("shows unknown manifests by default (no resolver entry → assume compatible)", () => {
+    const compatMap = new Map<string, "green" | "amber" | "red">();
+    expect(compatFromResolver("brand-new-model", compatMap, false)).toBe(true);
   });
 });

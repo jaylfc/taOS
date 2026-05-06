@@ -6,7 +6,8 @@ import type { CatalogApp, InstallTarget, InstalledEntry } from "./types";
 import { DevicePillBar } from "./DevicePillBar";
 import { BackendPillBar } from "./BackendPillBar";
 import { IncompatibleToggle } from "./IncompatibleToggle";
-import { filterModels } from "./filter";
+import { filterModels, compatFromResolver } from "./filter";
+import { resolveModel, type Compat } from "./resolver-types";
 import { loadFilter, saveFilter } from "./storage";
 
 /* ------------------------------------------------------------------ */
@@ -579,6 +580,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const [runtimeHosts, setRuntimeHosts] = useState<Record<string, string | null>>({});
   const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
   const [selectedBackends, setSelectedBackends] = useState<string[]>([]);
+  const [compatMap, setCompatMap] = useState<Map<string, Compat>>(new Map());
   // User identity for per-user filter persistence. Use an "anon" fallback
   // so single-user setups still work; profile defaults to "default".
   const userId = (typeof window !== "undefined"
@@ -640,6 +642,39 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     })();
     return () => { cancelled = true; };
   }, [fetchCatalog]);
+
+  // Resolve compatibility for every model card via /api/store/resolve.
+  // Runs after the catalog loads. Batches of 8 to avoid overwhelming the
+  // controller; Promise.allSettled so a single failure doesn't kill the batch.
+  useEffect(() => {
+    const modelIds = apps
+      .filter((a) => a.type === "model")
+      .map((a) => a.id);
+
+    if (modelIds.length === 0) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      const next = new Map<string, Compat>();
+      for (let i = 0; i < modelIds.length; i += 8) {
+        if (cancelled) return;
+        const batch = modelIds.slice(i, i + 8);
+        const results = await Promise.allSettled(
+          batch.map((id) => resolveModel(id, "auto")),
+        );
+        results.forEach((r, idx) => {
+          if (r.status === "fulfilled" && r.value && "compat" in r.value) {
+            next.set(batch[idx], r.value.compat);
+          }
+        });
+        if (!cancelled) setCompatMap(new Map(next));
+      }
+    };
+
+    run();
+    return () => { cancelled = true; };
+  }, [apps]);
 
   useEffect(() => {
     const qs = new URLSearchParams(window.location.hash.split("?")[1] || "");
@@ -709,11 +744,23 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const selectedDeviceObjs = installTargets.filter((t) =>
     selectedDevices.includes(t.name)
   );
-  const filterResult = isModels
+  const tierFilterResult = isModels
     ? filterModels(categoryFiltered, selectedDeviceObjs, selectedBackends)
     : { compatible: categoryFiltered, incompatible: [] };
-  const filtered = filterResult.compatible;
-  const incompatible = filterResult.incompatible;
+
+  // Apply resolver compat as a second pass: any model the resolver classifies
+  // as "red" moves from compatible → incompatible, regardless of tier match.
+  // Models not yet classified (compatMap has no entry) stay compatible — the
+  // incompatibility signal must be explicit, not a default.
+  const filtered: CatalogApp[] = [];
+  const incompatible: CatalogApp[] = [...tierFilterResult.incompatible];
+  for (const app of tierFilterResult.compatible) {
+    if (app.type === "model" && !compatFromResolver(app.id, compatMap, false)) {
+      incompatible.push(app);
+    } else {
+      filtered.push(app);
+    }
+  }
 
   // Backends shown in the BackendPillBar are the union of variants[].backend
   // across all manifests where any selected device's tier_id is supported.
