@@ -17,7 +17,7 @@
 ## Reference: catalog targets enum
 
 ```
-rockchip-rk3588   # Orange Pi 5 Plus, friends — RK3588 NPU
+rockchip   # Orange Pi 5 Plus, friends — RK3588 NPU
 apple-silicon     # M1/M2/M3+ — MLX / Metal
 x86-cuda          # x86_64 with NVIDIA CUDA-capable GPU
 x86-vulkan        # x86_64 with Vulkan-capable GPU (AMD, Intel Arc, NVIDIA without CUDA)
@@ -46,7 +46,7 @@ variants:
     requires:
       backends:
         - id: rk-llama-cpp
-          targets: [rockchip-rk3588]
+          targets: [rockchip]
           min_ram_mb: 4096
         - id: ollama
           targets: [apple-silicon, x86-cuda, cpu]
@@ -66,7 +66,7 @@ The deprecated fields `install: {method: ...}` (top level) and `variants[].backe
 
 ## Task 1: Hardware → catalog-targets translation
 
-Adds a pure helper that derives the catalog-wide `targets[]` enum (`rockchip-rk3588`, `apple-silicon`, `x86-cuda`, `x86-vulkan`, `cpu`) from the existing `WorkerInfo.hardware` dict. The resolver consumes this list as input.
+Adds a pure helper that derives the catalog-wide `targets[]` enum (`rockchip`, `apple-silicon`, `x86-cuda`, `x86-vulkan`, `cpu`) from the existing `WorkerInfo.hardware` dict. The resolver consumes this list as input.
 
 **Files:**
 - Modify: `tinyagentos/cluster/capabilities.py` (add `hardware_to_targets`)
@@ -94,7 +94,7 @@ class TestHardwareToTargets:
             "npu": {"type": "rk3588"},
             "ram_mb": 16384,
         }
-        assert hardware_to_targets(hw) == ["rockchip-rk3588", "cpu"]
+        assert hardware_to_targets(hw) == ["rockchip", "cpu"]
 
     def test_apple_silicon_returns_apple_and_cpu(self):
         hw = {
@@ -154,7 +154,7 @@ class TestHardwareToTargets:
             "gpu": {"type": "mali"},
             "ram_mb": 16384,
         }
-        assert hardware_to_targets(hw) == ["rockchip-rk3588", "cpu"]
+        assert hardware_to_targets(hw) == ["rockchip", "cpu"]
 
     def test_string_cpu_field_does_not_crash(self):
         # Older worker agents may send cpu as a plain string, not a dict.
@@ -202,7 +202,7 @@ def hardware_to_targets(hardware: dict) -> list[str]:
 
     # NPU takes priority over GPU when both are present.
     if npu_type == "rk3588":
-        targets.append("rockchip-rk3588")
+        targets.append("rockchip")
     elif gpu_type == "apple":
         targets.append("apple-silicon")
     elif gpu_type == "nvidia" and gpu.get("cuda"):
@@ -276,21 +276,21 @@ class TestDeviceCapability:
     def test_construction_with_required_fields(self):
         d = DeviceCapability(
             device_id="local",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=50_000,
             installed_backends=("rk-llama-cpp",),
         )
         assert d.device_id == "local"
-        assert d.targets == ("rockchip-rk3588", "cpu")
+        assert d.targets == ("rockchip", "cpu")
 
 
 class TestBackendDep:
     def test_default_min_vram_zero(self):
         b = BackendDep(
             id="rk-llama-cpp",
-            targets=("rockchip-rk3588",),
+            targets=("rockchip",),
             min_ram_mb=4096,
         )
         assert b.min_vram_mb == 0
@@ -446,7 +446,7 @@ def make_qwen_manifest() -> dict:
                     "backends": [
                         {
                             "id": "rk-llama-cpp",
-                            "targets": ["rockchip-rk3588"],
+                            "targets": ["rockchip"],
                             "min_ram_mb": 4096,
                         },
                         {
@@ -469,7 +469,7 @@ def make_qwen_manifest() -> dict:
                     "backends": [
                         {
                             "id": "rk-llama-cpp",
-                            "targets": ["rockchip-rk3588"],
+                            "targets": ["rockchip"],
                             "min_ram_mb": 6144,
                         },
                         {
@@ -487,7 +487,7 @@ def make_qwen_manifest() -> dict:
 def pi_device(installed: tuple[str, ...] = ()) -> DeviceCapability:
     return DeviceCapability(
         device_id="pi",
-        targets=("rockchip-rk3588", "cpu"),
+        targets=("rockchip", "cpu"),
         total_ram_mb=16384,
         total_vram_mb=0,
         free_disk_mb=50_000,
@@ -537,7 +537,7 @@ class TestResolveGates:
                         "backends": [
                             {
                                 "id": "rkllama",
-                                "targets": ["rockchip-rk3588"],
+                                "targets": ["rockchip"],
                                 "min_ram_mb": 4096,
                             },
                         ],
@@ -561,7 +561,7 @@ class TestResolveGates:
         m = make_qwen_manifest()
         small_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=2048,  # below q8_0's 6144 floor
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -610,7 +610,7 @@ class TestResolveGates:
         m = make_qwen_manifest()
         full_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=500,  # well below the 1900 MB the variant needs
@@ -860,7 +860,7 @@ class TestResolveAutoVariant:
         m = make_qwen_manifest()
         small_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=4096,  # q8_0's 6144 doesn't fit, q4_k_m's 4096 does
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -874,7 +874,7 @@ class TestResolveAutoVariant:
         m = make_qwen_manifest()
         tiny = DeviceCapability(
             device_id="tiny",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=1024,  # below every variant's floor
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -977,7 +977,7 @@ class TestResolveForceFlag:
         m = make_qwen_manifest()
         small_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=1024,
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -992,7 +992,7 @@ class TestResolveForceFlag:
         m = make_qwen_manifest()
         full_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=100,  # nowhere near 1900 MB
@@ -1036,7 +1036,7 @@ from tinyagentos.catalog.resolver import classify  # noqa: E402
 class TestClassify:
     def test_green_when_accelerated_target_matches(self):
         m = make_qwen_manifest()
-        # Pi-NPU has rockchip-rk3588 → rk-llama-cpp matches → green.
+        # Pi-NPU has rockchip → rk-llama-cpp matches → green.
         assert classify(m, pi_device()) == "green"
 
     def test_amber_when_only_cpu_target_matches(self):
@@ -1399,7 +1399,7 @@ class TestInferBackends:
         }
         out = migrate_mod.infer_backends(manifest, manifest["variants"][0])
         assert out == [
-            {"id": "rkllama", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096}
+            {"id": "rkllama", "targets": ["rockchip"], "min_ram_mb": 4096}
         ]
 
     def test_rkllamacpp_method_maps_to_rk_llama_cpp_backend(self, migrate_mod):
@@ -1410,7 +1410,7 @@ class TestInferBackends:
         }
         out = migrate_mod.infer_backends(manifest, manifest["variants"][0])
         assert out == [
-            {"id": "rk-llama-cpp", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096}
+            {"id": "rk-llama-cpp", "targets": ["rockchip"], "min_ram_mb": 4096}
         ]
 
     def test_variant_backend_ollama_llama_cpp_maps_to_pair(self, migrate_mod):
@@ -1564,8 +1564,8 @@ DEFAULT_CONTEXT_WINDOW: dict[str, int] = {
 # Backend ID → (targets, default-min-ram-fallback).  RAM fallback is only used
 # when the legacy variant doesn't declare ``min_ram_mb``.
 BACKEND_TARGETS: dict[str, tuple[list[str], int]] = {
-    "rkllama": (["rockchip-rk3588"], 2048),
-    "rk-llama-cpp": (["rockchip-rk3588"], 2048),
+    "rkllama": (["rockchip"], 2048),
+    "rk-llama-cpp": (["rockchip"], 2048),
     "ollama": (["apple-silicon", "x86-cuda", "x86-vulkan", "arm-vulkan", "cpu"], 4096),
     "llama-cpp": (["x86-vulkan", "arm-vulkan", "cpu"], 4096),
     "mlx": (["apple-silicon"], 4096),
@@ -1783,7 +1783,7 @@ def make_qwen_manifest():
             "download_url": "https://example/q4.gguf",
             "requires": {
                 "backends": [
-                    {"id": "rk-llama-cpp", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096},
+                    {"id": "rk-llama-cpp", "targets": ["rockchip"], "min_ram_mb": 4096},
                 ],
             },
         },
@@ -1820,7 +1820,7 @@ def fake_registry():
 def pi_capability():
     return DeviceCapability(
         device_id="local",
-        targets=("rockchip-rk3588", "cpu"),
+        targets=("rockchip", "cpu"),
         total_ram_mb=16384,
         total_vram_mb=0,
         free_disk_mb=50_000,
@@ -2149,7 +2149,7 @@ from pathlib import Path
 import yaml
 
 VALID_TARGETS = {
-    "rockchip-rk3588",
+    "rockchip",
     "apple-silicon",
     "x86-cuda",
     "x86-vulkan",
@@ -2309,7 +2309,7 @@ def make_qwen_manifest():
             "size_mb": 1900,
             "requires": {
                 "backends": [
-                    {"id": "rk-llama-cpp", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096},
+                    {"id": "rk-llama-cpp", "targets": ["rockchip"], "min_ram_mb": 4096},
                 ],
             },
         },
@@ -2331,7 +2331,7 @@ class TestStoreResolveEndpoint:
         client._transport.app.state.registry = fake_registry
         pi = DeviceCapability(
             device_id="local",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=50_000,

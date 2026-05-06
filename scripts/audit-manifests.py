@@ -23,7 +23,7 @@ from pathlib import Path
 import yaml
 
 VALID_TARGETS = {
-    "rockchip-rk3588",
+    "rockchip",
     "apple-silicon",
     "x86-cuda",
     "x86-vulkan",

@@ -176,5 +176,5 @@ User enters prompt in TinyAgentOS web UI
 - https://github.com/Pelochus/ezrknpu
 - https://github.com/rockchip-linux/rknn-toolkit2
 - https://docs.radxa.com/en/rock5/rock5b/app-development/ai/rknn-stable-diffusion
-- https://tinycomputers.io/posts/rockchip-rk3588-npu-benchmarks.html
+- https://tinycomputers.io/posts/rockchip-npu-benchmarks.html
 - https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2

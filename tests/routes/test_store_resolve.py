@@ -16,7 +16,7 @@ def make_qwen_manifest():
             "size_mb": 1900,
             "requires": {
                 "backends": [
-                    {"id": "rk-llama-cpp", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096},
+                    {"id": "rk-llama-cpp", "targets": ["rockchip"], "min_ram_mb": 4096},
                 ],
             },
         },
@@ -38,7 +38,7 @@ class TestStoreResolveEndpoint:
         client._transport.app.state.registry = fake_registry
         pi = DeviceCapability(
             device_id="local",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=50_000,

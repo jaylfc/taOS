@@ -83,3 +83,4 @@ models/minilm-onnx/minilm-l6-rk3588.rknn
 !app-catalog/models/
 screenshots.zip
 data/.auth_user.json
+data/browser_cookie_key.hex

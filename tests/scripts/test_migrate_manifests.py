@@ -38,7 +38,7 @@ class TestInferBackends:
         }
         out = migrate_mod.infer_backends(manifest, manifest["variants"][0])
         assert out == [
-            {"id": "rkllama", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096}
+            {"id": "rkllama", "targets": ["rockchip"], "min_ram_mb": 4096}
         ]
 
     def test_rkllamacpp_method_maps_to_rk_llama_cpp_backend(self, migrate_mod):
@@ -49,7 +49,7 @@ class TestInferBackends:
         }
         out = migrate_mod.infer_backends(manifest, manifest["variants"][0])
         assert out == [
-            {"id": "rk-llama-cpp", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096}
+            {"id": "rk-llama-cpp", "targets": ["rockchip"], "min_ram_mb": 4096}
         ]
 
     def test_variant_backend_ollama_llama_cpp_maps_to_pair(self, migrate_mod):

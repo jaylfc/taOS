@@ -22,7 +22,7 @@ variants:
     backends:
     - id: rkllama
       targets:
-      - rockchip-rk3588
+      - rockchip
       min_ram_mb: 2048
     - id: ezrknpu
       targets:

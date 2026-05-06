@@ -29,7 +29,7 @@ def make_qwen_manifest() -> dict:
                     "backends": [
                         {
                             "id": "rk-llama-cpp",
-                            "targets": ["rockchip-rk3588"],
+                            "targets": ["rockchip"],
                             "min_ram_mb": 4096,
                         },
                         {
@@ -52,7 +52,7 @@ def make_qwen_manifest() -> dict:
                     "backends": [
                         {
                             "id": "rk-llama-cpp",
-                            "targets": ["rockchip-rk3588"],
+                            "targets": ["rockchip"],
                             "min_ram_mb": 6144,
                         },
                         {
@@ -70,7 +70,7 @@ def make_qwen_manifest() -> dict:
 def pi_device(installed: tuple[str, ...] = ()) -> DeviceCapability:
     return DeviceCapability(
         device_id="pi",
-        targets=("rockchip-rk3588", "cpu"),
+        targets=("rockchip", "cpu"),
         total_ram_mb=16384,
         total_vram_mb=0,
         free_disk_mb=50_000,
@@ -116,7 +116,7 @@ class TestResolveGates:
                         "backends": [
                             {
                                 "id": "rkllama",
-                                "targets": ["rockchip-rk3588"],
+                                "targets": ["rockchip"],
                                 "min_ram_mb": 4096,
                             },
                         ],
@@ -140,7 +140,7 @@ class TestResolveGates:
         m = make_qwen_manifest()
         small_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=2048,  # below q8_0's 6144 floor
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -188,7 +188,7 @@ class TestResolveGates:
         m = make_qwen_manifest()
         full_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=500,  # well below the 1900 MB the variant needs
@@ -222,7 +222,7 @@ class TestResolveAutoVariant:
         m = make_qwen_manifest()
         small_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=4096,  # q8_0's 6144 doesn't fit, q4_k_m's 4096 does
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -236,7 +236,7 @@ class TestResolveAutoVariant:
         m = make_qwen_manifest()
         tiny = DeviceCapability(
             device_id="tiny",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=1024,  # below every variant's floor
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -280,7 +280,7 @@ class TestResolveForceFlag:
         m = make_qwen_manifest()
         small_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=1024,
             total_vram_mb=0,
             free_disk_mb=50_000,
@@ -295,7 +295,7 @@ class TestResolveForceFlag:
         m = make_qwen_manifest()
         full_pi = DeviceCapability(
             device_id="pi",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=100,  # nowhere near 1900 MB
@@ -309,7 +309,7 @@ class TestResolveForceFlag:
 class TestClassify:
     def test_green_when_accelerated_target_matches(self):
         m = make_qwen_manifest()
-        # Pi-NPU has rockchip-rk3588 → rk-llama-cpp matches → green.
+        # Pi-NPU has rockchip → rk-llama-cpp matches → green.
         assert classify(m, pi_device()) == "green"
 
     def test_amber_when_only_cpu_target_matches(self):

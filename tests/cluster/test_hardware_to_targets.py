@@ -15,7 +15,19 @@ class TestHardwareToTargets:
             "npu": {"type": "rk3588"},
             "ram_mb": 16384,
         }
-        assert hardware_to_targets(hw) == ["rockchip-rk3588", "cpu"]
+        assert hardware_to_targets(hw) == ["rockchip", "cpu"]
+
+    def test_rknpu_kernel_module_name_returns_rockchip_and_cpu(self):
+        # Real Pi production hardware.json reports npu.type="rknpu" (the
+        # kernel module name) rather than "rk3588" (the chip generation).
+        # Both must map to the rockchip catalog target.
+        hw = {
+            "cpu": {"arch": "aarch64"},
+            "npu": {"type": "rknpu", "tops": 6, "cores": 3},
+            "gpu": {"type": "mali", "vulkan": True},
+            "ram_mb": 15958,
+        }
+        assert hardware_to_targets(hw) == ["rockchip", "cpu"]
 
     def test_apple_silicon_returns_apple_and_cpu(self):
         hw = {
@@ -95,7 +107,7 @@ class TestHardwareToTargets:
             "gpu": {"type": "mali"},
             "ram_mb": 16384,
         }
-        assert hardware_to_targets(hw) == ["rockchip-rk3588", "cpu"]
+        assert hardware_to_targets(hw) == ["rockchip", "cpu"]
 
     def test_string_cpu_field_does_not_crash(self):
         # Older worker agents may send cpu as a plain string, not a dict.

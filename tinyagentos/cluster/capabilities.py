@@ -109,8 +109,8 @@ def hardware_to_targets(hardware: dict) -> list[str]:
     gpu_type = gpu.get("type", "none") or "none"
 
     # NPU takes priority over GPU when both are present.
-    if npu_type == "rk3588":
-        targets.append("rockchip-rk3588")
+    if npu_type in ("rk3588", "rknpu"):
+        targets.append("rockchip")
     elif gpu_type == "apple":
         targets.append("apple-silicon")
     elif gpu_type == "nvidia" and gpu.get("cuda"):

@@ -16,21 +16,21 @@ class TestDeviceCapability:
     def test_construction_with_required_fields(self):
         d = DeviceCapability(
             device_id="local",
-            targets=("rockchip-rk3588", "cpu"),
+            targets=("rockchip", "cpu"),
             total_ram_mb=16384,
             total_vram_mb=0,
             free_disk_mb=50_000,
             installed_backends=("rk-llama-cpp",),
         )
         assert d.device_id == "local"
-        assert d.targets == ("rockchip-rk3588", "cpu")
+        assert d.targets == ("rockchip", "cpu")
 
 
 class TestBackendDep:
     def test_default_min_vram_zero(self):
         b = BackendDep(
             id="rk-llama-cpp",
-            targets=("rockchip-rk3588",),
+            targets=("rockchip",),
             min_ram_mb=4096,
         )
         assert b.min_vram_mb == 0

@@ -54,8 +54,8 @@ DEFAULT_CONTEXT_WINDOW: dict[str, int] = {
 # Backend ID → (targets, default-min-ram-fallback). RAM fallback is only used
 # when the legacy variant doesn't declare ``min_ram_mb``.
 BACKEND_TARGETS: dict[str, tuple[list[str], int]] = {
-    "rkllama": (["rockchip-rk3588"], 2048),
-    "rk-llama-cpp": (["rockchip-rk3588"], 2048),
+    "rkllama": (["rockchip"], 2048),
+    "rk-llama-cpp": (["rockchip"], 2048),
     "ollama": (["apple-silicon", "x86-cuda", "x86-vulkan", "arm-vulkan", "cpu"], 4096),
     "llama-cpp": (["x86-vulkan", "arm-vulkan", "cpu"], 4096),
     "mlx": (["apple-silicon"], 4096),

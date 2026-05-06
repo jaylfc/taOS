@@ -24,7 +24,7 @@ def make_qwen_manifest():
             "download_url": "https://example/q4.gguf",
             "requires": {
                 "backends": [
-                    {"id": "rk-llama-cpp", "targets": ["rockchip-rk3588"], "min_ram_mb": 4096},
+                    {"id": "rk-llama-cpp", "targets": ["rockchip"], "min_ram_mb": 4096},
                 ],
             },
         },
@@ -67,7 +67,7 @@ def fake_registry():
 def pi_capability():
     return DeviceCapability(
         device_id="local",
-        targets=("rockchip-rk3588", "cpu"),
+        targets=("rockchip", "cpu"),
         total_ram_mb=16384,
         total_vram_mb=0,
         free_disk_mb=50_000,

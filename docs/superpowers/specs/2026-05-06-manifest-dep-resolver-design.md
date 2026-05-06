@@ -125,7 +125,7 @@ Enforced by the audit script.
 
 Initial set:
 
-- `rockchip-rk3588` — Rockchip RK3588 NPU (Orange Pi 5 Plus, friends)
+- `rockchip` — Rockchip RK3588 NPU (Orange Pi 5 Plus, friends)
 - `apple-silicon` — Apple Silicon (M1/M2/M3+) for MLX / Metal backends
 - `x86-cuda` — x86_64 with NVIDIA CUDA-capable GPU
 - `x86-vulkan` — x86_64 with Vulkan-capable GPU (AMD, Intel Arc, NVIDIA without CUDA)
@@ -157,7 +157,7 @@ variants:
     requires:
       backends:
         - id: rk-llama-cpp
-          targets: [rockchip-rk3588]
+          targets: [rockchip]
           min_ram_mb: 4096
         - id: ollama
           targets: [apple-silicon, x86-cuda, cpu]
@@ -175,7 +175,7 @@ variants:
     requires:
       backends:
         - id: rk-llama-cpp
-          targets: [rockchip-rk3588]
+          targets: [rockchip]
           min_ram_mb: 6144
         - id: ollama
           targets: [apple-silicon, x86-cuda, cpu]
@@ -205,7 +205,7 @@ manifest types module.
 class DeviceCapability:
     """Device capacity snapshot — supplied by the caller."""
     device_id: str
-    targets: tuple[str, ...]            # e.g. ("rockchip-rk3588", "cpu")
+    targets: tuple[str, ...]            # e.g. ("rockchip", "cpu")
     total_ram_mb: int                   # capacity, not current free
     total_vram_mb: int                  # 0 if no GPU
     free_disk_mb: int                   # disk IS "free" — no auto-evict
@@ -388,8 +388,8 @@ For each model manifest:
 
 | Old `install.method` | Old `variants[].backend` | New `requires.backends`                                                                          |
 | -------------------- | ------------------------ | ----------------------------------------------------------------------------------------------- |
-| `rkllama`            | (any)                    | `[{id: rkllama, targets: [rockchip-rk3588], min_ram_mb: <variant.min_ram_mb>}]`                  |
-| `rkllamacpp`         | (any)                    | `[{id: rk-llama-cpp, targets: [rockchip-rk3588], min_ram_mb: <variant.min_ram_mb>}]`             |
+| `rkllama`            | (any)                    | `[{id: rkllama, targets: [rockchip], min_ram_mb: <variant.min_ram_mb>}]`                  |
+| `rkllamacpp`         | (any)                    | `[{id: rk-llama-cpp, targets: [rockchip], min_ram_mb: <variant.min_ram_mb>}]`             |
 | `download`           | `[ollama, llama-cpp]`    | `[{id: ollama, targets: [apple-silicon, x86-cuda, cpu], ...}, {id: llama-cpp, targets: [cpu], ...}]` |
 | `download`           | `[mlx]`                  | `[{id: mlx, targets: [apple-silicon], ...}]`                                                    |
 | `download`           | `[comfyui]`              | `[{id: comfyui, targets: [x86-cuda, x86-vulkan], ...}]`                                         |
@@ -606,6 +606,6 @@ tinyagentos/installers/{pip,docker,download,lxc,rkllama,rkllamacpp}_installer.py
   (test fixtures).
 - **Store filter regression-fixed:** opening the Store on the Orange Pi 5
   Plus shows the ~14 rkllm Qwen manifests as compatible with `green` borders
-  (rk-llama-cpp / rkllama against `rockchip-rk3588`). The "no compatible
+  (rk-llama-cpp / rkllama against `rockchip`). The "no compatible
   models" empty-state from PR #319 must not reproduce. Verified manually as
   part of the E2E smoke test.
