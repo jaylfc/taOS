@@ -244,3 +244,62 @@ class TestResolveAutoVariant:
         r = resolve(m, "auto", tiny)
         assert isinstance(r, ResolveErr)
         assert r.near_miss["blocked_by"] in ("ram", "target")
+
+
+class TestResolveForceFlag:
+    def test_force_bypasses_target_mismatch(self):
+        no_match = {
+            "id": "mlx-only",
+            "type": "model",
+            "variants": [
+                {
+                    "id": "default",
+                    "size_mb": 1000,
+                    "requires": {
+                        "backends": [
+                            {
+                                "id": "mlx",
+                                "targets": ["apple-silicon"],
+                                "min_ram_mb": 4096,
+                            },
+                        ],
+                    },
+                },
+            ],
+        }
+        pi = pi_device(installed=())
+        without_force = resolve(no_match, "default", pi, force=False)
+        with_force = resolve(no_match, "default", pi, force=True)
+        assert isinstance(without_force, ResolveErr)
+        assert isinstance(with_force, ResolveOk)
+        assert with_force.backend_id == "mlx"
+        assert with_force.action == "install_chain"
+
+    def test_force_bypasses_ram_short(self):
+        m = make_qwen_manifest()
+        small_pi = DeviceCapability(
+            device_id="pi",
+            targets=("rockchip-rk3588", "cpu"),
+            total_ram_mb=1024,
+            total_vram_mb=0,
+            free_disk_mb=50_000,
+            installed_backends=("rk-llama-cpp",),
+        )
+        without_force = resolve(m, "q8_0", small_pi, force=False)
+        with_force = resolve(m, "q8_0", small_pi, force=True)
+        assert isinstance(without_force, ResolveErr)
+        assert isinstance(with_force, ResolveOk)
+
+    def test_force_does_not_bypass_disk_gate(self):
+        m = make_qwen_manifest()
+        full_pi = DeviceCapability(
+            device_id="pi",
+            targets=("rockchip-rk3588", "cpu"),
+            total_ram_mb=16384,
+            total_vram_mb=0,
+            free_disk_mb=100,  # nowhere near 1900 MB
+            installed_backends=("rk-llama-cpp",),
+        )
+        r = resolve(m, "q4_k_m", full_pi, force=True)
+        assert isinstance(r, ResolveErr)
+        assert r.near_miss["blocked_by"] == "disk"
