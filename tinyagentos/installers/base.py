@@ -50,5 +50,8 @@ def get_installer(method: str, **kwargs) -> AppInstaller:
         return LXCInstaller(**kwargs)
     elif method == "rkllama":
         return RkllamaInstaller(**kwargs)
+    elif method == "script":
+        from tinyagentos.installers.script_installer import ScriptInstaller
+        return ScriptInstaller(**kwargs)
     else:
         raise ValueError(f"Unknown install method: '{method}'")
