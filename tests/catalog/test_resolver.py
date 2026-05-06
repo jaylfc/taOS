@@ -10,6 +10,7 @@ from tinyagentos.catalog.resolver import (
     DeviceCapability,
     ResolveErr,
     ResolveOk,
+    classify,
     resolve,
 )
 
@@ -303,3 +304,34 @@ class TestResolveForceFlag:
         r = resolve(m, "q4_k_m", full_pi, force=True)
         assert isinstance(r, ResolveErr)
         assert r.near_miss["blocked_by"] == "disk"
+
+
+class TestClassify:
+    def test_green_when_accelerated_target_matches(self):
+        m = make_qwen_manifest()
+        # Pi-NPU has rockchip-rk3588 → rk-llama-cpp matches → green.
+        assert classify(m, pi_device()) == "green"
+
+    def test_amber_when_only_cpu_target_matches(self):
+        m = make_qwen_manifest()
+        cpu_box = DeviceCapability(
+            device_id="cpu-box",
+            targets=("cpu",),
+            total_ram_mb=16384,
+            total_vram_mb=0,
+            free_disk_mb=200_000,
+            installed_backends=(),
+        )
+        assert classify(m, cpu_box) == "amber"
+
+    def test_red_when_no_variant_resolves(self):
+        m = make_qwen_manifest()
+        tiny = DeviceCapability(
+            device_id="tiny",
+            targets=("cpu",),
+            total_ram_mb=1024,
+            total_vram_mb=0,
+            free_disk_mb=200_000,
+            installed_backends=(),
+        )
+        assert classify(m, tiny) == "red"

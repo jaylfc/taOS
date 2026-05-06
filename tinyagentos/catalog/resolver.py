@@ -252,3 +252,41 @@ def resolve(
         near_miss={"blocked_by": "schema"},
         suggestions=["Fix the manifest"],
     )
+
+
+def classify(manifest: dict, device: DeviceCapability) -> Literal["green", "amber", "red"]:
+    """Classify a model's compatibility with a device.
+
+    Returns one of:
+
+    - ``"green"`` — at least one variant resolves on a non-``cpu`` target
+      (accelerated path available).
+    - ``"amber"`` — at least one variant resolves but only on ``cpu``.
+    - ``"red"`` — no variant resolves under non-force gates.
+    """
+    variants = manifest.get("variants") or []
+    accelerated = False
+    cpu_only = False
+    for v in variants:
+        if not isinstance(v, dict):
+            continue
+        result = _check_variant(v, device, force=False)
+        if isinstance(result, ResolveOk):
+            # Find the dep that won so we know its targets.
+            deps = _coerce_backends(
+                ((v.get("requires") or {}).get("backends")) or []
+            )
+            for dep in deps:
+                if dep.id != result.backend_id:
+                    continue
+                if any(t != "cpu" for t in dep.targets if t in device.targets):
+                    accelerated = True
+                else:
+                    cpu_only = True
+                break
+
+    if accelerated:
+        return "green"
+    if cpu_only:
+        return "amber"
+    return "red"
