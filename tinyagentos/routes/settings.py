@@ -1,6 +1,8 @@
 from __future__ import annotations
+import asyncio
 import datetime
 import io
+import logging
 import tarfile
 import time
 from pathlib import Path
@@ -11,7 +13,25 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def _run_capture(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
+    """Run a subprocess capturing combined stdout+stderr.
+
+    Wraps asyncio.create_subprocess_exec so callers don't have to plumb the
+    PIPE/communicate dance themselves. Returns (returncode, decoded_output).
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=cwd,
+    )
+    out, _ = await proc.communicate()
+    return proc.returncode or 0, out.decode() if out else ""
 
 
 class ConfigUpdate(BaseModel):
@@ -573,19 +593,58 @@ async def apply_update(request: Request):
     if proc.returncode != 0:
         return JSONResponse({"error": f"Update failed: {output}"}, status_code=500)
 
-    # Pip install to pick up new deps — prefer .venv then venv, fall back to system pip
+    # Pip install to pick up new deps. Capture output and surface failures —
+    # silently swallowing a failed install lands users on a grey-screen the
+    # next time they restart, because the new code imports a module that's
+    # not on disk. See issue #323's sibling failure mode.
+    venv_python: Path | None = None
     for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
         if candidate.exists():
             pip_cmd = str(candidate)
+            venv_python = candidate.parent / "python"
             break
     else:
         pip_cmd = "pip"
-    proc2 = await asyncio.create_subprocess_exec(
-        pip_cmd, "install", "-e", ".", "-q",
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    pip_returncode, pip_output = await _run_capture(
+        [pip_cmd, "install", "-e", "."],
         cwd=str(project_dir),
     )
-    await proc2.communicate()
+    if pip_returncode != 0:
+        return JSONResponse(
+            {
+                "error": "Dependency install failed — update aborted to avoid grey-screen on restart.",
+                "git_output": output.strip(),
+                "pip_output": pip_output.strip()[-2000:],
+            },
+            status_code=500,
+        )
+
+    # Import smoke test in a fresh interpreter — verifies the new code can
+    # actually load with the freshly installed deps. Without this a partial
+    # pip install (returncode 0 but a wheel quietly skipped) still grey-screens
+    # the user on restart.
+    if venv_python is not None and venv_python.exists():
+        smoke_returncode, smoke_output = await _run_capture(
+            [
+                str(venv_python), "-c",
+                "import tinyagentos.app; "
+                "from tinyagentos.routes.desktop_browser import proxy, copilot_ws, vapid, store",
+            ],
+            cwd=str(project_dir),
+        )
+        if smoke_returncode != 0:
+            return JSONResponse(
+                {
+                    "error": (
+                        "Update applied to disk but post-install import test failed "
+                        "— restart would grey-screen. Fix the import error before restarting."
+                    ),
+                    "git_output": output.strip(),
+                    "pip_output": pip_output.strip()[-2000:],
+                    "import_error": smoke_output.strip()[-2000:],
+                },
+                status_code=500,
+            )
 
     # Rebuild the desktop bundle if new source files landed (belt-and-braces on
     # non-systemd hosts where ExecStartPre doesn't run: Mac .app, Docker, dev).

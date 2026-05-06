@@ -137,3 +137,28 @@ class TestSettingsRoutes:
         resp = await client.delete("/api/settings/webhooks/0")
         assert resp.status_code == 200
         assert resp.json()["status"] == "removed"
+
+
+class TestRunCaptureHelper:
+    """Helper used by /api/settings/update to surface pip + smoke-test output.
+
+    The previous implementation piped pip output to DEVNULL, so a failed
+    install left no breadcrumbs and users grey-screened on next restart.
+    These tests pin the helper's contract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_captures_stdout_and_returncode_on_success(self):
+        from tinyagentos.routes.settings import _run_capture
+
+        rc, out = await _run_capture(["sh", "-c", "echo hello-from-helper"])
+        assert rc == 0
+        assert "hello-from-helper" in out
+
+    @pytest.mark.asyncio
+    async def test_captures_stderr_and_returncode_on_failure(self):
+        from tinyagentos.routes.settings import _run_capture
+
+        rc, out = await _run_capture(["sh", "-c", "echo boom-on-stderr 1>&2; exit 7"])
+        assert rc == 7
+        assert "boom-on-stderr" in out
