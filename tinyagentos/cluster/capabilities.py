@@ -118,8 +118,9 @@ def hardware_to_targets(hardware: dict) -> list[str]:
     elif (gpu_type in ("amd", "intel") and gpu.get("vulkan")) or (
         gpu_type != "none" and gpu.get("vulkan")
     ):
-        # Vulkan target is x86-only in the current catalog enum.
-        targets.append("x86-vulkan")
+        # Vulkan is cross-vendor — works on ARM (Mali, Adreno, Jetson) and
+        # x86 (AMD, Intel, NVIDIA without CUDA). Emit the matching arch tier.
+        targets.append("arm-vulkan" if arch == "arm" else "x86-vulkan")
 
     targets.append("cpu")
     return targets

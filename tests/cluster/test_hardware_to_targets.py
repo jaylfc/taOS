@@ -49,6 +49,26 @@ class TestHardwareToTargets:
         }
         assert hardware_to_targets(hw) == ["x86-vulkan", "cpu"]
 
+    def test_mali_vulkan_returns_arm_vulkan_and_cpu(self):
+        # ARM Mali (Pi-class), Adreno (Snapdragon) — Vulkan is cross-vendor
+        # so an ARM device with a Vulkan-capable GPU should claim arm-vulkan.
+        hw = {
+            "cpu": {"arch": "aarch64"},
+            "gpu": {"type": "mali", "vulkan": True, "vram_mb": 0},
+            "ram_mb": 8192,
+        }
+        assert hardware_to_targets(hw) == ["arm-vulkan", "cpu"]
+
+    def test_jetson_vulkan_without_cuda_returns_arm_vulkan(self):
+        # NVIDIA Jetson with Vulkan exposed but CUDA flag missing — picked
+        # up via the cross-vendor Vulkan branch and emits arm-vulkan.
+        hw = {
+            "cpu": {"arch": "aarch64"},
+            "gpu": {"type": "nvidia", "vulkan": True, "vram_mb": 8192},
+            "ram_mb": 16384,
+        }
+        assert hardware_to_targets(hw) == ["arm-vulkan", "cpu"]
+
     def test_cpu_only_returns_cpu(self):
         hw = {
             "cpu": {"arch": "x86_64"},

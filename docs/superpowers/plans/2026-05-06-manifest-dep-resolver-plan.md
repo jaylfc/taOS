@@ -20,7 +20,8 @@
 rockchip-rk3588   # Orange Pi 5 Plus, friends — RK3588 NPU
 apple-silicon     # M1/M2/M3+ — MLX / Metal
 x86-cuda          # x86_64 with NVIDIA CUDA-capable GPU
-x86-vulkan        # x86_64 with Vulkan-capable GPU (AMD, Intel Arc)
+x86-vulkan        # x86_64 with Vulkan-capable GPU (AMD, Intel Arc, NVIDIA without CUDA)
+arm-vulkan        # ARM with Vulkan-capable GPU (Mali, Adreno, NVIDIA Jetson)
 cpu               # generic CPU fallback (any arch)
 ```
 
@@ -1565,12 +1566,12 @@ DEFAULT_CONTEXT_WINDOW: dict[str, int] = {
 BACKEND_TARGETS: dict[str, tuple[list[str], int]] = {
     "rkllama": (["rockchip-rk3588"], 2048),
     "rk-llama-cpp": (["rockchip-rk3588"], 2048),
-    "ollama": (["apple-silicon", "x86-cuda", "x86-vulkan", "cpu"], 4096),
-    "llama-cpp": (["cpu"], 4096),
+    "ollama": (["apple-silicon", "x86-cuda", "x86-vulkan", "arm-vulkan", "cpu"], 4096),
+    "llama-cpp": (["x86-vulkan", "arm-vulkan", "cpu"], 4096),
     "mlx": (["apple-silicon"], 4096),
     "vllm": (["x86-cuda"], 8192),
     "comfyui": (["x86-cuda", "x86-vulkan", "apple-silicon"], 4096),
-    "transformers": (["x86-cuda", "x86-vulkan", "cpu"], 8192),
+    "transformers": (["x86-cuda", "x86-vulkan", "arm-vulkan", "cpu"], 8192),
 }
 
 
@@ -2152,6 +2153,7 @@ VALID_TARGETS = {
     "apple-silicon",
     "x86-cuda",
     "x86-vulkan",
+    "arm-vulkan",
     "cpu",
 }
 

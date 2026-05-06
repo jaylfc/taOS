@@ -128,7 +128,8 @@ Initial set:
 - `rockchip-rk3588` — Rockchip RK3588 NPU (Orange Pi 5 Plus, friends)
 - `apple-silicon` — Apple Silicon (M1/M2/M3+) for MLX / Metal backends
 - `x86-cuda` — x86_64 with NVIDIA CUDA-capable GPU
-- `x86-vulkan` — x86_64 with Vulkan-capable GPU (AMD, Intel Arc)
+- `x86-vulkan` — x86_64 with Vulkan-capable GPU (AMD, Intel Arc, NVIDIA without CUDA)
+- `arm-vulkan` — ARM with Vulkan-capable GPU (Mali, Adreno, NVIDIA Jetson)
 - `cpu` — generic CPU fallback (any arch)
 
 Targets can be added later (e.g. `arm-mali`, `xpu` for Intel, `rocm` for AMD).
