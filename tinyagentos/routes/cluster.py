@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-from tinyagentos.cluster.capabilities import potential_capabilities as _potential_capabilities
+from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 
@@ -263,14 +263,15 @@ async def list_install_targets(request: Request):
     filter to match against catalog `hardware_tiers`) and a `friendly_name`
     for display.
     """
+    hp = getattr(request.app.state, "hardware_profile", None)
+    local_hw = getattr(hp, "hardware", {}) if hp else {}
     targets: list[dict] = [
         {
             "name": "local",
             "label": "This controller",
             "type": "local",
-            "tier_id": getattr(
-                request.app.state.hardware_profile, "profile_id", ""
-            ),
+            "tier_id": getattr(hp, "profile_id", "") if hp else "",
+            "targets": hardware_to_targets(local_hw),
             "friendly_name": "Controller",
         }
     ]
@@ -294,12 +295,17 @@ async def list_install_targets(request: Request):
             proto = r.get("protocol", "")
             if not name or name in _BUILTIN_REMOTES or proto != "incus":
                 continue
+            worker_hw = next(
+                (w.hardware for w in cluster.get_workers() if w.name == name),
+                {},
+            ) if cluster else {}
             targets.append({
                 "name": name,
                 "label": name,
                 "type": "remote",
                 "addr": r.get("addr", ""),
                 "tier_id": worker_tiers.get(name, ""),
+                "targets": hardware_to_targets(worker_hw),
                 "friendly_name": name,
             })
     except Exception as exc:  # noqa: BLE001
