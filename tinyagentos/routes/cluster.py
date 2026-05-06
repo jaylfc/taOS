@@ -254,13 +254,38 @@ _BUILTIN_REMOTES = {"images", "ubuntu", "ubuntu-daily", "local"}
 
 
 @router.get("/api/cluster/install-targets")
-async def list_install_targets():
+async def list_install_targets(request: Request):
     """Return the ordered list of hosts available for LXC service installs.
 
     Always includes the controller first ("local"), then any registered incus
     remotes whose protocol is "incus" (filters out the read-only image servers).
+    Each entry carries a `tier_id` (hardware profile id, used by the Store
+    filter to match against catalog `hardware_tiers`) and a `friendly_name`
+    for display.
     """
-    targets: list[dict] = [{"name": "local", "label": "This controller", "type": "local"}]
+    targets: list[dict] = [
+        {
+            "name": "local",
+            "label": "This controller",
+            "type": "local",
+            "tier_id": getattr(
+                request.app.state.hardware_profile, "profile_id", ""
+            ),
+            "friendly_name": "Controller",
+        }
+    ]
+    # Map worker name → tier_id by reusing the existing capability resolver.
+    cluster = getattr(request.app.state, "cluster_manager", None)
+    registry = getattr(request.app.state, "registry", None)
+    worker_tiers: dict[str, str] = {}
+    if cluster is not None and registry is not None:
+        for w in cluster.get_workers():
+            try:
+                tier_id, _caps = _potential_capabilities(w.hardware, registry)
+                worker_tiers[w.name] = tier_id
+            except Exception:  # noqa: BLE001
+                worker_tiers[w.name] = ""
+
     try:
         import tinyagentos.containers as containers
         remotes = await containers.remote_list()
@@ -274,6 +299,8 @@ async def list_install_targets():
                 "label": name,
                 "type": "remote",
                 "addr": r.get("addr", ""),
+                "tier_id": worker_tiers.get(name, ""),
+                "friendly_name": name,
             })
     except Exception as exc:  # noqa: BLE001
         logger.warning("list_install_targets: remote_list failed: %s", exc)

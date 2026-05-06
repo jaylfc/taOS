@@ -247,3 +247,68 @@ async def test_incus_enroll_remote_add_failure(client):
     data = resp.json()
     assert data["ok"] is False
     assert "certificate rejected" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# install-targets endpoint — tier_id and friendly_name (Task 11)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_install_targets_includes_controller_with_tier_id(client):
+    resp = await client.get("/api/cluster/install-targets")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    local = next(t for t in data if t["name"] == "local")
+    assert local["type"] == "local"
+    assert local["label"] == "This controller"
+    assert "tier_id" in local
+    # Controller's tier comes from app.state.hardware_profile — accept any
+    # non-empty string; specific value depends on the host running tests.
+    assert isinstance(local["tier_id"], str) and local["tier_id"]
+    assert "friendly_name" in local
+    assert local["friendly_name"] == "Controller"
+
+
+@pytest.mark.asyncio
+async def test_install_targets_remote_includes_tier_id(app, client, monkeypatch):
+    # Register a fake worker so /api/cluster/workers has something with a
+    # tier_id we control.
+    # WorkerInfo.hardware is a plain dict (worker agent sends raw hardware data).
+    # Use ram_mb + a npu string so worker_tier_id() produces a non-empty arm-npu-*gb id.
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    fake_worker = WorkerInfo(
+        name="orange-pi",
+        url="https://192.168.1.10:8443",
+        hardware={
+            "ram_mb": 16384,
+            "npu": {"type": "rk3588"},
+            "cpu": {"arch": "aarch64"},
+            "gpu": {},
+        },
+        status="online",
+    )
+    cluster._workers["orange-pi"] = fake_worker  # noqa: SLF001
+
+    # Pretend an incus remote with the same name is registered.
+    async def fake_remote_list():
+        return [{"name": "orange-pi", "addr": "https://192.168.1.10:8443",
+                 "protocol": "incus"}]
+    monkeypatch.setattr(
+        "tinyagentos.containers.remote_list", fake_remote_list
+    )
+
+    resp = await client.get("/api/cluster/install-targets")
+    assert resp.status_code == 200
+    data = resp.json()
+    pi = next((t for t in data if t["name"] == "orange-pi"), None)
+    assert pi is not None
+    assert pi["type"] == "remote"
+    assert pi["addr"] == "https://192.168.1.10:8443"
+    # tier_id should be derived from the worker's hardware via
+    # _potential_capabilities — exact value depends on registry, but
+    # the key must be present and non-empty.
+    assert "tier_id" in pi
+    assert isinstance(pi["tier_id"], str) and pi["tier_id"]
+    assert pi["friendly_name"] == "orange-pi"
