@@ -35,6 +35,31 @@ _KNOWN_BACKENDS = {
     "mlx", "vllm", "comfyui", "transformers",
 }
 
+# Backend ID → install method known to get_installer().
+# rkllama has a purpose-built installer (calls /api/pull, manages symlinks,
+# restarts systemd units). rk-llama-cpp models are downloaded to disk and
+# loaded by the rk-llama-cpp runtime on demand, same as other backends.
+# Future per-backend installers (OllamaInstaller using `ollama pull`, etc.)
+# can land as follow-ups; download is the safest default in the meantime.
+_BACKEND_TO_METHOD: dict[str, str] = {
+    "rkllama": "rkllama",
+    "rk-llama-cpp": "download",
+    "ollama": "download",
+    "llama-cpp": "download",
+    "mlx": "download",
+    "vllm": "download",
+    "comfyui": "download",
+    "transformers": "download",
+    "diffusers": "download",
+    "sentence-transformers": "download",
+    "whisper-cpp": "download",
+    "piper": "download",
+    "onnxruntime": "download",
+    "nemo": "download",
+    "ezrknpu": "download",
+    "sd-webui": "download",
+}
+
 
 async def get_device_capability(request: Request, target_remote: str | None) -> DeviceCapability:
     """Build a DeviceCapability snapshot for the (local | remote) target."""
@@ -51,8 +76,9 @@ async def get_device_capability(request: Request, target_remote: str | None) -> 
         installed_backends: tuple[str, ...] = ()
         if registry is not None:
             try:
-                ids = [a.id for a in registry.list_available()]
-                installed_backends = tuple(b for b in ids if b in _KNOWN_BACKENDS)
+                installed = registry.list_installed()
+                ids = {entry["id"] for entry in installed if isinstance(entry, dict)}
+                installed_backends = tuple(b for b in _KNOWN_BACKENDS if b in ids)
             except Exception:  # noqa: BLE001
                 installed_backends = ()
         return DeviceCapability(
@@ -408,7 +434,18 @@ async def install_app(request: Request):
             {"error": f"variant {result.variant_id!r} not found in manifest"},
             status_code=500,
         )
-    model_installer = get_installer(result.backend_id)
+    install_method = _BACKEND_TO_METHOD.get(result.backend_id)
+    if install_method is None:
+        return JSONResponse(
+            {
+                "error": (
+                    f"backend {result.backend_id!r} has no installer mapping. "
+                    "Add an entry to _BACKEND_TO_METHOD in store_install.py."
+                ),
+            },
+            status_code=500,
+        )
+    model_installer = get_installer(install_method)
     install_config = dict(getattr(manifest, "install", None) or {})
     install_config["backend"] = result.backend_id
     model_result = await model_installer.install(

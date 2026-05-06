@@ -125,6 +125,104 @@ class TestInstallChainBackendFailure:
         assert "backend" in r.json()["error"].lower()
 
 
+class TestBackendToMethodMapping:
+    """Regression tests for _BACKEND_TO_METHOD and the real get_installer lookup.
+
+    These tests do NOT mock get_installer — they let the real lookup run so
+    that a future regression (e.g. adding an entry pointing to an unknown
+    method) would surface as a ValueError rather than an HTTP 500 in prod.
+    The underlying installers' .install() methods are mocked to avoid I/O.
+    """
+
+    def test_ollama_maps_to_download_no_value_error(self):
+        """get_installer(_BACKEND_TO_METHOD['ollama']) must not raise."""
+        from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
+        from tinyagentos.installers.base import get_installer
+
+        method = _BACKEND_TO_METHOD["ollama"]
+        assert method == "download"
+        # Should not raise ValueError
+        installer = get_installer(method)
+        assert installer is not None
+
+    def test_rk_llama_cpp_maps_to_download_no_value_error(self):
+        """get_installer(_BACKEND_TO_METHOD['rk-llama-cpp']) must not raise."""
+        from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
+        from tinyagentos.installers.base import get_installer
+
+        method = _BACKEND_TO_METHOD["rk-llama-cpp"]
+        assert method == "download"
+        # Should not raise ValueError
+        installer = get_installer(method)
+        assert installer is not None
+
+    def test_all_entries_resolve_to_valid_installer_methods(self):
+        """Every entry in _BACKEND_TO_METHOD must be a valid get_installer key."""
+        from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
+        from tinyagentos.installers.base import get_installer
+
+        for backend_id, method in _BACKEND_TO_METHOD.items():
+            try:
+                installer = get_installer(method)
+                assert installer is not None, f"{backend_id!r} → {method!r} returned None"
+            except ValueError as exc:
+                raise AssertionError(
+                    f"_BACKEND_TO_METHOD[{backend_id!r}] = {method!r} is not a valid "
+                    f"get_installer key: {exc}"
+                ) from exc
+
+    @pytest.mark.asyncio
+    async def test_unknown_backend_returns_500_not_exception(self, client, fake_registry):
+        """A backend_id absent from _BACKEND_TO_METHOD returns HTTP 500, not a traceback."""
+        # Construct a manifest whose variant declares an unmapped backend.
+        unknown_manifest = MagicMock()
+        unknown_manifest.id = "test-model"
+        unknown_manifest.type = "model"
+        unknown_manifest.variants = [
+            {
+                "id": "v1",
+                "size_mb": 100,
+                "download_url": "https://example/model.bin",
+                "requires": {
+                    "backends": [
+                        {"id": "unknown-backend-xyz", "targets": ["cpu"], "min_ram_mb": 512},
+                    ],
+                },
+            }
+        ]
+        unknown_manifest.context_window = 4096
+        unknown_manifest.hardware_tiers = {}
+        unknown_manifest.install = {}
+        unknown_manifest.version = "1.0.0"
+
+        fat_cap = DeviceCapability(
+            device_id="local",
+            targets=("cpu",),
+            total_ram_mb=32768,
+            total_vram_mb=0,
+            free_disk_mb=100_000,
+            installed_backends=("unknown-backend-xyz",),
+        )
+
+        reg = MagicMock()
+        reg.get_app = MagicMock(return_value=unknown_manifest)
+        reg.get = MagicMock(return_value=unknown_manifest)
+        reg.mark_installed = MagicMock()
+        reg.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = reg
+
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=fat_cap),
+        ):
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "test-model",
+                "variant_id": "v1",
+            })
+        assert r.status_code == 500
+        assert "_BACKEND_TO_METHOD" in r.json()["error"]
+
+
 class TestResolveErrorReturns422:
     @pytest.mark.asyncio
     async def test_returns_structured_error_with_suggestions(self, client, fake_registry):
