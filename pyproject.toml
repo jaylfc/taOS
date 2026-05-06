@@ -64,10 +64,13 @@ markers = [
     "slow: Tests requiring a live stack (skipped in local CI; run with pytest -m slow)",
 ]
 filterwarnings = [
-    # Silence noisy "Event loop is closed" RuntimeError emitted from
-    # asyncio finalisers (httpx clients, aiosqlite connections) during
-    # interpreter shutdown. Harmless — the tests have already passed by
-    # the time these fire — but they trip GitHub Actions log parser into
-    # marking the step as having errors. Filter at the warning level.
-    "ignore::pytest.PytestUnraisableExceptionWarning",
+    # Asyncio teardown emits unraisable RuntimeError("Event loop is closed")
+    # warnings when finalisers (httpx clients, aiosqlite connections) fire
+    # during interpreter shutdown after the loop is gone. Harmless — tests
+    # have already passed — but trips GitHub Actions log parser into
+    # ##[error] annotations. Narrow filter: only matches the well-known
+    # "Exception ignored in:" prefix that pytest uses for these, so
+    # genuine unraisable exceptions in __del__ or forgotten awaitables
+    # still surface as test failures.
+    "ignore:Exception ignored in:pytest.PytestUnraisableExceptionWarning",
 ]
