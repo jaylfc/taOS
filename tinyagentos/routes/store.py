@@ -7,7 +7,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.catalog.resolver import (
+    ResolveErr,
+    ResolveOk,
+    classify,
+    resolve,
+)
 from tinyagentos.installers.base import get_installer
+from tinyagentos.routes.store_install import get_device_capability
 
 
 class InstallRequest(BaseModel):
@@ -177,6 +184,52 @@ async def install_app(request: Request, body: InstallRequest):
                 )
         return {"status": "installed", "app_id": body.app_id}
     return JSONResponse({"error": result.get("error", "Install failed")}, status_code=500)
+
+
+@router.post("/api/store/resolve")
+async def resolve_model(request: Request):
+    """Wrapper around the resolver for the Store frontend.
+
+    Returns a JSON envelope with ``result`` ("ok" | "err"), the resolver's
+    structured payload, and the green/amber/red compatibility classification
+    (so the Store can colour-code the card from a single round-trip).
+    """
+    body = await request.json()
+    manifest_id = body.get("manifest_id") or body.get("app_id")
+    variant_id = body.get("variant_id", "auto")
+    target_remote = body.get("target_remote") or None
+    force = bool(body.get("force", False))
+
+    registry = request.app.state.registry
+    manifest = registry.get_app(manifest_id) if registry else None
+    if manifest is None:
+        return JSONResponse({"error": f"manifest {manifest_id!r} not found"}, status_code=404)
+
+    device = await get_device_capability(request, target_remote)
+    manifest_dict = {
+        "id": manifest.id,
+        "type": manifest.type,
+        "variants": manifest.variants,
+        "context_window": getattr(manifest, "context_window", 0),
+    }
+    res = resolve(manifest_dict, variant_id, device, force=force)
+    compat = classify(manifest_dict, device)
+
+    if isinstance(res, ResolveOk):
+        return {
+            "result": "ok",
+            "backend_id": res.backend_id,
+            "variant_id": res.variant_id,
+            "action": res.action,
+            "compat": compat,
+        }
+    return {
+        "result": "err",
+        "reason": res.reason,
+        "near_miss": res.near_miss,
+        "suggestions": res.suggestions,
+        "compat": compat,
+    }
 
 
 @router.post("/api/store/uninstall")
