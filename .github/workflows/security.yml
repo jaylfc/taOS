@@ -28,4 +28,9 @@ jobs:
       - name: Check for known vulnerabilities
         # CVE-2026-3219 affects pip itself with no fix released yet; revisit once
         # a patched pip is available on PyPI.
-        run: pip install pip-audit && pip-audit --ignore-vuln CVE-2026-3219
+        # CVE-2026-6357 is fixed in pip 26.1 — upgrade before auditing so the
+        # runner's bundled pip 26.0.1 doesn't trip the check.
+        run: |
+          python -m pip install --upgrade "pip>=26.1"
+          pip install pip-audit
+          pip-audit --ignore-vuln CVE-2026-3219
