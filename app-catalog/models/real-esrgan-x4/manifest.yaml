@@ -2,22 +2,41 @@ id: real-esrgan-x4
 name: Real-ESRGAN x4
 type: model
 version: 1.0.0
-description: "Practical image upscaler — 4x super-resolution, restores real-world images"
+description: Practical image upscaler — 4x super-resolution, restores real-world images
 homepage: https://huggingface.co/ai-forever/Real-ESRGAN
-license: "BSD-3-Clause"
-capabilities: [upscaling]
-
+license: BSD-3-Clause
+capabilities:
+- upscaling
 variants:
-  - id: x4
-    name: "x4 PyTorch (64MB)"
-    format: pytorch
-    size_mb: 64
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth
-    backend: [comfyui, sd-webui, onnxruntime]
-
+- id: x4
+  name: x4 PyTorch (64MB)
+  format: pytorch
+  size_mb: 64
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 1024
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 1024
+    - id: onnxruntime
+      targets:
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: x4}
-  arm-npu-16gb: {recommended: x4}
-  x86-cuda-8gb: {recommended: x4}
-  cpu-only: {recommended: x4}
+  arm-cpu-8gb:
+    recommended: x4
+  arm-npu-16gb:
+    recommended: x4
+  x86-cuda-8gb:
+    recommended: x4
+  cpu-only:
+    recommended: x4
+context_window: 1

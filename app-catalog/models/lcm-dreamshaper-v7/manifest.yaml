@@ -2,43 +2,76 @@ id: lcm-dreamshaper-v7
 name: LCM Dreamshaper V7
 type: model
 version: 7.0.0
-description: "Fast image generation — 4-step LCM acceleration, 512x512 in seconds on CPU or RK3588 NPU"
+description: Fast image generation — 4-step LCM acceleration, 512x512 in seconds on
+  CPU or RK3588 NPU
 homepage: https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7
 license: OpenRAIL-M
-capabilities: [image-generation]
-
+capabilities:
+- image-generation
 variants:
-  - id: rknn-rk3588
-    name: "RKNN for RK3588 NPU (2.3GB, multi-file)"
-    format: rknn
-    size_mb: 2350
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/resolve/main/model/unet/model.rknn
-    backend: [rknn-stable-diffusion]
-    requires_npu: [rk3588]
-    multi_file: true
-    repo: happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2
-    install_script: scripts/install-rknn-sd.sh
-    sha256: ""
-    quality: good
-    notes: "Multi-file RKNN model (text_encoder/unet/vae_decoder). Use install script to fetch full repo."
-
-  - id: safetensors
-    name: "LCM FP16 Safetensors (2.1GB)"
-    format: safetensors
-    size_mb: 2100
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7/resolve/main/LCM_Dreamshaper_v7_4k.safetensors
-    backend: [diffusers, comfyui, sd-webui]
-    sha256: ""
-    quality: best
-
+- id: rknn-rk3588
+  name: RKNN for RK3588 NPU (2.3GB, multi-file)
+  format: rknn
+  size_mb: 2350
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/resolve/main/model/unet/model.rknn
+  requires_npu:
+  - rk3588
+  multi_file: true
+  repo: happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2
+  install_script: scripts/install-rknn-sd.sh
+  sha256: ''
+  quality: good
+  notes: Multi-file RKNN model (text_encoder/unet/vae_decoder). Use install script
+    to fetch full repo.
+  requires:
+    backends:
+    - id: rknn-stable-diffusion
+      targets:
+      - cpu
+      min_ram_mb: 3072
+- id: safetensors
+  name: LCM FP16 Safetensors (2.1GB)
+  format: safetensors
+  size_mb: 2100
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7/resolve/main/LCM_Dreamshaper_v7_4k.safetensors
+  sha256: ''
+  quality: best
+  requires:
+    backends:
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 4096
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 4096
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-16gb: {recommended: safetensors}
-  arm-npu-16gb: {recommended: rknn-rk3588, fallback: safetensors}
-  arm-npu-32gb: {recommended: rknn-rk3588, fallback: safetensors}
-  x86-cpu-16gb: {recommended: safetensors}
-  x86-cuda-8gb: {recommended: safetensors}
-  x86-cuda-12gb: {recommended: safetensors}
-  apple-silicon: {recommended: safetensors}
-  cpu-only: {recommended: safetensors, notes: "Slow — consider SD 1.5 GGUF for CPU"}
+  arm-cpu-16gb:
+    recommended: safetensors
+  arm-npu-16gb:
+    recommended: rknn-rk3588
+    fallback: safetensors
+  arm-npu-32gb:
+    recommended: rknn-rk3588
+    fallback: safetensors
+  x86-cpu-16gb:
+    recommended: safetensors
+  x86-cuda-8gb:
+    recommended: safetensors
+  x86-cuda-12gb:
+    recommended: safetensors
+  apple-silicon:
+    recommended: safetensors
+  cpu-only:
+    recommended: safetensors
+    notes: Slow — consider SD 1.5 GGUF for CPU
+context_window: 77

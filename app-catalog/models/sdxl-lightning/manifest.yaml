@@ -2,35 +2,79 @@ id: sdxl-lightning
 name: SDXL Lightning
 type: model
 version: 1.0.0
-description: "ByteDance's SDXL distillation — 2-step and 4-step variants, fast generation"
+description: ByteDance's SDXL distillation — 2-step and 4-step variants, fast generation
 homepage: https://huggingface.co/ByteDance/SDXL-Lightning
-license: "openrail++"
-capabilities: [image-generation]
-
+license: openrail++
+capabilities:
+- image-generation
 variants:
-  - id: 2step
-    name: "2-step Safetensors (5.1GB)"
-    format: safetensors
-    size_mb: 5100
-    min_ram_mb: 8192
-    download_url: https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_2step.safetensors
-    backend: [comfyui, diffusers]
-  - id: 4step
-    name: "4-step Safetensors (5.1GB)"
-    format: safetensors
-    size_mb: 5100
-    min_ram_mb: 8192
-    download_url: https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors
-    backend: [comfyui, diffusers]
-
+- id: 2step
+  name: 2-step Safetensors (5.1GB)
+  format: safetensors
+  size_mb: 5100
+  min_ram_mb: 8192
+  download_url: https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_2step.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 8192
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 8192
+- id: 4step
+  name: 4-step Safetensors (5.1GB)
+  format: safetensors
+  size_mb: 5100
+  min_ram_mb: 8192
+  download_url: https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 8192
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 8192
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "SDXL FP16 needs ~10GB RAM — no GGUF variant available"}
-  arm-cpu-16gb: {recommended: 4step, warning: "Slow on ARM CPU even with 4 steps — 3-6 minutes per 1024px image"}
-  arm-npu-16gb: {recommended: 4step, warning: "No RKNN or GGUF — runs on RK3588 CPU only, 3-6 minutes per image"}
-  x86-cpu-8gb: {recommended: null, warning: "SDXL needs ~10GB RAM for weights + activations"}
-  x86-cpu-16gb: {recommended: 4step, warning: "Slow — 1-3 minutes per 1024px image, recommend GPU"}
-  x86-vulkan-8gb: {recommended: 4step, fallback: 4step, warning: "Vulkan SDXL support is decent, slightly slower than CUDA"}
-  x86-cuda-8gb: {recommended: 4step, fallback: 2step}
-  x86-cuda-12gb: {recommended: 2step, fallback: 4step}
-  apple-silicon: {recommended: 4step, fallback: 2step, notes: "Runs well on 16GB+ M-series via diffusers/MPS"}
-  cpu-only: {recommended: null, warning: "Not recommended — no quantised variant, very slow on CPU"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: SDXL FP16 needs ~10GB RAM — no GGUF variant available
+  arm-cpu-16gb:
+    recommended: 4step
+    warning: Slow on ARM CPU even with 4 steps — 3-6 minutes per 1024px image
+  arm-npu-16gb:
+    recommended: 4step
+    warning: No RKNN or GGUF — runs on RK3588 CPU only, 3-6 minutes per image
+  x86-cpu-8gb:
+    recommended: null
+    warning: SDXL needs ~10GB RAM for weights + activations
+  x86-cpu-16gb:
+    recommended: 4step
+    warning: Slow — 1-3 minutes per 1024px image, recommend GPU
+  x86-vulkan-8gb:
+    recommended: 4step
+    fallback: 4step
+    warning: Vulkan SDXL support is decent, slightly slower than CUDA
+  x86-cuda-8gb:
+    recommended: 4step
+    fallback: 2step
+  x86-cuda-12gb:
+    recommended: 2step
+    fallback: 4step
+  apple-silicon:
+    recommended: 4step
+    fallback: 2step
+    notes: Runs well on 16GB+ M-series via diffusers/MPS
+  cpu-only:
+    recommended: null
+    warning: Not recommended — no quantised variant, very slow on CPU
+context_window: 77

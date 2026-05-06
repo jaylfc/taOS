@@ -2,21 +2,32 @@ id: kokoro-tts
 name: Kokoro 82M TTS
 type: model
 version: 1.0.0
-description: "Compact 82M TTS — Apache 2.0 licensed, rivals much larger models, CPU-friendly"
+description: Compact 82M TTS — Apache 2.0 licensed, rivals much larger models, CPU-friendly
 homepage: https://huggingface.co/hexgrad/Kokoro-82M
 license: Apache-2.0
-capabilities: [text-to-speech]
-
+capabilities:
+- text-to-speech
 variants:
-  - id: pytorch
-    name: "Kokoro v1.0 (330MB)"
-    format: pytorch
-    size_mb: 330
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v1_0.pth
-    backend: [transformers]
-
+- id: pytorch
+  name: Kokoro v1.0 (330MB)
+  format: pytorch
+  size_mb: 330
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v1_0.pth
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: pytorch}
-  arm-npu-16gb: {recommended: pytorch}
-  cpu-only: {recommended: pytorch}
+  arm-cpu-8gb:
+    recommended: pytorch
+  arm-npu-16gb:
+    recommended: pytorch
+  cpu-only:
+    recommended: pytorch
+context_window: 512

@@ -2,23 +2,33 @@ id: qwen3-1.7b-rkllm
 name: Qwen 3 1.7B (RKLLM)
 type: model
 version: 3.0.0
-description: "RK3588 NPU-accelerated Qwen 3 1.7B — small, fast chat model for Orange Pi NPU"
+description: RK3588 NPU-accelerated Qwen 3 1.7B — small, fast chat model for Orange
+  Pi NPU
 homepage: https://huggingface.co/GatekeeperZA/Qwen3-1.7B-RKLLM-v1.2.3
 license: Apache-2.0
-capabilities: [chat, tool-calling]
-install: {method: rkllama}
-
+capabilities:
+- chat
+- tool-calling
 variants:
-  - id: w8a8
-    name: "W8A8 RKLLM (2.4GB, NPU)"
-    format: rkllm
-    size_mb: 2380
-    min_ram_mb: 0
-    download_url: https://huggingface.co/GatekeeperZA/Qwen3-1.7B-RKLLM-v1.2.3/resolve/main/Qwen3-1.7B-w8a8-rk3588.rkllm
-    backend: [rkllama]
-    requires_npu: [rk3588, rk3576]
-    quality: good
-
+- id: w8a8
+  name: W8A8 RKLLM (2.4GB, NPU)
+  format: rkllm
+  size_mb: 2380
+  min_ram_mb: 0
+  download_url: https://huggingface.co/GatekeeperZA/Qwen3-1.7B-RKLLM-v1.2.3/resolve/main/Qwen3-1.7B-w8a8-rk3588.rkllm
+  requires_npu:
+  - rk3588
+  - rk3576
+  quality: good
+  requires:
+    backends:
+    - id: rkllama
+      targets:
+      - rockchip-rk3588
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-npu-16gb: {recommended: w8a8}
-  arm-npu-32gb: {recommended: w8a8}
+  arm-npu-16gb:
+    recommended: w8a8
+  arm-npu-32gb:
+    recommended: w8a8
+context_window: 40960

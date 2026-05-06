@@ -2,23 +2,46 @@ id: gemma-3-12b
 name: Gemma 3 12B Instruct
 type: model
 version: 3.0.0
-description: "Google's Gemma 3 12B — multimodal, 128K context, strong benchmarks"
+description: Google's Gemma 3 12B — multimodal, 128K context, strong benchmarks
 homepage: https://huggingface.co/google/gemma-3-12b-it
-license: "Gemma Terms of Use"
-capabilities: [chat, vision, multilingual, reasoning]
-
+license: Gemma Terms of Use
+capabilities:
+- chat
+- vision
+- multilingual
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (7.3GB)"
-    format: gguf
-    size_mb: 7300
-    min_ram_mb: 9216
-    download_url: https://huggingface.co/unsloth/gemma-3-12b-it-GGUF/resolve/main/gemma-3-12b-it-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (7.3GB)
+  format: gguf
+  size_mb: 7300
+  min_ram_mb: 9216
+  download_url: https://huggingface.co/unsloth/gemma-3-12b-it-GGUF/resolve/main/gemma-3-12b-it-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 9216
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 9216
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 128000

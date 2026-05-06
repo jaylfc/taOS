@@ -2,23 +2,34 @@ id: qwen2.5-3b-rkllm
 name: Qwen 2.5 3B Instruct (RKLLM)
 type: model
 version: 2.5.0
-description: "RK3588 NPU-accelerated Qwen 2.5 3B — strong tool calling on Orange Pi NPU"
+description: RK3588 NPU-accelerated Qwen 2.5 3B — strong tool calling on Orange Pi
+  NPU
 homepage: https://huggingface.co/c01zaut/Qwen2.5-3B-Instruct-rk3588-1.1.1
-license: "Qwen Research License"
-capabilities: [chat, tool-calling, code]
-install: {method: rkllama}
-
+license: Qwen Research License
+capabilities:
+- chat
+- tool-calling
+- code
 variants:
-  - id: w8a8
-    name: "W8A8 RKLLM (3.5GB, NPU)"
-    format: rkllm
-    size_mb: 3500
-    min_ram_mb: 0
-    download_url: https://huggingface.co/c01zaut/Qwen2.5-3B-Instruct-rk3588-1.1.1/resolve/main/Qwen2.5-3B-Instruct-rk3588-w8a8-opt-1-hybrid-ratio-1.0.rkllm
-    backend: [rkllama]
-    requires_npu: [rk3588, rk3576]
-    quality: good
-
+- id: w8a8
+  name: W8A8 RKLLM (3.5GB, NPU)
+  format: rkllm
+  size_mb: 3500
+  min_ram_mb: 0
+  download_url: https://huggingface.co/c01zaut/Qwen2.5-3B-Instruct-rk3588-1.1.1/resolve/main/Qwen2.5-3B-Instruct-rk3588-w8a8-opt-1-hybrid-ratio-1.0.rkllm
+  requires_npu:
+  - rk3588
+  - rk3576
+  quality: good
+  requires:
+    backends:
+    - id: rkllama
+      targets:
+      - rockchip-rk3588
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-npu-16gb: {recommended: w8a8}
-  arm-npu-32gb: {recommended: w8a8}
+  arm-npu-16gb:
+    recommended: w8a8
+  arm-npu-32gb:
+    recommended: w8a8
+context_window: 32768

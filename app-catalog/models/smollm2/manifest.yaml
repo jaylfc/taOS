@@ -2,21 +2,42 @@ id: smollm2
 name: SmolLM2 1.7B
 type: model
 version: 2.0.0
-description: "Quality leader among small LLMs — best for nuanced text tasks on CPU. HuggingFace's tiny powerhouse."
+description: Quality leader among small LLMs — best for nuanced text tasks on CPU.
+  HuggingFace's tiny powerhouse.
 homepage: https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct
-capabilities: [chat, code]
-
+capabilities:
+- chat
+- code
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (1.1GB)"
-    format: gguf
-    size_mb: 1100
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF/resolve/main/SmolLM2-1.7B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (1.1GB)
+  format: gguf
+  size_mb: 1100
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF/resolve/main/SmolLM2-1.7B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-npu-16gb: {recommended: q4_k_m}
-  arm-cpu-8gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-npu-16gb:
+    recommended: q4_k_m
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 8192

@@ -2,23 +2,32 @@ id: qwen3-vl-2b-rkllm
 name: Qwen 3 VL 2B Instruct (RKLLM)
 type: model
 version: 3.0.0
-description: "RK3588 NPU-accelerated Qwen 3 VL 2B — vision-language multimodal model for Orange Pi NPU"
+description: RK3588 NPU-accelerated Qwen 3 VL 2B — vision-language multimodal model
+  for Orange Pi NPU
 homepage: https://huggingface.co/GatekeeperZA/Qwen3-VL-2B-Instruct-RKLLM-v1.2.3
 license: Apache-2.0
-capabilities: [chat, vision]
-install: {method: rkllama}
-
+capabilities:
+- chat
+- vision
 variants:
-  - id: w8a8
-    name: "W8A8 RKLLM (2.4GB, NPU)"
-    format: rkllm
-    size_mb: 2380
-    min_ram_mb: 0
-    download_url: https://huggingface.co/GatekeeperZA/Qwen3-VL-2B-Instruct-RKLLM-v1.2.3/resolve/main/qwen3-vl-2b-instruct_w8a8_rk3588.rkllm
-    backend: [rkllama]
-    requires_npu: [rk3588]
-    quality: good
-
+- id: w8a8
+  name: W8A8 RKLLM (2.4GB, NPU)
+  format: rkllm
+  size_mb: 2380
+  min_ram_mb: 0
+  download_url: https://huggingface.co/GatekeeperZA/Qwen3-VL-2B-Instruct-RKLLM-v1.2.3/resolve/main/qwen3-vl-2b-instruct_w8a8_rk3588.rkllm
+  requires_npu:
+  - rk3588
+  quality: good
+  requires:
+    backends:
+    - id: rkllama
+      targets:
+      - rockchip-rk3588
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-npu-16gb: {recommended: w8a8}
-  arm-npu-32gb: {recommended: w8a8}
+  arm-npu-16gb:
+    recommended: w8a8
+  arm-npu-32gb:
+    recommended: w8a8
+context_window: 40960

@@ -2,21 +2,39 @@ id: bge-small-en-v1.5
 name: BGE Small EN v1.5
 type: model
 version: 1.5.0
-description: "Tiny 384-dim English embedding — fast, ideal for edge RAG"
+description: Tiny 384-dim English embedding — fast, ideal for edge RAG
 homepage: https://huggingface.co/BAAI/bge-small-en-v1.5
 license: MIT
-capabilities: [embedding]
-
+capabilities:
+- embedding
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M GGUF (23MB)"
-    format: gguf
-    size_mb: 23
-    min_ram_mb: 256
-    download_url: https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/main/bge-small-en-v1.5-q4_k_m.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M GGUF (23MB)
+  format: gguf
+  size_mb: 23
+  min_ram_mb: 256
+  download_url: https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/main/bge-small-en-v1.5-q4_k_m.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 256
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 256
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 512

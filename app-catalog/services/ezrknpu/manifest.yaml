@@ -1,0 +1,22 @@
+id: ezrknpu
+name: EzRKNPU
+type: service
+category: llm-runtime
+version: latest
+description: "Easy inference on Rockchip NPU — lightweight wrapper for RKNN model deployment."
+homepage: https://github.com/leafqycc/rknn-llm
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 500
+  ports: [8080]
+
+install:
+  method: script
+  script: scripts/install-ezrknpu.sh
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  cpu-only: unsupported

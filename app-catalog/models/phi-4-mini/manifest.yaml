@@ -2,23 +2,45 @@ id: phi-4-mini
 name: Phi 4 Mini Instruct
 type: model
 version: 4.0.0
-description: "Microsoft's 3.8B Phi-4 Mini — next-gen reasoning in edge-friendly size"
+description: Microsoft's 3.8B Phi-4 Mini — next-gen reasoning in edge-friendly size
 homepage: https://huggingface.co/microsoft/Phi-4-mini-instruct
 license: MIT
-capabilities: [chat, code, reasoning]
-
+capabilities:
+- chat
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (2.4GB)"
-    format: gguf
-    size_mb: 2400
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (2.4GB)
+  format: gguf
+  size_mb: 2400
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 131072

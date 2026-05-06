@@ -2,23 +2,34 @@ id: whisper-large-v3-turbo
 name: Whisper Large v3 Turbo (ggml)
 type: model
 version: 3.0.0
-description: "Distilled Whisper Large v3 — 8x faster, near-large quality"
+description: Distilled Whisper Large v3 — 8x faster, near-large quality
 homepage: https://huggingface.co/ggerganov/whisper.cpp
 license: MIT
-capabilities: [speech-to-text, multilingual]
-
+capabilities:
+- speech-to-text
+- multilingual
 variants:
-  - id: ggml
-    name: "ggml bin (1.6GB)"
-    format: ggml
-    size_mb: 1600
-    min_ram_mb: 2560
-    download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
-    backend: [whisper-cpp]
-
+- id: ggml
+  name: ggml bin (1.6GB)
+  format: ggml
+  size_mb: 1600
+  min_ram_mb: 2560
+  download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+  requires:
+    backends:
+    - id: whisper-cpp
+      targets:
+      - cpu
+      min_ram_mb: 2560
 hardware_tiers:
-  arm-cpu-8gb: {recommended: ggml}
-  arm-cpu-16gb: {recommended: ggml}
-  arm-npu-16gb: {recommended: ggml}
-  x86-cuda-8gb: {recommended: ggml}
-  cpu-only: {recommended: ggml}
+  arm-cpu-8gb:
+    recommended: ggml
+  arm-cpu-16gb:
+    recommended: ggml
+  arm-npu-16gb:
+    recommended: ggml
+  x86-cuda-8gb:
+    recommended: ggml
+  cpu-only:
+    recommended: ggml
+context_window: 448

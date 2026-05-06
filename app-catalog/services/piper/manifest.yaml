@@ -1,0 +1,22 @@
+id: piper
+name: Piper TTS
+type: service
+category: tts-runtime
+version: latest
+description: "Fast local text-to-speech — VITS-based, runs on CPU, many voice models available."
+homepage: https://github.com/rhasspy/piper
+license: MIT
+
+requires:
+  ram_mb: 256
+  disk_mb: 200
+  ports: [10200]
+
+install:
+  method: script
+  script: scripts/install-piper.sh
+
+hardware_tiers:
+  arm-cpu-8gb: full
+  x86-cpu-8gb: full
+  cpu-only: full

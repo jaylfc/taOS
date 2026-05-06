@@ -2,22 +2,35 @@ id: pelochus-qwen-1.8b-rkllm
 name: Qwen 1.8B Chat (Pelochus RKLLM)
 type: model
 version: 1.0.0
-description: "Pelochus' original Qwen 1.8B rkllm port for RK3588 — the classic ezrknpu model"
+description: Pelochus' original Qwen 1.8B rkllm port for RK3588 — the classic ezrknpu
+  model
 homepage: https://huggingface.co/Pelochus/qwen-1_8B-rk3588
-license: "Tongyi Qianwen License"
-capabilities: [chat]
-install: {method: rkllama}
-
+license: Tongyi Qianwen License
+capabilities:
+- chat
 variants:
-  - id: rkllm
-    name: "RKLLM (2.2GB, NPU)"
-    format: rkllm
-    size_mb: 2200
-    min_ram_mb: 0
-    download_url: https://huggingface.co/Pelochus/qwen-1_8B-rk3588/resolve/main/qwen-chat-1_8B.rkllm
-    backend: [rkllama, ezrknpu]
-    requires_npu: [rk3588, rk3576]
-
+- id: rkllm
+  name: RKLLM (2.2GB, NPU)
+  format: rkllm
+  size_mb: 2200
+  min_ram_mb: 0
+  download_url: https://huggingface.co/Pelochus/qwen-1_8B-rk3588/resolve/main/qwen-chat-1_8B.rkllm
+  requires_npu:
+  - rk3588
+  - rk3576
+  requires:
+    backends:
+    - id: rkllama
+      targets:
+      - rockchip-rk3588
+      min_ram_mb: 2048
+    - id: ezrknpu
+      targets:
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-npu-16gb: {recommended: rkllm}
-  arm-npu-32gb: {recommended: rkllm}
+  arm-npu-16gb:
+    recommended: rkllm
+  arm-npu-32gb:
+    recommended: rkllm
+context_window: 32768

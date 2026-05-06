@@ -2,22 +2,37 @@ id: gfpgan-v1.4
 name: GFPGAN v1.4 (Face Restoration)
 type: model
 version: 1.4.0
-description: "Tencent ARC's face restoration — fix blurred or damaged faces in photos"
+description: Tencent ARC's face restoration — fix blurred or damaged faces in photos
 homepage: https://github.com/TencentARC/GFPGAN
 license: Apache-2.0
-capabilities: [face-restoration]
-
+capabilities:
+- face-restoration
 variants:
-  - id: pth
-    name: "v1.4 PyTorch (333MB)"
-    format: pytorch
-    size_mb: 333
-    min_ram_mb: 2048
-    download_url: https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth
-    backend: [comfyui, sd-webui]
-
+- id: pth
+  name: v1.4 PyTorch (333MB)
+  format: pytorch
+  size_mb: 333
+  min_ram_mb: 2048
+  download_url: https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 2048
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-8gb: {recommended: pth}
-  arm-npu-16gb: {recommended: pth}
-  x86-cuda-8gb: {recommended: pth}
-  cpu-only: {recommended: pth}
+  arm-cpu-8gb:
+    recommended: pth
+  arm-npu-16gb:
+    recommended: pth
+  x86-cuda-8gb:
+    recommended: pth
+  cpu-only:
+    recommended: pth
+context_window: 1

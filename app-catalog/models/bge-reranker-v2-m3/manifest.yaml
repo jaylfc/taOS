@@ -2,21 +2,33 @@ id: bge-reranker-v2-m3
 name: BGE Reranker v2 M3
 type: model
 version: 2.0.0
-description: "Multilingual cross-encoder reranker — 100+ languages, strong retrieval boost"
+description: Multilingual cross-encoder reranker — 100+ languages, strong retrieval
+  boost
 homepage: https://huggingface.co/BAAI/bge-reranker-v2-m3
 license: Apache-2.0
-capabilities: [reranking, multilingual]
-
+capabilities:
+- reranking
+- multilingual
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M GGUF (400MB)"
-    format: gguf
-    size_mb: 400
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF/resolve/main/bge-reranker-v2-m3-Q4_K_M.gguf
-    backend: [llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M GGUF (400MB)
+  format: gguf
+  size_mb: 400
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF/resolve/main/bge-reranker-v2-m3-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 8192

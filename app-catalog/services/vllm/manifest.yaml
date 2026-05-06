@@ -1,0 +1,23 @@
+id: vllm
+name: vLLM
+type: service
+category: llm-runtime
+version: latest
+description: "High-throughput LLM inference engine — PagedAttention, continuous batching, CUDA required."
+homepage: https://github.com/vllm-project/vllm
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 2000
+  ports: [8000]
+
+install:
+  method: script
+  script: scripts/install-vllm.sh
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-24gb: full
+  cpu-only: unsupported

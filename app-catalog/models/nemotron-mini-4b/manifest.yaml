@@ -2,22 +2,42 @@ id: nemotron-mini-4b
 name: Nemotron Mini 4B Instruct
 type: model
 version: 1.0.0
-description: "NVIDIA's 4B fine-tune of Minitron — strong roleplay and function calling"
+description: NVIDIA's 4B fine-tune of Minitron — strong roleplay and function calling
 homepage: https://huggingface.co/nvidia/Nemotron-Mini-4B-Instruct
-license: "NVIDIA Open Model License"
-capabilities: [chat, tool-calling]
-
+license: NVIDIA Open Model License
+capabilities:
+- chat
+- tool-calling
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (2.7GB)"
-    format: gguf
-    size_mb: 2700
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/bartowski/Nemotron-Mini-4B-Instruct-GGUF/resolve/main/Nemotron-Mini-4B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (2.7GB)
+  format: gguf
+  size_mb: 2700
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/bartowski/Nemotron-Mini-4B-Instruct-GGUF/resolve/main/Nemotron-Mini-4B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 4096

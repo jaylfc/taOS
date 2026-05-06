@@ -1,0 +1,24 @@
+id: whisper-cpp
+name: whisper.cpp
+type: service
+category: asr-runtime
+version: latest
+description: "C++ inference engine for OpenAI Whisper — fast speech-to-text on CPU and GPU."
+homepage: https://github.com/ggerganov/whisper.cpp
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 200
+  ports: [8080]
+
+install:
+  method: script
+  script: scripts/install-whisper-cpp.sh
+
+hardware_tiers:
+  arm-cpu-8gb: full
+  x86-cuda-8gb: full
+  x86-vulkan-4gb: full
+  apple-silicon: full
+  cpu-only: full

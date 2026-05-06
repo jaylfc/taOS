@@ -2,22 +2,36 @@ id: florence-2-base
 name: Florence-2 Base
 type: model
 version: 2.0.0
-description: "Microsoft's 0.23B unified vision model — captioning, OCR, detection, segmentation in one small model"
+description: Microsoft's 0.23B unified vision model — captioning, OCR, detection,
+  segmentation in one small model
 homepage: https://huggingface.co/microsoft/Florence-2-base
 license: MIT
-capabilities: [vision, ocr]
-
+capabilities:
+- vision
+- ocr
 variants:
-  - id: pytorch
-    name: "PyTorch (0.9GB)"
-    format: pytorch
-    size_mb: 900
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/microsoft/Florence-2-base/resolve/main/pytorch_model.bin
-    backend: [transformers]
-
+- id: pytorch
+  name: PyTorch (0.9GB)
+  format: pytorch
+  size_mb: 900
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/microsoft/Florence-2-base/resolve/main/pytorch_model.bin
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-8gb: {recommended: pytorch}
-  arm-npu-16gb: {recommended: pytorch}
-  x86-cuda-8gb: {recommended: pytorch}
-  cpu-only: {recommended: pytorch}
+  arm-cpu-8gb:
+    recommended: pytorch
+  arm-npu-16gb:
+    recommended: pytorch
+  x86-cuda-8gb:
+    recommended: pytorch
+  cpu-only:
+    recommended: pytorch
+context_window: 1024

@@ -2,30 +2,64 @@ id: stable-cascade
 name: Stable Cascade
 type: model
 version: 1.0.0
-description: "Stability AI's efficient 3-stage cascade — strong quality at reduced compute"
+description: Stability AI's efficient 3-stage cascade — strong quality at reduced
+  compute
 homepage: https://huggingface.co/stabilityai/stable-cascade
-license: "stable-cascade-nc-community (non-commercial)"
-capabilities: [image-generation]
-
+license: stable-cascade-nc-community (non-commercial)
+capabilities:
+- image-generation
 variants:
-  - id: stage-c
-    name: "Stage C Safetensors (14.4GB)"
-    format: safetensors
-    size_mb: 14400
-    min_ram_mb: 16384
-    download_url: https://huggingface.co/stabilityai/stable-cascade/resolve/main/stage_c.safetensors
-    backend: [comfyui, diffusers]
-
+- id: stage-c
+  name: Stage C Safetensors (14.4GB)
+  format: safetensors
+  size_mb: 14400
+  min_ram_mb: 16384
+  download_url: https://huggingface.co/stabilityai/stable-cascade/resolve/main/stage_c.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 16384
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 16384
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "Stage C weights alone are 14.4GB — won't fit in 8GB RAM"}
-  arm-cpu-16gb: {recommended: null, warning: "Too large — Stage C is 14.4GB plus Stage B/A at runtime, no quant available"}
-  arm-npu-16gb: {recommended: null, warning: "No RKNN or GGUF — unsupported on RK3588"}
-  x86-cpu-8gb: {recommended: null, warning: "Stage C weights are 14.4GB — requires 24GB+ RAM for full cascade"}
-  x86-cpu-16gb: {recommended: null, warning: "Tight/OOM — full cascade (Stage A+B+C) needs 24GB+ RAM on CPU"}
-  x86-vulkan-8gb: {recommended: null, warning: "VRAM too low — Stage C alone is 14.4GB"}
-  x86-cuda-8gb: {recommended: null, warning: "VRAM too low — Stage C alone is 14.4GB, no quant available"}
-  x86-cuda-12gb: {recommended: stage-c, warning: "Tight — requires sequential offloading of Stage B/A, expect slow runs"}
-  x86-cuda-16gb: {recommended: stage-c}
-  x86-cuda-24gb: {recommended: stage-c}
-  apple-silicon: {recommended: stage-c, notes: "Requires 24GB+ unified memory for comfortable use"}
-  cpu-only: {recommended: null, warning: "Not recommended — 14.4GB Stage C has no quantised variant, very slow"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: Stage C weights alone are 14.4GB — won't fit in 8GB RAM
+  arm-cpu-16gb:
+    recommended: null
+    warning: Too large — Stage C is 14.4GB plus Stage B/A at runtime, no quant available
+  arm-npu-16gb:
+    recommended: null
+    warning: No RKNN or GGUF — unsupported on RK3588
+  x86-cpu-8gb:
+    recommended: null
+    warning: Stage C weights are 14.4GB — requires 24GB+ RAM for full cascade
+  x86-cpu-16gb:
+    recommended: null
+    warning: Tight/OOM — full cascade (Stage A+B+C) needs 24GB+ RAM on CPU
+  x86-vulkan-8gb:
+    recommended: null
+    warning: VRAM too low — Stage C alone is 14.4GB
+  x86-cuda-8gb:
+    recommended: null
+    warning: VRAM too low — Stage C alone is 14.4GB, no quant available
+  x86-cuda-12gb:
+    recommended: stage-c
+    warning: Tight — requires sequential offloading of Stage B/A, expect slow runs
+  x86-cuda-16gb:
+    recommended: stage-c
+  x86-cuda-24gb:
+    recommended: stage-c
+  apple-silicon:
+    recommended: stage-c
+    notes: Requires 24GB+ unified memory for comfortable use
+  cpu-only:
+    recommended: null
+    warning: Not recommended — 14.4GB Stage C has no quantised variant, very slow
+context_window: 77

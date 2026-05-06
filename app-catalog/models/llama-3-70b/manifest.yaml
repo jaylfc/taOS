@@ -2,17 +2,48 @@ id: llama-3-70b
 name: Llama 3 70B
 type: model
 version: 3.0.0
-description: "Meta's flagship open model — requires 24GB+ GPU or distributed inference via Exo"
+description: Meta's flagship open model — requires 24GB+ GPU or distributed inference
+  via Exo
 homepage: https://huggingface.co/meta-llama/Llama-3-70B-Instruct
-capabilities: [chat, tool-calling, code, reasoning]
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (40GB)"
-    format: gguf
-    size_mb: 40000
-    min_ram_mb: 44032
-    download_url: https://huggingface.co/bartowski/Meta-Llama-3-70B-Instruct-GGUF/resolve/main/Meta-Llama-3-70B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp, vllm, exo]
+- id: q4_k_m
+  name: Q4_K_M (40GB)
+  format: gguf
+  size_mb: 40000
+  min_ram_mb: 44032
+  download_url: https://huggingface.co/bartowski/Meta-Llama-3-70B-Instruct-GGUF/resolve/main/Meta-Llama-3-70B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 44032
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 44032
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 44032
+    - id: exo
+      targets:
+      - cpu
+      min_ram_mb: 44032
 hardware_tiers:
-  x86-cuda-24gb: {recommended: q4_k_m, notes: "Needs CPU offloading or Exo distributed"}
+  x86-cuda-24gb:
+    recommended: q4_k_m
+    notes: Needs CPU offloading or Exo distributed
   cpu-only: unsupported
+context_window: 8192

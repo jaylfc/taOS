@@ -2,28 +2,60 @@ id: kolors
 name: Kolors
 type: model
 version: 1.0.0
-description: "Kuaishou's bilingual (EN/ZH) text-to-image model — strong Chinese prompt support"
+description: Kuaishou's bilingual (EN/ZH) text-to-image model — strong Chinese prompt
+  support
 homepage: https://huggingface.co/Kwai-Kolors/Kolors
 license: Apache-2.0
-capabilities: [image-generation, multilingual]
-
+capabilities:
+- image-generation
+- multilingual
 variants:
-  - id: unet-fp16
-    name: "UNet FP16 (5.1GB)"
-    format: safetensors
-    size_mb: 5100
-    min_ram_mb: 8192
-    download_url: https://huggingface.co/Kwai-Kolors/Kolors/resolve/main/unet/diffusion_pytorch_model.fp16.safetensors
-    backend: [diffusers, comfyui]
-
+- id: unet-fp16
+  name: UNet FP16 (5.1GB)
+  format: safetensors
+  size_mb: 5100
+  min_ram_mb: 8192
+  download_url: https://huggingface.co/Kwai-Kolors/Kolors/resolve/main/unet/diffusion_pytorch_model.fp16.safetensors
+  requires:
+    backends:
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 8192
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 8192
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "No GGUF quant available — FP16 weights too large for 8GB ARM"}
-  arm-cpu-16gb: {recommended: unet-fp16, warning: "Extremely slow on ARM CPU — 10+ minutes per image, no quant available"}
-  arm-npu-16gb: {recommended: unet-fp16, warning: "No RKNN or GGUF — runs on RK3588 CPU only, 10+ minutes per image"}
-  x86-cpu-8gb: {recommended: null, warning: "FP16 UNet + ChatGLM text encoder needs ~10GB RAM"}
-  x86-cpu-16gb: {recommended: unet-fp16, warning: "Slow — 5+ minutes per image, recommend GPU"}
-  x86-vulkan-8gb: {recommended: unet-fp16, warning: "Tight fit in 8GB — Vulkan SDXL pipeline support is partial"}
-  x86-cuda-8gb: {recommended: unet-fp16, notes: "Tight — ChatGLM text encoder adds overhead, expect offloading"}
-  x86-cuda-12gb: {recommended: unet-fp16}
-  apple-silicon: {recommended: unet-fp16, notes: "Requires 16GB+ unified memory"}
-  cpu-only: {recommended: null, warning: "Not recommended — no quantised variant, very slow on CPU"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: No GGUF quant available — FP16 weights too large for 8GB ARM
+  arm-cpu-16gb:
+    recommended: unet-fp16
+    warning: Extremely slow on ARM CPU — 10+ minutes per image, no quant available
+  arm-npu-16gb:
+    recommended: unet-fp16
+    warning: No RKNN or GGUF — runs on RK3588 CPU only, 10+ minutes per image
+  x86-cpu-8gb:
+    recommended: null
+    warning: FP16 UNet + ChatGLM text encoder needs ~10GB RAM
+  x86-cpu-16gb:
+    recommended: unet-fp16
+    warning: Slow — 5+ minutes per image, recommend GPU
+  x86-vulkan-8gb:
+    recommended: unet-fp16
+    warning: Tight fit in 8GB — Vulkan SDXL pipeline support is partial
+  x86-cuda-8gb:
+    recommended: unet-fp16
+    notes: Tight — ChatGLM text encoder adds overhead, expect offloading
+  x86-cuda-12gb:
+    recommended: unet-fp16
+  apple-silicon:
+    recommended: unet-fp16
+    notes: Requires 16GB+ unified memory
+  cpu-only:
+    recommended: null
+    warning: Not recommended — no quantised variant, very slow on CPU
+context_window: 256

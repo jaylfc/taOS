@@ -2,30 +2,53 @@ id: pixart-sigma-512
 name: PixArt-Σ 512
 type: model
 version: 1.0
-capabilities: [image-generation]
-description: "Efficient DiT model — OpenRAIL++ licensed, strong prompt adherence, 0.6B params. Best lightweight DiT for 8GB systems."
+capabilities:
+- image-generation
+description: Efficient DiT model — OpenRAIL++ licensed, strong prompt adherence, 0.6B
+  params. Best lightweight DiT for 8GB systems.
 homepage: https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-512-MS
-license: "OpenRAIL++ (commercial use allowed)"
-
+license: OpenRAIL++ (commercial use allowed)
 variants:
-  - id: fp16
-    name: "FP16 Transformer (1.2GB core)"
-    format: safetensors
-    size_mb: 1200
-    backend: [diffusers, comfyui]
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-512-MS/resolve/main/transformer/diffusion_pytorch_model.safetensors
-    sha256: ""
-    quality: best
-
+- id: fp16
+  name: FP16 Transformer (1.2GB core)
+  format: safetensors
+  size_mb: 1200
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/PixArt-alpha/PixArt-Sigma-XL-2-512-MS/resolve/main/transformer/diffusion_pytorch_model.safetensors
+  sha256: ''
+  quality: best
+  requires:
+    backends:
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 4096
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-8gb: {recommended: fp16}
-  arm-cpu-16gb: {recommended: fp16}
-  arm-npu-16gb: {recommended: fp16}
-  x86-cpu-8gb: {recommended: fp16}
-  x86-cpu-16gb: {recommended: fp16}
-  x86-vulkan-8gb: {recommended: fp16}
-  x86-cuda-8gb: {recommended: fp16}
-  x86-cuda-12gb: {recommended: fp16}
-  apple-silicon: {recommended: fp16}
-  cpu-only: {recommended: fp16, notes: "Transformer only — requires T5 encoder separately"}
+  arm-cpu-8gb:
+    recommended: fp16
+  arm-cpu-16gb:
+    recommended: fp16
+  arm-npu-16gb:
+    recommended: fp16
+  x86-cpu-8gb:
+    recommended: fp16
+  x86-cpu-16gb:
+    recommended: fp16
+  x86-vulkan-8gb:
+    recommended: fp16
+  x86-cuda-8gb:
+    recommended: fp16
+  x86-cuda-12gb:
+    recommended: fp16
+  apple-silicon:
+    recommended: fp16
+  cpu-only:
+    recommended: fp16
+    notes: Transformer only — requires T5 encoder separately
+context_window: 300

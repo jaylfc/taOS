@@ -2,21 +2,39 @@ id: tinyllama-1.1b
 name: TinyLlama 1.1B Chat v1.0
 type: model
 version: 1.0.0
-description: "Lightweight 1.1B Llama clone — fast, simple, great for testing pipelines"
+description: Lightweight 1.1B Llama clone — fast, simple, great for testing pipelines
 homepage: https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0
 license: Apache-2.0
-capabilities: [chat]
-
+capabilities:
+- chat
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (670MB)"
-    format: gguf
-    size_mb: 670
-    min_ram_mb: 1536
-    download_url: https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (670MB)
+  format: gguf
+  size_mb: 670
+  min_ram_mb: 1536
+  download_url: https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1536
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1536
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 2048

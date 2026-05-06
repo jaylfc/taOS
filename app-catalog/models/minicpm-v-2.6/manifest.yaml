@@ -2,22 +2,35 @@ id: minicpm-v-2.6
 name: MiniCPM-V 2.6
 type: model
 version: 2.6.0
-description: "8B vision-language model — rivals GPT-4V on many benchmarks, multi-image support"
+description: 8B vision-language model — rivals GPT-4V on many benchmarks, multi-image
+  support
 homepage: https://huggingface.co/openbmb/MiniCPM-V-2_6
-license: "Apache-2.0 / MiniCPM Model License"
-capabilities: [chat, vision]
-
+license: Apache-2.0 / MiniCPM Model License
+capabilities:
+- chat
+- vision
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (5.5GB)"
-    format: gguf
-    size_mb: 5500
-    min_ram_mb: 7168
-    download_url: https://huggingface.co/openbmb/MiniCPM-V-2_6-gguf/resolve/main/ggml-model-Q4_K_M.gguf
-    backend: [llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (5.5GB)
+  format: gguf
+  size_mb: 5500
+  min_ram_mb: 7168
+  download_url: https://huggingface.co/openbmb/MiniCPM-V-2_6-gguf/resolve/main/ggml-model-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 7168
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 131072

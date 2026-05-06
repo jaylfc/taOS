@@ -2,22 +2,34 @@ id: llava-1.6-mistral-7b
 name: LLaVA 1.6 Mistral 7B
 type: model
 version: 1.6.0
-description: "Vision-language model based on Mistral 7B — strong image Q&A and captioning"
+description: Vision-language model based on Mistral 7B — strong image Q&A and captioning
 homepage: https://huggingface.co/liuhaotian/llava-v1.6-mistral-7b
 license: Apache-2.0
-capabilities: [chat, vision]
-
+capabilities:
+- chat
+- vision
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (4.4GB)"
-    format: gguf
-    size_mb: 4400
-    min_ram_mb: 6144
-    download_url: https://huggingface.co/cjpais/llava-1.6-mistral-7b-gguf/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf
-    backend: [llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (4.4GB)
+  format: gguf
+  size_mb: 4400
+  min_ram_mb: 6144
+  download_url: https://huggingface.co/cjpais/llava-1.6-mistral-7b-gguf/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 32768

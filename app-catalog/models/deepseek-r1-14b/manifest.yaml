@@ -2,19 +2,49 @@ id: deepseek-r1-14b
 name: DeepSeek R1 14B
 type: model
 version: 1.0.0
-description: "DeepSeek's reasoning model distilled to 14B — strong at math, code, and logical reasoning"
+description: DeepSeek's reasoning model distilled to 14B — strong at math, code, and
+  logical reasoning
 homepage: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B
-capabilities: [chat, reasoning, code, math]
+capabilities:
+- chat
+- reasoning
+- code
+- math
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (8.5GB)"
-    format: gguf
-    size_mb: 8500
-    min_ram_mb: 10240
-    download_url: https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf
-    backend: [ollama, llama-cpp, vllm]
+- id: q4_k_m
+  name: Q4_K_M (8.5GB)
+  format: gguf
+  size_mb: 8500
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 10240
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 10240
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 10240
 hardware_tiers:
-  arm-npu-32gb: {recommended: q4_k_m}
-  x86-cuda-12gb: {recommended: q4_k_m}
-  x86-cuda-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Slow but works"}
+  arm-npu-32gb:
+    recommended: q4_k_m
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  x86-cuda-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow but works
+context_window: 32768

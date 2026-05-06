@@ -2,38 +2,94 @@ id: ministral-3b
 name: Ministral 3B Instruct
 type: model
 version: 25.12.0
-description: "Mistral's edge-optimized 3B model — built-in function calling, vision, multilingual. Ideal for tool-using agents on low-power hardware."
+description: Mistral's edge-optimized 3B model — built-in function calling, vision,
+  multilingual. Ideal for tool-using agents on low-power hardware.
 homepage: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF
 license: Apache-2.0
-capabilities: [chat, tool-calling, vision, structured-output]
-
+capabilities:
+- chat
+- tool-calling
+- vision
+- structured-output
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (2GB)"
-    format: gguf
-    size_mb: 2000
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-  - id: q5_k_m
-    name: "Q5_K_M (2.3GB)"
-    format: gguf
-    size_mb: 2300
-    min_ram_mb: 3584
-    download_url: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q5_K_M.gguf
-    backend: [ollama, llama-cpp]
-  - id: q8_0
-    name: "Q8_0 (3.3GB)"
-    format: gguf
-    size_mb: 3300
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q8_0.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (2GB)
+  format: gguf
+  size_mb: 2000
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
+- id: q5_k_m
+  name: Q5_K_M (2.3GB)
+  format: gguf
+  size_mb: 2300
+  min_ram_mb: 3584
+  download_url: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q5_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3584
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3584
+- id: q8_0
+  name: Q8_0 (3.3GB)
+  format: gguf
+  size_mb: 3300
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q8_0.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-cpu-16gb: {recommended: q8_0, fallback: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q8_0}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-cpu-16gb:
+    recommended: q8_0
+    fallback: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q8_0
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 131072

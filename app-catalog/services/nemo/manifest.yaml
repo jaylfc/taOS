@@ -1,0 +1,22 @@
+id: nemo
+name: NVIDIA NeMo
+type: service
+category: asr-runtime
+version: latest
+description: "NVIDIA NeMo toolkit — high-quality ASR and TTS, parakeet and canary model support."
+homepage: https://github.com/NVIDIA/NeMo
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 2000
+  ports: []
+
+install:
+  method: pip
+  package: nemo_toolkit
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  cpu-only: degraded

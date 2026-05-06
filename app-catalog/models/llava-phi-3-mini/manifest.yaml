@@ -2,22 +2,35 @@ id: llava-phi-3-mini
 name: LLaVA Phi 3 Mini
 type: model
 version: 1.0.0
-description: "Compact Phi-3-based vision model — efficient image understanding on low-end hardware"
+description: Compact Phi-3-based vision model — efficient image understanding on low-end
+  hardware
 homepage: https://huggingface.co/xtuner/llava-phi-3-mini-gguf
 license: MIT
-capabilities: [chat, vision]
-
+capabilities:
+- chat
+- vision
 variants:
-  - id: int4
-    name: "INT4 GGUF (2.3GB)"
-    format: gguf
-    size_mb: 2300
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/xtuner/llava-phi-3-mini-gguf/resolve/main/llava-phi-3-mini-int4.gguf
-    backend: [llama-cpp]
-
+- id: int4
+  name: INT4 GGUF (2.3GB)
+  format: gguf
+  size_mb: 2300
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/xtuner/llava-phi-3-mini-gguf/resolve/main/llava-phi-3-mini-int4.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
 hardware_tiers:
-  arm-cpu-8gb: {recommended: int4}
-  arm-npu-16gb: {recommended: int4}
-  x86-cuda-8gb: {recommended: int4}
-  cpu-only: {recommended: int4}
+  arm-cpu-8gb:
+    recommended: int4
+  arm-npu-16gb:
+    recommended: int4
+  x86-cuda-8gb:
+    recommended: int4
+  cpu-only:
+    recommended: int4
+context_window: 4096

@@ -2,22 +2,45 @@ id: qwen2.5-14b
 name: Qwen 2.5 14B Instruct
 type: model
 version: 2.5.0
-description: "High-capability 14B — strong reasoning, tool calling, multilingual"
+description: High-capability 14B — strong reasoning, tool calling, multilingual
 homepage: https://huggingface.co/Qwen/Qwen2.5-14B-Instruct
 license: Apache-2.0
-capabilities: [chat, tool-calling, code, reasoning]
-
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (9GB)"
-    format: gguf
-    size_mb: 9000
-    min_ram_mb: 11264
-    download_url: https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (9GB)
+  format: gguf
+  size_mb: 9000
+  min_ram_mb: 11264
+  download_url: https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 11264
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 11264
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-12gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Slow on CPU"}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow on CPU
+context_window: 32768

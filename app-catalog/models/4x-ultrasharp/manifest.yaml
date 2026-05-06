@@ -2,22 +2,38 @@ id: 4x-ultrasharp
 name: 4x-UltraSharp
 type: model
 version: 1.0.0
-description: "Community favorite ESRGAN upscaler — crisp results for general images and art"
+description: Community favorite ESRGAN upscaler — crisp results for general images
+  and art
 homepage: https://huggingface.co/lokCX/4x-Ultrasharp
-license: "CC BY-NC-SA 4.0"
-capabilities: [upscaling]
-
+license: CC BY-NC-SA 4.0
+capabilities:
+- upscaling
 variants:
-  - id: pth
-    name: "PyTorch (67MB)"
-    format: pytorch
-    size_mb: 67
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth
-    backend: [comfyui, sd-webui]
-
+- id: pth
+  name: PyTorch (67MB)
+  format: pytorch
+  size_mb: 67
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 1024
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: pth}
-  arm-npu-16gb: {recommended: pth}
-  x86-cuda-8gb: {recommended: pth}
-  cpu-only: {recommended: pth}
+  arm-cpu-8gb:
+    recommended: pth
+  arm-npu-16gb:
+    recommended: pth
+  x86-cuda-8gb:
+    recommended: pth
+  cpu-only:
+    recommended: pth
+context_window: 1

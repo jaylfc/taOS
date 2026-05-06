@@ -2,22 +2,41 @@ id: qwen2.5-0.5b
 name: Qwen 2.5 0.5B Instruct
 type: model
 version: 2.5.0
-description: "Tiny 0.5B model — runs anywhere, ideal for embedded and classifier tasks"
+description: Tiny 0.5B model — runs anywhere, ideal for embedded and classifier tasks
 homepage: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
 license: Apache-2.0
-capabilities: [chat]
-
+capabilities:
+- chat
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (400MB)"
-    format: gguf
-    size_mb: 400
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (400MB)
+  format: gguf
+  size_mb: 400
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 32768

@@ -2,40 +2,87 @@ id: qwen3-embedding-0.6b
 name: Qwen 3 Embedding 0.6B
 type: model
 version: 3.0.0
-description: "Fast embedding model for semantic search — 1024 dimensions, multilingual"
+description: Fast embedding model for semantic search — 1024 dimensions, multilingual
 homepage: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 license: Apache-2.0
-capabilities: [embedding]
-
+capabilities:
+- embedding
 variants:
-  - id: q8_0
-    name: "Q8_0 GGUF (639MB)"
-    format: gguf
-    size_mb: 639
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf
-    backend: [ollama, llama-cpp]
-  - id: f16
-    name: "F16 GGUF (1.2GB)"
-    format: gguf
-    size_mb: 1200
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-f16.gguf
-    backend: [ollama, llama-cpp]
-  - id: safetensors
-    name: "Safetensors FP32 (2.4GB)"
-    format: safetensors
-    size_mb: 2400
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B/resolve/main/model.safetensors
-    backend: [transformers]
-
+- id: q8_0
+  name: Q8_0 GGUF (639MB)
+  format: gguf
+  size_mb: 639
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+- id: f16
+  name: F16 GGUF (1.2GB)
+  format: gguf
+  size_mb: 1200
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-f16.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+- id: safetensors
+  name: Safetensors FP32 (2.4GB)
+  format: safetensors
+  size_mb: 2400
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B/resolve/main/model.safetensors
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q8_0}
-  arm-cpu-16gb: {recommended: q8_0}
-  arm-npu-16gb: {recommended: q8_0}
-  arm-npu-32gb: {recommended: f16}
-  x86-cuda-12gb: {recommended: f16, fallback: q8_0}
-  x86-vulkan-8gb: {recommended: q8_0}
-  x86-vulkan-4gb: {recommended: q8_0}
-  cpu-only: {recommended: q8_0}
+  arm-cpu-8gb:
+    recommended: q8_0
+  arm-cpu-16gb:
+    recommended: q8_0
+  arm-npu-16gb:
+    recommended: q8_0
+  arm-npu-32gb:
+    recommended: f16
+  x86-cuda-12gb:
+    recommended: f16
+    fallback: q8_0
+  x86-vulkan-8gb:
+    recommended: q8_0
+  x86-vulkan-4gb:
+    recommended: q8_0
+  cpu-only:
+    recommended: q8_0
+context_window: 32768

@@ -2,21 +2,29 @@ id: whisper-base
 name: Whisper Base (ggml)
 type: model
 version: 1.0.0
-description: "Base Whisper — 74M params, good quality/speed tradeoff"
+description: Base Whisper — 74M params, good quality/speed tradeoff
 homepage: https://huggingface.co/ggerganov/whisper.cpp
 license: MIT
-capabilities: [speech-to-text]
-
+capabilities:
+- speech-to-text
 variants:
-  - id: ggml
-    name: "ggml bin (142MB)"
-    format: ggml
-    size_mb: 142
-    min_ram_mb: 512
-    download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-    backend: [whisper-cpp]
-
+- id: ggml
+  name: ggml bin (142MB)
+  format: ggml
+  size_mb: 142
+  min_ram_mb: 512
+  download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+  requires:
+    backends:
+    - id: whisper-cpp
+      targets:
+      - cpu
+      min_ram_mb: 512
 hardware_tiers:
-  arm-cpu-8gb: {recommended: ggml}
-  arm-npu-16gb: {recommended: ggml}
-  cpu-only: {recommended: ggml}
+  arm-cpu-8gb:
+    recommended: ggml
+  arm-npu-16gb:
+    recommended: ggml
+  cpu-only:
+    recommended: ggml
+context_window: 448

@@ -2,29 +2,61 @@ id: flux-schnell-unsloth
 name: Flux.1 Schnell (Unsloth GGUF)
 type: model
 version: 1.0.0
-description: "Unsloth's Flux Schnell GGUFs — Apache 2.0, 4-step generation, wide quant coverage"
+description: Unsloth's Flux Schnell GGUFs — Apache 2.0, 4-step generation, wide quant
+  coverage
 homepage: https://huggingface.co/unsloth/FLUX.1-schnell-GGUF
 license: Apache-2.0
-capabilities: [image-generation]
-
+capabilities:
+- image-generation
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (6.8GB)"
-    format: gguf
-    size_mb: 6800
-    min_ram_mb: 10240
-    download_url: https://huggingface.co/unsloth/FLUX.1-schnell-GGUF/resolve/main/flux1-schnell-Q4_K_M.gguf
-    backend: [stable-diffusion-cpp, comfyui]
-    quality: good
-
+- id: q4_k_m
+  name: Q4_K_M (6.8GB)
+  format: gguf
+  size_mb: 6800
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/unsloth/FLUX.1-schnell-GGUF/resolve/main/flux1-schnell-Q4_K_M.gguf
+  quality: good
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 10240
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 10240
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "Q4_K_M needs ~10GB RAM — won't fit on 8GB ARM"}
-  arm-cpu-16gb: {recommended: q4_k_m, warning: "Slow on ARM CPU — 3-8 minutes per image even with 4-step schnell"}
-  arm-npu-16gb: {recommended: q4_k_m, warning: "Runs on RK3588 CPU only (no NPU support), 3-8 minutes per image"}
-  x86-cpu-8gb: {recommended: null, warning: "Q4_K_M needs ~10GB RAM — insufficient"}
-  x86-cpu-16gb: {recommended: q4_k_m, warning: "Slow on CPU — 1-3 minutes per image"}
-  x86-vulkan-8gb: {recommended: q4_k_m, warning: "Tight fit in 8GB VRAM — Vulkan backend has partial Flux support, may be unstable"}
-  x86-cuda-8gb: {recommended: q4_k_m, notes: "Tight fit — use --lowvram if needed"}
-  x86-cuda-12gb: {recommended: q4_k_m}
-  apple-silicon: {recommended: q4_k_m, notes: "Runs well on 16GB+ M-series via stable-diffusion.cpp Metal"}
-  cpu-only: {recommended: q4_k_m, warning: "Slow — 2-5 minutes per image"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: Q4_K_M needs ~10GB RAM — won't fit on 8GB ARM
+  arm-cpu-16gb:
+    recommended: q4_k_m
+    warning: Slow on ARM CPU — 3-8 minutes per image even with 4-step schnell
+  arm-npu-16gb:
+    recommended: q4_k_m
+    warning: Runs on RK3588 CPU only (no NPU support), 3-8 minutes per image
+  x86-cpu-8gb:
+    recommended: null
+    warning: Q4_K_M needs ~10GB RAM — insufficient
+  x86-cpu-16gb:
+    recommended: q4_k_m
+    warning: Slow on CPU — 1-3 minutes per image
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+    warning: Tight fit in 8GB VRAM — Vulkan backend has partial Flux support, may
+      be unstable
+  x86-cuda-8gb:
+    recommended: q4_k_m
+    notes: Tight fit — use --lowvram if needed
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  apple-silicon:
+    recommended: q4_k_m
+    notes: Runs well on 16GB+ M-series via stable-diffusion.cpp Metal
+  cpu-only:
+    recommended: q4_k_m
+    warning: Slow — 2-5 minutes per image
+context_window: 256

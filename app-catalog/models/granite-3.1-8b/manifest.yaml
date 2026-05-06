@@ -2,22 +2,44 @@ id: granite-3.1-8b
 name: IBM Granite 3.1 8B Instruct
 type: model
 version: 3.1.0
-description: "IBM's 8B enterprise model — 128K context, Apache 2.0 commercial-safe"
+description: IBM's 8B enterprise model — 128K context, Apache 2.0 commercial-safe
 homepage: https://huggingface.co/ibm-granite/granite-3.1-8b-instruct
 license: Apache-2.0
-capabilities: [chat, tool-calling, code, reasoning]
-
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (4.9GB)"
-    format: gguf
-    size_mb: 4900
-    min_ram_mb: 6144
-    download_url: https://huggingface.co/bartowski/granite-3.1-8b-instruct-GGUF/resolve/main/granite-3.1-8b-instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (4.9GB)
+  format: gguf
+  size_mb: 4900
+  min_ram_mb: 6144
+  download_url: https://huggingface.co/bartowski/granite-3.1-8b-instruct-GGUF/resolve/main/granite-3.1-8b-instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 32768

@@ -1,0 +1,24 @@
+id: sd-webui
+name: Stable Diffusion WebUI (AUTOMATIC1111)
+type: service
+category: image-runtime
+version: latest
+description: "Full-featured SD WebUI — supports checkpoints, LoRA, ControlNet, upscalers."
+homepage: https://github.com/AUTOMATIC1111/stable-diffusion-webui
+license: AGPL-3.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 5000
+  ports: [7860]
+
+install:
+  method: script
+  script: scripts/install-sd-webui.sh
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  apple-silicon: full
+  cpu-only: degraded

@@ -2,21 +2,36 @@ id: snowflake-arctic-embed-m
 name: Snowflake Arctic Embed M v1.5
 type: model
 version: 1.5.0
-description: "Snowflake's 110M embedding — small, fast, strong retrieval performance"
+description: Snowflake's 110M embedding — small, fast, strong retrieval performance
 homepage: https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5
 license: Apache-2.0
-capabilities: [embedding]
-
+capabilities:
+- embedding
 variants:
-  - id: safetensors
-    name: "Safetensors (434MB)"
-    format: safetensors
-    size_mb: 434
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5/resolve/main/model.safetensors
-    backend: [transformers, sentence-transformers]
-
+- id: safetensors
+  name: Safetensors (434MB)
+  format: safetensors
+  size_mb: 434
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5/resolve/main/model.safetensors
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: sentence-transformers
+      targets:
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: safetensors}
-  arm-npu-16gb: {recommended: safetensors}
-  cpu-only: {recommended: safetensors}
+  arm-cpu-8gb:
+    recommended: safetensors
+  arm-npu-16gb:
+    recommended: safetensors
+  cpu-only:
+    recommended: safetensors
+context_window: 512

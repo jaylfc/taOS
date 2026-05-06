@@ -2,20 +2,48 @@ id: llama-3.3-70b
 name: Llama 3.3 70B Instruct
 type: model
 version: 3.3.0
-description: "Meta's flagship 70B — matches Llama 3.1 405B on many benchmarks. Requires clusters or distributed inference."
+description: Meta's flagship 70B — matches Llama 3.1 405B on many benchmarks. Requires
+  clusters or distributed inference.
 homepage: https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct
-license: "Llama 3.3 Community License"
-capabilities: [chat, tool-calling, code, reasoning]
-
+license: Llama 3.3 Community License
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (42GB)"
-    format: gguf
-    size_mb: 42000
-    min_ram_mb: 46080
-    download_url: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp, vllm, exo]
-
+- id: q4_k_m
+  name: Q4_K_M (42GB)
+  format: gguf
+  size_mb: 42000
+  min_ram_mb: 46080
+  download_url: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 46080
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 46080
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 46080
+    - id: exo
+      targets:
+      - cpu
+      min_ram_mb: 46080
 hardware_tiers:
-  x86-cuda-48gb: {recommended: q4_k_m}
+  x86-cuda-48gb:
+    recommended: q4_k_m
   cpu-only: unsupported
+context_window: 131072

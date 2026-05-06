@@ -2,29 +2,61 @@ id: flux-dev-gguf
 name: Flux.1 Dev (GGUF)
 type: model
 version: 1.0.0
-description: "Flux.1 Dev in GGUF — higher quality than Schnell, requires more steps. Non-commercial license."
+description: Flux.1 Dev in GGUF — higher quality than Schnell, requires more steps.
+  Non-commercial license.
 homepage: https://huggingface.co/city96/FLUX.1-dev-gguf
-license: "flux-1-dev-non-commercial-license"
-capabilities: [image-generation]
-
+license: flux-1-dev-non-commercial-license
+capabilities:
+- image-generation
 variants:
-  - id: q4_k_s
-    name: "Q4_K_S (6.8GB)"
-    format: gguf
-    size_mb: 6800
-    min_ram_mb: 10240
-    download_url: https://huggingface.co/city96/FLUX.1-dev-gguf/resolve/main/flux1-dev-Q4_K_S.gguf
-    backend: [stable-diffusion-cpp, comfyui]
-    quality: good
-
+- id: q4_k_s
+  name: Q4_K_S (6.8GB)
+  format: gguf
+  size_mb: 6800
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/city96/FLUX.1-dev-gguf/resolve/main/flux1-dev-Q4_K_S.gguf
+  quality: good
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 10240
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 10240
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "Q4_K_S needs ~10GB RAM — won't fit on 8GB ARM"}
-  arm-cpu-16gb: {recommended: q4_k_s, warning: "Very slow on ARM — 10+ minutes per image, 20 steps needed"}
-  arm-npu-16gb: {recommended: q4_k_s, warning: "Runs on RK3588 CPU only (no NPU support), 10+ minutes per image"}
-  x86-cpu-8gb: {recommended: null, warning: "Q4_K_S needs ~10GB RAM for weights + activations"}
-  x86-cpu-16gb: {recommended: q4_k_s, warning: "Slow on CPU — 3-8 minutes per image"}
-  x86-vulkan-8gb: {recommended: q4_k_s, warning: "Tight fit in 8GB VRAM — Vulkan backend is flaky for Flux, may fall back to CPU"}
-  x86-cuda-8gb: {recommended: q4_k_s, warning: "Tight fit in 8GB VRAM — use --lowvram flag, offloading expected"}
-  x86-cuda-12gb: {recommended: q4_k_s}
-  apple-silicon: {recommended: q4_k_s, notes: "Runs comfortably on 16GB+ M-series via stable-diffusion.cpp Metal"}
-  cpu-only: {recommended: q4_k_s, warning: "Very slow — expect 5+ minutes per image"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: Q4_K_S needs ~10GB RAM — won't fit on 8GB ARM
+  arm-cpu-16gb:
+    recommended: q4_k_s
+    warning: Very slow on ARM — 10+ minutes per image, 20 steps needed
+  arm-npu-16gb:
+    recommended: q4_k_s
+    warning: Runs on RK3588 CPU only (no NPU support), 10+ minutes per image
+  x86-cpu-8gb:
+    recommended: null
+    warning: Q4_K_S needs ~10GB RAM for weights + activations
+  x86-cpu-16gb:
+    recommended: q4_k_s
+    warning: Slow on CPU — 3-8 minutes per image
+  x86-vulkan-8gb:
+    recommended: q4_k_s
+    warning: Tight fit in 8GB VRAM — Vulkan backend is flaky for Flux, may fall back
+      to CPU
+  x86-cuda-8gb:
+    recommended: q4_k_s
+    warning: Tight fit in 8GB VRAM — use --lowvram flag, offloading expected
+  x86-cuda-12gb:
+    recommended: q4_k_s
+  apple-silicon:
+    recommended: q4_k_s
+    notes: Runs comfortably on 16GB+ M-series via stable-diffusion.cpp Metal
+  cpu-only:
+    recommended: q4_k_s
+    warning: Very slow — expect 5+ minutes per image
+context_window: 256

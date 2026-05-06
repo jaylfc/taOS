@@ -2,29 +2,62 @@ id: auraflow-v0.3
 name: AuraFlow v0.3
 type: model
 version: 0.3.0
-description: "Fal's fully open flow-matching text-to-image — Apache 2.0, 6.8B params"
+description: Fal's fully open flow-matching text-to-image — Apache 2.0, 6.8B params
 homepage: https://huggingface.co/fal/AuraFlow-v0.3
 license: Apache-2.0
-capabilities: [image-generation]
-
+capabilities:
+- image-generation
 variants:
-  - id: fp16
-    name: "Safetensors (13.6GB)"
-    format: safetensors
-    size_mb: 13600
-    min_ram_mb: 16384
-    download_url: https://huggingface.co/fal/AuraFlow-v0.3/resolve/main/aura_flow_0.3.safetensors
-    backend: [comfyui, diffusers]
-
+- id: fp16
+  name: Safetensors (13.6GB)
+  format: safetensors
+  size_mb: 13600
+  min_ram_mb: 16384
+  download_url: https://huggingface.co/fal/AuraFlow-v0.3/resolve/main/aura_flow_0.3.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 16384
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 16384
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "6.8B flow-matching model — requires 16GB+ RAM, no GGUF quant available"}
-  arm-cpu-16gb: {recommended: null, warning: "Too large for 16GB ARM systems — FP16 needs ~16GB just for weights, no quant available"}
-  arm-npu-16gb: {recommended: null, warning: "No RKNN export, no GGUF — unsupported on RK3588"}
-  x86-cpu-8gb: {recommended: null, warning: "FP16 weights alone are 13.6GB — requires 16GB+ RAM"}
-  x86-cpu-16gb: {recommended: fp16, warning: "Extremely slow on CPU (10+ minutes per image), tight on 16GB RAM"}
-  x86-vulkan-8gb: {recommended: null, warning: "VRAM too low — FP16 needs 14GB+ VRAM"}
-  x86-cuda-8gb: {recommended: null, warning: "VRAM too low — FP16 needs 14GB+ VRAM, no quant available"}
-  x86-cuda-12gb: {recommended: null, warning: "VRAM too low — FP16 needs 14GB+ VRAM, no GGUF quant exists"}
-  x86-cuda-24gb: {recommended: fp16}
-  apple-silicon: {recommended: fp16, notes: "Requires 24GB+ unified memory for comfortable use"}
-  cpu-only: {recommended: null, warning: "Not recommended — FP16 weights too large and no quantised variant available"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: 6.8B flow-matching model — requires 16GB+ RAM, no GGUF quant available
+  arm-cpu-16gb:
+    recommended: null
+    warning: Too large for 16GB ARM systems — FP16 needs ~16GB just for weights, no
+      quant available
+  arm-npu-16gb:
+    recommended: null
+    warning: No RKNN export, no GGUF — unsupported on RK3588
+  x86-cpu-8gb:
+    recommended: null
+    warning: FP16 weights alone are 13.6GB — requires 16GB+ RAM
+  x86-cpu-16gb:
+    recommended: fp16
+    warning: Extremely slow on CPU (10+ minutes per image), tight on 16GB RAM
+  x86-vulkan-8gb:
+    recommended: null
+    warning: VRAM too low — FP16 needs 14GB+ VRAM
+  x86-cuda-8gb:
+    recommended: null
+    warning: VRAM too low — FP16 needs 14GB+ VRAM, no quant available
+  x86-cuda-12gb:
+    recommended: null
+    warning: VRAM too low — FP16 needs 14GB+ VRAM, no GGUF quant exists
+  x86-cuda-24gb:
+    recommended: fp16
+  apple-silicon:
+    recommended: fp16
+    notes: Requires 24GB+ unified memory for comfortable use
+  cpu-only:
+    recommended: null
+    warning: Not recommended — FP16 weights too large and no quantised variant available
+context_window: 256

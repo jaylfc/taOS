@@ -2,20 +2,49 @@ id: qwen2.5-32b
 name: Qwen 2.5 32B Instruct
 type: model
 version: 2.5.0
-description: "Premium 32B — near-frontier quality, complex reasoning and code"
+description: Premium 32B — near-frontier quality, complex reasoning and code
 homepage: https://huggingface.co/Qwen/Qwen2.5-32B-Instruct
 license: Apache-2.0
-capabilities: [chat, tool-calling, code, reasoning]
-
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (19.8GB)"
-    format: gguf
-    size_mb: 19800
-    min_ram_mb: 22528
-    download_url: https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp, vllm, exo]
-
+- id: q4_k_m
+  name: Q4_K_M (19.8GB)
+  format: gguf
+  size_mb: 19800
+  min_ram_mb: 22528
+  download_url: https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 22528
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 22528
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 22528
+    - id: exo
+      targets:
+      - cpu
+      min_ram_mb: 22528
 hardware_tiers:
-  x86-cuda-24gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Very slow"}
+  x86-cuda-24gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Very slow
+context_window: 32768

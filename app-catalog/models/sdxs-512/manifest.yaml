@@ -2,36 +2,64 @@ id: sdxs-512
 name: SDXS 512 (1-step)
 type: model
 version: 0.9
-license: "OpenRAIL++"
-capabilities: [image-generation]
-description: "Single-step generation — sub-second on Intel x86 CPUs via OpenVINO. Trade-off: slight quality loss for extreme speed."
-
+license: OpenRAIL++
+capabilities:
+- image-generation
+description: 'Single-step generation — sub-second on Intel x86 CPUs via OpenVINO.
+  Trade-off: slight quality loss for extreme speed.'
 variants:
-  - id: openvino-int8
-    name: "OpenVINO INT8 (diffusers repo, x86 CPU)"
-    format: diffusers
-    size_mb: 3010
-    backend: [fastsdcpu]
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/rupeshs/sdxs-512-0.9-openvino/resolve/main/model_index.json
-    sha256: ""
-
-  - id: diffusers
-    name: "Diffusers Safetensors (4.4GB)"
-    format: diffusers
-    size_mb: 4380
-    backend: [diffusers]
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/IDKiro/sdxs-512-0.9/resolve/main/unet/diffusion_pytorch_model.safetensors
-    sha256: ""
-
+- id: openvino-int8
+  name: OpenVINO INT8 (diffusers repo, x86 CPU)
+  format: diffusers
+  size_mb: 3010
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/rupeshs/sdxs-512-0.9-openvino/resolve/main/model_index.json
+  sha256: ''
+  requires:
+    backends:
+    - id: fastsdcpu
+      targets:
+      - cpu
+      min_ram_mb: 3072
+- id: diffusers
+  name: Diffusers Safetensors (4.4GB)
+  format: diffusers
+  size_mb: 4380
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/IDKiro/sdxs-512-0.9/resolve/main/unet/diffusion_pytorch_model.safetensors
+  sha256: ''
+  requires:
+    backends:
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-8gb: {recommended: diffusers, fallback: diffusers}
-  arm-cpu-16gb: {recommended: diffusers, fallback: diffusers}
-  arm-npu-16gb: {recommended: diffusers, fallback: diffusers}
-  x86-cpu-8gb: {recommended: openvino-int8, fallback: diffusers}
-  x86-cpu-16gb: {recommended: openvino-int8, fallback: diffusers}
-  x86-vulkan-8gb: {recommended: openvino-int8, fallback: diffusers}
-  x86-cuda-8gb: {recommended: openvino-int8, fallback: diffusers}
-  apple-silicon: {recommended: diffusers, fallback: diffusers}
-  cpu-only: {recommended: openvino-int8, fallback: diffusers}
+  arm-cpu-8gb:
+    recommended: diffusers
+    fallback: diffusers
+  arm-cpu-16gb:
+    recommended: diffusers
+    fallback: diffusers
+  arm-npu-16gb:
+    recommended: diffusers
+    fallback: diffusers
+  x86-cpu-8gb:
+    recommended: openvino-int8
+    fallback: diffusers
+  x86-cpu-16gb:
+    recommended: openvino-int8
+    fallback: diffusers
+  x86-vulkan-8gb:
+    recommended: openvino-int8
+    fallback: diffusers
+  x86-cuda-8gb:
+    recommended: openvino-int8
+    fallback: diffusers
+  apple-silicon:
+    recommended: diffusers
+    fallback: diffusers
+  cpu-only:
+    recommended: openvino-int8
+    fallback: diffusers
+context_window: 77

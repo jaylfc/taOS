@@ -2,23 +2,47 @@ id: mistral-nemo-12b
 name: Mistral Nemo 12B Instruct
 type: model
 version: 24.07.0
-description: "Mistral/NVIDIA collaboration — 128K context, strong multilingual, built-in tool calling"
+description: Mistral/NVIDIA collaboration — 128K context, strong multilingual, built-in
+  tool calling
 homepage: https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407
 license: Apache-2.0
-capabilities: [chat, tool-calling, code, multilingual]
-
+capabilities:
+- chat
+- tool-calling
+- code
+- multilingual
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (7.5GB)"
-    format: gguf
-    size_mb: 7500
-    min_ram_mb: 9216
-    download_url: https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (7.5GB)
+  format: gguf
+  size_mb: 7500
+  min_ram_mb: 9216
+  download_url: https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 9216
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 9216
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 131072

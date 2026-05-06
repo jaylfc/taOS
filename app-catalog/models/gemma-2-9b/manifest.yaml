@@ -2,23 +2,45 @@ id: gemma-2-9b
 name: Gemma 2 9B Instruct
 type: model
 version: 2.0.0
-description: "Google's 9B — competitive with larger models, great general-purpose chat"
+description: Google's 9B — competitive with larger models, great general-purpose chat
 homepage: https://huggingface.co/google/gemma-2-9b-it
-license: "Gemma Terms of Use"
-capabilities: [chat, code, reasoning]
-
+license: Gemma Terms of Use
+capabilities:
+- chat
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (5.8GB)"
-    format: gguf
-    size_mb: 5800
-    min_ram_mb: 7168
-    download_url: https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (5.8GB)
+  format: gguf
+  size_mb: 5800
+  min_ram_mb: 7168
+  download_url: https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 7168
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 7168
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 8192

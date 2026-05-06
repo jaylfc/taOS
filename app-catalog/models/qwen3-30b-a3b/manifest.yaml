@@ -2,21 +2,45 @@ id: qwen3-30b-a3b
 name: Qwen 3 30B-A3B (MoE)
 type: model
 version: 3.0.0
-description: "MoE model with 3B active params — outperforms QwQ-32B with 10x fewer active parameters. Best quality/size ratio."
+description: MoE model with 3B active params — outperforms QwQ-32B with 10x fewer
+  active parameters. Best quality/size ratio.
 homepage: https://huggingface.co/Qwen/Qwen3-30B-A3B
-capabilities: [chat, tool-calling, code, reasoning]
-
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (18.6GB)"
-    format: gguf
-    size_mb: 18600
-    min_ram_mb: 22528
-    download_url: https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (18.6GB)
+  format: gguf
+  size_mb: 18600
+  min_ram_mb: 22528
+  download_url: https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 22528
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 22528
 hardware_tiers:
-  arm-npu-32gb: {recommended: q4_k_m}
-  x86-cuda-24gb: {recommended: q4_k_m}
-  x86-vulkan-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Slow but MoE keeps it efficient"}
+  arm-npu-32gb:
+    recommended: q4_k_m
+  x86-cuda-24gb:
+    recommended: q4_k_m
+  x86-vulkan-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow but MoE keeps it efficient
+context_window: 40960

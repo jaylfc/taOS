@@ -2,30 +2,51 @@ id: moondream2
 name: Moondream 2
 type: model
 version: 2.0.0
-description: "Tiny 2B vision model — fast image captioning and Q&A, runs on CPU"
+description: Tiny 2B vision model — fast image captioning and Q&A, runs on CPU
 homepage: https://huggingface.co/vikhyatk/moondream2
 license: Apache-2.0
-capabilities: [chat, vision]
-
+capabilities:
+- chat
+- vision
 variants:
-  - id: safetensors
-    name: "Safetensors (3.7GB)"
-    format: safetensors
-    size_mb: 3700
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/vikhyatk/moondream2/resolve/main/model.safetensors
-    backend: [transformers]
-  - id: gguf-f16
-    name: "GGUF F16 (2.8GB)"
-    format: gguf
-    size_mb: 2800
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-text-model-f16.gguf
-    backend: [llama-cpp]
-
+- id: safetensors
+  name: Safetensors (3.7GB)
+  format: safetensors
+  size_mb: 3700
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/vikhyatk/moondream2/resolve/main/model.safetensors
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
+- id: gguf-f16
+  name: GGUF F16 (2.8GB)
+  format: gguf
+  size_mb: 2800
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-text-model-f16.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-8gb: {recommended: gguf-f16}
-  arm-cpu-16gb: {recommended: gguf-f16}
-  arm-npu-16gb: {recommended: gguf-f16}
-  x86-cuda-8gb: {recommended: safetensors}
-  cpu-only: {recommended: gguf-f16}
+  arm-cpu-8gb:
+    recommended: gguf-f16
+  arm-cpu-16gb:
+    recommended: gguf-f16
+  arm-npu-16gb:
+    recommended: gguf-f16
+  x86-cuda-8gb:
+    recommended: safetensors
+  cpu-only:
+    recommended: gguf-f16
+context_window: 4096

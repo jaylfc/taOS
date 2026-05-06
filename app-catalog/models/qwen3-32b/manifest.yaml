@@ -2,18 +2,49 @@ id: qwen3-32b
 name: Qwen 3 32B
 type: model
 version: 3.0.0
-description: "Premium reasoning model — exceptional at complex tasks, code, and multi-step reasoning"
+description: Premium reasoning model — exceptional at complex tasks, code, and multi-step
+  reasoning
 homepage: https://huggingface.co/Qwen/Qwen3-32B
-capabilities: [chat, tool-calling, code, reasoning]
+capabilities:
+- chat
+- tool-calling
+- code
+- reasoning
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (19GB)"
-    format: gguf
-    size_mb: 19000
-    min_ram_mb: 22528
-    download_url: https://huggingface.co/Qwen/Qwen3-32B-GGUF/resolve/main/Qwen3-32B-Q4_K_M.gguf
-    backend: [ollama, llama-cpp, vllm, exo]
+- id: q4_k_m
+  name: Q4_K_M (19GB)
+  format: gguf
+  size_mb: 19000
+  min_ram_mb: 22528
+  download_url: https://huggingface.co/Qwen/Qwen3-32B-GGUF/resolve/main/Qwen3-32B-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 22528
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 22528
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 22528
+    - id: exo
+      targets:
+      - cpu
+      min_ram_mb: 22528
 hardware_tiers:
-  x86-cuda-24gb: {recommended: q4_k_m}
-  x86-rocm-24gb: {recommended: q4_k_m}
+  x86-cuda-24gb:
+    recommended: q4_k_m
+  x86-rocm-24gb:
+    recommended: q4_k_m
   cpu-only: unsupported
+context_window: 40960

@@ -2,32 +2,53 @@ id: qwen3-reranker-0.6b
 name: Qwen 3 Reranker 0.6B
 type: model
 version: 3.0.0
-description: "Cross-encoder reranker for search result scoring — multilingual"
+description: Cross-encoder reranker for search result scoring — multilingual
 homepage: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B
 license: Apache-2.0
-capabilities: [reranking]
-
+capabilities:
+- reranking
 variants:
-  - id: q8_0
-    name: "Q8_0 GGUF (639MB)"
-    format: gguf
-    size_mb: 639
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/resolve/main/qwen3-reranker-0.6b-q8_0.gguf
-    backend: [llama-cpp]
-  - id: mungert-q8
-    name: "Mungert Q8_0 GGUF (639MB)"
-    format: gguf
-    size_mb: 639
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/Mungert/Qwen3-Reranker-0.6B-GGUF/resolve/main/Qwen3-Reranker-0.6B-q8_0.gguf
-    backend: [llama-cpp]
-
+- id: q8_0
+  name: Q8_0 GGUF (639MB)
+  format: gguf
+  size_mb: 639
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/resolve/main/qwen3-reranker-0.6b-q8_0.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+- id: mungert-q8
+  name: Mungert Q8_0 GGUF (639MB)
+  format: gguf
+  size_mb: 639
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/Mungert/Qwen3-Reranker-0.6B-GGUF/resolve/main/Qwen3-Reranker-0.6B-q8_0.gguf
+  requires:
+    backends:
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q8_0}
-  arm-cpu-16gb: {recommended: q8_0}
-  arm-npu-16gb: {recommended: q8_0}
-  arm-npu-32gb: {recommended: q8_0}
-  x86-cuda-12gb: {recommended: q8_0}
-  x86-vulkan-8gb: {recommended: q8_0}
-  cpu-only: {recommended: q8_0}
+  arm-cpu-8gb:
+    recommended: q8_0
+  arm-cpu-16gb:
+    recommended: q8_0
+  arm-npu-16gb:
+    recommended: q8_0
+  arm-npu-32gb:
+    recommended: q8_0
+  x86-cuda-12gb:
+    recommended: q8_0
+  x86-vulkan-8gb:
+    recommended: q8_0
+  cpu-only:
+    recommended: q8_0
+context_window: 32768

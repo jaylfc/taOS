@@ -2,21 +2,36 @@ id: parakeet-tdt-0.6b
 name: NVIDIA Parakeet TDT 0.6B v2
 type: model
 version: 2.0.0
-description: "NVIDIA's 600M ASR — tops Open ASR leaderboard, fast real-time transcription"
+description: NVIDIA's 600M ASR — tops Open ASR leaderboard, fast real-time transcription
 homepage: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
-license: "CC-BY-4.0"
-capabilities: [speech-to-text]
-
+license: CC-BY-4.0
+capabilities:
+- speech-to-text
 variants:
-  - id: nemo
-    name: "NeMo (600MB)"
-    format: nemo
-    size_mb: 600
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/main/parakeet-tdt-0.6b-v2.nemo
-    backend: [nemo, transformers]
-
+- id: nemo
+  name: NeMo (600MB)
+  format: nemo
+  size_mb: 600
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/main/parakeet-tdt-0.6b-v2.nemo
+  requires:
+    backends:
+    - id: nemo
+      targets:
+      - cpu
+      min_ram_mb: 2048
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-8gb: {recommended: nemo}
-  x86-cuda-8gb: {recommended: nemo}
-  cpu-only: {recommended: nemo}
+  arm-cpu-8gb:
+    recommended: nemo
+  x86-cuda-8gb:
+    recommended: nemo
+  cpu-only:
+    recommended: nemo
+context_window: 4096

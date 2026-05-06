@@ -1,0 +1,22 @@
+id: onnxruntime
+name: ONNX Runtime
+type: service
+category: ml-runtime
+version: latest
+description: "Cross-platform ONNX inference — runs .onnx models on CPU, CUDA, and DirectML."
+homepage: https://github.com/microsoft/onnxruntime
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 300
+  ports: []
+
+install:
+  method: pip
+  package: onnxruntime
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  arm-cpu-8gb: full
+  cpu-only: full

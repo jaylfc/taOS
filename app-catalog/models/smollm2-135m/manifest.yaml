@@ -2,21 +2,39 @@ id: smollm2-135m
 name: SmolLM2 135M Instruct
 type: model
 version: 2.0.0
-description: "Ultra-tiny 135M — runs on microcontrollers and Raspberry Pi Zero 2W"
+description: Ultra-tiny 135M — runs on microcontrollers and Raspberry Pi Zero 2W
 homepage: https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct
 license: Apache-2.0
-capabilities: [chat]
-
+capabilities:
+- chat
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (95MB)"
-    format: gguf
-    size_mb: 95
-    min_ram_mb: 512
-    download_url: https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (95MB)
+  format: gguf
+  size_mb: 95
+  min_ram_mb: 512
+  download_url: https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 512
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 512
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 8192

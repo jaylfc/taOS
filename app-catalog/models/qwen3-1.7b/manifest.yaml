@@ -2,33 +2,73 @@ id: qwen3-1.7b
 name: Qwen 3 1.7B
 type: model
 version: 3.0.0
-description: "Tiny chat model — ideal for setup agent, tool calling on low-power devices"
+description: Tiny chat model — ideal for setup agent, tool calling on low-power devices
 homepage: https://huggingface.co/Qwen/Qwen3-1.7B
 license: Apache-2.0
-capabilities: [chat, tool-calling]
-
+capabilities:
+- chat
+- tool-calling
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (1.1GB)"
-    format: gguf
-    size_mb: 1100
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-  - id: q8_0
-    name: "Q8_0 (1.83GB)"
-    format: gguf
-    size_mb: 1830
-    min_ram_mb: 2560
-    download_url: https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (1.1GB)
+  format: gguf
+  size_mb: 1100
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+- id: q8_0
+  name: Q8_0 (1.83GB)
+  format: gguf
+  size_mb: 1830
+  min_ram_mb: 2560
+  download_url: https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2560
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2560
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-cpu-16gb: {recommended: q8_0, fallback: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  arm-npu-32gb: {recommended: q8_0}
-  x86-cuda-12gb: {recommended: q8_0}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-cpu-16gb:
+    recommended: q8_0
+    fallback: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  arm-npu-32gb:
+    recommended: q8_0
+  x86-cuda-12gb:
+    recommended: q8_0
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 40960

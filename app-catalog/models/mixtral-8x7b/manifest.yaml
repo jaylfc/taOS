@@ -2,21 +2,52 @@ id: mixtral-8x7b
 name: Mixtral 8x7B Instruct v0.1
 type: model
 version: 0.1.0
-description: "Sparse MoE with 12.9B active params out of 46.7B — competitive with 70B dense models"
+description: Sparse MoE with 12.9B active params out of 46.7B — competitive with 70B
+  dense models
 homepage: https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1
 license: Apache-2.0
-capabilities: [chat, code, reasoning, multilingual]
-
+capabilities:
+- chat
+- code
+- reasoning
+- multilingual
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (26GB)"
-    format: gguf
-    size_mb: 26000
-    min_ram_mb: 30720
-    download_url: https://huggingface.co/MaziyarPanahi/Mixtral-8x7B-Instruct-v0.1-GGUF/resolve/main/Mixtral-8x7B-Instruct-v0.1.Q4_K_M.gguf
-    backend: [ollama, llama-cpp, vllm, exo]
-
+- id: q4_k_m
+  name: Q4_K_M (26GB)
+  format: gguf
+  size_mb: 26000
+  min_ram_mb: 30720
+  download_url: https://huggingface.co/MaziyarPanahi/Mixtral-8x7B-Instruct-v0.1-GGUF/resolve/main/Mixtral-8x7B-Instruct-v0.1.Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 30720
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 30720
+    - id: vllm
+      targets:
+      - x86-cuda
+      min_ram_mb: 30720
+    - id: exo
+      targets:
+      - cpu
+      min_ram_mb: 30720
 hardware_tiers:
-  arm-npu-32gb: {recommended: q4_k_m}
-  x86-cuda-24gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Slow but MoE helps"}
+  arm-npu-32gb:
+    recommended: q4_k_m
+  x86-cuda-24gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow but MoE helps
+context_window: 32768

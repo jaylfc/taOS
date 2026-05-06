@@ -2,49 +2,87 @@ id: flux-schnell-gguf
 name: Flux.1 Schnell (GGUF)
 type: model
 version: 1.0
-capabilities: [image-generation]
-description: "SOTA-quality images in 4 steps. Apache 2.0 licensed — the only high-end image model with permissive licensing. Slow on CPU, fast on GPU."
+capabilities:
+- image-generation
+description: SOTA-quality images in 4 steps. Apache 2.0 licensed — the only high-end
+  image model with permissive licensing. Slow on CPU, fast on GPU.
 license: Apache-2.0
-
 variants:
-  - id: q4-gguf
-    name: "Q4 K S (6.5GB, high-end CPU)"
-    format: gguf
-    size_mb: 6500
-    backend: [stable-diffusion-cpp]
-    min_ram_mb: 10240
-    download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf
-    sha256: ""
-    quality: good
-
-  - id: q5-gguf
-    name: "Q5 K S (8.2GB, 16GB+ systems)"
-    format: gguf
-    size_mb: 8200
-    backend: [stable-diffusion-cpp]
-    min_ram_mb: 14336
-    download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q5_K_S.gguf
-    sha256: ""
-    quality: better
-
-  - id: q8-gguf
-    name: "Q8 (12.5GB, power users)"
-    format: gguf
-    size_mb: 12500
-    backend: [stable-diffusion-cpp]
-    min_ram_mb: 18432
-    download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q8_0.gguf
-    sha256: ""
-    quality: best
-
+- id: q4-gguf
+  name: Q4 K S (6.5GB, high-end CPU)
+  format: gguf
+  size_mb: 6500
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf
+  sha256: ''
+  quality: good
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 10240
+- id: q5-gguf
+  name: Q5 K S (8.2GB, 16GB+ systems)
+  format: gguf
+  size_mb: 8200
+  min_ram_mb: 14336
+  download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q5_K_S.gguf
+  sha256: ''
+  quality: better
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 14336
+- id: q8-gguf
+  name: Q8 (12.5GB, power users)
+  format: gguf
+  size_mb: 12500
+  min_ram_mb: 18432
+  download_url: https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q8_0.gguf
+  sha256: ''
+  quality: best
+  requires:
+    backends:
+    - id: stable-diffusion-cpp
+      targets:
+      - cpu
+      min_ram_mb: 18432
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4-gguf, fallback: q4-gguf, warning: "Very slow — estimated 5-10 minutes per image"}
-  arm-cpu-16gb: {recommended: q4-gguf, fallback: q4-gguf, warning: "Slow — estimated 3-8 minutes per image"}
-  arm-npu-16gb: {recommended: q5-gguf, fallback: q4-gguf, warning: "Slow on CPU, NPU not supported"}
-  x86-cpu-8gb: {recommended: q4-gguf, fallback: q4-gguf, warning: "Slow — estimated 2-5 minutes per image"}
-  x86-cpu-16gb: {recommended: q5-gguf, fallback: q4-gguf}
-  x86-vulkan-8gb: {recommended: q5-gguf, fallback: q4-gguf}
-  x86-cuda-8gb: {recommended: q5-gguf, fallback: q4-gguf}
-  x86-cuda-12gb: {recommended: q8-gguf, fallback: q5-gguf}
-  apple-silicon: {recommended: q5-gguf, fallback: q4-gguf}
-  cpu-only: {recommended: q4-gguf, fallback: q4-gguf}
+  arm-cpu-8gb:
+    recommended: q4-gguf
+    fallback: q4-gguf
+    warning: Very slow — estimated 5-10 minutes per image
+  arm-cpu-16gb:
+    recommended: q4-gguf
+    fallback: q4-gguf
+    warning: Slow — estimated 3-8 minutes per image
+  arm-npu-16gb:
+    recommended: q5-gguf
+    fallback: q4-gguf
+    warning: Slow on CPU, NPU not supported
+  x86-cpu-8gb:
+    recommended: q4-gguf
+    fallback: q4-gguf
+    warning: Slow — estimated 2-5 minutes per image
+  x86-cpu-16gb:
+    recommended: q5-gguf
+    fallback: q4-gguf
+  x86-vulkan-8gb:
+    recommended: q5-gguf
+    fallback: q4-gguf
+  x86-cuda-8gb:
+    recommended: q5-gguf
+    fallback: q4-gguf
+  x86-cuda-12gb:
+    recommended: q8-gguf
+    fallback: q5-gguf
+  apple-silicon:
+    recommended: q5-gguf
+    fallback: q4-gguf
+  cpu-only:
+    recommended: q4-gguf
+    fallback: q4-gguf
+context_window: 256

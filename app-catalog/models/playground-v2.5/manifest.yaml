@@ -2,28 +2,62 @@ id: playground-v2.5
 name: Playground v2.5 1024px
 type: model
 version: 2.5.0
-description: "Playground's photorealistic SDXL-compatible model — strong aesthetic quality"
+description: Playground's photorealistic SDXL-compatible model — strong aesthetic
+  quality
 homepage: https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic
-license: "Playground v2.5 Community License"
-capabilities: [image-generation]
-
+license: Playground v2.5 Community License
+capabilities:
+- image-generation
 variants:
-  - id: fp16
-    name: "FP16 Safetensors (6.9GB)"
-    format: safetensors
-    size_mb: 6900
-    min_ram_mb: 10240
-    download_url: https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic/resolve/main/playground-v2.5-1024px-aesthetic.fp16.safetensors
-    backend: [comfyui, sd-webui, diffusers]
-
+- id: fp16
+  name: FP16 Safetensors (6.9GB)
+  format: safetensors
+  size_mb: 6900
+  min_ram_mb: 10240
+  download_url: https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic/resolve/main/playground-v2.5-1024px-aesthetic.fp16.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 10240
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 10240
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 10240
 hardware_tiers:
-  arm-cpu-8gb: {recommended: null, warning: "FP16 SDXL needs ~10GB RAM — no GGUF variant available"}
-  arm-cpu-16gb: {recommended: fp16, warning: "Very slow on ARM CPU — 8+ minutes per 1024px image, no quant available"}
-  arm-npu-16gb: {recommended: fp16, warning: "No RKNN or GGUF — runs on RK3588 CPU only, 8+ minutes per image"}
-  x86-cpu-8gb: {recommended: null, warning: "FP16 SDXL needs ~10GB RAM — insufficient"}
-  x86-cpu-16gb: {recommended: fp16, warning: "Slow — 3-6 minutes per 1024px image, recommend GPU"}
-  x86-vulkan-8gb: {recommended: fp16, warning: "Fits in 8GB — Vulkan SDXL support is decent but slower than CUDA"}
-  x86-cuda-8gb: {recommended: fp16}
-  x86-cuda-12gb: {recommended: fp16}
-  apple-silicon: {recommended: fp16, notes: "Runs well on 16GB+ M-series via diffusers/MPS"}
-  cpu-only: {recommended: null, warning: "Not recommended — no quantised variant, very slow on CPU"}
+  arm-cpu-8gb:
+    recommended: null
+    warning: FP16 SDXL needs ~10GB RAM — no GGUF variant available
+  arm-cpu-16gb:
+    recommended: fp16
+    warning: Very slow on ARM CPU — 8+ minutes per 1024px image, no quant available
+  arm-npu-16gb:
+    recommended: fp16
+    warning: No RKNN or GGUF — runs on RK3588 CPU only, 8+ minutes per image
+  x86-cpu-8gb:
+    recommended: null
+    warning: FP16 SDXL needs ~10GB RAM — insufficient
+  x86-cpu-16gb:
+    recommended: fp16
+    warning: Slow — 3-6 minutes per 1024px image, recommend GPU
+  x86-vulkan-8gb:
+    recommended: fp16
+    warning: Fits in 8GB — Vulkan SDXL support is decent but slower than CUDA
+  x86-cuda-8gb:
+    recommended: fp16
+  x86-cuda-12gb:
+    recommended: fp16
+  apple-silicon:
+    recommended: fp16
+    notes: Runs well on 16GB+ M-series via diffusers/MPS
+  cpu-only:
+    recommended: null
+    warning: Not recommended — no quantised variant, very slow on CPU
+context_window: 77

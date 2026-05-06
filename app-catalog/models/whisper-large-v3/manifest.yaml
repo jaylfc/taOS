@@ -2,22 +2,32 @@ id: whisper-large-v3
 name: Whisper Large v3 (ggml)
 type: model
 version: 3.0.0
-description: "Largest Whisper v3 — 1550M params, best quality, 99 languages"
+description: Largest Whisper v3 — 1550M params, best quality, 99 languages
 homepage: https://huggingface.co/ggerganov/whisper.cpp
 license: MIT
-capabilities: [speech-to-text, multilingual]
-
+capabilities:
+- speech-to-text
+- multilingual
 variants:
-  - id: ggml
-    name: "ggml bin (3.1GB)"
-    format: ggml
-    size_mb: 3100
-    min_ram_mb: 4096
-    download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
-    backend: [whisper-cpp]
-
+- id: ggml
+  name: ggml bin (3.1GB)
+  format: ggml
+  size_mb: 3100
+  min_ram_mb: 4096
+  download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin
+  requires:
+    backends:
+    - id: whisper-cpp
+      targets:
+      - cpu
+      min_ram_mb: 4096
 hardware_tiers:
-  arm-cpu-16gb: {recommended: ggml}
-  arm-npu-16gb: {recommended: ggml}
-  x86-cuda-8gb: {recommended: ggml}
-  cpu-only: {recommended: ggml}
+  arm-cpu-16gb:
+    recommended: ggml
+  arm-npu-16gb:
+    recommended: ggml
+  x86-cuda-8gb:
+    recommended: ggml
+  cpu-only:
+    recommended: ggml
+context_window: 448

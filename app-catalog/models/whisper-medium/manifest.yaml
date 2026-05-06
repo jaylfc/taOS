@@ -2,22 +2,32 @@ id: whisper-medium
 name: Whisper Medium (ggml)
 type: model
 version: 1.0.0
-description: "Medium Whisper — 769M params, near-large quality at half the size"
+description: Medium Whisper — 769M params, near-large quality at half the size
 homepage: https://huggingface.co/ggerganov/whisper.cpp
 license: MIT
-capabilities: [speech-to-text, multilingual]
-
+capabilities:
+- speech-to-text
+- multilingual
 variants:
-  - id: ggml
-    name: "ggml bin (1.5GB)"
-    format: ggml
-    size_mb: 1500
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
-    backend: [whisper-cpp]
-
+- id: ggml
+  name: ggml bin (1.5GB)
+  format: ggml
+  size_mb: 1500
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+  requires:
+    backends:
+    - id: whisper-cpp
+      targets:
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-8gb: {recommended: ggml}
-  arm-npu-16gb: {recommended: ggml}
-  x86-cuda-8gb: {recommended: ggml}
-  cpu-only: {recommended: ggml}
+  arm-cpu-8gb:
+    recommended: ggml
+  arm-npu-16gb:
+    recommended: ggml
+  x86-cuda-8gb:
+    recommended: ggml
+  cpu-only:
+    recommended: ggml
+context_window: 448

@@ -2,23 +2,46 @@ id: qwen2.5-coder-7b
 name: Qwen 2.5 Coder 7B Instruct
 type: model
 version: 2.5.0
-description: "Dedicated code model — matches GPT-4o on code tasks at 7B size. Best open coding model."
+description: Dedicated code model — matches GPT-4o on code tasks at 7B size. Best
+  open coding model.
 homepage: https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct
 license: Apache-2.0
-capabilities: [chat, code, tool-calling]
-
+capabilities:
+- chat
+- code
+- tool-calling
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (4.7GB)"
-    format: gguf
-    size_mb: 4700
-    min_ram_mb: 6144
-    download_url: https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (4.7GB)
+  format: gguf
+  size_mb: 4700
+  min_ram_mb: 6144
+  download_url: https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 6144
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: q4_k_m}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: q4_k_m
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 32768

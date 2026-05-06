@@ -2,21 +2,41 @@ id: llama-3.2-1b
 name: Llama 3.2 1B
 type: model
 version: 3.2.0
-description: "Meta's lightest model — 2GB RAM, ARM-optimized, perfect for mobile workers and Pi 4"
+description: Meta's lightest model — 2GB RAM, ARM-optimized, perfect for mobile workers
+  and Pi 4
 homepage: https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct
-capabilities: [chat]
-
+capabilities:
+- chat
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (0.7GB)"
-    format: gguf
-    size_mb: 700
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (0.7GB)
+  format: gguf
+  size_mb: 700
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-npu-16gb: {recommended: q4_k_m}
-  arm-cpu-8gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-npu-16gb:
+    recommended: q4_k_m
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 131072

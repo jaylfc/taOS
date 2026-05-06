@@ -2,28 +2,52 @@ id: rmbg-1.4
 name: RMBG 1.4 (Background Removal)
 type: model
 version: 1.4.0
-description: "BRIA's state-of-the-art background removal — runs on CPU, non-commercial license"
+description: BRIA's state-of-the-art background removal — runs on CPU, non-commercial
+  license
 homepage: https://huggingface.co/briaai/RMBG-1.4
-license: "bria-rmbg-1.4 (non-commercial)"
-capabilities: [background-removal]
-
+license: bria-rmbg-1.4 (non-commercial)
+capabilities:
+- background-removal
 variants:
-  - id: pth
-    name: "PyTorch (176MB)"
-    format: pytorch
-    size_mb: 176
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/briaai/RMBG-1.4/resolve/main/model.pth
-    backend: [transformers, onnxruntime]
-  - id: pytorch-bin
-    name: "PyTorch Bin (176MB)"
-    format: pytorch
-    size_mb: 176
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/briaai/RMBG-1.4/resolve/main/pytorch_model.bin
-    backend: [transformers]
-
+- id: pth
+  name: PyTorch (176MB)
+  format: pytorch
+  size_mb: 176
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/briaai/RMBG-1.4/resolve/main/model.pth
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: onnxruntime
+      targets:
+      - cpu
+      min_ram_mb: 1024
+- id: pytorch-bin
+  name: PyTorch Bin (176MB)
+  format: pytorch
+  size_mb: 176
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/briaai/RMBG-1.4/resolve/main/pytorch_model.bin
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
 hardware_tiers:
-  arm-cpu-8gb: {recommended: pth}
-  arm-npu-16gb: {recommended: pth}
-  cpu-only: {recommended: pth}
+  arm-cpu-8gb:
+    recommended: pth
+  arm-npu-16gb:
+    recommended: pth
+  cpu-only:
+    recommended: pth
+context_window: 1

@@ -2,22 +2,43 @@ id: deepseek-coder-v2-lite
 name: DeepSeek Coder V2 Lite Instruct
 type: model
 version: 2.0.0
-description: "16B MoE with 2.4B active — specialized code model with strong fill-in-middle"
+description: 16B MoE with 2.4B active — specialized code model with strong fill-in-middle
 homepage: https://huggingface.co/deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
-license: "DeepSeek License"
-capabilities: [chat, code]
-
+license: DeepSeek License
+capabilities:
+- chat
+- code
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (10.4GB)"
-    format: gguf
-    size_mb: 10400
-    min_ram_mb: 12288
-    download_url: https://huggingface.co/bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (10.4GB)
+  format: gguf
+  size_mb: 10400
+  min_ram_mb: 12288
+  download_url: https://huggingface.co/bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF/resolve/main/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 12288
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 12288
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-12gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "MoE helps CPU inference"}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: MoE helps CPU inference
+context_window: 32768

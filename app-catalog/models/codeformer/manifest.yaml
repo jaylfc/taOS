@@ -2,22 +2,38 @@ id: codeformer
 name: CodeFormer (Face Restoration)
 type: model
 version: 0.1.0
-description: "Robust face restoration with codebook lookup — high fidelity, handles severe degradation"
+description: Robust face restoration with codebook lookup — high fidelity, handles
+  severe degradation
 homepage: https://github.com/sczhou/CodeFormer
-license: "S-Lab License 1.0"
-capabilities: [face-restoration]
-
+license: S-Lab License 1.0
+capabilities:
+- face-restoration
 variants:
-  - id: pth
-    name: "PyTorch (360MB)"
-    format: pytorch
-    size_mb: 360
-    min_ram_mb: 2048
-    download_url: https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth
-    backend: [comfyui, sd-webui]
-
+- id: pth
+  name: PyTorch (360MB)
+  format: pytorch
+  size_mb: 360
+  min_ram_mb: 2048
+  download_url: https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 2048
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-8gb: {recommended: pth}
-  arm-npu-16gb: {recommended: pth}
-  x86-cuda-8gb: {recommended: pth}
-  cpu-only: {recommended: pth}
+  arm-cpu-8gb:
+    recommended: pth
+  arm-npu-16gb:
+    recommended: pth
+  x86-cuda-8gb:
+    recommended: pth
+  cpu-only:
+    recommended: pth
+context_window: 1

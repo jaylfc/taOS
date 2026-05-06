@@ -2,22 +2,42 @@ id: controlnet-canny
 name: ControlNet Canny (SD 1.5)
 type: model
 version: 1.0.0
-description: "Canny edge-based ControlNet — control image generation from edge maps"
+description: Canny edge-based ControlNet — control image generation from edge maps
 homepage: https://huggingface.co/lllyasviel/sd-controlnet-canny
-license: "OpenRAIL"
-capabilities: [controlnet, image-generation]
-
+license: OpenRAIL
+capabilities:
+- controlnet
+- image-generation
 variants:
-  - id: safetensors
-    name: "Safetensors (1.4GB)"
-    format: safetensors
-    size_mb: 1400
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/diffusion_pytorch_model.safetensors
-    backend: [comfyui, sd-webui, diffusers]
-
+- id: safetensors
+  name: Safetensors (1.4GB)
+  format: safetensors
+  size_mb: 1400
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/lllyasviel/sd-controlnet-canny/resolve/main/diffusion_pytorch_model.safetensors
+  requires:
+    backends:
+    - id: comfyui
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - apple-silicon
+      min_ram_mb: 2048
+    - id: sd-webui
+      targets:
+      - cpu
+      min_ram_mb: 2048
+    - id: diffusers
+      targets:
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-16gb: {recommended: safetensors}
-  arm-npu-16gb: {recommended: safetensors}
-  x86-cuda-8gb: {recommended: safetensors}
-  cpu-only: {recommended: safetensors}
+  arm-cpu-16gb:
+    recommended: safetensors
+  arm-npu-16gb:
+    recommended: safetensors
+  x86-cuda-8gb:
+    recommended: safetensors
+  cpu-only:
+    recommended: safetensors
+context_window: 77

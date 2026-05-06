@@ -1,0 +1,24 @@
+id: llama-cpp
+name: llama.cpp
+type: service
+category: llm-runtime
+version: latest
+description: "C++ inference engine for GGUF models — runs on CPU, Vulkan, and Metal without CUDA."
+homepage: https://github.com/ggerganov/llama.cpp
+license: MIT
+
+requires:
+  ram_mb: 512
+  disk_mb: 300
+  ports: [8080]
+
+install:
+  method: script
+  script: scripts/install-llama-cpp.sh
+
+hardware_tiers:
+  x86-vulkan-4gb: full
+  x86-vulkan-8gb: full
+  arm-vulkan-8gb: full
+  arm-cpu-8gb: full
+  cpu-only: full

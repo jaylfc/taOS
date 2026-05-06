@@ -2,29 +2,58 @@ id: bge-m3
 name: BGE M3 (Multilingual)
 type: model
 version: 1.0.0
-description: "Multilingual embedding — dense, sparse, and multi-vector in one model. 100+ languages."
+description: Multilingual embedding — dense, sparse, and multi-vector in one model.
+  100+ languages.
 homepage: https://huggingface.co/BAAI/bge-m3
 license: MIT
-capabilities: [embedding, multilingual]
-
+capabilities:
+- embedding
+- multilingual
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M GGUF (400MB)"
-    format: gguf
-    size_mb: 400
-    min_ram_mb: 1024
-    download_url: https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-  - id: pytorch
-    name: "PyTorch (2.3GB)"
-    format: pytorch
-    size_mb: 2300
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/BAAI/bge-m3/resolve/main/pytorch_model.bin
-    backend: [transformers]
-
+- id: q4_k_m
+  name: Q4_K_M GGUF (400MB)
+  format: gguf
+  size_mb: 400
+  min_ram_mb: 1024
+  download_url: https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 1024
+- id: pytorch
+  name: PyTorch (2.3GB)
+  format: pytorch
+  size_mb: 2300
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/BAAI/bge-m3/resolve/main/pytorch_model.bin
+  requires:
+    backends:
+    - id: transformers
+      targets:
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-8gb: {recommended: pytorch}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-8gb:
+    recommended: pytorch
+  cpu-only:
+    recommended: q4_k_m
+context_window: 8192

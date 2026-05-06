@@ -2,21 +2,29 @@ id: whisper-tiny
 name: Whisper Tiny (ggml)
 type: model
 version: 1.0.0
-description: "Smallest Whisper — 39M params, real-time transcription on any CPU"
+description: Smallest Whisper — 39M params, real-time transcription on any CPU
 homepage: https://huggingface.co/ggerganov/whisper.cpp
 license: MIT
-capabilities: [speech-to-text]
-
+capabilities:
+- speech-to-text
 variants:
-  - id: ggml
-    name: "ggml bin (75MB)"
-    format: ggml
-    size_mb: 75
-    min_ram_mb: 512
-    download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
-    backend: [whisper-cpp]
-
+- id: ggml
+  name: ggml bin (75MB)
+  format: ggml
+  size_mb: 75
+  min_ram_mb: 512
+  download_url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+  requires:
+    backends:
+    - id: whisper-cpp
+      targets:
+      - cpu
+      min_ram_mb: 512
 hardware_tiers:
-  arm-cpu-8gb: {recommended: ggml}
-  arm-npu-16gb: {recommended: ggml}
-  cpu-only: {recommended: ggml}
+  arm-cpu-8gb:
+    recommended: ggml
+  arm-npu-16gb:
+    recommended: ggml
+  cpu-only:
+    recommended: ggml
+context_window: 448

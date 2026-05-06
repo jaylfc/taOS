@@ -2,20 +2,41 @@ id: command-r-35b
 name: Command-R 35B
 type: model
 version: 1.0.0
-description: "Cohere's 35B — specialized for RAG and tool use, 128K context"
+description: Cohere's 35B — specialized for RAG and tool use, 128K context
 homepage: https://huggingface.co/CohereForAI/c4ai-command-r-v01
-license: "CC-BY-NC 4.0 (non-commercial)"
-capabilities: [chat, tool-calling, rag, multilingual]
-
+license: CC-BY-NC 4.0 (non-commercial)
+capabilities:
+- chat
+- tool-calling
+- rag
+- multilingual
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (21GB)"
-    format: gguf
-    size_mb: 21000
-    min_ram_mb: 24576
-    download_url: https://huggingface.co/bartowski/c4ai-command-r-v01-GGUF/resolve/main/c4ai-command-r-v01-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (21GB)
+  format: gguf
+  size_mb: 21000
+  min_ram_mb: 24576
+  download_url: https://huggingface.co/bartowski/c4ai-command-r-v01-GGUF/resolve/main/c4ai-command-r-v01-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 24576
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 24576
 hardware_tiers:
-  x86-cuda-24gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Slow"}
+  x86-cuda-24gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow
+context_window: 128000

@@ -2,22 +2,42 @@ id: gemma-2-2b
 name: Gemma 2 2B Instruct
 type: model
 version: 2.0.0
-description: "Google's compact 2B — strong quality for size, ideal for Pi and edge"
+description: Google's compact 2B — strong quality for size, ideal for Pi and edge
 homepage: https://huggingface.co/google/gemma-2-2b-it
-license: "Gemma Terms of Use"
-capabilities: [chat, code]
-
+license: Gemma Terms of Use
+capabilities:
+- chat
+- code
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (1.7GB)"
-    format: gguf
-    size_mb: 1700
-    min_ram_mb: 3072
-    download_url: https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (1.7GB)
+  format: gguf
+  size_mb: 1700
+  min_ram_mb: 3072
+  download_url: https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 3072
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 8192

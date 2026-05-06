@@ -2,22 +2,42 @@ id: gemma-3-1b
 name: Gemma 3 1B Instruct
 type: model
 version: 3.0.0
-description: "Google's smallest Gemma 3 — 1B params, fast on any hardware"
+description: Google's smallest Gemma 3 — 1B params, fast on any hardware
 homepage: https://huggingface.co/google/gemma-3-1b-it
-license: "Gemma Terms of Use"
-capabilities: [chat, multilingual]
-
+license: Gemma Terms of Use
+capabilities:
+- chat
+- multilingual
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (0.8GB)"
-    format: gguf
-    size_mb: 800
-    min_ram_mb: 2048
-    download_url: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (0.8GB)
+  format: gguf
+  size_mb: 800
+  min_ram_mb: 2048
+  download_url: https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 2048
 hardware_tiers:
-  arm-cpu-8gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-vulkan-4gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m}
+  arm-cpu-8gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-vulkan-4gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+context_window: 32768

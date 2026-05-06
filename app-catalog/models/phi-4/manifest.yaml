@@ -2,23 +2,47 @@ id: phi-4
 name: Phi 4 (14B)
 type: model
 version: 4.0.0
-description: "Microsoft's 14B — trained on synthetic data, strong reasoning and math"
+description: Microsoft's 14B — trained on synthetic data, strong reasoning and math
 homepage: https://huggingface.co/microsoft/phi-4
 license: MIT
-capabilities: [chat, code, reasoning, math]
-
+capabilities:
+- chat
+- code
+- reasoning
+- math
 variants:
-  - id: q4_k_m
-    name: "Q4_K_M (9GB)"
-    format: gguf
-    size_mb: 9000
-    min_ram_mb: 11264
-    download_url: https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf
-    backend: [ollama, llama-cpp]
-
+- id: q4_k_m
+  name: Q4_K_M (9GB)
+  format: gguf
+  size_mb: 9000
+  min_ram_mb: 11264
+  download_url: https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf
+  requires:
+    backends:
+    - id: ollama
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 11264
+    - id: llama-cpp
+      targets:
+      - x86-vulkan
+      - arm-vulkan
+      - cpu
+      min_ram_mb: 11264
 hardware_tiers:
-  arm-cpu-16gb: {recommended: q4_k_m}
-  arm-npu-16gb: {recommended: q4_k_m}
-  x86-cuda-12gb: {recommended: q4_k_m}
-  x86-vulkan-8gb: {recommended: q4_k_m}
-  cpu-only: {recommended: q4_k_m, notes: "Slow on CPU"}
+  arm-cpu-16gb:
+    recommended: q4_k_m
+  arm-npu-16gb:
+    recommended: q4_k_m
+  x86-cuda-12gb:
+    recommended: q4_k_m
+  x86-vulkan-8gb:
+    recommended: q4_k_m
+  cpu-only:
+    recommended: q4_k_m
+    notes: Slow on CPU
+context_window: 16384
