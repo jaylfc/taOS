@@ -276,19 +276,33 @@ async def list_install_targets(request: Request):
         }
     ]
     # Map worker name → tier_id by reusing the existing capability resolver.
+    # Also map URL-hostname → tier_id so an incus remote whose name doesn't
+    # match the worker registration name (e.g. remote "fedora-worker" vs
+    # worker "fedora-host") still resolves the same physical hardware.
     cluster = getattr(request.app.state, "cluster_manager", None)
     registry = getattr(request.app.state, "registry", None)
     worker_tiers: dict[str, str] = {}
+    worker_tiers_by_host: dict[str, str] = {}
+    workers_by_host: dict[str, "WorkerInfo"] = {}
     if cluster is not None and registry is not None:
+        from urllib.parse import urlparse as _urlparse
         for w in cluster.get_workers():
             try:
                 tier_id, _caps = _potential_capabilities(w.hardware, registry)
-                worker_tiers[w.name] = tier_id
             except Exception:  # noqa: BLE001
-                worker_tiers[w.name] = ""
+                tier_id = ""
+            worker_tiers[w.name] = tier_id
+            try:
+                host = _urlparse(getattr(w, "url", "") or "").hostname or ""
+            except Exception:  # noqa: BLE001
+                host = ""
+            if host:
+                worker_tiers_by_host[host] = tier_id
+                workers_by_host[host] = w
 
     try:
         import tinyagentos.containers as containers
+        from urllib.parse import urlparse as _urlparse
         remotes = await containers.remote_list()
         for r in remotes:
             name = r.get("name", "")
@@ -301,17 +315,30 @@ async def list_install_targets(request: Request):
                 # entry above. Incus exposes this as "local (current)" when it
                 # is the active context, which isn't in _BUILTIN_REMOTES.
                 continue
-            worker_hw = next(
-                (w.hardware for w in cluster.get_workers() if w.name == name),
-                {},
-            ) if cluster else {}
-            hardware_known = bool(worker_hw) or bool(worker_tiers.get(name))
+            # Look up the matching worker: by name first, then by URL host.
+            worker_hw: dict = {}
+            tier_id = ""
+            if cluster is not None:
+                worker_hw = next(
+                    (w.hardware for w in cluster.get_workers() if w.name == name),
+                    {},
+                )
+                tier_id = worker_tiers.get(name, "")
+                if not worker_hw:
+                    try:
+                        remote_host = _urlparse(addr).hostname or ""
+                    except Exception:  # noqa: BLE001
+                        remote_host = ""
+                    if remote_host and remote_host in workers_by_host:
+                        worker_hw = workers_by_host[remote_host].hardware
+                        tier_id = worker_tiers_by_host.get(remote_host, tier_id)
+            hardware_known = bool(worker_hw) or bool(tier_id)
             targets.append({
                 "name": name,
                 "label": name,
                 "type": "remote",
-                "addr": r.get("addr", ""),
-                "tier_id": worker_tiers.get(name) or ("unknown" if not hardware_known else ""),
+                "addr": addr,
+                "tier_id": tier_id or ("unknown" if not hardware_known else ""),
                 "targets": hardware_to_targets(worker_hw),
                 "hardware_known": hardware_known,
                 "friendly_name": name,

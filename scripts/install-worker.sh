@@ -43,7 +43,20 @@ if [[ -z "$CONTROLLER_URL" ]]; then
     exit 2
 fi
 
-WORKER_NAME="${TAOS_WORKER_NAME:-$(hostname -s)}"
+# Default appends "-worker" to the host's short name so the cluster UI
+# distinguishes the worker entry from the underlying machine (e.g.
+# "fedora-host" becomes "fedora-worker"). Skip the suffix if the hostname
+# already contains "worker" so we don't end up with "rig-worker-worker".
+_default_worker_name() {
+    local h
+    h="$(hostname -s)"
+    if [[ "$h" == *worker* ]]; then
+        printf '%s' "$h"
+    else
+        printf '%s-worker' "$h"
+    fi
+}
+WORKER_NAME="${TAOS_WORKER_NAME:-$(_default_worker_name)}"
 INSTALL_DIR="${TAOS_INSTALL_DIR:-$HOME/.local/share/tinyagentos-worker}"
 BRANCH="${TAOS_BRANCH:-master}"
 REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
