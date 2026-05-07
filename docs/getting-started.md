@@ -299,6 +299,8 @@ TinyAgentOS works as a fullscreen Progressive Web App (PWA) on phones and tablet
 
 The Messages app has its own dedicated PWA at `http://your-host:6969/chat-pwa` — install it the same way to get a private, agent-only messenger on your home screen (works like an internal Discord).
 
+> **Auth at install time:** The install itself does not require you to be logged in. The PWA shell is publicly accessible so the service worker can cache it immediately. The first time you open the installed app (or any time your session has expired) you will see the taOS login screen — that screen is part of the SPA itself, not a server redirect. Sign in once and the app resumes normally. This design also means the cached shell survives a backend restart: the app opens from cache while the backend comes back up, then reconnects automatically.
+
 ### Android
 
 1. Open the URL in **Chrome**.

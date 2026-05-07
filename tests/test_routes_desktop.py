@@ -46,3 +46,61 @@ def test_sw_js_returns_404_when_not_built(client, monkeypatch, tmp_path):
     monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", tmp_path / "no-such-dir")
     r = client.get("/sw.js")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PWA shell pre-login accessibility
+# The service worker must be able to precache the shell HTML without a
+# session cookie. Auth is enforced client-side by the SPA itself.
+# ---------------------------------------------------------------------------
+
+
+def test_desktop_shell_accessible_without_auth(client, monkeypatch, tmp_path):
+    """/desktop returns 200 (or 404 if not built) without an auth cookie.
+    A 401 here would prevent the SW from precaching the shell."""
+    fake_dir = tmp_path / "spa"
+    fake_dir.mkdir()
+    (fake_dir / "index.html").write_text("<html>shell</html>")
+    monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", fake_dir)
+    r = client.get("/desktop")
+    assert r.status_code in (200, 404), (
+        f"Expected 200 or 404, got {r.status_code} — shell must not return 401"
+    )
+
+
+def test_desktop_shell_not_built_returns_404_without_auth(client, monkeypatch, tmp_path):
+    """/desktop returns 404 (not 401) when SPA is not built."""
+    monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", tmp_path / "no-such-dir")
+    r = client.get("/desktop")
+    assert r.status_code == 404
+
+
+def test_chat_pwa_accessible_without_auth(client, monkeypatch, tmp_path):
+    """/chat-pwa returns 200 (or 404 if not built) without an auth cookie."""
+    fake_dir = tmp_path / "spa"
+    fake_dir.mkdir()
+    (fake_dir / "chat.html").write_text("<html>chat pwa</html>")
+    monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", fake_dir)
+    r = client.get("/chat-pwa")
+    assert r.status_code in (200, 404), (
+        f"Expected 200 or 404, got {r.status_code} — chat PWA must not return 401"
+    )
+
+
+def test_chat_pwa_subpath_accessible_without_auth(client, monkeypatch, tmp_path):
+    """/chat-pwa/<subpath> falls back to chat.html without auth (SPA routing)."""
+    fake_dir = tmp_path / "spa"
+    fake_dir.mkdir()
+    (fake_dir / "chat.html").write_text("<html>chat pwa</html>")
+    monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", fake_dir)
+    r = client.get("/chat-pwa/some-thread")
+    assert r.status_code in (200, 404), (
+        f"Expected 200 or 404, got {r.status_code} — chat PWA subpaths must not return 401"
+    )
+
+
+def test_api_agents_still_requires_auth(client):
+    """Sanity check: opening the shell to auth-free access must not accidentally
+    expose real API endpoints. /api/agents must still return 401 without a cookie."""
+    r = client.get("/api/agents")
+    assert r.status_code == 401

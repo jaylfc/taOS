@@ -462,6 +462,8 @@ Import templates from a community marketplace or shared repository. This extends
 | API client | fetch / SWR | REST + WebSocket to FastAPI |
 | Icons | Lucide React | Clean, consistent icon set |
 | PWA | Service worker | Offline shell, installable |
+
+The service worker precaches the shell HTML (`/desktop`, `/desktop/index.html`, `/chat-pwa`) and all hashed JS/CSS assets on install. Caches are namespaced with `__TAOS_VERSION__` so the activate step evicts any stale cache from a previous build. When a new build is deployed the SW detects the version mismatch on next load and shows a toast prompting the user to reload — they never silently get stale assets. The shell HTML is intentionally pre-login accessible (no auth gate) so the SW can cache it on first visit; the SPA enforces auth client-side via `/auth/status` and redirects to `/auth/login` when there is no valid session.
 | Backend | FastAPI (unchanged) | Serves SPA bundle as static files |
 
 ## Migration Path

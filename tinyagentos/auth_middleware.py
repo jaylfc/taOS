@@ -5,15 +5,21 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
-EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/sw.js"}
-# Bundle assets must be reachable without auth so the SPA can paint the
-# login screen. The SPA shell itself (/desktop and /chat-pwa) goes
-# through the normal auth gate so an unauthenticated request hits a
-# server-side redirect instead of rendering whatever stale bundle the
-# browser cached.
+EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa"}
+# Bundle assets and the SPA shell HTML must be reachable without auth so:
+#   1. The browser can install and cache the shell for offline / PWA use.
+#   2. After a backend restart the cached shell loads immediately without
+#      a round-trip that would return 401 and leave the user with a blank
+#      screen instead of the cached app.
+# Auth is enforced client-side: the SPA checks /auth/status on boot and
+# redirects to /auth/login if there is no valid session — so dropping the
+# server-side gate on the HTML does not reduce security.
+# Stale-bundle risk is mitigated by __TAOS_VERSION__-namespaced SW caches:
+# on activate the SW deletes any cache that does not match the current
+# build token, so stale index.html entries are evicted automatically.
 # /shortcut/ routes use their own taos_shortcut session cookie for auth;
 # they are intentionally excluded from the main session gate here.
-EXEMPT_PREFIXES = ("/static/", "/desktop/assets/", "/chat-pwa/assets/", "/ws/", "/shortcut/")
+EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/shortcut/")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
