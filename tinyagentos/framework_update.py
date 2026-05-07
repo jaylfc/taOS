@@ -27,12 +27,20 @@ async def _prune_old_snapshots(container: str, *, keep: int) -> None:
 
 
 async def _wait_for_bootstrap_ping(
-    agent: dict, *, started_at: int, deadline_seconds: int = UPDATE_DEADLINE_SECONDS,
+    agent: dict, *, started_at: int, deadline_seconds: int | None = None,
 ) -> bool:
     """Poll `agent['bootstrap_last_seen_at']` every 500 ms. Returns True the
     first time it exceeds `started_at` (meaning the bridge has called
     `/api/openclaw/bootstrap` since the update started). False on deadline.
+
+    `deadline_seconds=None` reads `UPDATE_DEADLINE_SECONDS` at call time,
+    so tests that monkeypatch the module attribute are honoured. Using
+    the module attr as a default value bound it at definition time and
+    silently ignored the patch — the missing-bootstrap test then waited
+    the full 120 s on every CI run instead of the intended 1 s.
     """
+    if deadline_seconds is None:
+        deadline_seconds = UPDATE_DEADLINE_SECONDS
     deadline = time.time() + deadline_seconds
     while time.time() < deadline:
         last = agent.get("bootstrap_last_seen_at") or 0

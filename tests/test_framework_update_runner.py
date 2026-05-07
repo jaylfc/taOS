@@ -113,10 +113,17 @@ async def test_start_update_fails_on_missing_bootstrap(monkeypatch):
     monkeypatch.setattr(fu, "_prune_old_snapshots", AsyncMock())
     monkeypatch.setattr(fu, "exec_in_container", AsyncMock(return_value=(0, "")))
     monkeypatch.setattr(fu, "UPDATE_DEADLINE_SECONDS", 1)
+    # Time-bound the call so a regression on the default-arg fix surfaces
+    # as a fast failure (~5 s ceiling) instead of a 120 s CI hang.
+    elapsed_start = time.time()
     await start_update(agent,
                         {"id": "openclaw", "install_script": "/usr/local/bin/taos-framework-update"},
                         {"tag": "T", "sha": "s", "asset_url": "u"},
                         save_config=AsyncMock())
+    assert time.time() - elapsed_start < 5.0, (
+        "monkeypatched UPDATE_DEADLINE_SECONDS must take effect — "
+        "_wait_for_bootstrap_ping is reading the module attr at call time"
+    )
     assert agent["framework_update_status"] == "failed"
     assert "bridge" in agent["framework_update_last_error"]
 
