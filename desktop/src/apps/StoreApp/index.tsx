@@ -7,7 +7,8 @@ import { DevicePillBar } from "./DevicePillBar";
 import { BackendPillBar } from "./BackendPillBar";
 import { IncompatibleToggle } from "./IncompatibleToggle";
 import { filterModels, compatFromResolver } from "./filter";
-import { resolveModel, type Compat } from "./resolver-types";
+import { resolveModel, type ResolveResponse } from "./resolver-types";
+import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
 
 /* ------------------------------------------------------------------ */
@@ -410,7 +411,7 @@ function resolveIconUrl(appId: string): string | null {
 /*  AppCard                                                            */
 /* ------------------------------------------------------------------ */
 
-function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote }: {
+function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote, resolveResponse }: {
   app: CatalogApp;
   affected: number;
   onInstall: (id: string) => void;
@@ -418,6 +419,7 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
   installTargets: InstallTarget[];
   runtimeHost: string | null;
   defaultTargetRemote?: string;
+  resolveResponse?: ResolveResponse;
 }) {
   const [busy, setBusy] = useState(false);
   const [iconFailed, setIconFailed] = useState(false);
@@ -472,8 +474,13 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
     setBusy(false);
   };
 
+  const visuals = compatVisuals(resolveResponse);
+
   return (
-    <Card className="flex flex-col rounded-2xl hover:-translate-y-0.5 hover:shadow-2xl hover:border-white/[0.12] transition-all duration-200">
+    <Card
+      className={`flex flex-col rounded-2xl hover:-translate-y-0.5 hover:shadow-2xl hover:border-white/[0.12] transition-all duration-200 ${visuals.borderClass}`}
+      title={visuals.tooltip || undefined}
+    >
       <CardHeader className="p-5 pb-2">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
@@ -580,7 +587,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const [runtimeHosts, setRuntimeHosts] = useState<Record<string, string | null>>({});
   const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
   const [selectedBackends, setSelectedBackends] = useState<string[]>([]);
-  const [compatMap, setCompatMap] = useState<Map<string, Compat>>(new Map());
+  const [compatMap, setCompatMap] = useState<Map<string, ResolveResponse>>(new Map());
   // User identity for per-user filter persistence. Use an "anon" fallback
   // so single-user setups still work; profile defaults to "default".
   const userId = (typeof window !== "undefined"
@@ -656,7 +663,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     let cancelled = false;
 
     const run = async () => {
-      const next = new Map<string, Compat>();
+      const next = new Map<string, ResolveResponse>();
       for (let i = 0; i < modelIds.length; i += 8) {
         if (cancelled) return;
         const batch = modelIds.slice(i, i + 8);
@@ -666,7 +673,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
         results.forEach((r, idx) => {
           const id = batch[idx];
           if (id && r.status === "fulfilled" && r.value && "compat" in r.value) {
-            next.set(id, r.value.compat);
+            next.set(id, r.value);
           }
         });
         if (!cancelled) setCompatMap(new Map(next));
@@ -956,6 +963,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                     defaultTargetRemote={
                       isModels && selectedDevices.length === 1 ? selectedDevices[0] : undefined
                     }
+                    resolveResponse={compatMap.get(app.id)}
                   />
                 );
               })}
@@ -976,6 +984,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                     defaultTargetRemote={
                       isModels && selectedDevices.length === 1 ? selectedDevices[0] : undefined
                     }
+                    resolveResponse={compatMap.get(app.id)}
                   />
                 ))}
               </div>
