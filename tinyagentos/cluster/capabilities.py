@@ -16,6 +16,24 @@ if TYPE_CHECKING:
     from tinyagentos.registry import AppRegistry
 
 
+_RAM_BUCKETS_GB = (2, 4, 8, 16, 32, 64, 128)
+
+
+def _snap_to_bucket(raw_gb: int) -> int:
+    """Snap raw GB up to the nearest canonical bucket used by catalog manifests.
+
+    Catalog manifests only list canonical sizes (4gb / 8gb / 16gb / ...);
+    if a device reports a value between buckets (e.g. 15GB on a 16GB Pi after
+    kernel reservation), snap up so the tier_id matches the bucket the
+    device IS, not the slightly-smaller value it self-reports.
+    """
+    raw_gb = max(1, raw_gb)
+    for bucket in _RAM_BUCKETS_GB:
+        if raw_gb <= bucket:
+            return bucket
+    return _RAM_BUCKETS_GB[-1]
+
+
 def worker_tier_id(hardware: dict) -> str:
     """Derive a catalog-compatible tier id from a worker's hardware dict.
 
@@ -50,19 +68,19 @@ def worker_tier_id(hardware: dict) -> str:
     if npu_type != "none":
         accel = "npu"
         # NPU tiers use RAM gb
-        gb = max(1, ram_mb // 1024)
+        gb = _snap_to_bucket(ram_mb // 1024)
         return f"{arch}-{accel}-{gb}gb"
 
     if gpu_type == "nvidia" and gpu.get("cuda"):
         accel = "cuda"
         vram_mb = gpu.get("vram_mb", 0) or 0
-        gb = max(1, vram_mb // 1024) if vram_mb else max(1, ram_mb // 1024)
+        gb = _snap_to_bucket(vram_mb // 1024) if vram_mb else _snap_to_bucket(ram_mb // 1024)
         return f"{arch}-{accel}-{gb}gb"
 
     if gpu_type == "amd" and gpu.get("rocm"):
         accel = "rocm"
         vram_mb = gpu.get("vram_mb", 0) or 0
-        gb = max(1, vram_mb // 1024) if vram_mb else max(1, ram_mb // 1024)
+        gb = _snap_to_bucket(vram_mb // 1024) if vram_mb else _snap_to_bucket(ram_mb // 1024)
         return f"{arch}-{accel}-{gb}gb"
 
     if gpu_type == "apple":
@@ -72,14 +90,20 @@ def worker_tier_id(hardware: dict) -> str:
     if gpu.get("vulkan"):
         accel = "vulkan"
         vram_mb = gpu.get("vram_mb", 0) or 0
-        gb = max(1, vram_mb // 1024) if vram_mb else max(1, ram_mb // 1024)
+        gb = _snap_to_bucket(vram_mb // 1024) if vram_mb else _snap_to_bucket(ram_mb // 1024)
         return f"{arch}-{accel}-{gb}gb"
 
     # CPU-only fallback
-    gb = max(1, ram_mb // 1024)
+    gb = _snap_to_bucket(ram_mb // 1024)
     return f"{arch}-cpu-{gb}gb"
 
 
+# TODO(rockchip-target): The controller's hardware_to_targets sometimes returns
+# only ["cpu"] instead of ["rockchip", "cpu"] on Orange Pi 5+ production.
+# Root cause: the worker hardware dict for the *controller* is sourced from
+# HardwareProfile.hardware, which may report npu.type as something other than
+# "rk3588" or "rknpu" in older agent versions or when the NPU driver hasn't
+# initialised. Fix tracked separately — do not conflate with this PR.
 def hardware_to_targets(hardware: dict) -> list[str]:
     """Derive the resolver's catalog-targets list from a worker hardware dict.
 

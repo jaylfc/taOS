@@ -25,15 +25,30 @@ export interface FilterResult {
  * the backend filter only when no device filter is active; universal
  * device compatibility already includes them in that case.
  */
+/**
+ * Returns true if at least one of the selected devices has hardware_known === false.
+ * Used by callers to decide whether to show the "unknown hardware" banner.
+ */
+export function hasUnknownHardwareDevice(selectedDevices: InstallTarget[]): boolean {
+  return selectedDevices.some((d) => d.hardware_known === false);
+}
+
 export function filterModels(
   apps: CatalogApp[],
   selectedDevices: InstallTarget[],
   selectedBackends: string[],
 ): FilterResult {
+  // Devices with unknown hardware don't contribute a tier to the filter —
+  // they would match nothing and silently empty the catalog. Treat the device
+  // axis as inactive for those devices specifically: only known-hardware
+  // devices participate in tier matching.
+  const knownDevices = selectedDevices.filter((d) => d.hardware_known !== false);
   const tiers = new Set(
-    selectedDevices.map((d) => d.tier_id).filter((t): t is string => Boolean(t))
+    knownDevices.map((d) => d.tier_id).filter((t): t is string => Boolean(t))
   );
-  const requireDeviceMatch = selectedDevices.length > 0;
+  // If ALL selected devices have unknown hardware, treat the device filter as
+  // inactive (show everything) so the user doesn't get an empty catalog.
+  const requireDeviceMatch = selectedDevices.length > 0 && knownDevices.length > 0;
   const backends = new Set(selectedBackends);
 
   const compatible: CatalogApp[] = [];
