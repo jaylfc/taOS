@@ -48,9 +48,14 @@ fi
 # "fedora-host" becomes "fedora-worker"). Skip the suffix if the hostname
 # already contains "worker" so we don't end up with "rig-worker-worker".
 _default_worker_name() {
-    local h
+    local h h_lower
     h="$(hostname -s)"
-    if [[ "$h" == *worker* ]]; then
+    # Case-insensitive match so this stays consistent with the PowerShell
+    # installer's -like '*worker*' (which is case-insensitive). Otherwise
+    # a host called "WORKER1" would skip the suffix on Windows but get
+    # "-worker" appended on Linux.
+    h_lower="${h,,}"
+    if [[ "$h_lower" == *worker* ]]; then
         printf '%s' "$h"
     else
         printf '%s-worker' "$h"

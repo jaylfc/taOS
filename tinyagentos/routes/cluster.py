@@ -279,13 +279,13 @@ async def list_install_targets(request: Request):
     # Also map URL-hostname → tier_id so an incus remote whose name doesn't
     # match the worker registration name (e.g. remote "fedora-worker" vs
     # worker "fedora-host") still resolves the same physical hardware.
+    from urllib.parse import urlparse as _urlparse
     cluster = getattr(request.app.state, "cluster_manager", None)
     registry = getattr(request.app.state, "registry", None)
     worker_tiers: dict[str, str] = {}
     worker_tiers_by_host: dict[str, str] = {}
     workers_by_host: dict[str, "WorkerInfo"] = {}
     if cluster is not None and registry is not None:
-        from urllib.parse import urlparse as _urlparse
         for w in cluster.get_workers():
             try:
                 tier_id, _caps = _potential_capabilities(w.hardware, registry)
@@ -302,7 +302,6 @@ async def list_install_targets(request: Request):
 
     try:
         import tinyagentos.containers as containers
-        from urllib.parse import urlparse as _urlparse
         remotes = await containers.remote_list()
         for r in remotes:
             name = r.get("name", "")
