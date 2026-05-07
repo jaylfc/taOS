@@ -426,13 +426,22 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
   const [selectedTarget, setSelectedTarget] = useState<string>(
     defaultTargetRemote ?? "local"
   );
+  // "auto" defers variant choice to the resolver — same default the
+  // backend uses when the field is absent. Users can override via the
+  // dropdown when the manifest exposes >1 variant.
+  const [selectedVariant, setSelectedVariant] = useState<string>("auto");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (defaultTargetRemote !== undefined) setSelectedTarget(defaultTargetRemote);
   }, [defaultTargetRemote]);
   const iconUrl = resolveIconUrl(app.id);
-  const isLxc = app.install_method === "lxc";
+  const variantOptions = app.variants ?? [];
+  const showVariantPicker = !app.installed && variantOptions.length > 1;
+  // Show the target chooser whenever multiple targets exist — used to
+  // be gated to LXC apps only, but model installs also route to the
+  // selected worker so cluster users want the same pick on every card.
+  const showTargetPicker = !app.installed && installTargets.length > 1;
 
   const handleAction = async () => {
     setBusy(true);
@@ -454,6 +463,9 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
         onUninstall(app.id);
       } else {
         const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
+        if (selectedVariant !== "auto") {
+          body.variant_id = selectedVariant;
+        }
         const res = await fetch("/api/store/install-v2", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -531,7 +543,7 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
             {error}
           </div>
         )}
-        {isLxc && !app.installed && installTargets.length > 1 && (
+        {showTargetPicker && (
           <div className="flex items-center gap-2">
             <label htmlFor={`target-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">
               Install on
@@ -545,6 +557,25 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
             >
               {installTargets.map((t) => (
                 <option key={t.name} value={t.name}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        {showVariantPicker && (
+          <div className="flex items-center gap-2">
+            <label htmlFor={`variant-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">
+              Variant
+            </label>
+            <select
+              id={`variant-${app.id}`}
+              value={selectedVariant}
+              onChange={(e) => setSelectedVariant(e.target.value)}
+              className="flex-1 h-7 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-[11px] text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20 transition-colors"
+              aria-label="Variant"
+            >
+              <option value="auto">Auto (recommended)</option>
+              {variantOptions.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
               ))}
             </select>
           </div>

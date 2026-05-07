@@ -69,6 +69,26 @@ async def list_catalog(request: Request, type: str | None = None):
     registry = request.app.state.registry
     installation = getattr(request.app.state, "installation_state", None)
     apps = registry.list_available(type_filter=type)
+    def _slim_variants(manifest_app) -> list[dict]:
+        """Return id/name/size for each variant. Models with multiple
+        variants need this so the Store can render a chooser instead of
+        forcing the resolver's auto-pick."""
+        if manifest_app.type != "model":
+            return []
+        out: list[dict] = []
+        for v in (manifest_app.variants or []):
+            if not isinstance(v, dict):
+                continue
+            vid = v.get("id")
+            if not vid:
+                continue
+            out.append({
+                "id": vid,
+                "name": v.get("name") or vid,
+                "size_mb": v.get("size_mb") or 0,
+            })
+        return out
+
     return [
         {
             "id": a.id, "name": a.name, "type": a.type, "category": a.category,
@@ -78,6 +98,7 @@ async def list_catalog(request: Request, type: str | None = None):
             "install_method": (a.install.get("method") or a.install.get("backend") or "") if isinstance(a.install, dict) else "",
             "installed": (installation.is_installed(a.id) if installation else registry.is_installed(a.id)),
             "state": (installation.state(a.id) if installation else ("installed" if registry.is_installed(a.id) else "not_installed")),
+            "variants": _slim_variants(a),
         }
         for a in apps
     ]
