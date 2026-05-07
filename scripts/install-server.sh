@@ -258,13 +258,39 @@ detect_and_advise_accelerators() {
     fi
 
     # ── Rockchip RKNPU ──────────────────────────────────────────────
+    # Multi-signal detection: different RK3588 kernels expose the NPU at
+    # different paths. /dev/rknpu and /sys/class/devfreq/*.npu are the
+    # cleanest signals when present, but some kernel builds skip devfreq
+    # or expose only the debugfs entry, and on others the user-space
+    # device node is gated behind a module that isn't autoloaded. Fall
+    # back to the device-tree compatible string (the SoC's bootloader
+    # ID, always present on real RK35xx hardware) so we don't miss the
+    # NPU on those boards.  TAOS_FORCE_RKNPU=1 forces this branch on
+    # for testing or for kernels we don't yet recognise.
     local rknpu_present=0
-    if [[ -e /dev/rknpu ]]; then
+    local rknpu_signal=""
+    if [[ "${TAOS_FORCE_RKNPU:-}" == "1" || "${TAOS_FORCE_RKNPU:-}" == "true" ]]; then
         rknpu_present=1
+        rknpu_signal="TAOS_FORCE_RKNPU"
+    elif [[ -e /dev/rknpu ]]; then
+        rknpu_present=1
+        rknpu_signal="/dev/rknpu"
+    elif [[ -d /sys/kernel/debug/rknpu ]] || [[ -e /sys/kernel/debug/rknpu/load ]]; then
+        rknpu_present=1
+        rknpu_signal="/sys/kernel/debug/rknpu"
+    elif command -v lsmod >/dev/null 2>&1 && lsmod 2>/dev/null | awk '{print $1}' | grep -qx "rknpu"; then
+        rknpu_present=1
+        rknpu_signal="lsmod:rknpu"
+    elif [[ -r /proc/device-tree/compatible ]] && tr -d '\0' < /proc/device-tree/compatible 2>/dev/null | grep -qE "rockchip,rk(3588|3576|3568)"; then
+        rknpu_present=1
+        rknpu_signal="device-tree:rockchip-rk3xxx"
     else
         for _npu_devfreq in /sys/class/devfreq/*.npu; do
-            [[ -d "$_npu_devfreq" ]] && { rknpu_present=1; break; }
+            [[ -d "$_npu_devfreq" ]] && { rknpu_present=1; rknpu_signal="$_npu_devfreq"; break; }
         done
+    fi
+    if (( rknpu_present )); then
+        log "rknpu: detected via $rknpu_signal"
     fi
     if (( rknpu_present )); then
         found_any=1
