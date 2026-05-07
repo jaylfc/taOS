@@ -343,6 +343,76 @@ detect_and_advise_accelerators() {
 
 detect_and_advise_accelerators
 
+# --- container runtime — install Incus if nothing is present -------------
+#
+# taOS uses a container runtime (Incus, Docker, or Podman) to deploy
+# worker containers. On macOS, the Apple Containerization framework
+# (bundled with macOS 26) is used instead — no install needed here.
+# On Linux, if no runtime is found, we install Incus via the system
+# package manager on Debian/Ubuntu/Fedora. On Arch/Alpine we log a
+# manual-install notice and continue — those distros have it in the
+# repos but the AUR/apk setup varies too much to auto-invoke here.
+# A failed Incus install is non-fatal: taOS still starts; cluster and
+# worker-container features are simply unavailable until one is added.
+
+ensure_container_runtime() {
+    if [[ "$os_name" == "Darwin" ]]; then
+        log "container runtime: macOS — Apple Containerization framework (macOS 26+) will be used"
+        return 0
+    fi
+
+    # Check if any supported runtime is already present
+    if command -v incus >/dev/null 2>&1; then
+        log "container runtime: incus $(incus --version 2>/dev/null | head -1) — ok"
+        return 0
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        log "container runtime: docker $(docker --version 2>/dev/null | head -1) — ok"
+        return 0
+    fi
+    if command -v podman >/dev/null 2>&1; then
+        log "container runtime: podman $(podman --version 2>/dev/null | head -1) — ok"
+        return 0
+    fi
+
+    log "no container runtime found — attempting to install Incus"
+
+    local installed=0
+    if command -v apt-get >/dev/null 2>&1; then
+        log "installing incus via apt"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus \
+            && installed=1 \
+            || warn "apt install incus failed — continuing without container support"
+    elif command -v dnf >/dev/null 2>&1; then
+        log "installing incus via dnf"
+        sudo dnf install -y -q incus \
+            && installed=1 \
+            || warn "dnf install incus failed — continuing without container support"
+    elif command -v pacman >/dev/null 2>&1; then
+        warn "container runtime: Arch detected — install Incus manually with:"
+        warn "  sudo pacman -S incus"
+        warn "  (or install Docker/Podman if you prefer)"
+        warn "  worker containers will be unavailable until a runtime is installed"
+    elif command -v apk >/dev/null 2>&1; then
+        warn "container runtime: Alpine detected — install Incus manually with:"
+        warn "  sudo apk add incus"
+        warn "  worker containers will be unavailable until a runtime is installed"
+    else
+        warn "container runtime: unrecognised package manager — install Incus or Docker manually"
+        warn "  worker containers will be unavailable until a runtime is installed"
+    fi
+
+    if (( installed )); then
+        if command -v incus >/dev/null 2>&1; then
+            log "container runtime: incus installed successfully"
+        else
+            warn "incus install reported success but binary not found on PATH — check your PATH"
+        fi
+    fi
+}
+
+ensure_container_runtime
+
 # --- clone / update the repo ---------------------------------------------
 
 if [[ ! -d "$INSTALL_DIR/.git" ]]; then

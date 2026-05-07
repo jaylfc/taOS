@@ -26,6 +26,12 @@ export interface InstallTarget {
   tier_id?: string;
   /** Display name for pill bars. Defaults to `label` when absent. */
   friendly_name?: string;
+  /**
+   * False when the remote is an incus remote not yet registered as a taOS
+   * cluster worker. When false, tier_id is "unknown" and the filter should
+   * treat this device as if no device filter is active (show all).
+   */
+  hardware_known?: boolean;
 }
 
 export interface InstalledEntry {

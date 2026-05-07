@@ -275,7 +275,9 @@ def get_backend() -> ContainerBackend:
     """
     if _active_backend is None:
         raise RuntimeError(
-            "No container backend configured. Call set_backend() first."
+            "No container backend detected on this host. taOS needs Incus or Docker to run "
+            "worker containers. Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
+            "'sudo dnf install incus' on Fedora) and restart taOS."
         )
     return _active_backend
 

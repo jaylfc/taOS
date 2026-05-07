@@ -3,6 +3,31 @@ import { useMemo } from "react";
 import { X } from "lucide-react";
 import type { InstallTarget } from "./types";
 
+/** Banner rendered above the catalog when one or more selected devices have unknown hardware. */
+export function UnknownHardwareBanner({ devices }: { devices: InstallTarget[] }) {
+  const unknownNames = devices
+    .filter((d) => d.hardware_known === false)
+    .map((d) => d.friendly_name ?? d.label);
+  if (unknownNames.length === 0) return null;
+  const names = unknownNames.join(", ");
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 mb-2"
+    >
+      <span aria-hidden="true">?</span>
+      <span>
+        Selected {unknownNames.length === 1 ? "device" : "devices"}{" "}
+        <strong>{names}</strong>{" "}
+        {unknownNames.length === 1 ? "has" : "have"} unknown hardware — register{" "}
+        {unknownNames.length === 1 ? "it" : "them"} via the Cluster app to filter
+        accurately. Showing all models for now.
+      </span>
+    </div>
+  );
+}
+
 interface Props {
   devices: InstallTarget[];
   selected: string[]; // device names
@@ -52,12 +77,19 @@ export function DevicePillBar({
     >
       {devices.map((d) => {
         const isOn = selectedSet.has(d.name);
-        const tierBadge = d.tier_id?.replace(/^arm-|^x86-|^apple-/, "") ?? "";
+        const hardwareUnknown = d.hardware_known === false;
+        const tierBadge = hardwareUnknown
+          ? "?"
+          : (d.tier_id?.replace(/^arm-|^x86-|^apple-/, "") ?? "");
+        const tooltip = hardwareUnknown
+          ? "Hardware unknown — register this worker via the Cluster app to see compatibility"
+          : undefined;
         return (
           <button
             key={d.name}
             type="button"
             aria-pressed={isOn}
+            title={tooltip}
             onClick={() => toggle(d.name)}
             className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs whitespace-nowrap transition-colors ${
               isOn
@@ -67,7 +99,10 @@ export function DevicePillBar({
           >
             <span>{d.friendly_name ?? d.label}</span>
             {tierBadge && (
-              <span className="text-[10px] opacity-70 uppercase tracking-wide">
+              <span
+                className={`text-[10px] uppercase tracking-wide ${hardwareUnknown ? "opacity-50" : "opacity-70"}`}
+                aria-label={hardwareUnknown ? "hardware unknown" : undefined}
+              >
                 {tierBadge}
               </span>
             )}

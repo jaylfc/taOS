@@ -295,17 +295,25 @@ async def list_install_targets(request: Request):
             proto = r.get("protocol", "")
             if not name or name in _BUILTIN_REMOTES or proto != "incus":
                 continue
+            addr = r.get("addr", "")
+            if addr.startswith("unix://"):
+                # Local incus daemon — already added as the "local" controller
+                # entry above. Incus exposes this as "local (current)" when it
+                # is the active context, which isn't in _BUILTIN_REMOTES.
+                continue
             worker_hw = next(
                 (w.hardware for w in cluster.get_workers() if w.name == name),
                 {},
             ) if cluster else {}
+            hardware_known = bool(worker_hw) or bool(worker_tiers.get(name))
             targets.append({
                 "name": name,
                 "label": name,
                 "type": "remote",
                 "addr": r.get("addr", ""),
-                "tier_id": worker_tiers.get(name, ""),
+                "tier_id": worker_tiers.get(name) or ("unknown" if not hardware_known else ""),
                 "targets": hardware_to_targets(worker_hw),
+                "hardware_known": hardware_known,
                 "friendly_name": name,
             })
     except Exception as exc:  # noqa: BLE001

@@ -682,6 +682,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             set_backend(LXCBackend())
         elif runtime in ("docker", "podman"):
             set_backend(DockerBackend(binary=runtime))
+        else:
+            logger.warning(
+                "No container backend detected (Incus / Docker / Podman / Apple). "
+                "Cluster features and worker containers will be disabled. "
+                "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
+                "'sudo dnf install incus' on Fedora) and restart taOS."
+            )
 
         # Disk quota monitor — build and attach to app state so the route
         # handler can reuse the same instance (preserves in-memory last_state).
@@ -691,7 +698,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             _dq_backend = _get_container_backend()
             app.state.disk_quota_monitor = DiskQuotaMonitor(config, _dq_backend, notif_store)
         except Exception:
-            logger.exception("disk quota monitor failed to initialise — disk routes will still work")
+            logger.exception(
+                "disk quota monitor failed to initialise (likely because no container backend is "
+                "configured); container-quota tracking disabled, system-wide disk usage still "
+                "reported via shutil.disk_usage()"
+            )
             app.state.disk_quota_monitor = None
 
         try:
@@ -920,8 +931,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             set_backend(LXCBackend())
         elif _runtime in ("docker", "podman"):
             set_backend(DockerBackend(binary=_runtime))
+        else:
+            logger.warning(
+                "No container backend detected (Incus / Docker / Podman / Apple). "
+                "Cluster features and worker containers will be disabled. "
+                "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
+                "'sudo dnf install incus' on Fedora) and restart taOS."
+            )
     except Exception:
-        pass  # Container runtime detection is non-fatal
+        logger.exception("container backend auto-init failed")
 
     # Mount static files
     static_dir = PROJECT_DIR / "static"

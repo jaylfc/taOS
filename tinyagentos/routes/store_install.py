@@ -70,8 +70,19 @@ async def get_device_capability(request: Request, target_remote: str | None) -> 
         ram_mb = int(hw.get("ram_mb", 0) or 0)
         vram_mb = int((hw.get("gpu") or {}).get("vram_mb", 0) or 0)
         # Free disk lives on the hardware profile's disk dict (best-effort).
-        disk_total = int((hw.get("disk") or {}).get("total_gb", 0) or 0) * 1024
-        free_disk_mb = max(0, disk_total)  # we don't track used precisely; assume room.
+        free_gb = int((hw.get("disk") or {}).get("free_gb", 0) or 0)
+        free_disk_mb = max(0, free_gb * 1024)
+        if free_disk_mb == 0:
+            # Hardware probe didn't report disk OR detection failed entirely.
+            # Fall back to OS-level free space against the install dir.
+            try:
+                import shutil as _shutil
+                from pathlib import Path as _Path
+                install_dir = getattr(request.app.state, "data_dir", _Path("/"))
+                usage = _shutil.disk_usage(str(install_dir))
+                free_disk_mb = int(usage.free // (1024 * 1024))
+            except Exception:
+                free_disk_mb = 0  # truly unknowable; original behaviour
         registry = getattr(request.app.state, "registry", None)
         installed_backends: tuple[str, ...] = ()
         if registry is not None:

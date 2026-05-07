@@ -3,10 +3,10 @@ import { ShoppingBag, Search, Download, Trash2, Check, Package, Loader2, Bot, Br
 import { Button, Card, CardContent, CardFooter, CardHeader, Input } from "@/components/ui";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
 import type { CatalogApp, InstallTarget, InstalledEntry } from "./types";
-import { DevicePillBar } from "./DevicePillBar";
+import { DevicePillBar, UnknownHardwareBanner } from "./DevicePillBar";
 import { BackendPillBar } from "./BackendPillBar";
 import { IncompatibleToggle } from "./IncompatibleToggle";
-import { filterCatalog, compatFromResolver } from "./filter";
+import { filterCatalog, compatFromResolver, hasUnknownHardwareDevice } from "./filter";
 import { resolveModel, type ResolveResponse } from "./resolver-types";
 import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
@@ -915,6 +915,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
               onChange={setSelectedDevices}
               showSkeleton={installTargets.length === 0 && loading}
             />
+            {hasUnknownHardwareDevice(selectedDeviceObjs) && (
+              <UnknownHardwareBanner devices={selectedDeviceObjs} />
+            )}
             <BackendPillBar
               available={availableBackends}
               selected={selectedBackends}

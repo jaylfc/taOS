@@ -1,6 +1,6 @@
 // desktop/src/apps/StoreApp/filter.test.ts
 import { describe, it, expect } from "vitest";
-import { filterCatalog, compatFromResolver } from "./filter";
+import { filterCatalog, compatFromResolver, hasUnknownHardwareDevice } from "./filter";
 import type { CatalogApp, InstallTarget } from "./types";
 
 const piDevice: InstallTarget = {
@@ -325,6 +325,54 @@ describe("filterCatalog", () => {
     const { compatible, incompatible } = filterCatalog([rkLlamaCpp], [x86VulkanDevice], []);
     expect(compatible.find((a) => a.id === "rk-llama-cpp")).toBeUndefined();
     expect(incompatible.find((a) => a.id === "rk-llama-cpp")).toBeDefined();
+  });
+});
+
+describe("unknown-hardware device filter", () => {
+  const unknownDevice: InstallTarget = {
+    name: "fedora-worker",
+    label: "fedora-worker",
+    type: "remote",
+    tier_id: "unknown",
+    hardware_known: false,
+  };
+
+  it("hasUnknownHardwareDevice returns false when all devices have known hardware", () => {
+    expect(hasUnknownHardwareDevice([piDevice, macDevice])).toBe(false);
+  });
+
+  it("hasUnknownHardwareDevice returns true when any device has hardware_known=false", () => {
+    expect(hasUnknownHardwareDevice([piDevice, unknownDevice])).toBe(true);
+  });
+
+  it("hasUnknownHardwareDevice returns false when hardware_known is absent (legacy)", () => {
+    const noField: InstallTarget = { name: "x", label: "x", type: "remote" };
+    expect(hasUnknownHardwareDevice([noField])).toBe(false);
+  });
+
+  it("unknown-only selection shows all apps (filter treated as inactive)", () => {
+    // When every selected device has unknown hardware, knownDevices is empty
+    // → requireDeviceMatch is false → all apps pass device filter.
+    const { compatible } = filterCatalog(allApps, [unknownDevice], []);
+    expect(compatible).toEqual(allApps);
+  });
+
+  it("mixed known+unknown selection: unknown device doesn't narrow, known device does", () => {
+    // Pi + fedora-worker(unknown): only Pi tier matters; unknown adds nothing.
+    const { compatible } = filterCatalog(allApps, [piDevice, unknownDevice], []);
+    const ids = compatible.map((a) => a.id);
+    expect(ids).toContain("qwen3-4b-rk");   // matches Pi
+    expect(ids).toContain("small-tool");     // universal
+    // ollama model has no arm-npu-16gb tier so it won't match; but it would
+    // match if the unknown device contributed a tier — confirm it doesn't.
+    expect(ids).not.toContain("qwen3-4b-ollama");
+  });
+
+  it("unknown device does not cause empty catalog when it is the only selection", () => {
+    // The key regression: selecting an unknown-hardware device must NOT empty the Store.
+    const { compatible, incompatible } = filterCatalog(allApps, [unknownDevice], []);
+    expect(compatible.length).toBeGreaterThan(0);
+    expect(incompatible).toEqual([]);
   });
 });
 

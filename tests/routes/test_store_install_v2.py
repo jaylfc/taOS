@@ -253,3 +253,84 @@ class TestResolveErrorReturns422:
         assert "near_miss" in body
         assert "suggestions" in body
         assert isinstance(body["suggestions"], list)
+
+
+# ---------------------------------------------------------------------------
+# Tests for get_device_capability disk-free logic (#368)
+# ---------------------------------------------------------------------------
+
+class TestGetDeviceCapabilityDisk:
+    """Unit tests for the free-disk probe in get_device_capability."""
+
+    def _make_request(self, hw: dict, data_dir=None):
+        """Build a minimal mock request with a hardware_profile and optional data_dir."""
+        from unittest.mock import MagicMock
+
+        hp = MagicMock()
+        hp.hardware = hw
+
+        state = MagicMock()
+        state.hardware_profile = hp
+        state.registry = None
+        if data_dir is not None:
+            state.data_dir = data_dir
+
+        req = MagicMock()
+        req.app.state = state
+        return req
+
+    @pytest.mark.asyncio
+    async def test_free_gb_from_hardware_profile(self):
+        """When hardware probe reports free_gb=10, free_disk_mb must be 10240."""
+        from tinyagentos.routes.store_install import get_device_capability
+
+        hw = {"disk": {"free_gb": 10, "total_gb": 50}, "ram_mb": 0}
+        req = self._make_request(hw)
+        cap = await get_device_capability(req, None)
+        assert cap.free_disk_mb == 10240
+
+    @pytest.mark.asyncio
+    async def test_empty_disk_falls_back_to_shutil(self, tmp_path, monkeypatch):
+        """When hardware disk dict is empty, free_disk_mb comes from shutil.disk_usage."""
+        import shutil
+        from tinyagentos.routes.store_install import get_device_capability
+
+        fake_usage = shutil.disk_usage.__class__  # just need a namedtuple-like object
+        # shutil.disk_usage returns a named tuple with .free in bytes
+        fake_result = shutil.disk_usage("/")  # get the real namedtuple type
+        # monkeypatch shutil.disk_usage inside the store_install module
+        import collections
+        DiskUsage = collections.namedtuple("DiskUsage", ["total", "used", "free"])
+        monkeypatch.setattr(
+            "tinyagentos.routes.store_install._shutil",
+            None,  # will be replaced below via the module directly
+            raising=False,
+        )
+        # Patch at the shutil module level used by the fallback (imported inside the function)
+        import shutil as _shutil_mod
+        original = _shutil_mod.disk_usage
+        _shutil_mod.disk_usage = lambda _path: DiskUsage(total=100 * 1024**3, used=10 * 1024**3, free=20 * 1024**2 * 1024)
+        try:
+            hw = {"disk": {}, "ram_mb": 0}
+            req = self._make_request(hw, data_dir=tmp_path)
+            cap = await get_device_capability(req, None)
+            # 20 * 1024 MB = 20480 MB
+            assert cap.free_disk_mb == 20480
+        finally:
+            _shutil_mod.disk_usage = original
+
+    @pytest.mark.asyncio
+    async def test_shutil_raises_returns_zero(self, monkeypatch):
+        """When hardware probe is empty AND shutil.disk_usage raises, free_disk_mb == 0."""
+        import shutil as _shutil_mod
+        from tinyagentos.routes.store_install import get_device_capability
+
+        original = _shutil_mod.disk_usage
+        _shutil_mod.disk_usage = lambda _path: (_ for _ in ()).throw(OSError("no disk"))
+        try:
+            hw = {"disk": {}, "ram_mb": 0}
+            req = self._make_request(hw)
+            cap = await get_device_capability(req, None)
+            assert cap.free_disk_mb == 0
+        finally:
+            _shutil_mod.disk_usage = original
