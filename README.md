@@ -133,6 +133,14 @@ tinyagentos-worker http://your-server:6969
 curl -sL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/tinyagentos/worker/android_setup.sh | bash
 ```
 
+```powershell
+# Windows 10/11, one-line worker install (PowerShell, mirrors the
+# Linux/macOS installer — registers a Scheduled Task so the worker
+# starts at boot and survives logout)
+$env:TAOS_CONTROLLER_URL = 'http://your-server:6969'
+iwr -useb https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-worker.ps1 | iex
+```
+
 **Hardware detection on minimal systems.** The worker detects NVIDIA GPUs even when `nvidia-smi` is not installed: it probes `/proc/driver/nvidia` to confirm the driver is loaded and looks up VRAM from a known-cards table keyed by device ID. On native (non-container) hosts the installer offers to install `nvidia-utils` (via `apt`/`dnf`/`pacman`, matching the loaded driver branch automatically). Rockchip NPU detection uses unprivileged sysfs paths so it works inside LXC containers and other restricted environments where `/sys/kernel/debug` is inaccessible. Hosts that have neither GPU nor NPU are registered as CPU workers and contribute embeddings and small-model inference.
 
 **Sudo and freshness.** The Linux/macOS worker installer is designed to run on **either a fresh Debian install or your existing system.** No clean slate required. It installs cleanly on Debian, Ubuntu, Fedora, Arch, Alpine, and macOS.
