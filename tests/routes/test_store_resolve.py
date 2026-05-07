@@ -28,7 +28,7 @@ def make_qwen_manifest():
 @pytest.fixture
 def fake_registry():
     reg = MagicMock()
-    reg.get_app = MagicMock(return_value=make_qwen_manifest())
+    reg.get = MagicMock(return_value=make_qwen_manifest())
     return reg
 
 
