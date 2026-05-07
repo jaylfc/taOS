@@ -263,11 +263,26 @@ class TestGetDeviceCapabilityDisk:
     """Unit tests for the free-disk probe in get_device_capability."""
 
     def _make_request(self, hw: dict, data_dir=None):
-        """Build a minimal mock request with a hardware_profile and optional data_dir."""
-        from unittest.mock import MagicMock
+        """Build a minimal mock request with a hardware_profile and optional data_dir.
 
-        hp = MagicMock()
-        hp.hardware = hw
+        ``hw`` is the same nested {ram_mb, disk, gpu, ...} shape that
+        ``asdict(HardwareProfile)`` produces — get_device_capability now
+        calls asdict() on the profile, so the fixture builds a real
+        dataclass instance from the test dict.
+        """
+        from unittest.mock import MagicMock
+        from tinyagentos.hardware import (
+            HardwareProfile, CpuInfo, NpuInfo, GpuInfo, DiskInfo, OsInfo,
+        )
+
+        hp = HardwareProfile(
+            cpu=CpuInfo(**(hw.get("cpu") or {})),
+            ram_mb=int(hw.get("ram_mb", 0) or 0),
+            npu=NpuInfo(**(hw.get("npu") or {})),
+            gpu=GpuInfo(**(hw.get("gpu") or {})),
+            disk=DiskInfo(**(hw.get("disk") or {})),
+            os=OsInfo(**(hw.get("os") or {})),
+        )
 
         state = MagicMock()
         state.hardware_profile = hp
@@ -334,3 +349,21 @@ class TestGetDeviceCapabilityDisk:
             assert cap.free_disk_mb == 0
         finally:
             _shutil_mod.disk_usage = original
+
+    @pytest.mark.asyncio
+    async def test_total_ram_and_vram_propagate_from_hardware_profile(self):
+        """Regression: get_device_capability previously read hp.hardware
+        (an attribute that doesn't exist on HardwareProfile), so
+        total_ram_mb came back as 0 and every model's min_ram_mb check
+        failed in the Store. Confirm ram_mb + vram_mb come through now."""
+        from tinyagentos.routes.store_install import get_device_capability
+
+        hw = {
+            "ram_mb": 15958,
+            "gpu": {"type": "nvidia", "vram_mb": 24576, "cuda": True},
+            "disk": {"free_gb": 100, "total_gb": 500},
+        }
+        req = self._make_request(hw)
+        cap = await get_device_capability(req, None)
+        assert cap.total_ram_mb == 15958
+        assert cap.total_vram_mb == 24576

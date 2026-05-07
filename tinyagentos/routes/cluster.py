@@ -264,7 +264,10 @@ async def list_install_targets(request: Request):
     for display.
     """
     hp = getattr(request.app.state, "hardware_profile", None)
-    local_hw = getattr(hp, "hardware", {}) if hp else {}
+    # HardwareProfile is a flat dataclass (ram_mb / cpu / gpu / npu / disk
+    # / os) — no .hardware attribute. asdict() produces the same nested
+    # shape that hardware_to_targets and the Store filter expect.
+    local_hw = asdict(hp) if hp is not None else {}
     targets: list[dict] = [
         {
             "name": "local",
