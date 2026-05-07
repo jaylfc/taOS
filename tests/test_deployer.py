@@ -467,7 +467,12 @@ class TestDeployAgent:
             mock_push.return_value = (0, "")
             result = await deploy_agent(req)
             assert result["success"] is True
-            mock_push.assert_called_once()
+            # At least one push_file call must be for the install script
+            install_pushes = [
+                c for c in mock_push.call_args_list
+                if c.args[2] == "/tmp/install.sh"
+            ]
+            assert install_pushes, "install.sh was not pushed"
             assert any("bash /tmp/install.sh" in c for c in recorded_execs)
 
     @pytest.mark.asyncio
@@ -608,6 +613,55 @@ class TestDeployAgent:
             env = mock_create.call_args.kwargs["env"]
             assert "TAOS_BASE_IMAGE_PRESENT" not in env
             assert "deps_installed" in result["steps"]
+
+    @pytest.mark.asyncio
+    async def test_openclaw_deploy_pushes_agents_md_with_taosmd_rules(self, tmp_path):
+        """When framework=openclaw, deploy pushes AGENTS.md containing taosmd
+        agent_rules with the agent's name substituted in."""
+        pushed: list[tuple[str, str]] = []
+
+        async def fake_push_file(container, src, dst):
+            try:
+                with open(src) as fh:
+                    pushed.append((dst, fh.read()))
+            except FileNotFoundError:
+                # tmp file already unlinked — content capture not needed for error path
+                pushed.append((dst, ""))
+            return 0, ""
+
+        async def mock_exec_fn(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.99")
+            return (0, "ok")
+
+        fake_rules = "Follow the taosmd librarian protocol.\nAgent: <your-agent-name>"
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+             patch("tinyagentos.deployer.push_file", side_effect=fake_push_file), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.deployer.is_image_present", new_callable=AsyncMock, return_value=False):
+            mock_create.return_value = {"success": True, "name": "taos-agent-octest"}
+
+            import types
+            fake_taosmd = types.ModuleType("taosmd")
+            fake_taosmd.agent_rules = lambda: fake_rules
+
+            import sys
+            sys.modules["taosmd"] = fake_taosmd
+            try:
+                req = _req(name="octest", framework="openclaw", data_dir=tmp_path)
+                result = await deploy_agent(req)
+            finally:
+                sys.modules.pop("taosmd", None)
+
+        assert result["success"] is True
+        agents_md_entries = [(dst, content) for dst, content in pushed if dst == "/root/.openclaw/AGENTS.md"]
+        assert agents_md_entries, "AGENTS.md was not pushed to /root/.openclaw/AGENTS.md"
+        _dst, content = agents_md_entries[0]
+        assert "octest" in content, "agent slug not substituted in AGENTS.md"
+        assert "librarian" in content, "expected taosmd rules phrase in AGENTS.md"
+        assert "<your-agent-name>" not in content, "placeholder not replaced"
 
     @pytest.mark.asyncio
     async def test_bridge_url_injected_into_env(self, tmp_path):

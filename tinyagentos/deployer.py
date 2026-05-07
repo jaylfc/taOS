@@ -328,6 +328,39 @@ async def deploy_agent(req: DeployRequest) -> dict:
 
             steps.append("framework_installed")
 
+        # OpenClaw: inject taosmd agent rules into AGENTS.md so the framework
+        # picks them up on every turn (per taosmd contract — see issue #378).
+        # Non-fatal: the runtime system-prompt prepend in prompt_assembly.py
+        # remains as a backstop until all frameworks are wired.
+        if req.framework == "openclaw":
+            try:
+                import taosmd as _taosmd
+                _agent_rules_fn = getattr(_taosmd, "agent_rules", None)
+                if callable(_agent_rules_fn):
+                    _rules = _agent_rules_fn().replace("<your-agent-name>", req.name)
+                    import tempfile
+                    import os as _os
+                    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as _tf:
+                        _tf.write(_rules)
+                        _tmp_path = _tf.name
+                    _agents_md_path = "/root/.openclaw/AGENTS.md"
+                    _push_rc, _push_out = await push_file(container_name, _tmp_path, _agents_md_path)
+                    _os.unlink(_tmp_path)
+                    if _push_rc != 0:
+                        logger.warning(
+                            "openclaw: failed to push AGENTS.md (rc=%s): %s",
+                            _push_rc, _push_out[-200:],
+                        )
+                    else:
+                        logger.info(
+                            "openclaw: pushed AGENTS.md (taosmd rules) to %s",
+                            _agents_md_path,
+                        )
+            except ImportError:
+                logger.warning("openclaw: taosmd not installed — skipping AGENTS.md injection")
+            except Exception:
+                logger.exception("openclaw: AGENTS.md injection failed")
+
         # Step 5: Get container IP
         code, output = await exec_in_container(container_name, ["hostname", "-I"])
         container_ip = output.strip().split()[0] if code == 0 and output.strip() else None
