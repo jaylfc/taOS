@@ -1,0 +1,43 @@
+name: Add to Project Board
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+# This workflow adds every new issue and PR to the repo's GitHub Project (v2)
+# board so feature work shows up on the kanban automatically.
+#
+# Setup required (one-off):
+#
+# 1. Create a fine-grained PAT with `project:write` scope.
+# 2. Store it as a repo secret named ADD_TO_PROJECT_PAT.
+# 3. Add a repo variable named PROJECT_URL with the full project URL,
+#    e.g. https://github.com/users/jaylfc/projects/1
+#
+# If either is missing, the workflow logs a one-line skip note and exits 0
+# so issue creation isn't blocked by missing config.
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if not configured
+        id: cfg
+        env:
+          PROJECT_URL: ${{ vars.PROJECT_URL }}
+          PAT: ${{ secrets.ADD_TO_PROJECT_PAT }}
+        run: |
+          if [ -z "$PROJECT_URL" ] || [ -z "$PAT" ]; then
+            echo "::notice::add-to-project workflow not configured (PROJECT_URL var or ADD_TO_PROJECT_PAT secret missing). Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Add to Project
+        if: steps.cfg.outputs.skip != 'true'
+        uses: actions/add-to-project@v1
+        with:
+          project-url: ${{ vars.PROJECT_URL }}
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
