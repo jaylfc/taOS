@@ -44,7 +44,7 @@ _KNOWN_BACKENDS = {
 _BACKEND_TO_METHOD: dict[str, str] = {
     "rkllama": "rkllama",
     "rk-llama-cpp": "rkllamacpp",
-    "ollama": "download",
+    "ollama": "ollama",
     "llama-cpp": "download",
     "mlx": "download",
     "vllm": "download",
