@@ -49,6 +49,27 @@ class OsInfo:
     kernel: str = ""
 
 
+# Canonical RAM buckets covering the SBC / desktop / workstation range.
+# Boards reserve a slice for kernel/GPU so kernel-reported ram_mb is always
+# slightly below the marketed capacity (a "16 GB" Pi reports ~15.6 GB);
+# floor-dividing produced an `arm-npu-15gb` tier that didn't match any
+# catalog manifest using `arm-npu-16gb`. Snap to the closest bucket.
+_CANONICAL_RAM_GB: tuple[int, ...] = (
+    1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512,
+)
+
+
+def _snap_ram_to_canonical_gb(ram_mb: int) -> int:
+    """Map kernel-reported MB to the closest canonical bucket in GB.
+
+    ``ram_mb=0`` returns 1 to keep `profile_id` parseable while signalling
+    "unknown" via everything else (`cpu`, `npu.type=="none"`, etc.)."""
+    if ram_mb <= 0:
+        return 1
+    actual_gb = ram_mb / 1024
+    return min(_CANONICAL_RAM_GB, key=lambda b: abs(b - actual_gb))
+
+
 @dataclass
 class HardwareProfile:
     cpu: CpuInfo = field(default_factory=CpuInfo)
@@ -71,7 +92,7 @@ class HardwareProfile:
             accel = "vulkan"
         else:
             accel = "cpu"
-        ram_gb = max(1, self.ram_mb // 1024)
+        ram_gb = _snap_ram_to_canonical_gb(self.ram_mb)
         return f"{arch}-{accel}-{ram_gb}gb"
 
     def save(self, path: Path) -> None:

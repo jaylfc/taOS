@@ -785,6 +785,7 @@ function UpdatesSection() {
           </Button>
           {info?.has_updates ? (
             <Button size="sm" onClick={applyUpdate} disabled={applying}>
+              <RefreshCw size={14} className={applying ? "animate-spin" : ""} />
               {applying ? "Installing..." : "Install Update"}
             </Button>
           ) : null}
