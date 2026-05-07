@@ -75,7 +75,7 @@ GGUF-format models route through the resolver's `requires.backends` list — man
 | Model | Pi-NPU-16GB | Pi-NPU-32GB | Mac-MLX | Linux-x86-GPU | Linux-x86-CPU | Source | Notes |
 |---|---|---|---|---|---|---|---|
 | `qwen3-4b` (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | Qwen/Qwen3-4B-GGUF | catalog has it; backends in `requires` |
-| `gemma-4-e2b-gguf` | ✅ | ✅ | ⏳ | ⏳ | ⏳ | unsloth/gemma-4-E2B-it-GGUF | first GGUF on rk-llama.cpp |
+| `gemma-4-e2b-gguf` | ✅ | 🔧 | ⏳ | ⏳ | ⏳ | unsloth/gemma-4-E2B-it-GGUF | first GGUF on rk-llama.cpp; Pi-NPU-32GB awaits hardware smoke test |
 | Gemma 4 E4B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (followup) | follows e2b shape |
 | Qwen 3.5 2B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (followup) | rk-llama.cpp + ollama target |
 | Qwen 3.5 9B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (followup) | rk-llama.cpp + ollama target |
