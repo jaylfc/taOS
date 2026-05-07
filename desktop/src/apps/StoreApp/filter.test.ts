@@ -215,7 +215,7 @@ describe("unknown-hardware device filter", () => {
     expect(hasUnknownHardwareDevice([piDevice, unknownDevice])).toBe(true);
   });
 
-  it("hasUnknownHardwareDevice returns true when hardware_known is absent (legacy)", () => {
+  it("hasUnknownHardwareDevice returns false when hardware_known is absent (legacy)", () => {
     const noField: InstallTarget = { name: "x", label: "x", type: "remote" };
     expect(hasUnknownHardwareDevice([noField])).toBe(false);
   });
