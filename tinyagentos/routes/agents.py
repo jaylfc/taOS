@@ -438,7 +438,10 @@ class DeployAgentRequest(BaseModel):
     # Persona fields (v2 persona system).
     soul_md: str = ""
     agent_md: str = ""
-    memory_plugin: str = "taosmd"
+    memory_plugin: str | None = "taosmd"
+    # Per-agent override for taOSmd device + tier. None → use global default
+    # from data_dir/taosmd_default.json set by the memory wizard.
+    memory_config: dict | None = None
     source_persona_id: str | None = None
     save_to_library: dict | None = None  # {"name": str, "description": str|None}
 
@@ -622,6 +625,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     new_agent["soul_md"] = body.soul_md
     new_agent["agent_md"] = body.agent_md
     new_agent["memory_plugin"] = body.memory_plugin
+    new_agent["memory_config"] = body.memory_config
     new_agent["source_persona_id"] = body.source_persona_id
     new_agent["migrated_to_v2_personas"] = True
 

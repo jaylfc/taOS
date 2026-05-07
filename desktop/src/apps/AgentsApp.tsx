@@ -518,6 +518,323 @@ function AgentDetailPanel({
 }
 
 /* ------------------------------------------------------------------ */
+/*  MemoryWizardStep                                                   */
+/* ------------------------------------------------------------------ */
+
+// Tier metadata kept in sync with backend MEMORY_TIERS constant.
+const MEMORY_TIER_INFO: Record<string, { label: string; description: string; min_ram_mb: number; needs_accel: boolean }> = {
+  lite:     { label: "Lite",     description: "Works on any device. nomic-embed-text-v1.5 (~270MB). Slower retrieval.", min_ram_mb: 1024,  needs_accel: false },
+  standard: { label: "Standard", description: "Recommended for most users. bge-m3 (~2.3GB). Balanced.",                min_ram_mb: 4096,  needs_accel: false },
+  heavy:    { label: "Heavy",    description: "Best quality. bge-m3 + qwen3-reranker-0.6b (~3.5GB). Needs GPU/NPU.",   min_ram_mb: 8192,  needs_accel: true  },
+};
+
+/** Parse a tier_id like "arm-vulkan-8gb" and return RAM in MB. */
+function tierIdRamMb(tierId: string): number {
+  const m = tierId.match(/(\d+)gb/i);
+  return m ? parseInt(m[1], 10) * 1024 : 0;
+}
+
+/** Return the largest MEMORY_TIERS key the device tier_id can support. */
+function bestMemoryTierForDevice(deviceTierId: string): string {
+  const ram = tierIdRamMb(deviceTierId);
+  const hasAccel = /vulkan|cuda|npu|gpu/i.test(deviceTierId);
+  if (ram >= 8192 && hasAccel) return "heavy";
+  if (ram >= 4096) return "standard";
+  return "lite";
+}
+
+interface MemoryWizardStepProps {
+  memoryPlugin: "taosmd" | null;
+  setMemoryPlugin: (v: "taosmd" | null) => void;
+  memoryDeviceId: string | null;
+  setMemoryDeviceId: (v: string | null) => void;
+  memoryTierId: string | null;
+  setMemoryTierId: (v: string | null) => void;
+  memoryDefault: { device_id: string; tier_id: string; tier_name: string } | null | "none";
+  setMemoryDefault: (v: { device_id: string; tier_id: string; tier_name: string } | null | "none") => void;
+  memoryInstallTargets: Array<{ name: string; friendly_name: string; tier_id: string }>;
+  setMemoryInstallTargets: (v: Array<{ name: string; friendly_name: string; tier_id: string }>) => void;
+  memorySetupTaskId: string | null;
+  setMemorySetupTaskId: (v: string | null) => void;
+  memorySetupState: string;
+  setMemorySetupState: (v: string) => void;
+  memorySetupMsg: string;
+  setMemorySetupMsg: (v: string) => void;
+  memorySetupError: string | null;
+  setMemorySetupError: (v: string | null) => void;
+  memoryPickerMode: "default" | "picker";
+  setMemoryPickerMode: (v: "default" | "picker") => void;
+}
+
+function MemoryWizardStep({
+  memoryPlugin,
+  setMemoryPlugin,
+  memoryDeviceId,
+  setMemoryDeviceId,
+  memoryTierId,
+  setMemoryTierId,
+  memoryDefault,
+  setMemoryDefault,
+  memoryInstallTargets,
+  setMemoryInstallTargets,
+  memorySetupTaskId,
+  setMemorySetupTaskId,
+  memorySetupState,
+  setMemorySetupState,
+  memorySetupMsg,
+  setMemorySetupMsg,
+  memorySetupError,
+  setMemorySetupError,
+  memoryPickerMode,
+  setMemoryPickerMode,
+}: MemoryWizardStepProps) {
+  // Fetch default + install targets once on mount
+  useEffect(() => {
+    // Fetch user's saved default
+    fetch("/api/taosmd/default", { headers: { Accept: "application/json" } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.device_id) {
+          setMemoryDefault(data as { device_id: string; tier_id: string; tier_name: string });
+        } else {
+          setMemoryDefault("none");
+          setMemoryPickerMode("picker");
+        }
+      })
+      .catch(() => { setMemoryDefault("none"); setMemoryPickerMode("picker"); });
+
+    // Fetch install targets for device picker
+    fetch("/api/cluster/install-targets", { headers: { Accept: "application/json" } })
+      .then(r => r.ok ? r.json() : [])
+      .then((data: Array<{ name: string; friendly_name: string; tier_id: string }>) => {
+        setMemoryInstallTargets(Array.isArray(data) ? data : []);
+      })
+      .catch(() => setMemoryInstallTargets([]));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Poll setup task progress
+  useEffect(() => {
+    if (!memorySetupTaskId) return;
+    if (memorySetupState === "done" || memorySetupState === "failed") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/taosmd/setup/${memorySetupTaskId}`, { headers: { Accept: "application/json" } });
+        if (!r.ok) return;
+        const data = await r.json();
+        setMemorySetupState(data.state ?? "pending");
+        setMemorySetupMsg(data.message ?? "");
+        setMemorySetupError(data.error ?? null);
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [memorySetupTaskId, memorySetupState, setMemorySetupState, setMemorySetupMsg, setMemorySetupError]);
+
+  async function handleSetup() {
+    if (!memoryDeviceId || !memoryTierId) return;
+    setMemorySetupState("pending");
+    setMemorySetupMsg("Queued…");
+    setMemorySetupError(null);
+    try {
+      const r = await fetch("/api/taosmd/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ device_id: memoryDeviceId, tier: memoryTierId }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        setMemorySetupState("failed");
+        setMemorySetupError(err?.error ?? "Setup request failed");
+        return;
+      }
+      const { task_id } = await r.json();
+      setMemorySetupTaskId(task_id);
+      // Save the default optimistically
+      await fetch("/api/taosmd/default", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: memoryDeviceId, tier_id: memoryTierId }),
+      }).catch(() => { /* best-effort */ });
+    } catch (e) {
+      setMemorySetupState("failed");
+      setMemorySetupError(e instanceof Error ? e.message : "Network error");
+    }
+  }
+
+  const isRunning = memorySetupTaskId !== null && memorySetupState !== "done" && memorySetupState !== "failed";
+
+  // "Has default" mode
+  if (memoryPlugin !== null && memoryPickerMode === "default" && memoryDefault !== null && memoryDefault !== "none") {
+    const def = memoryDefault;
+    return (
+      <div className="space-y-3">
+        <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
+        <div className="px-4 py-3 rounded-lg border border-accent/30 bg-accent/5 flex items-start justify-between gap-2">
+          <div>
+            <div className="text-sm font-medium">taOSmd memory enabled</div>
+            <div className="text-xs text-shell-text-secondary mt-0.5">
+              {def.tier_name} on {def.device_id}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setMemoryPickerMode("picker")}
+              className="text-xs text-blue-400 hover:underline"
+            >
+              Change
+            </button>
+            <button
+              type="button"
+              onClick={() => setMemoryPlugin(null)}
+              className="text-xs text-shell-text-tertiary hover:text-shell-text"
+            >
+              Skip memory for this agent
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // "Skipped" mode — user pressed "Skip"
+  if (memoryPlugin === null) {
+    return (
+      <div className="space-y-3">
+        <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
+        <div className="px-4 py-3 rounded-lg border border-white/10 bg-shell-bg-deep">
+          <div className="text-sm font-medium text-shell-text-tertiary">Memory skipped for this agent</div>
+          <div className="text-xs text-shell-text-tertiary mt-0.5">
+            The agent will not have persistent memory. You can enable it later in agent settings.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setMemoryPlugin("taosmd")}
+          className="text-xs text-blue-400 hover:underline"
+        >
+          Enable memory
+        </button>
+      </div>
+    );
+  }
+
+  // Full picker mode (no default, or user clicked Change)
+  const selectedDevice = memoryInstallTargets.find(t => t.name === memoryDeviceId);
+  const bestTier = selectedDevice ? bestMemoryTierForDevice(selectedDevice.tier_id) : null;
+
+  return (
+    <div className="space-y-4">
+      <span className="block text-xs text-shell-text-secondary">Memory Layer</span>
+
+      {/* Device picker */}
+      <div>
+        <Label className="mb-1.5 block text-xs">Device</Label>
+        <div className="flex flex-wrap gap-2">
+          {memoryInstallTargets.length === 0 && (
+            <span className="text-xs text-shell-text-tertiary">Loading devices…</span>
+          )}
+          {memoryInstallTargets.map(t => (
+            <button
+              key={t.name}
+              type="button"
+              onClick={() => {
+                setMemoryDeviceId(t.name);
+                // Auto-suggest the best tier for this device
+                if (!memoryTierId) setMemoryTierId(bestMemoryTierForDevice(t.tier_id));
+              }}
+              className={`px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+                memoryDeviceId === t.name
+                  ? "border-accent bg-accent/10 text-shell-text"
+                  : "border-white/10 bg-shell-bg-deep text-shell-text-secondary hover:bg-white/5"
+              }`}
+            >
+              {t.friendly_name}
+              {t.tier_id && (
+                <span className="ml-1.5 opacity-60">{t.tier_id}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tier picker — only shown once device is selected */}
+      {memoryDeviceId && (
+        <div>
+          <Label className="mb-1.5 block text-xs">Memory tier</Label>
+          <div className="grid grid-cols-3 gap-2">
+            {(Object.entries(MEMORY_TIER_INFO) as [string, typeof MEMORY_TIER_INFO[string]][]).map(([key, info]) => {
+              const isRecommended = key === bestTier;
+              const selected = memoryTierId === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setMemoryTierId(key)}
+                  className={`p-2.5 rounded-lg border text-left transition-colors ${
+                    selected
+                      ? "border-accent bg-accent/10"
+                      : "border-white/10 bg-shell-bg-deep hover:bg-white/5"
+                  }`}
+                >
+                  <div className="flex items-center gap-1 mb-0.5">
+                    <span className="text-xs font-semibold">{info.label}</span>
+                    {isRecommended && !selected && (
+                      <span className="px-1 py-0.5 rounded text-[9px] font-medium bg-emerald-500/20 text-emerald-400 leading-none">
+                        recommended
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-shell-text-tertiary leading-tight">{info.description}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Setup button + progress */}
+      {memoryDeviceId && memoryTierId && (
+        <div className="space-y-2">
+          {!memorySetupTaskId && (
+            <Button
+              size="sm"
+              className="w-full"
+              onClick={handleSetup}
+              disabled={isRunning}
+            >
+              Set up memory layer
+            </Button>
+          )}
+          {memorySetupTaskId && (
+            <div className={`px-3 py-2 rounded-lg text-xs ${
+              memorySetupState === "done"
+                ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300"
+                : memorySetupState === "failed"
+                  ? "bg-red-500/10 border border-red-500/30 text-red-300"
+                  : "bg-shell-bg-deep border border-white/5 text-shell-text-secondary"
+            }`} role="status" aria-live="polite">
+              {memorySetupMsg || "Working…"}
+              {memorySetupError && <div className="mt-1 text-red-400">{memorySetupError}</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Skip link */}
+      <button
+        type="button"
+        onClick={() => setMemoryPlugin(null)}
+        className="text-xs text-shell-text-tertiary hover:text-shell-text transition-colors"
+      >
+        Skip memory for this agent
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  DeployWizard                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -554,10 +871,24 @@ function DeployWizard({
   const [memory, setMemory] = useState("");
   const [cpus, setCpus] = useState("");
 
-  // Step 3 — Permissions
+  // Step 4 — Memory layer
+  // null = no choice yet (show picker); "taosmd" = enabled; null plugin = skipped
+  const [memoryPlugin, setMemoryPlugin] = useState<"taosmd" | null>("taosmd");
+  const [memoryDeviceId, setMemoryDeviceId] = useState<string | null>(null);
+  const [memoryTierId, setMemoryTierId] = useState<string | null>(null);
+  // null = loading; "none" = no default; object = has default
+  const [memoryDefault, setMemoryDefault] = useState<{ device_id: string; tier_id: string; tier_name: string } | null | "none">(null);
+  const [memoryInstallTargets, setMemoryInstallTargets] = useState<Array<{ name: string; friendly_name: string; tier_id: string }>>([]);
+  const [memorySetupTaskId, setMemorySetupTaskId] = useState<string | null>(null);
+  const [memorySetupState, setMemorySetupState] = useState<string>("pending");
+  const [memorySetupMsg, setMemorySetupMsg] = useState<string>("");
+  const [memorySetupError, setMemorySetupError] = useState<string | null>(null);
+  const [memoryPickerMode, setMemoryPickerMode] = useState<"default" | "picker">("default");
+
+  // Step 5 — Permissions
   const [canReadUserMemory, setCanReadUserMemory] = useState(false);
 
-  // Step 4 — Worker failure policy
+  // Step 6 — Worker failure policy
   const [onWorkerFailure, setOnWorkerFailure] = useState<"pause" | "fallback" | "escalate-immediately">("pause");
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
   const [fallbackModelOpen, setFallbackModelOpen] = useState(false);
@@ -809,6 +1140,16 @@ function DeployWizard({
       setModelsLoaded(false);
       setMemory("");
       setCpus("");
+      setMemoryPlugin("taosmd");
+      setMemoryDeviceId(null);
+      setMemoryTierId(null);
+      setMemoryDefault(null);
+      setMemoryInstallTargets([]);
+      setMemorySetupTaskId(null);
+      setMemorySetupState("pending");
+      setMemorySetupMsg("");
+      setMemorySetupError(null);
+      setMemoryPickerMode("default");
       setCanReadUserMemory(false);
       setOnWorkerFailure("pause");
       setFallbackModels([]);
@@ -836,7 +1177,7 @@ function DeployWizard({
 
   if (!open) return null;
 
-  const STEPS = ["Persona", "Name & Color", "Framework", "Model", "Permissions", "Failure Policy", "Review"];
+  const STEPS = ["Persona", "Name & Color", "Framework", "Model", "Memory", "Permissions", "Failure Policy", "Review"];
 
   const canNext = () => {
     if (step === 0) return persona !== null;
@@ -847,6 +1188,12 @@ function DeployWizard({
     }
     if (step === 2) return selectedFramework.length > 0;
     if (step === 3) return selectedModel.length > 0;
+    // Step 4 (Memory): always advanceable — user can skip
+    if (step === 4) {
+      // Block only while a setup task is actively running
+      if (memorySetupTaskId && memorySetupState !== "done" && memorySetupState !== "failed") return false;
+      return true;
+    }
     return true;
   };
 
@@ -880,6 +1227,11 @@ function DeployWizard({
           agent_md: persona?.agent_md ?? "",
           source_persona_id: persona?.source_persona_id ?? null,
           save_to_library: persona?.save_to_library ?? null,
+          // Memory layer fields from step 4
+          memory_plugin: memoryPlugin ?? null,
+          memory_config: (memoryPlugin && memoryDeviceId && memoryTierId)
+            ? { device_id: memoryDeviceId, tier_id: memoryTierId }
+            : undefined,
         }),
       });
       if (!res.ok) {
@@ -1188,8 +1540,34 @@ function DeployWizard({
             </div>
           )}
 
-          {/* Step 4: Permissions */}
+          {/* Step 4: Memory layer */}
           {step === 4 && (
+            <MemoryWizardStep
+              memoryPlugin={memoryPlugin}
+              setMemoryPlugin={setMemoryPlugin}
+              memoryDeviceId={memoryDeviceId}
+              setMemoryDeviceId={setMemoryDeviceId}
+              memoryTierId={memoryTierId}
+              setMemoryTierId={setMemoryTierId}
+              memoryDefault={memoryDefault}
+              setMemoryDefault={setMemoryDefault}
+              memoryInstallTargets={memoryInstallTargets}
+              setMemoryInstallTargets={setMemoryInstallTargets}
+              memorySetupTaskId={memorySetupTaskId}
+              setMemorySetupTaskId={setMemorySetupTaskId}
+              memorySetupState={memorySetupState}
+              setMemorySetupState={setMemorySetupState}
+              memorySetupMsg={memorySetupMsg}
+              setMemorySetupMsg={setMemorySetupMsg}
+              memorySetupError={memorySetupError}
+              setMemorySetupError={setMemorySetupError}
+              memoryPickerMode={memoryPickerMode}
+              setMemoryPickerMode={setMemoryPickerMode}
+            />
+          )}
+
+          {/* Step 5: Permissions */}
+          {step === 5 && (
             <div className="space-y-4">
               <span className="block text-xs text-shell-text-secondary mb-2">Permissions</span>
               <label
@@ -1221,8 +1599,8 @@ function DeployWizard({
             </div>
           )}
 
-          {/* Step 5: Failure Policy */}
-          {step === 5 && (
+          {/* Step 6: Failure Policy */}
+          {step === 6 && (
             <div className="space-y-4">
               <span className="block text-xs text-shell-text-secondary mb-2">Worker Failure Policy</span>
               <div>
@@ -1364,8 +1742,8 @@ function DeployWizard({
             </div>
           )}
 
-          {/* Step 6: Review */}
-          {step === 6 && (
+          {/* Step 7: Review */}
+          {step === 7 && (
             <div className="space-y-3">
               <span className="block text-xs text-shell-text-secondary mb-2">Review Configuration</span>
               <div className="rounded-lg bg-shell-bg-deep border border-white/5 divide-y divide-white/5">
@@ -1375,7 +1753,8 @@ function DeployWizard({
                   ["Emoji", emoji.trim() || "—"],
                   ["Framework", frameworks.find((f) => f.id === selectedFramework)?.name ?? selectedFramework],
                   ["Model", models.find((m) => m.id === selectedModel)?.name ?? selectedModel],
-                  ["Memory", memory ? (parseInt(memory, 10) >= 1024 ? `${Math.round(parseInt(memory, 10) / 1024)} GB` : `${memory} MB`) : "Unlimited"],
+                  ["Memory layer", memoryPlugin === null ? "Skipped" : memoryTierId ? `taOSmd · ${memoryTierId} on ${memoryDeviceId}` : "taOSmd (global default)"],
+                  ["RAM limit", memory ? (parseInt(memory, 10) >= 1024 ? `${Math.round(parseInt(memory, 10) / 1024)} GB` : `${memory} MB`) : "Unlimited"],
                   ["CPUs", cpus ? `${cpus} Core${cpus !== "1" ? "s" : ""}` : "Unlimited"],
                   ["User Memory", canReadUserMemory ? "Allowed (read-only)" : "Denied"],
                   ["On failure", onWorkerFailure],

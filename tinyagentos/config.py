@@ -190,6 +190,7 @@ def normalize_agent(agent: dict) -> dict:
     agent.setdefault("soul_md", "")
     agent.setdefault("agent_md", "")
     agent.setdefault("memory_plugin", "taosmd")
+    agent.setdefault("memory_config", None)  # device_id + tier_id; None → use global taosmd_default.json
     agent.setdefault("source_persona_id", None)
     # False for pre-existing rows; new deploys flip to True explicitly.
     agent.setdefault("migrated_to_v2_personas", False)

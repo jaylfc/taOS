@@ -1163,6 +1163,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.taos_agent import router as taos_agent_router
     app.include_router(taos_agent_router)
 
+    from tinyagentos.routes.taosmd import router as taosmd_router
+    app.include_router(taosmd_router)
+
     return app
 
 

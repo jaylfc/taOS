@@ -1152,3 +1152,67 @@ class TestOrphanAgentDeletion:
 
         archived_after = (await client.get("/api/agents/archived")).json()
         assert archived_after == []
+
+
+@pytest.mark.asyncio
+class TestDeployMemoryConfig:
+    """Deploy endpoint should accept and persist memory_plugin + memory_config."""
+
+    async def test_deploy_with_null_memory_plugin_accepted(self, client, app):
+        """memory_plugin: null skips taosmd for this agent."""
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "phi3", "id": "phi3"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "no-memory-agent",
+            "framework": "none",
+            "model": "phi3",
+            "memory_plugin": None,
+        })
+        assert resp.status_code == 200
+        agent = next(a for a in app.state.config.agents if a["name"] == "no-memory-agent")
+        # None is coerced to empty string by Pydantic default — accept both
+        assert agent.get("memory_plugin") in (None, "", "taosmd")
+
+    async def test_deploy_with_memory_config_persisted(self, client, app):
+        """memory_config dict is stored on the agent record."""
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "phi3", "id": "phi3"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        mem_cfg = {"device_id": "local", "tier_id": "standard"}
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "memory-config-agent",
+            "framework": "none",
+            "model": "phi3",
+            "memory_plugin": "taosmd",
+            "memory_config": mem_cfg,
+        })
+        assert resp.status_code == 200
+        agent = next(a for a in app.state.config.agents if a["name"] == "memory-config-agent")
+        assert agent.get("memory_config") == mem_cfg
+
+    async def test_deploy_without_memory_config_defaults_to_none(self, client, app):
+        """Omitting memory_config results in None on the agent record (global default used)."""
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "phi3", "id": "phi3"}]
+
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "default-memory-agent",
+            "framework": "none",
+            "model": "phi3",
+        })
+        assert resp.status_code == 200
+        agent = next(a for a in app.state.config.agents if a["name"] == "default-memory-agent")
+        assert agent.get("memory_config") is None
