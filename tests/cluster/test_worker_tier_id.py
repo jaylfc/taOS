@@ -68,7 +68,7 @@ class TestWorkerTierIdPiBucket:
         }
         assert worker_tier_id(hw) == "arm-cpu-16gb"
 
-    def test_cuda_12gb_vram_exact_stays_12(self):
+    def test_cuda_12gb_vram_snaps_to_16(self):
         # 12 GB is not a canonical bucket — snaps up to 16
         hw = {
             "cpu": {"arch": "x86_64"},
