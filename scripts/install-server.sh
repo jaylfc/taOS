@@ -543,6 +543,14 @@ ensure_litellm_postgres() {
         elif command -v pacman >/dev/null 2>&1; then
             sudo pacman -S --noconfirm postgresql \
                 || { warn "pacman -S postgresql failed — skipping virtual key setup"; return 0; }
+            # Arch ships postgresql binaries without an initialised data
+            # directory; systemd refuses to start until initdb has run.
+            if [[ ! -d /var/lib/postgres/data/base ]]; then
+                sudo mkdir -p /var/lib/postgres/data
+                sudo chown postgres:postgres /var/lib/postgres/data
+                sudo -u postgres initdb --locale=C.UTF-8 --encoding=UTF8 \
+                    -D /var/lib/postgres/data >/dev/null 2>&1 || true
+            fi
         else
             warn "litellm postgres: unrecognised package manager — install postgresql manually then re-run"
             return 0
@@ -567,21 +575,32 @@ ensure_litellm_postgres() {
         return 0
     fi
 
+    # Pipe the password via stdin instead of -c "...PASSWORD '...'" so it
+    # never appears in /proc/<pid>/cmdline. Quoting nuance: psql's :'var'
+    # interpolation produces a properly-escaped SQL string literal.
+    local role_sql
     if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='litellm'" 2>/dev/null | grep -q 1; then
-        sudo -u postgres psql -c "CREATE ROLE litellm WITH LOGIN PASSWORD '${pw}';" >/dev/null \
-            || { warn "litellm postgres: CREATE ROLE failed — skipping"; return 0; }
+        role_sql="CREATE ROLE litellm WITH LOGIN PASSWORD :'pw';"
     else
-        sudo -u postgres psql -c "ALTER ROLE litellm WITH LOGIN PASSWORD '${pw}';" >/dev/null \
-            || { warn "litellm postgres: ALTER ROLE failed — skipping"; return 0; }
+        role_sql="ALTER ROLE litellm WITH LOGIN PASSWORD :'pw';"
+    fi
+    if ! printf '%s\n' "$role_sql" \
+            | sudo -u postgres psql -v ON_ERROR_STOP=1 -v "pw=${pw}" >/dev/null 2>&1; then
+        warn "litellm postgres: role create/alter failed — skipping"
+        return 0
     fi
 
     if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='litellm'" 2>/dev/null | grep -q 1; then
-        sudo -u postgres psql -c "CREATE DATABASE litellm OWNER litellm;" >/dev/null \
+        printf 'CREATE DATABASE litellm OWNER litellm;\n' \
+            | sudo -u postgres psql -v ON_ERROR_STOP=1 >/dev/null 2>&1 \
             || { warn "litellm postgres: CREATE DATABASE failed — skipping"; return 0; }
     fi
 
-    umask 077
-    printf 'postgresql://litellm:%s@127.0.0.1:5432/litellm\n' "$pw" > data/.litellm_db_url
+    # Subshell scopes umask so we don't leak 077 into the rest of the
+    # install script (the SPA build below relies on the calling shell's
+    # default umask for npm-managed files). chmod is belt-and-braces.
+    ( umask 077 && \
+        printf 'postgresql://litellm:%s@127.0.0.1:5432/litellm\n' "$pw" > data/.litellm_db_url )
     chmod 600 data/.litellm_db_url
     log "litellm postgres: data/.litellm_db_url written — virtual keys enabled"
 }
