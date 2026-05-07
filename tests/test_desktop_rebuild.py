@@ -85,8 +85,8 @@ async def test_rebuild_skips_when_bundle_current(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    rebuilt, msg = await rebuild_desktop_bundle_if_stale(tmp_path)
-    assert rebuilt is False
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is False
     assert called == []
 
 
@@ -97,9 +97,9 @@ async def test_rebuild_skips_when_no_package_json(tmp_path):
     src_dir.mkdir(parents=True)
     (src_dir / "App.tsx").write_text("// stale source")
     # Deliberately no package.json
-    rebuilt, msg = await rebuild_desktop_bundle_if_stale(tmp_path)
-    assert rebuilt is False
-    assert "package.json" in msg.lower() or "skipping" in msg.lower()
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is False
+    assert "package.json" in result.message.lower() or "skipping" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -115,9 +115,9 @@ async def test_rebuild_handles_npm_missing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    rebuilt, msg = await rebuild_desktop_bundle_if_stale(tmp_path)
-    assert rebuilt is False
-    assert "npm" in msg.lower()
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is False
+    assert "npm" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -139,9 +139,10 @@ async def test_rebuild_returns_true_on_npm_install_failure(tmp_path, monkeypatch
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    rebuilt, msg = await rebuild_desktop_bundle_if_stale(tmp_path)
-    assert rebuilt is True
-    assert "npm install failed" in msg
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is False
+    assert "npm install failed" in result.message
 
 
 @pytest.mark.asyncio
@@ -174,9 +175,10 @@ async def test_rebuild_returns_true_on_npm_build_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    rebuilt, msg = await rebuild_desktop_bundle_if_stale(tmp_path)
-    assert rebuilt is True
-    assert "npm run build failed" in msg
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is False
+    assert "npm run build failed" in result.message
 
 
 @pytest.mark.asyncio
@@ -198,6 +200,7 @@ async def test_rebuild_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    rebuilt, msg = await rebuild_desktop_bundle_if_stale(tmp_path)
-    assert rebuilt is True
-    assert "successfully" in msg.lower()
+    result = await rebuild_desktop_bundle_if_stale(tmp_path)
+    assert result.rebuilt is True
+    assert result.success is True
+    assert "successfully" in result.message.lower()

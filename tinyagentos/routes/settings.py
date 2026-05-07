@@ -57,13 +57,20 @@ async def _run_capture(
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return proc.returncode or 0, out.decode() if out else ""
     except asyncio.TimeoutError:
-        # Kill the subprocess so it doesn't leak; communicate() may have
-        # buffered some output before we hit the timeout, but we can't
-        # safely retrieve it without potentially blocking again.
+        # Kill the subprocess so it doesn't leak. communicate() may have
+        # buffered some output before we hit the timeout but we can't
+        # safely retrieve it without potentially blocking again.  Don't
+        # rely on proc.wait() unbounded — on some Linux kernels the
+        # asyncio subprocess transport can hold a pipe FD open after
+        # SIGKILL, leaving wait() pending until manual reap (#323/#327
+        # CI flake).  So bound it.
         try:
             proc.kill()
-            await proc.wait()
-        except Exception:  # noqa: BLE001
+        except (ProcessLookupError, Exception):  # noqa: BLE001
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
             pass
         return -1, f"[TIMEOUT after {timeout}s] cmd: {' '.join(cmd[:3])}..."
 
