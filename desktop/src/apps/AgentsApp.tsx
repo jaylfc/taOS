@@ -554,6 +554,8 @@ interface MemoryWizardStepProps {
   setMemoryDefault: (v: { device_id: string; tier_id: string; tier_name: string } | null | "none") => void;
   memoryInstallTargets: Array<{ name: string; friendly_name: string; tier_id: string }>;
   setMemoryInstallTargets: (v: Array<{ name: string; friendly_name: string; tier_id: string }>) => void;
+  memoryDevicesLoaded: boolean;
+  setMemoryDevicesLoaded: (v: boolean) => void;
   memorySetupTaskId: string | null;
   setMemorySetupTaskId: (v: string | null) => void;
   memorySetupState: string;
@@ -577,6 +579,8 @@ function MemoryWizardStep({
   setMemoryDefault,
   memoryInstallTargets,
   setMemoryInstallTargets,
+  memoryDevicesLoaded,
+  setMemoryDevicesLoaded,
   memorySetupTaskId,
   setMemorySetupTaskId,
   memorySetupState,
@@ -1557,6 +1561,8 @@ function DeployWizard({
               setMemoryDefault={setMemoryDefault}
               memoryInstallTargets={memoryInstallTargets}
               setMemoryInstallTargets={setMemoryInstallTargets}
+              memoryDevicesLoaded={memoryDevicesLoaded}
+              setMemoryDevicesLoaded={setMemoryDevicesLoaded}
               memorySetupTaskId={memorySetupTaskId}
               setMemorySetupTaskId={setMemorySetupTaskId}
               memorySetupState={memorySetupState}
