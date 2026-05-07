@@ -28,6 +28,33 @@ from tinyagentos.containers import (
 
 logger = logging.getLogger(__name__)
 
+_TAOSMD_BEGIN = "<!-- taosmd:rules-begin -->"
+_TAOSMD_END = "<!-- taosmd:rules-end -->"
+
+
+def _splice_taosmd_block(existing: str, new_rules: str) -> str:
+    """Insert or replace the taosmd-rules sentinel block in *existing*,
+    preserving any user content outside the sentinels.
+
+    Sentinels are HTML comments so they're invisible in rendered Markdown
+    but trivial to find in raw text.  The pattern follows tools like
+    pre-commit, direnv and nvm that manage a section inside user-editable
+    files without silently blowing away the rest.
+
+    Three cases:
+      1. Sentinels present  → replace only the content between them.
+      2. File empty/absent  → return only the sentinel-wrapped block.
+      3. File exists, no sentinels → append block with a blank separator.
+    """
+    block = f"{_TAOSMD_BEGIN}\n{new_rules.rstrip()}\n{_TAOSMD_END}"
+    if _TAOSMD_BEGIN in existing and _TAOSMD_END in existing:
+        before, _, rest = existing.partition(_TAOSMD_BEGIN)
+        _, _, after = rest.partition(_TAOSMD_END)
+        return f"{before}{block}{after}"
+    if not existing.strip():
+        return block + "\n"
+    return existing.rstrip() + "\n\n" + block + "\n"
+
 
 @dataclass
 class DeployRequest:
@@ -332,6 +359,11 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # picks them up on every turn (per taosmd contract — see issue #378).
         # Non-fatal: the runtime system-prompt prepend in prompt_assembly.py
         # remains as a backstop until all frameworks are wired.
+        #
+        # Sentinel-aware write: we wrap the taosmd block between HTML comment
+        # sentinels so it never conflicts with a user-supplied template.  If
+        # the file already exists (from the Store or hand-crafted), we splice
+        # only our block in; everything outside the sentinels is preserved.
         if req.framework == "openclaw":
             try:
                 import taosmd as _taosmd
@@ -340,10 +372,16 @@ async def deploy_agent(req: DeployRequest) -> dict:
                     _rules = _agent_rules_fn().replace("<your-agent-name>", req.name)
                     import tempfile
                     import os as _os
-                    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as _tf:
-                        _tf.write(_rules)
-                        _tmp_path = _tf.name
                     _agents_md_path = "/root/.openclaw/AGENTS.md"
+                    # Read existing file from the container; treat any error as absent.
+                    _read_rc, _existing = await exec_in_container(
+                        container_name, ["cat", _agents_md_path]
+                    )
+                    _existing_content = _existing if _read_rc == 0 else ""
+                    _new_content = _splice_taosmd_block(_existing_content, _rules)
+                    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as _tf:
+                        _tf.write(_new_content)
+                        _tmp_path = _tf.name
                     _push_rc, _push_out = await push_file(container_name, _tmp_path, _agents_md_path)
                     _os.unlink(_tmp_path)
                     if _push_rc != 0:

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from tinyagentos.deployer import deploy_agent, undeploy_agent, DeployRequest
+from tinyagentos.deployer import deploy_agent, undeploy_agent, DeployRequest, _splice_taosmd_block
 
 
 def _req(**overrides) -> DeployRequest:
@@ -616,8 +616,8 @@ class TestDeployAgent:
 
     @pytest.mark.asyncio
     async def test_openclaw_deploy_pushes_agents_md_with_taosmd_rules(self, tmp_path):
-        """When framework=openclaw, deploy pushes AGENTS.md containing taosmd
-        agent_rules with the agent's name substituted in."""
+        """When framework=openclaw and no existing AGENTS.md, deploy pushes a
+        sentinel-wrapped file with taosmd agent_rules and the agent name substituted."""
         pushed: list[tuple[str, str]] = []
 
         async def fake_push_file(container, src, dst):
@@ -625,13 +625,16 @@ class TestDeployAgent:
                 with open(src) as fh:
                     pushed.append((dst, fh.read()))
             except FileNotFoundError:
-                # tmp file already unlinked — content capture not needed for error path
                 pushed.append((dst, ""))
             return 0, ""
 
         async def mock_exec_fn(name, cmd, **kwargs):
-            if "hostname -I" in " ".join(cmd):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
                 return (0, "10.0.0.99")
+            if "cat" in cmd_str and "AGENTS.md" in cmd_str:
+                # Simulate no existing file
+                return (1, "")
             return (0, "ok")
 
         fake_rules = "Follow the taosmd librarian protocol.\nAgent: <your-agent-name>"
@@ -662,6 +665,8 @@ class TestDeployAgent:
         assert "octest" in content, "agent slug not substituted in AGENTS.md"
         assert "librarian" in content, "expected taosmd rules phrase in AGENTS.md"
         assert "<your-agent-name>" not in content, "placeholder not replaced"
+        assert "<!-- taosmd:rules-begin -->" in content, "missing begin sentinel"
+        assert "<!-- taosmd:rules-end -->" in content, "missing end sentinel"
 
     @pytest.mark.asyncio
     async def test_bridge_url_injected_into_env(self, tmp_path):
@@ -681,6 +686,160 @@ class TestDeployAgent:
             await deploy_agent(req)
             env = mock_create.call_args.kwargs["env"]
             assert env["TAOS_BRIDGE_URL"] == "http://127.0.0.1:6969"
+
+
+class TestSpliceTaosmdBlock:
+    """Unit tests for the _splice_taosmd_block helper — no I/O involved."""
+
+    BEGIN = "<!-- taosmd:rules-begin -->"
+    END = "<!-- taosmd:rules-end -->"
+
+    def test_no_existing_file_produces_sentinel_only(self):
+        result = _splice_taosmd_block("", "my rules")
+        assert result == f"{self.BEGIN}\nmy rules\n{self.END}\n"
+
+    def test_existing_with_sentinels_replaces_block_preserves_surroundings(self):
+        existing = (
+            "# My Agent\n\nSome user content.\n\n"
+            f"{self.BEGIN}\nold rules\n{self.END}\n\n"
+            "User content below.\n"
+        )
+        result = _splice_taosmd_block(existing, "new rules")
+        assert "Some user content." in result
+        assert "User content below." in result
+        assert "old rules" not in result
+        assert "new rules" in result
+        assert result.count(self.BEGIN) == 1
+        assert result.count(self.END) == 1
+
+    def test_existing_without_sentinels_appends_block(self):
+        existing = "# My Agent\n\nHand-crafted user content.\n"
+        result = _splice_taosmd_block(existing, "appended rules")
+        assert result.startswith("# My Agent")
+        assert "Hand-crafted user content." in result
+        assert "appended rules" in result
+        assert self.BEGIN in result
+        assert self.END in result
+        # User content comes before the sentinels
+        user_pos = result.index("Hand-crafted")
+        sentinel_pos = result.index(self.BEGIN)
+        assert user_pos < sentinel_pos
+
+    def test_redeploy_updates_only_block_content(self):
+        rules_v1 = "rules version 1"
+        rules_v2 = "rules version 2"
+        user_header = "# My Agent\n\nUser stuff.\n"
+        user_footer = "\nUser footer.\n"
+        after_first = _splice_taosmd_block("", rules_v1)
+        # Simulate user editing the file around the block
+        with_user = user_header + after_first + user_footer
+        result = _splice_taosmd_block(with_user, rules_v2)
+        assert "User stuff." in result
+        assert "User footer." in result
+        assert rules_v1 not in result
+        assert rules_v2 in result
+        assert result.count(self.BEGIN) == 1
+
+
+class TestOpenClawSpliceDeploy:
+    """Integration-level tests for sentinel-aware AGENTS.md push via deploy_agent."""
+
+    @pytest.mark.asyncio
+    async def test_existing_file_with_sentinels_preserves_user_content(self, tmp_path):
+        """When the container already has AGENTS.md with sentinels, user content
+        outside the block is kept and only the taosmd block is updated."""
+        import types, sys
+
+        pushed: list[tuple[str, str]] = []
+        existing_file = (
+            "# Agent rules\n\nMy custom rules.\n\n"
+            "<!-- taosmd:rules-begin -->\nstale rules\n<!-- taosmd:rules-end -->\n\n"
+            "Footer content.\n"
+        )
+
+        async def fake_push_file(container, src, dst):
+            with open(src) as fh:
+                pushed.append((dst, fh.read()))
+            return 0, ""
+
+        async def mock_exec_fn(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.100")
+            if "cat" in cmd_str and "AGENTS.md" in cmd_str:
+                return (0, existing_file)
+            return (0, "ok")
+
+        fake_taosmd = types.ModuleType("taosmd")
+        fake_taosmd.agent_rules = lambda: "fresh rules for <your-agent-name>"
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+             patch("tinyagentos.deployer.push_file", side_effect=fake_push_file), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.deployer.is_image_present", new_callable=AsyncMock, return_value=False):
+            mock_create.return_value = {"success": True, "name": "taos-agent-splice-test"}
+            sys.modules["taosmd"] = fake_taosmd
+            try:
+                req = _req(name="splice-test", framework="openclaw", data_dir=tmp_path)
+                result = await deploy_agent(req)
+            finally:
+                sys.modules.pop("taosmd", None)
+
+        assert result["success"] is True
+        agents_pushed = [(dst, c) for dst, c in pushed if dst == "/root/.openclaw/AGENTS.md"]
+        assert agents_pushed
+        content = agents_pushed[0][1]
+        assert "My custom rules." in content
+        assert "Footer content." in content
+        assert "stale rules" not in content
+        assert "fresh rules for splice-test" in content
+
+    @pytest.mark.asyncio
+    async def test_existing_file_without_sentinels_preserves_and_appends(self, tmp_path):
+        """When the container AGENTS.md has no sentinels (user template), we
+        append the block at the end without touching user content."""
+        import types, sys
+
+        pushed: list[tuple[str, str]] = []
+        existing_file = "# My handcrafted template\n\nDo not overwrite me.\n"
+
+        async def fake_push_file(container, src, dst):
+            with open(src) as fh:
+                pushed.append((dst, fh.read()))
+            return 0, ""
+
+        async def mock_exec_fn(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.101")
+            if "cat" in cmd_str and "AGENTS.md" in cmd_str:
+                return (0, existing_file)
+            return (0, "ok")
+
+        fake_taosmd = types.ModuleType("taosmd")
+        fake_taosmd.agent_rules = lambda: "appended rules <your-agent-name>"
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+             patch("tinyagentos.deployer.push_file", side_effect=fake_push_file), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}), \
+             patch("tinyagentos.deployer.is_image_present", new_callable=AsyncMock, return_value=False):
+            mock_create.return_value = {"success": True, "name": "taos-agent-append-test"}
+            sys.modules["taosmd"] = fake_taosmd
+            try:
+                req = _req(name="append-test", framework="openclaw", data_dir=tmp_path)
+                result = await deploy_agent(req)
+            finally:
+                sys.modules.pop("taosmd", None)
+
+        assert result["success"] is True
+        agents_pushed = [(dst, c) for dst, c in pushed if dst == "/root/.openclaw/AGENTS.md"]
+        assert agents_pushed
+        content = agents_pushed[0][1]
+        assert "Do not overwrite me." in content
+        assert "appended rules append-test" in content
+        assert content.index("Do not overwrite me.") < content.index("<!-- taosmd:rules-begin -->")
 
 
 class TestBackgroundDeploy:
