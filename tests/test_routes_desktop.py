@@ -27,6 +27,20 @@ def test_sw_js_returns_javascript_with_root_scope_header(client):
     assert "no-cache" in r.headers.get("Cache-Control", "")
 
 
+def test_sw_js_headers_present_with_fake_file(client, monkeypatch, tmp_path):
+    """CI-safe coverage of the response headers — uses a fake sw.js so
+    the assertions fire even when the real SPA bundle isn't built."""
+    fake_dir = tmp_path / "fake-spa"
+    fake_dir.mkdir()
+    (fake_dir / "sw.js").write_text("// fake sw")
+    monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", fake_dir)
+    r = client.get("/sw.js")
+    assert r.status_code == 200
+    assert r.headers.get("content-type", "").startswith("application/javascript")
+    assert r.headers.get("Service-Worker-Allowed") == "/"
+    assert "no-cache" in r.headers.get("Cache-Control", "")
+
+
 def test_sw_js_returns_404_when_not_built(client, monkeypatch, tmp_path):
     """Graceful fallback when the bundle hasn't been built yet."""
     monkeypatch.setattr("tinyagentos.routes.desktop.SPA_DIR", tmp_path / "no-such-dir")
