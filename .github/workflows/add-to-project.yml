@@ -37,7 +37,7 @@ jobs:
           fi
       - name: Add to Project
         if: steps.cfg.outputs.skip != 'true'
-        uses: actions/add-to-project@v1
+        uses: actions/add-to-project@v2
         with:
           project-url: ${{ vars.PROJECT_URL }}
           github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
