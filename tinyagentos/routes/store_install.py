@@ -43,7 +43,7 @@ _KNOWN_BACKENDS = {
 # can land as follow-ups; download is the safest default in the meantime.
 _BACKEND_TO_METHOD: dict[str, str] = {
     "rkllama": "rkllama",
-    "rk-llama-cpp": "download",
+    "rk-llama-cpp": "rkllamacpp",
     "ollama": "download",
     "llama-cpp": "download",
     "mlx": "download",

@@ -32,7 +32,7 @@ this doc records what's actually verified working.
 | Backend | Pi-NPU-16GB | Pi-NPU-32GB | Mac-MLX | Linux-x86-GPU | Linux-x86-CPU | Win-WSL | Notes |
 |---|---|---|---|---|---|---|---|
 | `rkllama` | ✅ | 🔧 | ❌ | ❌ | ❌ | ❌ | install-rknpu.sh ships it; issue #318 cycle stable |
-| `rk-llama.cpp` | ⚠️ | 🔧 | ❌ | ❌ | ❌ | ❌ | binary builds; smoke hit `EMFILE` — needs ulimit/contention fix |
+| `rk-llama.cpp` | ✅ | 🔧 | ❌ | ❌ | ❌ | ❌ | scripts/install-rk-llama-cpp.sh + RkLlamaCppInstaller wired; pinned-SHA tarball; 288 MiB on RKNPU verified |
 | `ollama` | 🔧 | 🔧 | 🔧 | 🔧 | 🔧 | 🔧 | catalog entry; install path not yet wired |
 | `llama-cpp` | 🔧 | 🔧 | 🔧 | 🔧 | 🔧 | 🔧 | catalog entry; install path not yet wired |
 | `vllm` | ❌ | ❌ | ❌ | 🔧 | ❌ | 🔧 | x86 GPU only; not yet wired |
@@ -70,15 +70,15 @@ Pre-loaded by `install-rknpu.sh` (separate from Store install path):
 
 ## LLM models — GGUF format (rk-llama.cpp / Ollama / llama.cpp)
 
-Will populate once rk-llama.cpp service install path is wired (Pack 1 in progress).
+GGUF-format models route through the resolver's `requires.backends` list — manifests pick `rk-llama-cpp` for Pi NPU and fall back to `ollama` / `llama-cpp` on other tiers.
 
 | Model | Pi-NPU-16GB | Pi-NPU-32GB | Mac-MLX | Linux-x86-GPU | Linux-x86-CPU | Source | Notes |
 |---|---|---|---|---|---|---|---|
-| `qwen3-4b` (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | Qwen/Qwen3-4B-GGUF | catalog has it; needs backend wiring |
-| Gemma 4 E2B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (Pack 1 will add) | rk-llama.cpp target |
-| Gemma 4 E4B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (Pack 1 will add) | rk-llama.cpp target |
-| Qwen 3.5 2B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (Pack 1 will add) | rk-llama.cpp target |
-| Qwen 3.5 9B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (Pack 1 will add) | rk-llama.cpp target |
+| `qwen3-4b` (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | Qwen/Qwen3-4B-GGUF | catalog has it; backends in `requires` |
+| `gemma-4-e2b-gguf` | ✅ | ✅ | ⏳ | ⏳ | ⏳ | unsloth/gemma-4-E2B-it-GGUF | first GGUF on rk-llama.cpp |
+| Gemma 4 E4B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (followup) | follows e2b shape |
+| Qwen 3.5 2B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (followup) | rk-llama.cpp + ollama target |
+| Qwen 3.5 9B (GGUF) | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | (followup) | rk-llama.cpp + ollama target |
 
 ## Vision-language models
 

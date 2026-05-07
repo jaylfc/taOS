@@ -145,16 +145,17 @@ class TestBackendToMethodMapping:
         installer = get_installer(method)
         assert installer is not None
 
-    def test_rk_llama_cpp_maps_to_download_no_value_error(self):
-        """get_installer(_BACKEND_TO_METHOD['rk-llama-cpp']) must not raise."""
+    def test_rk_llama_cpp_maps_to_rkllamacpp_installer(self):
+        """get_installer(_BACKEND_TO_METHOD['rk-llama-cpp']) returns the
+        purpose-built RkLlamaCppInstaller (not the generic download fallback)."""
         from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
         from tinyagentos.installers.base import get_installer
+        from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
 
         method = _BACKEND_TO_METHOD["rk-llama-cpp"]
-        assert method == "download"
-        # Should not raise ValueError
+        assert method == "rkllamacpp"
         installer = get_installer(method)
-        assert installer is not None
+        assert isinstance(installer, RkLlamaCppInstaller)
 
     def test_all_entries_resolve_to_valid_installer_methods(self):
         """Every entry in _BACKEND_TO_METHOD must be a valid get_installer key."""

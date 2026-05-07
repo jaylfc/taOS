@@ -50,6 +50,9 @@ def get_installer(method: str, **kwargs) -> AppInstaller:
         return LXCInstaller(**kwargs)
     elif method == "rkllama":
         return RkllamaInstaller(**kwargs)
+    elif method in ("rkllamacpp", "rk-llama.cpp"):
+        from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
+        return RkLlamaCppInstaller(**kwargs)
     elif method == "script":
         from tinyagentos.installers.script_installer import ScriptInstaller
         return ScriptInstaller(**kwargs)

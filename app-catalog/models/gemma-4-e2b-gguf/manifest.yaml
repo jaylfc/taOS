@@ -1,0 +1,35 @@
+id: gemma-4-e2b-gguf
+name: Gemma 4 E2B Instruct (GGUF)
+type: model
+version: 4.0.0
+description: "Google Gemma 4 E2B (~5B raw / 2.3B effective via PLE), Q4_K_M GGUF — runs on Pi NPU via rk-llama.cpp"
+homepage: https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF
+license: "Gemma Terms of Use"
+capabilities: [chat, tool-calling]
+context_window: 32768
+
+variants:
+  - id: q4_k_m
+    name: "Q4_K_M GGUF (3.1GB)"
+    format: gguf
+    size_mb: 3110
+    download_url: https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf
+    requires:
+      backends:
+        - id: rk-llama-cpp
+          targets: [rockchip]
+          min_ram_mb: 4096
+        - id: ollama
+          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 4096
+        - id: llama-cpp
+          targets: [x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 4096
+
+hardware_tiers:
+  arm-npu-16gb: {recommended: q4_k_m}
+  arm-npu-32gb: {recommended: q4_k_m}
+  apple-silicon: {recommended: q4_k_m}
+  x86-cuda-12gb: {recommended: q4_k_m}
+  x86-vulkan-8gb: {recommended: q4_k_m}
+  cpu-only: {recommended: q4_k_m}
