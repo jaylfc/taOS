@@ -1167,7 +1167,12 @@ def main():
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")
     app = create_app()
-    uvicorn.run(app, host=config.server.get("host", "0.0.0.0"), port=config.server.get("port", 6969))
+    uvicorn.run(
+        app,
+        host=config.server.get("host", "0.0.0.0"),
+        port=config.server.get("port", 6969),
+        backlog=128,
+    )
 
 
 def gui():

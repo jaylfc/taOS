@@ -163,7 +163,7 @@ class AgentBrowsersManager:
             return _MOCK_PNG
         try:
             import aiohttp  # optional dep
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
                 async with session.get(
                     "http://localhost:9222/json", timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
@@ -171,7 +171,7 @@ class AgentBrowsersManager:
                     if not tabs:
                         return None
                     ws_url = tabs[0].get("webSocketDebuggerUrl")
-                async with session.ws_connect(ws_url) as ws:
+                async with session.ws_connect(ws_url, timeout=10) as ws:
                     await ws.send_json({"id": 1, "method": "Page.captureScreenshot"})
                     async for msg in ws:
                         import json, base64

@@ -35,6 +35,7 @@ class HealthMonitor:
         self._poll_count = 0
         self._last_cleanup = 0
         self._backend_states: dict[str, str] = {}
+        self._poll_budget_seconds: float | None = None  # set in tests
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._poll_loop())
@@ -49,9 +50,15 @@ class HealthMonitor:
 
     async def _poll_loop(self) -> None:
         interval = self.config.metrics.get("poll_interval", 30)
+        # Hard ceiling so a wedged backend or hung qmd probe can't lock the
+        # event loop. Each individual call already has its own timeout, but
+        # this is a defense-in-depth guard against #323-style wedges.
+        poll_budget = self._poll_budget_seconds or max(60, interval * 2)
         while True:
             try:
-                await self._poll_once()
+                await asyncio.wait_for(self._poll_once(), timeout=poll_budget)
+            except asyncio.TimeoutError:
+                logger.error(f"Health poll exceeded {poll_budget}s budget — aborting cycle")
             except Exception as e:
                 logger.error(f"Health poll error: {e}")
             await asyncio.sleep(interval)

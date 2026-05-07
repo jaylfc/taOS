@@ -150,7 +150,7 @@ class LifecycleManager:
         """Return True if the service at url responds to /health with status ok."""
         import httpx
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
                 resp = await client.get(f"{url.rstrip('/')}/health", timeout=3)
                 if resp.status_code == 200:
                     data = resp.json()

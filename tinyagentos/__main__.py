@@ -34,7 +34,9 @@ def main() -> None:
         port = config.server.get("port", 6969)
 
     app = create_app(data_dir=data_dir)
-    uvicorn.run(app, host=host, port=port)
+    # backlog=128 — see issue #323. Keeps the kernel accept queue from
+    # silently growing into the thousands if the event loop ever wedges.
+    uvicorn.run(app, host=host, port=port, backlog=128)
 
 
 def _seed_data_dir(target: Path) -> None:
