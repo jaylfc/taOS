@@ -375,14 +375,36 @@ ensure_container_runtime() {
         return 0
     fi
 
-    log "no container runtime found — attempting to install Incus"
+    log "no container runtime found — installing Incus via Zabbly apt repo"
 
     local installed=0
     if command -v apt-get >/dev/null 2>&1; then
-        log "installing incus via apt"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus \
-            && installed=1 \
-            || warn "apt install incus failed — continuing without container support"
+        # Incus is not in default Debian 12 / Ubuntu 22.04 repos — use Zabbly's
+        # stable apt repo which provides it on every supported Debian/Ubuntu release.
+        local codename=""
+        if command -v lsb_release >/dev/null 2>&1; then
+            codename=$(lsb_release -cs 2>/dev/null)
+        elif [[ -f /etc/os-release ]]; then
+            codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+        fi
+
+        if [[ -z "$codename" ]]; then
+            warn "couldn't detect distro codename — Zabbly repo install skipped"
+            warn "  install Incus manually: https://github.com/zabbly/incus"
+        else
+            sudo install -d -m 0755 /etc/apt/keyrings
+            sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc \
+                || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
+            echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
+                | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus; then
+                installed=1
+                log "container runtime: incus installed via Zabbly"
+            else
+                warn "Zabbly Incus install failed — see /var/log/apt/term.log"
+            fi
+        fi
     elif command -v dnf >/dev/null 2>&1; then
         log "installing incus via dnf"
         sudo dnf install -y -q incus \
@@ -407,6 +429,16 @@ ensure_container_runtime() {
             log "container runtime: incus installed successfully"
         else
             warn "incus install reported success but binary not found on PATH — check your PATH"
+        fi
+    fi
+
+    if (( installed )) && command -v incus >/dev/null 2>&1; then
+        log "initialising Incus with default storage + network"
+        if sudo incus admin init --auto >/dev/null 2>&1; then
+            log "container runtime: incus initialised"
+        else
+            warn "incus admin init --auto failed — you may need to configure storage manually"
+            warn "  see: https://linuxcontainers.org/incus/docs/main/howto/initialize/"
         fi
     fi
 }
@@ -442,9 +474,9 @@ if [[ ! -d .venv ]]; then
     fi
 fi
 
-log "installing controller python deps into .venv (pip install -e .)"
+log "installing controller python deps into .venv (pip install -e '.[proxy]')"
 ./.venv/bin/pip install --quiet --upgrade pip
-./.venv/bin/pip install --quiet -e .
+./.venv/bin/pip install --quiet -e ".[proxy]"
 
 # yt-dlp is needed for YouTube and X content ingestion (runs as subprocess)
 if ! command -v yt-dlp &>/dev/null; then
