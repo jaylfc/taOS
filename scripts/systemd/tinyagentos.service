@@ -37,6 +37,8 @@ ExecStop=TAOS_STOP_SCRIPT
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=3
+# Slow boot on low-end ARM SBCs (Pi ~58s) sits too close to systemd's 90s default.
+TimeoutStartSec=180
 TimeoutStopSec=360
 Environment=PYTHONUNBUFFERED=1
 

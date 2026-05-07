@@ -130,3 +130,12 @@ class TestAppRegistry:
         # Create new registry instance pointing at same file
         registry2 = AppRegistry(catalog_dir=registry.catalog_dir, installed_path=registry.installed_path)
         assert registry2.is_installed("gitea")
+
+    def test_catalog_loads_lazily(self, catalog_dir, tmp_path):
+        """Construction must not parse manifests; first read triggers load."""
+        installed_path = tmp_path / "installed.json"
+        r = AppRegistry(catalog_dir=catalog_dir, installed_path=installed_path)
+        assert r._catalog is None
+        r.list_available()
+        assert r._catalog is not None
+        assert len(r._catalog) == 3

@@ -79,8 +79,13 @@ class AppRegistry:
     def __init__(self, catalog_dir: Path, installed_path: Path):
         self.catalog_dir = catalog_dir
         self.installed_path = installed_path
-        self._catalog: list[AppManifest] = []
-        self._load_catalog()
+        # Sentinel: None means catalog has not been loaded yet. Deferred so that
+        # boot does not pay for walking + parsing every manifest under catalog_dir.
+        self._catalog: list[AppManifest] | None = None
+
+    def _ensure_loaded(self) -> None:
+        if self._catalog is None:
+            self._load_catalog()
 
     def _load_catalog(self) -> None:
         self._catalog = []
@@ -100,11 +105,13 @@ class AppRegistry:
         self._load_catalog()
 
     def list_available(self, type_filter: str | None = None) -> list[AppManifest]:
+        self._ensure_loaded()
         if type_filter:
             return [a for a in self._catalog if a.type == type_filter]
         return list(self._catalog)
 
     def get(self, app_id: str) -> AppManifest | None:
+        self._ensure_loaded()
         return next((a for a in self._catalog if a.id == app_id), None)
 
     def _read_installed(self) -> list[dict]:
