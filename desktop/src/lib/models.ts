@@ -116,7 +116,7 @@ export interface CloudProvider {
   models?: { id?: string; name?: string }[];
 }
 
-export const CLOUD_PROVIDER_TYPES = ["openai", "anthropic", "openrouter", "kilocode"] as const;
+export const CLOUD_PROVIDER_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
 
 /** Flatten /api/providers cloud providers into AggregatedModel entries. */
 export function cloudProvidersToAggregated(providers: CloudProvider[]): AggregatedModel[] {

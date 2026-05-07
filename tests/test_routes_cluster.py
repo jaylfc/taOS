@@ -312,3 +312,38 @@ async def test_install_targets_remote_includes_tier_id(app, client, monkeypatch)
     assert "tier_id" in pi
     assert isinstance(pi["tier_id"], str) and pi["tier_id"]
     assert pi["friendly_name"] == "orange-pi"
+
+
+@pytest.mark.asyncio
+async def test_install_targets_matches_remote_to_worker_by_url_host(app, client, monkeypatch):
+    """When the incus remote name (e.g. 'fedora-worker') doesn't equal the
+    cluster worker name (e.g. 'fedora-host'), the install-target lookup
+    must still link them via URL hostname so the box doesn't show as
+    'unknown hardware'."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    cluster._workers["fedora-host"] = WorkerInfo(  # noqa: SLF001
+        name="fedora-host",
+        url="https://192.168.6.108:8443",
+        hardware={
+            "ram_mb": 65536,
+            "cpu": {"arch": "x86_64"},
+            "gpu": {"type": "nvidia", "vram_mb": 16384, "cuda": True},
+        },
+        status="online",
+    )
+
+    async def fake_remote_list():
+        return [{"name": "fedora-worker", "addr": "https://192.168.6.108:8443",
+                 "protocol": "incus"}]
+    monkeypatch.setattr(
+        "tinyagentos.containers.remote_list", fake_remote_list
+    )
+
+    resp = await client.get("/api/cluster/install-targets")
+    assert resp.status_code == 200
+    data = resp.json()
+    fedora = next((t for t in data if t["name"] == "fedora-worker"), None)
+    assert fedora is not None
+    assert fedora["hardware_known"] is True, fedora
+    assert fedora["tier_id"] not in ("", "unknown"), fedora

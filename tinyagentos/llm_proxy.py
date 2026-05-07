@@ -558,6 +558,12 @@ class LLMProxy:
         """Create a per-agent virtual key via LiteLLM API."""
         if not self.is_running():
             return None
+        # LiteLLM virtual keys require a Postgres DB. Without one,
+        # /key/generate returns a 500 "DB not connected" error that looks
+        # alarming in logs even though the deployer's master-key fallback
+        # handles it fine. Skip the round-trip in routing-only mode.
+        if not self.database_url:
+            return None
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 body = {

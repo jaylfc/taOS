@@ -418,7 +418,10 @@ class TestLLMProxyOwnership:
 
         monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
 
-        p = mod.LLMProxy(port=4000)
+        # database_url required so create_agent_key actually hits the
+        # endpoint — without it the routing-only short-circuit returns
+        # None before any HTTP call.
+        p = mod.LLMProxy(port=4000, database_url="postgres://x:y@h/litellm")
 
         # Bypass is_running(): pretend we own a live subprocess.
         class _FakeProc:
@@ -433,3 +436,33 @@ class TestLLMProxyOwnership:
             "/key/generate" in rec.getMessage() and "401" in rec.getMessage()
             for rec in caplog.records
         ), [rec.getMessage() for rec in caplog.records]
+
+    @pytest.mark.asyncio
+    async def test_create_agent_key_skips_call_when_no_database_url(self, monkeypatch):
+        """In routing-only mode (no Postgres), create_agent_key must
+        return None without hitting /key/generate — otherwise LiteLLM
+        emits a confusing 500 'DB not connected' on every deploy."""
+        import tinyagentos.llm_proxy as mod
+
+        called = False
+
+        class _FakeClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def post(self, *a, **kw):
+                nonlocal called
+                called = True
+                raise AssertionError("/key/generate should not be called when database_url is None")
+
+        monkeypatch.setattr(mod.httpx, "AsyncClient", _FakeClient)
+
+        p = mod.LLMProxy(port=4000)  # no database_url
+
+        class _FakeProc:
+            def poll(self): return None
+        p._process = _FakeProc()
+
+        key = await p.create_agent_key("routing-only")
+        assert key is None
+        assert called is False

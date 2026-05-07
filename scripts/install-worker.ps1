@@ -36,7 +36,16 @@ if (-not $ControllerUrl) {
     exit 2
 }
 
-if (-not $WorkerName) { $WorkerName = $env:COMPUTERNAME }
+if (-not $WorkerName) {
+    # Default appends "-worker" so the cluster UI distinguishes the worker
+    # entry from the underlying machine. Skip if the host already contains
+    # "worker" to avoid "rig-worker-worker".
+    if ($env:COMPUTERNAME -like '*worker*') {
+        $WorkerName = $env:COMPUTERNAME
+    } else {
+        $WorkerName = "$($env:COMPUTERNAME)-worker"
+    }
+}
 if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA 'tinyagentos-worker' }
 if (-not $Branch) { $Branch = 'master' }
 if (-not $Repo) { $Repo = 'https://github.com/jaylfc/tinyagentos' }
