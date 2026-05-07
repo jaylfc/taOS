@@ -164,6 +164,30 @@ _HTML_NO_CACHE = {
 }
 
 
+_SW_HEADERS = {
+    "Content-Type": "application/javascript",
+    "Service-Worker-Allowed": "/",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+}
+
+
+@router.get("/sw.js")
+async def serve_service_worker():
+    """Serve the SPA's service worker at root scope.
+
+    The file lives at /static/desktop/sw.js but the SW must claim scope
+    `/` to cover both /desktop (desktop SPA) and /chat-pwa (chat PWA).
+    Browsers only honor a non-default scope if the response carries the
+    Service-Worker-Allowed header — hence the explicit headers below.
+
+    The SW itself must never be cached aggressively or browsers will pin
+    a stale worker after a deploy."""
+    sw_file = SPA_DIR / "sw.js"
+    if sw_file.exists():
+        return FileResponse(sw_file, headers=_SW_HEADERS)
+    return JSONResponse({"error": "Service worker not built"}, status_code=404)
+
+
 @router.get("/desktop")
 async def serve_spa_root():
     """Serve the SPA index.html at /desktop."""
