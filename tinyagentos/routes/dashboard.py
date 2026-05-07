@@ -4,6 +4,8 @@ import asyncio
 import shutil
 import time
 
+import tinyagentos
+
 import psutil
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -102,6 +104,13 @@ async def api_health(request: Request, detailed: bool = False):
         subsystems["qmd"] = {"status": "unavailable"}
 
     return {**basic, "subsystems": subsystems}
+
+
+@router.get("/api/version")
+async def get_version():
+    """Cheap version probe. Auth-exempt — the frontend uses this to
+    detect when a new backend version has shipped after a restart."""
+    return {"version": tinyagentos.__version__}
 
 
 @router.get("/api/system/info")
