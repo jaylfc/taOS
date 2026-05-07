@@ -493,17 +493,12 @@ interface UpdateInfo {
 
 interface AutoUpdatePrefs {
   check_enabled?: boolean;
-  auto_apply?: boolean;
-  auto_restart?: boolean;
-  last_notified_commit?: string | null;
 }
 
 interface UpdateStatus {
   current_sha: string;
   pending_restart_sha: string | null;
   auto_check: boolean;
-  auto_apply: boolean;
-  auto_restart: boolean;
 }
 
 interface RestartOrchestratorStatus {
@@ -636,10 +631,9 @@ function UpdatesSection() {
   const [rebuilding, setRebuilding] = useState(false);
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true, auto_apply: false, auto_restart: false });
+  const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [showRestartModal, setShowRestartModal] = useState(false);
-  const [pendingRestart, setPendingRestart] = useState(false);
 
   // Load current prefs + info on mount
   useEffect(() => {
@@ -651,8 +645,6 @@ function UpdatesSection() {
           if (data && typeof data === "object") {
             setPrefs({
               check_enabled: data.check_enabled ?? true,
-              auto_apply: data.auto_apply ?? false,
-              auto_restart: data.auto_restart ?? false,
             });
           }
         }
@@ -703,18 +695,8 @@ function UpdatesSection() {
     try {
       const res = await fetch("/api/settings/update", { method: "POST" });
       if (res.ok) {
-        const data = await res.json().catch(() => ({})) as { status?: string; message?: string };
-        if (data.status === "restarting") {
-          // auto_restart is on — server will restart itself; show modal
-          setShowRestartModal(true);
-        } else {
-          setStatus(data.message ?? "Update applied. Restart the server to finish.");
-          setPendingRestart(true);
-          const r2 = await fetch("/api/settings/update-check");
-          if (r2.ok) setInfo(await r2.json());
-          const r3 = await fetch("/api/settings/update-status");
-          if (r3.ok) setUpdateStatus(await r3.json());
-        }
+        // Server always restarts after a successful install — show the modal.
+        setShowRestartModal(true);
       } else {
         const err = await res.json().catch(() => ({}));
         setStatus((err as { error?: string }).error ?? "Update failed.");
@@ -801,11 +783,7 @@ function UpdatesSection() {
             <RefreshCw size={14} className={checking ? "animate-spin" : ""} />
             {checking ? "Checking..." : "Check Now"}
           </Button>
-          {pendingRestart ? (
-            <Button size="sm" onClick={triggerRestart} aria-label="Restart server to apply update">
-              Restart Now
-            </Button>
-          ) : info?.has_updates ? (
+          {info?.has_updates ? (
             <Button size="sm" onClick={applyUpdate} disabled={applying}>
               {applying ? "Installing..." : "Install Update"}
             </Button>
@@ -848,35 +826,6 @@ function UpdatesSection() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <Label className="text-sm">Install updates automatically</Label>
-              <p className="text-[11px] text-shell-text-tertiary mt-0.5">
-                Pulls + installs new versions as soon as they're detected. You'll still need to restart the server manually.
-              </p>
-            </div>
-            <Switch
-              checked={prefs.auto_apply ?? false}
-              onCheckedChange={(v) => savePrefs({ ...prefs, auto_apply: v })}
-              disabled={!(prefs.check_enabled ?? true)}
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <Label className="text-sm">Automatically restart after update</Label>
-              <p className="text-[11px] text-shell-text-tertiary mt-0.5">
-                {prefs.auto_restart
-                  ? "Server will restart automatically once an update is pulled."
-                  : "We'll remind you every 6 hours when a restart is pending."}
-              </p>
-            </div>
-            <Switch
-              checked={prefs.auto_restart ?? false}
-              onCheckedChange={(v) => savePrefs({ ...prefs, auto_restart: v })}
-              aria-label="Automatically restart after update"
-            />
-          </div>
         </div>
       </Card>
 

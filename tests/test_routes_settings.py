@@ -1,4 +1,61 @@
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+
+
+class TestUpdateAlwaysRestarts:
+    """Contract: /api/settings/update ALWAYS triggers a restart on success.
+
+    No pref state can suppress the restart — the toggles were removed and the
+    endpoint unconditionally calls _do_restart after a successful install.
+    """
+
+    @pytest.mark.asyncio
+    async def test_update_always_restarts_after_successful_install(self, client):
+        """A successful update must return status='restarting' regardless of prefs."""
+        import types
+
+        # Patch the entire subprocess machinery so no real git/pip is invoked,
+        # and patch _do_restart so it doesn't actually touch the process.
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate = AsyncMock(return_value=(b"Already up to date.\n", b""))
+
+        restart_called = []
+
+        async def _fake_restart(_app_state):
+            restart_called.append(True)
+
+        with (
+            patch(
+                "tinyagentos.routes.settings.asyncio.create_subprocess_exec",
+                return_value=fake_proc,
+            ),
+            patch(
+                "tinyagentos.routes.settings._run_capture",
+                new=AsyncMock(return_value=(0, "ok")),
+            ),
+            patch(
+                "tinyagentos.desktop_rebuild.rebuild_desktop_bundle_if_stale",
+                new=AsyncMock(
+                    return_value=MagicMock(rebuilt=False, success=True, message="current")
+                ),
+            ),
+            patch(
+                "tinyagentos.routes.system._do_restart",
+                new=_fake_restart,
+            ),
+            patch("tinyagentos.restart_orchestrator.write_pending_restart"),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "restarting", (
+            f"Expected status='restarting' but got {data!r}. "
+            "Restart must always happen after a successful install."
+        )
 
 
 class TestSettingsRoutes:
