@@ -35,6 +35,12 @@ TARGET_GROUP="$(id -gn "$TARGET_USER")"
 
 INSTALL_DIR="${TAOS_RKLLAMACPP_DIR:-$TARGET_HOME/rk-llama.cpp}"
 PORT="${TAOS_RKLLAMACPP_PORT:-8090}"
+# llama-server's --host bind. Default to loopback so the API isn't
+# exposed to the LAN without explicit opt-in (CodeRabbit on PR #339).
+# Override via TAOS_RKLLAMACPP_HOST=0.0.0.0 to allow LAN access — only
+# do this if a reverse proxy with auth sits in front, or you trust the
+# entire LAN.
+HOST="${TAOS_RKLLAMACPP_HOST:-127.0.0.1}"
 MIRROR_BASE="${TAOS_MIRROR_BASE:-https://huggingface.co/jaylfc/tinyagentos-rockchip-mirror/resolve/main}"
 TARBALL_URL="${MIRROR_BASE}/binaries/rkllamacpp-aarch64-rk3588.tar.gz"
 
@@ -73,6 +79,14 @@ if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
 fi
 log "checksum ok: $ACTUAL_SHA256"
 
+# Make the tarball readable by TARGET_USER. mktemp creates files with
+# 0600 permissions owned by the current shell (root when invoked via
+# sudo), so a subsequent `run_as_user tar` would fail with "Permission
+# denied". Either fix-up route works; chown is the cleanest.
+if [[ "$(id -un)" != "$TARGET_USER" ]]; then
+    chown "$TARGET_USER:$TARGET_GROUP" "$TMP_TARBALL"
+fi
+
 log "extracting into $INSTALL_DIR"
 run_as_user tar -xzf "$TMP_TARBALL" -C "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true
@@ -92,7 +106,7 @@ Group=$TARGET_GROUP
 WorkingDirectory=$INSTALL_DIR
 Environment=LD_LIBRARY_PATH=$INSTALL_DIR/lib
 LimitNOFILE=65536
-ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/models/active.gguf --host 0.0.0.0 --port $PORT
+ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/models/active.gguf --host $HOST --port $PORT
 Restart=on-failure
 RestartSec=5
 KillMode=mixed
