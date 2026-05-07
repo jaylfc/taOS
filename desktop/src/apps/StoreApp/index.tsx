@@ -766,7 +766,15 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   }
 
   // Backends shown in the BackendPillBar are the union of variants[].backend
-  // across all manifests where any selected device's tier_id is supported.
+  // across manifests in the *current category* where any selected device's
+  // tier_id is supported. Two reasons this is category-scoped instead of
+  // catalog-wide:
+  //   1. On the Models view, runtime backends (rkllama, ollama, llama.cpp)
+  //      are meaningful filters; on the Agent Frameworks view they aren't.
+  //   2. install_method (docker, lxc, npm, pip) was leaking into the
+  //      backend pills via the no-variants fallback below — these are
+  //      deploy mechanisms, not runtime backends, and they don't belong
+  //      in this filter at all. Dropping the fallback closes that gap.
   const availableBackends = useMemo(() => {
     if (selectedDevices.length === 0) return [];
     const memoSelectedDevices = installTargets.filter((t) =>
@@ -775,8 +783,11 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     const tiers = new Set(
       memoSelectedDevices.map((d) => d.tier_id).filter(Boolean) as string[]
     );
+    const sourceApps = activeCategory === "all" || !activeCat
+      ? apps
+      : apps.filter((a) => activeCat.types.includes(appGroup(a)));
     const out = new Set<string>();
-    for (const app of apps) {
+    for (const app of sourceApps) {
       if (!app.hardware_tiers) continue;
       const tierMatch = [...tiers].some(
         (t) =>
@@ -787,12 +798,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
       for (const v of app.variants ?? []) {
         for (const b of v.backend ?? []) out.add(b);
       }
-      if ((app.variants ?? []).length === 0 && app.install_method) {
-        out.add(app.install_method);
-      }
     }
     return Array.from(out).sort();
-  }, [selectedDevices, installTargets, apps]);
+  }, [selectedDevices, installTargets, apps, activeCategory, activeCat]);
 
   useEffect(() => {
     if (availableBackends.length === 0) {
