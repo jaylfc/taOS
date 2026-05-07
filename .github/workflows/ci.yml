@@ -9,7 +9,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 3.11 is consistently the slowest matrix leg (~25-30 min) — the
+    # SPA-build drop in this PR only saved ~1.5 min, so the previous
+    # 45-min cap stays. Future investigation: figure out why 3.11 is
+    # ~10 min slower than 3.12/3.13 and whether dropping it is OK.
+    timeout-minutes: 45
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
