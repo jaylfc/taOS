@@ -18,11 +18,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _run_capture(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    """Run a subprocess capturing combined stdout+stderr.
+async def _run_capture(
+    cmd: list[str],
+    cwd: str | None = None,
+    timeout: float | None = 600.0,
+) -> tuple[int, str]:
+    """Run a subprocess capturing combined stdout+stderr, with timeout.
 
-    Wraps asyncio.create_subprocess_exec so callers don't have to plumb the
-    PIPE/communicate dance themselves. Returns (returncode, decoded_output).
+    Wraps ``asyncio.create_subprocess_exec`` so callers don't have to plumb
+    the PIPE/communicate dance themselves.
+
+    Parameters
+    ----------
+    cmd:
+        Command list (no shell — argv-style).
+    cwd:
+        Working directory.
+    timeout:
+        Wall-clock seconds. Default 10 minutes — long enough for pip
+        wheels on a Pi but short enough to fail loud rather than hang
+        the user's session indefinitely (issue #327).  Pass ``None`` to
+        disable the timeout (rare; only for trusted long-running calls).
+
+    Returns
+    -------
+    tuple[int, str]
+        ``(returncode, combined_output)``.  On timeout, returncode is
+        ``-1`` and the output ends with a clear ``[TIMEOUT after Ns]``
+        marker so callers can include it in the error surface.
     """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -30,8 +53,19 @@ async def _run_capture(cmd: list[str], cwd: str | None = None) -> tuple[int, str
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
     )
-    out, _ = await proc.communicate()
-    return proc.returncode or 0, out.decode() if out else ""
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return proc.returncode or 0, out.decode() if out else ""
+    except asyncio.TimeoutError:
+        # Kill the subprocess so it doesn't leak; communicate() may have
+        # buffered some output before we hit the timeout, but we can't
+        # safely retrieve it without potentially blocking again.
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:  # noqa: BLE001
+            pass
+        return -1, f"[TIMEOUT after {timeout}s] cmd: {' '.join(cmd[:3])}..."
 
 
 class ConfigUpdate(BaseModel):
@@ -623,14 +657,35 @@ async def apply_update(request: Request):
     # actually load with the freshly installed deps. Without this a partial
     # pip install (returncode 0 but a wheel quietly skipped) still grey-screens
     # the user on restart.
+    #
+    # Walk the package tree dynamically (issue #327) so new modules added in
+    # later PRs are validated automatically without anyone remembering to
+    # update a hardcoded import list. Errors during walk_packages or import
+    # bubble up via the smoke proc's exit code.
     if venv_python is not None and venv_python.exists():
+        smoke_script = (
+            "import importlib, pkgutil, sys, traceback\n"
+            "import tinyagentos\n"
+            "errors = []\n"
+            "for m in pkgutil.walk_packages(tinyagentos.__path__, prefix='tinyagentos.'):\n"
+            "    name = m.name\n"
+            "    # Skip optional dev/test scaffolding; stay on production code paths.\n"
+            "    if any(part in name for part in ('test', '_pycache_', '.scripts.')):\n"
+            "        continue\n"
+            "    try:\n"
+            "        importlib.import_module(name)\n"
+            "    except Exception:\n"
+            "        errors.append(name + ':\\n' + traceback.format_exc())\n"
+            "if errors:\n"
+            "    print('Import smoke FAILED for', len(errors), 'modules:\\n')\n"
+            "    print('\\n---\\n'.join(errors[:10]))\n"
+            "    sys.exit(1)\n"
+            "print('Import smoke OK')\n"
+        )
         smoke_returncode, smoke_output = await _run_capture(
-            [
-                str(venv_python), "-c",
-                "import tinyagentos.app; "
-                "from tinyagentos.routes.desktop_browser import proxy, copilot_ws, vapid, store",
-            ],
+            [str(venv_python), "-c", smoke_script],
             cwd=str(project_dir),
+            timeout=60.0,  # imports should be fast; 60s is generous
         )
         if smoke_returncode != 0:
             return JSONResponse(
@@ -653,9 +708,16 @@ async def apply_update(request: Request):
     # same instant and the heuristic can pick the wrong winner. Force-rebuilding
     # is the only reliable path; the cost is one ~30s npm build on Update click.
     from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
-    _rebuilt, _rebuild_msg = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
-    if _rebuilt:
-        logger.info("Desktop rebuild: %s", _rebuild_msg)
+    rebuild_result = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
+    if rebuild_result.rebuilt:
+        logger.info("Desktop rebuild: %s", rebuild_result.message)
+    if not rebuild_result.success:
+        # Update is still applied to disk, but the frontend won't be in sync
+        # until the rebuild succeeds. Surface this clearly rather than
+        # silently leaving the user with a stale UI.
+        logger.warning(
+            "Update pulled but desktop rebuild failed: %s", rebuild_result.message
+        )
 
     # Record the new SHA so the restart modal can confirm the update was applied
     # and the Updates section can show the pending-restart banner.
@@ -717,11 +779,16 @@ async def rebuild_frontend(request: Request):
     project_dir = Path(__file__).parent.parent.parent
     from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
 
-    rebuilt, message = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
-    if not rebuilt:
-        return JSONResponse({"error": message}, status_code=500)
-    if "failed" in message.lower() or "error" in message.lower() or "timed out" in message.lower():
-        return JSONResponse({"error": message}, status_code=500)
+    result = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
+    if not result.success:
+        # Structured success bool — no more string-matching the message
+        # field for "failed"/"error"/"timed out". Issue #327.
+        return JSONResponse({"error": result.message}, status_code=500)
+    if not result.rebuilt:
+        # Force=True should always rebuild unless something is fundamentally
+        # missing (no package.json, npm not on PATH). Surface the reason
+        # rather than claiming success — the user clicked Rebuild.
+        return JSONResponse({"error": result.message}, status_code=500)
 
     return {
         "status": "rebuilt",

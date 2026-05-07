@@ -162,3 +162,75 @@ class TestRunCaptureHelper:
         rc, out = await _run_capture(["sh", "-c", "echo boom-on-stderr 1>&2; exit 7"])
         assert rc == 7
         assert "boom-on-stderr" in out
+
+
+class TestRunCaptureTimeout:
+    """The timeout fix for #327. Without it, pip / npm / smoke test could
+    hang the /api/settings/update route forever on a slow mirror."""
+
+    @pytest.mark.asyncio
+    async def test_command_within_timeout_succeeds(self):
+        from tinyagentos.routes.settings import _run_capture
+
+        rc, out = await _run_capture(
+            ["sh", "-c", "echo fast"], timeout=5.0,
+        )
+        assert rc == 0
+        assert "fast" in out
+
+    @pytest.mark.asyncio
+    async def test_command_exceeding_timeout_returns_marker(self):
+        from tinyagentos.routes.settings import _run_capture
+
+        rc, out = await _run_capture(
+            ["sh", "-c", "sleep 5"], timeout=0.5,
+        )
+        assert rc == -1
+        assert "TIMEOUT" in out
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_subprocess_no_orphan(self):
+        """After timeout, the subprocess must be terminated — not leaked."""
+        import time
+
+        from tinyagentos.routes.settings import _run_capture
+
+        # Long sleep that would pin the subprocess open if not killed.
+        start = time.monotonic()
+        rc, _out = await _run_capture(
+            ["sh", "-c", "sleep 30"], timeout=0.3,
+        )
+        elapsed = time.monotonic() - start
+        assert rc == -1
+        # Should return promptly after timeout, not after the full sleep.
+        assert elapsed < 5.0, (
+            f"_run_capture took {elapsed:.1f}s — subprocess wasn't killed cleanly"
+        )
+
+
+class TestRebuildResultStructured:
+    """Issue #327: rebuild_desktop_bundle_if_stale returns a structured
+    RebuildResult so callers don't have to string-match the message field."""
+
+    @pytest.mark.asyncio
+    async def test_skip_returns_success_true(self, tmp_path):
+        """When there's no desktop/, the rebuild is a successful no-op."""
+        from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+
+        result = await rebuild_desktop_bundle_if_stale(tmp_path, force=True)
+        assert result.rebuilt is False
+        # No desktop dir → nothing to do; that's a successful skip, not a failure.
+        # (force=True makes it skip the staleness check; it still skips because
+        # there's no package.json.)
+        assert result.success is True
+        assert "package.json" in result.message or "current" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_result_fields_present(self, tmp_path):
+        """Sanity-check the dataclass surface so future refactors don't drift."""
+        from tinyagentos.desktop_rebuild import RebuildResult
+
+        r = RebuildResult(rebuilt=True, success=False, message="x")
+        assert r.rebuilt is True
+        assert r.success is False
+        assert r.message == "x"
