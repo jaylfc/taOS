@@ -9,7 +9,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # Bumped from 35 to 45: 3.11 was hitting the cap because it has fewer
+    # pre-built wheels for our deps + the newly-added SPA build step adds
+    # ~30s. Cancellations were showing as CANCELLED instead of TIMED_OUT,
+    # which made the cause non-obvious.
+    timeout-minutes: 45
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
