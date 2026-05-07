@@ -186,11 +186,13 @@ function defaultFormState(editingProvider?: Provider | null, schema?: ProviderTy
       priority: String(editingProvider.priority ?? 99),
     };
   }
-  const openai = schema?.find((p) => p.id === "openai");
+  // Default to first available cloud type from schema; fall back to empty string
+  // so form fields don't reference a type that doesn't exist in the schema.
+  const firstCloud = schema?.find((p) => p.category === "cloud");
   return {
     name: "",
-    type: "openai",
-    url: openai?.default_url ?? "",
+    type: firstCloud?.id ?? "",
+    url: firstCloud?.default_url ?? "",
     apiKey: "",
     priority: "99",
   };
@@ -214,7 +216,7 @@ function ProviderForm({
 
   const isMobile = useIsMobile();
   const isEdit = !!editing;
-  const { providers: schema } = useProviderSchema();
+  const { providers: schema, loaded: schemaLoaded } = useProviderSchema();
 
   const cloudProviders = schema.filter((p) => p.category === "cloud");
   const localProviders = schema.filter((p) => p.category === "local");
@@ -413,8 +415,8 @@ function ProviderForm({
                       if (cat === "cloud") setStep("cloud-pick");
                       else if (cat === "cluster") setStep("cluster-info");
                       else {
-                        const rkllama = schema.find((p) => p.id === "rkllama");
-                        setForm((p) => ({ ...p, type: "rkllama", url: rkllama?.default_url ?? "" }));
+                        const firstLocal = schema.find((p) => p.category === "local");
+                        setForm((p) => ({ ...p, type: firstLocal?.id ?? "", url: firstLocal?.default_url ?? "" }));
                         setStep("config");
                       }
                     }}
@@ -433,8 +435,10 @@ function ProviderForm({
           {/* Step: cloud provider picker */}
           {step === "cloud-pick" && (
             <div className="grid grid-cols-2 gap-3" role="group" aria-label="Cloud provider">
-              {cloudProviders.length === 0 ? (
-                <p className="col-span-2 text-xs text-shell-text-tertiary text-center py-4">Loading providers...</p>
+              {!schemaLoaded ? (
+                <p className="col-span-2 text-xs text-shell-text-tertiary text-center py-4">Loading providers…</p>
+              ) : cloudProviders.length === 0 ? (
+                <p className="col-span-2 text-xs text-shell-text-tertiary text-center py-4">No cloud providers available.</p>
               ) : cloudProviders.map((spec) => (
                 <button
                   key={spec.id}
@@ -1066,7 +1070,7 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
   const isMobile = useIsMobile();
   const isMobileRef = useRef(isMobile);
   useEffect(() => { isMobileRef.current = isMobile; }, [isMobile]);
-  const { providers: schema } = useProviderSchema();
+  const { providers: schema, loaded: schemaLoaded } = useProviderSchema();
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1175,7 +1179,7 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
             <Button variant="ghost" size="icon" onClick={fetchProviders} aria-label="Refresh provider list">
               <RefreshCw size={14} />
             </Button>
-            <Button size="sm" onClick={openAdd} aria-label="Add provider">
+            <Button size="sm" onClick={openAdd} disabled={!schemaLoaded} aria-label="Add provider" title={!schemaLoaded ? "Loading provider catalog…" : undefined}>
               <Plus size={14} />
               {isMobile ? "Add" : "Add Provider"}
             </Button>

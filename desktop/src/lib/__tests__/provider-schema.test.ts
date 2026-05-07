@@ -8,7 +8,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fetchProviderSchema, resetSchemaCache } from "../provider-schema";
+import { renderHook, waitFor } from "@testing-library/react";
+import { fetchProviderSchema, resetSchemaCache, useProviderSchema } from "../provider-schema";
 
 const SRC_ROOT = resolve(__dirname, "..", "..");
 const ALLOWLIST = new Set([
@@ -112,5 +113,34 @@ describe("provider schema drift guard", () => {
     );
     const r = await fetchProviderSchema();
     expect(r).toEqual([]);
+  });
+
+  it("useProviderSchema reports loaded=false then true after fetch", async () => {
+    const spec = {
+      id: "openai",
+      category: "cloud",
+      label: "OpenAI",
+      description: "OpenAI API",
+      default_url: "https://api.openai.com/v1",
+      key_placeholder: "sk-...",
+      litellm_prefix: "openai",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ providers: [spec] }), { status: 200 })
+      )
+    );
+
+    const { result } = renderHook(() => useProviderSchema());
+
+    // Initially not loaded (cache is empty after resetSchemaCache in afterEach)
+    expect(result.current.loaded).toBe(false);
+    expect(result.current.providers).toEqual([]);
+
+    // After fetch resolves, loaded becomes true and providers are populated
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.providers).toHaveLength(1);
+    expect(result.current.providers[0].id).toBe("openai");
   });
 });
