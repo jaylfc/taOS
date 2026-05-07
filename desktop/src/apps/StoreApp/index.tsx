@@ -795,7 +795,12 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   }, [selectedDevices, installTargets, apps]);
 
   useEffect(() => {
-    if (availableBackends.length === 0) return; // bar is hidden, leave state alone
+    if (availableBackends.length === 0) {
+      // Bar is hidden; clear any stale backend filter so it doesn't
+      // silently apply behind invisible UI.
+      if (selectedBackends.length > 0) setSelectedBackends([]);
+      return;
+    }
     const availSet = new Set(availableBackends);
     const dropped = selectedBackends.filter((b) => !availSet.has(b));
     if (dropped.length > 0) {
