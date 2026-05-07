@@ -134,13 +134,17 @@ class TestBackendToMethodMapping:
     The underlying installers' .install() methods are mocked to avoid I/O.
     """
 
-    def test_ollama_maps_to_download_no_value_error(self):
-        """get_installer(_BACKEND_TO_METHOD['ollama']) must not raise."""
+    def test_ollama_maps_to_ollama_installer_no_value_error(self):
+        """get_installer(_BACKEND_TO_METHOD['ollama']) must not raise.
+
+        Originally pointed at the generic DownloadInstaller; now uses the
+        dedicated OllamaInstaller which streams /api/pull (#329 / #342).
+        """
         from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
         from tinyagentos.installers.base import get_installer
 
         method = _BACKEND_TO_METHOD["ollama"]
-        assert method == "download"
+        assert method == "ollama"
         # Should not raise ValueError
         installer = get_installer(method)
         assert installer is not None
