@@ -62,7 +62,7 @@ _CANONICAL_RAM_GB: tuple[int, ...] = (
 def _snap_ram_to_canonical_gb(ram_mb: int) -> int:
     """Map kernel-reported MB to the closest canonical bucket in GB.
 
-    ``ram_mb=0`` returns 1 to keep `profile_id` parseable while signalling
+    ``ram_mb <= 0`` returns 1 to keep `profile_id` parseable while signalling
     "unknown" via everything else (`cpu`, `npu.type=="none"`, etc.)."""
     if ram_mb <= 0:
         return 1
