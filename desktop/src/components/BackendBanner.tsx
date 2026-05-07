@@ -17,8 +17,8 @@ export function BackendBanner() {
   const { status, secondsReconnecting } = useBackendStatus();
   if (status === "up") return null;
 
-  const taking_long = secondsReconnecting >= LONG_THRESHOLD_S;
-  const message = taking_long
+  const takingLong = secondsReconnecting >= LONG_THRESHOLD_S;
+  const message = takingLong
     ? "taOS is taking longer than usual."
     : "taOS is restarting…";
 
@@ -26,11 +26,12 @@ export function BackendBanner() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed top-0 left-0 right-0 z-[9999] flex items-center justify-center gap-3 bg-amber-500/95 px-4 py-2 text-sm font-medium text-amber-950 shadow-md"
+      // z-[9500]: above app chrome / Launchpad (~9000), below toasts/modals (10000+).
+      className="fixed top-0 left-0 right-0 z-[9500] flex items-center justify-center gap-3 bg-amber-500/95 px-4 py-2 text-sm font-medium text-amber-950 shadow-md"
     >
       <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
       <span>{message}</span>
-      {taking_long && (
+      {takingLong && (
         <button
           type="button"
           onClick={() => window.location.reload()}
