@@ -7,7 +7,7 @@ import { BACKEND_META } from "./backends";
 /**
  * Every backend id referenced from app-catalog/models/manifest files
  * must have a BACKEND_META entry. Falling through to the generic
- * fallback hid rk-llama-cpp / exo / onnxruntime / sd-webui /
+ * fallback hides rk-llama-cpp / exo / onnxruntime / sd-webui /
  * sentence-transformers / ezrknpu in the Store filter.
  *
  * Cheap regex parse: every backend reference under requires.backends
