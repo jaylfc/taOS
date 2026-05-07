@@ -6,7 +6,7 @@ import type { CatalogApp, InstallTarget, InstalledEntry } from "./types";
 import { DevicePillBar } from "./DevicePillBar";
 import { BackendPillBar } from "./BackendPillBar";
 import { IncompatibleToggle } from "./IncompatibleToggle";
-import { filterModels, compatFromResolver } from "./filter";
+import { filterCatalog, compatFromResolver } from "./filter";
 import { resolveModel, type ResolveResponse } from "./resolver-types";
 import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
@@ -746,15 +746,10 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     return true;
   });
 
-  // Device + backend filter only applies when the user is in the Models
-  // category. Other categories use the existing list as-is.
-  const isModels = activeCategory === "models";
   const selectedDeviceObjs = installTargets.filter((t) =>
     selectedDevices.includes(t.name)
   );
-  const tierFilterResult = isModels
-    ? filterModels(categoryFiltered, selectedDeviceObjs, selectedBackends)
-    : { compatible: categoryFiltered, incompatible: [] };
+  const tierFilterResult = filterCatalog(categoryFiltered, selectedDeviceObjs, selectedBackends);
 
   // Apply resolver compat as a second pass: any model the resolver classifies
   // as "red" moves from compatible → incompatible, regardless of tier match.
@@ -773,7 +768,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   // Backends shown in the BackendPillBar are the union of variants[].backend
   // across all manifests where any selected device's tier_id is supported.
   const availableBackends = useMemo(() => {
-    if (!isModels || selectedDevices.length === 0) return [];
+    if (selectedDevices.length === 0) return [];
     const memoSelectedDevices = installTargets.filter((t) =>
       selectedDevices.includes(t.name)
     );
@@ -797,10 +792,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
       }
     }
     return Array.from(out).sort();
-  }, [isModels, selectedDevices, installTargets, apps]);
+  }, [selectedDevices, installTargets, apps]);
 
   useEffect(() => {
-    if (!isModels) return;
     if (availableBackends.length === 0) return; // bar is hidden, leave state alone
     const availSet = new Set(availableBackends);
     const dropped = selectedBackends.filter((b) => !availSet.has(b));
@@ -813,7 +807,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
         `[store-filter] auto-deselected backend(s): ${dropped.join(", ")}`
       );
     }
-  }, [availableBackends, isModels, selectedBackends]);
+  }, [availableBackends, selectedBackends]);
 
   const handleInstall = useCallback((id: string) => {
     setApps((prev) => prev.map((a) => (a.id === id ? { ...a, installed: true } : a)));
@@ -909,22 +903,20 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
 
         {/* Grid */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {isModels && (
-            <>
-              <DevicePillBar
-                devices={installTargets}
-                selected={selectedDevices}
-                onChange={setSelectedDevices}
-                showSkeleton={installTargets.length === 0 && loading}
-              />
-              <BackendPillBar
-                available={availableBackends}
-                selected={selectedBackends}
-                onChange={setSelectedBackends}
-                disabled={selectedDevices.length === 0}
-              />
-            </>
-          )}
+          <>
+            <DevicePillBar
+              devices={installTargets}
+              selected={selectedDevices}
+              onChange={setSelectedDevices}
+              showSkeleton={installTargets.length === 0 && loading}
+            />
+            <BackendPillBar
+              available={availableBackends}
+              selected={selectedBackends}
+              onChange={setSelectedBackends}
+              disabled={selectedDevices.length === 0}
+            />
+          </>
           {loading ? (
             <div className="flex items-center justify-center h-40">
               <Loader2 className="w-6 h-6 text-shell-text-tertiary animate-spin" />
@@ -961,7 +953,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                     installTargets={installTargets}
                     runtimeHost={runtimeHosts[app.id] ?? null}
                     defaultTargetRemote={
-                      isModels && selectedDevices.length === 1 ? selectedDevices[0] : undefined
+                      selectedDevices.length === 1 ? selectedDevices[0] : undefined
                     }
                     resolveResponse={compatMap.get(app.id)}
                   />
@@ -969,7 +961,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
               })}
             </div>
           )}
-          {isModels && (
+          {incompatible.length > 0 && (
             <IncompatibleToggle count={incompatible.length}>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {incompatible.map((app) => (
@@ -982,7 +974,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                     installTargets={installTargets}
                     runtimeHost={runtimeHosts[app.id] ?? null}
                     defaultTargetRemote={
-                      isModels && selectedDevices.length === 1 ? selectedDevices[0] : undefined
+                      selectedDevices.length === 1 ? selectedDevices[0] : undefined
                     }
                     resolveResponse={compatMap.get(app.id)}
                   />

@@ -14,18 +14,21 @@ export interface FilterResult {
  * within an axis (any selected device matches; any selected backend
  * matches), intersection across axes (must satisfy both).
  *
- * A model passes the device filter if at least one of its declared
+ * An app passes the device filter if at least one of its declared
  * hardware_tiers matches one of the selected devices' tier_ids and
- * is not explicitly "unsupported". Models with no hardware_tiers are
- * treated as universally compatible.
+ * is not explicitly "unsupported". Apps with no hardware_tiers are
+ * treated as universally compatible (runs anywhere).
  *
- * A model passes the backend filter if any of its variants advertise
+ * An app passes the backend filter if any of its variants advertise
  * one of the selected backends. Falls back to install_method when
- * variants[].backend is empty. Models with no declared backend pass
+ * variants[].backend is empty. Apps with no declared backend pass
  * the backend filter only when no device filter is active; universal
  * device compatibility already includes them in that case.
+ *
+ * Works for all catalog item types: models, runtimes, services, agents,
+ * MCP servers, etc.
  */
-export function filterModels(
+export function filterCatalog(
   apps: CatalogApp[],
   selectedDevices: InstallTarget[],
   selectedBackends: string[],

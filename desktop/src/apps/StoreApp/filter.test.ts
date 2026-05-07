@@ -1,6 +1,6 @@
 // desktop/src/apps/StoreApp/filter.test.ts
 import { describe, it, expect } from "vitest";
-import { filterModels, compatFromResolver } from "./filter";
+import { filterCatalog, compatFromResolver } from "./filter";
 import type { CatalogApp, InstallTarget } from "./types";
 
 const piDevice: InstallTarget = {
@@ -22,6 +22,13 @@ const controllerDevice: InstallTarget = {
   label: "Controller",
   type: "local",
   tier_id: "x86-cpu-only",
+};
+
+const x86VulkanDevice: InstallTarget = {
+  name: "x86-gpu",
+  label: "x86 GPU",
+  type: "remote",
+  tier_id: "x86-vulkan-8gb",
 };
 
 const rkllamaModel: CatalogApp = {
@@ -97,15 +104,15 @@ const allApps = [
   fallbackInstallMethod,
 ];
 
-describe("filterModels", () => {
+describe("filterCatalog", () => {
   it("returns all apps as compatible when no filters are applied", () => {
-    const { compatible, incompatible } = filterModels(allApps, [], []);
+    const { compatible, incompatible } = filterCatalog(allApps, [], []);
     expect(compatible).toEqual(allApps);
     expect(incompatible).toEqual([]);
   });
 
   it("filters to a single device's compatible models", () => {
-    const { compatible } = filterModels(allApps, [piDevice], []);
+    const { compatible } = filterCatalog(allApps, [piDevice], []);
     const ids = compatible.map((a) => a.id);
     expect(ids).toContain("qwen3-4b-rk");
     expect(ids).toContain("small-tool"); // no hardware_tiers → universal
@@ -113,13 +120,13 @@ describe("filterModels", () => {
   });
 
   it("excludes models with explicit 'unsupported' tier", () => {
-    const { compatible, incompatible } = filterModels(allApps, [piDevice], []);
+    const { compatible, incompatible } = filterCatalog(allApps, [piDevice], []);
     expect(compatible.find((a) => a.id === "huge-model")).toBeUndefined();
     expect(incompatible.find((a) => a.id === "huge-model")).toBeDefined();
   });
 
   it("union semantics across multiple devices", () => {
-    const { compatible } = filterModels(allApps, [piDevice, macDevice], []);
+    const { compatible } = filterCatalog(allApps, [piDevice, macDevice], []);
     const ids = compatible.map((a) => a.id);
     expect(ids).toContain("qwen3-4b-rk"); // matches Pi
     expect(ids).toContain("qwen3-4b-ollama"); // matches Mac
@@ -127,7 +134,7 @@ describe("filterModels", () => {
   });
 
   it("backend filter narrows further (intersection with device match)", () => {
-    const { compatible } = filterModels(
+    const { compatible } = filterCatalog(
       allApps,
       [piDevice, macDevice],
       ["rkllama"]
@@ -138,7 +145,7 @@ describe("filterModels", () => {
   });
 
   it("falls back to install_method when variants[].backend is absent", () => {
-    const { compatible } = filterModels(
+    const { compatible } = filterCatalog(
       [fallbackInstallMethod],
       [macDevice],
       ["ollama"]
@@ -147,7 +154,7 @@ describe("filterModels", () => {
   });
 
   it("model with no hardware_tiers and no variants passes any device filter", () => {
-    const { compatible } = filterModels(
+    const { compatible } = filterCatalog(
       [universalModel],
       [piDevice],
       []
@@ -156,7 +163,7 @@ describe("filterModels", () => {
   });
 
   it("model with no backend constraint passes any backend filter", () => {
-    const { compatible } = filterModels(
+    const { compatible } = filterCatalog(
       [universalModel],
       [],
       ["rkllama"]
@@ -165,7 +172,7 @@ describe("filterModels", () => {
   });
 
   it("controller-only filter excludes Pi-only models into incompatible", () => {
-    const { compatible, incompatible } = filterModels(
+    const { compatible, incompatible } = filterCatalog(
       allApps,
       [controllerDevice],
       []
@@ -177,7 +184,7 @@ describe("filterModels", () => {
   });
 
   it("device + backend together require BOTH to match", () => {
-    const { compatible } = filterModels(
+    const { compatible } = filterCatalog(
       allApps,
       [macDevice],
       ["rkllama"]
@@ -191,10 +198,133 @@ describe("filterModels", () => {
       label: "weird",
       type: "remote",
     };
-    const { compatible } = filterModels(allApps, [noTierDevice], []);
+    const { compatible } = filterCatalog(allApps, [noTierDevice], []);
     // device has no tier_id → contributes nothing to the tier set;
     // selectedDevices is non-empty so deviceOk=false except for universal
     expect(compatible.map((a) => a.id)).toEqual(["small-tool"]);
+  });
+
+  // --- Non-model app type tests ---
+
+  it("service with hardware_tiers is correctly filtered by device", () => {
+    const armService: CatalogApp = {
+      id: "arm-inference-svc",
+      name: "ARM Inference Service",
+      type: "service",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+      hardware_tiers: { "arm-npu-16gb": { recommended: "default" } },
+      variants: [{ id: "default", backend: ["rkllama"] }],
+    };
+    const { compatible, incompatible } = filterCatalog([armService], [controllerDevice], []);
+    expect(compatible.find((a) => a.id === "arm-inference-svc")).toBeUndefined();
+    expect(incompatible.find((a) => a.id === "arm-inference-svc")).toBeDefined();
+  });
+
+  it("agent-framework with hardware_tiers is filtered when tier doesn't match", () => {
+    const npuFramework: CatalogApp = {
+      id: "npu-agent-fw",
+      name: "NPU Agent Framework",
+      type: "agent-framework",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+      hardware_tiers: {
+        "arm-npu-16gb": { recommended: "default" },
+        "arm-npu-8gb": { recommended: "default" },
+      },
+      variants: [{ id: "default", backend: ["rkllama"] }],
+    };
+    const { compatible, incompatible } = filterCatalog([npuFramework], [macDevice], []);
+    expect(compatible.find((a) => a.id === "npu-agent-fw")).toBeUndefined();
+    expect(incompatible.find((a) => a.id === "npu-agent-fw")).toBeDefined();
+  });
+
+  it("mcp server with hardware_tiers is filtered when tier doesn't match", () => {
+    const armMcp: CatalogApp = {
+      id: "arm-mcp-server",
+      name: "ARM MCP Server",
+      type: "mcp",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+      hardware_tiers: { "arm-npu-16gb": { recommended: "default" } },
+    };
+    const { compatible, incompatible } = filterCatalog([armMcp], [x86VulkanDevice], []);
+    expect(compatible.find((a) => a.id === "arm-mcp-server")).toBeUndefined();
+    expect(incompatible.find((a) => a.id === "arm-mcp-server")).toBeDefined();
+  });
+
+  it("service without hardware_tiers is universally compatible (passes any device filter)", () => {
+    const universalService: CatalogApp = {
+      id: "universal-svc",
+      name: "Universal Service",
+      type: "service",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+      // no hardware_tiers → runs anywhere
+    };
+    const { compatible } = filterCatalog([universalService], [piDevice], []);
+    expect(compatible.map((a) => a.id)).toEqual(["universal-svc"]);
+  });
+
+  it("agent-framework without hardware_tiers passes any device filter", () => {
+    const universalFw: CatalogApp = {
+      id: "universal-fw",
+      name: "Universal Framework",
+      type: "agent-framework",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+    };
+    const { compatible } = filterCatalog([universalFw], [x86VulkanDevice], []);
+    expect(compatible.map((a) => a.id)).toEqual(["universal-fw"]);
+  });
+
+  it("mcp server without hardware_tiers passes any device filter", () => {
+    const universalMcp: CatalogApp = {
+      id: "universal-mcp",
+      name: "Universal MCP",
+      type: "mcp",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+    };
+    const { compatible } = filterCatalog([universalMcp], [controllerDevice], []);
+    expect(compatible.map((a) => a.id)).toEqual(["universal-mcp"]);
+  });
+
+  // --- LLM Runtime specific test (johny / N100 case from #312) ---
+
+  it("LLM runtime restricted to arm-npu tiers is incompatible on x86-vulkan", () => {
+    // This is the exact case from #312: johny on an N100 (x86-vulkan-*) was
+    // able to install rk-llama-cpp because the runtime tab had no filter.
+    const rkLlamaCpp: CatalogApp = {
+      id: "rk-llama-cpp",
+      name: "rk-llama-cpp Runtime",
+      type: "llm-runtime",
+      version: "1",
+      description: "",
+      installed: false,
+      compat: "green",
+      hardware_tiers: {
+        "arm-npu-16gb": { recommended: "default" },
+        "arm-npu-8gb": { recommended: "default" },
+        "cpu-only": { recommended: "default" },
+      },
+      variants: [{ id: "default", backend: ["rk-llama-cpp"] }],
+    };
+    const { compatible, incompatible } = filterCatalog([rkLlamaCpp], [x86VulkanDevice], []);
+    expect(compatible.find((a) => a.id === "rk-llama-cpp")).toBeUndefined();
+    expect(incompatible.find((a) => a.id === "rk-llama-cpp")).toBeDefined();
   });
 });
 
