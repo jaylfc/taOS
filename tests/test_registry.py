@@ -139,3 +139,25 @@ class TestAppRegistry:
         r.list_available()
         assert r._catalog is not None
         assert len(r._catalog) == 3
+
+    def test_concurrent_first_read_does_not_double_load(self, catalog_dir, tmp_path):
+        """Two threads racing on a cold registry must not produce a doubled catalog."""
+        import threading
+
+        installed_path = tmp_path / "installed.json"
+        r = AppRegistry(catalog_dir=catalog_dir, installed_path=installed_path)
+        results: list[int] = []
+        barrier = threading.Barrier(8)
+
+        def worker():
+            barrier.wait()
+            results.append(len(r.list_available()))
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(n == 3 for n in results)
+        assert len(r._catalog) == 3

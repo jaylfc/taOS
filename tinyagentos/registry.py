@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -82,13 +83,18 @@ class AppRegistry:
         # Sentinel: None means catalog has not been loaded yet. Deferred so that
         # boot does not pay for walking + parsing every manifest under catalog_dir.
         self._catalog: list[AppManifest] | None = None
+        self._catalog_lock = threading.Lock()
 
     def _ensure_loaded(self) -> None:
-        if self._catalog is None:
-            self._load_catalog()
+        # Double-checked locking: cheap path when already loaded, lock only on first miss.
+        if self._catalog is not None:
+            return
+        with self._catalog_lock:
+            if self._catalog is None:
+                self._load_catalog()
 
     def _load_catalog(self) -> None:
-        self._catalog = []
+        catalog: list[AppManifest] = []
         for type_dir in ("agents", "models", "services", "plugins"):
             base = self.catalog_dir / type_dir
             if not base.exists():
@@ -97,12 +103,15 @@ class AppRegistry:
                 manifest = app_dir / "manifest.yaml"
                 if manifest.exists():
                     try:
-                        self._catalog.append(AppManifest.from_file(manifest))
+                        catalog.append(AppManifest.from_file(manifest))
                     except (yaml.YAMLError, KeyError):
                         pass  # skip invalid manifests
+        # Single atomic assignment: readers either see the old list or the fully built one.
+        self._catalog = catalog
 
     def reload(self) -> None:
-        self._load_catalog()
+        with self._catalog_lock:
+            self._load_catalog()
 
     def list_available(self, type_filter: str | None = None) -> list[AppManifest]:
         self._ensure_loaded()
