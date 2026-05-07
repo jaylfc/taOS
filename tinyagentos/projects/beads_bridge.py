@@ -287,9 +287,14 @@ class BeadsBridge:
                     channel["id"], format_claimed(actor, tsk_id, title)
                 )
             elif kind == "task.released":
-                # The release event payload doesn't include releaser_id;
-                # use the actor we last knew about, or fall back to "agent".
-                actor = task.get("claimed_by") or "agent"
+                # release_task clears claimed_by before publishing the event,
+                # so prefer payload.releaser_id (the user/agent who released)
+                # over the now-NULL claimed_by column.
+                actor = (
+                    payload.get("releaser_id")
+                    or task.get("claimed_by")
+                    or "agent"
+                )
                 await self._post_system(
                     channel["id"], format_released(actor, tsk_id, title)
                 )

@@ -219,7 +219,11 @@ class ProjectTaskStore(BaseStore):
         if changed:
             existing = await self.get_task(task_id)
             if existing is not None:
-                await self._publish(existing["project_id"], "task.released", {"id": task_id})
+                await self._publish(
+                    existing["project_id"],
+                    "task.released",
+                    {"id": task_id, "releaser_id": releaser_id},
+                )
         return changed
 
     async def close_task(

@@ -16,6 +16,36 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 
 router = APIRouter()
+
+
+_SLASH_GROUP_GUARD_ERROR = (
+    "slash commands in group channels must address an agent: "
+    "use @<agent> /<cmd> or @all /<cmd>"
+)
+
+
+def _validate_slash_target(content: str, channel: dict | None) -> str | None:
+    """Return an error message if a /cmd message is unaddressed in a non-DM,
+    non-A2A group channel; otherwise None.
+
+    Otherwise a framework slash command would broadcast to every agent in
+    the channel, producing N different /help outputs and (in some
+    frameworks) triggering destructive side effects like /clear on
+    unaddressed agents. Applies to HTTP /api/chat/messages and the
+    WS "message" branch — the safety must not be transport-dependent (#268).
+    """
+    if not content.lstrip().startswith("/"):
+        return None
+    if not channel or channel.get("type") == "dm":
+        return None
+    if ((channel.get("settings") or {}).get("kind")) == "a2a":
+        return None
+    from tinyagentos.chat.mentions import parse_mentions
+    members = list(channel.get("members") or [])
+    mentions = parse_mentions(content, members)
+    if mentions.explicit or mentions.all:
+        return None
+    return _SLASH_GROUP_GUARD_ERROR
 logger = logging.getLogger(__name__)
 
 _background_tasks: set[asyncio.Task] = set()
@@ -102,6 +132,14 @@ async def chat_ws(websocket: WebSocket):
                 msg_store = websocket.app.state.chat_messages
                 ch_store = websocket.app.state.chat_channels
                 _ws_channel = await ch_store.get_channel(data["channel_id"])
+                _ws_guard_err = _validate_slash_target(data.get("content", ""), _ws_channel)
+                if _ws_guard_err:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "channel_id": data["channel_id"],
+                        "error": _ws_guard_err,
+                    }))
+                    continue
                 _ws_ttl = None
                 if _ws_channel and _ws_channel.get("settings"):
                     _ws_ttl = _ws_channel["settings"].get("ephemeral_ttl_seconds")
@@ -256,24 +294,9 @@ async def post_message(request: Request):
             status_code=200,
         )
 
-    # Guardrail: in a non-DM channel, a / message must address at least one
-    # agent explicitly (@<slug> or @all). Otherwise a framework slash command
-    # would broadcast to every agent in the channel, producing N different
-    # /help outputs and (in some frameworks) triggering destructive side effects
-    # like /clear on unaddressed agents.
-    stripped = content.lstrip()
-    if stripped.startswith("/"):
-        channel = await ch_store.get_channel(channel_id)
-        _is_a2a = ((channel or {}).get("settings") or {}).get("kind") == "a2a"
-        if channel and channel.get("type") != "dm" and not _is_a2a:
-            from tinyagentos.chat.mentions import parse_mentions
-            members = list(channel.get("members") or [])
-            mentions = parse_mentions(content, members)
-            if not mentions.explicit and not mentions.all:
-                return JSONResponse(
-                    {"error": "slash commands in group channels must address an agent: use @<agent> /<cmd> or @all /<cmd>"},
-                    status_code=400,
-                )
+    err = _validate_slash_target(content, await ch_store.get_channel(channel_id))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
 
     attachments = (body or {}).get("attachments") or []
     if not isinstance(attachments, list):
