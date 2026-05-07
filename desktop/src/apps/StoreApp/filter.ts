@@ -1,6 +1,6 @@
 // desktop/src/apps/StoreApp/filter.ts
 import type { CatalogApp, InstallTarget } from "./types";
-import type { Compat } from "./resolver-types";
+import type { Compat, ResolveResponse } from "./resolver-types";
 
 export interface FilterResult {
   compatible: CatalogApp[];
@@ -63,11 +63,12 @@ export function filterModels(
  */
 export function compatFromResolver(
   manifestId: string,
-  compatMap: Map<string, Compat>,
+  compatMap: Map<string, Compat | ResolveResponse>,
   showIncompatible: boolean,
 ): boolean {
-  const c = compatMap.get(manifestId);
-  if (c === undefined) return true;
+  const entry = compatMap.get(manifestId);
+  if (entry === undefined) return true;
+  const c = typeof entry === "string" ? entry : entry.compat;
   if (c === "red") return showIncompatible;
   return true;
 }
