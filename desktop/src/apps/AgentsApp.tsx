@@ -531,7 +531,7 @@ const MEMORY_TIER_INFO: Record<string, { label: string; description: string; min
 /** Parse a tier_id like "arm-vulkan-8gb" and return RAM in MB. */
 function tierIdRamMb(tierId: string): number {
   const m = tierId.match(/(\d+)gb/i);
-  return m ? parseInt(m[1], 10) * 1024 : 0;
+  return m && m[1] ? parseInt(m[1], 10) * 1024 : 0;
 }
 
 /** Return the largest MEMORY_TIERS key the device tier_id can support. */
@@ -609,7 +609,8 @@ function MemoryWizardStep({
       .then((data: Array<{ name: string; friendly_name: string; tier_id: string }>) => {
         setMemoryInstallTargets(Array.isArray(data) ? data : []);
       })
-      .catch(() => setMemoryInstallTargets([]));
+      .catch(() => setMemoryInstallTargets([]))
+      .finally(() => setMemoryDevicesLoaded(true));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -733,7 +734,9 @@ function MemoryWizardStep({
         <Label className="mb-1.5 block text-xs">Device</Label>
         <div className="flex flex-wrap gap-2">
           {memoryInstallTargets.length === 0 && (
-            <span className="text-xs text-shell-text-tertiary">Loading devices…</span>
+            <span className="text-xs text-shell-text-tertiary">
+              {memoryDevicesLoaded ? "No devices available" : "Loading devices…"}
+            </span>
           )}
           {memoryInstallTargets.map(t => (
             <button
@@ -879,6 +882,7 @@ function DeployWizard({
   // null = loading; "none" = no default; object = has default
   const [memoryDefault, setMemoryDefault] = useState<{ device_id: string; tier_id: string; tier_name: string } | null | "none">(null);
   const [memoryInstallTargets, setMemoryInstallTargets] = useState<Array<{ name: string; friendly_name: string; tier_id: string }>>([]);
+  const [memoryDevicesLoaded, setMemoryDevicesLoaded] = useState(false);
   const [memorySetupTaskId, setMemorySetupTaskId] = useState<string | null>(null);
   const [memorySetupState, setMemorySetupState] = useState<string>("pending");
   const [memorySetupMsg, setMemorySetupMsg] = useState<string>("");
