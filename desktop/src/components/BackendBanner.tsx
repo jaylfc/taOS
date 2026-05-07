@@ -26,7 +26,11 @@ export function BackendBanner() {
     <div role="status" aria-live="polite">
       {status !== "up" && (
         // z-[9500]: above app chrome / Launchpad (~9000), below toasts/modals (10000+).
-        <div className="fixed top-0 left-0 right-0 z-[9500] flex items-center justify-center gap-3 bg-amber-500/95 px-4 py-2 text-sm font-medium text-amber-950 shadow-md">
+        // pt is max(0.5rem, safe-area-top) so the spinner + text clear the
+        // iOS notch / Android status bar when running as an installed PWA;
+        // on desktop env(safe-area-inset-top)=0 and the original padding
+        // baseline applies.
+        <div className="fixed top-0 left-0 right-0 z-[9500] flex items-center justify-center gap-3 bg-amber-500/95 px-4 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] text-sm font-medium text-amber-950 shadow-md">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           <span>{message}</span>
           {takingLong && (
