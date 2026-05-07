@@ -10,6 +10,7 @@ script).
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
@@ -65,7 +66,11 @@ async def get_device_capability(request: Request, target_remote: str | None) -> 
     """Build a DeviceCapability snapshot for the (local | remote) target."""
     if not target_remote or target_remote == "local":
         hp = getattr(request.app.state, "hardware_profile", None)
-        hw = getattr(hp, "hardware", {}) if hp else {}
+        # HardwareProfile is a flat dataclass — there is no .hardware
+        # attribute on it. asdict() yields {ram_mb, cpu, gpu, npu, disk,
+        # os}, which is the shape hardware_to_targets and the resolver
+        # both expect.
+        hw = asdict(hp) if hp is not None else {}
         targets = tuple(hardware_to_targets(hw))
         ram_mb = int(hw.get("ram_mb", 0) or 0)
         vram_mb = int((hw.get("gpu") or {}).get("vram_mb", 0) or 0)

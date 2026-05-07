@@ -6,6 +6,28 @@ import yaml
 from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
+from tinyagentos.routes.desktop import SPA_DIR
+
+
+def pytest_configure(config):
+    """Stub the SPA bundle so the test suite doesn't depend on a real
+    `npm run build`. Two tests need actual files on disk to exercise
+    desktop routes (test_root_redirects_to_desktop checks the body
+    contains "taOS"; the sw.js header test reads the file). Building
+    the real bundle in every CI matrix job added ~3-5 min × 3 — the
+    SPA build itself stays covered by the lint job. Stubs are only
+    created when the file is missing so a real local build is left
+    untouched."""
+    SPA_DIR.mkdir(parents=True, exist_ok=True)
+    stubs = {
+        "index.html": "<!doctype html><title>taOS</title>",
+        "chat.html": "<!doctype html><title>taOS chat</title>",
+        "sw.js": "// stub service worker for tests\n",
+    }
+    for name, body in stubs.items():
+        f = SPA_DIR / name
+        if not f.exists():
+            f.write_text(body)
 
 
 @pytest.fixture

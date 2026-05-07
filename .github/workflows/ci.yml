@@ -9,10 +9,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Bumped from 35 to 45: 3.11 was hitting the cap because it has fewer
-    # pre-built wheels for our deps + the newly-added SPA build step adds
-    # ~30s. Cancellations were showing as CANCELLED instead of TIMED_OUT,
-    # which made the cause non-obvious.
+    # 3.11 is consistently the slowest matrix leg (~25-30 min) — the
+    # SPA-build drop in this PR only saved ~1.5 min, so the previous
+    # 45-min cap stays. Future investigation: figure out why 3.11 is
+    # ~10 min slower than 3.12/3.13 and whether dropping it is OK.
     timeout-minutes: 45
     strategy:
       matrix:
@@ -35,22 +35,8 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: desktop/package-lock.json
-
-      - name: Build SPA bundle
-        # Several backend tests serve from static/desktop/* and 404 if the
-        # bundle isn't built (e.g. test_root_redirects_to_desktop). The bundle
-        # is gitignored (see #375) — generated, not source — so CI builds it
-        # before running pytest.
-        run: |
-          cd desktop
-          npm ci --silent
-          npm run build
+      # SPA bundle is stubbed by tests/conftest.py — see pytest_configure.
+      # The real build is exercised in the spa-build job below.
 
       - name: Run tests
         run: pytest tests/ -v --tb=short --ignore=tests/e2e
@@ -73,3 +59,21 @@ jobs:
 
       - name: Check for syntax errors
         run: python -m compileall tinyagentos/ -q
+
+  spa-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install + build SPA
+        run: |
+          cd desktop
+          npm ci --silent
+          npm run build

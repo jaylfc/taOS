@@ -504,6 +504,109 @@ if [[ -f data/config.yaml.example && ! -f data/config.yaml ]]; then
     cp data/config.yaml.example data/config.yaml
 fi
 
+# --- LiteLLM virtual-key store (Postgres) --------------------------------
+#
+# LiteLLM uses a Postgres-backed key store to mint per-agent virtual keys
+# via /key/generate. Without it, agent deploys log a "DB not connected"
+# error and fall back to a shared master key (functional, but every agent
+# in this controller authenticates as the same identity). We install a
+# small local Postgres and write data/.litellm_db_url so the controller
+# picks it up on next start. Idempotent: re-runs leave the existing URL
+# in place — bumping the password would invalidate any keys already
+# minted against it.
+
+ensure_litellm_postgres() {
+    if [[ -f data/.litellm_db_url && -s data/.litellm_db_url ]]; then
+        log "litellm postgres: data/.litellm_db_url present — skipping setup"
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1 && [[ "$(id -u)" != "0" ]]; then
+        warn "litellm postgres: sudo not available and not running as root — skipping"
+        warn "  per-agent virtual keys will not work; deployer will use the shared master key"
+        return 0
+    fi
+
+    if ! command -v psql >/dev/null 2>&1; then
+        log "installing postgresql for LiteLLM virtual keys"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql \
+                || { warn "apt install postgresql failed — skipping virtual key setup"; return 0; }
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q postgresql postgresql-server \
+                || { warn "dnf install postgresql failed — skipping virtual key setup"; return 0; }
+            # Fedora/RHEL ship Postgres uninitialised — set up the data
+            # cluster before systemd can start it.
+            if [[ ! -d /var/lib/pgsql/data/base ]]; then
+                sudo postgresql-setup --initdb >/dev/null 2>&1 || true
+            fi
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm postgresql \
+                || { warn "pacman -S postgresql failed — skipping virtual key setup"; return 0; }
+            # Arch ships postgresql binaries without an initialised data
+            # directory; systemd refuses to start until initdb has run.
+            if [[ ! -d /var/lib/postgres/data/base ]]; then
+                sudo mkdir -p /var/lib/postgres/data
+                sudo chown postgres:postgres /var/lib/postgres/data
+                sudo -u postgres initdb --locale=C.UTF-8 --encoding=UTF8 \
+                    -D /var/lib/postgres/data >/dev/null 2>&1 || true
+            fi
+        else
+            warn "litellm postgres: unrecognised package manager — install postgresql manually then re-run"
+            return 0
+        fi
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl enable --now postgresql >/dev/null 2>&1 \
+            || { warn "litellm postgres: could not start postgresql service — skipping"; return 0; }
+    fi
+
+    # Wait for Postgres to accept connections (cold start can take a few seconds).
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sudo -u postgres psql -tAc 'SELECT 1' >/dev/null 2>&1 && break
+        sleep 1
+    done
+
+    local pw
+    pw=$(openssl rand -hex 24 2>/dev/null || head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+    if [[ -z "$pw" ]]; then
+        warn "litellm postgres: could not generate password — skipping"
+        return 0
+    fi
+
+    # Pipe the password via stdin instead of -c "...PASSWORD '...'" so it
+    # never appears in /proc/<pid>/cmdline. Quoting nuance: psql's :'var'
+    # interpolation produces a properly-escaped SQL string literal.
+    local role_sql
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='litellm'" 2>/dev/null | grep -q 1; then
+        role_sql="CREATE ROLE litellm WITH LOGIN PASSWORD :'pw';"
+    else
+        role_sql="ALTER ROLE litellm WITH LOGIN PASSWORD :'pw';"
+    fi
+    if ! printf '%s\n' "$role_sql" \
+            | sudo -u postgres psql -v ON_ERROR_STOP=1 -v "pw=${pw}" >/dev/null 2>&1; then
+        warn "litellm postgres: role create/alter failed — skipping"
+        return 0
+    fi
+
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='litellm'" 2>/dev/null | grep -q 1; then
+        printf 'CREATE DATABASE litellm OWNER litellm;\n' \
+            | sudo -u postgres psql -v ON_ERROR_STOP=1 >/dev/null 2>&1 \
+            || { warn "litellm postgres: CREATE DATABASE failed — skipping"; return 0; }
+    fi
+
+    # Subshell scopes umask so we don't leak 077 into the rest of the
+    # install script (the SPA build below relies on the calling shell's
+    # default umask for npm-managed files). chmod is belt-and-braces.
+    ( umask 077 && \
+        printf 'postgresql://litellm:%s@127.0.0.1:5432/litellm\n' "$pw" > data/.litellm_db_url )
+    chmod 600 data/.litellm_db_url
+    log "litellm postgres: data/.litellm_db_url written — virtual keys enabled"
+}
+
+ensure_litellm_postgres
+
 # --- desktop SPA bundle --------------------------------------------------
 # Build the frontend unconditionally on every install / upgrade. The bundle
 # is not committed to git (static/desktop/ is gitignored) so this is the
