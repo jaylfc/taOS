@@ -375,34 +375,61 @@ ensure_container_runtime() {
         return 0
     fi
 
-    log "no container runtime found — installing Incus via Zabbly apt repo"
+    log "no container runtime found — installing Incus"
 
     local installed=0
     if command -v apt-get >/dev/null 2>&1; then
-        # Incus is not in default Debian 12 / Ubuntu 22.04 repos — use Zabbly's
-        # stable apt repo which provides it on every supported Debian/Ubuntu release.
-        local codename=""
-        if command -v lsb_release >/dev/null 2>&1; then
-            codename=$(lsb_release -cs 2>/dev/null)
-        elif [[ -f /etc/os-release ]]; then
-            codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
-        fi
-
-        if [[ -z "$codename" ]]; then
-            warn "couldn't detect distro codename — Zabbly repo install skipped"
-            warn "  install Incus manually: https://github.com/zabbly/incus"
-        else
-            sudo install -d -m 0755 /etc/apt/keyrings
-            sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc \
-                || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
-            echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
-                | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        # Try the distro's default repos first (Ubuntu 24.04+ ships incus in
+        # universe; some Debian unstable releases also have it). Fall back
+        # to Zabbly for older Debian/Ubuntu where the package isn't there.
+        # apt-cache madison is the lightest "is the package available?"
+        # probe — empty output means no candidate, which is what we want.
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
+        if [[ -n "$(apt-cache madison incus 2>/dev/null)" ]]; then
+            log "incus available in default apt repos — installing"
             if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus; then
                 installed=1
-                log "container runtime: incus installed via Zabbly"
+                log "container runtime: incus installed from default apt repos"
             else
-                warn "Zabbly Incus install failed — see /var/log/apt/term.log"
+                warn "default apt install of incus failed — see /var/log/apt/term.log"
+            fi
+        else
+            # Detect distro codename for Zabbly repo line.
+            local codename=""
+            if command -v lsb_release >/dev/null 2>&1; then
+                codename=$(lsb_release -cs 2>/dev/null)
+            elif [[ -f /etc/os-release ]]; then
+                codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+            fi
+
+            # Zabbly publishes for a fixed set of codenames. Listed at
+            # https://github.com/zabbly/incus — keep this in sync with
+            # whatever's in the repo's Release file. Adding an unsupported
+            # codename to sources.list.d gives a "does not have a Release
+            # file" error and breaks every subsequent apt run.
+            local zabbly_supported=" bookworm trixie jammy noble "
+
+            if [[ -z "$codename" ]]; then
+                warn "couldn't detect distro codename — skipping Zabbly fallback"
+                warn "  install Incus manually: https://github.com/zabbly/incus"
+            elif [[ "$zabbly_supported" != *" $codename "* ]]; then
+                warn "incus not in default repos and codename '$codename' isn't on Zabbly's supported list ($zabbly_supported)."
+                warn "  if your distro is newer than Zabbly's supported set, install Incus from your package manager once it's available."
+                warn "  otherwise: https://github.com/zabbly/incus"
+            else
+                log "incus not in default repos — using Zabbly for codename '$codename'"
+                sudo install -d -m 0755 /etc/apt/keyrings
+                sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc \
+                    || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
+                echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
+                    | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
+                sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+                if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus; then
+                    installed=1
+                    log "container runtime: incus installed via Zabbly"
+                else
+                    warn "Zabbly Incus install failed — see /var/log/apt/term.log"
+                fi
             fi
         fi
     elif command -v dnf >/dev/null 2>&1; then
