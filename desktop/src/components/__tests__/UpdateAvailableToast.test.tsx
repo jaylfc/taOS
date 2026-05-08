@@ -63,4 +63,14 @@ describe("<UpdateAvailableToast />", () => {
     // The notification store has no actions[] — reload instruction is in the body.
     expect(call.body).toMatch(/reload/i);
   });
+
+  it("ignores semver build metadata when comparing", () => {
+    // Bundle version carries +sha for SW cache busting; backend version
+    // header is the raw 0.1.0. These should be treated as equal.
+    vi.mocked(useBackendStatus).mockReturnValue({
+      status: "up", currentVersion: "0.1.0", secondsReconnecting: 0,
+    });
+    render(<UpdateAvailableToast buildVersion="0.1.0+a3bd632" />);
+    expect(addNotification).not.toHaveBeenCalled();
+  });
 });

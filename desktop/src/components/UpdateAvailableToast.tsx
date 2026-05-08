@@ -20,6 +20,15 @@ import { useNotificationStore } from "@/stores/notification-store";
 
 const DEV_VERSION_PATTERN = /^(dev|0\.0\.0)/i;
 
+// Strip semver build metadata so a new SPA build (e.g. 0.1.0+a3bd632)
+// against the same backend version (0.1.0) doesn't trigger a spurious
+// "update available" toast. Build metadata is by spec not part of the
+// release identity.
+function strippedVersion(v: string): string {
+  const plus = v.indexOf("+");
+  return plus === -1 ? v : v.slice(0, plus);
+}
+
 interface Props {
   buildVersion: string;
 }
@@ -32,7 +41,7 @@ export function UpdateAvailableToast({ buildVersion }: Props) {
   useEffect(() => {
     if (DEV_VERSION_PATTERN.test(buildVersion)) return;
     if (!currentVersion) return;
-    if (currentVersion === buildVersion) return;
+    if (strippedVersion(currentVersion) === strippedVersion(buildVersion)) return;
     if (firedFor.current === currentVersion) return;
     firedFor.current = currentVersion;
     addNotification({
