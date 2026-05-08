@@ -130,6 +130,28 @@ class TestModelsAPI:
         for m in data["models"]:
             assert m["has_downloaded_variant"] is False
 
+    async def test_registry_installed_marks_downloaded(self, models_client, models_app):
+        """Backend-installed models (e.g. rk-llama.cpp GGUFs at
+        ~/rk-llama.cpp/models/) leave nothing in data/models and don't show
+        up in any live BackendCatalog entry, so /api/models needs to fall
+        back to the install registry to know they're present.
+        """
+        registry = models_app.state.registry
+        registry.mark_installed("test-model", "1.0.0")
+
+        resp = await models_client.get("/api/models")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        installed = next(m for m in data["models"] if m["id"] == "test-model")
+        assert installed["has_downloaded_variant"] is True
+        assert all(v["downloaded"] is True for v in installed["variants"])
+
+        # Other manifests not in the registry must remain not-downloaded so
+        # we don't blanket-mark every model.
+        not_installed = next(m for m in data["models"] if m["id"] == "another-model")
+        assert not_installed["has_downloaded_variant"] is False
+
 
 @pytest.mark.asyncio
 class TestModelsDelete:

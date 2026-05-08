@@ -149,6 +149,8 @@ def _model_to_dict(
     hardware_profile,
     downloaded_files: list[dict],
     live_models: list[dict] | None = None,
+    *,
+    registry_installed: bool = False,
 ) -> dict:
     """Convert an AppManifest to a model dict with compatibility info.
 
@@ -158,6 +160,16 @@ def _model_to_dict(
     for models that have been pulled to ``data/models`` but no backend has
     loaded yet — though this is a transitional state; the long-term answer is
     always the live catalog.
+
+    ``registry_installed`` is the install-registry's verdict for this manifest
+    id. Some installers (e.g. rk-llama.cpp) write GGUFs to a backend-specific
+    directory outside ``data/models`` and the resulting llama-server reports
+    the model under a generic name like ``active.gguf``. Neither the on-disk
+    scan nor the live-backend match can detect those, so the registry's
+    "this app was installed" record is the only honest signal we have. Set
+    on the manifest level (variant-level install-tracking doesn't exist yet),
+    so every variant gets the same flag — coarse but accurate enough for the
+    agent picker, which filters on any-variant-downloaded.
     """
     downloaded_filenames = {d["filename"] for d in downloaded_files}
     live_models = live_models or []
@@ -169,6 +181,7 @@ def _model_to_dict(
             _matches_live_backend(manifest.id, v, live_models)
             or expected_filename in downloaded_filenames
             or _is_service_installed(v)
+            or registry_installed
         )
         compat = _variant_compatibility(v, hardware_profile)
         variants.append({
@@ -211,10 +224,23 @@ async def list_models(request: Request):
     models = registry.list_available(type_filter="model")
     downloaded = get_downloaded_models(models_dir)
     live_models = catalog.all_models() if catalog is not None else []
+    # Build {app_id: True} from the install registry so backend-installed
+    # models (e.g. rk-llama.cpp GGUFs at ~/rk-llama.cpp/models/) still show
+    # up as downloaded in /api/models even though they're not under data/.
+    try:
+        installed_ids = {row["id"] for row in registry.list_installed() if "id" in row}
+    except Exception:  # noqa: BLE001 — registry is best-effort, never break /api/models
+        installed_ids = set()
 
     return {
         "models": [
-            _model_to_dict(m, hardware_profile, downloaded, live_models)
+            _model_to_dict(
+                m,
+                hardware_profile,
+                downloaded,
+                live_models,
+                registry_installed=(m.id in installed_ids),
+            )
             for m in models
         ],
         "downloaded_files": downloaded,
