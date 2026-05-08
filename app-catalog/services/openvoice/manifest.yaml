@@ -1,0 +1,24 @@
+id: openvoice
+name: OpenVoice
+type: service
+category: voice
+version: 2.0.0
+description: "MyShell's instant voice cloning — clones speaker identity from a single reference, then generates in any language with controllable style."
+homepage: https://github.com/myshell-ai/OpenVoice
+license: MIT
+
+requires:
+  ram_mb: 4096
+  python: ">=3.9"
+
+install:
+  method: pip
+  package: MyShell-OpenVoice
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full
