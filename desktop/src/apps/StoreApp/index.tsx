@@ -1105,7 +1105,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             </div>
           )}
           {incompatible.length > 0 && (
-            <IncompatibleToggle count={incompatible.length}>
+            <IncompatibleToggle count={incompatible.length} compatibleCount={filtered.length}>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {incompatible.map((app) => (
                   <AppCard
