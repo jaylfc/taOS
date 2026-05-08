@@ -135,14 +135,25 @@ class TestModelsAPI:
         for m in data["models"]:
             assert m["has_downloaded_variant"] is False
 
-    async def test_registry_installed_marks_downloaded(self, models_client, models_app):
+    async def test_registry_installed_with_disk_evidence_marks_downloaded(
+        self, models_client, models_app, tmp_path
+    ):
         """Backend-installed models (e.g. rk-llama.cpp GGUFs at
-        ~/rk-llama.cpp/models/) leave nothing in data/models and don't show
-        up in any live BackendCatalog entry, so /api/models needs to fall
-        back to the install registry to know they're present.
+        ~/models/rk-llama.cpp/<family>/<manifest_id>/) leave nothing in
+        data/models and don't show up in the live BackendCatalog, so
+        /api/models needs to fall back to the install registry —
+        provided there's at least one corroborating signal that the
+        install really happened.
         """
         registry = models_app.state.registry
         registry.mark_installed("test-model", "1.0.0")
+
+        # Drop a file under the new shared layout that the rglob scan
+        # picks up — its path contains the manifest id.
+        shared = models_app.state.models_root
+        target_dir = shared / "rk-llama.cpp" / "test" / "test-model"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "test-model-q4_k_m.gguf").write_bytes(b"x" * 100)
 
         resp = await models_client.get("/api/models")
         assert resp.status_code == 200
@@ -150,12 +161,30 @@ class TestModelsAPI:
 
         installed = next(m for m in data["models"] if m["id"] == "test-model")
         assert installed["has_downloaded_variant"] is True
-        assert all(v["downloaded"] is True for v in installed["variants"])
 
-        # Other manifests not in the registry must remain not-downloaded so
-        # we don't blanket-mark every model.
+        # Other manifests untouched.
         not_installed = next(m for m in data["models"] if m["id"] == "another-model")
         assert not_installed["has_downloaded_variant"] is False
+
+    async def test_registry_installed_without_evidence_is_not_downloaded(
+        self, models_client, models_app
+    ):
+        """Stale registry entry with no disk file and no live backend
+        match should NOT count as downloaded. johny saw the catalog
+        showing models as installed when nothing was actually on disk —
+        registry breadcrumbs from earlier sessions leaking through. This
+        is the bypass the corroboration check closes.
+        """
+        registry = models_app.state.registry
+        registry.mark_installed("test-model", "1.0.0")
+        # No file written, no live backend — registry breadcrumb only.
+
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        installed = next(m for m in data["models"] if m["id"] == "test-model")
+        assert installed["has_downloaded_variant"] is False, (
+            f"stale registry entry should not mark downloaded: {installed}"
+        )
 
 
 @pytest.mark.asyncio

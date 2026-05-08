@@ -35,10 +35,27 @@ def _build_app_items(registry, profile_id: str, type_filter: str | None = None, 
     registry cache with the live BackendCatalog; callers that pass it
     get accurate 'installed' state for services and models. Passing
     ``None`` falls back to the registry cache only (tests and early
-    startup paths)."""
+    startup paths).
+
+    "Installed" here means actually-usable-right-now or in-cache-with-no-
+    probe-surface (agents/plugins). ``stale`` cache entries — services
+    whose backends are unreachable, models whose files no longer exist —
+    are deliberately excluded from the installed set so the user sees
+    them as installable rather than as a permanent "Installed (broken)"
+    state with no working uninstall. johny flagged this on #312/#356:
+    Ollama / Open WebUI / rk-llama.cpp etc were showing as installed
+    when he hadn't actually installed them, blocking him from installing
+    them legitimately.
+    """
     apps = registry.list_available(type_filter=type_filter or None)
     if installation is not None:
-        installed_ids = {entry["id"] for entry in installation.list_installed()}
+        # Filter out stale entries — only entries the live probe says are
+        # running, or no-probe-surface types (agent/plugin) that the cache
+        # alone is authoritative for.
+        installed_ids = {
+            entry["id"] for entry in installation.list_installed()
+            if entry.get("state") in ("running", "installed")
+        }
     else:
         installed_ids = {a["id"] for a in registry.list_installed()}
     items = []
@@ -99,6 +116,15 @@ async def list_catalog(request: Request, type: str | None = None):
             })
         return out
 
+    def _installed_flag(app_id: str) -> bool:
+        # Match _build_app_items semantics: stale entries should NOT
+        # count as installed for the user-facing flag, otherwise the
+        # Store shows them as installed with a non-functional Uninstall
+        # button (johny's #312 complaint).
+        if installation is None:
+            return registry.is_installed(app_id)
+        return installation.state(app_id) in ("running", "installed")
+
     return [
         {
             "id": a.id, "name": a.name, "type": a.type, "category": a.category,
@@ -106,7 +132,7 @@ async def list_catalog(request: Request, type: str | None = None):
             "description": a.description, "icon": a.icon,
             "requires": a.requires, "hardware_tiers": a.hardware_tiers,
             "install_method": (a.install.get("method") or a.install.get("backend") or "") if isinstance(a.install, dict) else "",
-            "installed": (installation.is_installed(a.id) if installation else registry.is_installed(a.id)),
+            "installed": _installed_flag(a.id),
             "state": (installation.state(a.id) if installation else ("installed" if registry.is_installed(a.id) else "not_installed")),
             "variants": _slim_variants(a),
         }
@@ -265,9 +291,24 @@ async def resolve_model(request: Request):
 
 @router.post("/api/store/uninstall")
 async def uninstall_app(request: Request, body: UninstallRequest):
-    """Uninstall an installed app."""
+    """Uninstall an installed app.
+
+    Accepts either an actually-installed app (live or cached) OR a stale
+    cache entry. johny saw the catalog show items as installed (via the
+    joined live+cache view) and then the uninstall route reject them as
+    "not installed" (cache-only check). Use the same joined view here so
+    the two endpoints agree, AND fall through to mark_uninstalled even
+    when the live probe says the service is gone — cleaning the
+    breadcrumb is exactly what the user wants in that case.
+    """
     registry = request.app.state.registry
-    if not registry.is_installed(body.app_id):
+    installation = getattr(request.app.state, "installation_state", None)
+    is_known = (
+        installation.is_installed(body.app_id)
+        if installation is not None
+        else registry.is_installed(body.app_id)
+    )
+    if not is_known:
         return JSONResponse({"error": f"App '{body.app_id}' not installed"}, status_code=404)
 
     manifest = registry.get(body.app_id)

@@ -211,17 +211,37 @@ def _model_to_dict(
     always the live catalog.
 
     ``registry_installed`` is the install-registry's verdict for this manifest
-    id. Some installers (e.g. rk-llama.cpp) write GGUFs to a backend-specific
-    directory outside ``data/models`` and the resulting llama-server reports
-    the model under a generic name like ``active.gguf``. Neither the on-disk
-    scan nor the live-backend match can detect those, so the registry's
-    "this app was installed" record is the only honest signal we have. Set
-    on the manifest level (variant-level install-tracking doesn't exist yet),
-    so every variant gets the same flag — coarse but accurate enough for the
-    agent picker, which filters on any-variant-downloaded.
+    id, but only counts when corroborated by at least one of:
+
+    - a file under ``downloaded_files`` whose path contains this manifest id
+      (the new shared layout from #430 puts files at
+      ``~/models/<backend>/<family>/<manifest_id>/`` — any file there is
+      strong evidence the install really happened)
+    - a live backend that advertises this manifest id
+
+    Pure registry breadcrumbs without disk or live-backend evidence are
+    treated as stale and NOT marked downloaded. johny saw a bunch of
+    models showing as installed on a fresh install because the registry
+    had stale entries from earlier sessions; that bypass is closed here.
     """
     downloaded_filenames = {d["filename"] for d in downloaded_files}
     live_models = live_models or []
+
+    # Corroboration check for registry_installed — does this manifest have
+    # at least one file on disk or one live-backend hit somewhere? Used
+    # below in place of an unconditional registry_installed OR.
+    manifest_id_lower = (manifest.id or "").lower()
+    has_disk_evidence = any(
+        manifest_id_lower in (d.get("relative_path", d.get("filename", "")) or "").lower()
+        for d in downloaded_files
+    )
+    has_live_evidence = any(
+        manifest_id_lower in ((m.get("name") or m.get("id") or "").lower().replace("_", "-"))
+        for m in live_models
+    )
+    registry_corroborated = bool(
+        registry_installed and (has_disk_evidence or has_live_evidence)
+    )
 
     variants = []
     for v in manifest.variants:
@@ -230,7 +250,7 @@ def _model_to_dict(
             _matches_live_backend(manifest.id, v, live_models)
             or expected_filename in downloaded_filenames
             or _is_service_installed(v)
-            or registry_installed
+            or registry_corroborated
         )
         compat = _variant_compatibility(v, hardware_profile)
         variants.append({
