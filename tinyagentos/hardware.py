@@ -196,6 +196,21 @@ def _path_exists_safe(p: Path) -> bool:
         return False
 
 
+def _drm_has_rknpu() -> bool:
+    """Return True if any /sys/class/drm renderD* node binds to the RKNPU driver."""
+    try:
+        for node in Path("/sys/class/drm").glob("renderD*"):
+            driver_link = node / "device" / "driver"
+            try:
+                if driver_link.resolve().name == "RKNPU":
+                    return True
+            except (OSError, RuntimeError):
+                continue
+    except OSError:
+        pass
+    return False
+
+
 def _detect_npu() -> NpuInfo:
     # Rockchip RKNPU — detect via multiple paths (driver exposes different interfaces per board)
     rknpu_paths = [
@@ -207,19 +222,7 @@ def _detect_npu() -> NpuInfo:
     # DRM render-node fallback: modern RK3588 BSP exposes the NPU as a render
     # node whose device/driver symlink resolves to RKNPU. Catches hosts where
     # devfreq isn't exposed and the platform-drivers dir isn't readable.
-    rknpu_drm = False
-    try:
-        for node in Path("/sys/class/drm").glob("renderD*"):
-            driver_link = node / "device" / "driver"
-            try:
-                if driver_link.resolve().name == "RKNPU":
-                    rknpu_drm = True
-                    break
-            except (OSError, RuntimeError):
-                continue
-    except OSError:
-        pass
-    if rknpu_drm or any(_path_exists_safe(p) for p in rknpu_paths):
+    if any(_path_exists_safe(p) for p in rknpu_paths) or _drm_has_rknpu():
         # Detect SoC variant — RK3588 has 3 cores at 6 TOPS, RK3576 has 1 core at 6 TOPS,
         # RK3568 has 1 core at 1 TOPS
         soc = ""
