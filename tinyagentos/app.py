@@ -618,6 +618,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # registry.is_installed() / list_installed() directly.
         app.state.installation_state = InstallationState(registry, backend_catalog)
 
+        # In-memory install progress store. Read by /api/store/install-progress*
+        # endpoints; written by the install-v2 dispatcher and the
+        # download_file callback.
+        from tinyagentos.install_progress import get_global_store
+        app.state.install_progress_store = get_global_store()
+
         # LiteLLM config reload on catalog change — keeps the proxy's
         # routing table in sync with live backend state. Subscriber is
         # a no-op if the proxy isn't running (LiteLLM not installed) or

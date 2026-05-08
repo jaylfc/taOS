@@ -431,10 +431,64 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
   // dropdown when the manifest exposes >1 variant.
   const [selectedVariant, setSelectedVariant] = useState<string>("auto");
   const [error, setError] = useState<string | null>(null);
+  // Live install progress — polled from /api/store/install-progress
+  // while busy. null when no install is in-flight. Backend updates
+  // bytes_downloaded / bytes_total / state as the install runs.
+  interface InstallProgressSnapshot {
+    state: string;
+    percent: number | null;
+    bytes_downloaded: number;
+    bytes_total: number;
+    detail: string;
+    error: string | null;
+  }
+  const [progress, setProgress] = useState<InstallProgressSnapshot | null>(null);
 
   useEffect(() => {
     if (defaultTargetRemote !== undefined) setSelectedTarget(defaultTargetRemote);
   }, [defaultTargetRemote]);
+
+  // Poll install progress while a download is running. Stops on
+  // terminal states or when busy flips back to false.
+  useEffect(() => {
+    if (!busy) {
+      // Hold the last frame for a moment so the user sees "installed" /
+      // error before it disappears. The handleAction completion path
+      // handles the actual clear.
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        try {
+          const r = await fetch(`/api/store/install-progress/by-app/${encodeURIComponent(app.id)}`, {
+            headers: { Accept: "application/json" },
+          });
+          if (r.ok) {
+            const j = await r.json();
+            const a = j?.active;
+            if (a) {
+              setProgress({
+                state: a.state,
+                percent: a.percent ?? null,
+                bytes_downloaded: a.bytes_downloaded ?? 0,
+                bytes_total: a.bytes_total ?? 0,
+                detail: a.detail ?? "",
+                error: a.error ?? null,
+              });
+              if (a.state === "installed" || a.state === "failed" || a.state === "cancelled") {
+                break; // terminal — handleAction will set busy=false on response return
+              }
+            }
+          }
+        } catch { /* network blip; keep polling */ }
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+    };
+    void poll();
+    return () => { cancelled = true; };
+  }, [busy, app.id]);
+
   const iconUrl = resolveIconUrl(app.id);
   const variantOptions = app.variants ?? [];
   const showVariantPicker = !app.installed && variantOptions.length > 1;
@@ -446,6 +500,7 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
   const handleAction = async () => {
     setBusy(true);
     setError(null);
+    setProgress(null);
     try {
       if (app.installed) {
         const res = await fetch("/api/store/uninstall", {
@@ -484,6 +539,10 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
       setError(e instanceof Error ? e.message : "Network error");
     }
     setBusy(false);
+    // Hold the last progress frame for a beat so the user reads
+    // "installed" / error before it fades. 1.5 s matches the poll
+    // interval, so the bar visibly settles rather than vanishing.
+    setTimeout(() => setProgress(null), 1500);
   };
 
   const visuals = compatVisuals(resolveResponse);
@@ -541,6 +600,43 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
         {error && (
           <div role="alert" className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
             {error}
+          </div>
+        )}
+        {progress && (
+          <div className="flex flex-col gap-1" aria-live="polite">
+            <div className="flex items-center justify-between text-[11px] text-shell-text-tertiary">
+              <span className="capitalize">{progress.state.replace(/_/g, " ")}</span>
+              <span>
+                {progress.percent !== null
+                  ? `${progress.percent.toFixed(0)}%`
+                  : progress.bytes_downloaded > 0
+                    ? `${(progress.bytes_downloaded / (1024 * 1024)).toFixed(1)} MB`
+                    : ""}
+              </span>
+            </div>
+            <div
+              className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden"
+              role="progressbar"
+              aria-valuenow={progress.percent ?? 0}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className={`h-full transition-all ${
+                  progress.state === "failed"
+                    ? "bg-red-400"
+                    : progress.state === "installed"
+                      ? "bg-emerald-400"
+                      : "bg-sky-400"
+                } ${progress.percent === null ? "animate-pulse w-1/3" : ""}`}
+                style={{ width: progress.percent !== null ? `${progress.percent}%` : undefined }}
+              />
+            </div>
+            {progress.detail && (
+              <span className="text-[10px] text-shell-text-tertiary truncate" title={progress.detail}>
+                {progress.detail}
+              </span>
+            )}
           </div>
         )}
         {showTargetPicker && (
