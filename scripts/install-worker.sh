@@ -352,13 +352,13 @@ install_and_enroll_incus() {
         log "incus HTTPS listener already set to :8443"
     else
         log "enabling incus HTTPS listener on :8443"
-        $sg_incus "incus config set core.https_address :8443"
+        $sg_incus "incus config set core.https_address :8443 < /dev/null"
     fi
 
     # ── 5. Generate a one-shot trust token ─────────────────────────────
     log "generating incus trust token for controller enrollment"
     local token_output
-    token_output="$($sg_incus "incus config trust add controller-enroll" 2>&1)"
+    token_output="$($sg_incus "incus config trust add controller-enroll < /dev/null" 2>&1)"
     # The token is the last non-empty line of the output
     local TOKEN
     TOKEN="$(echo "$token_output" | awk 'NF{last=$0} END{print last}')"
