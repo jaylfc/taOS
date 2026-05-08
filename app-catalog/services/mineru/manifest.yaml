@@ -1,0 +1,25 @@
+id: mineru
+name: MinerU
+type: service
+category: productivity
+version: 1.0.0
+description: "PDF → structured Markdown / JSON with tables, formulas, and figures. Strong scientific and financial document parsing."
+homepage: https://github.com/opendatalab/MinerU
+license: AGPL-3.0
+
+requires:
+  ram_mb: 6144
+  disk_mb: 4000
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: magic-pdf
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full
