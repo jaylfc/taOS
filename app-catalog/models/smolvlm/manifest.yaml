@@ -8,7 +8,6 @@ license: Apache-2.0
 capabilities:
 - chat
 - vision
-context_window: 16384
 
 variants:
   - id: safetensors
@@ -29,3 +28,4 @@ hardware_tiers:
   x86-cuda-12gb: {recommended: safetensors}
   x86-vulkan-8gb: {recommended: safetensors}
   cpu-only: {recommended: safetensors}
+context_window: 16384

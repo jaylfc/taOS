@@ -8,7 +8,6 @@ license: Gemma
 capabilities:
 - chat
 - vision
-context_window: 8192
 
 variants:
   - id: safetensors-224
@@ -29,3 +28,4 @@ hardware_tiers:
   x86-cuda-12gb: {recommended: safetensors-224}
   x86-vulkan-8gb: {recommended: safetensors-224}
   cpu-only: {recommended: safetensors-224}
+context_window: 8192
