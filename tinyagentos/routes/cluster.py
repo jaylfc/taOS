@@ -174,11 +174,25 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
     if data_dir is None:
         return
     try:
+        import re as _re
         from pathlib import Path as _Path
-        inbox = _Path(data_dir) / "workspace" / "inbox"
+        inbox = (_Path(data_dir) / "workspace" / "inbox").resolve()
         inbox.mkdir(parents=True, exist_ok=True)
-        # Filename sortable by timestamp; safe ASCII only.
-        fname = f"worker-storage-backup-{worker_name}-{timestamp or 'unknown'}.txt"
+        # Sanitise both interpolated components — worker_name and the
+        # marker timestamp arrive over the wire and can carry slashes,
+        # NULs, or other path-traversal characters. Strip everything
+        # outside [A-Za-z0-9._-] and cap length so a hostile or weird
+        # worker can't escape the inbox via crafted filename pieces.
+        safe_re = _re.compile(r"[^A-Za-z0-9._-]+")
+        safe_worker = safe_re.sub("-", worker_name)[:64] or "worker"
+        safe_ts = safe_re.sub("-", timestamp)[:32] if timestamp else "unknown"
+        fname = f"worker-storage-backup-{safe_worker}-{safe_ts}.txt"
+        target = (inbox / fname).resolve()
+        # Belt-and-braces — even after sanitisation, refuse to write
+        # outside the inbox directory.
+        if not str(target).startswith(str(inbox) + "/") and target != inbox:
+            logger.warning("storage-backup notify: refusing write outside inbox (%s)", target)
+            return
         body_lines = [
             f"Worker storage pool backed up — {worker_name}",
             "",
@@ -200,7 +214,7 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
             "Discard the backup once you're sure you don't need it:",
             f"  incus storage delete {backed_up}",
         ]
-        (inbox / fname).write_text("\n".join(body_lines) + "\n")
+        target.write_text("\n".join(body_lines) + "\n")
     except Exception:  # noqa: BLE001
         logger.warning("storage-backup notify: failed to write workspace inbox file")
 
