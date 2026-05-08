@@ -1,0 +1,23 @@
+id: mochi-1
+name: Mochi 1
+type: service
+category: video-gen
+version: 1.0.0
+description: "Genmo's open video model — 480p text-to-video at 30 fps with strong motion fidelity. 10B params; Apache-2.0 weights."
+homepage: https://github.com/genmoai/models
+license: Apache-2.0
+
+requires:
+  ram_mb: 24576
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: genmo-mochi-1
+
+hardware_tiers:
+  arm-npu-32gb: unsupported
+  x86-cuda-12gb: degraded
+  x86-vulkan-8gb: unsupported
+  cpu-only: unsupported
+  apple-silicon: degraded

@@ -1,0 +1,23 @@
+id: cogvideox
+name: CogVideoX
+type: service
+category: video-gen
+version: 1.5.0
+description: "Tsinghua's CogVideo line — text-to-video, image-to-video, multiple sizes (2B / 5B). Strong prompt adherence, Apache-2.0 weights."
+homepage: https://github.com/THUDM/CogVideo
+license: Apache-2.0
+
+requires:
+  ram_mb: 16384
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: diffusers
+
+hardware_tiers:
+  arm-npu-32gb: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: unsupported
+  apple-silicon: degraded
