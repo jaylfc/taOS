@@ -50,9 +50,16 @@ _BACKEND_TO_METHOD: dict[str, str] = {
     "mlx": "download",
     "vllm": "download",
     "comfyui": "download",
-    "transformers": "download",
-    "diffusers": "download",
-    "sentence-transformers": "download",
+    # Multi-file backends — model weights ship as an HF directory (config,
+    # tokenizer, sharded safetensors / .bin chunks). The huggingface
+    # installer downloads the whole repo into the shared layout. Single-
+    # file variants on these backends still work because the installer
+    # delegates back to DownloadInstaller when a variant has no hf_repo.
+    "transformers": "huggingface",
+    "diffusers": "huggingface",
+    "sentence-transformers": "huggingface",
+    "mlc-llm": "huggingface",
+    "mlc": "huggingface",
     "whisper-cpp": "download",
     "piper": "download",
     "onnxruntime": "download",

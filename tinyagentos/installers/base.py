@@ -59,5 +59,8 @@ def get_installer(method: str, **kwargs) -> AppInstaller:
     elif method == "script":
         from tinyagentos.installers.script_installer import ScriptInstaller
         return ScriptInstaller(**kwargs)
+    elif method in ("huggingface", "hf-multi"):
+        from tinyagentos.installers.hf_multi_installer import HFMultiInstaller
+        return HFMultiInstaller(**kwargs)
     else:
         raise ValueError(f"Unknown install method: '{method}'")
