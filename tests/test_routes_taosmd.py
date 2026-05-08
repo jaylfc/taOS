@@ -110,38 +110,182 @@ class TestSetup:
         assert resp.status_code == 404
 
     async def test_setup_progresses_to_done_with_mock_installer(self, client, app):
-        """Integration: _run_setup drives state to 'done' when Ollama succeeds."""
+        """Integration: _run_setup drives state to 'done' when the resolver
+        picks a backend and the installer succeeds.
+
+        Updated to reflect the resolver-based dispatch from #444 — the old
+        code path always tried OllamaInstaller, which 'Ollama is not
+        reachable'-failed for users on llama.cpp / rkllama. Now we go
+        through resolve() + _BACKEND_TO_METHOD and dispatch the right
+        installer based on hardware + installed backends.
+        """
         from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+        from types import SimpleNamespace
 
         tasks: dict = {}
         task_id = "test-task-1"
+
+        # Fake manifest matching what the catalog would yield for
+        # nomic-embed-text-v1.5 (Lite tier's only model).
+        fake_manifest = SimpleNamespace(
+            id="nomic-embed-text-v1.5",
+            type="model",
+            version="1.5.0",
+            variants=[{
+                "id": "default",
+                "format": "gguf",
+                "min_ram_mb": 1024,
+                "download_url": "https://example.com/x.gguf",
+                "requires": {
+                    "backends": [
+                        {"id": "ollama",
+                         "targets": ["x86-cuda", "cpu"],
+                         "min_ram_mb": 1024},
+                    ],
+                },
+            }],
+            context_window=8192,
+        )
+        fake_registry = SimpleNamespace(
+            get=lambda _id: fake_manifest if _id == "nomic-embed-text-v1.5" else None,
+            mark_installed=lambda *_a, **_kw: None,
+        )
+        # Hardware profile shaped to dataclasses.asdict — flat dict.
+        fake_hw = SimpleNamespace(
+            ram_mb=4096,
+            cpu={"arch": "x86_64"},
+            gpu={"type": "nvidia", "cuda": True, "vram_mb": 12288},
+            npu={"type": "none"},
+            disk={"free_gb": 100},
+            os={"distro": "linux"},
+        )
 
         mock_installer = AsyncMock()
         mock_installer.install = AsyncMock(return_value={"success": True})
 
         with patch(
-            "tinyagentos.installers.ollama_installer.OllamaInstaller",
+            "tinyagentos.installers.base.get_installer",
             return_value=mock_installer,
         ):
-            await _run_setup(tasks, task_id, "local", "lite", MEMORY_TIERS["lite"])
+            await _run_setup(
+                tasks, task_id, "local", "lite", MEMORY_TIERS["lite"],
+                registry=fake_registry,
+                hardware_profile=fake_hw,
+                backends=[{"type": "ollama", "url": "http://localhost:11434", "enabled": True}],
+            )
 
-        assert tasks[task_id]["state"] == "done"
+        assert tasks[task_id]["state"] == "done", tasks[task_id]
         assert tasks[task_id]["progress_pct"] == 100
 
     async def test_setup_marks_failed_on_install_error(self, client, app):
         from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+        from types import SimpleNamespace
 
         tasks: dict = {}
         task_id = "test-task-2"
 
+        fake_manifest = SimpleNamespace(
+            id="nomic-embed-text-v1.5",
+            type="model",
+            version="1.5.0",
+            variants=[{
+                "id": "default",
+                "format": "gguf",
+                "download_url": "https://example.com/x.gguf",
+                "requires": {"backends": [{"id": "ollama", "targets": ["cpu"], "min_ram_mb": 1024}]},
+            }],
+            context_window=0,
+        )
+        fake_registry = SimpleNamespace(
+            get=lambda _id: fake_manifest,
+            mark_installed=lambda *_a, **_kw: None,
+        )
+        fake_hw = SimpleNamespace(
+            ram_mb=4096,
+            cpu={"arch": "x86_64"},
+            gpu={"type": "none"},
+            npu={"type": "none"},
+            disk={"free_gb": 100},
+            os={"distro": "linux"},
+        )
+
         mock_installer = AsyncMock()
-        mock_installer.install = AsyncMock(return_value={"success": False, "error": "network timeout"})
+        mock_installer.install = AsyncMock(
+            return_value={"success": False, "error": "network timeout"},
+        )
 
         with patch(
-            "tinyagentos.installers.ollama_installer.OllamaInstaller",
+            "tinyagentos.installers.base.get_installer",
             return_value=mock_installer,
         ):
-            await _run_setup(tasks, task_id, "local", "lite", MEMORY_TIERS["lite"])
+            await _run_setup(
+                tasks, task_id, "local", "lite", MEMORY_TIERS["lite"],
+                registry=fake_registry,
+                hardware_profile=fake_hw,
+                backends=[{"type": "ollama", "enabled": True}],
+            )
 
         assert tasks[task_id]["state"] == "failed"
         assert "network timeout" in tasks[task_id]["error"]
+
+
+@pytest.mark.asyncio
+class TestSetupResolverPath:
+    """Resolver-based dispatch — johny's #312 fix. The old code always
+    used OllamaInstaller; the new path consults the catalog resolver
+    and picks an installer that matches the controller's available
+    backends.
+    """
+
+    async def test_setup_fails_clearly_when_no_compatible_backend(self):
+        from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+        from types import SimpleNamespace
+
+        tasks: dict = {}
+        # Manifest only supports an arm-npu backend; controller is x86 cpu-only.
+        fake_manifest = SimpleNamespace(
+            id="nomic-embed-text-v1.5",
+            type="model",
+            variants=[{
+                "id": "rk",
+                "format": "rkllm",
+                "download_url": "https://example.com/x.rkllm",
+                "requires": {"backends": [{
+                    "id": "rkllama", "targets": ["rockchip"], "min_ram_mb": 4096,
+                }]},
+            }],
+            context_window=0,
+        )
+        fake_registry = SimpleNamespace(get=lambda _id: fake_manifest)
+        fake_hw = SimpleNamespace(
+            ram_mb=4096,
+            cpu={"arch": "x86_64"},
+            gpu={"type": "none"},
+            npu={"type": "none"},
+            disk={"free_gb": 100},
+            os={"distro": "linux"},
+        )
+
+        await _run_setup(
+            tasks, "task-x", "local", "lite", MEMORY_TIERS["lite"],
+            registry=fake_registry,
+            hardware_profile=fake_hw,
+            backends=[],
+        )
+
+        assert tasks["task-x"]["state"] == "failed"
+        assert "no compatible backend" in tasks["task-x"]["error"].lower()
+
+    async def test_setup_short_circuits_when_registry_missing(self):
+        from tinyagentos.routes.taosmd import _run_setup, MEMORY_TIERS
+
+        tasks: dict = {}
+        await _run_setup(
+            tasks, "task-z", "local", "lite", MEMORY_TIERS["lite"],
+            registry=None,
+            hardware_profile=None,
+            backends=None,
+        )
+
+        assert tasks["task-z"]["state"] == "failed"
+        assert "registry" in tasks["task-z"]["error"].lower()

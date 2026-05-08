@@ -153,9 +153,28 @@ async def post_setup(request: Request, body: SetupBody):
         "error": None,
     }
 
-    # Run the install in the background without blocking the response.
+    # Capture state on the request thread so the background task isn't
+    # tied to the request lifecycle. Resolver needs registry +
+    # hardware_profile to pick a backend that's actually available on
+    # this controller — johny saw "Ollama not reachable" because the
+    # old code path always tried OllamaInstaller regardless of whether
+    # Ollama was the appropriate or even installed runtime.
+    registry = getattr(request.app.state, "registry", None)
+    hardware_profile = getattr(request.app.state, "hardware_profile", None)
+    config = getattr(request.app.state, "config", None)
+    backends_snapshot = list(getattr(config, "backends", []) or []) if config else []
+
     asyncio.create_task(
-        _run_setup(tasks, task_id, body.device_id, body.tier, tier_cfg)
+        _run_setup(
+            tasks,
+            task_id,
+            body.device_id,
+            body.tier,
+            tier_cfg,
+            registry=registry,
+            hardware_profile=hardware_profile,
+            backends=backends_snapshot,
+        )
     )
 
     return {"task_id": task_id}
@@ -181,11 +200,22 @@ async def _run_setup(
     device_id: str,
     tier: str,
     tier_cfg: dict,
+    *,
+    registry=None,
+    hardware_profile=None,
+    backends: list | None = None,
 ) -> None:
-    """Pull each model listed in the tier via Ollama (best-effort).
+    """Install each model listed in the tier using the catalog resolver.
 
-    Progress is reported coarsely: pending → downloading (per model) →
-    installing → done / failed.
+    For every model id, looks up its manifest, lets the resolver pick a
+    compatible backend based on the controller's hardware + the
+    backends in config, then dispatches to the matching installer
+    (Ollama / download / hf-multi / rkllama). This replaces the
+    previous hardcoded OllamaInstaller path which gave johny the
+    "Ollama not reachable" error when he had llama.cpp installed
+    instead.
+
+    Progress: pending → downloading (per model) → installing → done / failed.
     """
     models: list[str] = tier_cfg.get("models", [])
     total = len(models)
@@ -200,27 +230,145 @@ async def _run_setup(
 
     _update("pending", 0, "Starting…")
 
+    if registry is None or hardware_profile is None:
+        _update(
+            "failed",
+            0,
+            "Setup unavailable.",
+            "registry or hardware profile missing — controller startup not complete",
+        )
+        return
+
     try:
-        from tinyagentos.installers.ollama_installer import OllamaInstaller
+        from dataclasses import asdict
+        from tinyagentos.catalog.resolver import (
+            DeviceCapability,
+            ResolveErr,
+            resolve,
+        )
+        from tinyagentos.cluster.capabilities import hardware_to_targets
+        from tinyagentos.installers.base import get_installer
+        from tinyagentos.routes.store_install import _BACKEND_TO_METHOD
 
-        installer = OllamaInstaller()
+        # Build a DeviceCapability — inline because get_device_capability
+        # in routes/store_install.py needs a Request, and this background
+        # task doesn't have one. HardwareProfile is a flat dataclass;
+        # asdict yields {ram_mb, cpu, gpu, npu, disk, os}.
+        # Wrap separately so a hardware-detection failure surfaces with
+        # a clearer error than the generic outer-except catch — old
+        # agent versions and partial profiles can land int() conversion
+        # errors here that would otherwise show as "ValueError: invalid
+        # literal" in the UI.
+        try:
+            hw_dict = asdict(hardware_profile)
+            ram_mb = int(hw_dict.get("ram_mb", 0) or 0)
+            vram_mb = int((hw_dict.get("gpu") or {}).get("vram_mb", 0) or 0)
+            free_gb = int((hw_dict.get("disk") or {}).get("free_gb", 0) or 0)
+            installed_backends = tuple(
+                b.get("type", "")
+                for b in (backends or [])
+                if b.get("enabled", True) and b.get("type")
+            )
+            device = DeviceCapability(
+                device_id="local",
+                targets=tuple(hardware_to_targets(hw_dict)),
+                total_ram_mb=ram_mb,
+                total_vram_mb=vram_mb,
+                free_disk_mb=max(0, free_gb * 1024),
+                installed_backends=installed_backends,
+            )
+        except (TypeError, ValueError, AttributeError) as hw_exc:
+            _update(
+                "failed",
+                0,
+                "Hardware detection failed.",
+                f"could not derive device capability from hardware profile: {hw_exc}",
+            )
+            return
 
-        for idx, model_name in enumerate(models):
+        for idx, manifest_id in enumerate(models):
             base_pct = int(idx / total * 90)
             _update(
                 "downloading",
                 base_pct,
-                f"Downloading {model_name} ({idx + 1}/{total})…",
+                f"Installing {manifest_id} ({idx + 1}/{total})…",
             )
-            result = await installer.install(
-                app_id=model_name,
-                install_config={},
-                variant={"ollama_name": model_name},
-            )
-            if not result.get("success"):
-                err = result.get("error", "unknown error")
-                _update("failed", base_pct, f"Failed: {model_name}", err)
+
+            manifest = registry.get(manifest_id) if hasattr(registry, "get") else None
+            if manifest is None:
+                _update(
+                    "failed",
+                    base_pct,
+                    f"Failed: {manifest_id}",
+                    f"manifest {manifest_id!r} not found in catalog",
+                )
                 return
+
+            manifest_dict = {
+                "id": manifest.id,
+                "type": manifest.type,
+                "variants": manifest.variants,
+                "context_window": getattr(manifest, "context_window", 0),
+            }
+            result = resolve(manifest_dict, "auto", device)
+            if isinstance(result, ResolveErr):
+                _update(
+                    "failed",
+                    base_pct,
+                    f"Failed: {manifest_id}",
+                    f"no compatible backend: {result.reason}. "
+                    f"Suggestions: {', '.join(result.suggestions)}"
+                    if result.suggestions else
+                    f"no compatible backend: {result.reason}",
+                )
+                return
+
+            chosen_variant = next(
+                (v for v in manifest.variants
+                 if isinstance(v, dict) and v.get("id") == result.variant_id),
+                None,
+            )
+            if chosen_variant is None:
+                _update(
+                    "failed",
+                    base_pct,
+                    f"Failed: {manifest_id}",
+                    f"variant {result.variant_id!r} not in manifest",
+                )
+                return
+
+            install_method = _BACKEND_TO_METHOD.get(result.backend_id)
+            if install_method is None:
+                _update(
+                    "failed",
+                    base_pct,
+                    f"Failed: {manifest_id}",
+                    f"backend {result.backend_id!r} has no installer mapping. "
+                    "Add to _BACKEND_TO_METHOD in store_install.py.",
+                )
+                return
+
+            installer = get_installer(install_method)
+            install_result = await installer.install(
+                app_id=manifest_id,
+                install_config={"backend": result.backend_id},
+                variant=chosen_variant,
+            )
+            if not install_result.get("success"):
+                err = install_result.get("error", "unknown error")
+                _update(
+                    "failed",
+                    base_pct,
+                    f"Failed: {manifest_id}",
+                    f"{err} (backend: {result.backend_id})",
+                )
+                return
+
+            try:
+                if hasattr(registry, "mark_installed"):
+                    registry.mark_installed(manifest_id, getattr(manifest, "version", ""))
+            except Exception:  # noqa: BLE001 — registry write is best-effort
+                logger.exception("taosmd setup: mark_installed for %s failed", manifest_id)
 
         _update("installing", 95, "Finalising…")
         # Brief pause to let any daemon-side work settle.
