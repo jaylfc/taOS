@@ -197,6 +197,37 @@ def get_adapter(backend_type: str) -> BackendAdapter:
 
 
 async def check_backend_health(client: httpx.AsyncClient, backend: dict) -> dict:
-    adapter = get_adapter(backend["type"])
-    result = await adapter.health(client, backend["url"])
-    return {**result, "name": backend["name"], "type": backend["type"], "priority": backend.get("priority", 99)}
+    """Health-check a single backend, never raising.
+
+    A misconfigured backend (unknown type, missing url, adapter that
+    raises) must not be allowed to take down the entire /api/backends
+    response. Return a structured error envelope so the caller can
+    aggregate and the UI can show the bad entry as offline with a
+    reason rather than 500-ing the whole endpoint.
+    """
+    backend_type = backend.get("type", "")
+    try:
+        adapter = get_adapter(backend_type)
+    except ValueError as exc:
+        return {
+            "healthy": False,
+            "status": "unsupported",
+            "error": str(exc),
+            "name": backend.get("name", ""),
+            "type": backend_type,
+            "priority": backend.get("priority", 99),
+            "models": [],
+        }
+    try:
+        result = await adapter.health(client, backend["url"])
+    except Exception as exc:  # noqa: BLE001 — adapter integrity is best-effort
+        return {
+            "healthy": False,
+            "status": "error",
+            "error": str(exc),
+            "name": backend.get("name", ""),
+            "type": backend_type,
+            "priority": backend.get("priority", 99),
+            "models": [],
+        }
+    return {**result, "name": backend.get("name", ""), "type": backend_type, "priority": backend.get("priority", 99)}

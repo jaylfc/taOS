@@ -19,6 +19,51 @@ class TestGetAdapter:
         with pytest.raises(ValueError, match="Unknown backend type"):
             get_adapter("unknown")
 
+
+class TestCheckBackendHealthResilience:
+    """A misconfigured backend (unknown type, raising adapter) must not
+    take the whole /api/backends endpoint with it. check_backend_health
+    must always return a structured dict.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_returns_unsupported_envelope(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        backend = {"name": "local-mlc-llm", "type": "llm-runtime", "url": "http://x"}
+        result = await check_backend_health(client, backend)
+        assert result["healthy"] is False
+        assert result["status"] == "unsupported"
+        assert "Unknown backend type" in result["error"]
+        assert result["name"] == "local-mlc-llm"
+        assert result["type"] == "llm-runtime"
+        assert result["models"] == []
+
+    @pytest.mark.asyncio
+    async def test_adapter_exception_returns_error_envelope(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        # Use a real type whose adapter we'll make raise — patch the
+        # registered adapter's health method.
+        from tinyagentos.backend_adapters import _ADAPTERS
+        original = _ADAPTERS["ollama"].health
+        async def boom(*_a, **_kw):
+            raise RuntimeError("network on fire")
+        _ADAPTERS["ollama"].health = boom  # type: ignore[method-assign]
+        try:
+            result = await check_backend_health(client, {"name": "x", "type": "ollama", "url": "http://x"})
+        finally:
+            _ADAPTERS["ollama"].health = original  # type: ignore[method-assign]
+        assert result["healthy"] is False
+        assert result["status"] == "error"
+        assert "network on fire" in result["error"]
+        assert result["models"] == []
+
+    @pytest.mark.asyncio
+    async def test_missing_name_does_not_crash(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        result = await check_backend_health(client, {"type": "totally-bogus", "url": "http://x"})
+        assert result["healthy"] is False
+        assert result["name"] == ""
+
 class TestRkLlamaAdapter:
     @pytest.mark.asyncio
     async def test_parse_health_response(self):

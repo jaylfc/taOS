@@ -239,6 +239,21 @@ def auto_register_from_manifest(manifest_path: Path, config: "AppConfig") -> boo
     if not backend_type:
         return False
 
+    # Reject backend types we don't have an adapter for. Otherwise the
+    # entry survives in config.backends and every health-check round
+    # raises ValueError in get_adapter() — a single bad manifest takes
+    # the /api/backends endpoint with it. Better to surface this loudly
+    # at startup than to limp along with a 500-ing endpoint.
+    if backend_type not in VALID_BACKEND_TYPES:
+        import logging
+        logging.getLogger(__name__).warning(
+            "auto_register_from_manifest: skipping %s — backend_type %r is not "
+            "in VALID_BACKEND_TYPES %s. Update the manifest's lifecycle.backend_type "
+            "or register an adapter in backend_adapters.py.",
+            name, backend_type, sorted(VALID_BACKEND_TYPES),
+        )
+        return False
+
     if any(b.get("name") == name for b in config.backends):
         return False
 

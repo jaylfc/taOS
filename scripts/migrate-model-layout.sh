@@ -22,17 +22,44 @@ log()  { echo -e "\033[1;34m[migrate-models]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[migrate-models]\033[0m $*" >&2; }
 die()  { echo -e "\033[1;31m[migrate-models]\033[0m $*" >&2; exit 1; }
 
-# Resolve target user — controller installs as root or jay; pick the owner
-# of the running unit's WorkingDirectory rather than guess from $HOME.
-TARGET_USER="${SUDO_USER:-$(id -un)}"
-TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-[[ -d "$TARGET_HOME" ]] || die "could not resolve home for $TARGET_USER"
+# Resolve the rk-llama.cpp install dir from the live systemd unit so we
+# migrate the directory that's actually serving traffic. Falls back to
+# $SUDO_USER's home only if no unit is installed (fresh Pi, no service
+# yet) — otherwise picking the wrong tree can leave the unit pointing
+# at a non-existent active.gguf and the service refuses to start.
+UNIT_PATH="/etc/systemd/system/rkllamacpp.service"
+RKDIR=""
+if [[ -f "$UNIT_PATH" ]]; then
+    # ExecStart line lists the binary path — strip the "bin/llama-server …" tail
+    # to get the install dir.
+    binary=$(awk -F= '/^ExecStart=/{ split($2,a," "); print a[1] }' "$UNIT_PATH" | head -1)
+    if [[ -n "$binary" && "$binary" == */bin/llama-server ]]; then
+        RKDIR="${binary%/bin/llama-server}"
+    fi
+fi
+if [[ -z "$RKDIR" ]]; then
+    # Fall back: $SUDO_USER home, then $HOME. Only used when no unit
+    # exists yet (this script ran before install-rk-llama-cpp.sh).
+    fallback_user="${SUDO_USER:-$(id -un)}"
+    fallback_home=$(getent passwd "$fallback_user" | cut -d: -f6)
+    [[ -d "$fallback_home" ]] || die "could not resolve home for $fallback_user"
+    RKDIR="$fallback_home/rk-llama.cpp"
+fi
 
-NEW_ROOT="${TAOS_MODELS_ROOT:-$TARGET_HOME/models}"
-log "target user: $TARGET_USER  new root: $NEW_ROOT"
+# Owner of the install dir drives chown — the service runs as that user.
+if [[ -d "$RKDIR" ]]; then
+    install_owner=$(stat -c '%U' "$RKDIR")
+else
+    install_owner="${SUDO_USER:-$(id -un)}"
+fi
+install_home=$(getent passwd "$install_owner" | cut -d: -f6)
+[[ -d "$install_home" ]] || die "could not resolve home for install owner $install_owner"
+
+NEW_ROOT="${TAOS_MODELS_ROOT:-$install_home/models}"
+log "rk-llama.cpp install dir: $RKDIR  owner: $install_owner  new models root: $NEW_ROOT"
 
 mkdir -p "$NEW_ROOT"
-chown "$TARGET_USER:$TARGET_USER" "$NEW_ROOT"
+chown "$install_owner:$install_owner" "$NEW_ROOT" 2>/dev/null || true
 
 # Pure-bash family extractor — first dash-separated token of the id,
 # lowercased. Matches model_paths.family_from_manifest's fallback path.
@@ -44,10 +71,19 @@ family_of() {
 }
 
 # --- rk-llama.cpp -----------------------------------------------------
-RKDIR="$TARGET_HOME/rk-llama.cpp"
 RK_OLD_MODELS="$RKDIR/models"
 RK_NEW_BACKEND="$NEW_ROOT/rk-llama.cpp"
 moved=0
+
+# Skip rk-llama.cpp's own bundled vocab test fixtures — they're build
+# artefacts in the source tree, not user-installed models. Detect them
+# by filename pattern so we don't accidentally migrate them and then
+# expose them in /api/models as fake installed models.
+is_vocab_fixture() {
+    local name="$1"
+    [[ "$name" == ggml-vocab-* ]]
+}
+
 if [[ -d "$RK_OLD_MODELS" ]]; then
     log "scanning $RK_OLD_MODELS"
     mkdir -p "$RK_NEW_BACKEND"
@@ -56,6 +92,10 @@ if [[ -d "$RK_OLD_MODELS" ]]; then
         # Skip the active.gguf symlink — re-pointed below.
         if [[ -L "$src" ]]; then continue; fi
         base=$(basename "$src")
+        if is_vocab_fixture "$base"; then
+            log "  skip $base (rk-llama.cpp vocab test fixture, not a real model)"
+            continue
+        fi
         # Old naming was "<app_id>.gguf"; recover app_id and family from it.
         manifest_id="${base%.gguf}"
         family=$(family_of "$manifest_id")
@@ -68,7 +108,7 @@ if [[ -d "$RK_OLD_MODELS" ]]; then
         mkdir -p "$target_dir"
         log "  moving $base -> $family/$manifest_id/"
         mv "$src" "$target"
-        chown -R "$TARGET_USER:$TARGET_USER" "$target_dir"
+        chown -R "$install_owner:$install_owner" "$target_dir" 2>/dev/null || true
         moved=$((moved+1))
     done
 fi
@@ -86,7 +126,7 @@ if [[ -L "$ACTIVE_OLD" ]]; then
     new_target="$RK_NEW_BACKEND/$family/$manifest_id/$target_name"
     if [[ -f "$new_target" ]]; then
         ln -sfn "$new_target" "$ACTIVE_NEW"
-        chown -h "$TARGET_USER:$TARGET_USER" "$ACTIVE_NEW"
+        chown -h "$install_owner:$install_owner" "$ACTIVE_NEW" 2>/dev/null || true
         rm -f "$ACTIVE_OLD"
         log "  active.gguf -> $new_target"
     else
