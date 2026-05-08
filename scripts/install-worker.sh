@@ -221,7 +221,11 @@ EOF
 
 create_btrfs_loopback() {
     if sudo incus storage list --format=csv 2>/dev/null | awk -F',' '{print $1}' | grep -q '^taos-worker-pool$'; then
-        if ! handle_existing_storage_pool; then
+        # handle_existing_storage_pool: 0 = "backup or delete done, proceed
+        # to create a fresh pool"; 1 = "reuse path, leave the pool alone".
+        if handle_existing_storage_pool; then
+            : # fall through to creation block below
+        else
             return 0
         fi
     fi
