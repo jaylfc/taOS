@@ -247,10 +247,14 @@ export function App() {
     );
   }
 
-  // Mobile/Tablet layout — no login gate, no fullscreen button (PWA is already fullscreen)
+  // Mobile/Tablet layout — wrap in LoginGate so a stale or missing
+  // session prompts the user to sign in instead of rendering apps with
+  // empty data. The LoginScreen splash is intentionally still skipped
+  // (mobile auto-launches), but the auth check itself is required.
   return (
     <ShortcutProvider>
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
+      <LoginGate>
     <div className="taos-wallpaper h-screen w-screen flex flex-col text-shell-text" style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
         <MobileTopBar
@@ -297,6 +301,7 @@ export function App() {
       <NotificationToasts />
       <NotificationCentre />
     </div>
+      </LoginGate>
     </ShortcutProvider>
   );
 }
