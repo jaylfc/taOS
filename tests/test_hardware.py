@@ -1,8 +1,10 @@
 # tests/test_hardware.py
 import json
+from pathlib import Path
 import pytest
 from unittest.mock import patch
 from tinyagentos.hardware import detect_hardware, get_hardware_profile, HardwareProfile
+from tinyagentos import hardware as hardware_mod
 
 import pytest_asyncio
 
@@ -39,6 +41,74 @@ class TestDetectHardware:
         loaded = HardwareProfile.load(path)
         assert loaded.profile_id == profile.profile_id
         assert loaded.ram_mb == profile.ram_mb
+
+
+class TestDetectNpuRknpuModernPaths:
+    """Modern RK3588 BSP kernels don't always expose /dev/rknpu, debugfs, or
+    devfreq. Detection should still succeed via the platform-drivers bind
+    dir or the DRM render-node driver symlink."""
+
+    def _stub_environment(self, monkeypatch, exists_set, drm_nodes):
+        """Stub filesystem probes so _detect_npu sees only the configured
+        signals. exists_set: set of str paths that _path_exists_safe should
+        report present. drm_nodes: list of (renderD_path, driver_basename)
+        tuples to expose under /sys/class/drm."""
+        def fake_exists_safe(p):
+            return str(p) in exists_set
+        monkeypatch.setattr(hardware_mod, "_path_exists_safe", fake_exists_safe)
+
+        real_glob = Path.glob
+        def fake_glob(self, pattern):
+            if str(self) == "/sys/class/drm" and pattern == "renderD*":
+                return iter([Path(node) for node, _ in drm_nodes])
+            if str(self) == "/dev":
+                return iter([])
+            return real_glob(self, pattern)
+        monkeypatch.setattr(Path, "glob", fake_glob)
+
+        driver_targets = {
+            f"{node}/device/driver": basename for node, basename in drm_nodes
+        }
+        real_resolve = Path.resolve
+        def fake_resolve(self, *args, **kwargs):
+            key = str(self)
+            if key in driver_targets:
+                return Path(f"/sys/bus/platform/drivers/{driver_targets[key]}")
+            return real_resolve(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+        # Block /proc/device-tree/model and rknpu/load reads — force the
+        # core-count fallback path so tests don't depend on host files.
+        real_read_text = Path.read_text
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) in (
+                "/proc/device-tree/model",
+                "/sys/kernel/debug/rknpu/load",
+            ):
+                raise OSError("stubbed")
+            return real_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+        # Neutralise lspci / non-rknpu accelerator probes.
+        monkeypatch.setattr(hardware_mod, "_run", lambda *a, **k: "")
+
+    def test_platform_drivers_dir_alone_detects_rknpu(self, monkeypatch):
+        self._stub_environment(
+            monkeypatch,
+            exists_set={"/sys/bus/platform/drivers/RKNPU"},
+            drm_nodes=[],
+        )
+        npu = hardware_mod._detect_npu()
+        assert npu.type == "rknpu"
+
+    def test_drm_render_node_driver_symlink_detects_rknpu(self, monkeypatch):
+        self._stub_environment(
+            monkeypatch,
+            exists_set=set(),
+            drm_nodes=[("/sys/class/drm/renderD129", "RKNPU")],
+        )
+        npu = hardware_mod._detect_npu()
+        assert npu.type == "rknpu"
 
 
 class TestGetHardwareProfile:
