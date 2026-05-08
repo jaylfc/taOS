@@ -137,8 +137,12 @@ export function TaosAssistantPanel() {
         aria-modal="true"
         className="fixed right-0 z-[101] flex flex-col border-l border-white/10 shadow-2xl"
         style={{
+          // Fill from below the topbar to the bottom of the viewport.
+          // The dock floats above this with its own z-index, so the
+          // panel doesn't need to leave a hole for it. Removing the
+          // bottom: dock-h gap closes the empty strip jay reported.
           top: "var(--spacing-topbar-h)",
-          bottom: "calc(var(--spacing-dock-h, 52px))",
+          bottom: 0,
           width: 400,
           backgroundColor: "rgba(21, 22, 37, 0.92)",
           backdropFilter: "blur(20px)",
@@ -201,8 +205,13 @@ export function TaosAssistantPanel() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area */}
-        <div className="px-4 py-3 border-t border-white/5 shrink-0">
+        {/* Input area — extra bottom padding equal to the dock height
+            so the textarea + send button never sit under the floating
+            dock at the bottom-right corner of the screen. */}
+        <div
+          className="px-4 py-3 border-t border-white/5 shrink-0"
+          style={{ paddingBottom: "calc(0.75rem + var(--spacing-dock-h, 52px))" }}
+        >
           {noModel && (
             <p className="text-xs text-shell-text-tertiary mb-2">
               No model selected.{" "}

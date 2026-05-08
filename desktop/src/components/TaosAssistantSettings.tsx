@@ -6,7 +6,6 @@ import {
   fetchCloudProviders,
   workersToAggregated,
   cloudProvidersToAggregated,
-  controllerDownloadedToAggregated,
 } from "@/lib/models";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 
@@ -27,21 +26,33 @@ export function TaosAssistantSettings({ open, onClose }: Props) {
     async function load() {
       try {
         const [localRes, workers, providers] = await Promise.all([
-          fetch("/api/models").then((r) => r.ok ? r.json() : { downloaded_files: [] }),
+          fetch("/api/models").then((r) => r.ok ? r.json() : { models: [] }),
           fetchClusterWorkers(),
           fetchCloudProviders(),
         ]);
         if (cancelled) return;
 
-        const local = (localRes.downloaded_files ?? []).map(
-          (f: { filename: string; size_mb?: number; format?: string }) =>
-            controllerDownloadedToAggregated(f),
-        );
+        // Use models[].id (manifest id, e.g. "gemma-4-e2b-gguf") rather
+        // than downloaded_files[].filename ("gemma-4-e2b-gguf.gguf").
+        // The chat path passes whatever id we set here straight to the
+        // LiteLLM proxy as the model_name; #433 registered aliases by
+        // manifest id, so sending the filename 400s. AgentsApp uses
+        // the same models[] source and works correctly.
+        type ApiModel = { id: string; name?: string; has_downloaded_variant?: boolean };
+        const apiModels: ApiModel[] = Array.isArray(localRes?.models) ? localRes.models : [];
+        const local = apiModels
+          .filter((m) => m.has_downloaded_variant === true)
+          .map((m) => ({
+            id: m.id,
+            name: m.name ?? m.id,
+            host: "controller" as const,
+            hostKind: "controller" as const,
+          }));
         const worker = workersToAggregated(workers);
         const cloud = cloudProvidersToAggregated(providers);
 
         const all: AgentModel[] = [
-          ...local.map((m: { id: string; name: string; host: string; hostKind: "controller" | "worker" | "cloud" }) => ({ id: m.id, name: m.name, host: m.host, hostKind: m.hostKind })),
+          ...local,
           ...worker.map((m: { id: string; name: string; host: string; hostKind: "controller" | "worker" | "cloud" }) => ({ id: m.id, name: m.name, host: m.host, hostKind: m.hostKind })),
           ...cloud.map((m: { id: string; name: string; host: string; hostKind: "controller" | "worker" | "cloud" }) => ({ id: m.id, name: m.name, host: m.host, hostKind: m.hostKind })),
         ];
