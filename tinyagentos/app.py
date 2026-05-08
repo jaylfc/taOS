@@ -147,6 +147,44 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             shutil.copy2(example, config_path)
     config = load_config(config_path)
 
+    # Sweep config.backends for duplicates accumulated over restarts —
+    # auto-register and the manual /api/providers POST both write here,
+    # and a manifest id rename or repeated registration could land two
+    # entries that share (type, url) or even share name. johny saw this
+    # on #312 with two rkllama entries and no way to remove them. Dedupe
+    # by name first, then by (type, url) tuple — persist the cleaned
+    # list so the file matches what we serve.
+    if config.backends:
+        seen_names: set[str] = set()
+        seen_url_type: set[tuple[str, str]] = set()
+        deduped: list[dict] = []
+        for b in config.backends:
+            name = b.get("name") or ""
+            url = b.get("url") or ""
+            btype = b.get("type") or ""
+            url_type_key = (btype, url) if url and btype else None
+            if name and name in seen_names:
+                logger.warning(
+                    "config.backends: dropping duplicate-by-name entry %r", name,
+                )
+                continue
+            if url_type_key and url_type_key in seen_url_type:
+                logger.warning(
+                    "config.backends: dropping duplicate-by-(type,url) entry "
+                    "name=%r type=%r url=%r",
+                    name, btype, url,
+                )
+                continue
+            if name:
+                seen_names.add(name)
+            if url_type_key:
+                seen_url_type.add(url_type_key)
+            deduped.append(b)
+        if len(deduped) != len(config.backends):
+            config.backends = deduped
+            if config.config_path and config.config_path.exists():
+                save_config(config, config.config_path)
+
     # Hardware profile drives auto-registration: a service whose manifest
     # declares e.g. ``arm-npu-*: full`` and ``x86-cuda-*: unsupported``
     # shouldn't be added as a backend on an x86 controller (rk-llama.cpp

@@ -40,6 +40,26 @@ class TestProviderAPI:
         })
         assert resp.status_code == 409
 
+    async def test_add_duplicate_by_type_and_url(self, client):
+        """Two providers with different names but the same (type, url) is
+        always wrong — they'd point at the same backend and the picker /
+        lifecycle logic can't disambiguate. johny on #312 saw two rkllama
+        entries because this case wasn't blocked.
+        """
+        first = await client.post("/api/providers", json={
+            "name": "rkllama-one", "type": "rkllama",
+            "url": "http://localhost:8080", "priority": 1,
+        })
+        assert first.status_code == 200
+        second = await client.post("/api/providers", json={
+            "name": "rkllama-two", "type": "rkllama",
+            "url": "http://localhost:8080", "priority": 2,
+        })
+        assert second.status_code == 409
+        body = second.json()
+        assert "rkllama" in body.get("error", "").lower()
+        assert "already exists" in body.get("error", "").lower()
+
     async def test_add_kilocode_autofills_url_and_models(self, client, app):
         """Kilocode add form only collects name + api_key — server must fill
         the canonical base URL and a routable model list (from live probe,

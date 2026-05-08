@@ -397,6 +397,23 @@ async def add_provider(request: Request, body: ProviderCreate):
         entry["url"] = PROVIDER_URL_DEFAULTS[entry["type"]]
     if not entry.get("url"):
         return JSONResponse({"error": "URL required for this provider type"}, status_code=400)
+    # Reject (type, url) duplicates too — johny on #312 ended up with two
+    # rkllama provider entries (different names, same type+url) because
+    # the existing check only looked at name. Two providers pointing at
+    # the same URL is never useful and confuses the picker / lifecycle
+    # logic.
+    if any(
+        b.get("type") == entry.get("type") and b.get("url") == entry.get("url")
+        for b in config.backends
+    ):
+        return JSONResponse(
+            {"error": (
+                f"A provider for {entry.get('type')!r} at {entry.get('url')!r} "
+                "already exists. Edit it from the Providers list rather than adding "
+                "another."
+            )},
+            status_code=409,
+        )
     # Auto-discover models for cloud providers when the caller didn't
     # supply any. Keeps the path generic across openai/anthropic/
     # openrouter/kilocode — each exposes an OpenAI-shaped {url}/models.
