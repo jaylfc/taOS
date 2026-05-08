@@ -350,6 +350,35 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
 
 
+@router.get("/api/store/install-progress/by-app/{app_id}")
+async def install_progress_by_app(request: Request, app_id: str):
+    """Return the most-recent install progress entry for ``app_id``.
+
+    The Store frontend polls this every 1.5 s after a user clicks
+    Install so it can render a download bar / status label without
+    needing to track the install_id explicitly.
+    """
+    from tinyagentos.install_progress import get_global_store
+    store = getattr(request.app.state, "install_progress_store", None) or get_global_store()
+    entries = store.list_by_app(app_id)
+    if not entries:
+        return JSONResponse({"app_id": app_id, "active": None})
+    return JSONResponse({"app_id": app_id, "active": entries[0].to_dict()})
+
+
+@router.get("/api/store/install-progress/{install_id}")
+async def install_progress_by_id(request: Request, install_id: str):
+    """Look up a specific install attempt. Returned by install-v2 in
+    the response body so the caller can pin a progress stream to the
+    exact attempt rather than 'most recent for app_id'."""
+    from tinyagentos.install_progress import get_global_store
+    store = getattr(request.app.state, "install_progress_store", None) or get_global_store()
+    entry = store.get(install_id)
+    if entry is None:
+        return JSONResponse({"error": "install_id not found"}, status_code=404)
+    return JSONResponse(entry.to_dict())
+
+
 @router.post("/api/store/install-v2")
 async def install_app(request: Request):
     """Resolver-driven install. Chains backend → model in one user click.
@@ -365,16 +394,31 @@ async def install_app(request: Request):
     target_remote = body.get("target_remote") or None
     force = bool(body.get("force", False))
 
+    # Progress store — opened up here so both legacy and v2 paths can
+    # tag work-in-flight that the frontend polls for. Importing here
+    # avoids a circular import at module load.
+    from tinyagentos.install_progress import get_global_store
+    progress = getattr(request.app.state, "install_progress_store", None) or get_global_store()
+    progress_entry = progress.start(app_id=manifest_id or "(unknown)", target_remote=target_remote)
+    install_id = progress_entry.install_id
+
     registry = getattr(request.app.state, "registry", None)
     manifest = _registry_get(registry, manifest_id) if registry and manifest_id else None
     if manifest is None:
         # Fall through to legacy path if the registry doesn't know this ID —
         # allows callers that don't have a manifest to install via metadata.
+        progress.finish(install_id, success=False, error="manifest not found in registry")
         return await _legacy_install(request, body, manifest_id, target_remote)
 
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":
-        return await _legacy_install(request, body, manifest_id, target_remote)
+        progress.update(install_id, state="unpacking", detail=f"installing {manifest.type}")
+        legacy_resp = await _legacy_install(request, body, manifest_id, target_remote)
+        # Best-effort: read status code on the response to mark final
+        # state. JSONResponse defaults to 200 on success.
+        success = getattr(legacy_resp, "status_code", 200) < 400
+        progress.finish(install_id, success=success)
+        return legacy_resp
 
     device = await get_device_capability(request, target_remote)
     manifest_dict = {
@@ -385,11 +429,13 @@ async def install_app(request: Request):
     }
     result = resolve(manifest_dict, variant_id, device, force=force)
     if isinstance(result, ResolveErr):
+        progress.finish(install_id, success=False, error=result.reason)
         return JSONResponse(
             {
                 "error": result.reason,
                 "near_miss": result.near_miss,
                 "suggestions": result.suggestions,
+                "install_id": install_id,
             },
             status_code=422,
         )
@@ -398,10 +444,12 @@ async def install_app(request: Request):
 
     # Install the backend if missing.
     if result.action == "install_chain":
+        progress.update(install_id, state="unpacking", detail=f"installing backend {result.backend_id}")
         backend_manifest = _registry_get(registry, result.backend_id)
         if backend_manifest is None:
+            progress.finish(install_id, success=False, error=f"backend manifest {result.backend_id!r} not in catalog")
             return JSONResponse(
-                {"error": f"backend service manifest {result.backend_id!r} not in catalog"},
+                {"error": f"backend service manifest {result.backend_id!r} not in catalog", "install_id": install_id},
                 status_code=500,
             )
         install_block = getattr(backend_manifest, "install", None) or {}
@@ -409,8 +457,9 @@ async def install_app(request: Request):
             install_block.get("method") if isinstance(install_block, dict) else None
         )
         if not backend_method:
+            progress.finish(install_id, success=False, error=f"backend {result.backend_id!r} has no install.method")
             return JSONResponse(
-                {"error": f"backend {result.backend_id!r} has no install.method"},
+                {"error": f"backend {result.backend_id!r} has no install.method", "install_id": install_id},
                 status_code=500,
             )
         backend_installer = get_installer(backend_method)
@@ -419,13 +468,15 @@ async def install_app(request: Request):
             install_config=install_block if isinstance(install_block, dict) else {},
         )
         if not be_result.get("success"):
+            err = be_result.get("error", "unknown")
+            progress.finish(install_id, success=False, error=f"backend install failed: {err}")
             return JSONResponse(
                 {
                     "error": (
-                        f"backend install failed for {result.backend_id!r}: "
-                        f"{be_result.get('error', 'unknown')}"
+                        f"backend install failed for {result.backend_id!r}: {err}"
                     ),
                     "chain": chain + [{"step": "backend", "id": result.backend_id, "status": "failed"}],
+                    "install_id": install_id,
                 },
                 status_code=500,
             )
@@ -442,35 +493,57 @@ async def install_app(request: Request):
         None,
     )
     if chosen_variant is None:
+        progress.finish(install_id, success=False, error=f"variant {result.variant_id!r} not in manifest")
         return JSONResponse(
-            {"error": f"variant {result.variant_id!r} not found in manifest"},
+            {"error": f"variant {result.variant_id!r} not found in manifest", "install_id": install_id},
             status_code=500,
         )
     install_method = _BACKEND_TO_METHOD.get(result.backend_id)
     if install_method is None:
+        progress.finish(install_id, success=False, error=f"backend {result.backend_id!r} has no installer mapping")
         return JSONResponse(
             {
                 "error": (
                     f"backend {result.backend_id!r} has no installer mapping. "
                     "Add an entry to _BACKEND_TO_METHOD in store_install.py."
                 ),
+                "install_id": install_id,
             },
             status_code=500,
         )
     model_installer = get_installer(install_method)
     install_config = dict(getattr(manifest, "install", None) or {})
     install_config["backend"] = result.backend_id
+
+    # Wire a download-progress callback so the in-flight bytes show
+    # up in the install-progress store. Throttled to ~1 update per
+    # second by download_file itself.
+    def _on_progress(downloaded: int, total: int) -> None:
+        progress.update(
+            install_id,
+            state="downloading",
+            bytes_downloaded=downloaded,
+            bytes_total=total,
+            detail=(f"downloading {chosen_variant.get('id','')} from {chosen_variant.get('download_url','')[:60]}…"
+                    if downloaded == 0 else None),
+        )
+
+    progress.update(install_id, state="downloading", detail=f"downloading {chosen_variant.get('id','')}")
     model_result = await model_installer.install(
         manifest.id,
         install_config=install_config,
         variant=chosen_variant,
         target_remote=target_remote,
+        on_progress=_on_progress,
     )
     if not model_result.get("success"):
+        err = model_result.get("error", "unknown")
+        progress.finish(install_id, success=False, error=f"model install failed: {err}")
         return JSONResponse(
             {
-                "error": f"model install failed: {model_result.get('error', 'unknown')}",
+                "error": f"model install failed: {err}",
                 "chain": chain + [{"step": "model", "id": manifest.id, "status": "failed"}],
+                "install_id": install_id,
             },
             status_code=500,
         )
@@ -480,8 +553,9 @@ async def install_app(request: Request):
         except Exception:  # noqa: BLE001
             pass
     chain.append({"step": "model", "id": manifest.id, "status": "installed"})
+    progress.finish(install_id, success=True, detail="install complete")
 
-    return JSONResponse({"chain": chain, "compat": classify(manifest_dict, device)})
+    return JSONResponse({"chain": chain, "compat": classify(manifest_dict, device), "install_id": install_id})
 
 
 @router.post("/api/store/uninstall-v2")

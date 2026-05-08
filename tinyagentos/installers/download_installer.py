@@ -2,23 +2,59 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
 from tinyagentos.installers.base import AppInstaller
 
+# Signature: callback(downloaded_bytes, total_bytes_or_zero_if_unknown)
+ProgressCallback = Callable[[int, int], None]
 
-async def download_file(url: str, dest: Path, expected_sha256: str | None = None) -> Path:
-    """Download a file with optional SHA256 verification."""
+
+async def download_file(
+    url: str,
+    dest: Path,
+    expected_sha256: str | None = None,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Download a file with optional SHA256 verification.
+
+    ``on_progress`` is called periodically with (downloaded_bytes,
+    total_bytes). total_bytes is 0 when the server didn't send a
+    Content-Length. Callbacks are throttled to roughly once a second
+    so the install-progress store doesn't take a write lock per chunk.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    import time as _time
+    last_cb = 0.0
     async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
+            total = int(resp.headers.get("content-length") or 0)
             sha = hashlib.sha256()
+            downloaded = 0
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=65536):
                     f.write(chunk)
                     sha.update(chunk)
+                    downloaded += len(chunk)
+                    if on_progress is not None:
+                        now = _time.monotonic()
+                        if now - last_cb >= 1.0:
+                            try:
+                                on_progress(downloaded, total)
+                            except Exception:  # noqa: BLE001
+                                pass  # never let a bad callback kill the download
+                            last_cb = now
+            # Always emit a final update at 100% so the UI can flip to
+            # "verifying" promptly instead of waiting for the next tick.
+            if on_progress is not None:
+                try:
+                    on_progress(downloaded, total or downloaded)
+                except Exception:  # noqa: BLE001
+                    pass
     if expected_sha256 and sha.hexdigest() != expected_sha256:
         dest.unlink()
         raise ValueError(f"SHA256 mismatch: expected {expected_sha256}, got {sha.hexdigest()}")
@@ -39,11 +75,17 @@ class DownloadInstaller(AppInstaller):
         if dest.exists():
             return {"success": True, "path": str(dest), "cached": True}
 
+        # Optional progress hook from the dispatcher. The Store route
+        # passes one wired to the install-progress store so the
+        # frontend can render a download bar.
+        on_progress: ProgressCallback | None = kwargs.get("on_progress")
+
         try:
             path = await download_file(
                 url=variant["download_url"],
                 dest=dest,
                 expected_sha256=variant.get("sha256"),
+                on_progress=on_progress,
             )
             return {"success": True, "path": str(path)}
         except Exception as e:
