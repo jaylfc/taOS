@@ -150,12 +150,73 @@ def hardware_to_targets(hardware: dict) -> list[str]:
     return targets
 
 
+def _parse_numeric_tier(tier_id: str) -> tuple[str, str, int] | None:
+    """Decompose a numeric tier id like ``x86-cuda-12gb`` into
+    ``(arch, accel, gb)``. Non-numeric tiers (``apple-silicon``,
+    ``cpu-only``) return ``None`` — they only ever match exactly.
+    """
+    parts = tier_id.split("-")
+    if len(parts) < 3 or not parts[-1].endswith("gb"):
+        return None
+    try:
+        gb = int(parts[-1][:-2])
+    except ValueError:
+        return None
+    arch = parts[0]
+    accel = "-".join(parts[1:-1])
+    if not arch or not accel:
+        return None
+    return arch, accel, gb
+
+
+def tier_compatible(worker_tier: str, manifest_tier: str) -> bool:
+    """A manifest tier is compatible with a worker tier when either:
+
+    - The two strings are equal (existing exact-match behaviour), OR
+    - Both are numeric tiers (``<arch>-<accel>-<N>gb``) with matching arch
+      and accel, and the manifest's required gb is at most the worker's gb.
+
+    Bigger machines inherit smaller-tier compatibility — a worker on
+    ``x86-cuda-16gb`` qualifies for any manifest declaring
+    ``x86-cuda-12gb`` or ``x86-cuda-8gb``, since the larger card has
+    enough VRAM by definition. This means manifest authors only need to
+    declare the *minimum* tier per arch/accel; bigger workers pick it up
+    automatically. Same machine never inherits across arches or
+    accelerator types (CUDA ≠ Vulkan ≠ ROCm even on the same card).
+
+    Apple Silicon and ``cpu-only`` are flat tiers, so they only match
+    exactly — there's no ladder to walk.
+    """
+    if worker_tier == manifest_tier:
+        return True
+    w = _parse_numeric_tier(worker_tier)
+    m = _parse_numeric_tier(manifest_tier)
+    if w is None or m is None:
+        return False
+    return w[0] == m[0] and w[1] == m[1] and m[2] <= w[2]
+
+
+def _tier_value_compatible(tier_val: object) -> bool:
+    """A hardware_tiers entry counts as compatible iff it's a non-empty
+    declaration that isn't the explicit ``"unsupported"`` sentinel.
+    """
+    if isinstance(tier_val, str):
+        return tier_val != "unsupported"
+    if isinstance(tier_val, dict):
+        return (
+            tier_val.get("recommended") is not None
+            or tier_val.get("fallback") is not None
+        )
+    return False
+
+
 def potential_capabilities(hardware: dict, registry: "AppRegistry") -> tuple[str, list[str]]:
     """Return the tier id and list of capabilities the hardware *could* support.
 
     Walks every model in the catalog and collects the distinct capability
-    strings from any manifest that declares the worker's tier as compatible
-    (i.e. has a non-``unsupported`` / non-null entry for that tier).
+    strings from any manifest with at least one ``hardware_tiers`` entry
+    that's compatible with the worker's tier (per :func:`tier_compatible`
+    — exact match or same-arch-accel ladder match).
 
     Parameters
     ----------
@@ -175,18 +236,12 @@ def potential_capabilities(hardware: dict, registry: "AppRegistry") -> tuple[str
 
     for manifest in registry.list_available(type_filter="model"):
         tiers = manifest.hardware_tiers or {}
-        tier_val = tiers.get(tier_id)
-        if tier_val is None:
-            continue
-        compatible = False
-        if isinstance(tier_val, str):
-            compatible = tier_val != "unsupported"
-        elif isinstance(tier_val, dict):
-            compatible = (
-                tier_val.get("recommended") is not None
-                or tier_val.get("fallback") is not None
-            )
-        if compatible:
+        for manifest_tier, tier_val in tiers.items():
+            if not tier_compatible(tier_id, manifest_tier):
+                continue
+            if not _tier_value_compatible(tier_val):
+                continue
             caps.update(manifest.capabilities or [])
+            break  # one matching tier is enough
 
     return tier_id, sorted(caps)
