@@ -323,6 +323,22 @@ install_rkllama() {
     run_as_user git -C "$RKLLAMA_DIR" checkout --quiet "$RKLLAMA_REF"
     log "rkllama pinned to $(run_as_user git -C "$RKLLAMA_DIR" rev-parse --short HEAD)"
 
+    # rkllama's transitive deps (notably webrtcvad) need a C toolchain to
+    # build wheels from source — Pi images often ship without these. Pull
+    # them via apt before the venv install so `pip install -e .` doesn't
+    # die with "Failed building wheel for webrtcvad" on a fresh box.
+    if command -v apt-get >/dev/null 2>&1; then
+        local _need=()
+        command -v gcc >/dev/null 2>&1 || _need+=("build-essential")
+        dpkg-query -W python3-dev >/dev/null 2>&1 || _need+=("python3-dev")
+        dpkg-query -W libffi-dev  >/dev/null 2>&1 || _need+=("libffi-dev")
+        if (( ${#_need[@]} )); then
+            log "installing build deps for rkllama wheel compilation: ${_need[*]}"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${_need[@]}" \
+                || warn "apt-get install of build deps failed — wheel builds may still fail"
+        fi
+    fi
+
     # Build the venv in-place (matches the production layout).
     if [[ ! -d "$RKLLAMA_VENV" ]]; then
         log "creating rkllama venv at $RKLLAMA_VENV"

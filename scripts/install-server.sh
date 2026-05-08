@@ -317,20 +317,12 @@ detect_and_advise_accelerators() {
                 warn "TAOS_NO_RKNPU=1 — skipping rkllama install; controller will run CPU-only on this NPU box"
                 warn "  to set up later: sudo bash scripts/install-rknpu.sh"
             else
-                local rknpu_script=""
-                if [[ -x "$(dirname "$0")/install-rknpu.sh" ]]; then
-                    rknpu_script="$(dirname "$0")/install-rknpu.sh"
-                elif [[ -x "$INSTALL_DIR/scripts/install-rknpu.sh" ]]; then
-                    rknpu_script="$INSTALL_DIR/scripts/install-rknpu.sh"
-                fi
-                if [[ -n "$rknpu_script" ]]; then
-                    log "chaining into $rknpu_script"
-                    sudo -E bash "$rknpu_script" --yes \
-                        || warn "install-rknpu.sh failed — continuing controller install anyway"
-                else
-                    warn "install-rknpu.sh not found locally yet — it will be after the repo is cloned"
-                    warn "  to set up rkllama then: sudo bash scripts/install-rknpu.sh"
-                fi
+                # Defer the actual install to after the repo clone — the
+                # script we need lives at $INSTALL_DIR/scripts/install-rknpu.sh
+                # and that path doesn't exist on this very first detection
+                # pass. install_rknpu_if_pending below picks this up.
+                RKNPU_PENDING_INSTALL=1
+                log "rkllama install deferred until after repo clone"
             fi
         fi
     fi
@@ -339,6 +331,24 @@ detect_and_advise_accelerators() {
     if (( ! found_any )); then
         log "no discrete accelerator detected — controller will run on CPU"
     fi
+}
+
+# Run the deferred rknpu auto-install once the repo is on disk. Called
+# after `git clone $INSTALL_DIR`. Skips if no NPU was detected up front
+# or if the user opted out via TAOS_NO_RKNPU=1.
+install_rknpu_if_pending() {
+    if [[ "${RKNPU_PENDING_INSTALL:-0}" != "1" ]]; then
+        return 0
+    fi
+    local rknpu_script="$INSTALL_DIR/scripts/install-rknpu.sh"
+    if [[ ! -x "$rknpu_script" ]]; then
+        warn "install-rknpu.sh not found at $rknpu_script — skipping rkllama auto-install"
+        warn "  to set up rkllama later: sudo bash $INSTALL_DIR/scripts/install-rknpu.sh"
+        return 0
+    fi
+    log "chaining into $rknpu_script (rkllama auto-install)"
+    sudo -E bash "$rknpu_script" --yes \
+        || warn "install-rknpu.sh failed — continuing controller install anyway"
 }
 
 detect_and_advise_accelerators
@@ -484,6 +494,10 @@ else
 fi
 
 cd "$INSTALL_DIR"
+
+# Now that the repo is on disk, run any accelerator-backend install
+# that was deferred up front (e.g. rkllama on a Rockchip NPU host).
+install_rknpu_if_pending
 
 # --- python venv + controller deps ---------------------------------------
 
