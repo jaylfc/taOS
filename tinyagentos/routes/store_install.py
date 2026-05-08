@@ -318,7 +318,49 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         resp_target = _target_remote or "local"
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "target_remote": resp_target, **result})
 
-    # Default: delegate to InstalledAppsStore (docker/pip/download).
+    # docker / pip — actually run the installer.
+    # Previously this branch fell straight through to the installed-apps
+    # store, which only marks the app installed in the registry without
+    # running anything. That left services like open-webui / perplexica /
+    # anything-llm in a "stale" state forever (filed as #410). Now we
+    # invoke DockerInstaller / PipInstaller and only mark installed when
+    # the underlying tool succeeds.
+    if backend in ("docker", "pip"):
+        try:
+            from tinyagentos.installers.docker_installer import DockerInstaller
+            from tinyagentos.installers.pip_installer import PipInstaller
+            installer = DockerInstaller() if backend == "docker" else PipInstaller()
+            inst_result = await installer.install(app_id, install_config)
+        except FileNotFoundError as exc:
+            return JSONResponse(
+                {"error": f"{backend} not available on this controller: {exc}"},
+                status_code=500,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("_legacy_install: %s installer raised", backend)
+            return JSONResponse({"error": f"{backend} install failed: {exc}"}, status_code=500)
+        if not inst_result.get("success"):
+            return JSONResponse(
+                {"error": inst_result.get("error", f"{backend} install failed")},
+                status_code=500,
+            )
+        # Auto-start docker compose so the service is actually serving
+        # on its declared ports. Pip installs don't have a generic start
+        # command — those are libraries the user invokes from code.
+        if backend == "docker":
+            try:
+                start_result = await installer.start(app_id)
+                if not start_result.get("success"):
+                    logger.warning(
+                        "_legacy_install: docker pull succeeded but compose up failed for %s: %s",
+                        app_id, start_result.get("output", "")[:500],
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_legacy_install: docker compose up raised for %s: %s", app_id, exc,
+                )
+
+    # Default: delegate to InstalledAppsStore (records the install in db / store).
     store = request.app.state.installed_apps
     await store.install(app_id, body.get("version", ""), meta)
     raw_remote = body.get("target_remote") or ""
