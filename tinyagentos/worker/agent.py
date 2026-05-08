@@ -1,14 +1,44 @@
 from __future__ import annotations
 import asyncio
+import json
 import logging
+import os
 import platform
 import socket
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 import httpx
 import psutil
 
 logger = logging.getLogger(__name__)
+
+
+# Marker dropped by install-worker.sh when it backs up an existing
+# taos-worker-pool. The worker forwards it to the controller once on
+# registration; controller materialises a notification + a workspace
+# text file. Worker deletes the marker after a successful POST so it
+# doesn't repeat the alert on every reconnect.
+_STORAGE_BACKUP_MARKER = Path("/var/lib/tinyagentos-worker/storage-backup.json")
+
+
+def _read_storage_backup_marker() -> dict | None:
+    """Return the parsed storage-backup marker if present, else None.
+    Errors swallowed — the marker is best-effort plumbing and must not
+    break worker registration."""
+    try:
+        if not _STORAGE_BACKUP_MARKER.exists():
+            return None
+        return json.loads(_STORAGE_BACKUP_MARKER.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _delete_storage_backup_marker() -> None:
+    try:
+        _STORAGE_BACKUP_MARKER.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _detect_lan_ip(controller_url: str) -> str | None:
@@ -330,6 +360,12 @@ class WorkerAgent:
             "kv_cache_quant_v_support": kv_quant.get("v", ["fp16"]),
             "kv_cache_quant_boundary_layer_protect": bool(kv_quant.get("boundary", False)),
         }
+        # Forward the storage-backup marker once. Controller materialises
+        # a workspace text file + a notification so the user sees the
+        # rename next time they open taOS.
+        backup = _read_storage_backup_marker()
+        if backup:
+            payload["pending_storage_backup"] = backup
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -337,6 +373,8 @@ class WorkerAgent:
                 resp.raise_for_status()
                 self._registered = True
                 logger.info(f"Registered with controller as '{self.name}'")
+                if backup:
+                    _delete_storage_backup_marker()
                 return True
         except Exception as e:
             logger.error(f"Failed to register: {e}")
