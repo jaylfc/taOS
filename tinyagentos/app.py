@@ -147,6 +147,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             shutil.copy2(example, config_path)
     config = load_config(config_path)
 
+    # Hardware profile drives auto-registration: a service whose manifest
+    # declares e.g. ``arm-npu-*: full`` and ``x86-cuda-*: unsupported``
+    # shouldn't be added as a backend on an x86 controller (rk-llama.cpp
+    # was registering everywhere before this). Load it BEFORE the
+    # auto-register loop so the gate is informed.
+    hardware_path = data_dir / "hardware.json"
+    hardware_profile = get_hardware_profile(hardware_path)
+
     # Auto-register any taOS-managed services that have a lifecycle block
     # in their app-catalog manifest but are not yet in config.backends.
     # This runs synchronously at create_app time (before the lifespan starts)
@@ -156,7 +164,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         _any_added = False
         for _manifest in _services_dir.glob("*/manifest.yaml"):
             try:
-                added = auto_register_from_manifest(_manifest, config)
+                added = auto_register_from_manifest(
+                    _manifest, config, hardware_profile=hardware_profile,
+                )
                 if added:
                     logger.info("auto-registered backend from manifest: %s", _manifest)
                     _any_added = True
@@ -178,8 +188,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             # Do NOT raise — legacy manifests can still run agents; only update paths are disabled.
 
     catalog_dir = catalog_dir or PROJECT_DIR / "app-catalog"
-    hardware_path = data_dir / "hardware.json"
-    hardware_profile = get_hardware_profile(hardware_path)
+    # hardware_path / hardware_profile already loaded above before the
+    # auto-register loop; don't re-probe.
     installed_path = data_dir / "installed.json"
     registry = AppRegistry(catalog_dir=catalog_dir, installed_path=installed_path)
 

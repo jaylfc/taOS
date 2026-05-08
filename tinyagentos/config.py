@@ -213,15 +213,27 @@ async def save_config_locked(config: AppConfig, path: Path) -> None:
     async with _config_lock:
         save_config(config, path)
 
-def auto_register_from_manifest(manifest_path: Path, config: "AppConfig") -> bool:
+def auto_register_from_manifest(
+    manifest_path: Path,
+    config: "AppConfig",
+    *,
+    hardware_profile: object | None = None,
+) -> bool:
     """Read a service manifest and add a backend entry to config if not already present.
 
-    Returns True if a new entry was added, False if already registered.
+    Returns True if a new entry was added, False if already registered or skipped.
 
     Supports two manifest formats:
     - Flat format: top-level ``type`` is the backend type, ``default_url`` is the URL.
     - Catalog format: ``type: service`` with ``lifecycle.backend_type`` and
       ``lifecycle.default_url`` (used by existing app-catalog manifests).
+
+    When ``hardware_profile`` is supplied, the manifest's ``hardware_tiers``
+    block is checked: if every declared tier is ``unsupported`` (or no
+    matching tier survives the ladder match in
+    :func:`tinyagentos.cluster.capabilities.tier_compatible`), the entry
+    is **skipped** rather than registered. Stops e.g. rk-llama.cpp from
+    auto-registering on x86 hardware.
     """
     data = yaml.safe_load(manifest_path.read_text())
     lifecycle = data.get("lifecycle", {})
@@ -253,6 +265,44 @@ def auto_register_from_manifest(manifest_path: Path, config: "AppConfig") -> boo
             name, backend_type, sorted(VALID_BACKEND_TYPES),
         )
         return False
+
+    # Hardware compat check: skip the entry if the manifest declares
+    # hardware_tiers and none are compatible with this controller's tier.
+    # Reuses the ladder logic from tier_compatible() — bigger workers
+    # inherit smaller-tier compatibility, so a 16gb CUDA worker matches
+    # a manifest declaring ``x86-cuda-12gb: full``. Manifests with no
+    # hardware_tiers block (rare for service manifests, common for
+    # generic infra) are accepted as-is — opt-in gating only.
+    if hardware_profile is not None:
+        tiers = data.get("hardware_tiers") or {}
+        if isinstance(tiers, dict) and tiers:
+            from tinyagentos.cluster.capabilities import (
+                tier_compatible,
+                worker_tier_id,
+            )
+            hw_dict = getattr(hardware_profile, "hardware", None) or {}
+            controller_tier = worker_tier_id(hw_dict)
+            any_compatible = False
+            for manifest_tier, tier_val in tiers.items():
+                if not tier_compatible(controller_tier, manifest_tier):
+                    continue
+                # Treat 'unsupported' as a hard no even if the tier matches.
+                if isinstance(tier_val, str) and tier_val == "unsupported":
+                    continue
+                if isinstance(tier_val, dict) and tier_val.get("unsupported") is True:
+                    continue
+                any_compatible = True
+                break
+            if not any_compatible:
+                import logging
+                logging.getLogger(__name__).info(
+                    "auto_register_from_manifest: skipping %s — controller tier %s "
+                    "doesn't match any compatible entry in %s. Hardware-incompatible "
+                    "manifests stay un-registered so the Providers list and Store "
+                    "don't show services that can't actually run here.",
+                    name, controller_tier, sorted(tiers.keys()),
+                )
+                return False
 
     if any(b.get("name") == name for b in config.backends):
         return False

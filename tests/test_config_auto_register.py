@@ -159,3 +159,140 @@ default_url: http://localhost:9999
         added = auto_register_from_manifest(manifest, config)
     assert added is False
     assert config.backends == []
+
+
+class _FakeHardwareProfile:
+    """Test stub mirroring the HardwareProfile API the gate uses."""
+
+    def __init__(self, hardware: dict):
+        self.hardware = hardware
+
+
+def test_auto_register_skips_when_hardware_only_lists_unsupported_tiers(tmp_path: Path, caplog):
+    """rk-llama.cpp on x86: every CUDA / vulkan tier that matches the
+    controller's tier_id is marked ``unsupported``, so the entry must be
+    skipped rather than registered. johny saw rk-llama.cpp showing as
+    installed on his x86 cluster — exactly this gap."""
+    import logging
+
+    manifest = tmp_path / "rk-llama-cpp.yaml"
+    manifest.write_text("""
+id: rk-llama-cpp
+name: rk-llama.cpp
+type: service
+lifecycle:
+  backend_type: openai-compatible
+  default_url: http://localhost:8090
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: unsupported
+  x86-vulkan-8gb: unsupported
+  cpu-only: unsupported
+""")
+    # x86 controller with a 12 GB CUDA card — tier_id = x86-cuda-12gb,
+    # which IS in the manifest but as "unsupported". Skip.
+    hw = _FakeHardwareProfile({
+        "cpu": {"arch": "x86_64"},
+        "gpu": {"type": "nvidia", "cuda": True, "vram_mb": 12 * 1024},
+    })
+    config = AppConfig()
+    with caplog.at_level(logging.INFO):
+        added = auto_register_from_manifest(manifest, config, hardware_profile=hw)
+    assert added is False
+    assert config.backends == []
+    assert any(
+        "doesn't match" in rec.message.lower() or "incompatible" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+
+def test_auto_register_accepts_when_compatible_tier_present(tmp_path: Path):
+    """rk-llama.cpp on a Pi: arm-npu-16gb is declared ``full`` and matches
+    the controller's tier_id, so the entry registers."""
+    manifest = tmp_path / "rk-llama-cpp.yaml"
+    manifest.write_text("""
+id: rk-llama-cpp
+name: rk-llama.cpp
+type: service
+lifecycle:
+  backend_type: openai-compatible
+  default_url: http://localhost:8090
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: unsupported
+  cpu-only: unsupported
+""")
+    hw = _FakeHardwareProfile({
+        "cpu": {"arch": "aarch64"},
+        "npu": {"type": "rk3588", "tops": 6, "cores": 3},
+        "ram_mb": 16 * 1024,
+    })
+    config = AppConfig()
+    added = auto_register_from_manifest(manifest, config, hardware_profile=hw)
+    assert added is True
+    assert len(config.backends) == 1
+    assert config.backends[0]["name"] == "local-rk-llama-cpp"
+
+
+def test_auto_register_accepts_via_ladder_match(tmp_path: Path):
+    """Bigger worker inherits smaller minimum tier (per #436's tier ladder).
+    A manifest declaring only ``x86-cuda-8gb: full`` should register on
+    a 16 GB CUDA worker."""
+    manifest = tmp_path / "fake-svc.yaml"
+    manifest.write_text("""
+id: fake-svc
+name: Fake Service
+type: service
+lifecycle:
+  backend_type: openai-compatible
+  default_url: http://localhost:9000
+hardware_tiers:
+  x86-cuda-8gb: full
+""")
+    hw = _FakeHardwareProfile({
+        "cpu": {"arch": "x86_64"},
+        "gpu": {"type": "nvidia", "cuda": True, "vram_mb": 16 * 1024},
+    })
+    config = AppConfig()
+    added = auto_register_from_manifest(manifest, config, hardware_profile=hw)
+    assert added is True
+
+
+def test_auto_register_no_hardware_tiers_block_still_registers(tmp_path: Path):
+    """Manifests without a hardware_tiers block (some infrastructure
+    services) shouldn't be gated — the check is opt-in. Backwards
+    compatible with existing manifests."""
+    manifest = tmp_path / "infra-svc.yaml"
+    manifest.write_text("""
+id: infra-svc
+name: Infra Service
+type: service
+lifecycle:
+  backend_type: openai-compatible
+  default_url: http://localhost:7000
+""")
+    hw = _FakeHardwareProfile({
+        "cpu": {"arch": "x86_64"},
+        "gpu": {"type": "nvidia", "cuda": True, "vram_mb": 12 * 1024},
+    })
+    config = AppConfig()
+    added = auto_register_from_manifest(manifest, config, hardware_profile=hw)
+    assert added is True
+
+
+def test_auto_register_without_hardware_profile_works_unchanged(tmp_path: Path):
+    """Existing callers that don't pass hardware_profile must still work
+    (no gate applied) — keeps the function backwards-compatible for
+    tests and any non-controller call sites."""
+    manifest = tmp_path / "rkllama.yaml"
+    manifest.write_text("""
+id: rkllama
+name: rkllama
+type: rkllama
+default_url: http://localhost:8080
+""")
+    config = AppConfig()
+    added = auto_register_from_manifest(manifest, config)  # no hardware_profile kwarg
+    assert added is True
