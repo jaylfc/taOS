@@ -31,7 +31,12 @@ function readBuildId() {
   } catch {
     // git not available — fall through to timestamp
   }
-  return Math.floor(Date.now() / 1000).toString(36);
+  // Two distinct fields encoded in base36 so two builds within the same
+  // second still produce distinct ids (Date.now() is millisecond-resolution
+  // but high-res nanos disambiguate even sub-millisecond bursts).
+  const ms = Date.now().toString(36);
+  const hr = process.hrtime.bigint().toString(36);
+  return `${ms}-${hr.slice(-6)}`;
 }
 
 // Service worker uses this string as its cache name (`taos-static-${VERSION}`).
