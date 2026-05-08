@@ -8,8 +8,11 @@ homepage: https://github.com/THUDM/CogVideo
 license: Apache-2.0
 
 requires:
+  disk_mb: 30000
   ram_mb: 16384
   python: ">=3.10"
+
+  ports: [7860]
 
 install:
   method: pip
