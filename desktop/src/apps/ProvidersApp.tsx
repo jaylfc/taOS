@@ -839,7 +839,13 @@ function ProviderDetail({
               <RefreshCw size={13} className={testing ? "animate-spin" : ""} />
               {testing ? "Testing..." : "Test"}
             </Button>
-            {(!isLocal || lifecycleState === "running" || !provider.lifecycle_state) && (
+            {/* Edit + Delete: previously hidden for local providers in any
+                non-running lifecycle state, which trapped johny on #312
+                with stopped rkllama entries that couldn't be removed.
+                Now hide ONLY during transitional moments (starting /
+                stopping) to avoid mid-operation surprises; running and
+                stopped both allow Edit/Delete. */}
+            {!isTransitional && (
               <>
                 <Button size="sm" variant="outline" onClick={onEdit} aria-label={`Edit provider ${provider.name}`}>
                   <Edit size={13} />
