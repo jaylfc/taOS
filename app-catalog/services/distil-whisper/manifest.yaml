@@ -2,7 +2,7 @@ id: distil-whisper
 name: Distil-Whisper
 type: service
 category: voice
-version: 0.0.0
+version: 1.0.0
 description: "Hugging Face's distilled Whisper — 6× faster than whisper-large-v3 at within 1% WER. Drop-in via transformers."
 homepage: https://github.com/huggingface/distil-whisper
 license: MIT
