@@ -85,4 +85,9 @@ hardware_tiers:
     recommended: q8_0
   cpu-only:
     recommended: q8_0
+  x86-cuda-2gb:
+    recommended: f16
+    fallback: q8_0
+  x86-vulkan-2gb:
+    recommended: q8_0
 context_window: 32768

@@ -33,3 +33,6 @@ hardware_tiers:
   x86-cuda-12gb: {recommended: q4_k_m}
   x86-vulkan-8gb: {recommended: q4_k_m}
   cpu-only: {recommended: q4_k_m}
+  arm-npu-4gb: {recommended: q4_k_m}
+  x86-cuda-4gb: {recommended: q4_k_m}
+  x86-vulkan-4gb: {recommended: q4_k_m}

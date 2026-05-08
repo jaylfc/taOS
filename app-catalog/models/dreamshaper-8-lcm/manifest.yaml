@@ -111,4 +111,10 @@ hardware_tiers:
   cpu-only:
     recommended: iq2_xs-gguf
     fallback: iq2_xs-gguf
+  x86-cuda-4gb:
+    recommended: lcm-safetensors
+    fallback: iq4_nl-gguf
+  x86-vulkan-4gb:
+    recommended: lcm-safetensors
+    fallback: iq4_nl-gguf
 context_window: 77

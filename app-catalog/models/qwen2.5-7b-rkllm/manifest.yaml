@@ -33,4 +33,6 @@ hardware_tiers:
     recommended: w8a8
   arm-npu-32gb:
     recommended: w8a8
+  arm-npu-2gb:
+    recommended: w8a8
 context_window: 32768

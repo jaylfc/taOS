@@ -74,4 +74,6 @@ hardware_tiers:
   cpu-only:
     recommended: safetensors
     notes: Slow — consider SD 1.5 GGUF for CPU
+  x86-cuda-4gb:
+    recommended: safetensors
 context_window: 77

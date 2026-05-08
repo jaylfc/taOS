@@ -49,4 +49,6 @@ hardware_tiers:
     recommended: safetensors
   cpu-only:
     recommended: gguf-f16
+  x86-cuda-4gb:
+    recommended: safetensors
 context_window: 4096

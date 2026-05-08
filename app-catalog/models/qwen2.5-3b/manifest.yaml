@@ -43,4 +43,6 @@ hardware_tiers:
     recommended: q4_k_m
   cpu-only:
     recommended: q4_k_m
+  x86-cuda-4gb:
+    recommended: q4_k_m
 context_window: 32768

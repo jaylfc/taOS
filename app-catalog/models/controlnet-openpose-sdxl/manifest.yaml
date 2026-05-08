@@ -37,4 +37,6 @@ hardware_tiers:
   x86-cuda-12gb:
     recommended: safetensors
   cpu-only: unsupported
+  x86-cuda-6gb:
+    recommended: safetensors
 context_window: 77

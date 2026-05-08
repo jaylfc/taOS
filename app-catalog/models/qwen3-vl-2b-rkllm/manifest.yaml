@@ -30,5 +30,7 @@ hardware_tiers:
     recommended: w8a8
   arm-npu-32gb:
     recommended: w8a8
+  arm-npu-2gb:
+    recommended: w8a8
 # context_window: rkllm quantizer cap; base Qwen3-VL-2B is 262144 (256K) but rkllm caps at 40960
 context_window: 40960

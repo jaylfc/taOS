@@ -36,4 +36,6 @@ hardware_tiers:
     recommended: pth
   cpu-only:
     recommended: pth
+  x86-cuda-2gb:
+    recommended: pth
 context_window: 1

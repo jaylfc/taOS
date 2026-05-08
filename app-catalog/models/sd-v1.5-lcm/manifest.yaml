@@ -101,4 +101,9 @@ hardware_tiers:
   cpu-only:
     recommended: q4_0
     notes: Slow — 1-3 minutes per image
+  x86-cuda-6gb:
+    recommended: safetensors
+    fallback: f16
+  x86-vulkan-6gb:
+    recommended: f16
 context_window: 77

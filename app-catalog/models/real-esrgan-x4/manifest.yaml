@@ -39,4 +39,6 @@ hardware_tiers:
     recommended: x4
   cpu-only:
     recommended: x4
+  x86-cuda-2gb:
+    recommended: x4
 context_window: 1

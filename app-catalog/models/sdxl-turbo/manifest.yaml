@@ -88,4 +88,9 @@ hardware_tiers:
   cpu-only:
     recommended: q4_0
     warning: Slow on CPU
+  x86-cuda-6gb:
+    recommended: q8_0
+    fallback: q4_0
+  x86-vulkan-6gb:
+    recommended: q4_0
 context_window: 77

@@ -34,4 +34,6 @@ hardware_tiers:
     recommended: pytorch
   cpu-only:
     recommended: pytorch
+  x86-cuda-2gb:
+    recommended: pytorch
 context_window: 1024

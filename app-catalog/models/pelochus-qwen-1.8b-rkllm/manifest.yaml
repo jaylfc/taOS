@@ -33,4 +33,6 @@ hardware_tiers:
     recommended: rkllm
   arm-npu-32gb:
     recommended: rkllm
+  arm-npu-2gb:
+    recommended: rkllm
 context_window: 32768

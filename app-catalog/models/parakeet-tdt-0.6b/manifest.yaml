@@ -34,4 +34,6 @@ hardware_tiers:
     recommended: nemo
   cpu-only:
     recommended: nemo
+  x86-cuda-2gb:
+    recommended: nemo
 context_window: 4096

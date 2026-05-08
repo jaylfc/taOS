@@ -28,4 +28,6 @@ hardware_tiers:
   x86-cuda-12gb: {recommended: safetensors}
   x86-vulkan-8gb: {recommended: safetensors}
   cpu-only: {recommended: safetensors}
+  x86-cuda-6gb: {recommended: safetensors}
+  x86-vulkan-6gb: {recommended: safetensors}
 context_window: 16384

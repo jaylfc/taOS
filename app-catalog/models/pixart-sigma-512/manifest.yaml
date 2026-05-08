@@ -51,4 +51,8 @@ hardware_tiers:
   cpu-only:
     recommended: fp16
     notes: Transformer only — requires T5 encoder separately
+  x86-cuda-4gb:
+    recommended: fp16
+  x86-vulkan-4gb:
+    recommended: fp16
 context_window: 300
