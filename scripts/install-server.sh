@@ -51,11 +51,15 @@ ensure_linux_deps() {
         # causes "held broken packages" when NodeSource's nodejs is already
         # present, because apt's npm conflicts with NodeSource's bundled npm.
         sudo apt-get update -qq
+        # vulkan-tools provides vulkaninfo, which the runtime hardware
+        # probe shells out to for iGPU detection. Without it, taOS
+        # silently reports vulkan: false on Intel / AMD iGPUs (#354).
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             python3 python3-venv python3-pip git curl ca-certificates \
-            libtorrent-rasterbar-dev libboost-python-dev sqlite3 libsqlcipher-dev
+            libtorrent-rasterbar-dev libboost-python-dev sqlite3 libsqlcipher-dev \
+            vulkan-tools
     elif command -v dnf >/dev/null 2>&1; then
-        log "installing dnf deps (python3, git, curl, libtorrent, nodejs, sqlcipher)"
+        log "installing dnf deps (python3, git, curl, libtorrent, nodejs, sqlcipher, vulkan-tools)"
         # rb_libtorrent: Fedora's libtorrent-rasterbar is split into the C++
         # library (rb_libtorrent), its devel headers (rb_libtorrent-devel), and
         # the Python bindings (rb_libtorrent-python3). The bindings are NOT on
@@ -66,14 +70,14 @@ ensure_linux_deps() {
         # across recent Fedora releases.
         sudo dnf install -y -q python3 python3-pip git curl \
             rb_libtorrent-devel rb_libtorrent-python3 boost-python3 \
-            sqlite nodejs npm sqlcipher-devel
+            sqlite nodejs npm sqlcipher-devel vulkan-tools
     elif command -v pacman >/dev/null 2>&1; then
         log "installing pacman deps"
         sudo pacman -Sy --noconfirm --needed python python-pip git curl \
-            libtorrent-rasterbar boost sqlite nodejs npm sqlcipher
+            libtorrent-rasterbar boost sqlite nodejs npm sqlcipher vulkan-tools
     elif command -v apk >/dev/null 2>&1; then
         log "installing apk deps"
-        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev
+        sudo apk add --no-cache python3 py3-pip git curl libtorrent-rasterbar sqlite nodejs npm sqlcipher-dev vulkan-tools
     else
         warn "unrecognised package manager — assuming python3/git/curl/libtorrent/nodejs already present"
     fi
