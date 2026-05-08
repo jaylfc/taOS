@@ -6,6 +6,7 @@ import {
   fetchCloudProviders,
   workersToAggregated,
   cloudProvidersToAggregated,
+  localProvidersToAggregated,
 } from "@/lib/models";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 
@@ -50,9 +51,15 @@ export function TaosAssistantSettings({ open, onClose }: Props) {
           }));
         const worker = workersToAggregated(workers);
         const cloud = cloudProvidersToAggregated(providers);
+        // Providers configured directly on the controller (a local ollama,
+        // a manually-added llama-cpp, etc.) are neither cloud nor a remote
+        // worker — they were silently dropped from the picker before #356
+        // surfaced the gap.
+        const localProviders = localProvidersToAggregated(providers);
 
         const all: AgentModel[] = [
           ...local,
+          ...localProviders.map((m: { id: string; name: string; host: string; hostKind: "controller" | "worker" | "cloud" }) => ({ id: m.id, name: m.name, host: m.host, hostKind: m.hostKind })),
           ...worker.map((m: { id: string; name: string; host: string; hostKind: "controller" | "worker" | "cloud" }) => ({ id: m.id, name: m.name, host: m.host, hostKind: m.hostKind })),
           ...cloud.map((m: { id: string; name: string; host: string; hostKind: "controller" | "worker" | "cloud" }) => ({ id: m.id, name: m.name, host: m.host, hostKind: m.hostKind })),
         ];

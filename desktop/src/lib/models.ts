@@ -114,6 +114,11 @@ export interface CloudProvider {
   type?: string;
   model?: string;
   models?: { id?: string; name?: string }[];
+  // Optional — set by /api/providers when the entry is sourced from a
+  // remote worker's heartbeat (e.g. ``worker:fedora-worker``). Used by
+  // the picker to keep network-attached and locally-configured local
+  // providers in different lanes.
+  source?: string;
 }
 
 export const CLOUD_PROVIDER_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
@@ -145,6 +150,52 @@ export function cloudProvidersToAggregated(providers: CloudProvider[]): Aggregat
         name: m.name ?? id,
         host: providerName,
         hostKind: "cloud",
+        backend: p.type,
+      });
+    }
+  }
+  return out;
+}
+
+/** Flatten /api/providers entries that are NEITHER cloud nor worker-attached
+ *  — i.e. backends configured directly on the controller (a local ollama
+ *  on localhost, a manually-added llama-cpp endpoint, etc.). They show
+ *  alongside catalog-installed local models in the picker's controller
+ *  lane. johny-mnemonic surfaced this gap on #356.
+ *
+ *  Reuses the cloud filter rules in negative: skip anything in
+ *  CLOUD_PROVIDER_TYPES (handled by cloudProvidersToAggregated) and
+ *  anything whose source is ``worker:*`` (handled by workers). What's
+ *  left is "local controller-hosted".
+ */
+export function localProvidersToAggregated(providers: CloudProvider[]): AggregatedModel[] {
+  const out: AggregatedModel[] = [];
+  for (const p of providers ?? []) {
+    if (!p || !p.type) continue;
+    if ((CLOUD_PROVIDER_TYPES as readonly string[]).includes(p.type)) continue;
+    if (typeof p.source === "string" && p.source.startsWith("worker:")) continue;
+    const providerName = p.name ?? p.type;
+    const list = Array.isArray(p.models) ? p.models : [];
+    if (list.length === 0) {
+      const id = p.model ?? "default";
+      out.push({
+        key: `local:${providerName}:${id}`,
+        id,
+        name: `${providerName} default`,
+        host: providerName,
+        hostKind: "controller",
+        backend: p.type,
+      });
+      continue;
+    }
+    for (const m of list) {
+      const id = m.id ?? m.name ?? "unknown";
+      out.push({
+        key: `local:${providerName}:${id}`,
+        id,
+        name: m.name ?? id,
+        host: providerName,
+        hostKind: "controller",
         backend: p.type,
       });
     }

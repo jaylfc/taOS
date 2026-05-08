@@ -1074,7 +1074,14 @@ function DeployWizard({
         // Network providers map onto the picker's 'worker' source tab
         // since that's what they conceptually are. Filed as #356 —
         // network providers were silently dropped before.
-        const providerByModelId = new Map<string, { name: string; kind: "cloud" | "worker" }>();
+        // Three lanes: cloud, worker (network-attached, source starts
+        // with "worker:"), and controller (everything else — backends
+        // configured directly on this controller, e.g. a local ollama
+        // or llama-cpp). Filed under #356 — johny reported (2026-05-08)
+        // that local-provider models were still being dropped after the
+        // network fix in #422. Surface them in the picker's local lane
+        // alongside catalog-installed models.
+        const providerByModelId = new Map<string, { name: string; kind: "cloud" | "worker" | "controller" }>();
         const cloudProviderNames = new Set<string>();
         try {
           const pct = providersRes.headers.get("content-type") ?? "";
@@ -1083,8 +1090,8 @@ function DeployWizard({
             for (const p of (Array.isArray(providers) ? providers : [])) {
               const isCloud = (CLOUD_PROVIDER_TYPES as readonly string[]).includes(p.type);
               const isNetwork = typeof p.source === "string" && p.source.startsWith("worker:");
-              if (!isCloud && !isNetwork) continue;
-              const kind: "cloud" | "worker" = isCloud ? "cloud" : "worker";
+              const kind: "cloud" | "worker" | "controller" =
+                isCloud ? "cloud" : isNetwork ? "worker" : "controller";
               const pname = p.name ?? p.type;
               if (kind === "cloud") cloudProviderNames.add(pname);
               const pModels: { id?: string; name?: string }[] = Array.isArray(p.models) ? p.models : [];
@@ -1110,11 +1117,17 @@ function DeployWizard({
             // defaults — they'd show up as a confusing "default" entry.
             if (mid === "default" || mid === "taos-embedding-default") continue;
             const provider = providerByModelId.get(mid);
-            if (!provider) continue; // not a cloud or network model
+            if (!provider) continue; // not a known provider — LiteLLM internal alias
             const key = `${provider.kind}:${provider.name}:${mid}`;
             if (seen.has(key)) continue;
             seen.add(key);
-            const target = provider.kind === "cloud" ? cloudModels : workerModels;
+            // Route into the lane that matches the provider's kind so the
+            // picker shows it under the right tab. Controller-hosted local
+            // providers go into localModels alongside catalog installs.
+            const target =
+              provider.kind === "cloud" ? cloudModels :
+              provider.kind === "worker" ? workerModels :
+              localModels;
             target.push({
               id: mid,
               name: `${mid} (${provider.name})`,
