@@ -144,11 +144,14 @@ def audit_one(entry: dict) -> dict:
             "age_days": _days_since(rel.get("published_at")),
         }
 
-    behind = out["behind_by"] or 0
     age = (out["fork_release"] or {}).get("age_days")
     issues = []
-    if behind > 0:
-        issues.append(f"{behind} commits behind {upstream}/{upstream_branch}")
+    # behind_by=None means the GH compare API failed — don't silently
+    # downgrade that to "in sync". Surface as its own warning.
+    if out["behind_by"] is None:
+        issues.append("could not determine drift (compare API failed)")
+    elif out["behind_by"] > 0:
+        issues.append(f"{out['behind_by']} commits behind {upstream}/{upstream_branch}")
     if age is not None and age > 14:
         issues.append(f"latest release is {age} days old")
     out["ok"] = not issues
