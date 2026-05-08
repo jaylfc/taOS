@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Lock } from "lucide-react";
 import { OnboardingScreen } from "./OnboardingScreen";
+import { SESSION_EXPIRED_EVENT } from "@/lib/auth-guard";
 
 interface Props {
   children: React.ReactNode;
@@ -53,6 +54,23 @@ export function LoginGate({ children }: Props) {
 
   useEffect(() => {
     refreshStatus();
+  }, [refreshStatus]);
+
+  // Listen for session-expired events from the global auth guard. Any
+  // /api/* call returning 401 fires this; we re-run /auth/status which
+  // will flip phase to "login" and unmount the app shell back to the
+  // sign-in form. Without this, a stale cookie (e.g. after a controller
+  // reinstall) left every app rendering empty data with no signal to
+  // re-authenticate.
+  useEffect(() => {
+    const onExpired = () => {
+      // Only re-prompt if we currently think we're authenticated.
+      // Avoids a refresh loop if the user is already on the login form.
+      setStatus((cur) => (cur.phase === "ready" ? { phase: "loading" } : cur));
+      void refreshStatus();
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, [refreshStatus]);
 
   const handleSubmit = async (e: React.FormEvent) => {
