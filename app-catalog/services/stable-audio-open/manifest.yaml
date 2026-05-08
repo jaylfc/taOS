@@ -9,6 +9,7 @@ license: "Stability AI Community License"
 
 requires:
   ram_mb: 8192
+  disk_mb: 8000
   python: ">=3.10"
 
 install:
