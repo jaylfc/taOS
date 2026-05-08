@@ -1,0 +1,34 @@
+id: jina-embeddings-v3
+name: Jina Embeddings v3
+type: model
+version: 3.0.0
+description: "Multilingual embedding model — 89 languages, 8192 token context, task-specific LoRA adapters. 570M params, 1024 dim."
+homepage: https://huggingface.co/jinaai/jina-embeddings-v3
+license: CC-BY-NC-4.0
+capabilities:
+- embedding
+- multilingual
+
+variants:
+- id: pytorch
+  name: PyTorch (570M params, 2.3GB)
+  format: pytorch
+  size_mb: 2300
+  download_url: https://huggingface.co/jinaai/jina-embeddings-v3/resolve/main/model.safetensors
+  requires:
+    backends:
+    - id: sentence-transformers
+      targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+      min_ram_mb: 3072
+    - id: transformers
+      targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+      min_ram_mb: 3072
+
+hardware_tiers:
+  apple-silicon: {recommended: pytorch}
+  x86-cuda-4gb: {recommended: pytorch}
+  x86-vulkan-4gb: {recommended: pytorch}
+  arm-vulkan-4gb: {recommended: pytorch}
+  cpu-only: {recommended: pytorch}
+
+context_window: 8192
