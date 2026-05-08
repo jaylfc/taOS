@@ -326,10 +326,22 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     # invoke DockerInstaller / PipInstaller and only mark installed when
     # the underlying tool succeeds.
     if backend in ("docker", "pip"):
+        # Apps_dir defaults to data_dir/apps so an unprivileged install
+        # works without /opt write access. Tests can override via
+        # app.state.apps_dir on a tmp path.
+        apps_dir = getattr(request.app.state, "apps_dir", None)
+        if apps_dir is None:
+            data_dir = getattr(request.app.state, "data_dir", None)
+            if data_dir is not None:
+                from pathlib import Path as _Path
+                apps_dir = _Path(data_dir) / "apps"
         try:
             from tinyagentos.installers.docker_installer import DockerInstaller
             from tinyagentos.installers.pip_installer import PipInstaller
-            installer = DockerInstaller() if backend == "docker" else PipInstaller()
+            installer = (
+                DockerInstaller(apps_dir=apps_dir) if backend == "docker"
+                else PipInstaller(apps_dir=apps_dir)
+            )
             inst_result = await installer.install(app_id, install_config)
         except FileNotFoundError as exc:
             return JSONResponse(
