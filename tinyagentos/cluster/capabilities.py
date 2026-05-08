@@ -16,7 +16,20 @@ if TYPE_CHECKING:
     from tinyagentos.registry import AppRegistry
 
 
-_RAM_BUCKETS_GB = (2, 4, 8, 16, 32, 64, 128)
+# Bucket sizes used by catalog manifests' hardware_tiers keys
+# (e.g. ``x86-cuda-12gb``, ``arm-npu-6gb``). Adding 6 / 12 / 24 closes a
+# real coverage gap: cards / boards with those VRAM/RAM amounts used to
+# snap UP to the next bucket (12 → 16, 24 → 32) and miss every manifest
+# that targets the precise size. Concrete failures observed on:
+#
+#   - Orange Pi 5 (6 GB) — was snapping to 8gb, missing arm-npu-6gb
+#   - RTX 3060 12 GB     — was snapping to 16gb, missing x86-cuda-12gb
+#   - RTX 3090 / 4090    — was snapping to 32gb, missing x86-cuda-24gb
+#
+# The list must stay sorted ascending — _snap_to_bucket walks it in
+# order and returns the first bucket >= raw_gb, so 12 has to come
+# before 16 to actually be reachable.
+_RAM_BUCKETS_GB = (2, 4, 6, 8, 12, 16, 24, 32, 64, 128)
 
 
 def _snap_to_bucket(raw_gb: int) -> int:
