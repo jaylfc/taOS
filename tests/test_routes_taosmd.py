@@ -5,6 +5,14 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 
+from tinyagentos.hardware import (
+    CpuInfo,
+    DiskInfo,
+    GpuInfo,
+    HardwareProfile,
+    NpuInfo,
+    OsInfo,
+)
 from tinyagentos.routes.taosmd import MEMORY_TIERS
 
 
@@ -150,14 +158,13 @@ class TestSetup:
             get=lambda _id: fake_manifest if _id == "nomic-embed-text-v1.5" else None,
             mark_installed=lambda *_a, **_kw: None,
         )
-        # Hardware profile shaped to dataclasses.asdict — flat dict.
-        fake_hw = SimpleNamespace(
+        fake_hw = HardwareProfile(
             ram_mb=4096,
-            cpu={"arch": "x86_64"},
-            gpu={"type": "nvidia", "cuda": True, "vram_mb": 12288},
-            npu={"type": "none"},
-            disk={"free_gb": 100},
-            os={"distro": "linux"},
+            cpu=CpuInfo(arch="x86_64"),
+            gpu=GpuInfo(type="nvidia", cuda=True, vram_mb=12288),
+            npu=NpuInfo(type="none"),
+            disk=DiskInfo(free_gb=100),
+            os=OsInfo(distro="linux"),
         )
 
         mock_installer = AsyncMock()
@@ -200,13 +207,13 @@ class TestSetup:
             get=lambda _id: fake_manifest,
             mark_installed=lambda *_a, **_kw: None,
         )
-        fake_hw = SimpleNamespace(
+        fake_hw = HardwareProfile(
             ram_mb=4096,
-            cpu={"arch": "x86_64"},
-            gpu={"type": "none"},
-            npu={"type": "none"},
-            disk={"free_gb": 100},
-            os={"distro": "linux"},
+            cpu=CpuInfo(arch="x86_64"),
+            gpu=GpuInfo(type="none"),
+            npu=NpuInfo(type="none"),
+            disk=DiskInfo(free_gb=100),
+            os=OsInfo(distro="linux"),
         )
 
         mock_installer = AsyncMock()
@@ -257,13 +264,13 @@ class TestSetupResolverPath:
             context_window=0,
         )
         fake_registry = SimpleNamespace(get=lambda _id: fake_manifest)
-        fake_hw = SimpleNamespace(
+        fake_hw = HardwareProfile(
             ram_mb=4096,
-            cpu={"arch": "x86_64"},
-            gpu={"type": "none"},
-            npu={"type": "none"},
-            disk={"free_gb": 100},
-            os={"distro": "linux"},
+            cpu=CpuInfo(arch="x86_64"),
+            gpu=GpuInfo(type="none"),
+            npu=NpuInfo(type="none"),
+            disk=DiskInfo(free_gb=100),
+            os=OsInfo(distro="linux"),
         )
 
         await _run_setup(
