@@ -1,0 +1,24 @@
+id: parakeet-nemo
+name: NVIDIA Parakeet (NeMo)
+type: service
+category: voice
+version: 1.23.0
+description: "NVIDIA's RNN-T / TDT ASR family — sub-real-time on CUDA, strong on long-form. NeMo runtime."
+homepage: https://github.com/NVIDIA/NeMo
+license: Apache-2.0
+
+requires:
+  ram_mb: 6144
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: nemo_toolkit[asr]
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: degraded
