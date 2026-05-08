@@ -296,13 +296,21 @@ pin_librknnrt() {
 
     # Install the new one.
     sudo install -m 0644 "$tmp" "$LIBRKNNRT_DEST"
-    rm -f "$tmp"
     LIBRKNNRT_REPLACED=1
     sudo ldconfig
 
-    # Verify version string.
+    # Verify version string against the temp source file before deleting
+    # it — the filesystem-cache / symlink-resolution race after
+    # `sudo install` + `sudo ldconfig` was making librknnrt_current_version
+    # return empty on first run even though the file content was correct
+    # (#406). SHA256 matched up front so $tmp is provably the right file.
     local verified
-    verified="$(librknnrt_current_version || true)"
+    verified="$(strings "$tmp" | awk '/librknnrt version: / { print $3; exit }')"
+    rm -f "$tmp"
+    if [[ -z "$verified" ]]; then
+        # Fall back to re-reading the installed path (legacy behaviour).
+        verified="$(librknnrt_current_version || true)"
+    fi
     if [[ "$verified" != "$LIBRKNNRT_EXPECTED_VERSION" ]]; then
         die "librknnrt version after install is '$verified', expected $LIBRKNNRT_EXPECTED_VERSION"
     fi
