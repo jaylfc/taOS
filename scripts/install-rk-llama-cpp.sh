@@ -106,7 +106,7 @@ Group=$TARGET_GROUP
 WorkingDirectory=$INSTALL_DIR
 Environment=LD_LIBRARY_PATH=$INSTALL_DIR/lib
 LimitNOFILE=65536
-ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/models/active.gguf --host $HOST --port $PORT
+ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --host $HOST --port $PORT
 Restart=on-failure
 RestartSec=5
 KillMode=mixed

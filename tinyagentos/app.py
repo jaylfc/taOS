@@ -440,6 +440,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.agent_memory_dir.mkdir(parents=True, exist_ok=True)
         app.state.models_dir = data_dir / "models"
         app.state.models_dir.mkdir(parents=True, exist_ok=True)
+        # Shared model layout root (~/models/<backend>/<family>/<id>/...)
+        # — the new home for everything backend installers download.
+        # Kept distinct from the legacy data/models scan target so old
+        # files there still get discovered.
+        from tinyagentos.installers.model_paths import models_root
+        app.state.models_root = models_root()
+        app.state.models_root.mkdir(parents=True, exist_ok=True)
         app.state.metrics = metrics_store
         app.state.notifications = notif_store
         app.state.qmd_client = qmd_client

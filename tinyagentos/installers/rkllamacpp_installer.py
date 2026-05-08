@@ -9,22 +9,25 @@ Unlike rkllama (which has its own ``/api/pull`` download flow), llama-server
 expects a model file path on disk. So this installer:
 
 1. Downloads the GGUF from the manifest's variant.download_url
-2. Places it at ``<install_dir>/models/<app_id>.gguf``
-3. Updates the symlink ``<install_dir>/models/active.gguf`` → that file
+2. Places it under the shared layout at
+   ``~/models/rk-llama.cpp/<family>/<manifest_id>/<filename>``
+3. Updates the symlink ``<install_dir>/active.gguf`` to point at that file
 4. Enables + restarts the ``rkllamacpp`` systemd unit so llama-server
    picks up the new model
 
-One model is "active" at a time. Switching = installing a different
-manifest. This matches how llama-server is designed and keeps the unit
-configuration simple.
+One model is "active" at a time on this backend. Switching = installing
+a different manifest. This matches how llama-server is designed and
+keeps the unit configuration simple. ``active.gguf`` lives outside the
+shared models tree because it's a service-state pointer, not a model.
 
 Configuration via env vars (matched to install-rk-llama-cpp.sh):
 
-- ``TAOS_RKLLAMACPP_DIR`` — install directory (default: ``~/rk-llama.cpp``)
+- ``TAOS_RKLLAMACPP_DIR`` — service install directory for binary +
+  active symlink (default: ``~/rk-llama.cpp``). Distinct from the
+  shared models root.
+- ``TAOS_MODELS_ROOT`` — shared model tree root (default: ``~/models``).
+  Honoured via ``model_paths.models_root()``.
 - ``TAOS_RKLLAMACPP_PORT`` — server port (default: ``8090``)
-
-Both default to the values used by ``install-rk-llama-cpp.sh``; if you
-override one, override both consistently.
 """
 from __future__ import annotations
 
@@ -38,6 +41,13 @@ from typing import Any
 import httpx
 
 from tinyagentos.installers.base import AppInstaller, run_cmd
+from tinyagentos.installers.model_paths import (
+    backend_model_dir,
+    filename_from_url,
+)
+
+
+BACKEND_ID = "rk-llama.cpp"
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +80,9 @@ class RkLlamaCppInstaller(AppInstaller):
         timeout: int = 1800,
     ):
         self.install_dir = Path(install_dir) if install_dir else _default_install_dir()
-        self.models_dir = self.install_dir / "models"
+        # Model files live in the shared layout (~/models/<backend>/<family>/<id>),
+        # not under install_dir/models. Keep the install_dir for the binary,
+        # the libs, and the active.gguf symlink — that's all service state.
         self.port = port if port is not None else _default_port()
         self.timeout = timeout
 
@@ -107,9 +119,19 @@ class RkLlamaCppInstaller(AppInstaller):
                 ),
             }
 
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-        target = self.models_dir / f"{app_id}.gguf"
-        active_link = self.models_dir / "active.gguf"
+        # Resolve the per-(backend, family, manifest) directory and the
+        # original filename from the URL — preserves what the user
+        # actually got from HF and lets a manifest dir hold multiple
+        # variants over time.
+        target_dir = backend_model_dir(BACKEND_ID, app_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        fallback = f"{app_id}-{variant.get('id', 'model')}.gguf"
+        filename = filename_from_url(url, fallback)
+        target = target_dir / filename
+        # active.gguf is a service-state pointer, not a model artefact —
+        # keep it next to the binary in install_dir, never inside the
+        # shared models tree.
+        active_link = self.install_dir / "active.gguf"
 
         if target.exists():
             logger.info("rk-llama.cpp install: %s already present, reusing", target)
@@ -122,11 +144,13 @@ class RkLlamaCppInstaller(AppInstaller):
                     target.unlink()
                 return {"success": False, "error": f"download failed: {exc}"}
 
-        # Atomic active-symlink update.
+        # Atomic active-symlink update. Use absolute target so the
+        # symlink works regardless of working directory and cross-tree
+        # (active.gguf in install_dir, target in models_root).
         tmp_link = active_link.with_suffix(".gguf.new")
         if tmp_link.exists() or tmp_link.is_symlink():
             tmp_link.unlink()
-        tmp_link.symlink_to(target.name)
+        tmp_link.symlink_to(target)
         os.replace(tmp_link, active_link)
 
         # Enable + restart the service. Failure here means the model file
@@ -177,16 +201,32 @@ class RkLlamaCppInstaller(AppInstaller):
         }
 
     async def uninstall(self, app_id: str) -> dict:
-        target = self.models_dir / f"{app_id}.gguf"
-        active_link = self.models_dir / "active.gguf"
+        target_dir = backend_model_dir(BACKEND_ID, app_id)
+        active_link = self.install_dir / "active.gguf"
 
-        was_active = (
-            active_link.is_symlink()
-            and active_link.readlink().name == target.name
-        )
+        was_active = False
+        if active_link.is_symlink():
+            try:
+                active_target = active_link.resolve(strict=False)
+                # Active points inside this manifest's dir → it's serving
+                # one of this manifest's variants right now.
+                was_active = target_dir in active_target.parents
+            except OSError:
+                was_active = False
 
-        if target.exists():
-            target.unlink()
+        deleted: list[str] = []
+        if target_dir.exists():
+            for f in sorted(target_dir.glob("*")):
+                if f.is_file():
+                    f.unlink()
+                    deleted.append(f.name)
+            try:
+                target_dir.rmdir()
+            except OSError:
+                # Directory not empty (e.g. partial dir from an aborted
+                # install), leave it for human inspection rather than
+                # nuking unknown contents.
+                pass
 
         if was_active:
             try:
@@ -197,7 +237,12 @@ class RkLlamaCppInstaller(AppInstaller):
             if active_link.is_symlink():
                 active_link.unlink()
 
-        return {"success": True, "status": "uninstalled", "was_active": was_active}
+        return {
+            "success": True,
+            "status": "uninstalled",
+            "was_active": was_active,
+            "deleted": deleted,
+        }
 
     # ------------------------------------------------------------------
     # Helpers

@@ -295,11 +295,14 @@ def catalog_with_models(tmp_path):
 
 
 @pytest.fixture
-def search_app(tmp_data_dir, catalog_with_models, tmp_path):
+def search_app(tmp_data_dir, catalog_with_models, tmp_path, monkeypatch):
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    shared_root = tmp_path / "models-shared"
+    monkeypatch.setenv("TAOS_MODELS_ROOT", str(shared_root))
     app = create_app(data_dir=tmp_data_dir, catalog_dir=catalog_with_models)
     app.state.models_dir = models_dir
+    app.state.models_root = shared_root
     return app
 
 
