@@ -48,12 +48,12 @@ class TestProviderAPI:
         """
         first = await client.post("/api/providers", json={
             "name": "rkllama-one", "type": "rkllama",
-            "url": "http://localhost:8080", "priority": 1,
+            "url": "http://localhost:18080", "priority": 1,
         })
         assert first.status_code == 200
         second = await client.post("/api/providers", json={
             "name": "rkllama-two", "type": "rkllama",
-            "url": "http://localhost:8080", "priority": 2,
+            "url": "http://localhost:18080", "priority": 2,
         })
         assert second.status_code == 409
         body = second.json()
