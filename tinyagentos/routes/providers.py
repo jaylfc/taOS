@@ -277,6 +277,23 @@ async def list_providers(request: Request):
             models = result.get("models", [])
         except Exception:
             status = "error"
+        # Cloud / openai-compatible adapters call /models without auth.
+        # That returns 401 for any auth-required endpoint (LiteLLM proxy,
+        # private OpenAI gateway, etc.) and we end up with an empty
+        # models list even though the user gave us a valid key. Re-probe
+        # with the resolved api_key when the auth-less path returned
+        # nothing — issue #356 (johny: 'LiteLLM provider connects but
+        # picker shows 0 models').
+        if (
+            status == "ok"
+            and not models
+            and backend.get("type") in ("openai", "anthropic", "openrouter", "kilocode", "openai-compatible")
+        ):
+            api_key = await _resolve_api_key_for_backend(request.app.state, backend)
+            if api_key:
+                discovered = await _discover_provider_models(backend["url"], api_key)
+                if discovered:
+                    models = [{"name": m.get("id", ""), "size_mb": 0} for m in discovered]
         lifecycle_state = catalog.get_lifecycle_state(backend["name"]) if catalog else "running"
         entry = {
             **backend,
