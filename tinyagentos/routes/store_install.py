@@ -343,12 +343,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
                 else PipInstaller(apps_dir=apps_dir)
             )
             inst_result = await installer.install(app_id, install_config)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ImportError) as exc:
+            # Binary or installer module missing on this controller.
             return JSONResponse(
                 {"error": f"{backend} not available on this controller: {exc}"},
                 status_code=500,
             )
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, RuntimeError) as exc:
+            # Filesystem / process-launch / runtime errors. logger.exception
+            # captures the traceback for debugging; the response message is
+            # intentionally narrower to avoid leaking internal paths.
             logger.exception("_legacy_install: %s installer raised", backend)
             return JSONResponse({"error": f"{backend} install failed: {exc}"}, status_code=500)
         if not inst_result.get("success"):
@@ -359,6 +363,11 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         # Auto-start docker compose so the service is actually serving
         # on its declared ports. Pip installs don't have a generic start
         # command — those are libraries the user invokes from code.
+        # docker pull succeeded → image is on disk, the install is
+        # 'installed' even if compose up trips on a port collision /
+        # daemon hiccup. We surface a warning instead of failing the
+        # whole install so the user can `docker compose up -d` manually
+        # without re-pulling.
         if backend == "docker":
             try:
                 start_result = await installer.start(app_id)
@@ -367,7 +376,7 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
                         "_legacy_install: docker pull succeeded but compose up failed for %s: %s",
                         app_id, start_result.get("output", "")[:500],
                     )
-            except Exception as exc:  # noqa: BLE001
+            except (FileNotFoundError, OSError, RuntimeError) as exc:
                 logger.warning(
                     "_legacy_install: docker compose up raised for %s: %s", app_id, exc,
                 )
