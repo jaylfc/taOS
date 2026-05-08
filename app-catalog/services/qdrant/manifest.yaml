@@ -1,0 +1,37 @@
+id: qdrant
+name: Qdrant
+type: service
+category: vector-db
+version: 1.13.0
+description: "High-performance vector database — Rust core, gRPC + REST APIs, payload filtering, hybrid search. Production-grade for RAG."
+homepage: https://qdrant.tech
+license: Apache-2.0
+
+requires:
+  ram_mb: 1024
+  disk_mb: 2000
+  ports: [6333, 6334]
+
+install:
+  method: docker
+  image: qdrant/qdrant:v1.13.0
+  ports:
+    - "6333:6333"
+    - "6334:6334"
+  volumes:
+    - qdrant-storage:/qdrant/storage
+
+lifecycle:
+  # Pure storage service — no LLM backend type, just a port the agent
+  # frameworks talk to. Doesn't auto-register as a backend.
+  auto_manage: false
+  keep_alive_minutes: 0  # always-on while installed
+
+hardware_tiers:
+  arm-npu-4gb: full
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  apple-silicon: full
+  x86-cuda-4gb: full
+  x86-vulkan-4gb: full
+  cpu-only: full

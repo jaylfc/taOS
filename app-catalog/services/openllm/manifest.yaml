@@ -1,0 +1,35 @@
+id: openllm
+name: OpenLLM
+type: service
+category: llm-runtime
+version: 0.6.0
+description: "BentoML's production LLM serving framework — OpenAI-compatible API, vLLM under the hood, model packaging, K8s deploy. Bridge between local dev and production inference."
+homepage: https://github.com/bentoml/OpenLLM
+license: Apache-2.0
+
+requires:
+  ram_mb: 8192
+  disk_mb: 4000
+  python: ">=3.9"
+  ports: [3000]
+
+install:
+  method: pip
+  package: openllm
+
+lifecycle:
+  # OpenLLM exposes an OpenAI-compatible /v1 API on its bento server.
+  backend_type: openai-compatible
+  default_url: http://localhost:3000
+  auto_manage: false
+  keep_alive_minutes: 10
+
+hardware_tiers:
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-16gb: full
+  x86-cuda-24gb: full
+  x86-vulkan-8gb: degraded
+  apple-silicon: full
+  cpu-only: degraded
+  arm-npu-32gb: unsupported

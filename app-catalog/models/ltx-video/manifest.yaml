@@ -1,0 +1,32 @@
+id: ltx-video
+name: LTX-Video
+type: model
+version: 0.9.5
+description: "Lightricks open video gen — 2B params, real-time generation on H100, 24 fps, 768×512. Apache-2.0 weights, fastest open video model in its class."
+homepage: https://huggingface.co/Lightricks/LTX-Video
+license: Apache-2.0
+capabilities:
+- video-generation
+- image-to-video
+
+variants:
+- id: bf16-safetensors
+  name: bf16 safetensors (~9GB)
+  format: safetensors
+  size_mb: 9000
+  download_url: https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors
+  requires:
+    backends:
+    - id: diffusers
+      targets: [apple-silicon, x86-cuda, x86-vulkan]
+      min_ram_mb: 12288
+    - id: comfyui
+      targets: [apple-silicon, x86-cuda, x86-vulkan]
+      min_ram_mb: 12288
+
+hardware_tiers:
+  apple-silicon: {recommended: bf16-safetensors}
+  x86-cuda-12gb: {recommended: bf16-safetensors}
+  x86-cuda-16gb: {recommended: bf16-safetensors}
+  x86-cuda-24gb: {recommended: bf16-safetensors}
+  x86-vulkan-16gb: {recommended: bf16-safetensors}
