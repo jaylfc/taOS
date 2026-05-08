@@ -295,13 +295,24 @@ async def list_install_targets(request: Request):
             except Exception:  # noqa: BLE001
                 tier_id = ""
             worker_tiers[w.name] = tier_id
+            # Index by every plausible host signal — URL hostname AND
+            # host_lan_ip — so an incus remote at https://192.168.x.y:8443
+            # can match a worker whose `url` field points at its local
+            # Ollama (e.g. http://localhost:11434) but who registered with
+            # the LAN IP it would use to reach the controller.
+            host_keys: set[str] = set()
             try:
                 host = _urlparse(getattr(w, "url", "") or "").hostname or ""
             except Exception:  # noqa: BLE001
                 host = ""
-            if host:
-                worker_tiers_by_host[host] = tier_id
-                workers_by_host[host] = w
+            if host and host not in ("localhost", "127.0.0.1", "::1"):
+                host_keys.add(host)
+            lan_ip = getattr(w, "host_lan_ip", None) or ""
+            if lan_ip:
+                host_keys.add(lan_ip)
+            for k in host_keys:
+                worker_tiers_by_host[k] = tier_id
+                workers_by_host[k] = w
 
     try:
         import tinyagentos.containers as containers

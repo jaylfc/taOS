@@ -4,10 +4,35 @@ import logging
 import platform
 import socket
 import time
+from urllib.parse import urlparse
 import httpx
 import psutil
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_lan_ip(controller_url: str) -> str | None:
+    """Return the local IPv4 address the worker would use to reach the
+    controller — same address the controller sees the registration POST
+    coming from. Used to populate `host_lan_ip` on registration so the
+    install-targets matcher can link an incus remote to its worker even
+    when the worker's `url` field points at an unrelated backend (e.g.
+    the local Ollama on 127.0.0.1).
+
+    Connectionless UDP: opening a socket and calling ``connect`` makes
+    the kernel pick the outbound interface, but no packet is sent — we
+    just read ``getsockname()`` and close. Falls back to ``None`` if
+    the controller URL can't be parsed.
+    """
+    try:
+        host = urlparse(controller_url).hostname
+        if not host:
+            return None
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((host, 9))  # UDP discard port; never delivered
+            return s.getsockname()[0]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class WorkerAgent:
@@ -294,6 +319,7 @@ class WorkerAgent:
         payload = {
             "name": self.name,
             "url": worker_url,
+            "host_lan_ip": _detect_lan_ip(self.controller_url),
             "hardware": asdict(hw),
             "backends": backends,
             "capabilities": caps,
