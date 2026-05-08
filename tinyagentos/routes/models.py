@@ -39,24 +39,73 @@ router = APIRouter()
 DEFAULT_MODELS_DIR = Path("/opt/tinyagentos/models")
 
 
+_MODEL_FILE_SUFFIXES = (".gguf", ".rkllm", ".bin", ".safetensors", ".onnx")
+
+
 def get_downloaded_models(models_dir: Path) -> list[dict]:
-    """Scan models directory and return list of downloaded model files."""
+    """Scan model directories and return downloaded model files.
+
+    Walks ``models_dir`` recursively (not just the top level) so the
+    shared layout at ``~/models/<backend>/<family>/<id>/<file>`` is
+    discovered alongside any legacy flat ``data/models/<file>`` files.
+    Each entry carries the relative path so the UI can show backend +
+    family grouping without re-deriving them.
+    """
     if not models_dir.exists():
         return []
     results = []
-    for f in sorted(models_dir.glob("*")):
-        if f.is_file() and f.suffix in (".gguf", ".rkllm", ".bin"):
-            results.append({
-                "filename": f.name,
-                "size_mb": f.stat().st_size // (1024 * 1024),
-                "format": f.suffix.lstrip("."),
-                "path": str(f),
-            })
+    for f in sorted(models_dir.rglob("*")):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in _MODEL_FILE_SUFFIXES:
+            continue
+        try:
+            rel = str(f.relative_to(models_dir))
+        except ValueError:
+            rel = f.name
+        results.append({
+            "filename": f.name,
+            "relative_path": rel,
+            "size_mb": f.stat().st_size // (1024 * 1024),
+            "format": f.suffix.lstrip(".").lower(),
+            "path": str(f),
+        })
     return results
 
 
 def _models_dir(request: Request) -> Path:
     return getattr(request.app.state, "models_dir", DEFAULT_MODELS_DIR)
+
+
+def _scan_roots(request: Request) -> list[Path]:
+    """Roots to scan for downloaded model files.
+
+    Legacy ``data/models`` plus the new shared layout root
+    (~/models/<backend>/<family>/<id>/...). Both get walked so files
+    placed by older installers still surface alongside the new tree.
+    """
+    primary = _models_dir(request)
+    extra = getattr(request.app.state, "models_root", None)
+    roots = [primary]
+    if extra is not None and Path(extra) != primary:
+        roots.append(Path(extra))
+    return roots
+
+
+def _scan_all_roots(roots: list[Path]) -> list[dict]:
+    """Run get_downloaded_models against each root and merge, de-duped
+    by absolute path so a single file never appears twice even if a
+    legacy directory is symlinked into the new layout.
+    """
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for r in roots:
+        for entry in get_downloaded_models(r):
+            if entry["path"] in seen:
+                continue
+            seen.add(entry["path"])
+            merged.append(entry)
+    return merged
 
 
 def _is_service_installed(variant: dict) -> bool:
@@ -218,11 +267,10 @@ async def list_models(request: Request):
     """
     registry = request.app.state.registry
     hardware_profile = request.app.state.hardware_profile
-    models_dir = _models_dir(request)
     catalog = getattr(request.app.state, "backend_catalog", None)
 
     models = registry.list_available(type_filter="model")
-    downloaded = get_downloaded_models(models_dir)
+    downloaded = _scan_all_roots(_scan_roots(request))
     live_models = catalog.all_models() if catalog is not None else []
     # Build {app_id: True} from the install registry so backend-installed
     # models (e.g. rk-llama.cpp GGUFs at ~/rk-llama.cpp/models/) still show

@@ -48,12 +48,23 @@ class TestEnvVarOverrides:
         assert i.port == 7777
 
 
+@pytest.fixture
+def sandboxed_models_root(tmp_path, monkeypatch):
+    """Point TAOS_MODELS_ROOT at tmp_path so the installer creates the
+    new shared layout (~/models/<backend>/<family>/<id>/) inside the
+    test sandbox instead of the real home directory.
+    """
+    root = tmp_path / "models"
+    monkeypatch.setenv("TAOS_MODELS_ROOT", str(root))
+    return root
+
+
 class TestInstallReturnsFailureOnSystemctlError:
     """If systemctl restart fails, the model file is on disk but the runtime
     is not serving — we must NOT report success. (CR finding from PR #322.)"""
 
     @pytest.mark.asyncio
-    async def test_systemctl_failure_returns_success_false(self, tmp_path):
+    async def test_systemctl_failure_returns_success_false(self, tmp_path, sandboxed_models_root):
         from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
 
         # Pre-create the binary so the precondition check passes.
@@ -79,7 +90,7 @@ class TestInstallReturnsFailureOnHealthCheckTimeout:
     actually usable — we must NOT report success. (CR finding from PR #322.)"""
 
     @pytest.mark.asyncio
-    async def test_health_timeout_returns_success_false(self, tmp_path):
+    async def test_health_timeout_returns_success_false(self, tmp_path, sandboxed_models_root):
         from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
 
         (tmp_path / "bin").mkdir()
@@ -102,7 +113,7 @@ class TestInstallReturnsFailureOnHealthCheckTimeout:
 
 class TestInstallSucceedsHappyPath:
     @pytest.mark.asyncio
-    async def test_full_install_returns_success(self, tmp_path):
+    async def test_full_install_returns_success(self, tmp_path, sandboxed_models_root):
         from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
 
         (tmp_path / "bin").mkdir()
@@ -122,3 +133,54 @@ class TestInstallSucceedsHappyPath:
         assert result["success"] is True
         assert result["service_running"] is True
         assert result["endpoint"] == "http://localhost:8090"
+
+
+class TestInstallUsesSharedLayout:
+    """The installer writes to ~/models/<backend>/<family>/<manifest_id>/
+    (per the layout decision in #430), not the legacy install_dir/models/."""
+
+    @pytest.mark.asyncio
+    async def test_target_path_under_shared_root(self, tmp_path, sandboxed_models_root):
+        from tinyagentos.installers.rkllamacpp_installer import (
+            BACKEND_ID,
+            RkLlamaCppInstaller,
+        )
+
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "llama-server").write_text("fake")
+
+        installer = RkLlamaCppInstaller(install_dir=tmp_path, port=8090)
+        captured: dict = {}
+
+        async def fake_download(url, dest, expected_sha256):
+            captured["dest"] = dest
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text("fake gguf bytes")
+
+        with patch.object(installer, "_download", side_effect=fake_download), \
+             patch.object(installer, "_systemctl", new=AsyncMock()), \
+             patch.object(installer, "_wait_for_server", new=AsyncMock(return_value=True)):
+            result = await installer.install(
+                "gemma-4-e2b-gguf",
+                install_config={"method": "rkllamacpp"},
+                variant={
+                    "id": "q4_k_m",
+                    "size_mb": 100,
+                    "download_url": "https://hf.co/x/y/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+                },
+            )
+
+        assert result["success"] is True
+        # Lands at <root>/<backend>/<family>/<id>/<original-filename>
+        expected = (
+            sandboxed_models_root
+            / BACKEND_ID
+            / "gemma"
+            / "gemma-4-e2b-gguf"
+            / "gemma-4-E2B-it-Q4_K_M.gguf"
+        )
+        assert captured["dest"] == expected
+        # active.gguf is in install_dir, points at the file in the new tree
+        active = tmp_path / "active.gguf"
+        assert active.is_symlink()
+        assert active.resolve() == expected.resolve()
