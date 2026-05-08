@@ -1065,24 +1065,33 @@ function DeployWizard({
           }),
         ]);
 
-        // Build id → provider-name map. Each cloud backend in /api/providers
-        // lists its advertised models; we use that to attribute a LiteLLM
-        // model entry to its source provider for display/grouping.
-        const providerByModelId = new Map<string, string>();
+        // Build id → (provider-name, kind) map. We classify providers
+        // into 'cloud' (CLOUD_PROVIDER_TYPES e.g. openai / anthropic /
+        // openrouter / kilocode / openai-compatible) and 'network' —
+        // anything whose `source` field starts with `worker:` is a
+        // remote worker / network-attached backend (remote ollama,
+        // remote llama.cpp, etc., per ProvidersApp's classification).
+        // Network providers map onto the picker's 'worker' source tab
+        // since that's what they conceptually are. Filed as #356 —
+        // network providers were silently dropped before.
+        const providerByModelId = new Map<string, { name: string; kind: "cloud" | "worker" }>();
         const cloudProviderNames = new Set<string>();
         try {
           const pct = providersRes.headers.get("content-type") ?? "";
           if (providersRes.ok && pct.includes("application/json")) {
             const providers = await providersRes.json();
             for (const p of (Array.isArray(providers) ? providers : [])) {
-              if (!(CLOUD_PROVIDER_TYPES as readonly string[]).includes(p.type)) continue;
+              const isCloud = (CLOUD_PROVIDER_TYPES as readonly string[]).includes(p.type);
+              const isNetwork = typeof p.source === "string" && p.source.startsWith("worker:");
+              if (!isCloud && !isNetwork) continue;
+              const kind: "cloud" | "worker" = isCloud ? "cloud" : "worker";
               const pname = p.name ?? p.type;
-              cloudProviderNames.add(pname);
+              if (kind === "cloud") cloudProviderNames.add(pname);
               const pModels: { id?: string; name?: string }[] = Array.isArray(p.models) ? p.models : [];
               for (const m of pModels) {
                 const mid = m.id ?? m.name;
                 if (mid && !providerByModelId.has(mid)) {
-                  providerByModelId.set(mid, pname);
+                  providerByModelId.set(mid, { name: pname, kind });
                 }
               }
             }
@@ -1093,23 +1102,24 @@ function DeployWizard({
         if (modelsRes.ok && mct.includes("application/json")) {
           const body = await modelsRes.json();
           const data: { id?: string }[] = Array.isArray(body?.data) ? body.data : [];
-          const seenCloud = new Set<string>();
+          const seen = new Set<string>();
           for (const entry of data) {
             const mid = entry?.id;
             if (!mid || typeof mid !== "string") continue;
             // Skip the internal alias entries LiteLLM exposes for routing
             // defaults — they'd show up as a confusing "default" entry.
             if (mid === "default" || mid === "taos-embedding-default") continue;
-            const providerName = providerByModelId.get(mid);
-            if (!providerName) continue; // not a cloud model (local/worker handled above)
-            const key = `${providerName}:${mid}`;
-            if (seenCloud.has(key)) continue;
-            seenCloud.add(key);
-            cloudModels.push({
+            const provider = providerByModelId.get(mid);
+            if (!provider) continue; // not a cloud or network model
+            const key = `${provider.kind}:${provider.name}:${mid}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const target = provider.kind === "cloud" ? cloudModels : workerModels;
+            target.push({
               id: mid,
-              name: `${mid} (${providerName})`,
-              host: providerName,
-              hostKind: "cloud",
+              name: `${mid} (${provider.name})`,
+              host: provider.name,
+              hostKind: provider.kind,
             });
           }
         }
