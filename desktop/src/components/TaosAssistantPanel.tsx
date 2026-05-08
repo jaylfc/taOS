@@ -125,16 +125,24 @@ export function TaosAssistantPanel() {
         aria-hidden="true"
       />
 
-      {/* Slide-over panel */}
+      {/* Slide-over panel.
+          bg-shell-surface (4% white) is fine for inline cards layered
+          inside windows but is unreadable as a top-level slide-over
+          against the wallpaper. Use a heavy dark glass instead — solid
+          enough that error/log text reads cleanly, with a hint of
+          backdrop blur for the macOS-style sidebar feel. */}
       <div
         role="dialog"
         aria-label="taOS Assistant"
         aria-modal="true"
-        className="fixed right-0 z-[101] flex flex-col bg-shell-surface border-l border-white/10 shadow-2xl"
+        className="fixed right-0 z-[101] flex flex-col border-l border-white/10 shadow-2xl"
         style={{
           top: "var(--spacing-topbar-h)",
           bottom: "calc(var(--spacing-dock-h, 52px))",
           width: 400,
+          backgroundColor: "rgba(21, 22, 37, 0.92)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
           animation: "taos-assistant-slidein 300ms ease-out",
         }}
         onClick={(e) => e.stopPropagation()}
