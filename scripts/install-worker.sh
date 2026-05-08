@@ -148,10 +148,82 @@ worker_disk_cap() {
     echo $(( free_kb * 1024 * 90 / 100 ))
 }
 
+# Handle a pre-existing taos-worker-pool. Three actions:
+#   - backup (default): rename the pool so the user can recover any
+#     containers/data, then create fresh. A marker file is dropped at
+#     /var/lib/tinyagentos-worker/storage-backup.json so the controller
+#     can surface the rename to the user later (the worker daemon picks
+#     this up on registration; a follow-up wires the controller-side UI).
+#   - delete: destroy the pool and create fresh.
+#   - reuse: keep using the existing pool (legacy behaviour).
+#
+# Headless installs (curl|bash, no TTY on stdin) take the default
+# without prompting. Interactive installs get a 20-second prompt that
+# also defaults to backup on timeout — so a babysitter who steps away
+# for a coffee doesn't lose data and doesn't block the script.
+#
+# Returns 0 if the caller should proceed to create a new pool; 1 if
+# the existing pool was reused and creation should be skipped.
+handle_existing_storage_pool() {
+    local action="backup"
+    if [[ -t 0 ]]; then
+        warn "existing 'taos-worker-pool' detected — what should I do?"
+        warn "  [b]ackup  rename to taos-worker-pool-backup-<timestamp> and create fresh (default)"
+        warn "  [d]elete  destroy the existing pool and create fresh"
+        warn "  [r]euse   keep using the existing pool (legacy behaviour)"
+        printf '\033[1;33m[worker-install]\033[0m choice [b/d/r] (default b in 20s): '
+        local choice=""
+        if read -t 20 -r choice; then
+            case "${choice,,}" in
+                d|delete) action="delete" ;;
+                r|reuse)  action="reuse"  ;;
+                *)        action="backup" ;;
+            esac
+        else
+            printf '\n'
+            log "no input within 20s — using default (backup)"
+        fi
+    else
+        log "non-interactive install — defaulting to backup of existing 'taos-worker-pool'"
+    fi
+
+    case "$action" in
+        reuse)
+            log "reusing existing storage pool"
+            return 1
+            ;;
+        delete)
+            log "deleting existing storage pool 'taos-worker-pool'"
+            sudo incus storage delete taos-worker-pool </dev/null \
+                || die "incus storage delete failed — a container may still be using the pool. Stop it with 'incus stop <name>' and re-run."
+            ;;
+        backup)
+            local ts backup_name
+            ts="$(date -u +%Y%m%d-%H%M%S)"
+            backup_name="taos-worker-pool-backup-${ts}"
+            log "renaming existing pool 'taos-worker-pool' → '$backup_name'"
+            sudo incus storage rename taos-worker-pool "$backup_name" </dev/null \
+                || die "incus storage rename failed — a container may still be using the pool. Stop it and re-run, or pick 'delete' if you don't need the data."
+            sudo mkdir -p /var/lib/tinyagentos-worker
+            sudo tee /var/lib/tinyagentos-worker/storage-backup.json >/dev/null <<EOF
+{
+  "backed_up_pool": "$backup_name",
+  "original_name": "taos-worker-pool",
+  "timestamp_utc": "$ts",
+  "reason": "install-worker re-run found an existing pool; renamed for safety"
+}
+EOF
+            log "marker written to /var/lib/tinyagentos-worker/storage-backup.json"
+            ;;
+    esac
+    return 0
+}
+
 create_btrfs_loopback() {
     if sudo incus storage list --format=csv 2>/dev/null | awk -F',' '{print $1}' | grep -q '^taos-worker-pool$'; then
-        log "incus storage pool 'taos-worker-pool' already exists; reusing"
-        return 0
+        if ! handle_existing_storage_pool; then
+            return 0
+        fi
     fi
     local cap_bytes cap_gb
     cap_bytes="$(worker_disk_cap)"
