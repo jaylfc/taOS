@@ -1,0 +1,92 @@
+name: Fork audit
+
+on:
+  schedule:
+    # 06:30 UTC daily — slightly offset from CI's 06:00 cron so the
+    # GitHub Actions runner pool isn't slammed at the same minute.
+    - cron: "30 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Audit forks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/audit-forks.py | tee fork-audit.json
+
+      - name: Render summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = json.load(open("fork-audit.json"))
+          print(f"# Fork audit — {r['generated_at']}\n")
+          print(f"any_drift: **{r['any_drift']}**\n")
+          print("| Fork | Sync branch | Behind | Release age | Status |")
+          print("|------|-------------|--------|-------------|--------|")
+          for f in r["forks"]:
+              behind = f.get("behind_by")
+              behind_s = "?" if behind is None else str(behind)
+              rel = f.get("fork_release") or {}
+              age = rel.get("age_days")
+              age_s = "—" if age is None else f"{age}d"
+              ok = "✅" if f["ok"] else "⚠️"
+              print(f"| `{f['fork']}` | `{f['sync_branch']}` | {behind_s} | {age_s} | {ok} {f['reason']} |")
+          PY
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-audit
+          path: fork-audit.json
+
+      - name: Open or update tracking issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BODY=$(python3 - <<'PY'
+          import json
+          r = json.load(open("fork-audit.json"))
+          lines = [
+              f"_Last audit: {r['generated_at']}_",
+              "",
+              "| Fork | Sync branch | Behind | Release age | Status |",
+              "|------|-------------|--------|-------------|--------|",
+          ]
+          for f in r["forks"]:
+              behind = f.get("behind_by")
+              behind_s = "?" if behind is None else str(behind)
+              rel = f.get("fork_release") or {}
+              age = rel.get("age_days")
+              age_s = "—" if age is None else f"{age}d"
+              ok = "✅" if f["ok"] else "⚠️"
+              lines.append(f"| `{f['fork']}` | `{f['sync_branch']}` | {behind_s} | {age_s} | {ok} {f['reason']} |")
+          lines += [
+              "",
+              "Audit script: `scripts/audit-forks.py`. Workflow: `.github/workflows/fork-audit.yml`.",
+              "Edit the `TRACKED` list in the script to add or remove a fork.",
+          ]
+          print("\n".join(lines))
+          PY
+          )
+          ISSUE_NUMBER=$(gh issue list --label fork-audit --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -z "$ISSUE_NUMBER" ]; then
+            gh issue create \
+              --title "Fork audit — drift tracking" \
+              --label fork-audit \
+              --body "$BODY"
+          else
+            gh issue edit "$ISSUE_NUMBER" --body "$BODY"
+          fi
