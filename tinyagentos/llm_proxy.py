@@ -147,7 +147,62 @@ def _discover_ollama_models(url: str, timeout: float = 2.0) -> list[str]:
         return []
 
 
-def generate_litellm_config(backends: list[dict], default_model: str = "default") -> dict:
+def _local_backend_models_from_registry(
+    backend: dict, registry
+) -> list[str]:
+    """Find every installed model that can run on this local backend.
+
+    auto_register_from_manifest names backends ``local-<service-id>`` (e.g.
+    ``local-rk-llama-cpp`` for the rk-llama.cpp service). Each model
+    manifest declares ``variants[].requires.backends[].id`` listing the
+    runtime ids it supports. Cross-reference the two: every installed
+    model whose variants point at this backend's service id is a model
+    we can route requests to via this backend's URL.
+
+    Returns a deduplicated list of manifest ids — the LiteLLM model_name
+    aliases we want to create per local backend.
+    """
+    if registry is None:
+        return []
+
+    name = backend.get("name", "")
+    if not name.startswith("local-"):
+        return []
+    service_id = name[len("local-"):]
+    if not service_id:
+        return []
+
+    try:
+        installed_rows = registry.list_installed()
+    except Exception:  # noqa: BLE001
+        return []
+    installed_ids = {row.get("id") for row in installed_rows if row.get("id")}
+
+    matched: list[str] = []
+    for manifest_id in sorted(installed_ids):
+        manifest = registry.get(manifest_id) if hasattr(registry, "get") else None
+        if not manifest or getattr(manifest, "type", None) != "model":
+            continue
+        variants = getattr(manifest, "variants", None) or []
+        for v in variants:
+            if not isinstance(v, dict):
+                continue
+            for req in (v.get("requires", {}) or {}).get("backends", []) or []:
+                if isinstance(req, dict) and req.get("id") == service_id:
+                    matched.append(manifest_id)
+                    break
+            else:
+                continue
+            break
+    return matched
+
+
+def generate_litellm_config(
+    backends: list[dict],
+    default_model: str = "default",
+    *,
+    registry=None,
+) -> dict:
     """Generate LiteLLM config from TinyAgentOS backend list.
 
     Emits two kinds of model_list entries:
@@ -243,6 +298,39 @@ def generate_litellm_config(backends: list[dict], default_model: str = "default"
             },
         })
 
+        # For local backends (name "local-<service-id>" from
+        # auto_register_from_manifest), also register every installed
+        # model that targets this backend as its own LiteLLM model_name.
+        # Independent of cloud/non-cloud: openai-compatible is in
+        # CLOUD_BACKEND_TYPES even when it's actually a local llama-server
+        # (e.g. rk-llama.cpp). Without this, an agent picker that says
+        # "use gemma-4-e2b-gguf" → LiteLLM call with that model_name →
+        # 400 because no such alias is registered.
+        backend_name = backend.get("name", "")
+        if backend_name.startswith("local-") and url:
+            for manifest_id in _local_backend_models_from_registry(backend, registry):
+                # Skip if already added (e.g. cloud per-model loop above
+                # already registered it under the same name).
+                if any(e.get("model_name") == manifest_id for e in model_list):
+                    continue
+                per_model_params: dict = {
+                    "model": f"{prefix}/{manifest_id}",
+                    "api_base": url,
+                }
+                if backend.get("api_key_secret"):
+                    per_model_params["api_key"] = f"os.environ/{backend['api_key_secret']}"
+                elif backend.get("api_key"):
+                    per_model_params["api_key"] = backend["api_key"]
+                model_list.append({
+                    "model_name": manifest_id,
+                    "litellm_params": per_model_params,
+                    "metadata": {
+                        "priority": backend.get("priority", 99),
+                        "backend_name": backend_name,
+                        "source": "local-installed",
+                    },
+                })
+
         # Auto-discover embedding models on ollama-compatible backends and
         # register each as its own LiteLLM entry. The first embedding model
         # found across all backends also claims the stable
@@ -319,6 +407,7 @@ class LLMProxy:
         config_dir: Path | None = None,
         database_url: str | None = None,
         local_token: str | None = None,
+        registry=None,
     ):
         self.port = port
         self.config_dir = config_dir or Path("/tmp/taos-litellm")
@@ -329,6 +418,12 @@ class LLMProxy:
         # the taOS bridge — without it, every llm_call event lands a 401
         # and trace rows never get ``llm_call`` entries.
         self.local_token = local_token
+        # AppRegistry — when provided, generate_litellm_config can register
+        # every installed model that targets a local backend as its own
+        # model_name alias. Without this, an agent picker that says "use
+        # gemma-4-e2b-gguf" would 400 on the proxy because the alias was
+        # never created.
+        self._registry = registry
         self._process: subprocess.Popen | None = None
 
     @property
@@ -356,7 +451,7 @@ class LLMProxy:
         callback code in one place.
         """
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        config = generate_litellm_config(backends)
+        config = generate_litellm_config(backends, registry=self._registry)
         config_path = self.config_dir / "litellm_config.yaml"
 
         import yaml

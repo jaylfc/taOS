@@ -153,6 +153,14 @@ class RkLlamaCppInstaller(AppInstaller):
         tmp_link.symlink_to(target)
         os.replace(tmp_link, active_link)
 
+        # Tell llama-server which manifest id is now active so its
+        # /v1/models endpoint advertises the right name. The systemd
+        # unit reads this file via EnvironmentFile= and passes it to
+        # llama-server as --alias. Reading via a sidecar file means
+        # we never rewrite the unit at runtime — install-time only.
+        active_alias_path = self.install_dir / "active.alias"
+        active_alias_path.write_text(f"TAOS_ACTIVE_ALIAS={app_id}\n")
+
         # Enable + restart the service. Failure here means the model file
         # is on disk but the runtime is not actually serving it — we report
         # success: False so the dispatcher can persist the install correctly

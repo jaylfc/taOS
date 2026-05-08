@@ -91,6 +91,18 @@ log "extracting into $INSTALL_DIR"
 run_as_user tar -xzf "$TMP_TARBALL" -C "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true
 
+# Default active.alias — rkllamacpp installer rewrites this file every
+# time a model becomes active so /v1/models advertises the manifest id
+# (e.g. gemma-4-e2b-gguf) instead of the generic "active.gguf". The
+# systemd unit reads it via EnvironmentFile= and passes the value as
+# --alias. Pre-create with a sentinel so the unit starts cleanly even
+# before the first model install (llama-server will refuse to load
+# without -m, which is fine — the unit is disabled until the store
+# install activates it anyway).
+sudo -u "$TARGET_USER" tee "$INSTALL_DIR/active.alias" > /dev/null <<'ALIAS'
+TAOS_ACTIVE_ALIAS=active.gguf
+ALIAS
+
 # -------- systemd unit ---------------------------------------------------
 UNIT_PATH="/etc/systemd/system/rkllamacpp.service"
 log "writing $UNIT_PATH (port $PORT)"
@@ -105,8 +117,9 @@ User=$TARGET_USER
 Group=$TARGET_GROUP
 WorkingDirectory=$INSTALL_DIR
 Environment=LD_LIBRARY_PATH=$INSTALL_DIR/lib
+EnvironmentFile=$INSTALL_DIR/active.alias
 LimitNOFILE=65536
-ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --host $HOST --port $PORT
+ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --alias \${TAOS_ACTIVE_ALIAS} --host $HOST --port $PORT
 Restart=on-failure
 RestartSec=5
 KillMode=mixed

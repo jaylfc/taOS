@@ -10,11 +10,24 @@ license: MIT
 requires:
   ram_mb: 512
   disk_mb: 1000
-  ports: [8080]
+  # llama-server inside rk-llama.cpp listens on 8090 by default (see
+  # scripts/install-rk-llama-cpp.sh — TAOS_RKLLAMACPP_PORT). Bound to
+  # 127.0.0.1 so it isn't exposed off-host.
+  ports: [8090]
 
 install:
   method: script
   script: scripts/install-rk-llama-cpp.sh
+
+lifecycle:
+  # Auto-register as a backend so the LiteLLM proxy gets a route to
+  # the local llama-server. llama-server speaks OpenAI-compatible
+  # /v1/chat/completions; without this block the service runs but no
+  # agent / assistant call ever finds it.
+  backend_type: openai-compatible
+  default_url: http://localhost:8090
+  auto_manage: false
+  keep_alive_minutes: 0  # always-on while a model is active
 
 hardware_tiers:
   arm-npu-16gb: full

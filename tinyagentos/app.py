@@ -233,7 +233,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # back to /api/trace and the 401s fill the log instead of trace rows.
     local_token_path = data_dir / ".auth_local_token"
     local_token = local_token_path.read_text().strip() if local_token_path.exists() else None
-    llm_proxy = LLMProxy(port=4000, database_url=db_url, local_token=local_token)
+    llm_proxy = LLMProxy(
+        port=4000,
+        database_url=db_url,
+        local_token=local_token,
+        # registry lets generate_litellm_config register installed local
+        # models (e.g. gemma-4-e2b-gguf) as LiteLLM model_name aliases
+        # routing through the matching backend's URL. Without it, the
+        # agent picker can show a local model but chatting with it 400s
+        # at the proxy because no alias exists for that model_name.
+        registry=registry,
+    )
     channel_hub_router = MessageRouter()
     adapter_manager = AdapterManager(channel_hub_router)
     chat_messages = ChatMessageStore(data_dir / "chat.db")
