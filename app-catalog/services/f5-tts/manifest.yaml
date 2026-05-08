@@ -1,0 +1,24 @@
+id: f5-tts
+name: F5-TTS
+type: service
+category: voice
+version: 1.0.0
+description: "Flow-matching TTS with strong zero-shot voice cloning from short references. Multilingual, low-latency, MIT licensed."
+homepage: https://github.com/SWivid/F5-TTS
+license: MIT
+
+requires:
+  ram_mb: 4096
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: f5-tts
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

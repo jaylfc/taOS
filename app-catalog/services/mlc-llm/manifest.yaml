@@ -1,0 +1,27 @@
+id: mlc-llm
+name: MLC LLM
+type: llm-runtime
+category: llm-runtime
+version: 0.1.0
+description: "TVM-compiled LLM serving — runs Llama / Mistral / Qwen / Phi on Vulkan, ROCm, Metal, CUDA, and even WebGPU. Strong on consumer GPUs and edge accelerators where llama.cpp underperforms."
+homepage: https://github.com/mlc-ai/mlc-llm
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  disk_mb: 6000
+  python: ">=3.10"
+  ports: [8000]
+
+install:
+  method: pip
+  package: mlc-llm
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  x86-vulkan-16gb: full
+  cpu-only: degraded
+  apple-silicon: full

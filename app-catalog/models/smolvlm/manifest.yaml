@@ -1,0 +1,31 @@
+id: smolvlm
+name: SmolVLM
+type: model
+version: 1.0.0
+description: "Hugging Face's compact VLM — 2B params, runs in 5 GB VRAM. Strong at chart understanding, document Q&A, and visual reasoning for the size."
+homepage: https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct
+license: Apache-2.0
+capabilities:
+- chat
+- vision
+
+variants:
+  - id: safetensors
+    name: "Safetensors (4.5GB)"
+    format: safetensors
+    size_mb: 4500
+    download_url: https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/resolve/main/model.safetensors
+    requires:
+      backends:
+        - id: transformers
+          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 5120
+
+hardware_tiers:
+  arm-npu-16gb: {recommended: safetensors}
+  arm-npu-32gb: {recommended: safetensors}
+  apple-silicon: {recommended: safetensors}
+  x86-cuda-12gb: {recommended: safetensors}
+  x86-vulkan-8gb: {recommended: safetensors}
+  cpu-only: {recommended: safetensors}
+context_window: 16384

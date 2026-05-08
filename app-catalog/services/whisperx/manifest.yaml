@@ -1,0 +1,24 @@
+id: whisperx
+name: WhisperX
+type: service
+category: voice
+version: 3.3.4
+description: "Whisper + word-level timestamps + speaker diarization. Built on faster-whisper plus pyannote for speaker labels and forced alignment."
+homepage: https://github.com/m-bain/whisperX
+license: BSD-2-Clause
+
+requires:
+  ram_mb: 4096
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: whisperx
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

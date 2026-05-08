@@ -38,6 +38,12 @@ class WorkerRegister(BaseModel):
     storage_used_bytes: int = 0
     bytes_deduped_total: int = 0
     worker_lxc_image_version: str | None = None
+    # One-shot marker delivered by install-worker.sh when it backed up
+    # an existing taos-worker-pool. Controller materialises it as a
+    # workspace text file + notification so the user knows old data was
+    # preserved under the renamed pool. Worker deletes its local marker
+    # after a successful registration so this never repeats.
+    pending_storage_backup: dict | None = None
 
 
 class HeartbeatBody(BaseModel):
@@ -133,7 +139,84 @@ async def register_worker(request: Request, body: WorkerRegister):
         worker_lxc_image_version=body.worker_lxc_image_version,
     )
     await cluster.register_worker(info)
+    if body.pending_storage_backup:
+        await _surface_storage_backup(request.app, body.name, body.pending_storage_backup)
     return {"status": "registered", "name": body.name}
+
+
+async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
+    """Materialise an install-worker storage-backup marker as both a
+    notification and a workspace text file so the user finds out about
+    the rename without needing to inspect the worker box.
+
+    Failures are swallowed — registration must succeed even if the
+    surfacing path is broken (e.g. workspace dir missing in tests).
+    """
+    backed_up = marker.get("backed_up_pool", "?")
+    original = marker.get("original_name", "taos-worker-pool")
+    timestamp = marker.get("timestamp_utc", "")
+    reason = marker.get("reason", "")
+
+    title = f"Worker '{worker_name}': storage pool backed up"
+    short_msg = (
+        f"The installer found an existing '{original}' on this worker and "
+        f"renamed it to '{backed_up}' before creating a fresh pool. "
+        f"No data was deleted — see your workspace inbox for the full note."
+    )
+    notif = getattr(app.state, "notif_store", None)
+    if notif is not None:
+        try:
+            await notif.add(title, short_msg, level="warning", source=f"worker:{worker_name}")
+        except Exception:  # noqa: BLE001
+            logger.warning("storage-backup notify: failed to add notification")
+
+    data_dir = getattr(app.state, "data_dir", None)
+    if data_dir is None:
+        return
+    try:
+        import re as _re
+        from pathlib import Path as _Path
+        inbox = (_Path(data_dir) / "workspace" / "inbox").resolve()
+        inbox.mkdir(parents=True, exist_ok=True)
+        # Sanitise both interpolated components — worker_name and the
+        # marker timestamp arrive over the wire and can carry slashes,
+        # NULs, or other path-traversal characters. Strip everything
+        # outside [A-Za-z0-9._-] and cap length so a hostile or weird
+        # worker can't escape the inbox via crafted filename pieces.
+        safe_re = _re.compile(r"[^A-Za-z0-9._-]+")
+        safe_worker = safe_re.sub("-", worker_name)[:64] or "worker"
+        safe_ts = safe_re.sub("-", timestamp)[:32] if timestamp else "unknown"
+        fname = f"worker-storage-backup-{safe_worker}-{safe_ts}.txt"
+        target = (inbox / fname).resolve()
+        # Belt-and-braces — even after sanitisation, refuse to write
+        # outside the inbox directory.
+        if not str(target).startswith(str(inbox) + "/") and target != inbox:
+            logger.warning("storage-backup notify: refusing write outside inbox (%s)", target)
+            return
+        body_lines = [
+            f"Worker storage pool backed up — {worker_name}",
+            "",
+            f"When: {timestamp or 'unknown'} (UTC)",
+            f"Reason: {reason or 'unspecified'}",
+            f"Original pool: {original}",
+            f"Renamed to:   {backed_up}",
+            "",
+            "What this means:",
+            f"  The installer detected an existing '{original}' storage pool",
+            "  on this worker and renamed it for safety before creating a",
+            "  fresh pool. Nothing was deleted. Any LXCs from the previous",
+            f"  install are still attached to '{backed_up}'.",
+            "",
+            "Recovery on the worker box:",
+            f"  incus storage list                # confirm '{backed_up}' is present",
+            f"  incus storage info {backed_up}    # check what's stored there",
+            "",
+            "Discard the backup once you're sure you don't need it:",
+            f"  incus storage delete {backed_up}",
+        ]
+        target.write_text("\n".join(body_lines) + "\n")
+    except Exception:  # noqa: BLE001
+        logger.warning("storage-backup notify: failed to write workspace inbox file")
 
 
 @router.post("/api/cluster/heartbeat")
@@ -295,13 +378,24 @@ async def list_install_targets(request: Request):
             except Exception:  # noqa: BLE001
                 tier_id = ""
             worker_tiers[w.name] = tier_id
+            # Index by every plausible host signal — URL hostname AND
+            # host_lan_ip — so an incus remote at https://192.168.x.y:8443
+            # can match a worker whose `url` field points at its local
+            # Ollama (e.g. http://localhost:11434) but who registered with
+            # the LAN IP it would use to reach the controller.
+            host_keys: set[str] = set()
             try:
                 host = _urlparse(getattr(w, "url", "") or "").hostname or ""
             except Exception:  # noqa: BLE001
                 host = ""
-            if host:
-                worker_tiers_by_host[host] = tier_id
-                workers_by_host[host] = w
+            if host and host not in ("localhost", "127.0.0.1", "::1"):
+                host_keys.add(host)
+            lan_ip = getattr(w, "host_lan_ip", None) or ""
+            if lan_ip:
+                host_keys.add(lan_ip)
+            for k in host_keys:
+                worker_tiers_by_host[k] = tier_id
+                workers_by_host[k] = w
 
     try:
         import tinyagentos.containers as containers

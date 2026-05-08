@@ -70,9 +70,12 @@ async def list_catalog(request: Request, type: str | None = None):
     installation = getattr(request.app.state, "installation_state", None)
     apps = registry.list_available(type_filter=type)
     def _slim_variants(manifest_app) -> list[dict]:
-        """Return id/name/size for each variant. Models with multiple
-        variants need this so the Store can render a chooser instead of
-        forcing the resolver's auto-pick."""
+        """Return id/name/size/backend for each variant. Models with
+        multiple variants need this so the Store can render a chooser
+        instead of forcing the resolver's auto-pick. ``backend`` is the
+        list of backend ids the variant declares under
+        ``requires.backends`` — the Store's BackendPillBar uses it to
+        derive which backend filters apply to which model."""
         if manifest_app.type != "model":
             return []
         out: list[dict] = []
@@ -82,10 +85,17 @@ async def list_catalog(request: Request, type: str | None = None):
             vid = v.get("id")
             if not vid:
                 continue
+            backend_ids: list[str] = []
+            for b in (v.get("requires", {}) or {}).get("backends", []) or []:
+                if isinstance(b, dict) and b.get("id"):
+                    backend_ids.append(b["id"])
+                elif isinstance(b, str):
+                    backend_ids.append(b)
             out.append({
                 "id": vid,
                 "name": v.get("name") or vid,
                 "size_mb": v.get("size_mb") or 0,
+                "backend": backend_ids,
             })
         return out
 

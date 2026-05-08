@@ -1,0 +1,24 @@
+id: style-tts-2
+name: StyleTTS 2
+type: service
+category: voice
+version: 0.0.1
+description: "Diffusion + adversarial TTS — human-level quality on LibriTTS, fast inference. Strong English voice cloning from a few seconds of reference audio."
+homepage: https://github.com/yl4579/StyleTTS2
+license: MIT
+
+requires:
+  ram_mb: 4096
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: styletts2
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

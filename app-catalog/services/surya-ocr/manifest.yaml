@@ -1,0 +1,24 @@
+id: surya-ocr
+name: Surya OCR
+type: service
+category: productivity
+version: 0.6.0
+description: "Multilingual OCR with layout, reading-order, and table detection. Strong on 90+ languages including handwriting."
+homepage: https://github.com/VikParuchuri/surya
+license: GPL-3.0
+
+requires:
+  ram_mb: 4096
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: surya-ocr
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

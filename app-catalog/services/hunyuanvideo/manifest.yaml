@@ -1,0 +1,26 @@
+id: hunyuanvideo
+name: HunyuanVideo
+type: service
+category: video-gen
+version: 1.0.0
+description: "Tencent's 13B-param open video model — high-quality text-to-video, 720p, prompt adherence on par with closed offerings."
+homepage: https://github.com/Tencent/HunyuanVideo
+license: "Tencent HunyuanVideo Community License"
+
+requires:
+  disk_mb: 80000
+  ram_mb: 24576
+  python: ">=3.10"
+
+  ports: [7860]
+
+install:
+  method: pip
+  package: hyvideo
+
+hardware_tiers:
+  arm-npu-32gb: unsupported
+  x86-cuda-12gb: degraded
+  x86-vulkan-8gb: unsupported
+  cpu-only: unsupported
+  apple-silicon: degraded

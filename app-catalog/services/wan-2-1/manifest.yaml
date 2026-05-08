@@ -1,0 +1,26 @@
+id: wan-2-1
+name: Wan 2.1
+type: service
+category: video-gen
+version: 2.1.0
+description: "Alibaba's open video model — text-to-video and image-to-video at 480p / 720p, 5-10s clips. State-of-the-art open-weights video gen."
+homepage: https://github.com/Wan-Video/Wan2.1
+license: Apache-2.0
+
+requires:
+  disk_mb: 35000
+  ram_mb: 16384
+  python: ">=3.10"
+
+  ports: [7860]
+
+install:
+  method: pip
+  package: wan2_1
+
+hardware_tiers:
+  arm-npu-32gb: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: unsupported
+  apple-silicon: degraded

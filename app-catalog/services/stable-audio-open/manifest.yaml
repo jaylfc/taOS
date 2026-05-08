@@ -1,0 +1,24 @@
+id: stable-audio-open
+name: Stable Audio Open
+type: service
+category: music
+version: 1.0.0
+description: "Stability AI's open audio diffusion — generates up to 47s of music or sound effects from a prompt. Open weights under a community license."
+homepage: https://github.com/Stability-AI/stable-audio-tools
+license: "Stability AI Community License"
+
+requires:
+  ram_mb: 8192
+  disk_mb: 8000
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: stable-audio-tools
+
+hardware_tiers:
+  arm-npu-32gb: degraded
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

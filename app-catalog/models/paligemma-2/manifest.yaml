@@ -1,0 +1,31 @@
+id: paligemma-2
+name: PaliGemma 2 3B Mix
+type: model
+version: 2.0.0
+description: "Google's lightweight vision-language model — strong at image captioning, OCR, segmentation, visual Q&A. 3B params; 224/448/896 input resolutions."
+homepage: https://huggingface.co/google/paligemma2-3b-mix-224
+license: Gemma
+capabilities:
+- chat
+- vision
+
+variants:
+  - id: safetensors-224
+    name: "Safetensors 224px (5.5GB)"
+    format: safetensors
+    size_mb: 5500
+    download_url: https://huggingface.co/google/paligemma2-3b-mix-224/resolve/main/model.safetensors
+    requires:
+      backends:
+        - id: transformers
+          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 6144
+
+hardware_tiers:
+  arm-npu-16gb: {recommended: safetensors-224}
+  arm-npu-32gb: {recommended: safetensors-224}
+  apple-silicon: {recommended: safetensors-224}
+  x86-cuda-12gb: {recommended: safetensors-224}
+  x86-vulkan-8gb: {recommended: safetensors-224}
+  cpu-only: {recommended: safetensors-224}
+context_window: 8192

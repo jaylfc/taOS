@@ -1,0 +1,24 @@
+id: sense-voice
+name: SenseVoice
+type: service
+category: voice
+version: 0.5.0
+description: "Multilingual ASR from FunASR with emotion + audio-event detection. Strong on Chinese, Japanese, Korean, English."
+homepage: https://github.com/FunAudioLLM/SenseVoice
+license: Apache-2.0
+
+requires:
+  ram_mb: 4096
+  python: ">=3.10"
+
+install:
+  method: pip
+  package: funasr
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full

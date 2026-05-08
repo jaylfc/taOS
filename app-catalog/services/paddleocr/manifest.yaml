@@ -1,0 +1,24 @@
+id: paddleocr
+name: PaddleOCR
+type: service
+category: productivity
+version: 2.7.3
+description: "Baidu's deep-learning OCR — strong on layout-rich documents and CJK languages. Detection + recognition + table extraction in one pipeline."
+homepage: https://github.com/PaddlePaddle/PaddleOCR
+license: Apache-2.0
+
+requires:
+  ram_mb: 1024
+  python: ">=3.9"
+
+install:
+  method: pip
+  package: paddleocr
+
+hardware_tiers:
+  arm-npu-16gb: degraded
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: degraded
+  cpu-only: degraded
+  apple-silicon: full
