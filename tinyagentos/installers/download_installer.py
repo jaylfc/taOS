@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Callable
 
 import httpx
 
 from tinyagentos.installers.base import AppInstaller
+
+logger = logging.getLogger(__name__)
 
 # Signature: callback(downloaded_bytes, total_bytes_or_zero_if_unknown)
 ProgressCallback = Callable[[int, int], None]
@@ -45,16 +48,25 @@ async def download_file(
                         if now - last_cb >= 1.0:
                             try:
                                 on_progress(downloaded, total)
-                            except Exception:  # noqa: BLE001
-                                pass  # never let a bad callback kill the download
+                            except Exception as exc:  # noqa: BLE001
+                                # Never let a bad callback kill the
+                                # download, but log so a regression in
+                                # the progress store is debuggable.
+                                logger.warning(
+                                    "download_file: progress callback raised %s — continuing download",
+                                    exc,
+                                )
                             last_cb = now
             # Always emit a final update at 100% so the UI can flip to
             # "verifying" promptly instead of waiting for the next tick.
             if on_progress is not None:
                 try:
                     on_progress(downloaded, total or downloaded)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "download_file: final progress callback raised %s",
+                        exc,
+                    )
     if expected_sha256 and sha.hexdigest() != expected_sha256:
         dest.unlink()
         raise ValueError(f"SHA256 mismatch: expected {expected_sha256}, got {sha.hexdigest()}")

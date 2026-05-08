@@ -32,7 +32,10 @@ InstallState = Literal[
     "starting",      # backend service starting up
     "installed",     # terminal — success
     "failed",        # terminal — error populated
-    "cancelled",     # terminal — caller asked to stop
+    "cancelled",     # terminal — caller asked to stop. Reserved for the
+                     # follow-up "Cancel install" UI; the frontend already
+                     # treats this as a terminal state and hides the bar
+                     # the same way as installed/failed.
 ]
 
 # Drop entries older than this many seconds the next time anything
