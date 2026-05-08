@@ -341,8 +341,10 @@ install_rknpu_if_pending() {
         return 0
     fi
     local rknpu_script="$INSTALL_DIR/scripts/install-rknpu.sh"
-    if [[ ! -x "$rknpu_script" ]]; then
-        warn "install-rknpu.sh not found at $rknpu_script — skipping rkllama auto-install"
+    # We invoke via `bash "$rknpu_script"`, so executable bit isn't
+    # required — only readable. Per CodeRabbit nit on #405.
+    if [[ ! -f "$rknpu_script" || ! -r "$rknpu_script" ]]; then
+        warn "install-rknpu.sh missing or unreadable at $rknpu_script — skipping rkllama auto-install"
         warn "  to set up rkllama later: sudo bash $INSTALL_DIR/scripts/install-rknpu.sh"
         return 0
     fi
@@ -969,10 +971,16 @@ fi
 # --- wait for controller to come up -------------------------------------
 
 if [[ "$SERVICE_MODE" != "skip" ]]; then
-    log "waiting for controller to be ready on port $TAOS_PORT (up to 60 s)..."
+    # 120s ceiling: cold-boot on a Pi 5 / Orange Pi 5 lands around 55-65s
+    # (issue #337) so 60s was racing the actual ready state and printing
+    # a false "controller did not respond" warning even on successful
+    # installs. Doubling the cap keeps the safety net while removing the
+    # false alarm. Loop continues to early-exit the moment /api/cluster/workers
+    # answers, so this is just a higher ceiling, not slower steady state.
+    log "waiting for controller to be ready on port $TAOS_PORT (up to 120 s)..."
     ctrl_tries=0
     ctrl_up=0
-    while [[ $ctrl_tries -lt 60 ]]; do
+    while [[ $ctrl_tries -lt 120 ]]; do
         if curl -sf "http://localhost:$TAOS_PORT/api/cluster/workers" >/dev/null 2>&1; then
             ctrl_up=1
             break
@@ -982,7 +990,7 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     done
 
     if [[ $ctrl_up -eq 0 ]]; then
-        warn "controller did not respond within 60 seconds"
+        warn "controller did not respond within 120 seconds"
         if command -v journalctl >/dev/null 2>&1; then
             warn "latest journal output:"
             journalctl -u tinyagentos --no-pager -n 30 2>/dev/null || true
