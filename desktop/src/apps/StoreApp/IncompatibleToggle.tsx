@@ -1,5 +1,5 @@
 // desktop/src/apps/StoreApp/IncompatibleToggle.tsx
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, AlertCircle } from "lucide-react";
 
 interface Props {
@@ -17,6 +17,13 @@ interface Props {
 
 export function IncompatibleToggle({ count, compatibleCount = 1, children }: Props) {
   const [open, setOpen] = useState(compatibleCount === 0);
+  // compatibleCount can transition to 0 after mount when the user changes
+  // the device filter; without this the section stays collapsed and the
+  // empty-state CTA doesn't surface the dimmed list. Only auto-opens on
+  // the 0 transition — preserves user's choice in the other direction.
+  useEffect(() => {
+    if (compatibleCount === 0) setOpen(true);
+  }, [compatibleCount]);
 
   if (count === 0) return null;
 

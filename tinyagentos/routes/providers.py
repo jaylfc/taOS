@@ -287,7 +287,7 @@ async def list_providers(request: Request):
         if (
             status == "ok"
             and not models
-            and backend.get("type") in ("openai", "anthropic", "openrouter", "kilocode", "openai-compatible")
+            and backend.get("type") in CLOUD_TYPES
         ):
             api_key = await _resolve_api_key_for_backend(request.app.state, backend)
             if api_key:
