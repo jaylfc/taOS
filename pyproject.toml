@@ -31,6 +31,10 @@ dependencies = [
     "websockets>=12.0",
     # Web Push VAPID signing — pulls in cryptography, http-ece, py-vapid
     "pywebpush>=1.14",
+    # mDNS/Bonjour publisher so the controller is reachable at
+    # http://taos.local:<port>/ on the LAN without users knowing its IP
+    # (tinyagentos/services/mdns_publisher.py).
+    "zeroconf>=0.140",
 ]
 
 [project.optional-dependencies]

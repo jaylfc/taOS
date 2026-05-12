@@ -820,11 +820,31 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("canvas snapshotter failed to start")
             app.state.canvas_snapshotter = None
 
+        # mDNS publisher — advertises http://taos.local:<port>/ on the LAN.
+        # Failure must never break startup; the publisher swallows its own
+        # errors but wrap it again here for belt-and-braces.
+        try:
+            from tinyagentos.services.mdns_publisher import MdnsPublisher
+            mdns_publisher = MdnsPublisher(port=config.server.get("port", 6969))
+            await mdns_publisher.start()
+            app.state.mdns_publisher = mdns_publisher
+        except Exception:
+            logger.exception("mdns publisher failed to start — continuing without")
+            app.state.mdns_publisher = None
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers —
         # agents and LiteLLM keep running independently, so there's nothing to
         # gracefully drain here. Only true system halt (system-shutdown) and
         # explicit agent pause/stop go through the orchestrator.
+        # Unregister mDNS first so the goodbye packet goes out before other
+        # services start tearing down (and potentially blocking the loop).
+        _mdns = getattr(app.state, "mdns_publisher", None)
+        if _mdns is not None:
+            try:
+                await _mdns.stop()
+            except Exception:
+                logger.exception("mdns publisher stop failed")
         adapter_manager.stop_all()
         for c in list(getattr(app.state, "channel_hub_connectors", {}).values()):
             await c.stop()
