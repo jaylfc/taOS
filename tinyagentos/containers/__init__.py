@@ -48,9 +48,12 @@ async def container_exists(name: str) -> bool:
     callers can take the safer no-container path rather than blocking on
     cleanup of an orphan config row.
     """
-    code, output = await _run(
-        ["incus", "list", "--format=csv", "-c", "n", f"--filter=name={name}"]
-    )
+    try:
+        code, output = await _run(
+            ["incus", "list", "--format=csv", "-c", "n", f"--filter=name={name}"]
+        )
+    except OSError:
+        return False
     if code != 0:
         return False
     for line in output.splitlines():
