@@ -32,6 +32,13 @@ def post(path: str, **kwargs):
         return r.json()
 
 
+def put(path: str, **kwargs):
+    with _client() as c:
+        r = c.put(path, **kwargs)
+        r.raise_for_status()
+        return r.json()
+
+
 def delete(path: str, **kwargs):
     with _client() as c:
         r = c.delete(path, **kwargs)
