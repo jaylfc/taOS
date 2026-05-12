@@ -502,8 +502,14 @@ async def delete_agent(request: Request, name: str):
             doc_url="/docs/agents/recipes/managing-agents#delete-agent",
         )
     # Cascade: revoke the agent's token so it can't authenticate post-delete.
-    store = request.app.state.agent_tokens_store
-    await store.revoke_for_agent(name)
+    # Best-effort — a token-store error must not undo a successful archive.
+    try:
+        store = request.app.state.agent_tokens_store
+        await store.revoke_for_agent(name)
+    except Exception:
+        logger.warning(
+            "token revocation failed during agent delete for %s", name, exc_info=True
+        )
     return result
 
 

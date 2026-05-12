@@ -55,7 +55,18 @@ async def run_agent_token_migration(
             agent_id=name, user_id=user_id, scope=scope
         )
         container = f"taos-agent-{name}"
-        await container_backend.set_env(container, "TAOS_TOKEN", plaintext)
+        env_result = await container_backend.set_env(container, "TAOS_TOKEN", plaintext)
+        if not env_result.get("success", False):
+            # Roll back the issuance so subsequent runs retry instead of
+            # silently skipping. Without this, the agent ends up with a DB
+            # token but no TAOS_TOKEN env var and can never authenticate.
+            await agent_tokens_store.revoke_for_agent(name)
+            logger.warning(
+                "agent_token_migration: set_env failed for %s, revoked issuance: %s",
+                name,
+                env_result.get("output", ""),
+            )
+            continue
         logger.info("agent_token_migration: issued token for agent %s", name)
         issued += 1
 

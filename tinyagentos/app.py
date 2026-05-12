@@ -382,7 +382,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             from tinyagentos.migrations.agent_tokens_migration import run_agent_token_migration
             try:
                 _container_backend = get_backend()
-            except RuntimeError:
+            except Exception:
                 _container_backend = None
             await run_agent_token_migration(
                 agents=config.agents,

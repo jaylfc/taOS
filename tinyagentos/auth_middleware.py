@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
 from tinyagentos.errors import error_response
+
+logger = logging.getLogger(__name__)
 
 EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa"}
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
@@ -76,7 +80,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             try:
                 await store.touch_last_used(plaintext)
             except Exception:
-                pass
+                logger.warning(
+                    "agent token: failed to update last_used timestamp",
+                    exc_info=True,
+                )
             return await call_next(request)
 
         if auth_header.lower().startswith("bearer "):

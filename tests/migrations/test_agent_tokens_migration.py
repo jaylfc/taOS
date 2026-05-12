@@ -93,3 +93,24 @@ async def test_migration_empty_agents_is_noop():
         container_backend=backend,
     )
     assert result == {"issued": 0, "skipped_has_token": 0, "skipped_non_lxc": 0}
+
+
+@pytest.mark.asyncio
+async def test_migration_revokes_issuance_when_set_env_fails():
+    """If set_env fails after a successful issue, the token must be revoked so
+    subsequent runs retry instead of skipping the agent (has_token would
+    otherwise stay True with no TAOS_TOKEN in the container)."""
+    store = _store(has_token=False)
+    store.revoke_for_agent = AsyncMock(return_value=1)
+    backend = LXCBackend()
+    backend.set_env = AsyncMock(return_value={"success": False, "output": "incus error"})
+    agents = [{"name": "agent-1"}]
+    result = await run_agent_token_migration(
+        agents=agents,
+        agent_tokens_store=store,
+        container_backend=backend,
+    )
+    assert result == {"issued": 0, "skipped_has_token": 0, "skipped_non_lxc": 0}
+    store.issue.assert_called_once()
+    backend.set_env.assert_awaited_once()
+    store.revoke_for_agent.assert_awaited_once_with("agent-1")

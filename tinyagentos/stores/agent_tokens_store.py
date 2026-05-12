@@ -138,12 +138,15 @@ class AgentTokensStore:
     async def touch_last_used(self, plaintext: str) -> None:
         """Record that this token was just used. Best-effort — failures are non-fatal."""
         token_hash = _hash(plaintext)
-        async with aiosqlite.connect(self._db_path) as db:
-            await db.execute(
-                "UPDATE agent_tokens SET last_used_at = ? WHERE token_hash = ?",
-                (_now_iso(), token_hash),
-            )
-            await db.commit()
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    "UPDATE agent_tokens SET last_used_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+                    (_now_iso(), token_hash),
+                )
+                await db.commit()
+        except Exception:
+            return
 
     async def get_metadata(self, agent_id: str) -> dict[str, Any] | None:
         """Return non-secret token metadata for the agent (has_token, issued_at). Returns None if no active token."""

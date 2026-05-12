@@ -40,8 +40,8 @@ async def test_issue_stores_hash_not_plaintext(store):
 
 @pytest.mark.asyncio
 async def test_issue_revokes_previous_token_atomically(store):
-    plaintext_a, row_a = await store.issue(agent_id="agent-1", user_id="u", scope=["*"])
-    plaintext_b, row_b = await store.issue(agent_id="agent-1", user_id="u", scope=["*"])
+    plaintext_a, _row_a = await store.issue(agent_id="agent-1", user_id="u", scope=["*"])
+    _plaintext_b, row_b = await store.issue(agent_id="agent-1", user_id="u", scope=["*"])
     assert row_b["revoked_at"] is None
     looked_up_old = await store.lookup_by_plaintext(plaintext_a)
     assert looked_up_old is None
