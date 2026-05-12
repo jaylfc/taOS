@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
+from tinyagentos.errors import error_response
+
 EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa"}
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
@@ -41,6 +43,37 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Used by scripts and the upcoming CLI; the browser SPA keeps
         # using cookies.
         auth_header = request.headers.get("authorization", "")
+
+        # Agent bearer-token path: Authorization: Bearer taos_agent_*
+        if auth_header.startswith("Bearer taos_agent_"):
+            plaintext = auth_header[len("Bearer "):]
+            store = getattr(request.app.state, "agent_tokens_store", None)
+            if store is None:
+                return error_response(
+                    status_code=503,
+                    error="auth_unavailable",
+                    detail="Token store is not initialised.",
+                    fix="Wait for taOS startup to complete and retry.",
+                    doc_url="/docs/agents/concepts/permissions",
+                )
+            row = await store.lookup_by_plaintext(plaintext)
+            if row is None:
+                return error_response(
+                    status_code=401,
+                    error="invalid_token",
+                    detail="The bearer token is unknown or revoked.",
+                    fix="Request a new token via POST /api/agents/{name}/token/issue.",
+                    doc_url="/docs/agents/concepts/permissions",
+                )
+            request.state.user_id = row["user_id"]
+            request.state.agent_id = row["agent_id"]
+            request.state.token_scope = row["scope"]
+            try:
+                await store.touch_last_used(plaintext)
+            except Exception:
+                pass
+            return await call_next(request)
+
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):

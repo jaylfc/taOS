@@ -130,6 +130,8 @@ async def client(app, tmp_data_dir):
     if canvas_store._db is not None:
         await canvas_store.close()
     await canvas_store.init()
+    agent_tokens_store = app.state.agent_tokens_store
+    await agent_tokens_store.init()
     # BrowserApp v2 stores
     from tinyagentos.routes.desktop_browser.store import BrowserStore, BrowserCookieStore
     _browser_store = BrowserStore(tmp_data_dir / "browser.sqlite3")
@@ -175,6 +177,7 @@ async def client(app, tmp_data_dir):
     await app.state.http_client.aclose()
     await _browser_store.close()
     await _browser_cookie_store.close()
+    await agent_tokens_store.close()
 
 
 def create_test_qmd_db(db_path):
