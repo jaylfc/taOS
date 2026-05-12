@@ -41,15 +41,13 @@ def _detect_primary_ipv4() -> str | None:
     packets are actually sent, so this works fine on air-gapped
     networks (the kernel still resolves the source interface).
     """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.connect(("8.8.8.8", 80))
-        return sock.getsockname()[0]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
     except OSError as exc:
         logger.warning("mDNS: could not detect primary LAN IPv4: %s", exc)
         return None
-    finally:
-        sock.close()
 
 
 class MdnsPublisher:
