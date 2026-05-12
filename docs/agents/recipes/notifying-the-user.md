@@ -10,9 +10,9 @@ it). The endpoint is agent-only — session-cookie callers get 401
 
 ## Send a notification
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -X POST -H "Authorization: Bearer $TAOS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -23,9 +23,19 @@ curl -X POST -H "Authorization: Bearer $TAOS_TOKEN" \
   http://localhost:6969/api/ui/notify
 ```
 
+**API (HTTP):**
+
+```http
+POST /api/ui/notify HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
+Content-Type: application/json
+
+{"title": "Build complete", "body": "PR #449 merged.", "priority": "normal"}
+```
+
 **CLI:**
 
-```bash
+```bash-skip
 taosctl ui notify --title "Build complete" --body "PR #449 merged."
 ```
 
@@ -41,9 +51,18 @@ correlation. It does NOT correspond to a stable DB row identifier in Pass 1.
 **Verifying:** the notification appears in the desktop notification panel.
 To verify programmatically:
 
-```bash
+**API (bash):**
+
+```bash-skip
 curl -H "Authorization: Bearer $TAOS_TOKEN" \
   "http://localhost:6969/api/notifications?limit=10"
+```
+
+**API (HTTP):**
+
+```http
+GET /api/notifications HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
 ```
 
 Look for an entry where `source` starts with `agent:` followed by your agent

@@ -18,15 +18,22 @@ calls work today.
 **Prerequisites:** token with `agents.list` scope (the default `["*"]` covers
 it).
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -H "Authorization: Bearer $TAOS_TOKEN" http://localhost:6969/api/agents
+```
+
+**API (HTTP):**
+
+```http
+GET /api/agents HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents list
 ```
 
@@ -61,16 +68,23 @@ container state is queried separately via `GET /api/agents/containers`.
 
 **Prerequisites:** token with `agents.read` scope.
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -H "Authorization: Bearer $TAOS_TOKEN" \
-  http://localhost:6969/api/agents/<agent-name>
+  http://localhost:6969/api/agents/test-agent
+```
+
+**API (HTTP):**
+
+```http
+GET /api/agents/test-agent HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents get <agent-name>
 ```
 
@@ -106,9 +120,9 @@ it, and only once.
 **Prerequisites:** token with `agents.create` scope. Optional but
 recommended: send an `Idempotency-Key` header to make retries safe.
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -X POST -H "Authorization: Bearer $TAOS_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: create-$(uuidgen)" \
@@ -121,9 +135,20 @@ curl -X POST -H "Authorization: Bearer $TAOS_TOKEN" \
   http://localhost:6969/api/agents
 ```
 
+**API (HTTP):**
+
+```http
+POST /api/agents HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
+Content-Type: application/json
+Idempotency-Key: recipe-conf-create-2
+
+{"name": "recipe-conf-create-2", "host": "192.0.2.11", "qmd_index": "recipe-test"}
+```
+
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents create --name my-agent --host 192.0.2.11 --qmd-index my-agent
 ```
 
@@ -157,16 +182,23 @@ a retry, send the same `Idempotency-Key`.
 operator-issued bearer for token management is different from the
 agent-owned bearer that the new token represents.)
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -X POST -H "Authorization: Bearer $TAOS_TOKEN" \
-  http://localhost:6969/api/agents/<agent-name>/token/issue
+  http://localhost:6969/api/agents/test-agent/token/issue
+```
+
+**API (HTTP):**
+
+```http
+POST /api/agents/test-agent/token/issue HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents token-issue <agent-name>
 ```
 
@@ -194,16 +226,23 @@ plaintext.
 
 **Prerequisites:** token with `agents.token.revoke` scope.
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -X DELETE -H "Authorization: Bearer $TAOS_TOKEN" \
-  http://localhost:6969/api/agents/<agent-name>/token
+  http://localhost:6969/api/agents/test-agent/token
+```
+
+**API (HTTP):**
+
+```http
+DELETE /api/agents/test-agent/token HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents token-revoke <agent-name>
 ```
 
@@ -217,13 +256,16 @@ taosctl agents token-revoke <agent-name>
 
 ## Start / stop / pause / restart
 
+<!-- bash-skip only: these endpoints drive the LXC container lifecycle and
+     require incus on the host — not testable via the ASGI test transport. -->
+
 **Goal:** drive the container lifecycle.
 
 **Prerequisites:** token with `agents.lifecycle` scope.
 
 **API:**
 
-```bash
+```bash-skip
 curl -X POST -H "Authorization: Bearer $TAOS_TOKEN" \
   http://localhost:6969/api/agents/<agent-name>/start
 ```
@@ -234,7 +276,7 @@ configured agent.
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents start <agent-name>
 taosctl agents stop <agent-name>
 taosctl agents pause <agent-name>
@@ -253,20 +295,23 @@ for the matching container name (`taos-agent-<slug>`).
 
 ## Read recent logs
 
+<!-- bash-skip only: logs endpoint proxies to the LXC container runtime —
+     not testable via the ASGI test transport without a live container. -->
+
 **Goal:** fetch the most recent log lines from an agent's container.
 
 **Prerequisites:** token with `agents.logs` scope.
 
 **API:**
 
-```bash
+```bash-skip
 curl -H "Authorization: Bearer $TAOS_TOKEN" \
   "http://localhost:6969/api/agents/<agent-name>/logs?lines=100"
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents logs <agent-name> --lines 100
 ```
 
@@ -282,18 +327,28 @@ documented in `/openapi.json`).
 
 **Prerequisites:** token with `agents.update` scope.
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -X PUT -H "Authorization: Bearer $TAOS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"color": "#ff5a36"}' \
-  http://localhost:6969/api/agents/<agent-name>
+  http://localhost:6969/api/agents/test-agent
+```
+
+**API (HTTP):**
+
+```http
+PUT /api/agents/test-agent HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
+Content-Type: application/json
+
+{"color": "#ff5a36"}
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents update <agent-name> --color "#ff5a36"
 ```
 
@@ -309,16 +364,32 @@ taosctl agents update <agent-name> --color "#ff5a36"
 
 **Prerequisites:** token with `agents.delete` scope.
 
-**API:**
+**API (bash):**
 
-```bash
+```bash-skip
 curl -X DELETE -H "Authorization: Bearer $TAOS_TOKEN" \
-  http://localhost:6969/api/agents/<agent-name>
+  http://localhost:6969/api/agents/recipe-conf-delete-target
+```
+
+**API (HTTP):** create the target agent first, then delete it.
+
+```http
+POST /api/agents HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
+Content-Type: application/json
+Idempotency-Key: recipe-conf-delete-pre-8
+
+{"name": "recipe-conf-delete-target", "host": "192.0.2.250", "qmd_index": "recipe-test"}
+```
+
+```http
+DELETE /api/agents/recipe-conf-delete-target HTTP/1.1
+Authorization: Bearer $TAOS_TOKEN
 ```
 
 **CLI:**
 
-```bash
+```bash-skip
 taosctl agents delete <agent-name>
 ```
 
