@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import secrets
 import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
+
+from tinyagentos.errors import ErrorResponse, error_response
+from tinyagentos.scope import require_scope
 
 router = APIRouter()
 
@@ -61,3 +66,89 @@ async def mark_all_read(request: Request):
     store = request.app.state.notifications
     await store.mark_all_read()
     return {"ok": True}
+
+
+class UiNotifyRequest(BaseModel):
+    title: str = Field(..., max_length=120, description="Short notification title.", examples=["Build complete"])
+    body: str = Field(..., description="Body text. Plain text in Pass 1.", examples=["PR #449 merged."])
+    priority: str = Field("normal", description="One of 'low', 'normal', 'high'.", examples=["normal"])
+    app_origin: str | None = Field(
+        None,
+        description="Optional attribution shown to the user; defaults to the calling agent's name.",
+        examples=["code-review-agent"],
+    )
+    action_url: str | None = Field(
+        None,
+        description=(
+            "Optional deep link the user lands on when they tap the notification. "
+            "Stored on the notification but not yet surfaced — pending the multi-user "
+            "NotificationStore migration in Pass 2."
+        ),
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "title": "Build complete",
+                "body": "PR #449 merged.",
+                "priority": "normal",
+            }
+        }
+    }
+
+
+_VALID_PRIORITIES = ("low", "normal", "high")
+
+
+@router.post(
+    "/api/ui/notify",
+    summary="Send a notification to the user (agent → UI primitive)",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid priority or body."},
+        401: {"model": ErrorResponse, "description": "Endpoint requires an agent bearer token."},
+        403: {"model": ErrorResponse, "description": "Token scope does not cover ui.notify."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
+@require_scope("ui.notify")
+async def ui_notify(request: Request, body: UiNotifyRequest):
+    """Send a notification from the calling agent to the user.
+
+    Requires a bearer token issued via `POST /api/agents/{name}/token/issue` with
+    ui.notify (or wildcard) scope. The notification lands in the user's notification
+    panel with the calling agent name in the source field (`agent:<name>`) for
+    audit. Returns a client-side notification_id you can log; the id does not
+    correspond to a stable DB row in Pass 1 (the NotificationStore is single-user;
+    multi-user routing + per-row IDs land in Pass 2).
+    """
+    agent_id = getattr(request.state, "agent_id", None)
+    if agent_id is None:
+        return error_response(
+            status_code=401,
+            error="auth_required",
+            detail="ui.notify requires an agent bearer token; session-cookie callers are not supported.",
+            fix="Issue an agent token via POST /api/agents/{name}/token/issue and pass it as `Authorization: Bearer <token>`.",
+            doc_url="/docs/agents/getting-started#auth",
+        )
+    if body.priority not in _VALID_PRIORITIES:
+        return error_response(
+            status_code=400,
+            error="invalid_priority",
+            detail=f"priority must be one of {list(_VALID_PRIORITIES)} (got {body.priority!r}).",
+            fix="Omit the field to default to 'normal'.",
+            doc_url="/docs/agents/recipes/notifying-the-user",
+        )
+    store = request.app.state.notifications
+    source_label = body.app_origin or f"agent:{agent_id}"
+    if not source_label.startswith("agent:"):
+        source_label = f"agent:{source_label}"
+    await store.add(
+        title=body.title,
+        message=body.body,
+        level=body.priority,
+        source=source_label,
+    )
+    return {
+        "delivered": True,
+        "notification_id": f"ntf_{secrets.token_urlsafe(8)}",
+    }

@@ -22,7 +22,7 @@ Per-endpoint pass/fail against the agent-friendliness checklist
 | POST /api/agents/{name}/token/issue | ✅ | ✅ | ✅ | ✅ | ✅ | N/A | N/A | ✅ | Returns plaintext once (Task 6 ✅) |
 | DELETE /api/agents/{name}/token | ✅ | ✅ | ✅ | ✅ | ✅ | N/A | N/A | ✅ | Cascade on agent delete (Task 7 ✅) |
 | GET /api | ✅ | ✅ | ✅ | N/A | _pending_ | N/A | ✅ | ✅ | Discovery index — new endpoint (Task 13 ✅) |
-| POST /api/ui/notify | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | N/A | _pending_ | First agent-to-UI primitive (Task 15) |
+| POST /api/ui/notify | ✅ | ✅ | ✅ | ✅ | ✅ | N/A | N/A | ✅ | First agent-to-UI primitive (Task 15 ✅). Storage backed by single-user NotificationStore; multi-user routing lands in Pass 2. |
 
 ## Remediations
 
@@ -34,3 +34,4 @@ each remediation lands, replace `_pending_` with ✅ (or ❌ N/A with reason).
 - `response_model=` for success responses on agent CRUD endpoints — agent
   dicts are still loose-typed in Pass 1; locking the schema would either
   regress existing fields or land an empty/almost-empty pydantic model.
+- Multi-user NotificationStore migration (`user_id`, `source_type`, `source_id`, `priority`, `action_url`, `app_origin` columns + `list_for_user`/`create` API) — Pass 1 ui.notify uses the existing single-user `add()`; per-user routing lands in Pass 2.
