@@ -20,4 +20,4 @@ class TestDismissMigrationBanner:
     async def test_dismiss_banner_404_unknown_agent(self, client):
         resp = await client.post("/api/agents/no-such-agent/dismiss-migration-banner")
         assert resp.status_code == 404
-        assert "not found" in resp.json()["error"]
+        assert resp.json()["error"] == "agent_not_found"
