@@ -87,7 +87,21 @@ class MdnsPublisher:
                 server=self._hostname,
             )
             zc = AsyncZeroconf()
-            await zc.async_register_service(info, allow_name_change=True)
+            try:
+                await zc.async_register_service(info, allow_name_change=True)
+            except Exception:
+                # async_register_service can raise after the AsyncZeroconf
+                # is constructed (port conflict, multicast disabled mid-init,
+                # etc.). Close the half-built instance so its sockets and
+                # multicast subscriptions don't leak; re-raise into the
+                # outer except for logging.
+                try:
+                    await zc.async_close()
+                except Exception:
+                    logger.exception(
+                        "mDNS: cleanup after failed register also failed"
+                    )
+                raise
             self._zc = zc
             self._info = info
             self._active = True

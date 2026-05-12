@@ -48,6 +48,26 @@ async def test_stop_unregisters_then_closes(fake_zc):
 
 
 @pytest.mark.asyncio
+async def test_failed_register_closes_zeroconf_instance(monkeypatch):
+    """If async_register_service raises after AsyncZeroconf() is built,
+    the half-initialised instance must be closed — otherwise its sockets
+    and multicast subscriptions leak. Caught by kilo-code-bot on #449."""
+    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: "192.168.1.42")
+    zc_instance = MagicMock()
+    zc_instance.async_register_service = AsyncMock(
+        side_effect=RuntimeError("port in use")
+    )
+    zc_instance.async_close = AsyncMock()
+    monkeypatch.setattr(mp, "AsyncZeroconf", MagicMock(return_value=zc_instance))
+
+    pub = MdnsPublisher(port=6969)
+    await pub.start()  # must not raise
+
+    assert zc_instance.async_close.await_count == 1
+    assert pub._active is False
+
+
+@pytest.mark.asyncio
 async def test_start_swallows_exceptions_and_stop_is_noop(monkeypatch):
     monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: "192.168.1.42")
 
