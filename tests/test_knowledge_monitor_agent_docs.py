@@ -71,3 +71,62 @@ async def test_ingest_uses_filename_when_no_h1(tmp_path, store):
     await ingest_agent_docs(docs_dir=docs, knowledge_store=store)
     items = await store.list_items(source_type="agent-docs")
     assert items[0]["title"] == "no-heading.md"
+
+
+@pytest.mark.asyncio
+async def test_ingest_tags_source_id_taos_core_by_default(tmp_path, store):
+    docs = tmp_path / "docs" / "agents"
+    docs.mkdir(parents=True)
+    (docs / "a.md").write_text("# A\n")
+    await ingest_agent_docs(docs_dir=docs, knowledge_store=store)
+    items = await store.list_items(source_type="agent-docs")
+    assert all(i["source_id"] == "taos-core" for i in items)
+    assert all(i["metadata"]["origin"] == "taos-core" for i in items)
+
+
+@pytest.mark.asyncio
+async def test_ingest_only_wipes_matching_source_id(tmp_path, store):
+    """Reingesting taos-core docs must not delete app-supplied guides
+    that share the same source_type/category."""
+    # Seed taOS-core docs
+    docs = tmp_path / "docs" / "agents"
+    docs.mkdir(parents=True)
+    (docs / "core.md").write_text("# Core\n")
+    await ingest_agent_docs(docs_dir=docs, knowledge_store=store)
+
+    # Simulate a community app's guides also landing under category=agent-docs
+    # but with a different source_id.
+    await store.add_item(
+        source_type="agent-docs",
+        source_url="my-guide.md",
+        title="App Guide",
+        author="community",
+        content="from a community app",
+        summary="community app guide",
+        categories=["agent-docs"],
+        tags=[],
+        metadata={"source": "app:foo", "origin": "app:foo"},
+        source_id="app:foo",
+        status="ready",
+    )
+
+    # Reingest taOS-core — the app guide must survive.
+    await ingest_agent_docs(docs_dir=docs, knowledge_store=store)
+    items = await store.list_items(source_type="agent-docs")
+    sources = sorted(i["source_id"] for i in items)
+    assert sources == ["app:foo", "taos-core"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_custom_source_id(tmp_path, store):
+    """A community app ingesting its own guides should pass its own source_id."""
+    docs = tmp_path / "app-guides"
+    docs.mkdir()
+    (docs / "intro.md").write_text("# Intro\n")
+    await ingest_agent_docs(
+        docs_dir=docs, knowledge_store=store, source_id="app:my-app"
+    )
+    items = await store.list_items(source_type="agent-docs")
+    assert len(items) == 1
+    assert items[0]["source_id"] == "app:my-app"
+    assert items[0]["metadata"]["origin"] == "app:my-app"

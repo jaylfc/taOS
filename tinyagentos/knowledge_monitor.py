@@ -190,21 +190,30 @@ async def ingest_agent_docs(
     *,
     docs_dir: "Path",
     knowledge_store: "KnowledgeStore",
+    source_id: str = "taos-core",
 ) -> int:
     """Walk ``docs_dir`` for ``*.md`` files and (re-)ingest them into the
     knowledge store with ``source_type='agent-docs'`` and ``categories=['agent-docs']``.
 
-    Idempotent: every call first deletes all existing agent-docs entries
-    then re-adds the current contents, so updates land cleanly. Returns the
-    number of files ingested. Returns 0 if ``docs_dir`` doesn't exist.
+    ``source_id`` tags every item with its origin so the re-ingest wipe is
+    scoped: only items with a matching ``source_id`` are deleted before the
+    fresh batch is added. Defaults to ``taos-core`` for the canonical taOS
+    docs tree; community apps will pass their own ``source_id`` (e.g.
+    ``app:<slug>``) so their guides don't collide with the core tree.
+
+    Idempotent within the same ``source_id``. Returns the number of files
+    ingested. Returns 0 if ``docs_dir`` doesn't exist.
     """
     if not docs_dir.exists():
         return 0
 
-    # Wipe prior agent-docs entries so updates are clean.
+    # Wipe prior entries for THIS source_id only, leaving other sources
+    # (e.g. community-app guides) untouched. list_items doesn't filter by
+    # source_id today, so filter in Python after the source_type query.
     existing = await knowledge_store.list_items(source_type="agent-docs", limit=1000)
     for item in existing:
-        await knowledge_store.delete_item(item["id"])
+        if item.get("source_id") == source_id:
+            await knowledge_store.delete_item(item["id"])
 
     count = 0
     for md_file in sorted(docs_dir.rglob("*.md")):
@@ -227,7 +236,8 @@ async def ingest_agent_docs(
             summary=summary,
             categories=["agent-docs"],
             tags=[],
-            metadata={"source": "docs/agents"},
+            metadata={"source": "docs/agents", "origin": source_id},
+            source_id=source_id,
             status="ready",
         )
         count += 1
