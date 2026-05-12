@@ -12,6 +12,7 @@ import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, slugify_agent_name
+from tinyagentos.errors import error_response
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,11 @@ router = APIRouter()
 def _archive_timestamp() -> str:
     """UTC timestamp as YYYYMMDDTHHMMSS for archive naming."""
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+
+def _now_iso() -> str:
+    """UTC ISO-8601 timestamp."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 class AgentCreate(BaseModel):
@@ -88,7 +94,11 @@ async def get_agent_endpoint(request: Request, name: str):
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
-    return agent
+    store = request.app.state.agent_tokens_store
+    meta = await store.get_metadata(name)
+    if meta:
+        return {**agent, **meta}
+    return {**agent, "has_token": False}
 
 
 @router.post("/api/agents")
@@ -166,6 +176,51 @@ async def update_agent_permissions(request: Request, name: str, body: AgentPermi
             "can_read_user_memory": agent.get("can_read_user_memory", False),
         },
     }
+
+
+@router.post("/api/agents/{name}/token/issue")
+async def issue_agent_token(request: Request, name: str):
+    """Issue a new API token for the agent. Revokes any prior active token atomically.
+
+    Returns the plaintext token in the response body once — subsequent reads of
+    the agent return `has_token: true` only, never the plaintext.
+    """
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return error_response(
+            status_code=404,
+            error="agent_not_found",
+            detail=f"No agent named {name!r} exists.",
+            fix="List agents with `taosctl agents list` to see valid names.",
+            doc_url="/docs/agents/recipes/managing-agents#list-agents",
+        )
+    store = request.app.state.agent_tokens_store
+    user_id = agent.get("user_id", "default")
+    scope = agent.get("scope", ["*"])
+    plaintext, _ = await store.issue(agent_id=name, user_id=user_id, scope=scope)
+    return {"token": plaintext, "issued_at": _now_iso()}
+
+
+@router.delete("/api/agents/{name}/token", status_code=204)
+async def revoke_agent_token(request: Request, name: str):
+    """Revoke the agent's active token. The agent's existing bearer token
+    returns 401 on every subsequent request after this. Issue a new token to
+    restore access."""
+    from fastapi import Response
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return error_response(
+            status_code=404,
+            error="agent_not_found",
+            detail=f"No agent named {name!r} exists.",
+            fix="List agents to see valid names.",
+            doc_url="/docs/agents/recipes/managing-agents#list-agents",
+        )
+    store = request.app.state.agent_tokens_store
+    await store.revoke_for_agent(name)
+    return Response(status_code=204)
 
 
 async def _archive_agent_fully(request: Request, name: str) -> dict:
