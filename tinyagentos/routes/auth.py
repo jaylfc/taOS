@@ -3,7 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from tinyagentos.errors import error_response
+
 router = APIRouter(prefix="/auth", tags=["auth"])
+api_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # Self-contained HTML pages for the auth flow.
 #
@@ -674,3 +677,43 @@ async def change_password(username: str, request: Request):
     if not changed:
         return JSONResponse({"error": "current password is incorrect"}, status_code=401)
     return JSONResponse({"ok": True})
+
+
+# ------------------------------------------------------------------ #
+#  Agent-friendly /api/auth endpoints                                  #
+# ------------------------------------------------------------------ #
+
+@api_router.get("/whoami", include_in_schema=True)
+async def auth_whoami(request: Request):
+    """Identify the calling principal.
+
+    Returns 200 with whichever fields the auth path populated:
+      - Bearer agent token (Authorization: Bearer taos_agent_*): user_id +
+        agent_id + scope all populated.
+      - Session cookie (taos_session): user_id populated; agent_id and
+        scope are null (the caller is a human, not an agent bearer).
+      - Otherwise: AuthMiddleware has already returned 401, so this body
+        is unreachable for unauthenticated calls.
+    """
+    # Bearer path: AuthMiddleware (Task 5) put these on request.state.
+    user_id = getattr(request.state, "user_id", None)
+    agent_id = getattr(request.state, "agent_id", None)
+    scope = getattr(request.state, "token_scope", None)
+    if agent_id is not None or scope is not None:
+        return {"user_id": user_id, "agent_id": agent_id, "scope": scope}
+
+    # Session-cookie path: resolve user from the cookie.
+    auth_mgr = request.app.state.auth
+    token = request.cookies.get("taos_session", "")
+    session_user_id = auth_mgr.validate_session(token) if token else None
+    if session_user_id is not None:
+        return {"user_id": session_user_id, "agent_id": None, "scope": None}
+
+    # AuthMiddleware should have caught this, but defend just in case.
+    return error_response(
+        status_code=401,
+        error="not_authenticated",
+        detail="Whoami requires either a session cookie or an agent bearer token.",
+        fix="Sign in via /auth/login or pass `Authorization: Bearer taos_agent_<token>`.",
+        doc_url="/docs/agents/getting-started#auth",
+    )

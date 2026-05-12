@@ -1088,8 +1088,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
     # Import and include routers
-    from tinyagentos.routes.auth import router as auth_router
+    from tinyagentos.routes.auth import router as auth_router, api_router as auth_api_router
     app.include_router(auth_router)
+    app.include_router(auth_api_router)
 
     from tinyagentos.routes.system import router as system_router
     app.include_router(system_router)
