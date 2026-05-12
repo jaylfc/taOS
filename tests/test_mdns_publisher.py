@@ -45,6 +45,11 @@ async def test_stop_unregisters_then_closes(fake_zc):
 
     assert zc_instance.async_unregister_service.await_count == 1
     assert zc_instance.async_close.await_count == 1
+    # Order matters — closing zeroconf before unregistering would drop the
+    # goodbye packet on the floor and leave stale records on the LAN until
+    # they age out (~75min). mock_calls accumulates across the instance.
+    names = [c[0] for c in zc_instance.mock_calls]
+    assert names.index("async_unregister_service") < names.index("async_close")
 
 
 @pytest.mark.asyncio
