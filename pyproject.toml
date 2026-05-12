@@ -63,6 +63,12 @@ taos-gui = "tinyagentos.app:gui"
 taos-worker-ctl = "tinyagentos.cli.worker:main"
 
 [tool.pytest.ini_options]
+# Make the worktree root importable so tests can `from taosctl ...` even
+# though taosctl is a sibling top-level package (not part of the
+# tinyagentos install). Local pytest already auto-discovers it via the
+# implicit rootdir behaviour, but CI's `pip install -e .` installs only
+# tinyagentos, so taosctl needs an explicit path entry.
+pythonpath = ["."]
 markers = [
     "e2e: End-to-end browser tests (require running server)",
     "slow: Tests requiring a live stack (skipped in local CI; run with pytest -m slow)",
