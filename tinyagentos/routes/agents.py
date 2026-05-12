@@ -12,7 +12,7 @@ import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, slugify_agent_name
-from tinyagentos.errors import error_response
+from tinyagentos.errors import error_response, ErrorResponse
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,18 @@ class AgentCreate(BaseModel):
     color: str = "#888888"
     can_read_user_memory: bool = False
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "name": "code-review-agent",
+                "host": "192.0.2.10",
+                "qmd_index": "code-review",
+                "color": "#7f5af0",
+                "can_read_user_memory": False,
+            }
+        }
+    }
+
 
 class AgentUpdate(BaseModel):
     host: str | None = None
@@ -57,15 +69,30 @@ class AgentUpdate(BaseModel):
     can_read_user_memory: bool | None = None
 
 
-@router.get("/api/agents")
+@router.get(
+    "/api/agents",
+    summary="List all agents",
+)
 async def list_agents(request: Request):
-    """List all configured agents."""
+    """Return the full list of configured agents.
+
+    Each entry is a loose-typed dict reflecting the agent's current state,
+    including its slug name, display name, host, color, and deployment status.
+    An empty list is returned when no agents have been configured yet.
+    """
     return request.app.state.config.agents
 
 
-@router.get("/api/agents/containers")
+@router.get(
+    "/api/agents/containers",
+    summary="List live container status",
+)
 async def list_agent_containers(request: Request):
-    """List live LXC container status for all agent containers."""
+    """Return live LXC container status for every agent container.
+
+    Each entry includes name, agent_name, status, ip, memory_mb, and
+    cpu_cores. Containers that are stopped still appear with status='STOPPED'.
+    """
     from tinyagentos.containers import list_containers
     containers = await list_containers(prefix="taos-agent-")
     return [
@@ -81,15 +108,35 @@ async def list_agent_containers(request: Request):
     ]
 
 
-@router.get("/api/agents/archived")
+@router.get(
+    "/api/agents/archived",
+    summary="List archived agents",
+)
 async def list_archived_agents(request: Request):
+    """Return the list of archived (soft-deleted) agents.
+
+    Archived agents retain their original config under an `original` key and
+    include the `id` used to restore or permanently purge them. An empty list
+    is returned when nothing has been archived yet.
+    """
     config = request.app.state.config
     return config.archived_agents
 
 
-@router.get("/api/agents/{name}/deploy-status")
+@router.get(
+    "/api/agents/{name}/deploy-status",
+    summary="Get deploy task status",
+    responses={
+        404: {"model": ErrorResponse, "description": "No deploy task found for this agent."},
+    },
+)
 async def get_deploy_status(request: Request, name: str):
-    """Get the background deploy task status for an agent."""
+    """Get the background deploy task status for an agent.
+
+    Returns the in-memory task dict with `status` ('deploying', 'success', or
+    'failed') and, on failure, an `error` field explaining what went wrong.
+    Returns 404 if no deploy has been started for the given agent name.
+    """
     deploy_tasks = request.app.state.deploy_tasks
     task = deploy_tasks.get(name)
     if task is None:
@@ -103,9 +150,20 @@ async def get_deploy_status(request: Request, name: str):
     return task
 
 
-@router.get("/api/agents/{name}")
+@router.get(
+    "/api/agents/{name}",
+    summary="Get agent details",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def get_agent_endpoint(request: Request, name: str):
-    """Get agent details by name."""
+    """Get full details for a single agent by name.
+
+    Includes the `has_token` field showing whether an API token has been
+    issued. Returns 404 with the canonical {error, detail, fix, doc_url}
+    shape if no agent with that slug exists.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -117,14 +175,22 @@ async def get_agent_endpoint(request: Request, name: str):
     return {**agent, "has_token": False}
 
 
-@router.post("/api/agents")
+@router.post(
+    "/api/agents",
+    summary="Create a new agent",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid agent name or unresolvable slug."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def add_agent(request: Request, body: AgentCreate):
     """Add a new agent to the configuration.
 
     The user-supplied name is stored verbatim as ``display_name`` for UI
     purposes and slugified into ``name`` for container and path safety.
     If the slug collides with an existing agent, a numeric suffix is
-    appended until it's unique.
+    appended until it's unique. A 409 is never returned here — duplicates
+    are resolved automatically via the suffix strategy.
     """
     config = request.app.state.config
     display_name = body.name.strip()
@@ -161,9 +227,21 @@ async def add_agent(request: Request, body: AgentCreate):
     return {"status": "created", "name": unique_slug, "display_name": display_name}
 
 
-@router.put("/api/agents/{name}")
+@router.put(
+    "/api/agents/{name}",
+    summary="Update agent configuration",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def update_agent(request: Request, name: str, body: AgentUpdate):
-    """Update an existing agent's configuration."""
+    """Update an existing agent's configuration.
+
+    All fields in the request body are optional; only fields that are
+    provided (non-null) are written. Returns 404 if no agent with that
+    slug exists.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -187,9 +265,20 @@ class AgentPermissions(BaseModel):
     can_read_user_memory: bool | None = None
 
 
-@router.put("/api/agents/{name}/permissions")
+@router.put(
+    "/api/agents/{name}/permissions",
+    summary="Update agent permissions",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def update_agent_permissions(request: Request, name: str, body: AgentPermissions):
-    """Update an agent's permissions (e.g. user memory access)."""
+    """Update an agent's permission flags (e.g. user memory access).
+
+    Only supplied fields are written; omitted fields are left unchanged.
+    Returns 404 if no agent with that slug exists.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -206,12 +295,19 @@ async def update_agent_permissions(request: Request, name: str, body: AgentPermi
     }
 
 
-@router.post("/api/agents/{name}/token/issue")
+@router.post(
+    "/api/agents/{name}/token/issue",
+    summary="Issue an API token",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def issue_agent_token(request: Request, name: str):
     """Issue a new API token for the agent. Revokes any prior active token atomically.
 
     Returns the plaintext token in the response body once — subsequent reads of
-    the agent return `has_token: true` only, never the plaintext.
+    the agent return `has_token: true` only, never the plaintext. Returns 404 if
+    no agent with that slug exists.
     """
     config = request.app.state.config
     agent = find_agent(config, name)
@@ -230,11 +326,21 @@ async def issue_agent_token(request: Request, name: str):
     return {"token": plaintext, "issued_at": _now_iso()}
 
 
-@router.delete("/api/agents/{name}/token", status_code=204)
+@router.delete(
+    "/api/agents/{name}/token",
+    status_code=204,
+    summary="Revoke the API token",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def revoke_agent_token(request: Request, name: str):
-    """Revoke the agent's active token. The agent's existing bearer token
-    returns 401 on every subsequent request after this. Issue a new token to
-    restore access."""
+    """Revoke the agent's active token.
+
+    The agent's existing bearer token returns 401 on every subsequent request
+    after this call. Issue a new token via POST /api/agents/{name}/token/issue
+    to restore access. Returns 404 if no agent with that slug exists.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -485,12 +591,21 @@ async def _archive_agent_fully(request: Request, name: str) -> dict:
     }
 
 
-@router.delete("/api/agents/{name}")
+@router.delete(
+    "/api/agents/{name}",
+    summary="Archive (delete) an agent",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+        500: {"model": ErrorResponse, "description": "Archive operation failed."},
+    },
+)
 async def delete_agent(request: Request, name: str):
-    """Archive an agent instead of hard-deleting it. The agent's
-    container, workspace, and memory are preserved under an archive
-    bucket so the user can restore it later — or permanently purge it
-    via ``DELETE /api/agents/archived/{id}``.
+    """Archive an agent instead of hard-deleting it.
+
+    The agent's container, workspace, and memory are preserved under an archive
+    bucket so the user can restore it later — or permanently purge it via
+    ``DELETE /api/agents/archived/{id}``. The agent's API token is revoked
+    as part of the archive cascade.
     """
     result = await _archive_agent_fully(request, name)
     if "error" in result:
@@ -543,9 +658,19 @@ class DeployAgentRequest(BaseModel):
     save_to_library: dict | None = None  # {"name": str, "description": str|None}
 
 
-@router.post("/api/agents/deploy")
+@router.post(
+    "/api/agents/deploy",
+    summary="Deploy a new agent",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid agent name, framework, or unresolvable slug."},
+        404: {"model": ErrorResponse, "description": "Requested model not found in cluster."},
+        409: {"model": ErrorResponse, "description": "Model not on the pinned worker."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+        500: {"model": ErrorResponse, "description": "taosmd registration failed."},
+    },
+)
 async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
-    """Deploy a new agent.
+    """Deploy a new agent container.
 
     Resolution order for the requested model (task #176 route-only stub):
 
@@ -888,9 +1013,17 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     return {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
 
 
-@router.post("/api/agents/bulk/start")
+@router.post(
+    "/api/agents/bulk/start",
+    summary="Start all agent containers",
+)
 async def bulk_start_agents(request: Request):
-    """Start all agent containers."""
+    """Start all agent containers in parallel.
+
+    Returns a results dict keyed by agent slug, each with a `success` boolean.
+    Per-container errors are captured and returned inline rather than aborting
+    the whole batch.
+    """
     from tinyagentos.containers import start_container
     config = request.app.state.config
     results = {}
@@ -904,9 +1037,17 @@ async def bulk_start_agents(request: Request):
     return {"action": "start", "results": results}
 
 
-@router.post("/api/agents/bulk/stop")
+@router.post(
+    "/api/agents/bulk/stop",
+    summary="Stop all agent containers",
+)
 async def bulk_stop_agents(request: Request):
-    """Stop all agent containers, running graceful prepare first."""
+    """Stop all agent containers, running a graceful prepare step first.
+
+    Calls the orchestrator's prepare hook before stopping so agents can flush
+    in-flight work. Returns a results dict keyed by agent slug with `success`
+    booleans; per-container errors are captured inline.
+    """
     from tinyagentos.containers import stop_container
     config = request.app.state.config
     orchestrator = getattr(request.app.state, "orchestrator", None)
@@ -924,9 +1065,16 @@ async def bulk_stop_agents(request: Request):
     return {"action": "stop", "prepare_report": report, "results": results}
 
 
-@router.post("/api/agents/bulk/restart")
+@router.post(
+    "/api/agents/bulk/restart",
+    summary="Restart all agent containers",
+)
 async def bulk_restart_agents(request: Request):
-    """Restart all agent containers."""
+    """Restart all agent containers in parallel.
+
+    Returns a results dict keyed by agent slug with `success` booleans;
+    per-container errors are captured inline rather than aborting the batch.
+    """
     from tinyagentos.containers import restart_container
     config = request.app.state.config
     results = {}
@@ -940,16 +1088,35 @@ async def bulk_restart_agents(request: Request):
     return {"action": "restart", "results": results}
 
 
-@router.post("/api/agents/{name}/start")
+@router.post(
+    "/api/agents/{name}/start",
+    summary="Start an agent's container",
+)
 async def start_agent(request: Request, name: str):
-    """Start an agent's LXC container."""
+    """Start an agent's LXC container.
+
+    Delegates directly to the container runtime. Returns the container start
+    result dict. No 404 guard here — the container name is derived from the
+    slug; a missing container returns an error from the runtime layer.
+    """
     from tinyagentos.containers import start_container
     return await start_container(f"taos-agent-{name}")
 
 
-@router.post("/api/agents/{name}/pause")
+@router.post(
+    "/api/agents/{name}/pause",
+    summary="Pause an agent",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def pause_agent(request: Request, name: str):
-    """Gracefully prepare an agent for pause (paused=True, container still running)."""
+    """Gracefully prepare an agent for pause (paused=True, container still running).
+
+    Calls the orchestrator's prepare hook so the agent can flush in-flight work
+    before being paused. The container remains running; use
+    POST /api/agents/{name}/stop to also stop the container.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -961,9 +1128,19 @@ async def pause_agent(request: Request, name: str):
     return {"status": "paused", "name": name, "report": report}
 
 
-@router.post("/api/agents/{name}/stop")
+@router.post(
+    "/api/agents/{name}/stop",
+    summary="Stop an agent's container",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def stop_agent(request: Request, name: str):
-    """Gracefully prepare then stop an agent's LXC container."""
+    """Gracefully prepare then stop an agent's LXC container.
+
+    Calls the orchestrator's prepare hook before stopping so the agent can
+    flush in-flight work. Returns both the prepare report and the stop result.
+    """
     from tinyagentos.containers import stop_container
     config = request.app.state.config
     agent = find_agent(config, name)
@@ -977,24 +1154,50 @@ async def stop_agent(request: Request, name: str):
     return {"prepare_report": report, "stop_result": stop_result}
 
 
-@router.post("/api/agents/{name}/restart")
+@router.post(
+    "/api/agents/{name}/restart",
+    summary="Restart an agent",
+)
 async def restart_agent(request: Request, name: str):
-    """Restart an agent's LXC container."""
+    """Restart an agent's LXC container.
+
+    Delegates directly to the container runtime. Returns the container restart
+    result dict from the runtime layer.
+    """
     from tinyagentos.containers import restart_container
     return await restart_container(f"taos-agent-{name}")
 
 
-@router.get("/api/agents/{name}/logs")
+@router.get(
+    "/api/agents/{name}/logs",
+    summary="Get recent agent logs",
+)
 async def agent_logs(request: Request, name: str, lines: int = 100):
-    """Get recent journal logs from an agent's container."""
+    """Get recent journal logs from an agent's LXC container.
+
+    The `lines` query parameter controls how many tail lines to return
+    (default 100). Returns `{name, logs}` where `logs` is a string of
+    raw journal output.
+    """
     from tinyagentos.containers import get_container_logs
     logs = await get_container_logs(f"taos-agent-{name}", lines=lines)
     return {"name": name, "logs": logs}
 
 
-@router.get("/api/agents/{name}/export")
+@router.get(
+    "/api/agents/{name}/export",
+    summary="Export agent config",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def export_agent(request: Request, name: str):
-    """Export an agent's full config as portable JSON."""
+    """Export an agent's full config as portable JSON.
+
+    The returned object can be passed back to POST /api/agents/import to
+    recreate the agent on another instance. Includes channel assignments and
+    group memberships alongside the core agent config.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -1028,9 +1231,22 @@ class AgentImport(BaseModel):
     groups: list[str] = []
 
 
-@router.post("/api/agents/import")
+@router.post(
+    "/api/agents/import",
+    summary="Import an agent from exported config",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid or missing agent name."},
+        409: {"model": ErrorResponse, "description": "Agent already exists."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def import_agent(request: Request, body: AgentImport):
-    """Import an agent from an exported JSON config."""
+    """Import an agent from an exported JSON config.
+
+    The body should be the object produced by GET /api/agents/{name}/export.
+    Returns 409 if an agent with the same slug already exists — rename or
+    delete the existing agent before importing.
+    """
     config = request.app.state.config
 
     agent_data = body.agent
@@ -1081,11 +1297,18 @@ async def import_agent(request: Request, body: AgentImport):
     return {"status": "imported", "name": name}
 
 
-@router.delete("/api/agents/{name}/destroy")
+@router.delete(
+    "/api/agents/{name}/destroy",
+    summary="Archive an agent (compat alias)",
+    responses={
+        500: {"model": ErrorResponse, "description": "Archive operation failed."},
+    },
+)
 async def destroy_agent(request: Request, name: str):
-    """Kept for API compatibility. Same behaviour as DELETE
-    /api/agents/{name} — archives the agent. True permanent deletion
-    happens via ``DELETE /api/agents/archived/{id}``.
+    """Kept for API compatibility. Same behaviour as DELETE /api/agents/{name} — archives the agent.
+
+    True permanent deletion happens via ``DELETE /api/agents/archived/{id}``.
+    Prefer DELETE /api/agents/{name} for new integrations.
     """
     result = await _archive_agent_fully(request, name)
     if "error" in result:
@@ -1099,8 +1322,22 @@ async def destroy_agent(request: Request, name: str):
     return result
 
 
-@router.post("/api/agents/archived/{archive_id}/restore")
+@router.post(
+    "/api/agents/archived/{archive_id}/restore",
+    summary="Restore an archived agent",
+    responses={
+        404: {"model": ErrorResponse, "description": "Archived agent not found."},
+        500: {"model": ErrorResponse, "description": "Restore operation failed."},
+    },
+)
 async def restore_archived_agent(request: Request, archive_id: str):
+    """Restore a previously archived agent from its snapshot.
+
+    Restores the incus snapshot, starts the container, mints a new LiteLLM key,
+    re-imports chat history from the archive, and moves the config entry back
+    to the live agents list. Returns 404 if the archive_id does not match any
+    archived agent.
+    """
     import json as _json
     from tinyagentos.containers import (
         snapshot_restore, rename_container, start_container, set_env, exec_in_container,
@@ -1293,12 +1530,19 @@ async def restore_archived_agent(request: Request, archive_id: str):
     }
 
 
-@router.delete("/api/agents/archived/{archive_id}")
+@router.delete(
+    "/api/agents/archived/{archive_id}",
+    summary="Permanently purge an archived agent",
+    responses={
+        404: {"model": ErrorResponse, "description": "Archived agent not found."},
+    },
+)
 async def purge_archived_agent(request: Request, archive_id: str):
-    """True permanent deletion: destroys the archived container (and all its
-    snapshots) via ``incus delete --force``, wipes any exported tarball,
-    deletes chat channels and messages, and drops the config entry.
-    Irreversible.
+    """True permanent deletion: destroys the archived container (and all its snapshots).
+
+    Destroys via ``incus delete --force``, wipes any exported tarball, deletes
+    all associated chat channels and messages, and drops the config entry.
+    This action is irreversible. Returns 404 if the archive_id does not match.
     """
     import shutil
     from tinyagentos.containers import destroy_container
@@ -1386,9 +1630,19 @@ async def purge_archived_agent(request: Request, archive_id: str):
     return {"status": "purged", "id": archive_id}
 
 
-@router.post("/api/agents/{name}/resume")
+@router.post(
+    "/api/agents/{name}/resume",
+    summary="Resume a paused agent",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def resume_agent(request: Request, name: str):
-    """Clear the paused flag on an agent, allowing it to accept new calls."""
+    """Clear the paused flag on an agent, allowing it to accept new calls.
+
+    If the agent is not paused, returns `{status: ok, paused: false}` without
+    making any changes. Returns 404 if no agent with that slug exists.
+    """
     config = request.app.state.config
     agent = find_agent(config, name)
     if not agent:
@@ -1406,9 +1660,20 @@ class PersonaPatch(BaseModel):
     source_persona_id: str | None = None
 
 
-@router.patch("/api/agents/{slug}/persona")
+@router.patch(
+    "/api/agents/{slug}/persona",
+    summary="Update agent persona",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch):
-    """Partially update an agent's persona fields (soul_md, agent_md, source_persona_id)."""
+    """Partially update an agent's persona fields (soul_md, agent_md, source_persona_id).
+
+    Only supplied (non-null) fields are written; omitted fields are left
+    unchanged. Returns the full updated agent dict on success.
+    """
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:
@@ -1430,9 +1695,21 @@ class MemoryPatch(BaseModel):
 _VALID_MEMORY_PLUGINS = {"taosmd", "none"}
 
 
-@router.patch("/api/agents/{slug}/memory")
+@router.patch(
+    "/api/agents/{slug}/memory",
+    summary="Set agent memory plugin",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid memory_plugin value."},
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch):
-    """Set the memory_plugin for an agent. Valid values: 'taosmd', 'none'."""
+    """Set the memory_plugin for an agent. Valid values: 'taosmd', 'none'.
+
+    Returns 400 if the supplied plugin is not in the allowed set. Returns
+    the full updated agent dict on success.
+    """
     if body.memory_plugin not in _VALID_MEMORY_PLUGINS:
         return error_response(
             status_code=400,
@@ -1450,9 +1727,19 @@ async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch):
     return {"status": "ok", "agent": agent}
 
 
-@router.post("/api/agents/{slug}/dismiss-migration-banner")
+@router.post(
+    "/api/agents/{slug}/dismiss-migration-banner",
+    summary="Dismiss the v2 persona migration banner",
+    responses={
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+    },
+)
 async def dismiss_migration_banner(request: Request, slug: str):
-    """Flip migrated_to_v2_personas to True, hiding the migration banner."""
+    """Flip migrated_to_v2_personas to True, hiding the migration banner.
+
+    Idempotent — calling it on an agent that has already dismissed the banner
+    returns the same `{status: ok}` response without error.
+    """
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:
@@ -1466,13 +1753,23 @@ class AgentModelUpdate(BaseModel):
     model: str
 
 
-@router.post("/api/agents/{name}/model")
+@router.post(
+    "/api/agents/{name}/model",
+    summary="Update agent model",
+    responses={
+        400: {"model": ErrorResponse, "description": "Empty model identifier."},
+        404: {"model": ErrorResponse, "description": "Agent not found."},
+        409: {"model": ErrorResponse, "description": "Model not reachable in cluster."},
+        422: {"model": ErrorResponse, "description": "Request validation failed."},
+    },
+)
 async def update_agent_model(request: Request, name: str, body: AgentModelUpdate):
     """Update an agent's primary model and resume it if it was paused.
 
     Validates the requested model against currently-reachable cluster models
-    (local backend catalog + online workers).  Returns 409 if the model is
-    not reachable anywhere in the cluster right now.
+    (local backend catalog + online workers). Returns 409 if the model is
+    not reachable anywhere in the cluster right now. Also clears the paused
+    flag so the agent immediately starts accepting calls on the new model.
     """
     config = request.app.state.config
     agent = find_agent(config, name)
