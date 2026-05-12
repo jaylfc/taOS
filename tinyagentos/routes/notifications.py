@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import secrets
 import time
 
@@ -37,10 +38,16 @@ async def list_notifications(request: Request, unread_only: bool = False):
         for item in items:
             cls = "notif-item unread" if not item["read"] else "notif-item"
             level_icon = {"warning": "&#x26A0;&#xFE0F;", "error": "&#x274C;", "info": "&#x2139;&#xFE0F;"}.get(item["level"], "")
+            # Escape token-supplied fields — ui.notify (and other agent-driven
+            # paths) write arbitrary strings into title/message. Without
+            # escaping, an agent could inject script tags into the desktop
+            # notification panel.
+            safe_title = html.escape(item["title"] or "")
+            safe_message = html.escape(item["message"] or "")
             html_parts.append(
                 f'<div class="{cls}">'
-                f'<div class="notif-title">{level_icon} {item["title"]}</div>'
-                f'<div class="notif-meta">{item["message"]} &middot; {_format_ts(item["timestamp"])}</div>'
+                f'<div class="notif-title">{level_icon} {safe_title}</div>'
+                f'<div class="notif-meta">{safe_message} &middot; {_format_ts(item["timestamp"])}</div>'
                 f'</div>'
             )
         return HTMLResponse("".join(html_parts))
@@ -77,14 +84,10 @@ class UiNotifyRequest(BaseModel):
         description="Optional attribution shown to the user; defaults to the calling agent's name.",
         examples=["code-review-agent"],
     )
-    action_url: str | None = Field(
-        None,
-        description=(
-            "Optional deep link the user lands on when they tap the notification. "
-            "Stored on the notification but not yet surfaced — pending the multi-user "
-            "NotificationStore migration in Pass 2."
-        ),
-    )
+    # action_url is intentionally NOT in the Pass 1 schema — the existing
+    # single-user NotificationStore has no column for it, so accepting the
+    # field would silently discard caller intent. It returns alongside the
+    # multi-user store migration in Pass 2.
 
     model_config = {
         "json_schema_extra": {

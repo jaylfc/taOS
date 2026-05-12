@@ -78,3 +78,8 @@ async def test_post_ui_notify_priority_default_normal(client, app):
         json={"title": "Default", "body": "no priority"},
     )
     assert resp.status_code == 200
+    # The stored notification's level reflects the default priority.
+    items = await app.state.notifications.list()
+    matching = [n for n in items if n["title"] == "Default"]
+    assert matching, "default-priority notification did not land in the store"
+    assert matching[0]["level"] == "normal"

@@ -60,10 +60,11 @@ fields hold the values you sent.
 - **`app_origin`** (string, optional): attribution shown to the user.
   Defaults to the agent's name. Always prefixed with `agent:` in the
   stored `source` field for audit consistency.
-- **`action_url`** (string, optional): deep link the user lands on when
-  they tap the notification. Stored on the request body and accepted by
-  the endpoint; surfaced in the UI when the multi-user NotificationStore
-  migration lands in Pass 2.
+
+> **Pass 2 (not yet in the request schema):** `action_url` (deep link
+> the user lands on when they tap the notification). It lands alongside
+> the multi-user NotificationStore migration so it has a column to be
+> stored in — accepting it now would silently discard the caller's intent.
 
 ---
 

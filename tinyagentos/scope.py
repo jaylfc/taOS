@@ -48,9 +48,9 @@ def require_scope(action: str) -> Callable:
                     error="scope_denied",
                     detail=f"Token scope does not cover {action!r}.",
                     fix=(
-                        f"Reissue the token with a wider scope (e.g. ['*'] for full "
-                        f"access) via POST /api/agents/{{name}}/token/issue, or have "
-                        f"the operator widen the agent's permissions."
+                        "Reissue the token with a wider scope (e.g. ['*'] for full "
+                        "access) via POST /api/agents/{name}/token/issue, or have "
+                        "the operator widen the agent's permissions."
                     ),
                     doc_url="/docs/agents/concepts/permissions",
                 )

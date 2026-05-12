@@ -51,6 +51,15 @@ class AgentTokensStore:
                 )
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_id ON agent_tokens(agent_id)")
+            # Partial unique index: at most one ACTIVE (non-revoked) token per
+            # agent. The in-process asyncio.Lock in issue() coordinates within
+            # a single worker; this constraint catches the cross-worker race a
+            # multi-worker deploy could otherwise hit. BEGIN IMMEDIATE for the
+            # issue transaction is a Pass 2 concern (tracked as a follow-up).
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_active_token "
+                "ON agent_tokens(agent_id) WHERE revoked_at IS NULL"
+            )
             await db.commit()
 
     async def close(self) -> None:
