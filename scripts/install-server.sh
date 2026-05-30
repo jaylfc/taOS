@@ -532,38 +532,24 @@ ensure_docker_for_apps() {
         log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
         return 0
     fi
-    # macOS: Docker apps run under Docker Desktop / the Apple Containerization
-    # framework, both user-managed — never apt/brew a daemon here.
+    # macOS: the Docker Engine can't run natively (it needs a Linux VM), so the
+    # server doesn't install it here — agents use the Apple Containerization
+    # framework, and Docker apps need a user-provided Docker (Desktop/colima).
     if [[ "$(uname -s)" == "Darwin" ]]; then
         command -v docker >/dev/null 2>&1 \
             && log "macOS: using existing Docker ($(docker --version 2>/dev/null | head -1))" \
-            || log "macOS: install Docker Desktop for Store Docker apps (server uses Apple Containerization for agents)"
+            || log "macOS: provide Docker (Desktop or colima) for Store Docker apps; agents use Apple Containerization"
         return 0
     fi
 
-    # WSL2: Docker is normally Docker Desktop with WSL integration, and systemd
-    # is often disabled. Use whatever's already on PATH; don't fight Desktop.
-    local is_wsl=0
-    grep -qi microsoft /proc/version 2>/dev/null && is_wsl=1
-
+    # Linux, including WSL2: install the native Docker Engine + CLI in-distro.
+    # We deliberately use the in-distro engine rather than Docker Desktop on
+    # WSL2 so the controller is self-contained and headless; the daemon-start
+    # ladder below covers WSL2 setups where systemd isn't enabled.
     if command -v docker >/dev/null 2>&1; then
         log "docker present: $(docker --version 2>/dev/null | head -1)"
-        if (( is_wsl )); then
-            log "WSL2: leaving daemon management to Docker Desktop / your distro"
-            _docker_running || warn "docker is installed but the daemon isn't reachable — enable Docker Desktop's WSL integration or start it in-distro"
-            return 0
-        fi
-    elif (( is_wsl )); then
-        warn "WSL2 without docker on PATH — enable Docker Desktop's WSL integration (recommended) for Store Docker apps; attempting an in-distro install as fallback"
-        if command -v apt-get >/dev/null 2>&1; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
-                || warn "apt install docker.io failed — enable Docker Desktop WSL integration instead"
-        else
-            warn "install Docker Desktop and enable WSL integration for Store Docker apps"
-            return 0
-        fi
     else
-        log "installing Docker (for Store Docker apps)"
+        log "installing Docker Engine (for Store Docker apps)"
         if command -v apt-get >/dev/null 2>&1; then
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
                 || warn "apt install docker.io failed — Store Docker apps will be unavailable"
