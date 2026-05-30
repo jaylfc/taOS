@@ -121,39 +121,40 @@ class LazyBackendProxy:
         backend_writer: asyncio.StreamWriter | None = None
 
         try:
-            await self._ensure_backend()
-        except Exception:
-            _write_503(client_writer)
-            return
-
-        try:
-            backend_reader, backend_writer = await asyncio.wait_for(
-                asyncio.open_connection(self._backend_host, self._backend_port),
-                timeout=5.0,
-            )
-        except Exception:
-            _write_503(client_writer)
-            return
-
-        # Bidirectional copy.
-        async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
             try:
-                while True:
-                    data = await src.read(65536)
-                    if not data:
-                        break
-                    dst.write(data)
-                    await dst.drain()
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                pass
+                await self._ensure_backend()
+            except Exception:
+                _write_503(client_writer)
+                return
 
-        try:
-            await asyncio.gather(
-                _pipe(client_reader, backend_writer),
-                _pipe(backend_reader, client_writer),
-            )
-        except Exception:
-            pass
+            try:
+                backend_reader, backend_writer = await asyncio.wait_for(
+                    asyncio.open_connection(self._backend_host, self._backend_port),
+                    timeout=5.0,
+                )
+            except Exception:
+                _write_503(client_writer)
+                return
+
+            # Bidirectional copy.
+            async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
+                try:
+                    while True:
+                        data = await src.read(65536)
+                        if not data:
+                            break
+                        dst.write(data)
+                        await dst.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    pass
+
+            try:
+                await asyncio.gather(
+                    _pipe(client_reader, backend_writer),
+                    _pipe(backend_reader, client_writer),
+                )
+            except Exception:
+                pass
         finally:
             if backend_writer is not None:
                 backend_writer.close()
