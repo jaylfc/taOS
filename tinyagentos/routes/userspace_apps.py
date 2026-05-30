@@ -13,6 +13,8 @@ from tinyagentos.userspace.url_guard import is_safe_public_url
 
 router = APIRouter()
 
+_SDK_PATH = Path(__file__).resolve().parent.parent / "userspace" / "sdk" / "taos-app-sdk.js"
+
 # Bundle CSP. The `sandbox allow-scripts` directive (no allow-same-origin)
 # forces the document into an OPAQUE origin even on a direct top-level
 # navigation — so a userspace bundle can never execute on the core origin with
@@ -33,6 +35,13 @@ _BUNDLE_CSP = (
 
 def _apps_root(request: Request) -> Path:
     return Path(request.app.state.data_dir) / "apps"
+
+
+@router.get("/api/userspace-apps/sdk.js")
+async def serve_sdk(request: Request):
+    resp = FileResponse(_SDK_PATH, media_type="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @router.get("/api/userspace-apps")
