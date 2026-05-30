@@ -486,7 +486,99 @@ ensure_container_runtime() {
     fi
 }
 
+# Re-apply (idempotently) the incusbr0 FORWARD ACCEPT rules and persist them.
+# Docker sets the iptables FORWARD policy to DROP, which severs incus bridge
+# (incusbr0) traffic — agent containers would lose network. When both engines
+# are present we must explicitly ACCEPT incusbr0 forwarding, and persist it
+# because Docker re-inserts its rules on every restart / reboot.
+_apply_incusbr0_forward_accept() {
+    sudo iptables -C FORWARD -i incusbr0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -i incusbr0 -j ACCEPT || true
+    sudo iptables -C FORWARD -o incusbr0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -o incusbr0 -j ACCEPT || true
+    log "applied incusbr0 FORWARD ACCEPT rules (Docker ↔ incus coexistence)"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo tee /etc/systemd/system/taos-incus-docker-net.service >/dev/null <<'UNIT'
+[Unit]
+Description=taOS: keep incus bridge forwarding open alongside Docker
+After=docker.service incus.service
+Wants=docker.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'iptables -C FORWARD -i incusbr0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -i incusbr0 -j ACCEPT; iptables -C FORWARD -o incusbr0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -o incusbr0 -j ACCEPT'
+[Install]
+WantedBy=multi-user.target
+UNIT
+        sudo systemctl daemon-reload >/dev/null 2>&1 || true
+        sudo systemctl enable taos-incus-docker-net.service >/dev/null 2>&1 \
+            && log "installed taos-incus-docker-net.service (persists incusbr0 rules across reboots)" \
+            || warn "could not enable taos-incus-docker-net.service — incusbr0 rules may not survive a reboot"
+    else
+        warn "non-systemd host: incusbr0 FORWARD ACCEPT rules applied now but won't persist a reboot — re-apply via your firewall manager"
+    fi
+}
+
+# Docker is the engine for Store "Docker apps" (manifest install.method: docker),
+# including compose-style stacks like SearXNG / Perplexica. incus runs agent
+# LXCs; Docker runs Docker apps. Installed by default — set TAOS_SKIP_DOCKER=1
+# to opt out (Store Docker apps then stay unavailable).
+ensure_docker_for_apps() {
+    if [[ "${TAOS_SKIP_DOCKER:-0}" == "1" ]]; then
+        log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
+        return 0
+    fi
+    # macOS Docker Desktop is user-managed — don't touch it.
+    [[ "$(uname -s)" == "Darwin" ]] && return 0
+
+    if command -v docker >/dev/null 2>&1; then
+        log "docker present: $(docker --version 2>/dev/null | head -1)"
+    else
+        log "installing Docker (for Store Docker apps)"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
+                || warn "apt install docker.io failed — Store Docker apps will be unavailable"
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q moby-engine \
+                || warn "dnf install moby-engine failed — Store Docker apps will be unavailable"
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed docker \
+                || warn "pacman install docker failed — Store Docker apps will be unavailable"
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker \
+                || warn "apk add docker failed — Store Docker apps will be unavailable"
+        else
+            warn "unrecognised package manager — install Docker manually for Store Docker apps"
+            return 0
+        fi
+    fi
+
+    command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
+
+    # Enable + start the daemon (systemd, else OpenRC for Alpine).
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl enable --now docker >/dev/null 2>&1 \
+            || warn "could not enable/start docker.service — start it manually (sudo systemctl start docker)"
+    elif command -v rc-update >/dev/null 2>&1; then
+        sudo rc-update add docker default >/dev/null 2>&1 || true
+        sudo service docker start >/dev/null 2>&1 || warn "could not start docker (OpenRC) — start it manually"
+    fi
+
+    # Let the controller's user run docker without sudo.
+    local duser="${SUDO_USER:-$USER}"
+    if [[ -n "$duser" && "$duser" != "root" ]]; then
+        sudo groupadd -f docker >/dev/null 2>&1 || true
+        sudo usermod -aG docker "$duser" >/dev/null 2>&1 \
+            && log "added '$duser' to the docker group (re-login for it to take effect)" \
+            || warn "could not add '$duser' to the docker group"
+    fi
+
+    # Keep incus agent networking alive now that Docker owns the FORWARD chain.
+    if command -v incus >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
+        _apply_incusbr0_forward_accept
+    fi
+}
+
 ensure_container_runtime
+ensure_docker_for_apps
 
 # --- clone / update the repo ---------------------------------------------
 
