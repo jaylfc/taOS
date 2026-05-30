@@ -263,11 +263,16 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
     attach_line = _render_attachments(evt.get("attachments") or [])
     cid = evt.get("channel_id")
 
-    # Dedup: never re-process the same message
+    # Dedup: never re-process the same message.
+    # Bound the set to prevent unbounded growth over very long-lived SSE sessions.
+    _MAX_SEEN = 1000
     if msg_id and msg_id in _seen:
         log.info("user_message id=%s already processed — skipping", msg_id)
         return False
     if msg_id:
+        if len(_seen) >= _MAX_SEEN:
+            # Discard oldest half to keep memory bounded
+            _seen.clear()
         _seen.add(msg_id)
 
     # Error cooldown: after a final failure, pause before accepting new messages
