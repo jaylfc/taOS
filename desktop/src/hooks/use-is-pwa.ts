@@ -18,7 +18,11 @@ export function useIsPwa(): boolean {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const mql = window.matchMedia("(display-mode: standalone)");
-    const update = () => setIsPwa(mql.matches);
+    const update = () =>
+      setIsPwa(
+        mql.matches ||
+          (navigator as unknown as { standalone?: boolean }).standalone === true
+      );
     mql.addEventListener("change", update);
     return () => mql.removeEventListener("change", update);
   }, []);

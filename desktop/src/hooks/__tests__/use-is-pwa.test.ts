@@ -84,4 +84,30 @@ describe("useIsPwa", () => {
     });
     expect(result.current).toBe(false);
   });
+
+  it("does NOT clobber iOS navigator.standalone when media query changes", () => {
+    // iOS: navigator.standalone is true, but (display-mode: standalone) media
+    // query is unreliable — must keep PWA detection even when mql fires "change".
+    Object.defineProperty(navigator, "standalone", {
+      value: true,
+      configurable: true,
+      writable: true,
+    });
+
+    const mql = createMql(false);  // media query says browser
+    vi.stubGlobal("matchMedia", vi.fn(() => mql));
+
+    const { result } = renderHook(() => useIsPwa());
+    // Initial state: combined check says true (navigator.standalone)
+    expect(result.current).toBe(true);
+
+    // Media query change event fires — must NOT clobber navigator.standalone
+    act(() => {
+      matchMediaListeners.get("change")?.forEach((h) => h({ matches: false }));
+    });
+    expect(result.current).toBe(true);  // still PWA via navigator.standalone
+
+    // Clean up
+    Object.defineProperty(navigator, "standalone", { value: undefined, configurable: true });
+  });
 });
