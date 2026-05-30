@@ -120,13 +120,12 @@
    The PWA layout is UNCHANGED — this only activates with .taos-browser.
    ================================================================== */
 .taos-browser {
-  /* Drop safe-area insets — browser chrome already provides padding */
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
-
-  /* Use dvh (dynamic viewport height) so Safari's collapsing URL bar
-     doesn't leave a gap at the bottom. The 100vh line is the real fallback
-     for browsers without dvh support; the dvh line overrides it where supported. */
+  /* Note: safe-area insets are applied inline on individual components
+     (ChatStandalone, BottomSheet, OnboardingScreen, ModelPickerModal, …),
+     not on this element, and env(safe-area-inset-*) is already 0 in browser
+     (non-standalone) mode — so a padding reset here would be a no-op. We only
+     fix the viewport height: use dvh so Safari's collapsing URL bar doesn't
+     leave a gap, with 100vh as the fallback for browsers without dvh. */
   height: 100vh !important;
   height: 100dvh !important;
 }
