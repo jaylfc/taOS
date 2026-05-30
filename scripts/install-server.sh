@@ -549,24 +549,32 @@ ensure_docker_for_apps() {
     if command -v docker >/dev/null 2>&1; then
         log "docker present: $(docker --version 2>/dev/null | head -1)"
     else
-        log "installing Docker Engine (for Store Docker apps)"
+        # Install the engine AND the Compose v2 plugin — taOS deploys Store
+        # Docker apps via `docker compose`, and most distro 'docker' packages
+        # (e.g. Ubuntu's docker.io) don't bundle compose, which otherwise fails
+        # with "unknown command: docker compose".
+        log "installing Docker Engine + Compose plugin (for Store Docker apps)"
         if command -v apt-get >/dev/null 2>&1; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
-                || warn "apt install docker.io failed — Store Docker apps will be unavailable"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 \
+                || warn "apt install docker.io/docker-compose-v2 failed — Store Docker apps will be unavailable"
         elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y -q moby-engine \
-                || warn "dnf install moby-engine failed — Store Docker apps will be unavailable"
+            sudo dnf install -y -q moby-engine docker-compose \
+                || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
         elif command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm --needed docker \
-                || warn "pacman install docker failed — Store Docker apps will be unavailable"
+            sudo pacman -Sy --noconfirm --needed docker docker-compose \
+                || warn "pacman install docker/docker-compose failed — Store Docker apps will be unavailable"
         elif command -v apk >/dev/null 2>&1; then
-            sudo apk add --no-cache docker \
-                || warn "apk add docker failed — Store Docker apps will be unavailable"
+            sudo apk add --no-cache docker docker-cli-compose \
+                || warn "apk add docker/docker-cli-compose failed — Store Docker apps will be unavailable"
         else
-            warn "unrecognised package manager — install Docker manually for Store Docker apps"
+            warn "unrecognised package manager — install Docker + the compose plugin manually for Store Docker apps"
             return 0
         fi
     fi
+
+    # Verify the Compose v2 plugin is usable; taOS installs apps via it.
+    docker compose version >/dev/null 2>&1 \
+        || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin)"
 
     command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
 
