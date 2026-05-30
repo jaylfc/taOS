@@ -1130,7 +1130,9 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [localTypes, setLocalTypes] = useState<string[]>([...FALLBACK_LOCAL_TYPES]);
-  const [cloudTypes, setCloudTypes] = useState<string[]>([...FALLBACK_CLOUD_TYPES]);
+  // Only the setter is used — it re-renders so categorization picks up the
+  // updated `_activeCloudTypes`; the value itself is read via that module var.
+  const [, setCloudTypes] = useState<string[]>([...FALLBACK_CLOUD_TYPES]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
