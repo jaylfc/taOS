@@ -15,14 +15,31 @@ class DockerInstaller(AppInstaller):
     def _compose_path(self, app_id: str) -> Path:
         return self.apps_dir / app_id / "docker-compose.yaml"
 
+    @staticmethod
+    def _is_named_volume(source: str) -> bool:
+        """True when a compose volume source is a named volume (not a host path).
+
+        Host bind mounts start with /, ./, ../ or ~; anything else (e.g.
+        ``config``) is a named volume that must be declared at the top level.
+        """
+        return bool(source) and not source.startswith(("/", "./", "../", "~"))
+
     def _generate_compose(self, app_id: str, install_config: dict) -> dict:
         """Generate a docker-compose.yaml from the manifest install config."""
         service = {
             "image": install_config["image"],
             "restart": "unless-stopped",
         }
+        named_volumes: dict[str, None] = {}
         if "volumes" in install_config:
             service["volumes"] = install_config["volumes"]
+            # Named volumes (e.g. "config:/etc/searxng") must also be declared
+            # in a top-level `volumes:` block or compose rejects the project
+            # with "refers to undefined volume".
+            for vol in install_config["volumes"]:
+                source = str(vol).split(":", 1)[0]
+                if self._is_named_volume(source):
+                    named_volumes[source] = None
         if "env" in install_config:
             service["environment"] = install_config["env"]
         if "ports" in install_config.get("requires", {}):
@@ -30,10 +47,12 @@ class DockerInstaller(AppInstaller):
         elif "ports" in install_config:
             service["ports"] = [f"{p}:{p}" for p in install_config["ports"]]
 
-        return {
-            "version": "3.8",
-            "services": {app_id: service},
-        }
+        # No top-level `version:` — it's obsolete in Compose v2 and emits a
+        # warning on every command.
+        compose: dict = {"services": {app_id: service}}
+        if named_volumes:
+            compose["volumes"] = named_volumes
+        return compose
 
     async def install(self, app_id: str, install_config: dict, **kwargs) -> dict:
         app_dir = self.apps_dir / app_id
