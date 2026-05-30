@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
 
+# Cloud provider backend types whose advertised models are routable for a
+# deploy / model-change. Mirrors providers.CLOUD_TYPES; kept local to avoid a
+# cross-route import. #351 tracks consolidating these provider-type lists.
+_CLOUD_PROVIDER_TYPES = ("openai", "anthropic", "openrouter", "kilocode", "openai-compatible")
+
 router = APIRouter()
 
 
@@ -513,7 +518,12 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         cloud_models: list[str] = []
         try:
             for b in config.backends or []:
-                if b.get("type") in ("openai", "anthropic"):
+                # All cloud provider types, not just openai/anthropic — kilocode,
+                # openrouter and openai-compatible advertise routable cloud models
+                # too. Mirrors providers.CLOUD_TYPES (#351 tracks consolidating
+                # these lists). Without this, deploying an agent on e.g.
+                # kilo-auto/free 404s as "model not found".
+                if b.get("type") in _CLOUD_PROVIDER_TYPES:
                     for m in b.get("models") or []:
                         if isinstance(m, dict):
                             mid = m.get("id") or m.get("name") or ""
@@ -1318,7 +1328,10 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     cloud_models: list[str] = []
     try:
         for b in config.backends or []:
-            if b.get("type") in ("openai", "anthropic"):
+            # All cloud provider types (see _CLOUD_PROVIDER_TYPES / #351), so a
+            # model change to a kilocode/openrouter/openai-compatible model
+            # resolves instead of 404ing.
+            if b.get("type") in _CLOUD_PROVIDER_TYPES:
                 for m in b.get("models") or []:
                     mid = (m.get("id") or m.get("name") or "") if isinstance(m, dict) else str(m)
                     if mid:
