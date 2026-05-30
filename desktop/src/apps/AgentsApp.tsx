@@ -36,6 +36,8 @@ import { AgentShortcutRow } from "@/components/AgentShortcutRow";
 import type { AgentShortcut } from "@/hooks/use-agent-shortcuts";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { useNotificationStore } from "@/stores/notification-store";
+import { deriveTerminalShortcutTarget } from "./shortcut-launch";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -2302,22 +2304,52 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   }
 
   const handleShortcutLaunch = useCallback(async (agentId: string, shortcut: AgentShortcut) => {
-    const res = await fetch(
-      `/api/agents/${encodeURIComponent(agentId)}/shortcuts/${shortcut.idx}/launch`,
-      { method: "POST", headers: { Accept: "application/json" } }
-    );
-    if (!res.ok) return;
+    const failed = (body: string) =>
+      useNotificationStore.getState().addNotification({
+        source: agentId,
+        title: `Couldn't open ${shortcut.label}`,
+        body,
+        level: "error",
+        icon: "terminal",
+      });
+
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/shortcuts/${shortcut.idx}/launch`,
+        { method: "POST", headers: { Accept: "application/json" } }
+      );
+    } catch {
+      failed("Couldn't reach the server.");
+      return;
+    }
+    if (!res.ok) {
+      let detail = `Request failed (${res.status}).`;
+      try {
+        const e = await res.json();
+        if (e?.detail || e?.error) detail = String(e.detail ?? e.error);
+      } catch { /* keep generic detail */ }
+      failed(detail);
+      return;
+    }
+
     const { redirect_url } = await res.json() as { redirect_url: string };
     const kind = shortcut.kind;
     if (kind === "dashboard") {
       const app = getApp("browser");
       if (app) openWindow("browser", app.defaultSize, { initialUrl: redirect_url });
     } else if (kind === "tui" || kind === "container-terminal") {
-      const parsed = new URL(redirect_url, window.location.href);
-      const ticket = parsed.searchParams.get("t") ?? "";
-      const wsUrl = redirect_url
-        .replace(/^http:\/\//, "ws://")
-        .replace(/^https:\/\//, "wss://");
+      const { ticket, wsUrl, redeemUrl } = deriveTerminalShortcutTarget(
+        redirect_url,
+        agentId,
+        shortcut.idx,
+        window.location.href,
+      );
+      // Establish the taos_shortcut session cookie before opening the PTY
+      // socket. The WebSocket endpoint authenticates via that cookie, which
+      // only GET /redeem sets; the 302 it returns sets the cookie regardless
+      // of where the redirect points, so we ignore the follow-up response.
+      await fetch(redeemUrl, { credentials: "include" }).catch(() => { /* cookie still set */ });
       const app = getApp("terminal");
       if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } });
     }
