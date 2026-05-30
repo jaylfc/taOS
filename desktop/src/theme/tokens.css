@@ -107,3 +107,34 @@
   --board-status-claimed: #ffb340;
   --board-status-closed: #30d158;
 }
+
+/* ==================================================================
+   Browser (non-PWA) mobile layout
+   ==================================================================
+   When taOS runs in Safari/Chrome (not installed as a PWA), the
+   browser chrome — URL bar, tab bar, share sheet — consumes part of
+   the viewport. The PWA layout assumes the full viewport (with
+   safe-area-inset for the notch/home indicator). In browser mode we
+   drop the safe-area padding (the browser handles it) and constrain
+   the viewport so the dock sits above the tab bar instead of behind it.
+   The PWA layout is UNCHANGED — this only activates with .taos-browser.
+   ================================================================== */
+.taos-browser {
+  /* Drop safe-area insets — browser chrome already provides padding */
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+
+  /* Use dvh (dynamic viewport height) so Safari's collapsing URL bar
+     doesn't leave a gap at the bottom. Falls back to 100vh. */
+  height: 100dvh !important;
+}
+
+.taos-browser .taos-wallpaper {
+  /* In browser mode, stretch the wallpaper to fill the dynamic viewport */
+  background-size: 100% 100%;
+}
+
+/* Push the dock up slightly in browser mode to clear the tab bar */
+.taos-browser [class*="MobileDock"] {
+  padding-bottom: 4px;
+}
