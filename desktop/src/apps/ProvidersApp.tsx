@@ -257,10 +257,12 @@ function ProviderForm({
   editing,
   onSave,
   onClose,
+  localTypes,
 }: {
   editing: Provider | null;
   onSave: () => void;
   onClose: () => void;
+  localTypes: string[];
 }) {
   type WizardCategory = "local" | "cluster" | "cloud";
   type WizardStep = "category" | "cloud-pick" | "cluster-info" | "config";
@@ -1120,7 +1122,6 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
   const [showForm, setShowForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [cloudTypes, setCloudTypes] = useState<string[]>([...FALLBACK_CLOUD_TYPES]);
   const [localTypes, setLocalTypes] = useState<string[]>([...FALLBACK_LOCAL_TYPES]);
 
   const showToast = useCallback((msg: string) => {
@@ -1161,7 +1162,6 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
     fetch("/api/providers/types", { headers: { Accept: "application/json" } })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
-        if (data?.cloud) setCloudTypes(data.cloud);
         if (data?.local) setLocalTypes(data.local);
       })
       .catch(() => {}); // keep fallback
@@ -1399,6 +1399,7 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
           editing={editingProvider}
           onSave={handleFormSave}
           onClose={handleFormClose}
+          localTypes={localTypes}
         />
       )}
 
