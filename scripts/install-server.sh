@@ -591,9 +591,24 @@ ensure_docker_for_apps() {
         fi
     fi
 
-    # Verify the Compose v2 plugin is usable; taOS installs apps via it.
-    docker compose version >/dev/null 2>&1 \
-        || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin)"
+    # Ensure the Compose v2 plugin (taOS deploys apps via `docker compose`).
+    # This also covers the case where Docker was ALREADY installed but without
+    # the plugin — the fresh-install branch above bundles it, but a pre-existing
+    # Docker (the `had_docker` path) may lack it, so install it here too.
+    if ! docker compose version >/dev/null 2>&1; then
+        log "installing the Docker Compose v2 plugin"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2 || true
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q docker-compose || true
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed docker-compose || true
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker-cli-compose || true
+        fi
+        docker compose version >/dev/null 2>&1 \
+            || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin manually)"
+    fi
 
     command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
 
