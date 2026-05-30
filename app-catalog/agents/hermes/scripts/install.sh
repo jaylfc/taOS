@@ -16,16 +16,22 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
 # ---------------------------------------------------------------------------
 # 2. Install hermes-agent from PyPI
 # ---------------------------------------------------------------------------
+# --break-system-packages is intentional: the agent container is Debian
+# (PEP 668 externally-managed-environment), and this is a dedicated
+# single-purpose container, so a system-wide install is correct here.
 pip3 install --break-system-packages hermes-agent
 
-# Verify
+# Verify + resolve the binary's real path (pip may install it to
+# /usr/local/bin, /usr/bin, or ~/.local/bin depending on the base image),
+# so the systemd unit points at wherever it actually landed.
 if ! command -v hermes >/dev/null 2>&1; then
   echo "[hermes] FATAL: hermes CLI not found after install"
   exit 1
 fi
+HERMES_BIN="$(command -v hermes)"
 
 HERMES_VERSION=$(hermes --version 2>/dev/null || echo "unknown")
-echo "[hermes] installed: $HERMES_VERSION"
+echo "[hermes] installed: $HERMES_VERSION ($HERMES_BIN)"
 
 # ---------------------------------------------------------------------------
 # 3. Create directories
@@ -36,7 +42,7 @@ chmod 750 /var/lib/hermes
 # ---------------------------------------------------------------------------
 # 4. Systemd unit
 # ---------------------------------------------------------------------------
-cat > /etc/systemd/system/hermes-gateway.service <<'UNIT'
+cat > /etc/systemd/system/hermes-gateway.service <<UNIT
 [Unit]
 Description=Hermes Agent Gateway
 After=network-online.target
@@ -45,7 +51,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/var/lib/hermes/env
-ExecStart=/usr/local/bin/hermes gateway start
+ExecStart=${HERMES_BIN} gateway start
 Restart=on-failure
 RestartSec=5
 WorkingDirectory=/var/lib/hermes
