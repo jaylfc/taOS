@@ -209,7 +209,13 @@ async def call_hermes(client: httpx.AsyncClient, messages: list) -> str:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"[hermes error: {e}]"
+        # str(e) is empty for several httpx errors (notably ReadTimeout), which
+        # produced a blank "[hermes error: ]" that hid the real cause — e.g. the
+        # Hermes agent loop running past the request timeout against a slow
+        # local model. Always surface a non-empty detail (exception type at
+        # minimum) so the user/logs see what actually failed.
+        detail = str(e) or type(e).__name__
+        return f"[hermes error: {detail}]"
 
 
 async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
