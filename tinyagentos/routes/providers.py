@@ -44,7 +44,7 @@ async def get_provider_types():
     The frontend fetches this at boot so adding a new provider type only
     touches ``tinyagentos/providers/__init__.py``.
     """
-    from tinyagentos.providers import ALL_TYPES, CLOUD_TYPES, LOCAL_TYPES
+    from tinyagentos.providers import ALL_TYPES, LOCAL_TYPES
 
     return {
         "all": sorted(ALL_TYPES),

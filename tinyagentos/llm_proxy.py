@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from tinyagentos.providers import BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES
+from tinyagentos.providers import BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES, NEEDS_API_BASE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,7 @@ def generate_litellm_config(
         }
 
         # Set api_base for local/self-hosted backends and openai-compatible
-        if backend_type in ("ollama", "rkllama", "llama-cpp", "vllm", "exo", "mlx", "openai-compatible"):
+        if backend_type in NEEDS_API_BASE_TYPES:
             litellm_params["api_base"] = url
 
         # API key from secrets reference

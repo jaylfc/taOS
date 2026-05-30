@@ -1164,7 +1164,9 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
       .then((data) => {
         if (data?.local) setLocalTypes(data.local);
       })
-      .catch(() => {}); // keep fallback
+      .catch((err) => {
+        console.warn("Failed to fetch provider types, using fallback:", err);
+      });
   }, []);
 
   async function handleDelete(name: string) {
