@@ -1187,6 +1187,13 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
         }
       })
       .finally(() => clearTimeout(timeout));
+
+    // Abort the in-flight fetch and clear the timeout on unmount so the
+    // .then handlers can't setState after the component is gone.
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
   }, []);
 
   async function handleDelete(name: string) {
