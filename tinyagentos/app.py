@@ -83,6 +83,7 @@ from tinyagentos.desktop_settings import DesktopSettingsStore
 from tinyagentos.user_memory import UserMemoryStore
 from tinyagentos.user_personas import UserPersonaStore
 from tinyagentos.installed_apps import InstalledAppsStore
+from tinyagentos.userspace.store import UserspaceAppStore
 from tinyagentos.skills import SkillStore
 from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
@@ -312,6 +313,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_memory = UserMemoryStore(data_dir / "user_memory.db")
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
+    userspace_apps = UserspaceAppStore(data_dir / "userspace_apps.db")
     skills = SkillStore(data_dir / "skills.db")
     knowledge_store = KnowledgeStore(
         data_dir / "knowledge.db",
@@ -369,6 +371,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await desktop_settings.init()
         await user_memory.init()
         await installed_apps.init()
+        await userspace_apps.init()
         await skills.init()
         await knowledge_store.init()
         await mcp_store.init()
@@ -561,6 +564,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.user_memory = user_memory
         app.state.user_personas = user_personas
         app.state.installed_apps = installed_apps
+        app.state.userspace_apps = userspace_apps
         app.state.skills = skills
         app.state.benchmark_store = benchmark_store
         app.state.score_cache = score_cache
@@ -870,6 +874,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await knowledge_graph.close()
         await archive.close()
         await installed_apps.close()
+        await userspace_apps.close()
         await user_memory.close()
         await desktop_settings.close()
         await canvas_store.close()
@@ -977,6 +982,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.user_memory = user_memory
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
+    app.state.userspace_apps = userspace_apps
     app.state.skills = skills
     app.state.knowledge_store = knowledge_store
     app.state.ingest_pipeline = knowledge_ingest
