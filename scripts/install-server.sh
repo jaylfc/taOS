@@ -492,35 +492,44 @@ _docker_running() {
     sudo docker info >/dev/null 2>&1
 }
 
-# Re-apply (idempotently) the incusbr0 FORWARD ACCEPT rules and persist them.
-# Docker sets the iptables FORWARD policy to DROP, which severs incus bridge
-# (incusbr0) traffic — agent containers would lose network. When both engines
-# are present we must explicitly ACCEPT incusbr0 forwarding, and persist it
-# because Docker re-inserts its rules on every restart / reboot.
-_apply_incusbr0_forward_accept() {
-    sudo iptables -C FORWARD -i incusbr0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -i incusbr0 -j ACCEPT || true
-    sudo iptables -C FORWARD -o incusbr0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -o incusbr0 -j ACCEPT || true
-    log "applied incusbr0 FORWARD ACCEPT rules (Docker ↔ incus coexistence)"
+# Configure Docker so it coexists with incus networking.
+#
+# When Docker enables IP forwarding it sets the iptables FORWARD chain's
+# default policy to DROP, which severs incus bridge (incusbr0) traffic and
+# kills agent-container networking. The upstream-recommended fix (Incus
+# firewall docs + Docker packet-filtering docs) is Docker's own switch
+# `ip-forward-no-drop`, which tells Docker to never touch that policy — far
+# cleaner than patching the FORWARD chain by hand (Docker reorders/reinserts
+# its own rules, so hand-added FORWARD rules are fragile). We also enable IP
+# forwarding via sysctl as a belt-and-suspenders for older Docker builds that
+# predate the option. This must run BEFORE Docker's daemon first starts so the
+# DROP policy is never set in the first place.
+_configure_docker_incus_coexistence() {
+    sudo mkdir -p /etc/docker
+    # Merge "ip-forward-no-drop": true into any existing daemon.json. python3 is
+    # a controller dependency installed earlier, so it's always available here.
+    sudo python3 - <<'PY'
+import json, os
+path = "/etc/docker/daemon.json"
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}  # malformed/empty — start clean rather than fail the install
+if data.get("ip-forward-no-drop") is not True:
+    data["ip-forward-no-drop"] = True
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+PY
+    log "set Docker ip-forward-no-drop=true for incus coexistence (/etc/docker/daemon.json)"
 
-    if command -v systemctl >/dev/null 2>&1; then
-        sudo tee /etc/systemd/system/taos-incus-docker-net.service >/dev/null <<'UNIT'
-[Unit]
-Description=taOS: keep incus bridge forwarding open alongside Docker
-After=docker.service incus.service
-Wants=docker.service
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c 'iptables -C FORWARD -i incusbr0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -i incusbr0 -j ACCEPT; iptables -C FORWARD -o incusbr0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -o incusbr0 -j ACCEPT'
-[Install]
-WantedBy=multi-user.target
-UNIT
-        sudo systemctl daemon-reload >/dev/null 2>&1 || true
-        sudo systemctl enable taos-incus-docker-net.service >/dev/null 2>&1 \
-            && log "installed taos-incus-docker-net.service (persists incusbr0 rules across reboots)" \
-            || warn "could not enable taos-incus-docker-net.service — incusbr0 rules may not survive a reboot"
-    else
-        warn "non-systemd host: incusbr0 FORWARD ACCEPT rules applied now but won't persist a reboot — re-apply via your firewall manager"
-    fi
+    # Independently ensure IPv4 forwarding is on; if it's already enabled when
+    # Docker starts, Docker won't flip the FORWARD policy even on engines that
+    # lack ip-forward-no-drop.
+    printf 'net.ipv4.conf.all.forwarding=1\n' | sudo tee /etc/sysctl.d/99-taos-forwarding.conf >/dev/null
+    sudo sysctl -p /etc/sysctl.d/99-taos-forwarding.conf >/dev/null 2>&1 || true
 }
 
 # Docker is the engine for Store "Docker apps" (manifest install.method: docker),
@@ -542,11 +551,21 @@ ensure_docker_for_apps() {
         return 0
     fi
 
+    local had_docker=0
+    command -v docker >/dev/null 2>&1 && had_docker=1
+
+    # Configure Docker↔incus coexistence BEFORE the daemon's first start so
+    # Docker never sets the FORWARD policy to DROP. Only relevant when incus is
+    # also present (it runs the agent containers).
+    if command -v incus >/dev/null 2>&1; then
+        _configure_docker_incus_coexistence
+    fi
+
     # Linux, including WSL2: install the native Docker Engine + CLI in-distro.
     # We deliberately use the in-distro engine rather than Docker Desktop on
     # WSL2 so the controller is self-contained and headless; the daemon-start
     # ladder below covers WSL2 setups where systemd isn't enabled.
-    if command -v docker >/dev/null 2>&1; then
+    if (( had_docker )); then
         log "docker present: $(docker --version 2>/dev/null | head -1)"
     else
         # Install the engine AND the Compose v2 plugin — taOS deploys Store
@@ -604,9 +623,19 @@ ensure_docker_for_apps() {
             || warn "could not add '$duser' to the docker group"
     fi
 
-    # Keep incus agent networking alive now that Docker owns the FORWARD chain.
-    if command -v incus >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
-        _apply_incusbr0_forward_accept
+    # Keep incus agent networking alive alongside Docker. ip-forward-no-drop
+    # (set above, before first start) stops Docker setting FORWARD=DROP going
+    # forward. For a Docker that was already running, restart so it re-reads the
+    # config, then normalise any DROP a prior start may have left (idempotent;
+    # ACCEPT is ip-forward-no-drop's intended end-state — Docker still filters
+    # its own containers via the DOCKER/DOCKER-USER chains).
+    if command -v incus >/dev/null 2>&1; then
+        if (( had_docker )) && command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl restart docker >/dev/null 2>&1 || true
+        fi
+        if command -v iptables >/dev/null 2>&1; then
+            sudo iptables -P FORWARD ACCEPT 2>/dev/null || true
+        fi
     fi
 }
 
