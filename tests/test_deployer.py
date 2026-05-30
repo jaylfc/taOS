@@ -986,3 +986,45 @@ class TestUndeployWithStateCleanup:
             result = await undeploy_agent("keeper", data_dir=tmp_path, delete_state=False)
             assert result["success"] is True
             assert (tmp_path / "agent-workspaces" / "keeper").exists()
+
+
+class TestContainerFailureExplanation:
+    """The opaque incus 'idmapped storage / change ownership' failure (nested
+    deploy in an unprivileged LXC) must be translated into actionable guidance.
+    See the discussion #357 LXC investigation."""
+
+    def test_idmap_failure_gives_privileged_container_guidance(self):
+        from tinyagentos.deployer import _explain_container_failure
+        raw = ("Launching taos-agent-x\nError: Failed instance creation: Failed "
+               "to handle idmapped storage: Failed to change ownership of: "
+               "/var/lib/incus/storage-pools/default/containers/taos-agent-x/rootfs")
+        msg = _explain_container_failure(raw)
+        assert "privileged" in msg.lower()
+        assert "nesting" in msg.lower()
+        assert raw in msg  # underlying error preserved for debugging
+
+    def test_generic_failure_passes_through_when_privileged(self, monkeypatch):
+        from tinyagentos import deployer
+        # Pretend we're NOT in an unprivileged userns so a generic error isn't
+        # misattributed to the container-privilege problem.
+        monkeypatch.setattr(deployer, "_is_unprivileged_userns", lambda: False)
+        msg = deployer._explain_container_failure("no space left on device")
+        assert msg == "Container creation failed: no space left on device"
+        assert "privileged" not in msg.lower()
+
+    def test_unprivileged_userns_flags_even_generic_error(self, monkeypatch):
+        from tinyagentos import deployer
+        monkeypatch.setattr(deployer, "_is_unprivileged_userns", lambda: True)
+        msg = deployer._explain_container_failure("some other failure")
+        assert "privileged" in msg.lower()
+
+    def test_uid_map_parsing(self, tmp_path):
+        from tinyagentos import deployer
+        # privileged / host: root maps to 0
+        f = tmp_path / "privileged"; f.write_text("         0          0 4294967295\n")
+        assert deployer._is_unprivileged_userns(str(f)) is False
+        # unprivileged: root maps to 100000
+        f2 = tmp_path / "unpriv"; f2.write_text("         0     100000      65536\n")
+        assert deployer._is_unprivileged_userns(str(f2)) is True
+        # missing file (e.g. macOS): not an unprivileged Linux userns
+        assert deployer._is_unprivileged_userns(str(tmp_path / "nope")) is False
