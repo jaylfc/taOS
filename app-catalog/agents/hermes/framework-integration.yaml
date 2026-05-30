@@ -1,5 +1,10 @@
 # Hermes Agent Gateway — framework integration manifest
 # See docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md
+#
+# NOTE: This is a *design specification*, not machine-processed runtime config.
+# ${VAR} tokens (e.g. ${TAOS_HOST}) are documentation placeholders indicating
+# values resolved by the TAOS deployer at provision time. They mirror the same
+# env vars written to /var/lib/hermes/env by the deployer after install.sh.
 
 framework: hermes
 display_name: Hermes Agent Gateway

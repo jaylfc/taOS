@@ -30,31 +30,11 @@ echo "[hermes] installed: $HERMES_VERSION"
 # ---------------------------------------------------------------------------
 # 3. Create directories
 # ---------------------------------------------------------------------------
-mkdir -p /var/lib/hermes /var/log/hermes /var/lib/hermes/profiles
+mkdir -p /var/lib/hermes /var/log/hermes
 chmod 750 /var/lib/hermes
 
 # ---------------------------------------------------------------------------
-# 4. Bootstrap Hermes profile for TAOS
-# ---------------------------------------------------------------------------
-cat > /var/lib/hermes/profiles/taos-agent.yaml <<'PROFILE'
-# TAOS-managed Hermes agent profile
-model:
-  default: taos-chat
-  provider: openai
-  base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:4000/v1}
-  api_mode: chat_completions
-
-gateway:
-  host: 127.0.0.1
-  port: 8642
-
-logging:
-  level: info
-  file: /var/log/hermes/gateway.log
-PROFILE
-
-# ---------------------------------------------------------------------------
-# 5. Systemd unit
+# 4. Systemd unit
 # ---------------------------------------------------------------------------
 cat > /etc/systemd/system/hermes-gateway.service <<'UNIT'
 [Unit]
@@ -64,10 +44,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=HERMES_PROFILE=taos-agent
-Environment=HERMES_HOME=/var/lib/hermes
-Environment=TAOS_BRIDGE_URL=${TAOS_BRIDGE_URL}
-Environment=TAOS_AGENT_API_KEY=${TAOS_AGENT_API_KEY}
+EnvironmentFile=-/var/lib/hermes/env
 ExecStart=/usr/local/bin/hermes gateway start
 Restart=on-failure
 RestartSec=5
@@ -83,3 +60,8 @@ systemctl daemon-reload
 systemctl enable hermes-gateway.service
 
 echo "[hermes] install complete (service enabled, start deferred to deployer)"
+echo "[hermes] deployer must write /var/lib/hermes/env with:"
+echo "        HERMES_PROFILE=taos-agent"
+echo "        HERMES_HOME=/var/lib/hermes"
+echo "        TAOS_BRIDGE_URL=<url>"
+echo "        TAOS_AGENT_API_KEY=<key>"
