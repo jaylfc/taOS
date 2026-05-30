@@ -1,0 +1,98 @@
+# Hermes Agent Gateway — framework integration manifest
+# See docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md
+
+framework: hermes
+display_name: Hermes Agent Gateway
+version: "1.0.0"
+
+# -- Protocol endpoints the adapter speaks -----------------------------------
+endpoints:
+  llm: openai-chat              # Hermes natively speaks OpenAI /v1/chat/completions
+  memory: none                  # Hermes uses its own memory system (not qmd/mem0)
+  skills: none                  # Hermes has built-in skills via its plugin system
+  channels: sse-bridge          # Connects to TAOS channels via SSE (install_hermes.sh bridge)
+  approval: none                # Not implemented yet
+  sandbox: host-enforced        # Container-level sandbox, Hermes has no built-in sandbox
+
+# -- Persistence contract -----------------------------------------------------
+persistence:
+  memory:
+    kind: json-volume
+    mount: /var/lib/hermes
+    host_subdir: agent-memory/{name}/hermes/
+    writable: true
+    note: Hermes memories stored as JSON files in profile directory
+  workspace:
+    mount: /workspace
+    host_subdir: agent-workspaces/{name}/
+    writable: true
+  sessions:
+    mount: /sessions
+    host_subdir: agent-sessions/{name}/
+    writable: true
+
+# -- Capabilities matrix ------------------------------------------------------
+capabilities:
+  multi_model: true             # Hermes supports multiple model providers
+  hot_reload:
+    kind: restart-only          # Hermes requires restart for config changes
+    interval_seconds: null
+    push_supported: false
+    fallback: restart
+  metrics:
+    format: none                # Hermes has no built-in metrics endpoint
+  observability:
+    structured_logs: true       # Hermes gateway logs are structured
+    trace_format: none
+
+# -- Installation -------------------------------------------------------------
+install:
+  base_image: debian:bookworm-slim
+  steps:
+    - apt: [python3, python3-pip, python3-venv, git, curl, ca-certificates]
+    - run: "pip3 install hermes-agent"
+    - mkdir: [/var/lib/hermes, /var/log/hermes]
+  install_script: scripts/install.sh
+
+# -- Runtime ------------------------------------------------------------------
+runtime:
+  command: ["hermes", "gateway", "start"]
+  working_dir: /var/lib/hermes
+  env:
+    TAOS_BRIDGE_URL: "http://${TAOS_HOST}:6971"
+    TAOS_AGENT_API_KEY: "${AGENT_API_KEY}"
+    HERMES_PROFILE: taos-agent
+  ports: [8642]
+
+# -- Health check -------------------------------------------------------------
+health:
+  kind: http
+  url: "http://localhost:8642/health"
+  initial_delay_seconds: 10
+  interval_seconds: 15
+  failure_threshold: 3
+
+# -- Config reload ------------------------------------------------------------
+reload:
+  kind: restart-only            # Hermes requires restart for config changes
+  interval_seconds: null
+  push_supported: false
+  fallback: restart
+
+# -- Tier B escape hatches — none needed, Hermes speaks OpenAI natively -------
+hooks: {}
+
+# -- Data migration — not applicable (Hermes uses its own memory system) ------
+data_migration: {}
+
+# -- Tests --------------------------------------------------------------------
+tests:
+  smoke:
+    - name: "adapter responds to /message with valid Hermes response"
+      input: {text: "Hello from TAOS", from_name: "Test User"}
+      expect_status: 200
+    - name: "adapter /health returns ok"
+      input: {}
+      expect_status: 200
+      expect_body: {status: ok, framework: hermes}
+  golden: []
