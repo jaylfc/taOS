@@ -152,6 +152,12 @@ function AgentRow({
     latestForAgent.sha !== agent.framework_version_sha;
 
   const btnCls = isMobile ? "h-11 w-11" : "h-8 w-8";
+  // Only allow management actions while the agent is running
+  const running = agent.status === "running";
+  const disabledCls = running
+    ? "hover:bg-shell-surface-hover"
+    : "opacity-40 cursor-not-allowed";
+  const disabledAria = running ? undefined : "Agent is not running";
 
   const actionButtons = (
     <>
@@ -170,30 +176,33 @@ function AgentRow({
       <Button
         variant="ghost"
         size="icon"
-        className={btnCls}
-        onClick={() => onViewLogs(agent.name)}
-        aria-label={`View logs for ${agent.name}`}
-        title="View Logs"
+        className={`${btnCls} ${disabledCls}`}
+        onClick={running ? () => onViewLogs(agent.name) : undefined}
+        disabled={!running}
+        aria-label={`View logs for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
+        title={running ? "View Logs" : "Agent must be running to view logs"}
       >
         <ScrollText size={15} />
       </Button>
       <Button
         variant="ghost"
         size="icon"
-        className={btnCls}
-        onClick={() => onViewSkills(agent.name)}
-        aria-label={`Manage skills for ${agent.name}`}
-        title="Skills"
+        className={`${btnCls} ${disabledCls}`}
+        onClick={running ? () => onViewSkills(agent.name) : undefined}
+        disabled={!running}
+        aria-label={`Manage skills for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
+        title={running ? "Skills" : "Agent must be running to manage skills"}
       >
         <Wrench size={15} />
       </Button>
       <Button
         variant="ghost"
         size="icon"
-        className={btnCls}
-        onClick={() => onViewMessages(agent.name)}
-        aria-label={`View messages for ${agent.name}`}
-        title="Messages"
+        className={`${btnCls} ${disabledCls}`}
+        onClick={running ? () => onViewMessages(agent.name) : undefined}
+        disabled={!running}
+        aria-label={`View messages for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
+        title={running ? "Messages" : "Agent must be running to view messages"}
       >
         <MessageSquare size={15} />
       </Button>
@@ -2185,12 +2194,17 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           const err = await res.json();
           if (err?.error) msg = String(err.error);
         } catch { /* ignore */ }
-        window.alert(msg);
+        useNotificationStore.getState().addNotification({
+          source: name, title: "Resume failed", body: msg, level: "error",
+        });
         return;
       }
       fetchAgents();
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "Network error");
+      useNotificationStore.getState().addNotification({
+        source: name, title: "Resume failed",
+        body: e instanceof Error ? e.message : "Network error", level: "error",
+      });
     }
   }
 

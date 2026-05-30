@@ -123,6 +123,9 @@ HERMES_URL = os.environ.get("HERMES_API_URL", "http://127.0.0.1:8642")
 HERMES_KEY = os.environ.get("LITELLM_API_KEY", "")
 HERMES_MODEL = os.environ.get("TAOS_MODEL", "kilo-auto/free")
 RECONNECT_DELAY = 2.0
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2.0  # seconds — grows to 2, 4, 8 for retries 1-3
+ERROR_COOLDOWN = 5.0      # seconds after a final error before accepting new messages
 
 
 async def fetch_bootstrap(client: httpx.AsyncClient) -> dict:
@@ -192,7 +195,8 @@ async def _thinking(c: httpx.AsyncClient, ch_id, state: str, *,
 
 async def call_hermes(client: httpx.AsyncClient, messages: list) -> str:
     """Call Hermes' OpenAI-compatible /v1/chat/completions and return the
-    assistant's reply text. Errors return a short error string so the
+    assistant's reply text. Retries with exponential backoff on transient
+    failures; returns a short error string if all attempts fail so the
     user always sees something."""
     payload = {
         "model": HERMES_MODEL,
@@ -201,21 +205,34 @@ async def call_hermes(client: httpx.AsyncClient, messages: list) -> str:
     headers = {"Content-Type": "application/json"}
     if HERMES_KEY:
         headers["Authorization"] = f"Bearer {HERMES_KEY}"
-    try:
-        resp = await client.post(f"{HERMES_URL}/v1/chat/completions",
-                                  json=payload, headers=headers, timeout=120)
-        if resp.status_code != 200:
+    last_error = ""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = await client.post(f"{HERMES_URL}/v1/chat/completions",
+                                      json=payload, headers=headers, timeout=120)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+            # Non-200: 5xx are retryable, 4xx are not
+            if 500 <= resp.status_code < 600 and attempt < MAX_RETRIES:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                log.warning("hermes %d (attempt %d/%d) — retry in %.1fs",
+                            resp.status_code, attempt, MAX_RETRIES, delay)
+                last_error = f"[hermes returned {resp.status_code}: {resp.text[:200]}]"
+                await asyncio.sleep(delay)
+                continue
             return f"[hermes returned {resp.status_code}: {resp.text[:200]}]"
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        # str(e) is empty for several httpx errors (notably ReadTimeout), which
-        # produced a blank "[hermes error: ]" that hid the real cause — e.g. the
-        # Hermes agent loop running past the request timeout against a slow
-        # local model. Always surface a non-empty detail (exception type at
-        # minimum) so the user/logs see what actually failed.
-        detail = str(e) or type(e).__name__
-        return f"[hermes error: {detail}]"
+        except Exception as e:
+            detail = str(e) or type(e).__name__
+            if attempt < MAX_RETRIES:
+                delay = RETRY_BACKOFF_BASE ** attempt
+                log.warning("hermes error %s (attempt %d/%d) — retry in %.1fs",
+                            detail, attempt, MAX_RETRIES, delay)
+                last_error = f"[hermes error: {detail}]"
+                await asyncio.sleep(delay)
+                continue
+            return f"[hermes error: {detail}]"
+    return last_error or "[hermes error: unknown]"
 
 
 async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
@@ -233,7 +250,11 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
         log.warning("reply POST failed: %s", e)
 
 
-async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict) -> None:
+async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict,
+                              _seen: set, _error_until: list) -> bool:
+    """Process one user_message event. Returns True if a reply was posted.
+    Deduplicates by msg_id and enforces an error cooldown to prevent
+    runaway retry loops driven by repeated SSE events."""
     msg_id = evt.get("id", "")
     trace_id = evt.get("trace_id", msg_id)
     text = evt.get("text", "")
@@ -241,6 +262,26 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
     ctx = _render_context(evt.get("context") or [])
     attach_line = _render_attachments(evt.get("attachments") or [])
     cid = evt.get("channel_id")
+
+    # Dedup: never re-process the same message.
+    # Bound the set to prevent unbounded growth over very long-lived SSE sessions.
+    _MAX_SEEN = 1000
+    if msg_id and msg_id in _seen:
+        log.info("user_message id=%s already processed — skipping", msg_id)
+        return False
+    if msg_id:
+        if len(_seen) >= _MAX_SEEN:
+            # Discard oldest half to keep memory bounded
+            _seen.clear()
+        _seen.add(msg_id)
+
+    # Error cooldown: after a final failure, pause before accepting new messages
+    now = asyncio.get_event_loop().time()
+    if now < _error_until[0]:
+        log.info("user_message id=%s suppressed during error cooldown (%.1fs remaining)",
+                 msg_id, _error_until[0] - now)
+        return False
+
     log.info("user_message id=%s text=%r force=%s", msg_id, text[:80], force)
     system = _SYSTEM_PROMPT + ("\n\nYou were directly addressed. Reply naturally; do not output NO_RESPONSE."
         if force else
@@ -259,12 +300,21 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
     final = _suppress(reply, force)
     if final is None:
         log.info("suppressed NO_RESPONSE for id=%s", msg_id)
-        return
+        return False
+
+    # If the reply is an error, start the cooldown to prevent tight retry loops
+    if final.startswith("[hermes "):
+        log.warning("hermes error reply for id=%s — enabling %.1fs cooldown", msg_id, ERROR_COOLDOWN)
+        _error_until[0] = asyncio.get_event_loop().time() + ERROR_COOLDOWN
+
     await post_reply(client, channel["reply_url"], channel["auth_bearer"],
                      msg_id, trace_id, final, cid)
+    return True
 
 
 async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event) -> None:
+    seen_ids: set[str] = set()
+    error_until: list[float] = [0.0]  # mutable so tasks can update it
     while not stop.is_set():
         try:
             log.info("SSE connecting to %s", channel["events_url"])
@@ -287,7 +337,8 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                         if evt_type == "user_message" and evt_data:
                             try:
                                 evt = json.loads(evt_data)
-                                asyncio.create_task(handle_user_message(client, evt, channel))
+                                asyncio.create_task(handle_user_message(
+                                    client, evt, channel, seen_ids, error_until))
                             except Exception as e:
                                 log.warning("parse error: %s", e)
                         evt_type, evt_data = "", ""

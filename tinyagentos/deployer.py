@@ -28,6 +28,47 @@ from tinyagentos.containers import (
 
 logger = logging.getLogger(__name__)
 
+
+def _is_unprivileged_userns(uid_map_path: str = "/proc/self/uid_map") -> bool:
+    """True when this process runs in an unprivileged user namespace.
+
+    In an unprivileged container (e.g. an unprivileged LXC) the root user is
+    mapped to a non-zero host UID. The first line of ``/proc/self/uid_map`` is
+    ``<ns_start> <host_start> <count>``; a privileged container or the host maps
+    ``0 0 ...`` (root↦root), while an unprivileged one maps ``0 100000 ...``.
+    Nested container creation can't remap a new container's rootfs in that case,
+    so agent deploys fail with an "idmapped storage / change ownership" error.
+    """
+    try:
+        with open(uid_map_path, encoding="ascii") as f:
+            fields = f.readline().split()
+    except OSError:
+        return False  # no procfs (e.g. macOS) — not an unprivileged Linux userns
+    return len(fields) == 3 and fields[1] != "0"
+
+
+def _explain_container_failure(raw_error: object) -> str:
+    """Turn a raw container-creation error into an actionable message.
+
+    The kernel-level "Failed to handle idmapped storage / change ownership"
+    error is opaque to users. When we see it — or we can confirm we're in an
+    unprivileged user namespace — explain that taOS needs a privileged
+    container and how to fix it (the common Proxmox case)."""
+    text = str(raw_error).strip() if raw_error else "unknown error"
+    idmap_failure = ("idmapped storage" in text.lower()
+                     or "change ownership" in text.lower())
+    if idmap_failure or _is_unprivileged_userns():
+        return (
+            "Container creation failed — taOS appears to be running in an "
+            "unprivileged container, which cannot create the nested agent "
+            "container (the kernel can't remap the new container's filesystem). "
+            "Fix: run taOS in a privileged container with nesting enabled. On "
+            "Proxmox, set the LXC to Privileged and enable Nesting (Options → "
+            "Features: nesting=1, keyctl=1, fuse=1), then redeploy. "
+            f"Underlying error: {text}"
+        )
+    return f"Container creation failed: {text}"
+
 _TAOSMD_BEGIN = "<!-- taosmd:rules-begin -->"
 _TAOSMD_END = "<!-- taosmd:rules-end -->"
 
@@ -242,7 +283,7 @@ async def deploy_agent(req: DeployRequest) -> dict:
         root_size_gib=req.root_size_gib,
     )
     if not result["success"]:
-        return {"success": False, "error": f"Container creation failed: {result.get('error')}", "steps": steps}
+        return {"success": False, "error": _explain_container_failure(result.get("error")), "steps": steps}
     steps.append("container_created")
 
     try:
