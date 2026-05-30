@@ -29,8 +29,9 @@ class LazyBackendProxy:
     Listens on ``proxy_port``.  On the first inbound connection, runs
     ``start_cmd`` to launch the real backend.  All subsequent connections are
     forwarded bidirectionally to ``backend_host:backend_port`` until the proxy
-    has been idle for ``idle_timeout_seconds``, at which point the subprocess
-    is stopped.  PWA / SSE / raw HTTP all pass through unchanged.
+    has had *no active connections* for ``idle_timeout_seconds``, at which
+    point the subprocess is stopped.  PWA / SSE / raw HTTP all pass through
+    unchanged.
     """
 
     def __init__(
@@ -56,6 +57,7 @@ class LazyBackendProxy:
 
         self._proc: subprocess.Popen | None = None
         self._last_request: float = 0.0
+        self._active_connections: int = 0
         self._start_lock = asyncio.Lock()
         self._idle_task: asyncio.Task | None = None
         self._server: asyncio.AbstractServer | None = None
@@ -113,6 +115,11 @@ class LazyBackendProxy:
             client_writer.close()
             return
 
+        self._active_connections += 1
+        self._cancel_idle()
+
+        backend_writer: asyncio.StreamWriter | None = None
+
         try:
             await self._ensure_backend()
         except Exception:
@@ -126,7 +133,6 @@ class LazyBackendProxy:
             )
         except Exception:
             _write_503(client_writer)
-            await self._restart_idle_timer()
             return
 
         # Bidirectional copy.
@@ -149,10 +155,12 @@ class LazyBackendProxy:
         except Exception:
             pass
         finally:
-            backend_writer.close()
+            if backend_writer is not None:
+                backend_writer.close()
             client_writer.close()
-
-        await self._restart_idle_timer()
+            self._active_connections -= 1
+            if self._running and self._active_connections == 0:
+                await self._restart_idle_timer()
 
     # -- subprocess lifecycle ------------------------------------------------
 
@@ -165,6 +173,7 @@ class LazyBackendProxy:
             if self._proc is not None and self._proc.poll() is None:
                 return
 
+            cold_start_started_at = time.monotonic()
             logger.info("lazy-proxy :%d → starting: %r", self._proxy_port, self._start_cmd)
             self._proc = subprocess.Popen(
                 self._start_cmd,
@@ -182,17 +191,28 @@ class LazyBackendProxy:
                 try:
                     async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
                         resp = await client.get(self._health_url)
-                        if resp.status_code < 500:
-                            logger.info("lazy-proxy :%d → healthy", self._proxy_port)
+                        if 200 <= resp.status_code < 300:
+                            logger.info(
+                                "lazy-proxy :%d → healthy in %.2fs",
+                                self._proxy_port,
+                                time.monotonic() - cold_start_started_at,
+                            )
                             return
                 except Exception:
                     pass
                 await asyncio.sleep(_HEALTH_POLL_INTERVAL)
 
-            self._kill_subprocess()
+            await self._kill_subprocess()
+            elapsed = time.monotonic() - cold_start_started_at
+            logger.warning(
+                "lazy-proxy :%d → cold start timed out after %.2fs",
+                self._proxy_port,
+                elapsed,
+            )
             raise TimeoutError(
                 f"Backend at {self._backend_host}:{self._backend_port} "
-                f"did not become healthy within {_COLD_START_TIMEOUT}s"
+                f"did not become healthy within {_COLD_START_TIMEOUT}s "
+                f"(waited {elapsed:.1f}s)"
             )
 
     async def _stop_subprocess(self) -> None:
@@ -200,6 +220,9 @@ class LazyBackendProxy:
             self._proc = None
             return
         logger.info("lazy-proxy :%d → stopping backend", self._proxy_port)
+
+        proc = self._proc  # keep local ref — _kill_subprocess clears self._proc
+
         if self._stop_cmd:
             stop_proc: subprocess.Popen | None = None
             try:
@@ -209,25 +232,37 @@ class LazyBackendProxy:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                stop_proc.wait(timeout=_STOP_GRACE_PERIOD)
+                await asyncio.to_thread(stop_proc.wait, timeout=_STOP_GRACE_PERIOD)
             except subprocess.TimeoutExpired:
                 if stop_proc:
                     stop_proc.kill()
-        else:
-            self._proc.terminate()
+
+        # Always terminate/wait the actual backend process.
+        proc.terminate()
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(proc.wait), timeout=_STOP_GRACE_PERIOD
+            )
+        except (asyncio.TimeoutError, subprocess.TimeoutExpired):
+            proc.kill()
             try:
-                self._proc.wait(timeout=_STOP_GRACE_PERIOD)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+                await asyncio.wait_for(
+                    asyncio.to_thread(proc.wait), timeout=5
+                )
+            except (asyncio.TimeoutError, subprocess.TimeoutExpired):
+                pass
+
         self._proc = None
 
-    def _kill_subprocess(self) -> None:
+    async def _kill_subprocess(self) -> None:
         if self._proc is None:
             return
         try:
             self._proc.kill()
-            self._proc.wait(timeout=5)
-        except Exception:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._proc.wait), timeout=5
+            )
+        except (asyncio.TimeoutError, subprocess.TimeoutExpired):
             pass
         self._proc = None
 
