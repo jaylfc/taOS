@@ -33,8 +33,10 @@ config_schema:
     default: [discord]
 
 compliance:
-  tier: verified-with-fork
-  fork_url: https://github.com/NousResearch/hermes-agent
+  # No fork is used — Hermes is OpenAI-compatible natively and the bridge
+  # adapter lives in the taOS controller (see notes), so this is a plain
+  # "verified" entry, not verified-with-fork (and there is no fork_url).
+  tier: verified
   adapter: hermes_adapter.py
   bridge_protocol: openai-chat
   notes: |
