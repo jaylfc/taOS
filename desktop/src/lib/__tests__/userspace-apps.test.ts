@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { fetchUserspaceApps, toAppManifest } from "../userspace-apps";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { fetchUserspaceApps, toAppManifest, installUserspaceApp, grantUserspacePermissions } from "../userspace-apps";
 
 describe("userspace apps", () => {
   it("maps a userspace app row to an AppManifest in the 'userspace' category", () => {
@@ -24,5 +24,49 @@ describe("userspace apps", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
     expect(await fetchUserspaceApps()).toEqual([]);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("installUserspaceApp", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts multipart to install endpoint and returns parsed InstallResult", async () => {
+    const mockResult = { app_id: "todo", permissions_requested: ["app.net"], needs_consent: false, new_permissions: [] };
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => mockResult });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const file = new File(["data"], "todo.taosapp");
+    const result = await installUserspaceApp(file);
+
+    expect(result).toEqual(mockResult);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/userspace-apps/install",
+      expect.objectContaining({ method: "POST", credentials: "include" })
+    );
+  });
+
+  it("throws with server error string when res.ok is false", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ error: "bundle too large" }) }));
+
+    const file = new File(["data"], "todo.taosapp");
+    await expect(installUserspaceApp(file)).rejects.toThrow("bundle too large");
+  });
+});
+
+describe("grantUserspacePermissions", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts JSON granted list to the permissions URL with credentials include", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", mockFetch);
+
+    await grantUserspacePermissions("todo", ["app.net"]);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/userspace-apps/todo/permissions",
+      expect.objectContaining({ method: "POST", credentials: "include" })
+    );
+    const callArgs = mockFetch.mock.calls[0][1];
+    expect(JSON.parse(callArgs.body)).toEqual({ granted: ["app.net"] });
   });
 });

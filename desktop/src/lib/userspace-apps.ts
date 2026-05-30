@@ -30,6 +30,44 @@ export function toAppManifest(row: UserspaceAppRow): AppManifest {
   };
 }
 
+export interface InstallResult {
+  app_id: string;
+  permissions_requested: string[];
+  needs_consent: boolean;
+  new_permissions: string[];
+}
+
+export async function installUserspaceApp(file: File): Promise<InstallResult> {
+  const form = new FormData();
+  form.append("package", file);
+  const res = await fetch("/api/userspace-apps/install", {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = `install failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error) detail = body.error;
+    } catch {
+      // non-JSON error body; keep the status-based message
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as InstallResult;
+}
+
+export async function grantUserspacePermissions(appId: string, granted: string[]): Promise<void> {
+  const res = await fetch(`/api/userspace-apps/${encodeURIComponent(appId)}/permissions`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ granted }),
+  });
+  if (!res.ok) throw new Error(`granting permissions failed (${res.status})`);
+}
+
 export async function fetchUserspaceApps(): Promise<AppManifest[]> {
   let rows: UserspaceAppRow[];
   try {
