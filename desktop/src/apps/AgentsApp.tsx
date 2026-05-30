@@ -176,7 +176,7 @@ function AgentRow({
       <Button
         variant="ghost"
         size="icon"
-        className={`${btnCls} ${running ? "hover:bg-shell-surface-hover" : "opacity-40 cursor-not-allowed"}`}
+        className={`${btnCls} ${disabledCls}`}
         onClick={running ? () => onViewLogs(agent.name) : undefined}
         disabled={!running}
         aria-label={`View logs for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
@@ -187,7 +187,7 @@ function AgentRow({
       <Button
         variant="ghost"
         size="icon"
-        className={`${btnCls} ${running ? "hover:bg-shell-surface-hover" : "opacity-40 cursor-not-allowed"}`}
+        className={`${btnCls} ${disabledCls}`}
         onClick={running ? () => onViewSkills(agent.name) : undefined}
         disabled={!running}
         aria-label={`Manage skills for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
@@ -198,7 +198,7 @@ function AgentRow({
       <Button
         variant="ghost"
         size="icon"
-        className={`${btnCls} ${running ? "hover:bg-shell-surface-hover" : "opacity-40 cursor-not-allowed"}`}
+        className={`${btnCls} ${disabledCls}`}
         onClick={running ? () => onViewMessages(agent.name) : undefined}
         disabled={!running}
         aria-label={`View messages for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
