@@ -34,9 +34,17 @@ HERMES_VERSION=$(hermes --version 2>/dev/null || echo "unknown")
 echo "[hermes] installed: $HERMES_VERSION ($HERMES_BIN)"
 
 # ---------------------------------------------------------------------------
-# 3. Create directories
+# 3. Dedicated service account + directories
 # ---------------------------------------------------------------------------
+# Run the gateway as an unprivileged system user rather than root. Even though
+# this is an isolated single-purpose container, a non-root service user limits
+# the blast radius of any gateway compromise (defence in depth).
+if ! id -u hermes >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin hermes
+fi
+
 mkdir -p /var/lib/hermes /var/log/hermes
+chown hermes:hermes /var/lib/hermes /var/log/hermes
 chmod 750 /var/lib/hermes
 
 # ---------------------------------------------------------------------------
@@ -50,6 +58,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=hermes
+Group=hermes
 EnvironmentFile=-/var/lib/hermes/env
 ExecStart=${HERMES_BIN} gateway start
 Restart=on-failure
@@ -66,7 +76,8 @@ systemctl daemon-reload
 systemctl enable hermes-gateway.service
 
 echo "[hermes] install complete (service enabled, start deferred to deployer)"
-echo "[hermes] deployer must write /var/lib/hermes/env with:"
+echo "[hermes] deployer must write /var/lib/hermes/env (chown hermes:hermes,"
+echo "         chmod 640 — it holds the agent API key) with:"
 echo "        HERMES_PROFILE=taos-agent"
 echo "        HERMES_HOME=/var/lib/hermes"
 echo "        TAOS_BRIDGE_URL=<url>"
