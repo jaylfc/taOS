@@ -486,6 +486,12 @@ ensure_container_runtime() {
     fi
 }
 
+# True when the Docker daemon is reachable (don't trust a single start call's
+# exit code — WSL2/systemd quirks make that unreliable).
+_docker_running() {
+    sudo docker info >/dev/null 2>&1
+}
+
 # Re-apply (idempotently) the incusbr0 FORWARD ACCEPT rules and persist them.
 # Docker sets the iptables FORWARD policy to DROP, which severs incus bridge
 # (incusbr0) traffic — agent containers would lose network. When both engines
@@ -526,11 +532,36 @@ ensure_docker_for_apps() {
         log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
         return 0
     fi
-    # macOS Docker Desktop is user-managed — don't touch it.
-    [[ "$(uname -s)" == "Darwin" ]] && return 0
+    # macOS: Docker apps run under Docker Desktop / the Apple Containerization
+    # framework, both user-managed — never apt/brew a daemon here.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        command -v docker >/dev/null 2>&1 \
+            && log "macOS: using existing Docker ($(docker --version 2>/dev/null | head -1))" \
+            || log "macOS: install Docker Desktop for Store Docker apps (server uses Apple Containerization for agents)"
+        return 0
+    fi
+
+    # WSL2: Docker is normally Docker Desktop with WSL integration, and systemd
+    # is often disabled. Use whatever's already on PATH; don't fight Desktop.
+    local is_wsl=0
+    grep -qi microsoft /proc/version 2>/dev/null && is_wsl=1
 
     if command -v docker >/dev/null 2>&1; then
         log "docker present: $(docker --version 2>/dev/null | head -1)"
+        if (( is_wsl )); then
+            log "WSL2: leaving daemon management to Docker Desktop / your distro"
+            _docker_running || warn "docker is installed but the daemon isn't reachable — enable Docker Desktop's WSL integration or start it in-distro"
+            return 0
+        fi
+    elif (( is_wsl )); then
+        warn "WSL2 without docker on PATH — enable Docker Desktop's WSL integration (recommended) for Store Docker apps; attempting an in-distro install as fallback"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
+                || warn "apt install docker.io failed — enable Docker Desktop WSL integration instead"
+        else
+            warn "install Docker Desktop and enable WSL integration for Store Docker apps"
+            return 0
+        fi
     else
         log "installing Docker (for Store Docker apps)"
         if command -v apt-get >/dev/null 2>&1; then
@@ -553,14 +584,22 @@ ensure_docker_for_apps() {
 
     command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
 
-    # Enable + start the daemon (systemd, else OpenRC for Alpine).
+    # Start + enable the daemon across init systems: systemd (most distros),
+    # SysV 'service' (e.g. WSL2 without systemd), then OpenRC (Alpine). Verify
+    # reachability afterwards rather than trusting any single call's exit code.
     if command -v systemctl >/dev/null 2>&1; then
-        sudo systemctl enable --now docker >/dev/null 2>&1 \
-            || warn "could not enable/start docker.service — start it manually (sudo systemctl start docker)"
-    elif command -v rc-update >/dev/null 2>&1; then
-        sudo rc-update add docker default >/dev/null 2>&1 || true
-        sudo service docker start >/dev/null 2>&1 || warn "could not start docker (OpenRC) — start it manually"
+        sudo systemctl enable --now docker >/dev/null 2>&1 || true
     fi
+    if ! _docker_running && command -v service >/dev/null 2>&1; then
+        sudo service docker start >/dev/null 2>&1 || true
+    fi
+    if ! _docker_running && command -v rc-update >/dev/null 2>&1; then
+        sudo rc-update add docker default >/dev/null 2>&1 || true
+        sudo service docker start >/dev/null 2>&1 || true
+    fi
+    _docker_running \
+        && log "docker daemon is running" \
+        || warn "docker installed but the daemon isn't reachable — start it manually (e.g. sudo systemctl start docker)"
 
     # Let the controller's user run docker without sudo.
     local duser="${SUDO_USER:-$USER}"
