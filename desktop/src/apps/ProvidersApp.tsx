@@ -20,6 +20,13 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 /** Fallback constants used before the API call completes. */
 const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
 const FALLBACK_LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp", "rknn-sd"] as const;
+
+/** Active cloud types — seeded with fallback, updated from /api/providers/types.
+ *  Referenced by isCloud() and groupByCategory() directly so they don't
+ *  need prop-drilling through the entire component tree.  React state in
+ *  ProvidersApp mirrors this for re-render scheduling. */
+let _activeCloudTypes: readonly string[] = [...FALLBACK_CLOUD_TYPES];
+
 type ProviderType = string;
 
 const DEFAULT_URLS: Partial<Record<ProviderType, string>> = {
@@ -146,7 +153,7 @@ type TestResult = { reachable: boolean; response_ms?: number; models?: ProviderM
 /* ------------------------------------------------------------------ */
 
 function isCloud(type: string): boolean {
-  return (FALLBACK_CLOUD_TYPES as readonly string[]).includes(type);
+  return (_activeCloudTypes as readonly string[]).includes(type);
 }
 
 function TypePill({ type }: { type: string }) {
@@ -224,7 +231,7 @@ function WorkerBadge({ name, platform }: { name: string; platform?: string }) {
 function groupByCategory(providers: Provider[]): Record<ProviderCategory, Provider[]> {
   const groups: Record<ProviderCategory, Provider[]> = { local: [], network: [], cloud: [] };
   for (const p of providers) {
-    const cat: ProviderCategory = p.category ?? (p.source?.startsWith("worker:") ? "network" : (FALLBACK_CLOUD_TYPES as readonly string[]).includes(p.type) ? "cloud" : "local");
+    const cat: ProviderCategory = p.category ?? (p.source?.startsWith("worker:") ? "network" : (_activeCloudTypes as readonly string[]).includes(p.type) ? "cloud" : "local");
     groups[cat].push(p);
   }
   return groups;
@@ -1123,6 +1130,7 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [localTypes, setLocalTypes] = useState<string[]>([...FALLBACK_LOCAL_TYPES]);
+  const [cloudTypes, setCloudTypes] = useState<string[]>([...FALLBACK_CLOUD_TYPES]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -1159,14 +1167,26 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
 
   // Fetch canonical provider types once at boot (single source of truth).
   useEffect(() => {
-    fetch("/api/providers/types", { headers: { Accept: "application/json" } })
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    fetch("/api/providers/types", {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
+        if (data?.cloud) {
+          _activeCloudTypes = data.cloud;
+          setCloudTypes(data.cloud);
+        }
         if (data?.local) setLocalTypes(data.local);
       })
       .catch((err) => {
-        console.warn("Failed to fetch provider types, using fallback:", err);
-      });
+        if (err.name !== "AbortError") {
+          console.warn("Failed to fetch provider types, using fallback:", err);
+        }
+      })
+      .finally(() => clearTimeout(timeout));
   }, []);
 
   async function handleDelete(name: string) {
