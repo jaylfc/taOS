@@ -31,6 +31,9 @@ describe("useIsPwa", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    // Always reset navigator.standalone — doing it here (not inline after an
+    // assertion) means a failing expect can't leak PWA state into later tests.
+    Object.defineProperty(navigator, "standalone", { value: undefined, configurable: true });
   });
 
   it("returns false when display-mode is NOT standalone", () => {
@@ -52,8 +55,6 @@ describe("useIsPwa", () => {
     });
     const { result } = renderHook(() => useIsPwa());
     expect(result.current).toBe(true);
-    // Clean up
-    Object.defineProperty(navigator, "standalone", { value: undefined, configurable: true });
   });
 
   it("updates when media query changes from non-standalone to standalone", () => {
@@ -106,8 +107,5 @@ describe("useIsPwa", () => {
       matchMediaListeners.get("change")?.forEach((h) => h({ matches: false }));
     });
     expect(result.current).toBe(true);  // still PWA via navigator.standalone
-
-    // Clean up
-    Object.defineProperty(navigator, "standalone", { value: undefined, configurable: true });
   });
 });

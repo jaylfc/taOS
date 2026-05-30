@@ -2347,7 +2347,13 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
       return;
     }
 
-    const { redirect_url } = await res.json() as { redirect_url: string };
+    let redirect_url: string;
+    try {
+      ({ redirect_url } = await res.json() as { redirect_url: string });
+    } catch {
+      failed("Server returned an unexpected response.");
+      return;
+    }
     const kind = shortcut.kind;
     if (kind === "dashboard") {
       const app = getApp("browser");
@@ -2362,8 +2368,12 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
       // Establish the taos_shortcut session cookie before opening the PTY
       // socket. The WebSocket endpoint authenticates via that cookie, which
       // only GET /redeem sets; the 302 it returns sets the cookie regardless
-      // of where the redirect points, so we ignore the follow-up response.
-      await fetch(redeemUrl, { credentials: "include" }).catch(() => { /* cookie still set */ });
+      // of where the redirect points, so the follow-up response is ignored.
+      // Best-effort: a failure here just means the socket may fail to auth (the
+      // terminal surfaces its own connection error), so we log rather than block.
+      await fetch(redeemUrl, { credentials: "include" }).catch((e) => {
+        console.warn(`shortcut /redeem failed for ${agentId}:`, e);
+      });
       const app = getApp("terminal");
       if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } });
     }

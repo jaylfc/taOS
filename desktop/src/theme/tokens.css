@@ -125,7 +125,9 @@
   padding-bottom: 0 !important;
 
   /* Use dvh (dynamic viewport height) so Safari's collapsing URL bar
-     doesn't leave a gap at the bottom. Falls back to 100vh. */
+     doesn't leave a gap at the bottom. The 100vh line is the real fallback
+     for browsers without dvh support; the dvh line overrides it where supported. */
+  height: 100vh !important;
   height: 100dvh !important;
 }
 
@@ -134,7 +136,10 @@
   background-size: 100% 100%;
 }
 
-/* Push the dock up slightly in browser mode to clear the tab bar */
+/* Push the dock up slightly in browser mode to clear the tab bar. The
+   attribute selector matches the CSS-module-hashed MobileDock class
+   (e.g. MobileDock_dock__ab12); scoped under .taos-browser so it only
+   applies in browser (non-PWA) mode. */
 .taos-browser [class*="MobileDock"] {
   padding-bottom: 4px;
 }
