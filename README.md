@@ -710,11 +710,11 @@ TinyAgentOS makes AI agents accessible on affordable hardware.
 
 TinyAgentOS stands on a lot of excellent community work, particularly on Rockchip. Shout-outs where they are earned:
 
-- **happyme531.** Author of [ztu_somemodelruntime_ez_rknn_async](https://github.com/happyme531/ztu_somemodelruntime_ez_rknn_async), the ORT-style Python runtime that makes multi-core NPU inference on RK3588 actually work. Also the original author of the LCM Dreamshaper RKNN port. Without this library, the 21% SD speedup and the 1.78× concurrent-session throughput on the Orange Pi 5 Plus would not exist.
-- **darkbit1001.** The NHWC `data_format` fix for UNet and VAE decoder under `librknnrt 2.3.2` that made SD on RK3588 run cleanly in the first place. Upstreamed to happyme531's repo as [discussion #6](https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/discussions/6).
-- **c01zaut**. Qwen2.5 1.5B → 14B RKLLM model ports that let chat work on RK3588 at all.
-- **NotPunchnox.** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
-- **tobi** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).
+- **[happyme531](https://github.com/happyme531).** Author of [ztu_somemodelruntime_ez_rknn_async](https://github.com/happyme531/ztu_somemodelruntime_ez_rknn_async), the ORT-style Python runtime that makes multi-core NPU inference on RK3588 actually work. Also the original author of the LCM Dreamshaper RKNN port. Without this library, the 21% SD speedup and the 1.78× concurrent-session throughput on the Orange Pi 5 Plus would not exist.
+- **[darkbit1001](https://huggingface.co/darkbit1001).** The NHWC `data_format` fix for UNet and VAE decoder under `librknnrt 2.3.2` that made SD on RK3588 run cleanly in the first place. Upstreamed to happyme531's repo as [discussion #6](https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/discussions/6).
+- **[c01zaut](https://huggingface.co/c01zaut)**. Qwen2.5 1.5B → 14B RKLLM model ports that let chat work on RK3588 at all.
+- **[NotPunchnox](https://github.com/NotPunchnox).** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
+- **[tobi](https://github.com/tobi)** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).
 
 **Community.** taOS is better for the people testing it, filing issues, and sending fixes:
 
