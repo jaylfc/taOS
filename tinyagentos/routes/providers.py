@@ -12,14 +12,11 @@ from tinyagentos.backend_adapters import get_adapter
 from tinyagentos.config import save_config_locked, VALID_BACKEND_TYPES
 from tinyagentos.lifecycle_manager import LifecycleManager
 from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+from tinyagentos.providers import CLOUD_TYPES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Provider categories used by the UI to group entries. The backend
-# doesn't care about category for routing — it's purely display metadata.
-CLOUD_TYPES = {"openai", "anthropic", "openrouter", "kilocode", "openai-compatible"}
 
 # Defaults applied per-type when the Add Provider form doesn't supply
 # them. Covers the case where the UI collects just api_key + name and
@@ -38,6 +35,22 @@ PROVIDER_URL_DEFAULTS: dict[str, str] = {
 PROVIDER_DEFAULT_MODELS: dict[str, list[dict]] = {
     "kilocode": [{"id": "kilo-auto/free"}],
 }
+
+
+@router.get("/api/providers/types")
+async def get_provider_types():
+    """Return canonical provider type definitions (single source of truth).
+
+    The frontend fetches this at boot so adding a new provider type only
+    touches ``tinyagentos/providers/__init__.py``.
+    """
+    from tinyagentos.providers import ALL_TYPES, CLOUD_TYPES, LOCAL_TYPES
+
+    return {
+        "all": sorted(ALL_TYPES),
+        "cloud": sorted(CLOUD_TYPES),
+        "local": sorted(LOCAL_TYPES),
+    }
 
 
 async def _resolve_backend_secrets(

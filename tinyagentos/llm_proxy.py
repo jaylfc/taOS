@@ -18,6 +18,8 @@ from pathlib import Path
 
 import httpx
 
+from tinyagentos.providers import BACKEND_TYPE_MAP, CHAT_BACKEND_TYPE_MAP, CLOUD_TYPES as CLOUD_BACKEND_TYPES
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,34 +58,6 @@ def _pids_listening_on(port: int) -> list[int]:
         except ValueError:
             continue
     return pids
-
-# Map TinyAgentOS backend types to LiteLLM model prefixes
-BACKEND_TYPE_MAP = {
-    "ollama": "ollama",
-    "rkllama": "ollama",  # rkllama is ollama-compatible on /api/embed too
-    "llama-cpp": "openai",
-    "vllm": "openai",
-    "exo": "openai",
-    "mlx": "openai",
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "openrouter": "openrouter",
-    "kilocode": "openai",  # kilocode is OpenAI-compatible; api_base set explicitly
-    "openai-compatible": "openai",  # user-supplied OpenAI-compatible endpoint; api_base required
-}
-
-# Chat prefix is different from the embedding prefix for ollama-compat
-# backends: ollama_chat uses /api/chat, plain ollama uses /api/generate and
-# /api/embed. LiteLLM needs the right one to route requests correctly.
-CHAT_BACKEND_TYPE_MAP = {
-    **BACKEND_TYPE_MAP,
-    "ollama": "ollama_chat",
-    "rkllama": "ollama_chat",
-}
-
-# Cloud provider types that may serve multiple named models and require
-# per-model model_list entries so agents can route by exact model id.
-CLOUD_BACKEND_TYPES = {"openai", "anthropic", "openrouter", "kilocode", "openai-compatible"}
 
 # Canonical alias the deployer injects into agent containers as
 # TAOS_EMBEDDING_MODEL. Agents that want an embedding call this name and

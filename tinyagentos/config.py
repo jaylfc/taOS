@@ -8,7 +8,7 @@ from typing import Literal
 
 import yaml
 
-VALID_BACKEND_TYPES = {"rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "openai", "anthropic", "sd-cpp", "rknn-sd", "openrouter", "kilocode", "openai-compatible"}
+from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 
 VALID_ON_WORKER_FAILURE = {"pause", "fallback", "escalate-immediately"}
 
