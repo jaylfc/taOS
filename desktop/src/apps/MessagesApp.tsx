@@ -1565,11 +1565,13 @@ export function MessagesApp({
             )}
           </div>
 
-          {/* message list */}
+          {/* message list — explicitly selectable. Most app shells set
+              `select-none` for the native-OS feel; Messages is the exception
+              where users expect to copy conversation text, so opt back in. */}
           <div
             ref={messageListRef}
             onScroll={handleScroll}
-            className={`flex-1 overflow-y-auto px-4 py-3 space-y-0.5 message-list-drop-target ${
+            className={`flex-1 overflow-y-auto px-4 py-3 space-y-0.5 select-text message-list-drop-target ${
               shellFileDropTarget.isOver
                 ? "ring-2 ring-sky-400/60 ring-inset bg-sky-500/5"
                 : shellFileDropTarget.isValidTarget
