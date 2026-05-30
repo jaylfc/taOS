@@ -716,14 +716,16 @@ TinyAgentOS stands on a lot of excellent community work, particularly on Rockchi
 - **[NotPunchnox](https://github.com/NotPunchnox).** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
 - **[tobi](https://github.com/tobi)** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).
 
-**Community.** taOS is better for the people testing it, filing issues, and sending fixes:
+If you maintain one of the libraries above and want a different phrasing or a link added, open an issue and I will fix it.
+
+## Community
+
+taOS is better for the people testing it, filing issues, and sending fixes:
 
 - [@hognek](https://github.com/hognek) — the first community code contributions: Hermes bridge bounded-retry + dedup ([#468](https://github.com/jaylfc/tinyagentos/pull/468)), agent button states + feedback ([#469](https://github.com/jaylfc/tinyagentos/pull/469)), and browser/PWA mobile layout ([#470](https://github.com/jaylfc/tinyagentos/pull/470)).
 - [@johny-mnemonic](https://github.com/johny-mnemonic) — first to run taOS on a heterogeneous multi-GPU stack beyond our own hardware, surfacing the gaps behind the agent-deploy and UI fixes (the [#357](https://github.com/jaylfc/tinyagentos/discussions/357) thread).
 - [@m13v](https://github.com/m13v) and [@redkjuegos](https://github.com/redkjuegos) — sustained feedback and discussion across issues.
 - …and everyone who's opened an issue or tested an early build. 🙏
-
-If you maintain one of the libraries above and want a different phrasing or a link added, open an issue and I will fix it.
 
 ## License
 
