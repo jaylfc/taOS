@@ -128,7 +128,7 @@ async def connect_bot(request: Request):
             agent_name=agent_name, router=router_obj,
             repo=repo, event_kinds=event_kinds, pr_number=pr_number,
         )
-        router_obj.assign_channel(platform, agent_name, agent_name)
+        router_obj.assign_channel(platform, repo, agent_name)
         await connector.start()
         connectors[connector_key] = connector
         request.app.state.channel_hub_connectors = connectors
