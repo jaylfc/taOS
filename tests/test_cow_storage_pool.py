@@ -76,7 +76,9 @@ INCUS_STORAGE_INIT_FUNC = textwrap.dedent("""
             auto|*)
                 case "$fs_type" in
                     btrfs|zfs)
-                        echo "CoW filesystem ($fs_type) detected"
+                        echo "auto-creating $fs_type storage pool"
+                        incus storage create default "$fs_type" 2>/dev/null && return 0
+                        echo "WARN: auto-create failed - falling back"
                         ;;
                     ext[2-4]|xfs)
                         echo "$fs_type filesystem - CoW not available"
@@ -187,11 +189,11 @@ class TestIncusStorageInit:
 
     def test_auto_mode_btrfs(self):
         out = self._run_init("auto", "btrfs")
-        assert "CoW filesystem" in out
+        assert "auto-creating btrfs storage pool" in out
 
     def test_auto_mode_zfs(self):
         out = self._run_init("auto", "zfs")
-        assert "CoW filesystem" in out
+        assert "auto-creating zfs storage pool" in out
 
     def test_auto_mode_ext4(self):
         out = self._run_init("auto", "ext4")
@@ -223,6 +225,17 @@ class TestIncusStorageInit:
         out = self._run_init("dir", "btrfs")
         assert "forcing directory-backed pool" in out
         assert "incus storage create" not in out
+
+    def test_auto_create_fails_falls_back(self):
+        """When auto pool creation fails, warn and fall back gracefully."""
+        script = INCUS_STORAGE_INIT_FUNC + textwrap.dedent("""\
+            incus() { echo "incus $*"; return 1; }
+            COW_POOL_MODE="auto"
+            _incus_storage_init "btrfs"
+        """)
+        rc, out, err = _bash_run(script)
+        assert rc == 0, f"should not crash on failure: {out} {err}"
+        assert "auto-create failed - falling back" in out
 
 
 class TestEnvVarDefaults:

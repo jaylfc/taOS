@@ -430,7 +430,12 @@ _incus_storage_init() {
         auto|*)
             case "$fs_type" in
                 btrfs|zfs)
-                    log "CoW filesystem ($fs_type) detected - incus will use driver '$fs_type' for fast clones (<=5s deploys)"
+                    log "CoW filesystem ($fs_type) detected - auto-creating $fs_type storage pool for fast clones (<=5s deploys)"
+                    if sudo incus storage create default "$fs_type" 2>/dev/null; then
+                        log "incus $fs_type storage pool 'default' created - clones will use CoW"
+                        return 0
+                    fi
+                    warn "incus storage create default $fs_type failed - falling back to incus admin init --auto (dir pool)"
                     ;;
                 ext[2-4]|xfs)
                     log "$fs_type filesystem - CoW not available; container clones will be full copies (slower)"
