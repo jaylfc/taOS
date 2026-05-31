@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -183,3 +184,109 @@ class MonitorService:
         except Exception as exc:
             logger.warning("Article re-fetch failed for %s: %s", item["source_url"], exc)
             return "", False
+
+
+# ---------------------------------------------------------------------------
+# Agent doc & per-app guide ingestion
+# ---------------------------------------------------------------------------
+
+async def ingest_agent_docs(
+    docs_dir: Path,
+    store: "KnowledgeStore",
+    source_id: str = "core",
+) -> int:
+    """Walk *docs_dir* for ``.md`` files and ingest them into the knowledge store.
+
+    Each file becomes a ``KnowledgeItem`` with ``source_type="agent_doc"`` and
+    the given *source_id*.  Files that are already present (matched by
+    ``source_url`` + ``source_id``) are skipped.  Returns the number of files
+    that were actually ingested.
+    """
+    if not docs_dir.is_dir():
+        return 0
+
+    # Build a set of already-present source_urls for this source_id so we can
+    # skip re-ingestion.
+    existing = await store.list_by_source_id(source_id)
+    existing_urls = {item["source_url"] for item in existing}
+
+    ingested = 0
+    for md_file in sorted(docs_dir.rglob("*.md")):
+        rel = str(md_file.relative_to(docs_dir))
+        if rel in existing_urls:
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("Could not read %s", md_file)
+            continue
+        if not content.strip():
+            continue
+
+        title = md_file.stem
+        await store.add_item(
+            source_type="agent_doc",
+            source_url=rel,
+            source_id=source_id,
+            title=title,
+            author="",
+            content=content,
+            summary="",
+            categories=[],
+            tags=[],
+            metadata={},
+            status="ready",
+        )
+        ingested += 1
+
+    return ingested
+
+
+async def ingest_app_guides(
+    app_id: str,
+    manifest_dir: Path,
+    store: "KnowledgeStore",
+) -> int:
+    """Ingest the ``guides/`` directory of a single app (if present).
+
+    Returns the number of files ingested (0 if no guides directory exists).
+    """
+    guides_dir = manifest_dir / "guides"
+    return await ingest_agent_docs(
+        docs_dir=guides_dir,
+        store=store,
+        source_id=f"app:{app_id}",
+    )
+
+
+async def ingest_installed_app_guides(
+    installed_apps_store,
+    registry,
+    store: "KnowledgeStore",
+) -> dict[str, int]:
+    """Iterate every installed app and ingest its ``guides/`` directory.
+
+    Returns a dict mapping ``app_id`` → number of files ingested.
+    """
+    installed = await installed_apps_store.list_installed()
+    result: dict[str, int] = {}
+    for entry in installed:
+        app_id = entry["app_id"]
+        manifest = registry.get(app_id)
+        if manifest is None or manifest.manifest_dir is None:
+            continue
+        ingested = await ingest_app_guides(app_id, manifest.manifest_dir, store)
+        if ingested:
+            result[app_id] = ingested
+    return result
+
+
+async def wipe_app_guides(
+    store: "KnowledgeStore",
+    app_id: str,
+) -> int:
+    """Remove every knowledge item scoped to *app_id*'s guides.
+
+    Returns the number of items deleted.
+    """
+    return await store.delete_by_source_id(f"app:{app_id}")

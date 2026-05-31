@@ -1,9 +1,12 @@
 # tinyagentos/routes/store.py
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 
 from fastapi import APIRouter, Request
+
+logger = logging.getLogger(__name__)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -239,6 +242,14 @@ async def install_app(request: Request, body: InstallRequest):
                 await mcp_store.register_server(
                     body.app_id, manifest.version, transport
                 )
+        # Ingest per-app agent guides if present
+        knowledge_store = getattr(request.app.state, "knowledge_store", None)
+        if knowledge_store is not None and manifest.manifest_dir is not None:
+            from tinyagentos.knowledge_monitor import ingest_app_guides
+            try:
+                await ingest_app_guides(body.app_id, manifest.manifest_dir, knowledge_store)
+            except Exception:
+                logger.warning("Guide ingestion failed for app %s", body.app_id)
         return {"status": "installed", "app_id": body.app_id}
     return JSONResponse({"error": result.get("error", "Install failed")}, status_code=500)
 
@@ -329,4 +340,12 @@ async def uninstall_app(request: Request, body: UninstallRequest):
                 if existing is not None:
                     await mcp_supervisor.uninstall(body.app_id)
     registry.mark_uninstalled(body.app_id)
+    # Wipe per-app agent guides from the knowledge store
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    if knowledge_store is not None:
+        from tinyagentos.knowledge_monitor import wipe_app_guides
+        try:
+            await wipe_app_guides(knowledge_store, body.app_id)
+        except Exception:
+            logger.warning("Guide wipe failed for app %s", body.app_id)
     return {"status": "uninstalled", "app_id": body.app_id}

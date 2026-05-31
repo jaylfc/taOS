@@ -238,6 +238,40 @@ class KnowledgeStore(BaseStore):
         await self._db.commit()
         return cursor.rowcount > 0
 
+    async def list_by_source_id(self, source_id: str) -> list[dict]:
+        """List all items with a given source_id, newest first."""
+        assert self._db is not None
+        cursor = await self._db.execute(
+            """SELECT id, source_type, source_url, source_id, title, author, summary,
+                      content, media_path, thumbnail, categories, tags, metadata,
+                      status, monitor, created_at, updated_at
+               FROM knowledge_items WHERE source_id = ?
+               ORDER BY created_at DESC""",
+            (source_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_item(r) for r in rows]
+
+    async def delete_by_source_id(self, source_id: str) -> int:
+        """Delete all items with a given source_id. Returns count of deleted rows."""
+        assert self._db is not None
+        # Get IDs first to clean up FTS
+        cursor = await self._db.execute(
+            "SELECT id FROM knowledge_items WHERE source_id = ?",
+            (source_id,),
+        )
+        ids = [row[0] for row in (await cursor.fetchall())]
+        if not ids:
+            return 0
+        for item_id in ids:
+            await self._db.execute("DELETE FROM knowledge_fts WHERE id = ?", (item_id,))
+        cursor = await self._db.execute(
+            "DELETE FROM knowledge_items WHERE source_id = ?",
+            (source_id,),
+        )
+        await self._db.commit()
+        return len(ids)
+
     # ------------------------------------------------------------------
     # FTS search
     # ------------------------------------------------------------------

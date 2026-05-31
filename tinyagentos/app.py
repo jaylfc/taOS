@@ -379,6 +379,24 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.ingest_pipeline = knowledge_ingest
         app.state.knowledge_monitor = knowledge_monitor
         await knowledge_monitor.start()
+        # Ingest core agent docs and per-app guides on startup
+        from tinyagentos.knowledge_monitor import ingest_agent_docs, ingest_installed_app_guides
+        _agents_docs_dir = PROJECT_DIR / "docs" / "agents"
+        if _agents_docs_dir.is_dir():
+            try:
+                _n = await ingest_agent_docs(_agents_docs_dir, knowledge_store, source_id="core")
+                if _n:
+                    logger.info("ingested %d core agent docs on startup", _n)
+            except Exception:
+                logger.exception("core agent doc ingestion failed on startup")
+        try:
+            _app_guides = await ingest_installed_app_guides(
+                installed_apps, registry, knowledge_store
+            )
+            if _app_guides:
+                logger.info("ingested %d per-app guides on startup: %s", sum(_app_guides.values()), list(_app_guides.keys()))
+        except Exception:
+            logger.exception("per-app guide ingestion failed on startup")
         await agent_browsers.init()
         app.state.agent_browsers = agent_browsers
         await browsing_history.init()
@@ -1218,6 +1236,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.catalog import router as catalog_router
     app.include_router(catalog_router)
+
+    from tinyagentos.routes.agent_debugger import router as agent_debugger_router
+    app.include_router(agent_debugger_router)
 
     from tinyagentos.routes.memory_management import router as memory_mgmt_router
     app.include_router(memory_mgmt_router)
