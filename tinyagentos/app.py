@@ -1237,9 +1237,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.catalog import router as catalog_router
     app.include_router(catalog_router)
 
-    from tinyagentos.routes.agent_debugger import router as agent_debugger_router
-    app.include_router(agent_debugger_router)
-
     from tinyagentos.routes.memory_management import router as memory_mgmt_router
     app.include_router(memory_mgmt_router)
 
