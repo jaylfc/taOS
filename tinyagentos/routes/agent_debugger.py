@@ -215,10 +215,12 @@ async def debugger_trace(agent_id: str, request: Request) -> JSONResponse:
 
     await _broadcast(agent_id, event)
 
-    # If in step mode, wait for user to step/continue
-    step_event = _step_events.setdefault(agent_id, asyncio.Event())
-    step_event.clear()
-    await step_event.wait()
+    # Only block for step/continue when a debugger UI is actively listening.
+    # Without a listener the agent runs free — no reason to pause.
+    if _queues.get(agent_id):
+        step_event = _step_events.setdefault(agent_id, asyncio.Event())
+        step_event.clear()
+        await step_event.wait()
 
     return JSONResponse({"status": "recorded", "total": len(_traces[agent_id])})
 
