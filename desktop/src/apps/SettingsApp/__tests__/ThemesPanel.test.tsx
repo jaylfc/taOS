@@ -5,19 +5,25 @@ import { ThemesPanel } from "../ThemesPanel";
 beforeEach(() => {
   document.documentElement.removeAttribute("style");
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [
-    { theme_id: "default", name: "Default", config: { tokens: {}, structure: {}, effects: [], requires: [] } },
-    { theme_id: "matrix", name: "Matrix Terminal", config: { tokens: { "--color-accent": "#00ff46" }, structure: {}, effects: [], requires: ["assistant","launcher"] } },
+    { theme_id: "ocean", name: "Ocean Blue", config: { tokens: { "--color-accent": "#00aaff" }, structure: {}, effects: [], requires: [] } },
   ] }));
 });
 
 describe("ThemesPanel", () => {
   it("lists installed themes and previews on select with a Keep/Revert bar", async () => {
     render(<ThemesPanel />);
-    expect(await screen.findByText("Matrix Terminal")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Matrix Terminal"));
-    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#00ff46");
+    expect(await screen.findByText("Ocean Blue")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Ocean Blue"));
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#00aaff");
     expect(screen.getByRole("button", { name: /keep/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /revert/i }));
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("");
+  });
+
+  it("shows built-in Default and Matrix Terminal even when server returns empty list", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    render(<ThemesPanel />);
+    expect(await screen.findByText("Default")).toBeInTheDocument();
+    expect(screen.getByText("Matrix Terminal")).toBeInTheDocument();
   });
 });

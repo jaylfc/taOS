@@ -9,10 +9,12 @@ import {
   keepTheme,
 } from "@/stores/theme-store";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
+import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 
 interface InstalledTheme {
   theme_id: string;
   name: string;
+  builtin?: boolean;
   config: ThemeConfig;
 }
 
@@ -30,9 +32,17 @@ export function ThemesPanel() {
     fetch("/api/themes", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : []))
       .then((data: InstalledTheme[]) => {
-        if (Array.isArray(data)) setThemes(data);
+        const installed = Array.isArray(data) ? data : [];
+        const builtinIds = new Set(BUILTIN_THEMES.map((b) => b.theme_id));
+        const merged = [
+          ...BUILTIN_THEMES,
+          ...installed.filter((t) => !builtinIds.has(t.theme_id)),
+        ];
+        setThemes(merged);
       })
-      .catch(() => {});
+      .catch(() => {
+        setThemes([...BUILTIN_THEMES]);
+      });
   }, []);
 
   const handleSelect = (theme: InstalledTheme) => {

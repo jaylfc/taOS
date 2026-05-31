@@ -20,6 +20,7 @@ import {
   Trash2,
   KeyRound,
   X,
+  Palette,
 } from "lucide-react";
 import {
   Button,
@@ -30,12 +31,13 @@ import {
 } from "@/components/ui";
 import { useShortcuts } from "@/hooks/use-shortcut-registry";
 import { useServerPreference } from "@/hooks/use-server-preference";
+import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users";
+type Section = "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes";
 
 interface SectionDef {
   id: Section;
@@ -74,6 +76,7 @@ const SECTIONS: SectionDef[] = [
   { id: "accessibility", label: "Accessibility", icon: Accessibility },
   { id: "desktop", label: "Desktop & Dock", icon: Monitor },
   { id: "users", label: "Users", icon: Users },
+  { id: "themes", label: "Themes", icon: Palette },
 ];
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
@@ -1686,6 +1689,7 @@ export function SettingsApp({ windowId: _windowId }: { windowId: string }) {
     accessibility: <AccessibilitySection />,
     desktop: <DesktopDockSection />,
     users: <UsersSection />,
+    themes: <ThemesPanel />,
   };
 
   const handleSelectSection = (id: Section) => {
