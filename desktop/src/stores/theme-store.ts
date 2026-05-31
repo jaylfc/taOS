@@ -82,6 +82,10 @@ interface ThemeStore {
   structure: Record<string, { variant?: string } & Record<string, unknown>>;
   effects: { module: string; params?: Record<string, unknown> }[];
 
+  activeThemeId: string;
+  wallpaperByTheme: Record<string, string>;
+  themeDefaultWallpaper: Record<string, string>;
+
   setWallpaper: (id: string) => void;
   toggleDesktopIcons: () => void;
   getWallpapers: () => Wallpaper[];
@@ -95,6 +99,10 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   showDesktopIcons: true,
   structure: {},
   effects: [],
+
+  activeThemeId: "default",
+  wallpaperByTheme: {},
+  themeDefaultWallpaper: {},
 
   setWallpaper(id) {
     const wp = WALLPAPERS.find((w) => w.id === id);
@@ -134,4 +142,14 @@ export function revertTheme() {
   for (const k of _applied) root.style.removeProperty(k);
   _applied = [];
   useThemeStore.setState({ structure: {}, effects: [] });
+}
+
+export function setWallpaperForActiveTheme(value: string) {
+  const { activeThemeId, wallpaperByTheme } = useThemeStore.getState();
+  useThemeStore.setState({ wallpaperByTheme: { ...wallpaperByTheme, [activeThemeId]: value } });
+}
+
+export function resolveWallpaper(): string {
+  const { activeThemeId, wallpaperByTheme, themeDefaultWallpaper } = useThemeStore.getState();
+  return wallpaperByTheme[activeThemeId] ?? themeDefaultWallpaper[activeThemeId] ?? "";
 }
