@@ -25,23 +25,23 @@ login prompt entirely. This is the supported host-side fallback:
 
 ```bash
 # Interactive shell (bash in the agent container):
-incus exec agent-<slug> -- bash
+incus exec taos-agent-<slug> -- bash
 
 # Run a single command:
-incus exec agent-<slug> -- ls -la /workspace
+incus exec taos-agent-<slug> -- ls -la /workspace
 
 # Run a command with full environment:
-incus exec agent-<slug> -- env TERM=xterm-256color bash
+incus exec taos-agent-<slug> -- env TERM=xterm-256color bash
 ```
 
 ### Container naming
 
-Agent containers are named `agent-<slug>` where `<slug>` is the lowercase
+Agent containers are named `taos-agent-<slug>` where `<slug>` is the lowercase
 URL-safe version of the agent's display name with spaces replaced by
 hyphens. You can find the exact container name with:
 
 ```bash
-incus list --format csv --columns n | grep '^agent-'
+incus list --format csv --columns n | grep '^taos-agent-'
 ```
 
 Or, from within taOS, open the Agents app — the container name is shown
@@ -69,13 +69,13 @@ Runtime), the equivalent commands are:
 
 ```bash
 # List running agent containers:
-docker ps --filter "name=agent-"
+docker ps --filter "name=taos-agent-"
 
 # Interactive shell:
-docker exec -it agent-<slug> bash
+docker exec -it taos-agent-<slug> bash
 
 # Single command:
-docker exec agent-<slug> ls -la /workspace
+docker exec taos-agent-<slug> ls -la /workspace
 ```
 
 The principle is identical: `exec` bypasses the virtual console and runs
@@ -85,10 +85,10 @@ directly inside the container.
 
 | Goal | Command |
 |---|---|
-| Interactive shell (LXC) | `incus exec agent-<slug> -- bash` |
-| Single command (LXC) | `incus exec agent-<slug> -- <cmd>` |
-| List agent containers (LXC) | `incus list \| grep agent-` |
-| Interactive shell (Docker) | `docker exec -it agent-<slug> bash` |
+| Interactive shell (LXC) | `incus exec taos-agent-<slug> -- bash` |
+| Single command (LXC) | `incus exec taos-agent-<slug> -- <cmd>` |
+| List agent containers (LXC) | `incus list \| grep taos-agent-` |
+| Interactive shell (Docker) | `docker exec -it taos-agent-<slug> bash` |
 | Preferred CLI wrapper | `taos agent exec <name> -- bash` |
 
 ## Related

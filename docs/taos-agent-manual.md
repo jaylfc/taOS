@@ -110,4 +110,4 @@ Open the Activity app. Every LLM call, tool use, and memory operation is logged 
 Settings → Updates → Install Update. taOS pulls the latest code from GitHub, rebuilds the desktop bundle, and prompts you to restart.
 
 **How do I get a shell inside an agent container?**
-In the UI, use the container shell shortcut in the Agents app. If that's unavailable, use the host-side fallback: `incus exec agent-<slug> -- bash` (LXC) or `docker exec -it agent-<slug> bash` (Docker). See the [Container Shell Access runbook](runbooks/container-shell-access.md) for details. Never use `incus console` — it asks for a password that doesn't exist.
+In the UI, use the container shell shortcut in the Agents app. If that's unavailable, use the host-side fallback: `incus exec taos-agent-<slug> -- bash` (LXC) or `docker exec -it taos-agent-<slug> bash` (Docker). See the [Container Shell Access runbook](runbooks/container-shell-access.md) for details. Never use `incus console` — it asks for a password that doesn't exist.
