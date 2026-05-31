@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, Response
 
 from tinyagentos.userspace.broker import handle_capability
+from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
 from tinyagentos.userspace.package import extract_package, PackageError
 from tinyagentos.userspace.url_guard import is_safe_public_url
 
@@ -85,11 +86,23 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
         app_type=manifest["app_type"], entry=manifest["entry"], icon=manifest["icon"],
         permissions_requested=manifest["permissions"],
     )
+    deploy_info: dict = {}
+    if manifest["app_type"] == "container":
+        dep = await deploy_app_container(manifest["id"], manifest.get("container", {}))
+        if dep.get("success"):
+            await store.set_runtime_location(manifest["id"], dep["host"], dep["port"])
+            deploy_info = {"container_deployed": True}
+        else:
+            # App stays registered; its backend just isn't running. Surface
+            # the reason so the UI can show it / offer a retry.
+            deploy_info = {"container_deployed": False,
+                           "deploy_error": dep.get("error", "deploy failed")}
     return {
         "app_id": manifest["id"],
         "permissions_requested": manifest["permissions"],
         "needs_consent": bool(existing and new_perms),
         "new_permissions": new_perms,
+        **deploy_info,
     }
 
 
@@ -114,7 +127,11 @@ async def disable_app(request: Request, app_id: str):
 
 @router.delete("/api/userspace-apps/{app_id}")
 async def uninstall_app(request: Request, app_id: str):
-    removed = await request.app.state.userspace_apps.uninstall(app_id)
+    store = request.app.state.userspace_apps
+    app = await store.get(app_id)
+    removed = await store.uninstall(app_id)
+    if app and app.get("app_type") == "container":
+        await destroy_app_container(app_id)
     root = _apps_root(request).resolve()
     app_dir = (root / app_id).resolve()
     if str(app_dir).startswith(str(root) + "/") and app_dir.exists():
