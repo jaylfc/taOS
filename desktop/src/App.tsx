@@ -26,6 +26,7 @@ import { TaosAssistantPanel } from "@/components/TaosAssistantPanel";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 import { InstallPromptBanner } from "@/shell/InstallPromptBanner";
 import { EffectsLayer } from "@/theme/effects/EffectsLayer";
+import { SafetyFloor } from "@/components/SafetyFloor";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -245,6 +246,7 @@ export function App() {
               <NotificationToasts />
               <NotificationCentre />
               <TaosAssistantPanel />
+              <SafetyFloor />
             </div>
           </div>
         </LoginGate>
@@ -308,6 +310,8 @@ export function App() {
       <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} onOpenApp={(wid) => setActiveWindowId(wid)} />
       <NotificationToasts />
       <NotificationCentre />
+      <TaosAssistantPanel />
+      <SafetyFloor />
     </div>
       </LoginGate>
     </ShortcutProvider>
