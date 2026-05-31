@@ -470,6 +470,8 @@ describe("TabRenderer — tab-focus postMessage", () => {
     act(() => {
       useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabA);
     });
+    // Flush the async getBrowserProxyOrigin() inside the effect.
+    await act(async () => { await Promise.resolve(); });
 
     // At least one iframe should have received a taos-copilot:tab-focus message.
     const allCalls = spies.flatMap((spy) => spy.mock.calls);
@@ -487,6 +489,96 @@ describe("TabRenderer — tab-focus postMessage", () => {
     // window_id must be present on every tab-focus message.
     for (const args of focusCalls) {
       expect(args[0].window_id).toBe(TEST_WINDOW_ID);
+    }
+  });
+});
+
+describe("TabRenderer — postMessage target origin (Fix 2)", () => {
+  it("tab-focus postMessage uses the proxy origin, not '*', in single-port mode", async () => {
+    // Single-port mode: proxy port is 0 → proxy origin equals window.location.origin.
+    const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    const tabB = useBrowserStore.getState().addTab(
+      TEST_WINDOW_ID,
+      "https://b.test/",
+    );
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    await act(async () => { await Promise.resolve(); });
+
+    const iframes = Array.from(container.querySelectorAll("iframe")) as HTMLIFrameElement[];
+    const spies = iframes.map((iframe) => {
+      const spy = vi.fn();
+      if (!iframe.contentWindow) {
+        Object.defineProperty(iframe, "contentWindow", {
+          value: { postMessage: spy },
+          configurable: true,
+        });
+      } else {
+        vi.spyOn(iframe.contentWindow, "postMessage").mockImplementation(spy);
+      }
+      return spy;
+    });
+
+    act(() => {
+      useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabA);
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const allCalls = spies.flatMap((spy) => spy.mock.calls);
+    const focusCalls = allCalls.filter(
+      (args) => args[0]?.type === "taos-copilot:tab-focus",
+    );
+    expect(focusCalls.length).toBeGreaterThan(0);
+
+    // Every tab-focus call must use the resolved proxy origin, never "*".
+    for (const args of focusCalls) {
+      expect(args[1]).not.toBe("*");
+      // In single-port mode (mocked port 0), the proxy origin is the current origin.
+      expect(args[1]).toBe(window.location.origin);
+    }
+  });
+
+  it("tab-focus postMessage uses the cross-origin proxy origin when a port is configured", async () => {
+    // Cross-origin mode: proxy port is 6970 → proxy origin is a separate host:port.
+    vi.stubGlobal("fetch", mockProxyFetch({ port: 6970, ticket: "tok-xyz" }));
+    __resetProxyConfigCache();
+
+    const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    const tabB = useBrowserStore.getState().addTab(
+      TEST_WINDOW_ID,
+      "https://b.test/",
+    );
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    await act(async () => { await Promise.resolve(); });
+
+    const iframes = Array.from(container.querySelectorAll("iframe")) as HTMLIFrameElement[];
+    const spies = iframes.map((iframe) => {
+      const spy = vi.fn();
+      if (!iframe.contentWindow) {
+        Object.defineProperty(iframe, "contentWindow", {
+          value: { postMessage: spy },
+          configurable: true,
+        });
+      } else {
+        vi.spyOn(iframe.contentWindow, "postMessage").mockImplementation(spy);
+      }
+      return spy;
+    });
+
+    act(() => {
+      useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabA);
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const allCalls = spies.flatMap((spy) => spy.mock.calls);
+    const focusCalls = allCalls.filter(
+      (args) => args[0]?.type === "taos-copilot:tab-focus",
+    );
+    expect(focusCalls.length).toBeGreaterThan(0);
+
+    for (const args of focusCalls) {
+      expect(args[1]).not.toBe("*");
+      // Cross-origin proxy: hostname unchanged, port 6970.
+      expect(args[1]).toContain(":6970");
     }
   });
 });

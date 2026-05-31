@@ -243,3 +243,59 @@ class TestProxyConfigEndpoint:
         resp = await client.get("/api/desktop/browser/proxy-config")
         assert resp.status_code == 200
         assert resp.json()["port"] == 0
+
+
+# --------------------------------------------------------------------------- #
+#  Security: referrer-policy on the redeem 302 (Fix 1)                        #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestRedeemReferrerPolicy:
+    async def test_redeem_302_carries_no_referrer_policy(self, proxy_setup):
+        """The redeem redirect must include Referrer-Policy: no-referrer so the
+        single-use ticket in the redeem URL is not leaked to the proxied site
+        via the Referer header on the subsequent navigation."""
+        pc = proxy_setup["proxy"]
+        key = proxy_setup["signing_key"]
+        record = proxy_setup["proxy_app"].state.auth.find_user("admin")
+        _ticket, token = mint_proxy_ticket(record["id"], signing_key=key)
+
+        target = "/api/desktop/browser/proxy?profile_id=personal&url=http%3A%2F%2Fexample.com%2F"
+        resp = await pc.get(
+            "/__taos/redeem",
+            params={"ticket": token, "next": target},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers.get("referrer-policy") == "no-referrer"
+
+
+# --------------------------------------------------------------------------- #
+#  Security: _SharedState allowlist (Fix 4)                                   #
+# --------------------------------------------------------------------------- #
+
+
+class TestSharedStateAllowlist:
+    def test_allowed_attr_delegates_to_shared(self, proxy_setup):
+        """Allowed attributes must be forwarded to the main app state."""
+        proxy_app = proxy_setup["proxy_app"]
+        # 'auth' is on the allowlist; the main app initialises it.
+        assert proxy_app.state.auth is not None
+
+    def test_non_allowlisted_attr_raises_attribute_error(self, proxy_setup):
+        """Attributes outside the proxy allowlist must raise AttributeError so
+        a future proxy route cannot accidentally reach taOS internals."""
+        proxy_app = proxy_setup["proxy_app"]
+        import pytest as _pytest
+        with _pytest.raises(AttributeError):
+            _ = proxy_app.state.secrets  # noqa: F841
+
+    def test_local_attr_accessible_without_delegation(self, proxy_setup):
+        """Locally-set proxy attributes (e.g. browser_proxy_sessions) must be
+        accessible directly without going through the allowlist guard."""
+        proxy_app = proxy_setup["proxy_app"]
+        # browser_proxy_sessions is set locally on the wrapper by _session_store().
+        from tinyagentos.browser_proxy_origin import _session_store
+        store = _session_store(proxy_app.state)
+        assert isinstance(store, dict)

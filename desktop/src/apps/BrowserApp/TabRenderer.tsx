@@ -135,32 +135,39 @@ export function TabRenderer({ windowId }: TabRendererProps) {
     const handles: AgentWsHandle[] = [];
     let cancelled = false;
 
-    for (const agentId of pinnedAgentIdsForEffect) {
-      // 1. Mint a ticket for the iframe-side WS and post it.
-      mintCopilotTicket(profileId, tabId, agentId).then((ticket) => {
-        if (cancelled || !ticket) return;
-        if (iframe.contentWindow) {
-          iframe.contentWindow.postMessage(
-            { type: "taos-copilot:open", ticket: ticket.ticket, agentId },
-            "*",
-          );
-        }
-      });
+    // Resolve the proxy origin once for this effect so all postMessage calls
+    // target the exact proxy origin rather than "*". This prevents copilot
+    // tickets from being broadcast to any origin that happens to be embedded.
+    getBrowserProxyOrigin().then((proxyOrigin) => {
+      if (cancelled) return;
 
-      // 2. Register a parent-side listener for events forwarded by copilot.js.
-      const handle = openParentWs({
-        windowId,
-        tabId,
-        agentId,
-        iframe,
-        onEvent: (event) => {
-          const store = useBrowserAgentStore.getState();
-          store.bumpEventAt(windowId, tabId, agentId);
-          store.appendEvent(windowId, tabId, agentId, event);
-        },
-      });
-      handles.push(handle);
-    }
+      for (const agentId of pinnedAgentIdsForEffect) {
+        // 1. Mint a ticket for the iframe-side WS and post it.
+        mintCopilotTicket(profileId, tabId, agentId).then((ticket) => {
+          if (cancelled || !ticket) return;
+          if (iframe.contentWindow) {
+            iframe.contentWindow.postMessage(
+              { type: "taos-copilot:open", ticket: ticket.ticket, agentId },
+              proxyOrigin,
+            );
+          }
+        });
+
+        // 2. Register a parent-side listener for events forwarded by copilot.js.
+        const handle = openParentWs({
+          windowId,
+          tabId,
+          agentId,
+          iframe,
+          onEvent: (event) => {
+            const store = useBrowserAgentStore.getState();
+            store.bumpEventAt(windowId, tabId, agentId);
+            store.appendEvent(windowId, tabId, agentId, event);
+          },
+        });
+        handles.push(handle);
+      }
+    });
 
     return () => {
       cancelled = true;
@@ -168,15 +175,17 @@ export function TabRenderer({ windowId }: TabRendererProps) {
       // Close all parent-side listeners
       for (const handle of handles) handle.close();
 
-      // Tell the iframe-side copilot.js to close its WS for each agent
-      if (iframe.contentWindow) {
+      // Tell the iframe-side copilot.js to close its WS for each agent.
+      // Resolve the proxy origin for the close messages too.
+      getBrowserProxyOrigin().then((proxyOrigin) => {
+        if (!iframe.contentWindow) return;
         for (const agentId of pinnedAgentIdsForEffect) {
           iframe.contentWindow.postMessage(
             { type: "taos-copilot:close", agentId },
-            "*",
+            proxyOrigin,
           );
         }
-      }
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId, activeTabIdForEffect, pinnedAgentIdsForEffect.join(","), profileIdForEffect]);
@@ -188,22 +197,26 @@ export function TabRenderer({ windowId }: TabRendererProps) {
     if (!win) return;
     const tabs = win.tabs;
     const activeId = win.activeTabId;
-    for (const tab of tabs) {
-      const iframe = document.querySelector(
-        `iframe[data-tab-id="${tab.id}"]`,
-      ) as HTMLIFrameElement | null;
-      if (!iframe?.contentWindow) continue;
-      const focused = tab.id === activeId;
-      iframe.contentWindow.postMessage(
-        {
-          type: "taos-copilot:tab-focus",
-          window_id: windowId,
-          tab_id: tab.id,
-          focused,
-        },
-        "*",
-      );
-    }
+    // Use the proxy origin as the postMessage target so we don't broadcast
+    // tab-focus messages to "*".
+    getBrowserProxyOrigin().then((proxyOrigin) => {
+      for (const tab of tabs) {
+        const iframe = document.querySelector(
+          `iframe[data-tab-id="${tab.id}"]`,
+        ) as HTMLIFrameElement | null;
+        if (!iframe?.contentWindow) continue;
+        const focused = tab.id === activeId;
+        iframe.contentWindow.postMessage(
+          {
+            type: "taos-copilot:tab-focus",
+            window_id: windowId,
+            tab_id: tab.id,
+            focused,
+          },
+          proxyOrigin,
+        );
+      }
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId, activeTabIdForEffect]);
 

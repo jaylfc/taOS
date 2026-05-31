@@ -104,14 +104,27 @@ def _resolve_browser_session(state, session_id: str) -> str | None:
     return entry["user_id"]
 
 
+# The exact set of main-app state attributes the proxy origin legitimately
+# needs. Anything outside this set raises AttributeError so a future proxy
+# route cannot accidentally reach secrets, auth_manager, agent configs, etc.
+_SHARED_STATE_ALLOWLIST: frozenset[str] = frozenset({
+    "auth",
+    "browser_cookie_store",
+    "browser_proxy_signing_key",
+    "browser_store",
+    "copilot_hub",
+})
+
+
 class _SharedState:
     """A ``State``-like proxy that delegates attribute access to the main
     app's state, while allowing the proxy app to set its own attributes
     (e.g. ``browser_proxy_sessions``) without leaking them into the main
     app.
 
-    Starlette stores app state as a plain object with a ``_state`` dict
-    under the hood; we just forward ``getattr`` to the shared object.
+    Only attributes in ``_SHARED_STATE_ALLOWLIST`` are delegated to the
+    shared state; everything else raises ``AttributeError`` so this origin
+    cannot accidentally reach taOS internals (secrets, agent configs, etc.).
     """
 
     def __init__(self, shared) -> None:
@@ -122,6 +135,10 @@ class _SharedState:
         local = object.__getattribute__(self, "_local")
         if name in local:
             return local[name]
+        if name not in _SHARED_STATE_ALLOWLIST:
+            raise AttributeError(
+                f"_SharedState: '{name}' is not in the proxy-origin allowlist"
+            )
         return getattr(object.__getattribute__(self, "_shared"), name)
 
     def __setattr__(self, name: str, value) -> None:
@@ -290,6 +307,9 @@ def create_browser_proxy_app(main_app_state) -> FastAPI:
             max_age=_BROWSER_SESSION_IDLE_TTL,
             path="/",
         )
+        # Prevent the single-use ticket in the redeem URL from leaking to the
+        # proxied site via the Referer header on the subsequent navigation.
+        response.headers["referrer-policy"] = "no-referrer"
         return response
 
     return app
