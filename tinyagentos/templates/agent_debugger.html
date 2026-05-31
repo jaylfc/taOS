@@ -4,8 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Debugger — TinyAgentOS</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <script src="https://unpkg.com/htmx.org@2"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.min.css"
+        integrity="sha384-L1dWfspMTHU/ApYnFiMz2QID/PlP1xCW9visvBdbEkOLkSSWsP6ZJWhPw6apiXxU"
+        crossorigin="anonymous">
+  <script src="https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js"
+          integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
+          crossorigin="anonymous"></script>
   <style>
     :root {
       --debugger-header-height: 3.5rem;
@@ -248,6 +252,7 @@
             activeIdx = -1;
             eventList.innerHTML = '';
             eventDetail.innerHTML = '<div class="empty-state">Trace cleared.</div>';
+            updateUI();
             return;
           }
 
@@ -263,10 +268,16 @@
       function renderEvent(event, idx) {
         const li = document.createElement('li');
         li.className = 'event-item';
-        li.setAttribute('role', 'listitem');
+        li.setAttribute('role', 'button');
         li.setAttribute('tabindex', '0');
         li.setAttribute('aria-label', event.type + ' event');
         li.onclick = function() { selectEvent(idx); };
+        li.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+            e.preventDefault();
+            selectEvent(idx);
+          }
+        });
 
         const span = document.createElement('span');
         span.className = 'event-type event-type-' + event.type;

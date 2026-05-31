@@ -1,6 +1,71 @@
 """Tests for the agent debugger route module."""
 
+import asyncio
+import json
+
 import pytest
+
+
+async def _collect_sse_lines(app, path, cookies, n_lines, timeout=5.0):
+    """Drive an ASGI SSE endpoint, collect the first n_lines non-empty lines,
+    then cancel the request task.
+
+    httpx's buffered ``client.get`` would block until the long-lived
+    StreamingResponse closes, so we drive the ASGI app directly with a
+    controlled receive/send and cancel once we have enough lines.
+    """
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "headers": [
+            (b"cookie", "; ".join(f"{k}={v}" for k, v in cookies.items()).encode()),
+            (b"accept", b"text/event-stream"),
+        ],
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 1234),
+        "root_path": "",
+    }
+
+    lines: list[str] = []
+    done = asyncio.Event()
+    status_code = {"value": None}
+
+    async def receive():
+        await done.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            status_code["value"] = message["status"]
+        elif message["type"] == "http.response.body":
+            body = message.get("body", b"")
+            if body:
+                for line in body.decode().split("\n"):
+                    stripped = line.rstrip("\r")
+                    if stripped:
+                        lines.append(stripped)
+                        if len(lines) >= n_lines:
+                            done.set()
+
+    task = asyncio.create_task(app(scope, receive, send))
+    try:
+        await asyncio.wait_for(asyncio.shield(done.wait()), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    return status_code["value"], lines
 
 
 @pytest.mark.asyncio
@@ -17,6 +82,9 @@ async def test_debugger_ui_returns_html(client):
 @pytest.mark.asyncio
 async def test_trace_records_event(client):
     """POST /agent/{agent_id}/debug/trace records a trace event."""
+    # The trace buffer is module-level and not reset between tests, so clear it
+    # first to keep the exact-count assertion deterministic.
+    await client.post("/agent/test-agent/debug/clear")
     resp = await client.post(
         "/agent/test-agent/debug/trace",
         json={"type": "tool_call", "data": {"tool": "search", "query": "test"}},
@@ -134,16 +202,23 @@ async def test_separate_agents_have_separate_traces(client):
 
 
 @pytest.mark.asyncio
-async def test_events_endpoint_returns_sse(client):
-    """GET /agent/{agent_id}/debug/events returns SSE stream."""
+async def test_events_endpoint_returns_sse(app, client):
+    """GET /agent/{agent_id}/debug/events streams an SSE frame."""
+    await client.post("/agent/sse-agent/debug/clear")
     # Record an event first so there's data to stream
     await client.post(
-        "/agent/test-agent/debug/trace",
+        "/agent/sse-agent/debug/trace",
         json={"type": "tool_call", "data": {"tool": "test"}},
     )
 
-    resp = await client.get("/agent/test-agent/debug/events", timeout=2)
-    assert resp.status_code == 200
+    cookies = {"taos_session": client.cookies.get("taos_session", "")}
+    status, lines = await _collect_sse_lines(
+        app, "/agent/sse-agent/debug/events", cookies, n_lines=1, timeout=5.0
+    )
+
+    assert status == 200
+    data_lines = [l for l in lines if l.startswith("data:")]
+    assert data_lines, f"No data: lines received; got: {lines}"
 
 
 @pytest.mark.asyncio
@@ -157,16 +232,32 @@ async def test_status_no_events(client):
 
 
 @pytest.mark.asyncio
-async def test_multiple_events_ordered(client):
-    """Events are recorded in order."""
-    await client.post(
-        "/agent/test-agent/debug/clear",
-    )
+async def test_multiple_events_ordered(app, client):
+    """Events are recorded and replayed in order."""
+    await client.post("/agent/ordered-agent/debug/clear")
     for i in range(10):
         await client.post(
-            "/agent/test-agent/debug/trace",
+            "/agent/ordered-agent/debug/trace",
             json={"type": "log", "data": {"num": i}},
         )
 
-    status = await client.get("/agent/test-agent/debug/status")
+    status = await client.get("/agent/ordered-agent/debug/status")
     assert status.json()["total_events"] == 10
+
+    # Replaying the trace over SSE must yield the events in recorded order.
+    # The stream emits one position frame followed by the 10 buffered logs, so
+    # collect 11 data lines and check the log sequence.
+    cookies = {"taos_session": client.cookies.get("taos_session", "")}
+    _, lines = await _collect_sse_lines(
+        app, "/agent/ordered-agent/debug/events", cookies, n_lines=11, timeout=5.0
+    )
+
+    nums = []
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        payload = json.loads(line[len("data:"):].strip())
+        if payload.get("type") == "log":
+            nums.append(payload["data"]["num"])
+
+    assert nums == list(range(10))
