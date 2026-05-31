@@ -313,6 +313,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     skills = SkillStore(data_dir / "skills.db")
+    from tinyagentos.themes.store import ThemeStore
+    themes = ThemeStore(data_dir / "themes.sqlite3")
     knowledge_store = KnowledgeStore(
         data_dir / "knowledge.db",
         media_dir=data_dir / "knowledge-media",
@@ -370,6 +372,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await user_memory.init()
         await installed_apps.init()
         await skills.init()
+        await themes.init()
+        app.state.themes = themes
         await knowledge_store.init()
         await mcp_store.init()
         mcp_supervisor = MCPSupervisor(mcp_store, catalog=registry, notif_store=notif_store, secrets_store=secrets_store)
@@ -863,6 +867,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await scheduler_history_store.close()
         await benchmark_store.close()
         await skills.close()
+        await themes.close()
         await knowledge_monitor.stop()
         await knowledge_store.close()
         await agent_browsers.close()
@@ -978,6 +983,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
     app.state.skills = skills
+    app.state.themes = themes
     app.state.knowledge_store = knowledge_store
     app.state.ingest_pipeline = knowledge_ingest
     app.state.knowledge_monitor = knowledge_monitor
@@ -1251,6 +1257,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes import admin_prompts as admin_prompts_routes
     app.include_router(admin_prompts_routes.router)
+
+    from tinyagentos.routes import themes as themes_routes
+    app.include_router(themes_routes.router)
 
     from tinyagentos.routes import framework as framework_routes
     app.include_router(framework_routes.router)
