@@ -1,6 +1,13 @@
 # tinyagentos/routes/guides.py
 from __future__ import annotations
 
+"""Hardware guidance and model recommendation API.
+
+Provides per-hardware-tier, per-use-case model recommendations backed
+by a YAML data file (``data/guides.yaml``) that is cached in memory
+after the first load.  Restart the server to pick up edits.
+"""
+
 import logging
 from pathlib import Path
 
