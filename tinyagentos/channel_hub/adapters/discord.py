@@ -16,9 +16,8 @@ from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
-# Discord rate limit: 5 requests per 5 seconds per channel
+# Default retry delay when Discord returns 429 (used if retry_after is absent)
 _RATE_LIMIT_WINDOW = 5.0
-_RATE_LIMIT_MAX = 5
 
 
 class DiscordConnector:
@@ -50,17 +49,20 @@ class DiscordConnector:
         self._bot_user_id: str | None = None
         # Track last-seen message ID per channel for polling
         self._last_message_ids: dict[str, str] = {}
-        # Per-channel rate limiting: 5 requests per 5-second window
-        self._channel_sem: dict[str, asyncio.Semaphore] = {}
 
     async def start(self) -> None:
         """Start the Discord polling loop.
 
         Fetches the bot's user ID so we can filter out our own messages,
         then begins the poll loop.
+
+        Raises:
+            RuntimeError: If the bot user ID cannot be resolved (bad token,
+                network error, etc.).  Without it the connector cannot filter
+                its own messages, which would cause an infinite response loop.
         """
         self._running = True
-        # Resolve bot user ID
+        # Resolve bot user ID — required to skip the bot's own messages.
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
@@ -69,7 +71,16 @@ class DiscordConnector:
                 if resp.status_code == 200:
                     self._bot_user_id = resp.json().get("id")
         except Exception as exc:
-            logger.warning("Could not resolve bot user ID: %s", exc)
+            raise RuntimeError(
+                f"Discord connector for '{self.agent_name}': could not resolve "
+                f"bot user ID — check your token. ({exc})"
+            ) from exc
+
+        if not self._bot_user_id:
+            raise RuntimeError(
+                f"Discord connector for '{self.agent_name}': /users/@me returned "
+                f"an empty user ID — token may be invalid."
+            )
 
         self._task = asyncio.create_task(self._poll_loop())
         logger.info(
@@ -108,65 +119,61 @@ class DiscordConnector:
         """Fetch new messages from a single Discord channel.
 
         Uses after-id pagination so we only see messages newer than the
-        last one we processed.  Respects per-channel rate limits via a
-        semaphore (5 concurrent requests per 5-second window).
+        last one we processed.  Rate limiting is handled reactively: if
+        Discord returns 429 we back off for retry_after seconds.
         """
-        if channel_id not in self._channel_sem:
-            self._channel_sem[channel_id] = asyncio.Semaphore(_RATE_LIMIT_MAX)
+        params: dict[str, str | int] = {"limit": 10}
+        last_id = self._last_message_ids.get(channel_id)
+        if last_id:
+            params["after"] = last_id
 
-        async with self._channel_sem[channel_id]:
-            params: dict[str, str | int] = {"limit": 10}
-            last_id = self._last_message_ids.get(channel_id)
-            if last_id:
-                params["after"] = last_id
+        try:
+            resp = await client.get(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+                headers=self.headers,
+                params=params,
+            )
+        except httpx.RequestError as exc:
+            logger.error(
+                "Discord HTTP error on channel %s: %s", channel_id, exc,
+            )
+            return
 
-            try:
-                resp = await client.get(
-                    f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
-                    headers=self.headers,
-                    params=params,
-                )
-            except httpx.RequestError as exc:
-                logger.error(
-                    "Discord HTTP error on channel %s: %s", channel_id, exc,
-                )
-                return
+        if resp.status_code == 429:
+            retry_after = float(
+                resp.json().get("retry_after", _RATE_LIMIT_WINDOW),
+            )
+            logger.warning(
+                "Discord rate limited on channel %s, waiting %.1fs",
+                channel_id, retry_after,
+            )
+            await asyncio.sleep(retry_after)
+            return
 
-            if resp.status_code == 429:
-                retry_after = float(
-                    resp.json().get("retry_after", _RATE_LIMIT_WINDOW),
-                )
-                logger.warning(
-                    "Discord rate limited on channel %s, waiting %.1fs",
-                    channel_id, retry_after,
-                )
-                await asyncio.sleep(retry_after)
-                return
+        if resp.status_code == 401:
+            logger.error(
+                "Discord auth failure on channel %s — bad token?", channel_id,
+            )
+            return
 
-            if resp.status_code == 401:
-                logger.error(
-                    "Discord auth failure on channel %s — bad token?", channel_id,
-                )
-                return
+        if resp.status_code != 200:
+            logger.debug(
+                "Discord channel %s returned %d", channel_id, resp.status_code,
+            )
+            return
 
-            if resp.status_code != 200:
-                logger.debug(
-                    "Discord channel %s returned %d", channel_id, resp.status_code,
-                )
-                return
+        messages = resp.json()
+        if not messages:
+            return
 
-            messages = resp.json()
-            if not messages:
-                return
+        # Update last-seen ID (API returns newest first)
+        self._last_message_ids[channel_id] = messages[0]["id"]
 
-            # Update last-seen ID (API returns newest first)
-            self._last_message_ids[channel_id] = messages[0]["id"]
-
-            # Process in chronological order (oldest first)
-            for msg in reversed(messages):
-                if msg.get("author", {}).get("id") == self._bot_user_id:
-                    continue  # Skip our own messages
-                await self._handle_message(client, channel_id, msg)
+        # Process in chronological order (oldest first)
+        for msg in reversed(messages):
+            if msg.get("author", {}).get("id") == self._bot_user_id:
+                continue  # Skip our own messages
+            await self._handle_message(client, channel_id, msg)
 
     # ------------------------------------------------------------------
     # Message handling

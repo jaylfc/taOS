@@ -272,6 +272,113 @@ class TestDiscordConnector:
 
 
 # ---------------------------------------------------------------------------
+# Discord Adapter (channel_hub/adapters/discord.py)
+# Tests for the reviewed findings: start() raises on missing bot ID + no semaphore.
+# ---------------------------------------------------------------------------
+
+class TestDiscordAdapter:
+    @pytest.mark.asyncio
+    async def test_start_raises_on_network_error(self):
+        """start() raises RuntimeError when the /users/@me request fails."""
+        from tinyagentos.channel_hub.adapters.discord import DiscordConnector
+
+        router = MagicMock()
+        connector = DiscordConnector(
+            bot_token="bad_token", agent_name="test", router=router, channel_ids=["ch1"],
+        )
+
+        with patch("tinyagentos.channel_hub.adapters.discord.httpx.AsyncClient") as mock_httpx:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get = AsyncMock(side_effect=Exception("network error"))
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=False)
+            mock_httpx.return_value = mock_client_instance
+
+            with pytest.raises(RuntimeError, match="could not resolve bot user ID"):
+                await connector.start()
+
+    @pytest.mark.asyncio
+    async def test_start_raises_on_empty_user_id(self):
+        """start() raises RuntimeError when /users/@me returns no id."""
+        from tinyagentos.channel_hub.adapters.discord import DiscordConnector
+
+        router = MagicMock()
+        connector = DiscordConnector(
+            bot_token="bad_token", agent_name="test", router=router, channel_ids=["ch1"],
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {}  # no "id" field
+
+        with patch("tinyagentos.channel_hub.adapters.discord.httpx.AsyncClient") as mock_httpx:
+            mock_client_instance = AsyncMock()
+            mock_client_instance.get = AsyncMock(return_value=mock_resp)
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=False)
+            mock_httpx.return_value = mock_client_instance
+
+            with pytest.raises(RuntimeError, match="empty user ID"):
+                await connector.start()
+
+    @pytest.mark.asyncio
+    async def test_start_succeeds_with_valid_token(self):
+        """start() sets _bot_user_id and starts the poll task when token is valid."""
+        from tinyagentos.channel_hub.adapters.discord import DiscordConnector
+
+        router = MagicMock()
+        connector = DiscordConnector(
+            bot_token="good_token", agent_name="test", router=router, channel_ids=["ch1"],
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "bot_id_42"}
+
+        with patch.object(connector, "_poll_loop", new_callable=AsyncMock):
+            with patch("tinyagentos.channel_hub.adapters.discord.httpx.AsyncClient") as mock_httpx:
+                mock_client_instance = AsyncMock()
+                mock_client_instance.get = AsyncMock(return_value=mock_resp)
+                mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+                mock_client_instance.__aexit__ = AsyncMock(return_value=False)
+                mock_httpx.return_value = mock_client_instance
+
+                await connector.start()
+                assert connector._bot_user_id == "bot_id_42"
+                assert connector._running is True
+
+                await connector.stop()
+                assert connector._running is False
+
+    @pytest.mark.asyncio
+    async def test_check_channel_no_semaphore(self):
+        """_check_channel works without any semaphore — channels are polled sequentially."""
+        from tinyagentos.channel_hub.adapters.discord import DiscordConnector
+
+        mock_router = AsyncMock()
+        mock_router.route_message = AsyncMock(return_value=None)
+        connector = DiscordConnector(
+            bot_token="fake", agent_name="bot1", router=mock_router, channel_ids=["ch1"],
+        )
+        connector._bot_user_id = "bot_id_99"
+
+        assert not hasattr(connector, "_channel_sem"), \
+            "_channel_sem must not exist on the adapter"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            {"id": "m1", "author": {"id": "user1", "username": "Jay"}, "content": "hello"},
+        ]
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        await connector._check_channel(mock_client, "ch1")
+        assert mock_router.route_message.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # WebChat Connector
 # ---------------------------------------------------------------------------
 
