@@ -68,6 +68,35 @@ export function getAllApps(): AppManifest[] {
   return [...apps].sort((a, b) => a.launchpadOrder - b.launchpadOrder);
 }
 
+const prefetched = new Set<string>();
+// Tracks apps that failed prefetch; not retried to avoid repeated errors on every hover.
+const prefetchFailed = new Set<string>();
+
+/**
+ * Warm the dynamic-import chunk for an app so a later cold-open feels instant.
+ *
+ * Best-effort and memoized: each app is only prefetched once per session and
+ * errors are swallowed (a failed prefetch must never affect the UI). Works for
+ * any registered manifest, including service/userspace apps (`service:*`).
+ */
+export function prefetchApp(appId: string): void {
+  if (prefetched.has(appId) || prefetchFailed.has(appId)) return;
+  const app = getApp(appId);
+  if (!app) return;
+  prefetched.add(appId);
+  try {
+    void Promise.resolve(app.component()).catch((err) => {
+      console.warn("Failed to prefetch app:", appId, err);
+      prefetched.delete(appId);
+      prefetchFailed.add(appId);
+    });
+  } catch (err) {
+    console.warn("Failed to prefetch app:", appId, err);
+    prefetched.delete(appId);
+    prefetchFailed.add(appId);
+  }
+}
+
 /**
  * Register or return a dynamic app manifest for an installed service.
  *
