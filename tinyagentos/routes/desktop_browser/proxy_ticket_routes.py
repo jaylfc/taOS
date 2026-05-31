@@ -38,6 +38,19 @@ def _signing_key(request: Request) -> bytes:
     return key
 
 
+@router.get("/api/desktop/browser/proxy-config")
+async def proxy_config(request: Request):
+    """Public probe: tell the frontend which port the browser-proxy origin
+    is served on so it can build the cross-origin redeem URL.
+
+    Auth-exempt and leaks nothing sensitive — just a port number. A value of
+    0 means single-port mode (no separate origin); the frontend then falls
+    back to building same-origin proxy URLs on the shell.
+    """
+    port = int(getattr(request.app.state, "browser_proxy_port", 0) or 0)
+    return JSONResponse({"port": port})
+
+
 @router.api_route("/api/desktop/browser/proxy-ticket", methods=["GET", "POST"])
 async def proxy_ticket(
     request: Request,

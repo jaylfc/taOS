@@ -46,13 +46,19 @@ def main() -> None:
     if not proxy_port or proxy_port == port:
         # Single-port fallback: the browser proxy stays on the main origin
         # (as it has historically). No separate-origin / SW isolation, but
-        # the app boots and works.
+        # the app boots and works. Advertise port 0 to the frontend so it
+        # builds same-origin proxy URLs (the old behaviour).
+        app.state.browser_proxy_port = 0
         import uvicorn
 
         # backlog=128 — see issue #323. Keeps the kernel accept queue from
         # silently growing into the thousands if the event loop ever wedges.
         uvicorn.run(app, host=host, port=port, backlog=128)
         return
+
+    # Advertise the proxy port to the frontend (see proxy_config route) so it
+    # builds the cross-origin redeem URL from the current access host.
+    app.state.browser_proxy_port = proxy_port
 
     _serve_dual_port(app, host=host, port=port, proxy_port=proxy_port)
 

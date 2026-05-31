@@ -257,7 +257,12 @@ async def proxy_get(
             f"{ws_scheme}://{request.url.netloc}/api/desktop/browser/copilot"
             f"?profile_id={quote(profile_id, safe='')}"
         )
-        injected = inject_into_head(rewritten, ws_url=ws_url)
+        injected = inject_into_head(
+            rewritten,
+            ws_url=ws_url,
+            page_base_url=str(response.url),
+            profile_id=profile_id,
+        )
 
         # Page-change broadcast for any agents pinned to this tab.
         # Non-blocking — never delay the user's page load on agent fan-out.

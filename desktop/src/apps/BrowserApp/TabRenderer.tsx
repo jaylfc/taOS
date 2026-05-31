@@ -18,10 +18,17 @@
  * are exempt regardless of idle time. PR 4 ships the basic policy.
  */
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useBrowserSettingsStore } from "@/stores/browser-settings-store";
 import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 import { mintCopilotTicket } from "@/lib/browser-agent-api";
+import {
+  buildProxiedPath,
+  buildRedeemUrl,
+  getBrowserProxyOrigin,
+  mintProxyTicket,
+} from "@/lib/browser-proxy-config";
 import { openParentWs } from "./agent-ws-bridge";
 import type { AgentWsHandle } from "./agent-ws-bridge";
 import { detectLiveExclusion } from "./live-exclusion";
@@ -200,27 +207,11 @@ export function TabRenderer({ windowId }: TabRendererProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowId, activeTabIdForEffect]);
 
-  // Prime the Service Worker with the active tab's page base URL + profile ID
-  // so it can rewrite relative SPA fetch calls through the proxy.
-  // Registration moved to BrowserApp.tsx (parent shell) since copilot.js runs
-  // in a sandboxed iframe where navigator.serviceWorker is unavailable.
-  // Uses .ready so the message is delivered whether or not the SW has claimed
-  // this client yet.
-  const activeTabUrlForSW = win?.tabs.find((t) => t.id === win?.activeTabId)?.url;
-  useEffect(() => {
-    if (!win || !activeTabUrlForSW) return;
-    if (!('serviceWorker' in navigator)) return;
-    if (!activeTabUrlForSW || activeTabUrlForSW === "about:blank" || activeTabUrlForSW.startsWith("about:")) return;
-    navigator.serviceWorker.ready.then((reg) => {
-      if (reg.active) {
-        reg.active.postMessage({
-          type: "taos-sw:prime",
-          pageBaseUrl: activeTabUrlForSW,
-          profileId: win.profileId,
-        });
-      }
-    });
-  }, [activeTabUrlForSW, win?.profileId, win?.activeTabId]);
+  // NOTE: Service Worker registration + priming now happen INSIDE the iframe
+  // (copilot.js on the proxy origin). The iframe is a real, separate origin
+  // with allow-same-origin, so navigator.serviceWorker works there. The SW
+  // belongs to the proxy origin — not the shell — so there is no shell-side
+  // registration or prime here any more.
 
   // Subscribe to panel state so TabRenderer re-renders when panel opens/closes.
   // win?.activeTabId is safely undefined when win is undefined (hook must be
@@ -280,27 +271,13 @@ export function TabRenderer({ windowId }: TabRendererProps) {
               style={{ display: isActive ? "contents" : "none" }}
               data-window-tab={tab.id}
             >
-              <iframe
-                title={tab.title || tab.url || "Browser tab"}
-                src={proxiedSrc(win.profileId, tab.url, tab.id)}
-                data-tab-id={tab.id}
-                // sandbox: allow-same-origin intentionally OMITTED. The proxy
-                // serves on the same origin as the shell; combining
-                // allow-same-origin + allow-scripts would let proxied JS reach
-                // up into the parent and remove this attribute. The HTTPS+DNS
-                // Foundations brainstorm will land an isolated subdomain that
-                // makes allow-same-origin safe to add back.
-                sandbox="allow-scripts allow-forms allow-popups allow-downloads"
-                style={{
-                  display: isActive && !showReader ? "block" : "none",
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  border: "none",
-                  transform: tab.zoom !== 1 ? `scale(${tab.zoom})` : undefined,
-                  transformOrigin: "top left",
-                }}
+              <TabFrame
+                profileId={win.profileId}
+                url={tab.url}
+                tabId={tab.id}
+                title={tab.title}
+                zoom={tab.zoom}
+                visible={isActive && !showReader}
               />
               {showReader && (
                 <ReaderMode tab={tab} windowId={windowId} />
@@ -374,18 +351,115 @@ function DiscardedPlaceholder({ tab, onReload }: DiscardedPlaceholderProps) {
   );
 }
 
-/** Build the proxied iframe src. about:blank passes through unproxied.
- * tab_id is included so the proxy can fan out page-changed events to
- * any agents pinned to the tab (see proxy.py + CopilotHub).
+interface TabFrameProps {
+  profileId: string;
+  url: string;
+  tabId: string;
+  title: string;
+  zoom: number;
+  visible: boolean;
+}
+
+/**
+ * Renders a single tab's iframe via the ticketed redeem flow.
+ *
+ * For each top-level navigation we mint a fresh 30s single-use proxy ticket
+ * (same-origin, credentialed), then point the iframe at
+ * `<proxyOrigin>/__taos/redeem?ticket=…&next=<proxiedPath>`. The redeem sets
+ * the taos_browser cookie on the proxy origin and 302s to the proxied page;
+ * every subsequent in-iframe request carries the cookie automatically. In-page
+ * SPA fetches are intercepted by the proxy-origin service worker (registered
+ * by copilot.js), not re-redeemed.
+ *
+ * about:blank URLs render an empty iframe. A ticket-mint failure surfaces an
+ * inline error instead of a blank iframe.
  */
-function proxiedSrc(profileId: string, url: string, tabId: string): string {
-  if (!url || url === "about:blank" || url.startsWith("about:")) {
-    return "about:blank";
-  }
-  const params = new URLSearchParams({
-    profile_id: profileId,
-    url,
-    tab_id: tabId,
-  });
-  return `/api/desktop/browser/proxy?${params.toString()}`;
+function TabFrame({ profileId, url, tabId, title, zoom, visible }: TabFrameProps) {
+  // null = loading; "" = about:blank passthrough; string = redeem URL.
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Whether the proxy origin is cross-origin to the shell. Only then is
+  // allow-same-origin safe to grant (separate, API-free origin). In
+  // single-port mode the proxy IS the shell origin, so we withhold it and
+  // keep the historical opaque-origin sandbox.
+  const [crossOrigin, setCrossOrigin] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const proxiedPath = buildProxiedPath(profileId, url, tabId);
+    if (!proxiedPath) {
+      // about:blank / about: — no proxy, no ticket.
+      setError(null);
+      setSrc("");
+      return;
+    }
+
+    setError(null);
+    setSrc(null); // show nothing until the ticket resolves
+
+    (async () => {
+      const [proxyOrigin, ticket] = await Promise.all([
+        getBrowserProxyOrigin(),
+        mintProxyTicket(),
+      ]);
+      if (cancelled) return;
+      if (!ticket) {
+        setError("Couldn’t establish a secure browsing session. Try again.");
+        return;
+      }
+      setCrossOrigin(proxyOrigin !== window.location.origin);
+      setSrc(buildRedeemUrl(proxyOrigin, ticket, proxiedPath));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId, url, tabId]);
+
+  const frameStyle: CSSProperties = {
+    display: visible && !error ? "block" : "none",
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    border: "none",
+    transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+    transformOrigin: "top left",
+  };
+
+  return (
+    <>
+      <iframe
+        title={title || url || "Browser tab"}
+        // about:blank passthrough; otherwise the redeem URL on the proxy
+        // origin (or "" while the ticket is in flight → about:blank).
+        src={src === "" ? "about:blank" : src ?? "about:blank"}
+        data-tab-id={tabId}
+        // sandbox: allow-same-origin is added ONLY when the proxy is served on
+        // a SEPARATE, API-free origin (the proxy port), cross-origin to the
+        // taOS shell. There it is safe: the page script runs as its own origin
+        // that exposes no taOS APIs and cannot reach the shell DOM, so it
+        // cannot remove this sandbox or touch taOS state — and allow-same-origin
+        // is what lets the proxied page register a service worker (SPA fetch
+        // routing). In single-port mode the proxy IS the shell origin, so we
+        // withhold allow-same-origin and keep the historical opaque sandbox.
+        sandbox={
+          crossOrigin
+            ? "allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"
+            : "allow-scripts allow-forms allow-popups allow-downloads"
+        }
+        style={frameStyle}
+      />
+      {error && visible && (
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-shell-text-secondary text-sm"
+          data-tab-error={tabId}
+        >
+          <div className="font-medium">Couldn’t load this page</div>
+          <div className="text-xs opacity-70 max-w-[400px] text-center">{error}</div>
+        </div>
+      )}
+    </>
+  );
 }

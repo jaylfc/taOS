@@ -122,13 +122,17 @@ class TestCopilotJsAsset:
         assert "taosAnnotation" in body
 
     @pytest.mark.asyncio
-    async def test_does_not_register_sw_in_iframe_context(self, client):
-        """SW registration moved to parent shell — copilot.js (which runs in
-        the sandboxed iframe) should NOT call serviceWorker.register since
-        navigator.serviceWorker is unavailable in the sandbox."""
+    async def test_registers_and_primes_sw_in_iframe_context(self, client):
+        """The proxied iframe now has a real, separate origin with
+        allow-same-origin, so navigator.serviceWorker IS available. copilot.js
+        registers /__taos/sw.js (scope /) and primes it with the page base URL
+        + profile id read from the injected meta tags."""
         r = await client.get("/__taos/copilot.js")
         body = r.text
-        assert "serviceWorker.register" not in body
+        assert "serviceWorker.register('/__taos/sw.js'" in body
+        assert "taos-sw:prime" in body
+        assert "taos-page-base" in body
+        assert "taos-profile-id" in body
 
     @pytest.mark.asyncio
     async def test_websocket_constructor_patched(self, client):

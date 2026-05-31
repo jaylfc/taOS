@@ -214,3 +214,32 @@ class TestProxyTicketEndpoint:
         ticket = validate_proxy_ticket(token, signing_key=key)
         record = app.state.auth.find_user("admin")
         assert ticket.user_id == record["id"]
+
+
+# --------------------------------------------------------------------------- #
+#  Main-app proxy-config probe (public — tells the frontend the proxy port)   #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestProxyConfigEndpoint:
+    async def test_public_no_auth_required(self, app):
+        # Auth-exempt: an anonymous client must still get the port.
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as anon:
+            resp = await anon.get("/api/desktop/browser/proxy-config")
+        assert resp.status_code == 200
+
+    async def test_reports_configured_port(self, client, app):
+        app.state.browser_proxy_port = 6970
+        resp = await client.get("/api/desktop/browser/proxy-config")
+        assert resp.status_code == 200
+        assert resp.json()["port"] == 6970
+
+    async def test_defaults_to_zero_single_port(self, client, app):
+        # No port set on state -> 0 (single-port fallback signal).
+        if hasattr(app.state, "browser_proxy_port"):
+            delattr(app.state, "browser_proxy_port")
+        resp = await client.get("/api/desktop/browser/proxy-config")
+        assert resp.status_code == 200
+        assert resp.json()["port"] == 0
