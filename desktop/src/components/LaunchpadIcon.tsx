@@ -17,7 +17,6 @@ export function LaunchpadIcon({ app, onClick }: Props) {
     <button
       onClick={onClick}
       onMouseEnter={() => prefetchApp(app.id)}
-      onPointerDown={() => prefetchApp(app.id)}
       className="flex flex-col items-center gap-2 p-3 rounded-xl hover:bg-white/5 transition-colors"
       aria-label={`Open ${app.name}`}
     >

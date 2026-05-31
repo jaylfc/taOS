@@ -17,27 +17,19 @@ const app = { id: "browser", name: "Browser", icon: "globe" } as AppManifest;
 describe("icon prefetch wiring", () => {
   beforeEach(() => prefetchApp.mockClear());
 
-  it("DockIcon prefetches on hover and pointer-down", () => {
+  it("DockIcon prefetches on hover", () => {
     render(<DockIcon appId="browser" isRunning={false} onClick={() => {}} />);
     const btn = screen.getByRole("button", { name: "Open Browser" });
 
     fireEvent.mouseEnter(btn);
     expect(prefetchApp).toHaveBeenCalledWith("browser");
-
-    prefetchApp.mockClear();
-    fireEvent.pointerDown(btn);
-    expect(prefetchApp).toHaveBeenCalledWith("browser");
   });
 
-  it("LaunchpadIcon prefetches on hover and pointer-down", () => {
+  it("LaunchpadIcon prefetches on hover", () => {
     render(<LaunchpadIcon app={app} onClick={() => {}} />);
     const btn = screen.getByRole("button", { name: "Open Browser" });
 
     fireEvent.mouseEnter(btn);
-    expect(prefetchApp).toHaveBeenCalledWith("browser");
-
-    prefetchApp.mockClear();
-    fireEvent.pointerDown(btn);
     expect(prefetchApp).toHaveBeenCalledWith("browser");
   });
 

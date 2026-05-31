@@ -25,6 +25,6 @@ describe("WindowSkeleton", () => {
     render(<WindowContent appId="browser" windowId="w1" launchNonce={0} />);
     // Skeleton is rendered, not the old bare "Loading..." text.
     expect(screen.getByTestId("window-skeleton")).toBeTruthy();
-    expect(screen.queryByText("Loading...")).toBeNull();
+    expect(screen.getByRole("status", { name: "Loading app" })).toBeTruthy();
   });
 });

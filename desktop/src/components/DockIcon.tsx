@@ -21,7 +21,6 @@ export function DockIcon({ appId, isRunning, onClick }: Props) {
     <button
       onClick={onClick}
       onMouseEnter={() => prefetchApp(appId)}
-      onPointerDown={() => prefetchApp(appId)}
       className="group relative flex items-center justify-center w-10 h-10 rounded-lg bg-shell-surface hover:bg-shell-surface-active transition-all hover:scale-110"
       aria-label={`Open ${app.name}`}
       title={app.name}
