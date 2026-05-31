@@ -53,9 +53,15 @@ def get_installer(method: str, **kwargs) -> AppInstaller:
     elif method in ("rkllamacpp", "rk-llama.cpp"):
         from tinyagentos.installers.rkllamacpp_installer import RkLlamaCppInstaller
         return RkLlamaCppInstaller(**kwargs)
-    elif method == "ollama":
+    elif method in ("ollama", "ollama_pull"):
         from tinyagentos.installers.ollama_installer import OllamaInstaller
         return OllamaInstaller(**kwargs)
+    elif method == "llama_cpp_download":
+        from tinyagentos.installers.llama_cpp_installer import LlamaCppInstaller
+        return LlamaCppInstaller(**kwargs)
+    elif method == "vllm_download":
+        from tinyagentos.installers.vllm_installer import VllmInstaller
+        return VllmInstaller(**kwargs)
     elif method == "script":
         from tinyagentos.installers.script_installer import ScriptInstaller
         return ScriptInstaller(**kwargs)
