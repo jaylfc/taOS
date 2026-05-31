@@ -17,17 +17,19 @@
 #     TAOS_INSTALL_DIR    where to install (default: ~/tinyagentos)
 #     TAOS_BRANCH         git branch or tag (default: master)
 #     TAOS_REPO           git remote (default: https://github.com/jaylfc/tinyagentos)
-#     TAOS_PORT           controller listen port (default: 6969)
-#     TAOS_QMD_PORT       qmd model service port (default: 7832)
-#     TAOS_SERVICE        install as system service: auto (default), system, user, skip
-#     TAOS_SKIP_QMD       if set, skip qmd.service install (useful for boxes without a model backend)
-#     TAOS_RKNPU_SETUP    if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
+#     TAOS_PORT                controller listen port (default: 6969)
+#     TAOS_BROWSER_PROXY_PORT  browser-proxy second-origin port (default: 6970); set to 0 to disable
+#     TAOS_QMD_PORT            qmd model service port (default: 7832)
+#     TAOS_SERVICE             install as system service: auto (default), system, user, skip
+#     TAOS_SKIP_QMD            if set, skip qmd.service install (useful for boxes without a model backend)
+#     TAOS_RKNPU_SETUP         if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
 set -euo pipefail
 
 INSTALL_DIR="${TAOS_INSTALL_DIR:-$HOME/tinyagentos}"
 BRANCH="${TAOS_BRANCH:-master}"
 REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
 TAOS_PORT="${TAOS_PORT:-6969}"
+TAOS_BROWSER_PROXY_PORT="${TAOS_BROWSER_PROXY_PORT:-6970}"
 TAOS_QMD_PORT="${TAOS_QMD_PORT:-7832}"
 SERVICE_MODE="${TAOS_SERVICE:-auto}"
 
@@ -39,7 +41,7 @@ warn() { printf '\033[1;33m[server-install]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[server-install]\033[0m %s\n' "$*" >&2; exit 1; }
 
 log "os=$os_name arch=$arch"
-log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT qmd_port=$TAOS_QMD_PORT"
+log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
 
 # --- system dependencies --------------------------------------------------
 
@@ -1019,6 +1021,8 @@ install_linux_systemd_system() {
         -e "s|TAOS_STOP_SCRIPT|/usr/local/bin/taos-graceful-stop|g" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
         | $sudo_cmd tee "$unit" > /dev/null
+    # Inject TAOS_BROWSER_PROXY_PORT into the unit's Environment block.
+    $sudo_cmd sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
     log "installed $unit (system unit, runs as $USER)"
 
     # Install pre-shutdown hook
@@ -1060,6 +1064,8 @@ install_linux_systemd_user() {
         -e "/ExecStartPre/,/|| true'$/d" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
         > "$unit"
+    # Inject TAOS_BROWSER_PROXY_PORT into the unit's Environment block.
+    sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
     log "installed $unit (user unit fallback — sudo unavailable)"
 
     # Make the user manager start on boot without an active login. Must
@@ -1126,6 +1132,7 @@ install_macos_launchd() {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PYTHONUNBUFFERED</key><string>1</string>
+        <key>TAOS_BROWSER_PROXY_PORT</key><string>$TAOS_BROWSER_PROXY_PORT</string>
     </dict>
 </dict>
 </plist>
@@ -1140,7 +1147,7 @@ EOF
 
 if [[ "$SERVICE_MODE" == "skip" ]]; then
     log "TAOS_SERVICE=skip — not installing a service unit"
-    log "run manually: cd $INSTALL_DIR && ./.venv/bin/python -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port $TAOS_PORT"
+    log "run manually: cd $INSTALL_DIR && TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT ./.venv/bin/python -m tinyagentos"
 else
     case "$os_name" in
         Linux)  install_linux_systemd ;;
@@ -1195,6 +1202,10 @@ log "━━━━━━━━━━━━━━━━━━━━━━━━━
 log ""
 log "  Web UI      : http://$host_ip:$TAOS_PORT"
 log "  Localhost   : http://localhost:$TAOS_PORT"
+if [[ "$TAOS_BROWSER_PROXY_PORT" != "0" ]]; then
+    log "  Browser app : also listens on port $TAOS_BROWSER_PROXY_PORT (TAOS_BROWSER_PROXY_PORT)"
+    log "                open both ports in your firewall if accessing remotely"
+fi
 log "  Install dir : $INSTALL_DIR"
 log ""
 if have_root_or_sudo; then
