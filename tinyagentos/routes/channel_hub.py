@@ -117,6 +117,22 @@ async def connect_bot(request: Request):
         connectors[connector_key] = connector
         request.app.state.channel_hub_connectors = connectors
         return {"status": "connected", "platform": platform, "agent_name": agent_name}
+    elif platform == "github":
+        if not agent_name:
+            return JSONResponse({"error": "agent_name is required"}, status_code=400)
+        repo = body.get("repo")
+        event_kinds = body.get("event_kinds", [])
+        pr_number = body.get("pr_number")
+        from tinyagentos.channel_hub.adapters.github import GithubConnector
+        connector = GithubConnector(
+            agent_name=agent_name, router=router_obj,
+            repo=repo, event_kinds=event_kinds, pr_number=pr_number,
+        )
+        router_obj.assign_channel(platform, agent_name, agent_name)
+        await connector.start()
+        connectors[connector_key] = connector
+        request.app.state.channel_hub_connectors = connectors
+        return {"status": "connected", "platform": platform, "agent_name": agent_name}
     else:
         return JSONResponse({"error": f"Platform '{platform}' not yet supported"}, status_code=400)
 
