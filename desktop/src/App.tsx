@@ -25,6 +25,7 @@ import { useNotificationStore } from "@/stores/notification-store";
 import { TaosAssistantPanel } from "@/components/TaosAssistantPanel";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 import { InstallPromptBanner } from "@/shell/InstallPromptBanner";
+import { EffectsLayer } from "@/theme/effects/EffectsLayer";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -235,6 +236,7 @@ export function App() {
           )}
           <div className={`transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
             <div className="h-screen w-screen flex flex-col overflow-hidden bg-shell-bg text-shell-text">
+              <EffectsLayer />
               <TopBar onSearchOpen={toggleSearch} onAssistantOpen={toggleAssistant} />
               <Desktop />
               <Dock onLaunchpadOpen={toggleLaunchpad} />
@@ -259,6 +261,7 @@ export function App() {
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
     <div className={`taos-wallpaper h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
+      <EffectsLayer />
       {/* Install banner — shown in browser mode, hidden in PWA */}
       {isBrowserMobile && <InstallPromptBanner />}
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
