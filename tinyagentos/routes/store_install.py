@@ -183,6 +183,25 @@ def _registry_get(registry, app_id: str):
     return registry.get(app_id)
 
 
+def _docker_published_port(install_config: dict) -> int:
+    """Return the first host port a docker service publishes, or 0.
+
+    DockerInstaller maps each declared port as ``{p}:{p}`` so the host port
+    equals the container port. Ports may be declared either at the top level
+    (``install.ports``) or nested under ``install.requires.ports`` — mirror
+    the precedence DockerInstaller._generate_compose uses (requires first).
+    """
+    if not isinstance(install_config, dict):
+        return 0
+    ports = (install_config.get("requires") or {}).get("ports") or install_config.get("ports") or []
+    for p in ports:
+        try:
+            return int(p)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
 async def _legacy_install(request: Request, body: dict, app_id: str | None, target_remote: str | None) -> JSONResponse:
     """Legacy method-driven install path for non-model manifests.
 
@@ -393,6 +412,30 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     await store.install(app_id, body.get("version", ""), meta)
     raw_remote = body.get("target_remote") or ""
     _target_remote = raw_remote if raw_remote and raw_remote != "local" else None
+
+    # Docker services publish their port on the host (compose maps {p}:{p}),
+    # so they are reachable via the service proxy at /apps/{app_id}/. Record a
+    # runtime location so the app appears in /api/apps/installed and gets a
+    # Launchpad shortcut. Without this, a local docker install (e.g. SearxNG)
+    # succeeds but never surfaces a shortcut. Remote docker installs resolve
+    # the host from the registered incus remote; local installs use 127.0.0.1.
+    if backend == "docker":
+        docker_port = _docker_published_port(install_config)
+        if docker_port:
+            runtime_host = (
+                await _resolve_host(_target_remote) if _target_remote else "127.0.0.1"
+            )
+            await store.update_runtime_location(
+                app_id, host=runtime_host, port=docker_port, backend="docker",
+                ui_path=(install_config.get("ui_path", "/") if isinstance(install_config, dict) else "/"),
+            )
+        else:
+            logger.warning(
+                "_legacy_install: docker service %s declares no port; "
+                "no runtime location recorded (won't appear in Launchpad).",
+                app_id,
+            )
+
     if _target_remote is not None:
         try:
             import tinyagentos.containers as containers
@@ -408,12 +451,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("_legacy_install default: could not verify remote %r: %s", _target_remote, exc)
-        runtime_host = await _resolve_host(_target_remote)
-        await store.update_runtime_location(
-            app_id, host=runtime_host, port=0,
-            backend=meta.get("backend", "") if isinstance(meta, dict) else "",
-            ui_path=(install_config.get("ui_path", "/") if isinstance(install_config, dict) else "/"),
-        )
+        # Docker installs already recorded a full host:port location above —
+        # don't clobber it with the port=0 placeholder this branch records for
+        # backends (e.g. pip) that have no proxy-routable port.
+        if backend != "docker":
+            runtime_host = await _resolve_host(_target_remote)
+            await store.update_runtime_location(
+                app_id, host=runtime_host, port=0,
+                backend=meta.get("backend", "") if isinstance(meta, dict) else "",
+                ui_path=(install_config.get("ui_path", "/") if isinstance(install_config, dict) else "/"),
+            )
     if registry is not None:
         version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
         registry.mark_installed(app_id, version)

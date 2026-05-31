@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Sun, CloudSun, Sunset, Moon, type LucideIcon } from "lucide-react";
 import { useWidgetSize } from "@/hooks/use-widget-size";
 
 function getGreeting(hour: number): string {
@@ -8,11 +9,14 @@ function getGreeting(hour: number): string {
   return "Good night.";
 }
 
-function getGreetingEmoji(hour: number): string {
-  if (hour >= 5 && hour < 12) return "☀️";
-  if (hour >= 12 && hour < 17) return "⛅";
-  if (hour >= 17 && hour < 21) return "🌆";
-  return "🌙";
+// Lucide SVG icons rather than emoji: emoji glyphs (esp. 🌆) render as a
+// tofu/box on iOS where the font lacks them. SVGs are font-independent and
+// match the rest of the app's icon system.
+function getGreetingIcon(hour: number): LucideIcon {
+  if (hour >= 5 && hour < 12) return Sun;
+  if (hour >= 12 && hour < 17) return CloudSun;
+  if (hour >= 17 && hour < 21) return Sunset;
+  return Moon;
 }
 
 interface SystemSummary {
@@ -52,7 +56,7 @@ export function GreetingWidget() {
 
   const hour = now.getHours();
   const greeting = getGreeting(hour);
-  const emoji = getGreetingEmoji(hour);
+  const Icon = getGreetingIcon(hour);
 
   const subtitleParts: string[] = [];
   if (summary !== null) {
@@ -75,7 +79,7 @@ export function GreetingWidget() {
       role="region"
     >
       {tier !== "s" && (
-        <span style={{ fontSize: tier === "l" ? 36 : 28, lineHeight: 1 }} aria-hidden="true">{emoji}</span>
+        <Icon size={tier === "l" ? 36 : 28} color="rgba(255,255,255,0.92)" aria-hidden="true" />
       )}
 
       <span
@@ -85,11 +89,17 @@ export function GreetingWidget() {
           color: "rgba(255,255,255,0.92)",
           lineHeight: 1.2,
           letterSpacing: "-0.02em",
+          ...(tier === "s"
+            ? { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }
+            : {}),
         }}
       >
         {tier === "s" ? (
-          // Compact: emoji inline with text
-          <>{emoji} {greeting}</>
+          // Compact: icon inline with text
+          <>
+            <Icon size={16} color="rgba(255,255,255,0.92)" aria-hidden="true" />
+            {greeting}
+          </>
         ) : greeting}
       </span>
 
