@@ -540,6 +540,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.adapter_manager = adapter_manager
         app.state.channel_hub_connectors = {}
         app.state.deploy_tasks = {}
+        from tinyagentos.routes.agents import IdempotencyCache
+        app.state.idempotency_cache = IdempotencyCache()
         app.state.chat_messages = chat_messages
         app.state.chat_channels = chat_channels
         app.state.project_store = project_store
@@ -957,6 +959,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.adapter_manager = adapter_manager
     app.state.channel_hub_connectors = {}
     app.state.deploy_tasks = {}
+    from tinyagentos.routes.agents import IdempotencyCache
+    app.state.idempotency_cache = IdempotencyCache()
     app.state.chat_messages = chat_messages
     app.state.chat_channels = chat_channels
     app.state.project_store = project_store
