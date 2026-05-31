@@ -45,10 +45,10 @@ _KNOWN_BACKENDS = {
 _BACKEND_TO_METHOD: dict[str, str] = {
     "rkllama": "rkllama",
     "rk-llama-cpp": "rkllamacpp",
-    "ollama": "ollama",
-    "llama-cpp": "download",
+    "ollama": "ollama_pull",
+    "llama-cpp": "llama_cpp_download",
     "mlx": "download",
-    "vllm": "download",
+    "vllm": "vllm_download",
     "comfyui": "download",
     # Multi-file backends — model weights ship as an HF directory (config,
     # tokenizer, sharded safetensors / .bin chunks). The huggingface

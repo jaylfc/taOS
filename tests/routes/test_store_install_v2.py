@@ -144,8 +144,8 @@ class TestBackendToMethodMapping:
         from tinyagentos.installers.base import get_installer
 
         method = _BACKEND_TO_METHOD["ollama"]
-        assert method == "ollama"
-        # Should not raise ValueError
+        assert method == "ollama_pull"
+        # Should not raise ValueError — both "ollama" and "ollama_pull" resolve
         installer = get_installer(method)
         assert installer is not None
 
