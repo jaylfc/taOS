@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import type { ThemeConfig } from "@/theme/theme-config";
+import { ALLOWED_TOKENS } from "@/theme/theme-config";
 
 // Wallpapers are split into (image, fallback) pairs rather than a single
 // background-shorthand so CSS media queries can control background-size
@@ -77,6 +79,8 @@ interface ThemeStore {
   wallpaperMobileImage: string;
   wallpaperFallback: string;
   showDesktopIcons: boolean;
+  structure: Record<string, { variant?: string } & Record<string, unknown>>;
+  effects: { module: string; params?: Record<string, unknown> }[];
 
   setWallpaper: (id: string) => void;
   toggleDesktopIcons: () => void;
@@ -89,6 +93,8 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   wallpaperMobileImage: WALLPAPERS[0]!.mobileImage ?? WALLPAPERS[0]!.image,
   wallpaperFallback: WALLPAPERS[0]!.fallback,
   showDesktopIcons: true,
+  structure: {},
+  effects: [],
 
   setWallpaper(id) {
     const wp = WALLPAPERS.find((w) => w.id === id);
@@ -108,3 +114,24 @@ export const useThemeStore = create<ThemeStore>((set) => ({
 
   getWallpapers: () => WALLPAPERS,
 }));
+
+let _applied: string[] = []; // token keys currently set, for revert
+
+export function applyThemeConfig(cfg: ThemeConfig) {
+  revertTheme();
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(cfg.tokens || {})) {
+    if (ALLOWED_TOKENS.has(k) && typeof v === "string") {
+      root.style.setProperty(k, v);
+      _applied.push(k);
+    }
+  }
+  useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [] });
+}
+
+export function revertTheme() {
+  const root = document.documentElement;
+  for (const k of _applied) root.style.removeProperty(k);
+  _applied = [];
+  useThemeStore.setState({ structure: {}, effects: [] });
+}
