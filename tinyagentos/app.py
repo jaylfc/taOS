@@ -1279,6 +1279,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.taosmd import router as taosmd_router
     app.include_router(taosmd_router)
 
+    from tinyagentos.routes.gh_webhook import router as gh_webhook_router
+    app.include_router(gh_webhook_router)
+
     return app
 
 
