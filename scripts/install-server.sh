@@ -888,9 +888,16 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # node-llama-cpp tar-extraction failure (issue #310). When we
             # see it, point the user at the partial-install path and the log
             # rather than dumping hundreds of lines of npm noise to stderr.
+            # Pin qmd to a specific npm version to prevent surprise
+            # version bumps on fresh installs.  The npm package is
+            # pre-built (dist/ is not committed to the source repo),
+            # so installing from a git SHA requires a TypeScript
+            # build step — use the npm registry instead.
+            # To update: verify the new version against taOS, then
+            # bump the pinned version here.
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
-            log "npm install -g @jaylfc/qmd (log: $qmd_install_log)"
-            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd" >"$qmd_install_log" 2>&1; then
+            log "npm install -g @jaylfc/qmd@2.1.1 (log: $qmd_install_log)"
+            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@2.1.1" >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"
