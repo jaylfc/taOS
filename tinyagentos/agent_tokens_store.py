@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Per-agent token management with multi-worker-safe issuance.
+
+Uses SQLite with a partial unique index (one active token per agent)
+and ``BEGIN IMMEDIATE`` transactions to prevent race conditions across
+concurrent workers.  Also provides the ``IdempotencyCache`` used by
+the agent deploy and create endpoints to deduplicate retried requests.
+"""
+
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
