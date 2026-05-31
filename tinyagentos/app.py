@@ -1282,6 +1282,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.gh_webhook import router as gh_webhook_router
     app.include_router(gh_webhook_router)
 
+    from tinyagentos.routes.container_shell import router as container_shell_router
+    app.include_router(container_shell_router)
+
     return app
 
 
