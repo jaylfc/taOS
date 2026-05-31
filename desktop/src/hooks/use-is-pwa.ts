@@ -6,17 +6,24 @@ import { useEffect, useState } from "react";
  * viewport handling to account for Safari's dynamic URL bar and
  * the share/tab bars that consume screen space.
  */
+function isStandaloneNow(): boolean {
+  if (typeof window === "undefined") return false;
+  // matchMedia is absent in some embedded webviews / SSR / older runtimes —
+  // guard it rather than assume it's callable.
+  const standaloneDisplay =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(display-mode: standalone)").matches;
+  return (
+    standaloneDisplay ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true
+  );
+}
+
 export function useIsPwa(): boolean {
-  const [isPwa, setIsPwa] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return (
-      window.matchMedia("(display-mode: standalone)").matches ||
-      (navigator as unknown as { standalone?: boolean }).standalone === true
-    );
-  });
+  const [isPwa, setIsPwa] = useState(isStandaloneNow);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const mql = window.matchMedia("(display-mode: standalone)");
     const update = () =>
       setIsPwa(

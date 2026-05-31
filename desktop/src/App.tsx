@@ -258,7 +258,7 @@ export function App() {
     <ShortcutProvider>
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
-    <div className={`taos-wallpaper h-screen w-screen flex flex-col text-shell-text ${isBrowserMobile ? "taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
+    <div className={`taos-wallpaper h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
       {/* Install banner — shown in browser mode, hidden in PWA */}
       {isBrowserMobile && <InstallPromptBanner />}
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
