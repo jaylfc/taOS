@@ -48,7 +48,9 @@ def main() -> None:
         # (as it has historically). No separate-origin / SW isolation, but
         # the app boots and works. Advertise port 0 to the frontend so it
         # builds same-origin proxy URLs (the old behaviour).
-        app.state.browser_proxy_port = 0
+        # Guard: real Starlette apps have app.state; bare mocks (tests) may not.
+        if hasattr(app, "state"):
+            app.state.browser_proxy_port = 0
         import uvicorn
 
         # backlog=128 — see issue #323. Keeps the kernel accept queue from
@@ -58,7 +60,8 @@ def main() -> None:
 
     # Advertise the proxy port to the frontend (see proxy_config route) so it
     # builds the cross-origin redeem URL from the current access host.
-    app.state.browser_proxy_port = proxy_port
+    if hasattr(app, "state"):
+        app.state.browser_proxy_port = proxy_port
 
     _serve_dual_port(app, host=host, port=port, proxy_port=proxy_port)
 
