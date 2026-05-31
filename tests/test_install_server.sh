@@ -66,4 +66,36 @@ rknpu_line=$(grep -n "install_rknpu_if_pending" "$SCRIPT" | head -1 | cut -d: -f
 perf_call_line=$(grep -n "install_rk3588_perf_if_needed" "$SCRIPT" | head -1 | cut -d: -f1)
 (( rknpu_line < perf_call_line ))
 
+# ── Post-install hardware capability verification ──────────────────
+
+echo "test: verify_hardware_capabilities function exists"
+grep -q "verify_hardware_capabilities()" "$SCRIPT"
+
+echo "test: verification calls hardware/refresh API endpoint"
+grep -q "api/system/hardware/refresh" "$SCRIPT"
+
+echo "test: verification parses vulkan capability from JSON"
+grep -q "vulkan.*true.*claimed_vulkan" "$SCRIPT"
+
+echo "test: verification parses cuda capability from JSON"
+grep -q "cuda.*true.*claimed_cuda" "$SCRIPT"
+
+echo "test: verification parses rocm capability from JSON"
+grep -q "rocm.*true.*claimed_rocm" "$SCRIPT"
+
+echo "test: verification parses rknpu capability from JSON"
+grep -q "rknpu.*claimed_rknpu" "$SCRIPT"
+
+echo "test: verification detects Apple Silicon for MLX"
+grep -q "Darwin.*claimed_mlx" "$SCRIPT"
+
+echo "test: verification is non-blocking (return 0 on skip, not die)"
+grep -q "verification skipped" "$SCRIPT" && grep -q "return 0" "$SCRIPT"
+
+echo "test: verification counts verified_ok and verified_warn"
+grep -q "verified_ok=" "$SCRIPT" && grep -q "verified_warn=" "$SCRIPT"
+
+echo "test: verification only runs when SERVICE_MODE != skip"
+grep -A 3 'SERVICE_MODE.*!=.*skip' "$SCRIPT" | grep -q "verify_hardware_capabilities"
+
 echo "all tests passed"

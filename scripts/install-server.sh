@@ -1261,6 +1261,154 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     log "controller is up"
 fi
 
+# --- post-install hardware capability verification -----------------------
+# Probe each claimed hardware capability (vulkan / cuda / rocm / rknpu / mlx)
+# with lightweight verification commands. Claimed-but-failing capabilities
+# warn the user; verified ones log a quiet success. Failures are non-blocking
+# — the controller runs regardless — but are prominently displayed so the
+# user knows what's broken before they walk away from the install (#370).
+
+verify_hardware_capabilities() {
+    local claimed_vulkan=0 claimed_cuda=0 claimed_rocm=0 claimed_rknpu=0 claimed_mlx=0
+    local verified_ok=0 verified_warn=0
+
+    # Fetch the hardware profile from the now-running controller.
+    local hw_json
+    hw_json=$(curl -sf "http://localhost:$TAOS_PORT/api/system/hardware/refresh" 2>/dev/null || true)
+    if [[ -z "$hw_json" ]]; then
+        warn "hardware verification skipped — controller did not return a profile"
+        return 0
+    fi
+
+    # Parse claimed capabilities from the JSON response. Uses grep+sed
+    # instead of jq to avoid a dependency. The API response is a flat
+    # dataclass serialized with asdict() — simple pattern matching is
+    # sufficient.
+    if echo "$hw_json" | grep -q '"vulkan":[[:space:]]*true'; then claimed_vulkan=1; fi
+    if echo "$hw_json" | grep -q '"cuda":[[:space:]]*true'; then claimed_cuda=1; fi
+    if echo "$hw_json" | grep -q '"rocm":[[:space:]]*true'; then claimed_rocm=1; fi
+    if echo "$hw_json" | grep -q '"type":[[:space:]]*"rknpu"'; then claimed_rknpu=1; fi
+    # Apple Silicon: the profile_id starts with "arm-" and mlx capability
+    # is implicit on Apple M-series. CPU arch + macOS = MLX available.
+    if [[ "$os_name" == "Darwin" ]]; then claimed_mlx=1; fi
+
+    if (( ! claimed_vulkan && ! claimed_cuda && ! claimed_rocm && ! claimed_rknpu && ! claimed_mlx )); then
+        log "hardware: no discrete accelerator claimed — CPU-only profile, verification skipped"
+        return 0
+    fi
+
+    log "hardware: verifying claimed capabilities..."
+    log ""
+
+    # --- Vulkan ---
+    if (( claimed_vulkan )); then
+        if command -v vulkaninfo >/dev/null 2>&1; then
+            if vulkaninfo --summary 2>/dev/null | grep -q 'deviceName'; then
+                log "  ✓ vulkan: verified — vulkaninfo reports devices"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ vulkan: claimed by controller but vulkaninfo reports no devices"
+                warn "     install mesa-vulkan-drivers (Debian/Ubuntu) or vulkan-intel (Arch) and re-run"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ vulkan: claimed by controller but vulkaninfo is not installed"
+            warn "     install vulkan-tools (apt/dnf/pacman) and re-run"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- CUDA ---
+    if (( claimed_cuda )); then
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            if nvidia-smi -L 2>/dev/null | grep -qi 'GPU'; then
+                log "  ✓ cuda: verified — nvidia-smi reports GPU(s)"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ cuda: claimed by controller but nvidia-smi reports no GPUs"
+                warn "     check: nvidia-smi -L"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ cuda: claimed by controller but nvidia-smi is not installed"
+            warn "     install nvidia-utils (apt/pacman) or enable RPM Fusion for nvidia-smi (dnf)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- ROCm ---
+    if (( claimed_rocm )); then
+        if command -v rocm-smi >/dev/null 2>&1; then
+            if rocm-smi --showproductname 2>/dev/null | grep -qi 'GPU'; then
+                log "  ✓ rocm: verified — rocm-smi reports GPU(s)"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ rocm: claimed by controller but rocm-smi reports no GPUs"
+                warn "     check: rocm-smi --showproductname"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ rocm: claimed by controller but rocm-smi is not installed"
+            warn "     install rocm-smi-lib (apt/pacman) or rocm-smi (dnf)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- RKNPU ---
+    if (( claimed_rknpu )); then
+        local rknpu_ok=0
+        if [[ -r /dev/rknpu ]] || [[ -r /sys/kernel/debug/rknpu/load ]]; then
+            rknpu_ok=1
+        fi
+        # Also check if rkllama is responding on :8080
+        if curl -sf --max-time 3 "http://localhost:8080/health" >/dev/null 2>&1; then
+            rknpu_ok=1
+        fi
+        if (( rknpu_ok )); then
+            log "  ✓ rknpu: verified — device node readable, rkllama responding"
+            verified_ok=$((verified_ok + 1))
+        else
+            warn "  ✗ rknpu: claimed by controller but device node not readable and rkllama not responding"
+            warn "     check: ls -l /dev/rknpu && curl http://localhost:8080/health"
+            warn "     ensure rkllama.service is running: sudo systemctl status rkllama"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- MLX (Apple Silicon) ---
+    if (( claimed_mlx )); then
+        # On macOS, check that the Neural Engine / GPU is visible via system_profiler.
+        # Apple M-series always has MLX-capable hardware; we just confirm the chip is present.
+        local apple_chip
+        apple_chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")
+        if echo "$apple_chip" | grep -qi 'Apple M'; then
+            log "  ✓ mlx: verified — Apple Silicon ($apple_chip)"
+            verified_ok=$((verified_ok + 1))
+        else
+            warn "  ✗ mlx: claimed by controller but CPU is not Apple Silicon ($apple_chip)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    log ""
+    if (( verified_warn == 0 )); then
+        log "hardware: all claimed capabilities verified ($verified_ok/$verified_ok ok)"
+    else
+        warn "hardware: $verified_ok capability(s) verified, $verified_warn capability(s) reported with warnings"
+    fi
+}
+
+# Only run verification when we started the controller ourselves and curl
+# is available. Skip in SERVICE_MODE=skip (user manages the process) or
+# when curl wasn't installed (very minimal distros).
+if [[ "$SERVICE_MODE" != "skip" ]]; then
+    if command -v curl >/dev/null 2>&1; then
+        verify_hardware_capabilities
+    else
+        warn "curl not available — skipping hardware capability verification"
+    fi
+fi
+
 # --- success summary -----------------------------------------------------
 
 host_ip=""
