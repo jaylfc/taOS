@@ -126,9 +126,9 @@ class TestInitialization:
         assert isinstance(connector._last_message_ids, dict)
         assert len(connector._last_message_ids) == 0
 
-    def test_stores_per_channel_semaphores(self, connector):
-        assert isinstance(connector._channel_sem, dict)
-        assert len(connector._channel_sem) == 0
+    def test_initial_bot_user_id_none(self, connector):
+        """_bot_user_id is None until start() resolves it from /users/@me."""
+        assert connector._bot_user_id is None
 
 
 # ------------------------------------------------------------------
@@ -159,6 +159,7 @@ class TestStartStop:
 
     @pytest.mark.asyncio
     async def test_start_resolves_bot_user_id_failure(self, connector):
+        """A failed /users/@me call (e.g. bad token) raises RuntimeError."""
         with patch(
             "tinyagentos.channel_hub.adapters.discord.httpx.AsyncClient"
         ) as mock_client_cls:
@@ -168,9 +169,9 @@ class TestStartStop:
             )
             mock_client_cls.return_value.__aenter__.return_value = mock_client
 
-            await connector.start()
+            with pytest.raises(RuntimeError, match="returned an empty user ID"):
+                await connector.start()
 
-        assert connector._running is True
         assert connector._bot_user_id is None
 
     @pytest.mark.asyncio
