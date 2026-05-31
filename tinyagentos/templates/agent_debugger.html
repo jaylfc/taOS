@@ -248,6 +248,7 @@
             activeIdx = -1;
             eventList.innerHTML = '';
             eventDetail.innerHTML = '<div class="empty-state">Trace cleared.</div>';
+            updateUI();
             return;
           }
 
@@ -263,10 +264,17 @@
       function renderEvent(event, idx) {
         const li = document.createElement('li');
         li.className = 'event-item';
-        li.setAttribute('role', 'listitem');
+        li.setAttribute('role', 'button');
         li.setAttribute('tabindex', '0');
         li.setAttribute('aria-label', event.type + ' event');
+        li.setAttribute('aria-pressed', 'false');
         li.onclick = function() { selectEvent(idx); };
+        li.onkeydown = function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            selectEvent(idx);
+          }
+        };
 
         const span = document.createElement('span');
         span.className = 'event-type event-type-' + event.type;

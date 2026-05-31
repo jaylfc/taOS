@@ -17,6 +17,12 @@ async def test_debugger_ui_returns_html(client):
 @pytest.mark.asyncio
 async def test_trace_records_event(client):
     """POST /agent/{agent_id}/debug/trace records a trace event."""
+    # Reset shared module-level state for deterministic test
+    from tinyagentos.routes.agent_debugger import _traces, _positions, _step_events
+    _traces.clear()
+    _positions.clear()
+    _step_events.clear()
+
     resp = await client.post(
         "/agent/test-agent/debug/trace",
         json={"type": "tool_call", "data": {"tool": "search", "query": "test"}},
@@ -136,14 +142,24 @@ async def test_separate_agents_have_separate_traces(client):
 @pytest.mark.asyncio
 async def test_events_endpoint_returns_sse(client):
     """GET /agent/{agent_id}/debug/events returns SSE stream."""
+    import httpx
+
     # Record an event first so there's data to stream
     await client.post(
         "/agent/test-agent/debug/trace",
         json={"type": "tool_call", "data": {"tool": "test"}},
     )
 
-    resp = await client.get("/agent/test-agent/debug/events", timeout=2)
-    assert resp.status_code == 200
+    # Use streaming to avoid buffering the entire infinite SSE response
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=client._transport.app),  # type: ignore[arg-type]
+        base_url="http://test",
+    ) as ac:
+        async with ac.stream("GET", "/agent/test-agent/debug/events", timeout=2) as resp:
+            assert resp.status_code == 200
+            # Read one chunk to verify SSE frame delivery
+            chunk = await resp.aiter_raw().__anext__()
+            assert chunk, "SSE stream returned no data"
 
 
 @pytest.mark.asyncio
@@ -170,3 +186,9 @@ async def test_multiple_events_ordered(client):
 
     status = await client.get("/agent/test-agent/debug/status")
     assert status.json()["total_events"] == 10
+
+    # Verify ordering: data.num should match insertion order 0..9
+    events = status.json().get("events", [])
+    if events:
+        nums = [e["data"]["num"] for e in events if "num" in e.get("data", {})]
+        assert nums == list(range(len(nums))), f"events not in insertion order: {nums}"

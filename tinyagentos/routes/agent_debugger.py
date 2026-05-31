@@ -51,9 +51,15 @@ def _trim_trace(agent_id: str) -> None:
     """Drop oldest events if the trace exceeds the cap."""
     events = _traces[agent_id]
     if len(events) > _MAX_TRACE_LENGTH:
+        dropped = len(events) - _MAX_TRACE_LENGTH
         _traces[agent_id] = events[-_MAX_TRACE_LENGTH:]
-        if _positions.get(agent_id, 0) < len(events) - _MAX_TRACE_LENGTH:
-            _positions[agent_id] = max(0, len(_traces[agent_id]) - 1)
+        _positions[agent_id] = max(
+            0,
+            min(
+                _positions.get(agent_id, 0) - dropped,
+                max(0, len(_traces[agent_id]) - 1),
+            ),
+        )
 
 
 async def _broadcast(agent_id: str, event: dict) -> None:
@@ -76,7 +82,8 @@ async def debugger_ui(agent_id: str) -> HTMLResponse:
 @router.get("/agent/{agent_id}/debug/events")
 async def debugger_events(agent_id: str, request: Request):
     """SSE endpoint that streams trace events to the debugger UI."""
-    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+    # Use unbounded queue — traces can hold up to _MAX_TRACE_LENGTH events
+    queue: asyncio.Queue = asyncio.Queue()
 
     # Replay existing trace events
     for event in _traces.get(agent_id, []):
@@ -186,6 +193,21 @@ async def debugger_trace(agent_id: str, request: Request) -> JSONResponse:
         "type": event_type,
         "ts": time.time(),
         "data": body.get("data", {}),
+        # Stable identifiers for tree / replay / rerun flows
+        "node_id": body.get("node_id", body.get("data", {}).get("node_id")),
+        "parent_id": body.get("parent_id", body.get("data", {}).get("parent_id")),
+        # Timing and duration
+        "start_ts": body.get("start_ts", time.time()),
+        "end_ts": body.get("end_ts"),
+        "duration_ms": body.get("duration_ms"),
+        # Token / usage / model metadata
+        "token_count": body.get("token_count"),
+        "model": body.get("model"),
+        "latency_ms": body.get("latency_ms"),
+        # Replay / checkpoint flags
+        "replay_checkpoint": body.get("replay_checkpoint"),
+        "checkpoint_id": body.get("checkpoint_id"),
+        "metadata": body.get("metadata", {}),
     }
 
     _traces[agent_id].append(event)
