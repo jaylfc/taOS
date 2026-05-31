@@ -47,6 +47,62 @@ class AgentUpdate(BaseModel):
     can_read_user_memory: bool | None = None
 
 
+class IdempotencyCache:
+    """In-flight request deduplication cache keyed by Idempotency-Key.
+
+    ``try_reserve(key)`` returns ``("proceed", event)`` when this caller
+    should do the work, or ``("wait", event)`` when another caller is
+    already handling this key — the caller should ``await event.wait()``
+    and then call ``get(key)`` for the cached result.
+
+    ``set(key, result)`` stores the result and fires the event so all
+    waiters can proceed.
+
+    This closes the race in the naive get-then-set pattern where
+    ``cache.get()`` releases the lock before the write, letting a
+    concurrent retry with the same Idempotency-Key create a duplicate.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[str, tuple[asyncio.Event, dict | None]] = {}
+
+    def try_reserve(self, key: str) -> tuple[str, asyncio.Event]:
+        """Attempt to reserve *key*.
+
+        Returns ``("proceed", event)`` when this caller owns the key
+        and should perform the work.
+
+        Returns ``("wait", event)`` when another caller already reserved
+        the key — await ``event.wait()`` and call ``get()`` for the
+        result.
+        """
+        if key in self._entries:
+            event, _ = self._entries[key]
+            return ("wait", event)
+
+        event = asyncio.Event()
+        self._entries[key] = (event, None)
+        return ("proceed", event)
+
+    def set(self, key: str, result: dict) -> None:
+        """Store *result* and wake all waiters on *key*."""
+        entry = self._entries.get(key)
+        if entry is None:
+            self._entries[key] = (asyncio.Event(), result)
+            return
+        event, _ = entry
+        self._entries[key] = (event, result)
+        event.set()
+
+    def get(self, key: str) -> dict | None:
+        """Return the cached result for *key*, or ``None``."""
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        _, result = entry
+        return result
+
+
 @router.get("/api/agents")
 async def list_agents(request: Request):
     """List all configured agents."""
@@ -106,6 +162,15 @@ async def add_agent(request: Request, body: AgentCreate):
     If the slug collides with an existing agent, a numeric suffix is
     appended until it's unique.
     """
+    # --- Idempotency guard ---
+    idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key and idempotency_cache is not None:
+        mode, event = idempotency_cache.try_reserve(idempotency_key)
+        if mode == "wait":
+            await event.wait()
+            return idempotency_cache.get(idempotency_key)
+
     config = request.app.state.config
     display_name = body.name.strip()
     name_error = validate_agent_name(display_name)
@@ -126,7 +191,12 @@ async def add_agent(request: Request, body: AgentCreate):
     agent["display_name"] = display_name
     config.agents.append(agent)
     await save_config_locked(config, config.config_path)
-    return {"status": "created", "name": unique_slug, "display_name": display_name}
+    result = {"status": "created", "name": unique_slug, "display_name": display_name}
+
+    if idempotency_key and idempotency_cache is not None:
+        idempotency_cache.set(idempotency_key, result)
+
+    return result
 
 
 @router.put("/api/agents/{name}")
@@ -473,6 +543,15 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
        We never silently retarget a pinned deploy.
     6. Model not found anywhere in the cluster — 404.
     """
+    # --- Idempotency guard ---
+    idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key and idempotency_cache is not None:
+        mode, event = idempotency_cache.try_reserve(idempotency_key)
+        if mode == "wait":
+            await event.wait()
+            return idempotency_cache.get(idempotency_key)
+
     config = request.app.state.config
     display_name = body.name.strip()
     name_error = validate_agent_name(display_name)
@@ -807,7 +886,12 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             logger.exception("archive smoke-check failed for %s", unique_slug)
             smoke_ok = False
 
-    return {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
+    result = {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
+
+    if idempotency_key and idempotency_cache is not None:
+        idempotency_cache.set(idempotency_key, result)
+
+    return result
 
 
 @router.post("/api/agents/bulk/start")

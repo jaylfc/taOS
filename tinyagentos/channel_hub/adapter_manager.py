@@ -13,7 +13,6 @@ ADAPTER_DIR = Path(__file__).parent.parent / "adapters"
 CHANNEL_ADAPTER_DIR = Path(__file__).parent / "adapters"
 _CHANNEL_ADAPTERS = {"github": CHANNEL_ADAPTER_DIR / "github.py"}
 
-
 class AdapterManager:
     def __init__(self, router):
         self.router = router
