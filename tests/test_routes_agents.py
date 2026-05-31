@@ -1216,3 +1216,88 @@ class TestDeployMemoryConfig:
         assert resp.status_code == 200
         agent = next(a for a in app.state.config.agents if a["name"] == "default-memory-agent")
         assert agent.get("memory_config") is None
+
+
+@pytest.mark.asyncio
+class TestDeployRamPreflight:
+    """Pre-flight RAM check — low-RAM hosts reject deploy before mutating state (#384)."""
+
+    async def _mock_deploy_passthrough(self, monkeypatch):
+        """Allow deploy to run (patched out so no real container work)."""
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.1",
+                    "llm_key": None, "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+    async def test_low_ram_rejects_deploy(self, client, app, monkeypatch):
+        """Host with 2GB RAM should be rejected for all frameworks."""
+        class _FakeHW:
+            ram_mb = 2048  # 2GB — below every framework's minimum
+        app.state.hardware_profile = _FakeHW()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "low-ram-agent",
+            "framework": "openclaw",
+            "model": "phi3",
+        })
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "2.0 GB RAM" in body["error"]
+        assert "openclaw" in body["error"]
+        assert "needs at least" in body["error"]
+        assert body["ram_mb"] == 2048
+        assert body["framework"] == "openclaw"
+
+    async def test_adequate_ram_passes(self, client, app, monkeypatch):
+        """Host with 8GB RAM should pass the pre-flight check."""
+        await self._mock_deploy_passthrough(monkeypatch)
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "phi3", "id": "phi3"}]
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        class _FakeHW:
+            ram_mb = 8192  # 8GB — well above any framework minimum
+        app.state.hardware_profile = _FakeHW()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "adequate-ram-agent",
+            "framework": "openclaw",
+            "model": "phi3",
+        })
+        assert resp.status_code == 200
+
+    async def test_no_framework_skips_ram_check(self, client, app, monkeypatch):
+        """framework='none' should skip the RAM check entirely."""
+        await self._mock_deploy_passthrough(monkeypatch)
+
+        class _FakeCatalog:
+            def all_models(self, capability=None):
+                return [{"name": "phi3", "id": "phi3"}]
+        app.state.backend_catalog = _FakeCatalog()
+        app.state.cluster_manager._workers.clear()
+
+        class _FakeHW:
+            ram_mb = 1024  # 1GB — would fail check if it ran
+        app.state.hardware_profile = _FakeHW()
+
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "no-framework-agent",
+            "framework": "none",
+            "model": "phi3",
+        })
+        assert resp.status_code == 200
+
+    async def test_unknown_framework_still_checked_before_ram(self, client, app, monkeypatch):
+        """Unknown framework should fail at framework validation, not RAM check."""
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "bad-fw-agent",
+            "framework": "nonexistent-framework",
+            "model": "phi3",
+        })
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "Unknown framework" in body["error"]

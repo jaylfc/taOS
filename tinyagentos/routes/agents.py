@@ -12,15 +12,16 @@ import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, slugify_agent_name
+from tinyagentos.providers import CLOUD_TYPES
 
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
 
 # Cloud provider backend types whose advertised models are routable for a
-# deploy / model-change. Mirrors providers.CLOUD_TYPES; kept local to avoid a
-# cross-route import. #351 tracks consolidating these provider-type lists.
-_CLOUD_PROVIDER_TYPES = ("openai", "anthropic", "openrouter", "kilocode", "openai-compatible")
+# deploy / model-change. Single source of truth is providers.CLOUD_TYPES
+# (#351); aliased here so the call sites below read clearly.
+_CLOUD_PROVIDER_TYPES = CLOUD_TYPES
 
 router = APIRouter()
 
@@ -495,6 +496,37 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         known = {a.id for a in registry.list_available(type_filter="agent-framework")}
         if body.framework not in known:
             return JSONResponse({"error": f"Unknown framework '{body.framework}'. Available: {sorted(known)}"}, status_code=400)
+
+        # Pre-flight RAM check — low-RAM hosts (≤4GB) silently fail at
+        # container launch because incus accepts the request but the
+        # container never reaches RUNNING.  Check before we mutate any
+        # state so the user gets an actionable message, not a generic
+        # "failed" with no diagnostic.  (#384)
+        hw = getattr(request.app.state, "hardware_profile", None)
+        if hw is not None and hw.ram_mb > 0:
+            framework = registry.get(body.framework)
+            framework_ram = framework.requires.get("ram_mb", 0) if framework else 0
+            # Controller needs ~500 MB + Debian base ~256 MB +
+            # framework dependencies + a small model (~2 GB headroom).
+            _CONTROLLER_OVERHEAD_MB = 500
+            _MODEL_DEPS_OVERHEAD_MB = 2048
+            min_ram = _CONTROLLER_OVERHEAD_MB + framework_ram + _MODEL_DEPS_OVERHEAD_MB
+            if hw.ram_mb < min_ram:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"Your device has {hw.ram_mb / 1024:.1f} GB RAM. "
+                            f"{body.framework} needs at least "
+                            f"{min_ram / 1024:.1f} GB to run with a model. "
+                            f"Deploy this agent on a worker with more RAM, or "
+                            f"pick a smaller framework."
+                        ),
+                        "ram_mb": hw.ram_mb,
+                        "min_ram_mb": min_ram,
+                        "framework": body.framework,
+                    },
+                    status_code=400,
+                )
 
     # ------------------------------------------------------------------
     # Cross-worker deploy routing (task #176 stub)
