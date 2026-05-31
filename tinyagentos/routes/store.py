@@ -330,3 +330,38 @@ async def uninstall_app(request: Request, body: UninstallRequest):
                     await mcp_supervisor.uninstall(body.app_id)
     registry.mark_uninstalled(body.app_id)
     return {"status": "uninstalled", "app_id": body.app_id}
+
+
+# ── Store templates ────────────────────────────────────────────────────
+
+import yaml
+from pathlib import Path
+
+_STORE_TEMPLATE_DIR = Path(__file__).parent.parent.parent / "app-catalog" / "templates"
+
+
+@router.get("/api/store/templates")
+async def list_store_templates():
+    """Return curated hardware-tier install template bundles.
+
+    Each template is a static YAML file in app-catalog/templates/ describing
+    a curated set of apps for a specific hardware tier. The response includes
+    the template metadata plus resolved app info from the catalog so the
+    frontend can show download sizes, descriptions, and install buttons
+    without additional API calls.
+    """
+    if not _STORE_TEMPLATE_DIR.is_dir():
+        return {"templates": []}
+
+    templates = []
+    for tmpl_path in sorted(_STORE_TEMPLATE_DIR.glob("*.yaml")):
+        try:
+            with open(tmpl_path) as f:
+                data = yaml.safe_load(f)
+        except Exception:
+            continue
+        if not data or data.get("type") != "template":
+            continue
+        templates.append(data)
+
+    return {"templates": templates}

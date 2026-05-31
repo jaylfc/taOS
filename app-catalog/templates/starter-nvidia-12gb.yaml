@@ -1,0 +1,14 @@
+# Store template — NVIDIA GPU / 12GB VRAM starter pack
+id: starter-nvidia-12gb
+name: "NVIDIA GPU Starter Pack (12GB VRAM)"
+type: template
+hardware_tier: x86-cuda-12gb
+description: "Full-power LLM stack for machines with an NVIDIA GPU. 14B model, high-quality embedding, and voice."
+download_size_mb: 16000
+apps:
+  - qwen2.5-14b          # Chat — 14B AWQ via vLLM, fits 12GB VRAM
+  - bge-m3               # Embeddings — multilingual 1024-dim
+  - whisper-base         # Speech-to-text — 74M, good quality
+  - kokoro-tts           # Text-to-speech — 82M, fast on GPU
+  - open-webui           # ChatGPT-style UI
+  - faster-whisper       # Optimized Whisper runtime (GPU)
