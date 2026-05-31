@@ -153,3 +153,34 @@ export function resolveWallpaper(): string {
   const { activeThemeId, wallpaperByTheme, themeDefaultWallpaper } = useThemeStore.getState();
   return wallpaperByTheme[activeThemeId] ?? themeDefaultWallpaper[activeThemeId] ?? "";
 }
+
+let _priorConfig: ThemeConfig | null = null;
+
+export function previewTheme(cfg: ThemeConfig, priorCfg: ThemeConfig | null) {
+  _priorConfig = priorCfg;
+  applyThemeConfig(cfg);
+}
+
+export function revertPreview() {
+  if (_priorConfig) applyThemeConfig(_priorConfig);
+  else revertTheme();
+  _priorConfig = null;
+}
+
+export function keepTheme(themeId: string, cfg: ThemeConfig) {
+  _priorConfig = null;
+  useThemeStore.setState({
+    activeThemeId: themeId,
+    themeDefaultWallpaper: {
+      ...useThemeStore.getState().themeDefaultWallpaper,
+      ...(cfg.wallpaper ? { [themeId]: cfg.wallpaper } : {}),
+    },
+  });
+  // persist active theme id
+  void fetch("/api/preferences/themes", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ active_theme_id: themeId }),
+  }).catch(() => {});
+}
