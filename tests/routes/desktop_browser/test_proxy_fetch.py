@@ -86,6 +86,71 @@ class TestProxyFetchHtml:
 
 
 @pytest.mark.asyncio
+class TestProxyFetchEncoding:
+    @respx.mock
+    async def test_utf8_page_served_without_mojibake(self, client):
+        """A UTF-8 page with © / nbsp is served as UTF-8 — no `Â©` mojibake."""
+        body = (
+            "<html><head><meta charset=\"utf-8\"></head>"
+            "<body><p>© 2026 Example Co</p></body></html>"
+        ).encode("utf-8")
+        respx.get("http://example.com/utf8").mock(
+            return_value=Response(
+                200, content=body, headers={"content-type": "text/html; charset=utf-8"},
+            )
+        )
+
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ):
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params={"profile_id": "personal", "url": "http://example.com/utf8"},
+            )
+
+        assert resp.status_code == 200
+        # Served as UTF-8.
+        ct = next(v for k, v in resp.headers.items() if k.lower() == "content-type")
+        assert "charset=utf-8" in ct.lower()
+        # Real UTF-8 © bytes present; the Latin-1 mojibake signature is not.
+        assert "©".encode("utf-8") in resp.content
+        assert "Â©".encode("utf-8") not in resp.content
+        resp.content.decode("utf-8")
+
+    @respx.mock
+    async def test_latin1_page_decoded_and_served_as_utf8(self, client):
+        """Upstream ISO-8859-1 charset must not leak into our response label."""
+        # Raw 0xa9 is © in Latin-1.
+        body = (
+            b"<html><head><meta charset=\"iso-8859-1\"></head>"
+            b"<body><p>\xa9 2026 Example</p></body></html>"
+        )
+        respx.get("http://example.com/latin1").mock(
+            return_value=Response(
+                200, content=body,
+                headers={"content-type": "text/html; charset=ISO-8859-1"},
+            )
+        )
+
+        with patch(
+            "tinyagentos.routes.desktop_browser.ssrf.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ):
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params={"profile_id": "personal", "url": "http://example.com/latin1"},
+            )
+
+        assert resp.status_code == 200
+        ct = next(v for k, v in resp.headers.items() if k.lower() == "content-type")
+        assert "charset=utf-8" in ct.lower()
+        assert "iso-8859-1" not in ct.lower()
+        # Body decodes cleanly as UTF-8 with the correct glyph.
+        assert "© 2026 Example" in resp.content.decode("utf-8")
+
+
+@pytest.mark.asyncio
 class TestProxyFetchNonHtml:
     @respx.mock
     async def test_passes_through_image_unchanged(self, client):

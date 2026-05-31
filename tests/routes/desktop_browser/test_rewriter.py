@@ -128,3 +128,51 @@ class TestNonHtmlInput:
         # but our rewriter should be defensive about empty/binary input
         out = rewrite_html(b"", base_url="https://example.com/", proxy=_proxy)
         assert out == b""
+
+
+class TestCharsetHandling:
+    def test_utf8_copyright_and_nbsp_survive_roundtrip(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        html = (
+            "<html><head><meta charset=\"utf-8\"></head>"
+            "<body><p>© 2026 Example Co</p></body></html>"
+        ).encode("utf-8")
+        out = rewrite_html(
+            html, base_url="https://example.com/", proxy=_proxy, charset="utf-8"
+        )
+        # Real UTF-8 bytes for © and nbsp present; no Latin-1 mojibake.
+        assert "©".encode("utf-8") in out
+        assert " ".encode("utf-8") in out
+        # The mojibake signature (Â©) would be the bytes for U+00C2 U+00A9.
+        assert "Â©".encode("utf-8") not in out
+        # Output is valid UTF-8.
+        out.decode("utf-8")
+
+    def test_latin1_page_decoded_with_declared_charset(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        # Raw 0xa9 is © in ISO-8859-1.
+        html = (
+            b"<html><head><meta charset=\"iso-8859-1\"></head>"
+            b"<body><p>\xa9 2026</p></body></html>"
+        )
+        out = rewrite_html(
+            html, base_url="https://example.com/", proxy=_proxy, charset="ISO-8859-1"
+        )
+        text = out.decode("utf-8")
+        assert "© 2026" in text
+
+    def test_meta_charset_normalized_to_utf8(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        html = (
+            b"<html><head><meta charset=\"iso-8859-1\"></head>"
+            b"<body><p>x</p></body></html>"
+        )
+        out = rewrite_html(
+            html, base_url="https://example.com/", proxy=_proxy, charset="ISO-8859-1"
+        )
+        lower = out.lower()
+        assert b"charset=\"utf-8\"" in lower
+        assert b"iso-8859-1" not in lower
