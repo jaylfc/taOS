@@ -486,7 +486,176 @@ ensure_container_runtime() {
     fi
 }
 
+# True when the Docker daemon is reachable (don't trust a single start call's
+# exit code — WSL2/systemd quirks make that unreliable).
+_docker_running() {
+    sudo docker info >/dev/null 2>&1
+}
+
+# Configure Docker so it coexists with incus networking.
+#
+# When Docker enables IP forwarding it sets the iptables FORWARD chain's
+# default policy to DROP, which severs incus bridge (incusbr0) traffic and
+# kills agent-container networking. The upstream-recommended fix (Incus
+# firewall docs + Docker packet-filtering docs) is Docker's own switch
+# `ip-forward-no-drop`, which tells Docker to never touch that policy — far
+# cleaner than patching the FORWARD chain by hand (Docker reorders/reinserts
+# its own rules, so hand-added FORWARD rules are fragile). We also enable IP
+# forwarding via sysctl as a belt-and-suspenders for older Docker builds that
+# predate the option. This must run BEFORE Docker's daemon first starts so the
+# DROP policy is never set in the first place.
+_configure_docker_incus_coexistence() {
+    sudo mkdir -p /etc/docker
+    # Merge "ip-forward-no-drop": true into any existing daemon.json. python3 is
+    # a controller dependency installed earlier, so it's always available here.
+    sudo python3 - <<'PY'
+import json, os
+path = "/etc/docker/daemon.json"
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}  # malformed/empty — start clean rather than fail the install
+if data.get("ip-forward-no-drop") is not True:
+    data["ip-forward-no-drop"] = True
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+PY
+    log "set Docker ip-forward-no-drop=true for incus coexistence (/etc/docker/daemon.json)"
+
+    # Independently ensure IPv4 forwarding is on; if it's already enabled when
+    # Docker starts, Docker won't flip the FORWARD policy even on engines that
+    # lack ip-forward-no-drop.
+    printf 'net.ipv4.conf.all.forwarding=1\n' | sudo tee /etc/sysctl.d/99-taos-forwarding.conf >/dev/null
+    sudo sysctl -p /etc/sysctl.d/99-taos-forwarding.conf >/dev/null 2>&1 || true
+}
+
+# Docker is the engine for Store "Docker apps" (manifest install.method: docker),
+# including compose-style stacks like SearXNG / Perplexica. incus runs agent
+# LXCs; Docker runs Docker apps. Installed by default — set TAOS_SKIP_DOCKER=1
+# to opt out (Store Docker apps then stay unavailable).
+ensure_docker_for_apps() {
+    if [[ "${TAOS_SKIP_DOCKER:-0}" == "1" ]]; then
+        log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
+        return 0
+    fi
+    # macOS: the Docker Engine can't run natively (it needs a Linux VM), so the
+    # server doesn't install it here — agents use the Apple Containerization
+    # framework, and Docker apps need a user-provided Docker (Desktop/colima).
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        command -v docker >/dev/null 2>&1 \
+            && log "macOS: using existing Docker ($(docker --version 2>/dev/null | head -1))" \
+            || log "macOS: provide Docker (Desktop or colima) for Store Docker apps; agents use Apple Containerization"
+        return 0
+    fi
+
+    local had_docker=0
+    command -v docker >/dev/null 2>&1 && had_docker=1
+
+    # Configure Docker↔incus coexistence BEFORE the daemon's first start so
+    # Docker never sets the FORWARD policy to DROP. Only relevant when incus is
+    # also present (it runs the agent containers).
+    if command -v incus >/dev/null 2>&1; then
+        _configure_docker_incus_coexistence
+    fi
+
+    # Linux, including WSL2: install the native Docker Engine + CLI in-distro.
+    # We deliberately use the in-distro engine rather than Docker Desktop on
+    # WSL2 so the controller is self-contained and headless; the daemon-start
+    # ladder below covers WSL2 setups where systemd isn't enabled.
+    if (( had_docker )); then
+        log "docker present: $(docker --version 2>/dev/null | head -1)"
+    else
+        # Install the engine AND the Compose v2 plugin — taOS deploys Store
+        # Docker apps via `docker compose`, and most distro 'docker' packages
+        # (e.g. Ubuntu's docker.io) don't bundle compose, which otherwise fails
+        # with "unknown command: docker compose".
+        log "installing Docker Engine + Compose plugin (for Store Docker apps)"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 \
+                || warn "apt install docker.io/docker-compose-v2 failed — Store Docker apps will be unavailable"
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q moby-engine docker-compose \
+                || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed docker docker-compose \
+                || warn "pacman install docker/docker-compose failed — Store Docker apps will be unavailable"
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker docker-cli-compose \
+                || warn "apk add docker/docker-cli-compose failed — Store Docker apps will be unavailable"
+        else
+            warn "unrecognised package manager — install Docker + the compose plugin manually for Store Docker apps"
+            return 0
+        fi
+    fi
+
+    # Ensure the Compose v2 plugin (taOS deploys apps via `docker compose`).
+    # This also covers the case where Docker was ALREADY installed but without
+    # the plugin — the fresh-install branch above bundles it, but a pre-existing
+    # Docker (the `had_docker` path) may lack it, so install it here too.
+    if ! docker compose version >/dev/null 2>&1; then
+        log "installing the Docker Compose v2 plugin"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2 || true
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q docker-compose || true
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm --needed docker-compose || true
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add --no-cache docker-cli-compose || true
+        fi
+        docker compose version >/dev/null 2>&1 \
+            || warn "the 'docker compose' plugin isn't available — Store Docker apps need it (install docker-compose-v2 / docker-compose-plugin manually)"
+    fi
+
+    command -v docker >/dev/null 2>&1 || { warn "docker not on PATH after install — skipping daemon/group setup"; return 0; }
+
+    # Start + enable the daemon across init systems: systemd (most distros),
+    # SysV 'service' (e.g. WSL2 without systemd), then OpenRC (Alpine). Verify
+    # reachability afterwards rather than trusting any single call's exit code.
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl enable --now docker >/dev/null 2>&1 || true
+    fi
+    if ! _docker_running && command -v service >/dev/null 2>&1; then
+        sudo service docker start >/dev/null 2>&1 || true
+    fi
+    if ! _docker_running && command -v rc-update >/dev/null 2>&1; then
+        sudo rc-update add docker default >/dev/null 2>&1 || true
+        sudo service docker start >/dev/null 2>&1 || true
+    fi
+    _docker_running \
+        && log "docker daemon is running" \
+        || warn "docker installed but the daemon isn't reachable — start it manually (e.g. sudo systemctl start docker)"
+
+    # Let the controller's user run docker without sudo.
+    local duser="${SUDO_USER:-$USER}"
+    if [[ -n "$duser" && "$duser" != "root" ]]; then
+        sudo groupadd -f docker >/dev/null 2>&1 || true
+        sudo usermod -aG docker "$duser" >/dev/null 2>&1 \
+            && log "added '$duser' to the docker group (re-login for it to take effect)" \
+            || warn "could not add '$duser' to the docker group"
+    fi
+
+    # Keep incus agent networking alive alongside Docker. ip-forward-no-drop
+    # (set above, before first start) stops Docker setting FORWARD=DROP going
+    # forward. For a Docker that was already running, restart so it re-reads the
+    # config, then normalise any DROP a prior start may have left (idempotent;
+    # ACCEPT is ip-forward-no-drop's intended end-state — Docker still filters
+    # its own containers via the DOCKER/DOCKER-USER chains).
+    if command -v incus >/dev/null 2>&1; then
+        if (( had_docker )) && command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl restart docker >/dev/null 2>&1 || true
+        fi
+        if command -v iptables >/dev/null 2>&1; then
+            sudo iptables -P FORWARD ACCEPT 2>/dev/null || true
+        fi
+    fi
+}
+
 ensure_container_runtime
+ensure_docker_for_apps
 
 # --- clone / update the repo ---------------------------------------------
 
@@ -719,9 +888,16 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # node-llama-cpp tar-extraction failure (issue #310). When we
             # see it, point the user at the partial-install path and the log
             # rather than dumping hundreds of lines of npm noise to stderr.
+            # Pin qmd to a specific npm version to prevent surprise
+            # version bumps on fresh installs.  The npm package is
+            # pre-built (dist/ is not committed to the source repo),
+            # so installing from a git SHA requires a TypeScript
+            # build step — use the npm registry instead.
+            # To update: verify the new version against taOS, then
+            # bump the pinned version here.
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
-            log "npm install -g @jaylfc/qmd (log: $qmd_install_log)"
-            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd" >"$qmd_install_log" 2>&1; then
+            log "npm install -g @jaylfc/qmd@2.1.1 (log: $qmd_install_log)"
+            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@2.1.1" >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"

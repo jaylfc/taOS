@@ -7,6 +7,7 @@ import { SearchPalette } from "@/components/SearchPalette";
 import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
+import { useIsPwa } from "@/hooks/use-is-pwa";
 import { useThemeStore } from "@/stores/theme-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
@@ -23,6 +24,7 @@ import { NotificationCentre } from "@/components/NotificationCentre";
 import { useNotificationStore } from "@/stores/notification-store";
 import { TaosAssistantPanel } from "@/components/TaosAssistantPanel";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
+import { InstallPromptBanner } from "@/shell/InstallPromptBanner";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -105,10 +107,7 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: Sys
 
 export function App() {
   // Auto-launch on mobile/PWA — skip the login screen
-  const isPwa = typeof window !== "undefined" && (
-    window.matchMedia("(display-mode: standalone)").matches ||
-    (navigator as unknown as { standalone?: boolean }).standalone === true
-  );
+  const isPwa = useIsPwa();
   const isTouchDevice = typeof window !== "undefined" && (
     "ontouchstart" in window || navigator.maxTouchPoints > 0
   );
@@ -127,6 +126,10 @@ export function App() {
   const openWindow = useProcessStore((s) => s.openWindow);
   const closeWindow = useProcessStore((s) => s.closeWindow);
   const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
+
+  // Browser-mode flag: when on mobile but not in PWA, apply browser-safe
+  // layout that accounts for Safari's dynamic URL bar + share/tab bars
+  const isBrowserMobile = mode !== "desktop" && !isPwa;
 
   const activeWindow = windows.find((w) => w.id === activeWindowId);
 
@@ -255,7 +258,9 @@ export function App() {
     <ShortcutProvider>
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
-    <div className="taos-wallpaper h-screen w-screen flex flex-col text-shell-text" style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
+    <div className={`taos-wallpaper h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
+      {/* Install banner — shown in browser mode, hidden in PWA */}
+      {isBrowserMobile && <InstallPromptBanner />}
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
         <MobileTopBar
           onHome={handleMobileHome}

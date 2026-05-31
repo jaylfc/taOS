@@ -36,6 +36,8 @@ import { AgentShortcutRow } from "@/components/AgentShortcutRow";
 import type { AgentShortcut } from "@/hooks/use-agent-shortcuts";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { useNotificationStore } from "@/stores/notification-store";
+import { deriveTerminalShortcutTarget } from "./shortcut-launch";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -150,6 +152,12 @@ function AgentRow({
     latestForAgent.sha !== agent.framework_version_sha;
 
   const btnCls = isMobile ? "h-11 w-11" : "h-8 w-8";
+  // Only allow management actions while the agent is running
+  const running = agent.status === "running";
+  const disabledCls = running
+    ? "hover:bg-shell-surface-hover"
+    : "opacity-40 cursor-not-allowed";
+  const disabledAria = running ? undefined : "Agent is not running";
 
   const actionButtons = (
     <>
@@ -168,30 +176,33 @@ function AgentRow({
       <Button
         variant="ghost"
         size="icon"
-        className={btnCls}
-        onClick={() => onViewLogs(agent.name)}
-        aria-label={`View logs for ${agent.name}`}
-        title="View Logs"
+        className={`${btnCls} ${disabledCls}`}
+        onClick={running ? () => onViewLogs(agent.name) : undefined}
+        disabled={!running}
+        aria-label={`View logs for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
+        title={running ? "View Logs" : "Agent must be running to view logs"}
       >
         <ScrollText size={15} />
       </Button>
       <Button
         variant="ghost"
         size="icon"
-        className={btnCls}
-        onClick={() => onViewSkills(agent.name)}
-        aria-label={`Manage skills for ${agent.name}`}
-        title="Skills"
+        className={`${btnCls} ${disabledCls}`}
+        onClick={running ? () => onViewSkills(agent.name) : undefined}
+        disabled={!running}
+        aria-label={`Manage skills for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
+        title={running ? "Skills" : "Agent must be running to manage skills"}
       >
         <Wrench size={15} />
       </Button>
       <Button
         variant="ghost"
         size="icon"
-        className={btnCls}
-        onClick={() => onViewMessages(agent.name)}
-        aria-label={`View messages for ${agent.name}`}
-        title="Messages"
+        className={`${btnCls} ${disabledCls}`}
+        onClick={running ? () => onViewMessages(agent.name) : undefined}
+        disabled={!running}
+        aria-label={`View messages for ${agent.name}${disabledAria ? ` (${disabledAria})` : ""}`}
+        title={running ? "Messages" : "Agent must be running to view messages"}
       >
         <MessageSquare size={15} />
       </Button>
@@ -2183,12 +2194,17 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           const err = await res.json();
           if (err?.error) msg = String(err.error);
         } catch { /* ignore */ }
-        window.alert(msg);
+        useNotificationStore.getState().addNotification({
+          source: name, title: "Resume failed", body: msg, level: "error",
+        });
         return;
       }
       fetchAgents();
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "Network error");
+      useNotificationStore.getState().addNotification({
+        source: name, title: "Resume failed",
+        body: e instanceof Error ? e.message : "Network error", level: "error",
+      });
     }
   }
 
@@ -2302,22 +2318,72 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   }
 
   const handleShortcutLaunch = useCallback(async (agentId: string, shortcut: AgentShortcut) => {
-    const res = await fetch(
-      `/api/agents/${encodeURIComponent(agentId)}/shortcuts/${shortcut.idx}/launch`,
-      { method: "POST", headers: { Accept: "application/json" } }
-    );
-    if (!res.ok) return;
-    const { redirect_url } = await res.json() as { redirect_url: string };
+    const failed = (body: string) =>
+      useNotificationStore.getState().addNotification({
+        source: agentId,
+        title: `Couldn't open ${shortcut.label}`,
+        body,
+        level: "error",
+        icon: "terminal",
+      });
+
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/shortcuts/${shortcut.idx}/launch`,
+        { method: "POST", headers: { Accept: "application/json" } }
+      );
+    } catch {
+      failed("Couldn't reach the server.");
+      return;
+    }
+    if (!res.ok) {
+      let detail = `Request failed (${res.status}).`;
+      try {
+        const e = await res.json();
+        if (e?.detail || e?.error) detail = String(e.detail ?? e.error);
+      } catch { /* keep generic detail */ }
+      failed(detail);
+      return;
+    }
+
+    let redirect_url: unknown;
+    try {
+      ({ redirect_url } = await res.json() as { redirect_url?: unknown });
+    } catch {
+      failed("Server returned an unexpected response.");
+      return;
+    }
+    if (typeof redirect_url !== "string" || !redirect_url) {
+      failed("Server response was missing a launch URL.");
+      return;
+    }
     const kind = shortcut.kind;
     if (kind === "dashboard") {
       const app = getApp("browser");
       if (app) openWindow("browser", app.defaultSize, { initialUrl: redirect_url });
     } else if (kind === "tui" || kind === "container-terminal") {
-      const parsed = new URL(redirect_url, window.location.href);
-      const ticket = parsed.searchParams.get("t") ?? "";
-      const wsUrl = redirect_url
-        .replace(/^http:\/\//, "ws://")
-        .replace(/^https:\/\//, "wss://");
+      const { ticket, wsUrl, redeemUrl } = deriveTerminalShortcutTarget(
+        redirect_url,
+        agentId,
+        shortcut.idx,
+        window.location.href,
+      );
+      // Establish the taos_shortcut session cookie before opening the PTY
+      // socket. The WebSocket endpoint authenticates via that cookie, which
+      // only GET /redeem sets; the 302 it returns sets the cookie regardless
+      // of where the redirect points. Best-effort: a failure just means the
+      // socket may fail to auth (the terminal surfaces its own connection
+      // error), so we log rather than block — but log non-OK responses too,
+      // not only rejected fetches (a 401/500 resolves and wouldn't hit .catch).
+      try {
+        const redeemRes = await fetch(redeemUrl, { credentials: "include" });
+        if (!redeemRes.ok) {
+          console.warn(`shortcut /redeem for ${agentId} returned ${redeemRes.status}`);
+        }
+      } catch (e) {
+        console.warn(`shortcut /redeem failed for ${agentId}:`, e);
+      }
       const app = getApp("terminal");
       if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } });
     }

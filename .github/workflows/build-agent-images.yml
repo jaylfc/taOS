@@ -153,12 +153,12 @@ jobs:
       # Images are published to the separate jaylfc/tinyagentos-images repo so
       # the main tinyagentos Releases page stays reserved for user-facing taOS
       # releases. Consumers (taOS deployer) point at the images repo directly.
-      # Requires an IMAGES_RELEASE_TOKEN secret (fine-grained PAT with
-      # Contents: write on jaylfc/tinyagentos-images).
+      # Reuses ADD_TO_PROJECT_PAT (classic repo-scoped PAT already configured
+      # on this repo) — it has Contents: write on jaylfc/tinyagentos-images.
       - uses: softprops/action-gh-release@v2
         with:
           repository: jaylfc/tinyagentos-images
-          token: ${{ secrets.IMAGES_RELEASE_TOKEN }}
+          token: ${{ secrets.ADD_TO_PROJECT_PAT }}
           tag_name: rolling-images
           name: "taOS openclaw base image (${{ steps.id.outputs.ts }} - ${{ steps.id.outputs.sha }})"
           body: |

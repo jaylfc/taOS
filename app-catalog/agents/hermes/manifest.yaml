@@ -1,19 +1,50 @@
 id: hermes
-name: Hermes Function Calling
+name: Hermes Agent Gateway
 type: agent-framework
-verification_status: alpha
+verification_status: beta
 version: 1.0.0
-description: "Nous Research function calling framework — structured tool use with Hermes models"
-homepage: https://github.com/NousResearch/Hermes-Function-Calling
+description: "Nous Research autonomous agent gateway — multi-model, multi-channel agent runtime with skills, memory, and tool use"
+homepage: https://github.com/NousResearch/hermes-agent
 license: MIT
 
 requires:
-  ram_mb: 256
+  ram_mb: 512
+  disk_mb: 500
   python: ">=3.10"
 
 install:
-  method: pip
-  package: git+https://github.com/NousResearch/Hermes-Function-Calling.git
+  method: script
+  script: scripts/install.sh
+  note: |
+    Installs hermes-agent from PyPI inside the agent container.
+    Configures the Hermes → TAOS bridge adapter (hermes_adapter.py)
+    and a systemd unit that connects to TAOS channels via SSE.
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+    description: Primary chat model for the Hermes agent
+  - name: channels
+    type: multiselect
+    label: Communication Channels
+    options: [discord, telegram, slack, web]
+    default: [discord]
+
+compliance:
+  # No fork is used — Hermes is OpenAI-compatible natively and the bridge
+  # adapter lives in the taOS controller (see notes), so this is a plain
+  # "verified" entry, not verified-with-fork (and there is no fork_url).
+  tier: verified
+  adapter: hermes_adapter.py
+  bridge_protocol: openai-chat
+  notes: |
+    Hermes speaks OpenAI-compatible chat completions natively.
+    The adapter proxies TAOS /message calls to Hermes /v1/chat/completions.
+    No fork required — Hermes already has the OpenAI-compatible endpoint.
+    The bridge adapter (hermes_adapter.py) lives in the TAOS controller,
+    not in a fork.
 
 hardware_tiers:
   arm-npu-16gb: full

@@ -13,12 +13,21 @@ import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 
 /* ------------------------------------------------------------------ */
-/*  Constants — matches VALID_BACKEND_TYPES in tinyagentos/config.py  */
+/*  Provider types — fetched from /api/providers/types at boot.       */
+/*  Single source of truth: tinyagentos/providers/__init__.py         */
 /* ------------------------------------------------------------------ */
 
-const CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
-const LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx"] as const;
-type ProviderType = typeof CLOUD_TYPES[number] | typeof LOCAL_TYPES[number];
+/** Fallback constants used before the API call completes. */
+const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
+const FALLBACK_LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp", "rknn-sd"] as const;
+
+/** Active cloud types — seeded with fallback, updated from /api/providers/types.
+ *  Referenced by isCloud() and groupByCategory() directly so they don't
+ *  need prop-drilling through the entire component tree.  React state in
+ *  ProvidersApp mirrors this for re-render scheduling. */
+let _activeCloudTypes: readonly string[] = [...FALLBACK_CLOUD_TYPES];
+
+type ProviderType = string;
 
 const DEFAULT_URLS: Partial<Record<ProviderType, string>> = {
   openai: "https://api.openai.com/v1",
@@ -144,7 +153,7 @@ type TestResult = { reachable: boolean; response_ms?: number; models?: ProviderM
 /* ------------------------------------------------------------------ */
 
 function isCloud(type: string): boolean {
-  return (CLOUD_TYPES as readonly string[]).includes(type);
+  return (_activeCloudTypes as readonly string[]).includes(type);
 }
 
 function TypePill({ type }: { type: string }) {
@@ -222,7 +231,7 @@ function WorkerBadge({ name, platform }: { name: string; platform?: string }) {
 function groupByCategory(providers: Provider[]): Record<ProviderCategory, Provider[]> {
   const groups: Record<ProviderCategory, Provider[]> = { local: [], network: [], cloud: [] };
   for (const p of providers) {
-    const cat: ProviderCategory = p.category ?? (p.source?.startsWith("worker:") ? "network" : (CLOUD_TYPES as readonly string[]).includes(p.type) ? "cloud" : "local");
+    const cat: ProviderCategory = p.category ?? (p.source?.startsWith("worker:") ? "network" : (_activeCloudTypes as readonly string[]).includes(p.type) ? "cloud" : "local");
     groups[cat].push(p);
   }
   return groups;
@@ -255,10 +264,12 @@ function ProviderForm({
   editing,
   onSave,
   onClose,
+  localTypes,
 }: {
   editing: Provider | null;
   onSave: () => void;
   onClose: () => void;
+  localTypes: string[];
 }) {
   type WizardCategory = "local" | "cluster" | "cloud";
   type WizardStep = "category" | "cloud-pick" | "cluster-info" | "config";
@@ -557,7 +568,7 @@ function ProviderForm({
                       onChange={(e) => handleTypeChange(e.target.value as ProviderType)}
                       className="flex h-9 w-full rounded-lg border border-white/10 bg-shell-bg-deep px-3 py-1 text-sm text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
                     >
-                      {LOCAL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      {localTypes.map((t) => <option key={t} value={t}>{t}</option>)}
                     </select>
                   </div>
                   <div className="space-y-1.5">
@@ -1118,6 +1129,10 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
   const [showForm, setShowForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [localTypes, setLocalTypes] = useState<string[]>([...FALLBACK_LOCAL_TYPES]);
+  // Only the setter is used — it re-renders so categorization picks up the
+  // updated `_activeCloudTypes`; the value itself is read via that module var.
+  const [, setCloudTypes] = useState<string[]>([...FALLBACK_CLOUD_TYPES]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -1151,6 +1166,37 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
     const interval = setInterval(fetchProviders, 30_000);
     return () => clearInterval(interval);
   }, [fetchProviders]);
+
+  // Fetch canonical provider types once at boot (single source of truth).
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    fetch("/api/providers/types", {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.cloud) {
+          _activeCloudTypes = data.cloud;
+          setCloudTypes(data.cloud);
+        }
+        if (data?.local) setLocalTypes(data.local);
+      })
+      .catch((err) => {
+        if (err.name !== "AbortError") {
+          console.warn("Failed to fetch provider types, using fallback:", err);
+        }
+      })
+      .finally(() => clearTimeout(timeout));
+
+    // Abort the in-flight fetch and clear the timeout on unmount so the
+    // .then handlers can't setState after the component is gone.
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, []);
 
   async function handleDelete(name: string) {
     if (!window.confirm(`Remove provider "${name}"?`)) return;
@@ -1384,6 +1430,7 @@ export function ProvidersApp({ windowId: _windowId }: { windowId: string }) {
           editing={editingProvider}
           onSave={handleFormSave}
           onClose={handleFormClose}
+          localTypes={localTypes}
         />
       )}
 

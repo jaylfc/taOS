@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Debugger — TinyAgentOS</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script src="https://unpkg.com/htmx.org@2"></script>
+  <style>
+    :root {
+      --debugger-header-height: 3.5rem;
+      --debugger-footer-height: 3.5rem;
+    }
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .debugger-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid var(--pico-muted-border-color);
+      height: var(--debugger-header-height);
+      box-sizing: border-box;
+    }
+    .debugger-header h2 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    .debugger-main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .left-panel {
+      width: 40%;
+      border-right: 1px solid var(--pico-muted-border-color);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .left-panel-header {
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid var(--pico-muted-border-color);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .event-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }
+    .event-item {
+      border-bottom: 1px solid var(--pico-muted-border-color);
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-family: ui-monospace, monospace;
+    }
+    .event-item:hover {
+      background: var(--pico-secondary-hover-background);
+    }
+    .event-item.active {
+      background: var(--pico-primary-focus);
+    }
+    .event-item .event-type {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      margin-right: 0.5rem;
+    }
+    .event-type-tool_call { background: var(--pico-primary-background); }
+    .event-type-tool_result { background: var(--pico-mark-background); }
+    .event-type-prompt { background: var(--pico-ins-background); }
+    .event-type-error { background: var(--pico-del-background); }
+    .event-type-log { background: var(--pico-muted-color); }
+
+    .right-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .right-panel-header {
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid var(--pico-muted-border-color);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .event-detail {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+    }
+    .event-detail pre {
+      margin: 0;
+      white-space: pre-wrap;
+      font-size: 0.85rem;
+      font-family: ui-monospace, monospace;
+      background: var(--pico-secondary-background);
+      padding: 0.75rem;
+      border-radius: 4px;
+    }
+    .event-detail .empty-state {
+      color: var(--pico-muted-color);
+      font-style: italic;
+      padding: 2rem;
+      text-align: center;
+    }
+    .debugger-footer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      padding: 0.5rem 1rem;
+      border-top: 1px solid var(--pico-muted-border-color);
+      height: var(--debugger-footer-height);
+      box-sizing: border-box;
+    }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      font-size: 0.8rem;
+      color: var(--pico-muted-color);
+    }
+    .status-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .status-connected { background: var(--pico-ins-color, #4caf50); }
+    .status-disconnected { background: var(--pico-del-color, #f44336); }
+  </style>
+</head>
+<body>
+  <header class="debugger-header">
+    <h2>
+      <span id="agent-name">Agent</span>
+      <span class="status-indicator status-disconnected" id="connection-status"
+            role="status" aria-label="Connection status"></span>
+    </h2>
+    <div class="status-bar">
+      <small id="event-count">0 events</small>
+      <small id="position-label">Position: 0</small>
+    </div>
+  </header>
+
+  <main class="debugger-main">
+    <nav class="left-panel" aria-label="Event timeline">
+      <div class="left-panel-header">Events</div>
+      <ol class="event-list" id="event-list" role="list"
+          aria-label="Execution trace events"
+          hx-get="/agent/REPLACE_AGENT_ID/debug/events"
+          hx-trigger="sse:message"
+          hx-swap="none">
+      </ol>
+    </nav>
+
+    <section class="right-panel" aria-label="Event details">
+      <div class="right-panel-header">Details</div>
+      <div class="event-detail" id="event-detail">
+        <div class="empty-state">Select an event from the timeline to view details.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="debugger-footer">
+    <button id="btn-step" aria-label="Step to next event"
+            hx-post="/agent/REPLACE_AGENT_ID/debug/step"
+            hx-swap="none">
+      Step
+    </button>
+    <button id="btn-continue" aria-label="Continue until breakpoint or completion"
+            hx-post="/agent/REPLACE_AGENT_ID/debug/continue"
+            hx-swap="none">
+      Continue
+    </button>
+    <button id="btn-stop" class="secondary" aria-label="Stop debugging"
+            hx-post="/agent/REPLACE_AGENT_ID/debug/clear"
+            hx-swap="none">
+      Stop
+    </button>
+  </footer>
+
+  <script>
+    (function() {
+      const agentId = window.location.pathname.split('/')[2] || 'unknown';
+      document.getElementById('agent-name').textContent = agentId;
+
+      // Fix htmx URLs
+      document.querySelectorAll('[hx-get],[hx-post]').forEach(el => {
+        ['hx-get','hx-post'].forEach(attr => {
+          const val = el.getAttribute(attr);
+          if (val && val.includes('REPLACE_AGENT_ID')) {
+            el.setAttribute(attr, val.replace('REPLACE_AGENT_ID', agentId));
+          }
+        });
+      });
+
+      const eventList = document.getElementById('event-list');
+      const eventDetail = document.getElementById('event-detail');
+      const eventCount = document.getElementById('event-count');
+      const positionLabel = document.getElementById('position-label');
+      const connectionStatus = document.getElementById('connection-status');
+
+      let events = [];
+      let currentPos = 0;
+      let activeIdx = -1;
+
+      // SSE connection
+      const es = new EventSource('/agent/' + agentId + '/debug/events');
+
+      es.onopen = function() {
+        connectionStatus.className = 'status-indicator status-connected';
+        connectionStatus.setAttribute('aria-label', 'Connected');
+      };
+
+      es.onerror = function() {
+        connectionStatus.className = 'status-indicator status-disconnected';
+        connectionStatus.setAttribute('aria-label', 'Disconnected');
+      };
+
+      es.addEventListener('message', function(e) {
+        try {
+          const data = JSON.parse(e.data);
+
+          if (data.type === 'heartbeat') return;
+
+          if (data.type === 'position') {
+            currentPos = data.pos;
+            updateUI();
+            return;
+          }
+
+          if (data.type === 'clear') {
+            events = [];
+            currentPos = 0;
+            activeIdx = -1;
+            eventList.innerHTML = '';
+            eventDetail.innerHTML = '<div class="empty-state">Trace cleared.</div>';
+            updateUI();
+            return;
+          }
+
+          // Regular event — add to list
+          events.push(data);
+          renderEvent(data, events.length - 1);
+          updateUI();
+        } catch (err) {
+          // ignore parse errors
+        }
+      });
+
+      function renderEvent(event, idx) {
+        const li = document.createElement('li');
+        li.className = 'event-item';
+        li.setAttribute('role', 'button');
+        li.setAttribute('tabindex', '0');
+        li.setAttribute('aria-label', event.type + ' event');
+        li.setAttribute('aria-pressed', 'false');
+        li.onclick = function() { selectEvent(idx); };
+        li.onkeydown = function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            selectEvent(idx);
+          }
+        };
+
+        const span = document.createElement('span');
+        span.className = 'event-type event-type-' + event.type;
+        span.textContent = event.type.replace('_', ' ');
+
+        const label = document.createElement('span');
+        const data = event.data || {};
+        const summary = data.name || data.function || data.tool || data.text || '';
+        const truncated = typeof summary === 'string' ? summary.substring(0, 60) : JSON.stringify(summary).substring(0, 60);
+
+        label.textContent = truncated;
+
+        li.appendChild(span);
+        li.appendChild(label);
+        eventList.appendChild(li);
+      }
+
+      function selectEvent(idx) {
+        activeIdx = idx;
+        updateUI();
+
+        const event = events[idx];
+        if (!event) return;
+
+        let detailHtml = '<div class="event-type event-type-' + event.type + '" style="margin-bottom:0.5rem">' +
+                         event.type.replace('_', ' ') + '</div>';
+        detailHtml += '<pre>' + escapeHtml(JSON.stringify(event.data || {}, null, 2)) + '</pre>';
+        eventDetail.innerHTML = detailHtml;
+      }
+
+      function updateUI() {
+        eventCount.textContent = events.length + ' events';
+        positionLabel.textContent = 'Position: ' + currentPos;
+
+        // Update active styling
+        document.querySelectorAll('.event-item').forEach((el, i) => {
+          el.classList.toggle('active', i === activeIdx);
+        });
+      }
+
+      function escapeHtml(text) {
+        return String(text)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -64,6 +64,29 @@ class TestDockerInstaller:
             compose_file = tmp_path / "gitea" / "docker-compose.yaml"
             assert compose_file.exists()
 
+    def test_generate_compose_declares_named_volumes_and_omits_version(self, tmp_path):
+        # Regression: named volumes (e.g. searxng's "config:/etc/searxng") must
+        # be declared at the top level or compose rejects the project with
+        # "refers to undefined volume". The obsolete `version` key is dropped.
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose = installer._generate_compose("searxng", {
+            "image": "searxng/searxng:latest",
+            "volumes": ["config:/etc/searxng", "/host/path:/data"],
+            "ports": [8080],
+        })
+        assert "version" not in compose
+        assert compose["volumes"] == {"config": None}  # only the named volume
+        assert compose["services"]["searxng"]["volumes"] == ["config:/etc/searxng", "/host/path:/data"]
+        assert compose["services"]["searxng"]["ports"] == ["8080:8080"]
+
+    def test_generate_compose_omits_volumes_block_for_bind_mounts_only(self, tmp_path):
+        installer = DockerInstaller(apps_dir=tmp_path)
+        compose = installer._generate_compose("app", {
+            "image": "x:1",
+            "volumes": ["/host:/data", "./rel:/r", "~/h:/hh"],
+        })
+        assert "volumes" not in compose  # no named volumes → no top-level block
+
     @pytest.mark.asyncio
     async def test_start_runs_compose_up(self, tmp_path):
         installer = DockerInstaller(apps_dir=tmp_path)

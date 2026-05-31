@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 ADAPTER_DIR = Path(__file__).parent.parent / "adapters"
 
+# Channel-level adapters (run in-process via channel-hub connect API, not subprocesses)
+CHANNEL_ADAPTER_DIR = Path(__file__).parent / "adapters"
+_CHANNEL_ADAPTERS = {"github": CHANNEL_ADAPTER_DIR / "github.py"}
+
 
 class AdapterManager:
     def __init__(self, router):
@@ -16,6 +20,12 @@ class AdapterManager:
         self._processes: dict[str, subprocess.Popen] = {}
 
     async def start_adapter(self, agent_name: str, framework: str, env: dict | None = None) -> int:
+        if framework in _CHANNEL_ADAPTERS:
+            logger.info(
+                "Channel adapter '%s' is managed by channel-hub connect API, "
+                "not subprocess", framework,
+            )
+            return 0
         port = self.router.allocate_port(agent_name)
         adapter_file = ADAPTER_DIR / f"{framework}_adapter.py"
         if not adapter_file.exists():

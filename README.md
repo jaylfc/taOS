@@ -176,6 +176,8 @@ One-click install for agent frameworks, AI models, and services. Hardware-aware,
 ### Agent Deployment
 5-step wizard: pick framework → choose model → configure → deploy into an isolated container (LXC on bare metal, Docker on VPS, auto-detected). Each agent gets its own memory system (taOSmd instance), its own file storage, and its own network identity. The framework runs inside the container but TinyAgentOS manages everything around it: memory, channels, secrets, model access, scheduled tasks, and inter-agent communication. This means the framework is a swappable component, not a lock-in decision.
 
+> **Running taOS *inside* an LXC (e.g. Proxmox)?** Deploying an agent creates a *nested* container, which an **unprivileged** LXC cannot do — the kernel can't remap the nested container's filesystem, so the deploy fails with an `idmapped storage / change ownership` error. Run the taOS LXC as **privileged with nesting enabled**. On Proxmox: untick *Unprivileged container* and set Options → Features → `nesting=1` (plus `keyctl=1`, `fuse=1`), then redeploy. Bare-metal and VM installs are unaffected. (taOS detects this and surfaces the fix in the deploy error.)
+
 <p align="center">
   <img src="docs/images/mobile-agents-empty.png" alt="Agents app empty state on mobile — one tap to deploy" width="30%">
 </p>
@@ -710,13 +712,22 @@ TinyAgentOS makes AI agents accessible on affordable hardware.
 
 TinyAgentOS stands on a lot of excellent community work, particularly on Rockchip. Shout-outs where they are earned:
 
-- **happyme531.** Author of [ztu_somemodelruntime_ez_rknn_async](https://github.com/happyme531/ztu_somemodelruntime_ez_rknn_async), the ORT-style Python runtime that makes multi-core NPU inference on RK3588 actually work. Also the original author of the LCM Dreamshaper RKNN port. Without this library, the 21% SD speedup and the 1.78× concurrent-session throughput on the Orange Pi 5 Plus would not exist.
-- **darkbit1001.** The NHWC `data_format` fix for UNet and VAE decoder under `librknnrt 2.3.2` that made SD on RK3588 run cleanly in the first place. Upstreamed to happyme531's repo as [discussion #6](https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/discussions/6).
-- **c01zaut**. Qwen2.5 1.5B → 14B RKLLM model ports that let chat work on RK3588 at all.
-- **NotPunchnox.** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
-- **tobi** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).
+- **[happyme531](https://github.com/happyme531).** Author of [ztu_somemodelruntime_ez_rknn_async](https://github.com/happyme531/ztu_somemodelruntime_ez_rknn_async), the ORT-style Python runtime that makes multi-core NPU inference on RK3588 actually work. Also the original author of the LCM Dreamshaper RKNN port. Without this library, the 21% SD speedup and the 1.78× concurrent-session throughput on the Orange Pi 5 Plus would not exist.
+- **[darkbit1001](https://huggingface.co/darkbit1001).** The NHWC `data_format` fix for UNet and VAE decoder under `librknnrt 2.3.2` that made SD on RK3588 run cleanly in the first place. Upstreamed to happyme531's repo as [discussion #6](https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/discussions/6).
+- **[c01zaut](https://huggingface.co/c01zaut)**. Qwen2.5 1.5B → 14B RKLLM model ports that let chat work on RK3588 at all.
+- **[NotPunchnox](https://github.com/NotPunchnox).** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
+- **[tobi](https://github.com/tobi)** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).
 
 If you maintain one of the libraries above and want a different phrasing or a link added, open an issue and I will fix it.
+
+## Community
+
+taOS is better for the people testing it, filing issues, and sending fixes:
+
+- [@hognek](https://github.com/hognek) — the first community code contributions: Hermes bridge bounded-retry + dedup ([#468](https://github.com/jaylfc/tinyagentos/pull/468)), agent button states + feedback ([#469](https://github.com/jaylfc/tinyagentos/pull/469)), and browser/PWA mobile layout ([#470](https://github.com/jaylfc/tinyagentos/pull/470)).
+- [@johny-mnemonic](https://github.com/johny-mnemonic) — first to run taOS on a heterogeneous multi-GPU stack beyond our own hardware, surfacing the gaps behind the agent-deploy and UI fixes (the [#357](https://github.com/jaylfc/tinyagentos/discussions/357) thread).
+- [@m13v](https://github.com/m13v) and [@redkjuegos](https://github.com/redkjuegos) — sustained feedback and discussion across issues.
+- …and everyone who's opened an issue or tested an early build. 🙏
 
 ## License
 

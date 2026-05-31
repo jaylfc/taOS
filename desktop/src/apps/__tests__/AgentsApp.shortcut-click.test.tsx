@@ -63,6 +63,7 @@ vi.mock("@/components/AgentShortcutRow", () => ({
 }));
 
 import { AgentsApp } from "../AgentsApp";
+import { useNotificationStore } from "@/stores/notification-store";
 
 const MOCK_AGENT = {
   name: "test-agent",
@@ -135,7 +136,7 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
     );
   });
 
-  it("tui kind opens TerminalApp with wsUrl (ws://) and ticket extracted from t= param", async () => {
+  it("tui kind opens TerminalApp pointed at the PTY endpoint (not /redeem) and redeems the cookie first", async () => {
     const redirectUrl = "http://worker.local/redeem?t=myticket42";
     setupFetch({ redirect_url: redirectUrl, expires_in: 30 });
 
@@ -147,19 +148,24 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
       await onLaunch!("test-agent", { idx: 1, label: "TUI", icon: "tui", kind: "tui", requires_capability: "agent.terminal" });
     });
 
+    // The cookie-establishing GET /redeem must happen before the socket opens.
+    expect(fetch).toHaveBeenCalledWith(
+      redirectUrl,
+      expect.objectContaining({ credentials: "include" }),
+    );
     expect(mockOpenWindow).toHaveBeenCalledWith(
       "terminal",
       expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }),
       expect.objectContaining({
         shortcut: expect.objectContaining({
-          wsUrl: "ws://worker.local/redeem?t=myticket42",
+          wsUrl: "ws://worker.local/shortcut/terminal/test-agent/1",
           ticket: "myticket42",
         }),
       })
     );
   });
 
-  it("https redirect_url is converted to wss:// scheme for TerminalApp", async () => {
+  it("https redirect_url yields a wss:// PTY endpoint", async () => {
     const redirectUrl = "https://worker.secure/redeem?t=secureticket";
     setupFetch({ redirect_url: redirectUrl, expires_in: 30 });
 
@@ -176,14 +182,14 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
       expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }),
       expect.objectContaining({
         shortcut: expect.objectContaining({
-          wsUrl: "wss://worker.secure/redeem?t=secureticket",
+          wsUrl: "wss://worker.secure/shortcut/terminal/test-agent/1",
           ticket: "secureticket",
         }),
       })
     );
   });
 
-  it("container-terminal kind opens TerminalApp with wsUrl (ws://) and ticket", async () => {
+  it("container-terminal kind opens TerminalApp pointed at the PTY endpoint", async () => {
     const redirectUrl = "http://worker.local/redeem?t=containerticket";
     setupFetch({ redirect_url: redirectUrl, expires_in: 30 });
 
@@ -200,10 +206,40 @@ describe("AgentsApp — handleShortcutLaunch routing (Task 28)", () => {
       expect.objectContaining({ w: expect.any(Number), h: expect.any(Number) }),
       expect.objectContaining({
         shortcut: expect.objectContaining({
-          wsUrl: "ws://worker.local/redeem?t=containerticket",
+          wsUrl: "ws://worker.local/shortcut/terminal/test-agent/2",
           ticket: "containerticket",
         }),
       })
     );
+  });
+
+  it("surfaces an error notification when the launch request fails (no silent no-op)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      if (url === "/api/agents" && !opts?.method) {
+        return Promise.resolve({ ok: true, headers: { get: () => "application/json" }, json: () => Promise.resolve([MOCK_AGENT]) } as unknown as Response);
+      }
+      if (url === "/api/agents/archived") {
+        return Promise.resolve({ ok: true, headers: { get: () => "application/json" }, json: () => Promise.resolve([]) } as unknown as Response);
+      }
+      if (url.includes("/shortcuts/") && url.includes("/launch")) {
+        return Promise.resolve({ ok: false, status: 403, headers: { get: () => "application/json" }, json: () => Promise.resolve({ detail: "Capability 'agent.shell' required" }) } as unknown as Response);
+      }
+      return Promise.resolve({ ok: false, headers: { get: () => "application/json" }, json: () => Promise.resolve({}) } as unknown as Response);
+    }));
+
+    const before = useNotificationStore.getState().notifications.length;
+    render(<AgentsApp windowId="test" />);
+    await screen.findByTestId("shortcut-row-test-agent");
+
+    const { onLaunch } = captors["test-agent"]!;
+    await act(async () => {
+      await onLaunch!("test-agent", { idx: 2, label: "Shell", icon: "terminal", kind: "container-terminal", requires_capability: "agent.shell" });
+    });
+
+    expect(mockOpenWindow).not.toHaveBeenCalled();
+    const notifs = useNotificationStore.getState().notifications;
+    expect(notifs.length).toBe(before + 1);
+    expect(notifs[0].level).toBe("error");
+    expect(notifs[0].body).toContain("agent.shell");
   });
 });
