@@ -75,7 +75,7 @@ docker ps --filter "name=taos-agent-"
 docker exec -it taos-agent-<slug> bash
 
 # Single command:
-docker exec taos-agent-<slug> ls -la /workspace
+docker exec -i taos-agent-<slug> ls -la /workspace
 ```
 
 The principle is identical: `exec` bypasses the virtual console and runs
@@ -87,6 +87,7 @@ directly inside the container.
 |---|---|
 | Interactive shell (LXC) | `incus exec taos-agent-<slug> -- bash` |
 | Single command (LXC) | `incus exec taos-agent-<slug> -- <cmd>` |
+| Single command (Docker) | `docker exec -i taos-agent-<slug> <cmd>` |
 | List agent containers (LXC) | `incus list \| grep taos-agent-` |
 | Interactive shell (Docker) | `docker exec -it taos-agent-<slug> bash` |
 | Preferred CLI wrapper | `taos agent exec <name> -- bash` |
