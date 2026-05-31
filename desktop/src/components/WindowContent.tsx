@@ -1,5 +1,6 @@
 import { Suspense, lazy, useMemo } from "react";
 import { getApp } from "@/registry/app-registry";
+import { WindowSkeleton } from "./WindowSkeleton";
 
 interface Props {
   appId: string;
@@ -24,13 +25,7 @@ export function WindowContent({ appId, windowId, props, launchNonce = 0 }: Props
   }
 
   return (
-    <Suspense
-      fallback={
-        <div className="flex items-center justify-center h-full text-shell-text-tertiary">
-          Loading...
-        </div>
-      }
-    >
+    <Suspense fallback={<WindowSkeleton />}>
       <LazyComponent key={`${windowId}:${launchNonce}`} windowId={windowId} {...(props ?? {})} />
     </Suspense>
   );
