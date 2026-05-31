@@ -1201,6 +1201,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.github import router as github_router
     app.include_router(github_router)
 
+    from tinyagentos.routes.gh_webhook import router as gh_webhook_router
+    app.include_router(gh_webhook_router)
+
     from tinyagentos.routes.youtube import router as youtube_router
     app.include_router(youtube_router)
 
