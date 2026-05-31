@@ -1,6 +1,8 @@
 import pytest
 from pathlib import Path
 import yaml
+import tempfile
+import asyncio
 
 from tinyagentos.routes.store import _STORE_TEMPLATE_DIR
 
@@ -58,3 +60,65 @@ class TestStoreTemplates:
         route_paths = [r.path for r in router.routes]
         assert "/api/store/templates" in route_paths, \
             f"Expected /api/store/templates in routes, got {route_paths}"
+
+
+class TestStoreTemplatesEndpoint:
+    """Function-level tests for template listing logic."""
+
+    def test_malformed_yaml_skipped_gracefully(self, monkeypatch):
+        """When a template YAML file is malformed, it's skipped without
+        crashing or affecting valid templates."""
+        import tinyagentos.routes.store as store_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "good.yaml").write_text(
+                "id: good-one\nname: Good\ntype: template\n"
+                "hardware_tier: cpu-only\ndescription: ok\napps: []\n"
+            )
+            (tmp / "bad.yaml").write_text("id: broken\n  dangling indent: [\n{oops\n")
+            monkeypatch.setattr(store_mod, "_STORE_TEMPLATE_DIR", tmp)
+
+            result = asyncio.run(store_mod.list_store_templates())
+            templates = result["templates"]
+            ids = [t["id"] for t in templates]
+            assert "good-one" in ids
+            assert "broken" not in ids, "malformed YAML should be skipped"
+
+    def test_bad_type_field_skipped(self, monkeypatch):
+        """Template YAML without type: template is skipped."""
+        import tinyagentos.routes.store as store_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "real.yaml").write_text(
+                "id: real\nname: Real\ntype: template\n"
+                "hardware_tier: cpu-only\ndescription: ok\napps: []\n"
+            )
+            (tmp / "not-template.yaml").write_text(
+                "id: other\nname: Other\ntype: model\n"
+                "hardware_tier: cpu-only\ndescription: N/A\napps: []\n"
+            )
+            monkeypatch.setattr(store_mod, "_STORE_TEMPLATE_DIR", tmp)
+
+            result = asyncio.run(store_mod.list_store_templates())
+            templates = result["templates"]
+            ids = [t["id"] for t in templates]
+            assert "real" in ids
+            assert "other" not in ids, "non-template type should be skipped"
+
+    def test_empty_dir_returns_empty_list(self, monkeypatch):
+        """Empty template dir returns empty list, not an error."""
+        import tinyagentos.routes.store as store_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setattr(store_mod, "_STORE_TEMPLATE_DIR", Path(tmpdir))
+            result = asyncio.run(store_mod.list_store_templates())
+            assert result == {"templates": []}
+
+    def test_nonexistent_dir_returns_empty_list(self, monkeypatch):
+        """Nonexistent template dir returns empty list, not an error."""
+        import tinyagentos.routes.store as store_mod
+        monkeypatch.setattr(store_mod, "_STORE_TEMPLATE_DIR", Path("/nonexistent/path"))
+        result = asyncio.run(store_mod.list_store_templates())
+        assert result == {"templates": []}
