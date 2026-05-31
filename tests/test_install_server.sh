@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 # Regression tests for install-server.sh GPU capability tool installation.
-# Covers: NVIDIA nvidia-utils, AMD rocm-smi, and RK3588 perf service.
-# NOTE: Intel Mesa Vulkan tests are in PR #508 (mesa-vulkan-drivers).
+# Covers: NVIDIA nvidia-utils, AMD rocm-smi, RK3588 perf service, and
+# Intel GPU Mesa Vulkan driver support (mesa-vulkan-drivers).
 set -euo pipefail
 SCRIPT=scripts/install-server.sh
 
 echo "test: bash -n syntax"
 bash -n "$SCRIPT"
+
+echo "test: ensure_linux_deps includes vulkan-tools in apt path"
+grep -q "vulkan-tools" "$SCRIPT"
+
+echo "test: Intel GPU block installs mesa-vulkan-drivers via apt when available"
+grep -q "apt-cache show mesa-vulkan-drivers" "$SCRIPT"
+
+echo "test: Intel GPU block installs mesa-vulkan-drivers via dnf when available"
+grep -q "dnf.*mesa-vulkan-drivers" "$SCRIPT"
+
+echo "test: Intel GPU block installs vulkan-intel via pacman when available"
+grep -q "vulkan-intel" "$SCRIPT"
+grep -q "vulkan-mesa-layers" "$SCRIPT"
+
+echo "test: Intel GPU block installs mesa-vulkan-intel via apk when available"
+grep -q "mesa-vulkan-intel" "$SCRIPT"
+
+echo "test: Intel GPU detection runs before mesa install (ordering)"
+lspci_line=$(grep -n 'lspci.*Intel Corporation' "$SCRIPT" | head -1 | cut -d: -f1)
+mesa_line=$(grep -n 'apt-cache show mesa-vulkan-drivers' "$SCRIPT" | head -1 | cut -d: -f1)
+(( lspci_line < mesa_line ))
 
 # ── NVIDIA nvidia-utils ────────────────────────────────────────────
 

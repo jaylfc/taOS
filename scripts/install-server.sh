@@ -292,6 +292,23 @@ detect_and_advise_accelerators() {
     fi
     if (( intel_gpu )); then
         found_any=1
+        # Install Mesa Vulkan drivers so vulkaninfo can report hardware
+        # devices on Intel iGPUs. vulkan-tools (in ensure_linux_deps) only
+        # ships the vulkaninfo binary — it needs Mesa's Vulkan driver to
+        # actually detect the GPU (#354, epic #370).
+        if command -v apt-get >/dev/null 2>&1 && apt-cache show mesa-vulkan-drivers >/dev/null 2>&1; then
+            log "installing mesa-vulkan-drivers for Intel Vulkan support"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers
+        elif command -v dnf >/dev/null 2>&1 && dnf list mesa-vulkan-drivers >/dev/null 2>&1; then
+            log "installing mesa-vulkan-drivers for Intel Vulkan support"
+            sudo dnf install -y -q mesa-vulkan-drivers
+        elif command -v pacman >/dev/null 2>&1 && pacman -Si vulkan-intel >/dev/null 2>&1; then
+            log "installing vulkan-intel vulkan-mesa-layers for Intel Vulkan support"
+            sudo pacman -S --noconfirm --needed vulkan-intel vulkan-mesa-layers
+        elif command -v apk >/dev/null 2>&1 && apk search mesa-vulkan-intel >/dev/null 2>&1; then
+            log "installing mesa-vulkan-intel mesa-dri-gallium for Intel Vulkan support"
+            sudo apk add --no-cache mesa-vulkan-intel mesa-dri-gallium
+        fi
         if [[ -d /sys/class/drm/card0 ]] || [[ -d /sys/class/drm/card1 ]]; then
             log "intel gpu: present (Vulkan via Mesa, no separate driver install needed on most distros)"
         else
