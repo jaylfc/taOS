@@ -1,5 +1,5 @@
 import * as icons from "lucide-react";
-import { getApp } from "@/registry/app-registry";
+import { getApp, prefetchApp } from "@/registry/app-registry";
 
 interface Props {
   appId: string;
@@ -20,6 +20,7 @@ export function DockIcon({ appId, isRunning, onClick }: Props) {
   return (
     <button
       onClick={onClick}
+      onMouseEnter={() => prefetchApp(appId)}
       className="group relative flex items-center justify-center w-10 h-10 rounded-lg bg-shell-surface hover:bg-shell-surface-active transition-all hover:scale-110"
       aria-label={`Open ${app.name}`}
       title={app.name}
