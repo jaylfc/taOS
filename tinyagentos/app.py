@@ -71,6 +71,8 @@ from tinyagentos.webhook_notifier import WebhookNotifier
 from tinyagentos.llm_proxy import LLMProxy
 from tinyagentos.litellm_migrate import migrate as _litellm_migrate
 from tinyagentos.agent_image import ensure_image_present as _ensure_agent_image_present
+from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
+from tinyagentos.agent_image import register_prefetch_endpoint
 from tinyagentos.auto_update import AutoUpdateService
 from tinyagentos.restart_orchestrator import RestartOrchestrator, apply_pending_restart_check, resume_agents_from_notes
 from tinyagentos.channel_hub.router import MessageRouter
@@ -590,10 +592,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             except Exception:
                 logger.exception("litellm prisma migration failed — virtual keys will not work")
             # Kick off the one-time agent base image import in the background.
-            # Non-fatal — if GitHub is unreachable or the tarball isn't
-            # published yet, deploys fall back to images:debian/bookworm.
+            # Only runs when the user has explicitly opted in via
+            # TAOS_PREFETCH_BASE_IMAGE=1. Non-fatal — if GitHub is
+            # unreachable or the tarball isn't published yet, deploys
+            # fall back to images:debian/bookworm.
             try:
-                asyncio.create_task(_ensure_agent_image_present())
+                if _is_prefetch_enabled():
+                    asyncio.create_task(_ensure_agent_image_present())
+                else:
+                    logger.debug(
+                        "agent_image: base image prefetch disabled "
+                        "(set TAOS_PREFETCH_BASE_IMAGE=1 to enable)"
+                    )
             except Exception:
                 logger.exception("agent base image bootstrap scheduling failed")
             resolved_secrets: dict[str, str] = {}
@@ -1221,6 +1231,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.memory_management import router as memory_mgmt_router
     app.include_router(memory_mgmt_router)
+
+    # Agent base image prefetch status endpoint
+    register_prefetch_endpoint(app)
 
     from tinyagentos.routes.jobs import router as jobs_router
     app.include_router(jobs_router)

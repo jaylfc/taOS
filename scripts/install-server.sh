@@ -22,6 +22,7 @@
 #     TAOS_SERVICE        install as system service: auto (default), system, user, skip
 #     TAOS_SKIP_QMD       if set, skip qmd.service install (useful for boxes without a model backend)
 #     TAOS_RKNPU_SETUP    if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
+#     TAOS_PREFETCH_BASE_IMAGE   if set to 1, download the pre-built agent base image at startup (~300-500MB, one-time)
 set -euo pipefail
 
 INSTALL_DIR="${TAOS_INSTALL_DIR:-$HOME/tinyagentos}"
@@ -1005,6 +1006,10 @@ install_linux_systemd_system() {
         sudo_cmd="sudo"
     fi
 
+    # Resolve base image prefetch opt-in: honour TAOS_PREFETCH_BASE_IMAGE
+    # if set at install time, default to 0 (disabled).
+    local taos_prefetch="${TAOS_PREFETCH_BASE_IMAGE:-0}"
+
     # Install graceful-stop script
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
     log "installed /usr/local/bin/taos-graceful-stop"
@@ -1017,6 +1022,7 @@ install_linux_systemd_system() {
         -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
         -e "s|TAOS_PORT|$TAOS_PORT|g" \
         -e "s|TAOS_STOP_SCRIPT|/usr/local/bin/taos-graceful-stop|g" \
+        -e "s|TAOS_PREFETCH|$taos_prefetch|g" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
         | $sudo_cmd tee "$unit" > /dev/null
     log "installed $unit (system unit, runs as $USER)"
@@ -1045,6 +1051,8 @@ install_linux_systemd_user() {
     mkdir -p "$HOME/.local/bin"
     install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" "$HOME/.local/bin/taos-graceful-stop"
 
+    local taos_prefetch="${TAOS_PREFETCH_BASE_IMAGE:-0}"
+
     # User unit: no User=/Group= (inherits the running user), no ExecStartPre
     # for debugfs (that needs root). ExecReload/Restart=always still apply.
     sed \
@@ -1054,6 +1062,7 @@ install_linux_systemd_user() {
         -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
         -e "s|TAOS_PORT|$TAOS_PORT|g" \
         -e "s|TAOS_STOP_SCRIPT|$HOME/.local/bin/taos-graceful-stop|g" \
+        -e "s|TAOS_PREFETCH|$taos_prefetch|g" \
         -e "/^User=/d" \
         -e "/^Group=/d" \
         -e "s|WantedBy=multi-user.target|WantedBy=default.target|g" \

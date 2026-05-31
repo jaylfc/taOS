@@ -41,6 +41,7 @@ RestartSec=3
 TimeoutStartSec=180
 TimeoutStopSec=360
 Environment=PYTHONUNBUFFERED=1
+Environment=TAOS_PREFETCH_BASE_IMAGE=TAOS_PREFETCH
 
 [Install]
 WantedBy=multi-user.target
