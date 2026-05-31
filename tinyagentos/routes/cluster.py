@@ -656,3 +656,57 @@ async def worker_remote_command(request: Request, name: str, body: WorkerRemoteR
             return resp.json()
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=502)
+
+
+@router.get("/api/cluster/promote-archived")
+async def promote_archived_models(request: Request):
+    """Manual trigger: scan all online workers and promote any archived
+    models that are now compatible with cluster hardware.
+
+    Called by the user from the Cluster page or admin CLI. Safe to call
+    repeatedly — already-promoted models are skipped.
+    """
+    cluster = request.app.state.cluster_manager
+    notifications = getattr(request.app.state, "notifications", None)
+
+    workers = cluster.get_workers()
+    online = [w for w in workers if w.status == "online"]
+
+    from tinyagentos.cluster.model_archive import (
+        find_promotable,
+        promote_model,
+    )
+
+    promoted_by_worker: dict[str, list[str]] = {}
+    total = 0
+
+    for w in online:
+        promotable = find_promotable(
+            worker_hardware=w.hardware,
+            worker_name=w.name,
+        )
+        for model in promotable:
+            model_id = model.get("model_id", "?")
+            if promote_model(model):
+                promoted_by_worker.setdefault(w.name, []).append(model_id)
+                total += 1
+                if notifications:
+                    try:
+                        await notifications.emit_event(
+                            "model.promoted",
+                            f"Archived model '{model_id}' promoted",
+                            f"Worker '{w.name}' can now run '{model_id}'. "
+                            f"Moved from archive to active models.",
+                            level="info",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "notification emit failed for model promotion %s",
+                            model_id,
+                        )
+
+    return {
+        "promoted": total,
+        "by_worker": promoted_by_worker,
+        "workers_scanned": len(online),
+    }
