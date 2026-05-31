@@ -134,9 +134,8 @@ async def debugger_step(agent_id: str) -> JSONResponse:
         })
 
     # Signal any waiting agent
-    step_event = _step_events.get(agent_id)
-    if step_event:
-        step_event.set()
+    step_event = _step_events.setdefault(agent_id, asyncio.Event())
+    step_event.set()
 
     return JSONResponse({"status": "stepped", "pos": _positions.get(agent_id, 0)})
 
@@ -156,9 +155,8 @@ async def debugger_continue(agent_id: str) -> JSONResponse:
     })
 
     # Signal any waiting agent
-    step_event = _step_events.get(agent_id)
-    if step_event:
-        step_event.set()
+    step_event = _step_events.setdefault(agent_id, asyncio.Event())
+    step_event.set()
 
     return JSONResponse({"status": "continued", "pos": len(events)})
 
@@ -196,10 +194,9 @@ async def debugger_trace(agent_id: str, request: Request) -> JSONResponse:
     await _broadcast(agent_id, event)
 
     # If in step mode, wait for user to step/continue
-    step_event = _step_events.get(agent_id)
-    if step_event:
-        step_event.clear()
-        await step_event.wait()
+    step_event = _step_events.setdefault(agent_id, asyncio.Event())
+    step_event.clear()
+    await step_event.wait()
 
     return JSONResponse({"status": "recorded", "total": len(_traces[agent_id])})
 
