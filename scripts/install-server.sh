@@ -196,8 +196,30 @@ detect_and_advise_accelerators() {
         if (( nv_driver && nv_devices )); then
             log "nvidia: kernel module loaded + device nodes present (CUDA / Vulkan available)"
             if (( ! nv_userspace )); then
-                warn "nvidia-smi is not installed — VRAM size will report as unknown to the controller"
-                warn "  optional: install nvidia-utils-XXX matching your driver version"
+                # nvidia-smi provides VRAM size and capability reporting to
+                # the runtime hardware probe. Without it, VRAM reports as
+                # 'unknown' even though the GPU is fully operational (#370).
+                if command -v apt-get >/dev/null 2>&1 && apt-cache show nvidia-utils >/dev/null 2>&1; then
+                    log "installing nvidia-utils for VRAM/capability reporting"
+                    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-utils
+                elif command -v dnf >/dev/null 2>&1; then
+                    # nvidia-smi lives in rpmfusion-nonfree — only install if
+                    # the user already enabled RPM Fusion. Silently skip if
+                    # the package isn't there (no non-free repo = no NVIDIA).
+                    if dnf list nvidia-smi >/dev/null 2>&1; then
+                        log "installing nvidia-smi for VRAM/capability reporting"
+                        sudo dnf install -y -q nvidia-smi
+                    else
+                        warn "nvidia-smi not available — enable RPM Fusion nonfree for VRAM reporting"
+                        warn "  https://rpmfusion.org/Configuration"
+                    fi
+                elif command -v pacman >/dev/null 2>&1 && pacman -Si nvidia-utils >/dev/null 2>&1; then
+                    log "installing nvidia-utils for VRAM/capability reporting"
+                    sudo pacman -S --noconfirm --needed nvidia-utils
+                else
+                    warn "nvidia-smi is not installed — VRAM size will report as unknown to the controller"
+                    warn "  optional: install nvidia-utils-XXX matching your driver version"
+                fi
             fi
         elif (( nv_on_bus )); then
             warn "NVIDIA GPU detected on the PCIe bus but the kernel module is not loaded"
@@ -229,6 +251,22 @@ detect_and_advise_accelerators() {
         found_any=1
         if (( amd_rocm && amd_drm )); then
             log "amdgpu: kfd device + ROCm runtime present (HIP / Vulkan available)"
+            # rocm-smi provides VRAM size, temperature, and capability
+            # reporting for the runtime hardware probe. Without it, VRAM
+            # reports as 'unknown' even though the GPU is fully operational (#370).
+            if command -v apt-get >/dev/null 2>&1 && apt-cache show rocm-smi-lib >/dev/null 2>&1; then
+                log "installing rocm-smi-lib for VRAM/capability reporting"
+                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rocm-smi-lib
+            elif command -v dnf >/dev/null 2>&1 && dnf list rocm-smi >/dev/null 2>&1; then
+                log "installing rocm-smi for VRAM/capability reporting"
+                sudo dnf install -y -q rocm-smi
+            elif command -v pacman >/dev/null 2>&1 && pacman -Si rocm-smi-lib >/dev/null 2>&1; then
+                log "installing rocm-smi-lib for VRAM/capability reporting"
+                sudo pacman -S --noconfirm --needed rocm-smi-lib
+            else
+                warn "rocm-smi not installed — VRAM will report as unknown"
+                warn "  optional: install rocm-smi-lib (apt/pacman) or rocm-smi (dnf)"
+            fi
         elif (( amd_drm && ! amd_rocm )); then
             warn "AMD GPU detected with kfd device but ROCm is not installed"
             warn "  the controller will fall back to CPU until ROCm is set up"
