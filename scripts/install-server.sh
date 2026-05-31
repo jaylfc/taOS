@@ -395,6 +395,44 @@ install_rknpu_if_pending() {
         || warn "install-rknpu.sh failed — continuing controller install anyway"
 }
 
+# Install the RK3588 performance-mode systemd service when the NPU is
+# detected. This applies devfreq governors (performance for NPU/GPU/DMC
+# and CPU big-cluster) on every boot so rkllama runs at full throughput
+# without manual re-tuning after each power cycle (#361).
+#
+# Gated on: RKNPU_PENDING_INSTALL=1 (rkllama was just installed) AND
+# the perf service unit exists in the repo. Opt-out via TAOS_NO_RKNPU_PERF=1.
+install_rk3588_perf_if_needed() {
+    if [[ "${TAOS_NO_RKNPU_PERF:-}" == "1" || "${TAOS_NO_RKNPU_PERF:-}" == "true" ]]; then
+        log "TAOS_NO_RKNPU_PERF=1 — skipping rk3588 perf service install"
+        return 0
+    fi
+    if [[ "${RKNPU_PENDING_INSTALL:-0}" != "1" ]]; then
+        # Only install the perf service when we actually set up rkllama.
+        # If rkllama was already present, the user likely already has
+        # performance tuning configured.
+        return 0
+    fi
+    local perf_unit="scripts/systemd/taos-rk3588-perf.service"
+    if [[ ! -f "$INSTALL_DIR/$perf_unit" ]]; then
+        warn "taos-rk3588-perf.service not found in repo — skipping perf service install"
+        return 0
+    fi
+    local local_sudo=""
+    if [[ "$(id -u)" != "0" ]]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            warn "no sudo available — skipping rk3588 perf service install"
+            return 0
+        fi
+        local_sudo="sudo"
+    fi
+    log "installing /etc/systemd/system/taos-rk3588-perf.service"
+    $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
+    $local_sudo systemctl daemon-reload
+    $local_sudo systemctl enable taos-rk3588-perf.service
+    log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
+}
+
 detect_and_advise_accelerators
 
 # --- container runtime — install Incus if nothing is present -------------
@@ -711,6 +749,11 @@ cd "$INSTALL_DIR"
 # Now that the repo is on disk, run any accelerator-backend install
 # that was deferred up front (e.g. rkllama on a Rockchip NPU host).
 install_rknpu_if_pending
+
+# If we installed rkllama on an RK3588 board, also install the performance
+# mode systemd service so the NPU/devfreq governors are set on every boot.
+# Without this, rkllama throughput is ~20% of rated after a power cycle (#361).
+install_rk3588_perf_if_needed
 
 # --- python venv + controller deps ---------------------------------------
 

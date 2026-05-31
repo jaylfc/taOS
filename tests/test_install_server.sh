@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression tests for install-server.sh GPU capability tool installation.
-# Covers: NVIDIA nvidia-utils and AMD rocm-smi.
+# Covers: NVIDIA nvidia-utils, AMD rocm-smi, and RK3588 perf service.
 # NOTE: Intel Mesa Vulkan tests are in PR #508 (mesa-vulkan-drivers).
 set -euo pipefail
 SCRIPT=scripts/install-server.sh
@@ -45,5 +45,25 @@ echo "test: AMD block only runs after kfd + ROCm check"
 amd_rocm_line=$(grep -n 'amd_rocm && amd_drm' "$SCRIPT" | head -1 | cut -d: -f1)
 amd_smi_line=$(grep -n 'apt-cache show rocm-smi-lib' "$SCRIPT" | head -1 | cut -d: -f1)
 (( amd_rocm_line < amd_smi_line ))
+
+# ── RK3588 perf service ─────────────────────────────────────────────
+
+echo "test: install-server.sh references taos-rk3588-perf.service"
+grep -q "taos-rk3588-perf.service" "$SCRIPT"
+
+echo "test: perf service only installed when RKNPU_PENDING_INSTALL=1"
+grep -q "RKNPU_PENDING_INSTALL.*!=.*1" "$SCRIPT"
+
+echo "test: perf service respects TAOS_NO_RKNPU_PERF opt-out"
+grep -q "TAOS_NO_RKNPU_PERF" "$SCRIPT"
+
+echo "test: perf service calls systemctl daemon-reload + enable"
+grep -q "systemctl daemon-reload" "$SCRIPT"
+grep -q "systemctl enable taos-rk3588-perf.service" "$SCRIPT"
+
+echo "test: perf service install runs after rkllama install"
+rknpu_line=$(grep -n "install_rknpu_if_pending" "$SCRIPT" | head -1 | cut -d: -f1)
+perf_call_line=$(grep -n "install_rk3588_perf_if_needed" "$SCRIPT" | head -1 | cut -d: -f1)
+(( rknpu_line < perf_call_line ))
 
 echo "all tests passed"
