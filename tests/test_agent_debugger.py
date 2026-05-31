@@ -226,8 +226,9 @@ async def test_multiple_events_ordered(client):
     status = await client.get("/agent/test-agent/debug/status")
     assert status.json()["total_events"] == 10
 
-    # Verify ordering: data.num should match insertion order 0..9
-    events = status.json().get("events", [])
-    if events:
-        nums = [e["data"]["num"] for e in events if "num" in e.get("data", {})]
-        assert nums == list(range(len(nums))), f"events not in insertion order: {nums}"
+    # Verify ordering against the recorded trace store. The /status endpoint
+    # only returns counts (not the events), so assert against _traces directly
+    # — otherwise the ordering check is dead code that never runs.
+    from tinyagentos.routes.agent_debugger import _traces
+    nums = [e["data"]["num"] for e in _traces.get("test-agent", []) if "num" in e.get("data", {})]
+    assert nums == list(range(10)), f"events not in insertion order: {nums}"
