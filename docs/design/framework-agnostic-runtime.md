@@ -281,6 +281,63 @@ A "no" on any of these is a conversation, not necessarily a block — but it
 needs to be surfaced in the PR, not discovered a year later when the upgrade
 path breaks.
 
+## Updating the qmd fork
+
+taOS runs a fork of [tobilg/qmd](https://github.com/tobilg/qmd) at
+[jaylfc/qmd](https://github.com/jaylfc/qmd) (branch `feat/remote-llm-provider`).
+The fork adds multi-tenant serve mode, per-tenant `dbPath` routing, and
+ingest/delete-chunk endpoints.  These changes are not yet upstream.
+
+### When to rebase
+
+Rebase onto upstream when:
+- Upstream merges the outstanding PR (currently [#511](https://github.com/tobilg/qmd/pull/511))
+- A security fix or critical bug is released upstream
+- A new upstream feature is needed by taOS
+
+### How to rebase
+
+1. **Fetch upstream.**
+   ```bash
+   git remote add upstream https://github.com/tobilg/qmd.git
+   git fetch upstream main
+   ```
+
+2. **Rebase the fork onto upstream.**
+   ```bash
+   git checkout feat/remote-llm-provider
+   git rebase upstream/main
+   ```
+   Resolve conflicts.  taOS-specific changes are concentrated in:
+   `src/cli/serve.ts`, `src/cli/qmd.ts`, `src/cli/ingest.ts`,
+   and `package.json` (bin entries).
+
+3. **Test locally.**
+   ```bash
+   npm install
+   npm run build
+   npm test
+   # Smoke-test serve mode with per-tenant routing
+   node dist/cli/qmd.js serve --port 7833 --dbPath /tmp/test-qmd/index.sqlite
+   ```
+
+4. **Publish a new npm version.**
+   ```bash
+   npm version patch   # or minor, per semver
+   npm publish
+   ```
+
+5. **Update the pinned version in taOS.**
+   - Bump the version in `scripts/install-server.sh` (search for `@jaylfc/qmd@`)
+   - Update `docs/agent-qmd-serve-setup.md` with the new version
+   - Commit: `chore: bump qmd pin to <new-version>`
+
+### When upstream PR #511 merges
+
+Once tobig/qmd#511 lands, the fork should collapse back to thin PRs:
+rebase onto the new upstream main, drop any changes that were merged,
+and re-publish.  The goal is to eventually eliminate the fork.
+
 ## Related
 
 - `docs/design/architecture-pivot-v2.md` — full decision record for the

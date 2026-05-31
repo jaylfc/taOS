@@ -93,6 +93,23 @@ class ClusterManager:
                     level="info",
                 )
 
+        # Promote any archived models this worker can now run
+        try:
+            from tinyagentos.cluster.model_archive import (
+                promote_compatible_models,
+            )
+
+            await promote_compatible_models(
+                worker_hardware=info.hardware,
+                worker_name=info.name,
+                notifications=self._notifications,
+            )
+        except Exception:
+            logger.exception(
+                "model_archive: promotion scan failed for worker '%s'",
+                info.name,
+            )
+
     def kv_quant_union(self) -> list[str]:
         """Return the set-union of KV cache quant types across all online workers.
 
