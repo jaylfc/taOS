@@ -12,15 +12,16 @@ import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, slugify_agent_name
+from tinyagentos.providers import CLOUD_TYPES
 
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
 
 # Cloud provider backend types whose advertised models are routable for a
-# deploy / model-change. Mirrors providers.CLOUD_TYPES; kept local to avoid a
-# cross-route import. #351 tracks consolidating these provider-type lists.
-_CLOUD_PROVIDER_TYPES = ("openai", "anthropic", "openrouter", "kilocode", "openai-compatible")
+# deploy / model-change. Single source of truth is providers.CLOUD_TYPES
+# (#351); aliased here so the call sites below read clearly.
+_CLOUD_PROVIDER_TYPES = CLOUD_TYPES
 
 router = APIRouter()
 
