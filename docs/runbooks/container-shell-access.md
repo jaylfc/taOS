@@ -88,7 +88,7 @@ directly inside the container.
 | Interactive shell (LXC) | `incus exec taos-agent-<slug> -- bash` |
 | Single command (LXC) | `incus exec taos-agent-<slug> -- <cmd>` |
 | Single command (Docker) | `docker exec -i taos-agent-<slug> <cmd>` |
-| List agent containers (LXC) | `incus list \| grep taos-agent-` |
+| List agent containers (LXC) | `incus list --format csv --columns n \| grep '^taos-agent-'` |
 | Interactive shell (Docker) | `docker exec -it taos-agent-<slug> bash` |
 | Preferred CLI wrapper | `taos agent exec <name> -- bash` |
 
