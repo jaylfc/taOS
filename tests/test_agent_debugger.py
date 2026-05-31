@@ -3,6 +3,28 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_debugger_state():
+    """Reset module-level debugger globals around every test.
+
+    The debugger uses process-global dicts for traces, queues, positions and
+    step events. Without an explicit reset, state leaks across tests (and into
+    other test modules in a full-suite run), which can leave a connected SSE
+    queue or an unset step event behind and make a later /trace POST block.
+    """
+    from tinyagentos.routes import agent_debugger as dbg
+
+    dbg._traces.clear()
+    dbg._queues.clear()
+    dbg._positions.clear()
+    dbg._step_events.clear()
+    yield
+    dbg._traces.clear()
+    dbg._queues.clear()
+    dbg._positions.clear()
+    dbg._step_events.clear()
+
+
 @pytest.mark.asyncio
 async def test_debugger_ui_returns_html(client):
     """GET /agent/{agent_id}/debug returns an HTML page."""
@@ -141,25 +163,42 @@ async def test_separate_agents_have_separate_traces(client):
 
 @pytest.mark.asyncio
 async def test_events_endpoint_returns_sse(client):
-    """GET /agent/{agent_id}/debug/events returns SSE stream."""
-    import httpx
+    """GET /agent/{agent_id}/debug/events yields an SSE stream and terminates.
 
-    # Record an event first so there's data to stream
+    The SSE generator runs an infinite ``while True`` loop, so it cannot be
+    consumed over httpx's buffering ASGI transport without hanging. Drive the
+    handler directly with a Request that reports a client disconnect, so the
+    generator yields its initial position frame and then exits cleanly — this
+    proves frame delivery AND that the stream terminates (no leaked task).
+    """
+    import asyncio
+
+    from tinyagentos.routes.agent_debugger import debugger_events
+
+    # Record an event first so there's trace data to replay.
     await client.post(
         "/agent/test-agent/debug/trace",
         json={"type": "tool_call", "data": {"tool": "test"}},
     )
 
-    # Use streaming to avoid buffering the entire infinite SSE response
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=client._transport.app),  # type: ignore[arg-type]
-        base_url="http://test",
-    ) as ac:
-        async with ac.stream("GET", "/agent/test-agent/debug/events", timeout=2) as resp:
-            assert resp.status_code == 200
-            # Read one chunk to verify SSE frame delivery
-            chunk = await resp.aiter_raw().__anext__()
-            assert chunk, "SSE stream returned no data"
+    class _DisconnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return True
+
+    resp = await debugger_events("test-agent", _DisconnectedRequest())  # type: ignore[arg-type]
+
+    frames: list = []
+
+    async def _drain():
+        async for frame in resp.body_iterator:
+            frames.append(frame)
+
+    # Bound the drain so a regression that breaks termination fails loudly
+    # instead of hanging.
+    await asyncio.wait_for(_drain(), timeout=5)
+
+    assert frames, "SSE stream returned no data"
+    assert "position" in frames[0], frames[0]
 
 
 @pytest.mark.asyncio

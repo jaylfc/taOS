@@ -38,6 +38,11 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 _MAX_TRACE_LENGTH = 10_000  # cap per-agent trace to avoid unbounded memory growth
 
+# Max time a /trace POST will block waiting for the UI to step/continue.
+# A debugger UI that vanishes (closed tab, disconnect, never connected) must
+# NOT freeze agent trace recording forever, so the wait is always bounded.
+_STEP_WAIT_TIMEOUT = 30.0
+
 
 def _get_template(name: str) -> str:
     """Read an HTML template file, falling back to an error message."""
@@ -215,12 +220,18 @@ async def debugger_trace(agent_id: str, request: Request) -> JSONResponse:
 
     await _broadcast(agent_id, event)
 
-    # Only block for step/continue when a debugger UI is actively listening.
-    # Without a listener the agent runs free — no reason to pause.
+    # Block for step/continue only while a debugger UI is actually connected;
+    # otherwise no one can ever signal the step, so blocking would hang the
+    # agent forever. The wait is always bounded by _STEP_WAIT_TIMEOUT so a UI
+    # that disconnects mid-step can never freeze trace recording.
     if _queues.get(agent_id):
         step_event = _step_events.setdefault(agent_id, asyncio.Event())
         step_event.clear()
-        await step_event.wait()
+        try:
+            await asyncio.wait_for(step_event.wait(), timeout=_STEP_WAIT_TIMEOUT)
+        except asyncio.TimeoutError:
+            # No step/continue arrived in time — proceed rather than block.
+            pass
 
     return JSONResponse({"status": "recorded", "total": len(_traces[agent_id])})
 
