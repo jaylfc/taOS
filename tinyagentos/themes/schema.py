@@ -77,3 +77,13 @@ def validate_theme_config(cfg: dict) -> dict:
     out["effects"] = effects
     out["requires"] = sorted(requires)
     return out
+
+def theme_vocabulary() -> dict:
+    """Machine-readable vocabulary for the agent's get_theme_schema tool."""
+    return {
+        "tokens": sorted(_ALL_TOKENS),
+        "structure": {k: sorted(v) for k, v in _VARIANTS.items()},
+        "effects": sorted(_EFFECT_MODULES),
+        "safety_floor": sorted(_SAFETY_FLOOR),
+        "asset_limits": {"max_bytes": 5 * 1024 * 1024, "image": ["png", "jpg", "webp"], "font": ["woff2", "ttf"]},
+    }
