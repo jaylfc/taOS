@@ -622,6 +622,14 @@ async def install_app(request: Request):
             registry.mark_installed(manifest.id, getattr(manifest, "version", ""))
         except Exception:  # noqa: BLE001
             pass
+    # Ingest per-app agent guides if present
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    if knowledge_store is not None and getattr(manifest, "manifest_dir", None) is not None:
+        from tinyagentos.knowledge_monitor import ingest_app_guides
+        try:
+            await ingest_app_guides(manifest.id, manifest.manifest_dir, knowledge_store)
+        except Exception:
+            logger.warning("Guide ingestion failed for app %s", manifest.id)
     chain.append({"step": "model", "id": manifest.id, "status": "installed"})
     progress.finish(install_id, success=True, detail="install complete")
 
@@ -693,6 +701,14 @@ async def uninstall_app(request: Request):
     await store.remove_runtime_location(app_id)
     if registry is not None:
         registry.mark_uninstalled(app_id)
+    # Wipe per-app agent guides from the knowledge store
+    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    if knowledge_store is not None:
+        from tinyagentos.knowledge_monitor import wipe_app_guides
+        try:
+            await wipe_app_guides(knowledge_store, app_id)
+        except Exception:
+            logger.warning("Guide wipe failed for app %s", app_id)
     resp: dict = {"ok": removed, "app_id": app_id, "status": "uninstalled" if removed else "not_installed"}
     return JSONResponse(resp)
 
