@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ThemeConfig } from "@/theme/theme-config";
 import { ALLOWED_TOKENS } from "@/theme/theme-config";
+import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 
 // Wallpapers are split into (image, fallback) pairs rather than a single
 // background-shorthand so CSS media queries can control background-size
@@ -165,6 +166,39 @@ export function revertPreview() {
   if (_priorConfig) applyThemeConfig(_priorConfig);
   else revertTheme();
   _priorConfig = null;
+}
+
+// Re-apply the persisted active theme at app boot. Best-effort: any failure
+// (network, missing pref, unknown theme) leaves the default theme in place.
+export async function restoreActiveTheme(): Promise<void> {
+  try {
+    const res = await fetch("/api/preferences/themes", { credentials: "include" });
+    if (!res.ok) return;
+    const pref = (await res.json()) as { active_theme_id?: string } | null;
+    const themeId = pref?.active_theme_id;
+    if (!themeId || themeId === "default") return;
+
+    let cfg: ThemeConfig | undefined = BUILTIN_THEMES.find((t) => t.theme_id === themeId)?.config;
+    if (!cfg) {
+      const tRes = await fetch("/api/themes", { credentials: "include" });
+      if (tRes.ok) {
+        const themes = (await tRes.json()) as { theme_id: string; config: ThemeConfig }[];
+        cfg = themes.find((t) => t.theme_id === themeId)?.config;
+      }
+    }
+    if (!cfg) return;
+
+    applyThemeConfig(cfg);
+    useThemeStore.setState({
+      activeThemeId: themeId,
+      themeDefaultWallpaper: {
+        ...useThemeStore.getState().themeDefaultWallpaper,
+        ...(cfg.wallpaper ? { [themeId]: cfg.wallpaper } : {}),
+      },
+    });
+  } catch {
+    // best-effort: ignore
+  }
 }
 
 export function keepTheme(themeId: string, cfg: ThemeConfig) {

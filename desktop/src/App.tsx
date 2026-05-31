@@ -8,7 +8,7 @@ import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
 import { useIsPwa } from "@/hooks/use-is-pwa";
-import { useThemeStore } from "@/stores/theme-store";
+import { useThemeStore, restoreActiveTheme } from "@/stores/theme-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp } from "@/registry/app-registry";
@@ -154,6 +154,12 @@ export function App() {
   }, []);
 
   useSessionPersistence();
+
+  // Re-apply the persisted active theme on app boot so a reload keeps the
+  // user's chosen theme app-wide (not only when Settings is opened).
+  useEffect(() => {
+    void restoreActiveTheme();
+  }, []);
 
   // Welcome notification — shown once per install, gated on a
   // localStorage flag so reload / refresh / re-mount don't replay it.

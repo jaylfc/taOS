@@ -34,3 +34,30 @@ def test_missing_safety_floor_requirement_injected():
     cfg = _base(); cfg["requires"] = []
     out = validate_theme_config(cfg)
     assert "assistant" in out["requires"] and "launcher" in out["requires"]
+
+def test_cursor_effect_unsafe_value_rejected():
+    cfg = _base(); cfg["effects"] = [{"module": "cursor", "params": {"cursor": "url(/x.png)"}}]
+    with pytest.raises(ThemeError, match="unsafe cursor value"):
+        validate_theme_config(cfg)
+
+def test_cursor_effect_unknown_param_rejected():
+    cfg = _base(); cfg["effects"] = [{"module": "cursor", "params": {"evil": "x"}}]
+    with pytest.raises(ThemeError, match="unknown param"):
+        validate_theme_config(cfg)
+
+def test_cursor_effect_safe_value_accepted():
+    cfg = _base(); cfg["effects"] = [{"module": "cursor", "params": {"cursor": "crosshair"}}]
+    out = validate_theme_config(cfg)
+    assert out["effects"][0]["params"]["cursor"] == "crosshair"
+
+def test_css_comment_url_bypass_rejected():
+    cfg = _base(); cfg["tokens"] = {"--color-shell-bg": "url/**/(javascript:alert(1))"}
+    with pytest.raises(ThemeError, match="invalid token value"):
+        validate_theme_config(cfg)
+
+def test_css_comment_url_bypass_rejected_without_other_forbidden():
+    # Comment splits "url" from "(" so the url() rule alone must still fire
+    # even when no other forbidden token (e.g. javascript:) is present.
+    cfg = _base(); cfg["tokens"] = {"--color-shell-bg": "url/**/(/x.png)"}
+    with pytest.raises(ThemeError, match="forbidden content"):
+        validate_theme_config(cfg)

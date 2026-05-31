@@ -34,12 +34,17 @@ _VARIANTS = {
 _EFFECT_MODULES = {"crt", "scanlines", "glow", "cursor"}
 _SAFETY_FLOOR = {"assistant", "launcher"}
 
+_EFFECT_PARAMS = {"cursor": {"cursor"}, "crt": set(), "scanlines": set(), "glow": set()}
+_CURSOR_VALUES = {"crosshair", "default", "none", "pointer", "text", "move", "grab",
+                  "zoom-in", "zoom-out", "wait", "help", "not-allowed"}
+
 _FORBIDDEN = re.compile(r"(url\s*\(|expression\s*\(|javascript:|</|<script|@import|;\s*}|\\)", re.I)
 
 def _check_value(key: str, value) -> None:
     if not isinstance(value, str) or len(value) > 200:
         raise ThemeError(f"invalid token value for {key}")
-    if _FORBIDDEN.search(value):
+    normalized = re.sub(r"/\*.*?\*/", "", value, flags=re.S)
+    if _FORBIDDEN.search(normalized):
         raise ThemeError(f"invalid token value for {key}: forbidden content")
 
 def validate_theme_config(cfg: dict) -> dict:
@@ -69,6 +74,17 @@ def validate_theme_config(cfg: dict) -> dict:
     for eff in effects:
         if not isinstance(eff, dict) or eff.get("module") not in _EFFECT_MODULES:
             raise ThemeError(f"unknown effect module: {eff!r}")
+        module = eff["module"]
+        params = eff.get("params") or {}
+        if not isinstance(params, dict):
+            raise ThemeError(f"params for {module} must be an object")
+        for pk in params:
+            if pk not in _EFFECT_PARAMS.get(module, set()):
+                raise ThemeError(f"unknown param {pk!r} for effect {module}")
+        if module == "cursor":
+            cv = params.get("cursor", "crosshair")
+            if cv not in _CURSOR_VALUES:
+                raise ThemeError(f"unsafe cursor value: {cv!r}")
 
     requires = set(cfg.get("requires", []) or []) | _SAFETY_FLOOR
     out = dict(cfg)
