@@ -11,8 +11,11 @@ ADAPTER_DIR = Path(__file__).parent.parent / "adapters"
 
 # Channel-level adapters (run in-process via channel-hub connect API, not subprocesses)
 CHANNEL_ADAPTER_DIR = Path(__file__).parent / "adapters"
-_CHANNEL_ADAPTERS = {"github": CHANNEL_ADAPTER_DIR / "github.py"}
-
+_CHANNEL_ADAPTERS = {
+    "github": CHANNEL_ADAPTER_DIR / "github.py",
+    # === Discord adapter (issue #335) ===
+    "discord": CHANNEL_ADAPTER_DIR / "discord.py",
+}
 
 class AdapterManager:
     def __init__(self, router):
