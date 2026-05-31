@@ -215,7 +215,7 @@ async def container_shell_page(agent_id: str, request: Request):
 
 
 @router.post("/api/container-shell/{agent_id}/exec", response_class=HTMLResponse)
-async def container_shell_exec(agent_id: str, command: str = Form(...)):
+async def container_shell_exec(agent_id: str, command: str = Form("")):
     """Execute a command inside the agent container and return HTML fragment."""
     if not command or not command.strip():
         return HTMLResponse(
