@@ -198,8 +198,30 @@ detect_and_advise_accelerators() {
         if (( nv_driver && nv_devices )); then
             log "nvidia: kernel module loaded + device nodes present (CUDA / Vulkan available)"
             if (( ! nv_userspace )); then
-                warn "nvidia-smi is not installed — VRAM size will report as unknown to the controller"
-                warn "  optional: install nvidia-utils-XXX matching your driver version"
+                # nvidia-smi provides VRAM size and capability reporting to
+                # the runtime hardware probe. Without it, VRAM reports as
+                # 'unknown' even though the GPU is fully operational (#370).
+                if command -v apt-get >/dev/null 2>&1 && apt-cache show nvidia-utils >/dev/null 2>&1; then
+                    log "installing nvidia-utils for VRAM/capability reporting"
+                    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-utils
+                elif command -v dnf >/dev/null 2>&1; then
+                    # nvidia-smi lives in rpmfusion-nonfree — only install if
+                    # the user already enabled RPM Fusion. Silently skip if
+                    # the package isn't there (no non-free repo = no NVIDIA).
+                    if dnf list nvidia-smi >/dev/null 2>&1; then
+                        log "installing nvidia-smi for VRAM/capability reporting"
+                        sudo dnf install -y -q nvidia-smi
+                    else
+                        warn "nvidia-smi not available — enable RPM Fusion nonfree for VRAM reporting"
+                        warn "  https://rpmfusion.org/Configuration"
+                    fi
+                elif command -v pacman >/dev/null 2>&1 && pacman -Si nvidia-utils >/dev/null 2>&1; then
+                    log "installing nvidia-utils for VRAM/capability reporting"
+                    sudo pacman -S --noconfirm --needed nvidia-utils
+                else
+                    warn "nvidia-smi is not installed — VRAM size will report as unknown to the controller"
+                    warn "  optional: install nvidia-utils-XXX matching your driver version"
+                fi
             fi
         elif (( nv_on_bus )); then
             warn "NVIDIA GPU detected on the PCIe bus but the kernel module is not loaded"
@@ -231,6 +253,22 @@ detect_and_advise_accelerators() {
         found_any=1
         if (( amd_rocm && amd_drm )); then
             log "amdgpu: kfd device + ROCm runtime present (HIP / Vulkan available)"
+            # rocm-smi provides VRAM size, temperature, and capability
+            # reporting for the runtime hardware probe. Without it, VRAM
+            # reports as 'unknown' even though the GPU is fully operational (#370).
+            if command -v apt-get >/dev/null 2>&1 && apt-cache show rocm-smi-lib >/dev/null 2>&1; then
+                log "installing rocm-smi-lib for VRAM/capability reporting"
+                sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rocm-smi-lib
+            elif command -v dnf >/dev/null 2>&1 && dnf list rocm-smi >/dev/null 2>&1; then
+                log "installing rocm-smi for VRAM/capability reporting"
+                sudo dnf install -y -q rocm-smi
+            elif command -v pacman >/dev/null 2>&1 && pacman -Si rocm-smi-lib >/dev/null 2>&1; then
+                log "installing rocm-smi-lib for VRAM/capability reporting"
+                sudo pacman -S --noconfirm --needed rocm-smi-lib
+            else
+                warn "rocm-smi not installed — VRAM will report as unknown"
+                warn "  optional: install rocm-smi-lib (apt/pacman) or rocm-smi (dnf)"
+            fi
         elif (( amd_drm && ! amd_rocm )); then
             warn "AMD GPU detected with kfd device but ROCm is not installed"
             warn "  the controller will fall back to CPU until ROCm is set up"
@@ -357,6 +395,44 @@ install_rknpu_if_pending() {
     log "chaining into $rknpu_script (rkllama auto-install)"
     sudo -E bash "$rknpu_script" --yes \
         || warn "install-rknpu.sh failed — continuing controller install anyway"
+}
+
+# Install the RK3588 performance-mode systemd service when the NPU is
+# detected. This applies devfreq governors (performance for NPU/GPU/DMC
+# and CPU big-cluster) on every boot so rkllama runs at full throughput
+# without manual re-tuning after each power cycle (#361).
+#
+# Gated on: RKNPU_PENDING_INSTALL=1 (rkllama was just installed) AND
+# the perf service unit exists in the repo. Opt-out via TAOS_NO_RKNPU_PERF=1.
+install_rk3588_perf_if_needed() {
+    if [[ "${TAOS_NO_RKNPU_PERF:-}" == "1" || "${TAOS_NO_RKNPU_PERF:-}" == "true" ]]; then
+        log "TAOS_NO_RKNPU_PERF=1 — skipping rk3588 perf service install"
+        return 0
+    fi
+    if [[ "${RKNPU_PENDING_INSTALL:-0}" != "1" ]]; then
+        # Only install the perf service when we actually set up rkllama.
+        # If rkllama was already present, the user likely already has
+        # performance tuning configured.
+        return 0
+    fi
+    local perf_unit="scripts/systemd/taos-rk3588-perf.service"
+    if [[ ! -f "$INSTALL_DIR/$perf_unit" ]]; then
+        warn "taos-rk3588-perf.service not found in repo — skipping perf service install"
+        return 0
+    fi
+    local local_sudo=""
+    if [[ "$(id -u)" != "0" ]]; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            warn "no sudo available — skipping rk3588 perf service install"
+            return 0
+        fi
+        local_sudo="sudo"
+    fi
+    log "installing /etc/systemd/system/taos-rk3588-perf.service"
+    $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
+    $local_sudo systemctl daemon-reload
+    $local_sudo systemctl enable taos-rk3588-perf.service
+    log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
 }
 
 detect_and_advise_accelerators
@@ -675,6 +751,11 @@ cd "$INSTALL_DIR"
 # Now that the repo is on disk, run any accelerator-backend install
 # that was deferred up front (e.g. rkllama on a Rockchip NPU host).
 install_rknpu_if_pending
+
+# If we installed rkllama on an RK3588 board, also install the performance
+# mode systemd service so the NPU/devfreq governors are set on every boot.
+# Without this, rkllama throughput is ~20% of rated after a power cycle (#361).
+install_rk3588_perf_if_needed
 
 # --- python venv + controller deps ---------------------------------------
 
@@ -1185,6 +1266,154 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
         die "controller failed to start — check the journal above and fix before continuing"
     fi
     log "controller is up"
+fi
+
+# --- post-install hardware capability verification -----------------------
+# Probe each claimed hardware capability (vulkan / cuda / rocm / rknpu / mlx)
+# with lightweight verification commands. Claimed-but-failing capabilities
+# warn the user; verified ones log a quiet success. Failures are non-blocking
+# — the controller runs regardless — but are prominently displayed so the
+# user knows what's broken before they walk away from the install (#370).
+
+verify_hardware_capabilities() {
+    local claimed_vulkan=0 claimed_cuda=0 claimed_rocm=0 claimed_rknpu=0 claimed_mlx=0
+    local verified_ok=0 verified_warn=0
+
+    # Fetch the hardware profile from the now-running controller.
+    local hw_json
+    hw_json=$(curl -sf "http://localhost:$TAOS_PORT/api/system/hardware/refresh" 2>/dev/null || true)
+    if [[ -z "$hw_json" ]]; then
+        warn "hardware verification skipped — controller did not return a profile"
+        return 0
+    fi
+
+    # Parse claimed capabilities from the JSON response. Uses grep+sed
+    # instead of jq to avoid a dependency. The API response is a flat
+    # dataclass serialized with asdict() — simple pattern matching is
+    # sufficient.
+    if echo "$hw_json" | grep -q '"vulkan":[[:space:]]*true'; then claimed_vulkan=1; fi
+    if echo "$hw_json" | grep -q '"cuda":[[:space:]]*true'; then claimed_cuda=1; fi
+    if echo "$hw_json" | grep -q '"rocm":[[:space:]]*true'; then claimed_rocm=1; fi
+    if echo "$hw_json" | grep -q '"type":[[:space:]]*"rknpu"'; then claimed_rknpu=1; fi
+    # Apple Silicon: the profile_id starts with "arm-" and mlx capability
+    # is implicit on Apple M-series. CPU arch + macOS = MLX available.
+    if [[ "$os_name" == "Darwin" ]]; then claimed_mlx=1; fi
+
+    if (( ! claimed_vulkan && ! claimed_cuda && ! claimed_rocm && ! claimed_rknpu && ! claimed_mlx )); then
+        log "hardware: no discrete accelerator claimed — CPU-only profile, verification skipped"
+        return 0
+    fi
+
+    log "hardware: verifying claimed capabilities..."
+    log ""
+
+    # --- Vulkan ---
+    if (( claimed_vulkan )); then
+        if command -v vulkaninfo >/dev/null 2>&1; then
+            if vulkaninfo --summary 2>/dev/null | grep -q 'deviceName'; then
+                log "  ✓ vulkan: verified — vulkaninfo reports devices"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ vulkan: claimed by controller but vulkaninfo reports no devices"
+                warn "     install mesa-vulkan-drivers (Debian/Ubuntu) or vulkan-intel (Arch) and re-run"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ vulkan: claimed by controller but vulkaninfo is not installed"
+            warn "     install vulkan-tools (apt/dnf/pacman) and re-run"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- CUDA ---
+    if (( claimed_cuda )); then
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            if nvidia-smi -L 2>/dev/null | grep -qi 'GPU'; then
+                log "  ✓ cuda: verified — nvidia-smi reports GPU(s)"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ cuda: claimed by controller but nvidia-smi reports no GPUs"
+                warn "     check: nvidia-smi -L"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ cuda: claimed by controller but nvidia-smi is not installed"
+            warn "     install nvidia-utils (apt/pacman) or enable RPM Fusion for nvidia-smi (dnf)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- ROCm ---
+    if (( claimed_rocm )); then
+        if command -v rocm-smi >/dev/null 2>&1; then
+            if rocm-smi --showproductname 2>/dev/null | grep -qi 'GPU'; then
+                log "  ✓ rocm: verified — rocm-smi reports GPU(s)"
+                verified_ok=$((verified_ok + 1))
+            else
+                warn "  ✗ rocm: claimed by controller but rocm-smi reports no GPUs"
+                warn "     check: rocm-smi --showproductname"
+                verified_warn=$((verified_warn + 1))
+            fi
+        else
+            warn "  ✗ rocm: claimed by controller but rocm-smi is not installed"
+            warn "     install rocm-smi-lib (apt/pacman) or rocm-smi (dnf)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- RKNPU ---
+    if (( claimed_rknpu )); then
+        local rknpu_ok=0
+        if [[ -r /dev/rknpu ]] || [[ -r /sys/kernel/debug/rknpu/load ]]; then
+            rknpu_ok=1
+        fi
+        # Also check if rkllama is responding on :8080
+        if curl -sf --max-time 3 "http://localhost:8080/health" >/dev/null 2>&1; then
+            rknpu_ok=1
+        fi
+        if (( rknpu_ok )); then
+            log "  ✓ rknpu: verified — device node readable, rkllama responding"
+            verified_ok=$((verified_ok + 1))
+        else
+            warn "  ✗ rknpu: claimed by controller but device node not readable and rkllama not responding"
+            warn "     check: ls -l /dev/rknpu && curl http://localhost:8080/health"
+            warn "     ensure rkllama.service is running: sudo systemctl status rkllama"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    # --- MLX (Apple Silicon) ---
+    if (( claimed_mlx )); then
+        # On macOS, check that the Neural Engine / GPU is visible via system_profiler.
+        # Apple M-series always has MLX-capable hardware; we just confirm the chip is present.
+        local apple_chip
+        apple_chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")
+        if echo "$apple_chip" | grep -qi 'Apple M'; then
+            log "  ✓ mlx: verified — Apple Silicon ($apple_chip)"
+            verified_ok=$((verified_ok + 1))
+        else
+            warn "  ✗ mlx: claimed by controller but CPU is not Apple Silicon ($apple_chip)"
+            verified_warn=$((verified_warn + 1))
+        fi
+    fi
+
+    log ""
+    if (( verified_warn == 0 )); then
+        log "hardware: all claimed capabilities verified ($verified_ok/$verified_ok ok)"
+    else
+        warn "hardware: $verified_ok capability(s) verified, $verified_warn capability(s) reported with warnings"
+    fi
+}
+
+# Only run verification when we started the controller ourselves and curl
+# is available. Skip in SERVICE_MODE=skip (user manages the process) or
+# when curl wasn't installed (very minimal distros).
+if [[ "$SERVICE_MODE" != "skip" ]]; then
+    if command -v curl >/dev/null 2>&1; then
+        verify_hardware_capabilities
+    else
+        warn "curl not available — skipping hardware capability verification"
+    fi
 fi
 
 # --- success summary -----------------------------------------------------
