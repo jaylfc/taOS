@@ -161,6 +161,7 @@ class LXCBackend(ContainerBackend):
         env: dict[str, str] | None = None,
         host_uid: int | None = None,
         root_size_gib: int | None = None,
+        ports: list[tuple[int, int]] | None = None,
     ) -> dict:
         """Create and start a new LXC container.
 
@@ -178,6 +179,8 @@ class LXCBackend(ContainerBackend):
         the container can write to them.  The container is stopped, the idmap
         is applied, then it is restarted before mounts are attached.
         """
+        # LXC publishes ports via add_proxy_device, not at create time.
+        _ = ports
         code, output = await _run(
             ["incus", "launch", image, name], timeout=300,
         )

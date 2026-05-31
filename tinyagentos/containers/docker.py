@@ -133,6 +133,7 @@ class DockerBackend(ContainerBackend):
         env: dict[str, str] | None = None,
         host_uid: int | None = None,
         root_size_gib: int | None = None,
+        ports: list[tuple[int, int]] | None = None,
     ) -> dict:
         """Create and start a new container.
 
@@ -153,6 +154,8 @@ class DockerBackend(ContainerBackend):
             args += ["--cpus", str(cpu_limit)]
         for host_path, container_path in mounts or []:
             args += ["-v", f"{host_path}:{container_path}"]
+        for host_port, container_port in ports or []:
+            args += ["-p", f"{host_port}:{container_port}"]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
         args.append(image)
