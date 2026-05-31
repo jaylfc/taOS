@@ -53,8 +53,16 @@ def rewrite_html(
     *,
     base_url: str,
     proxy: Callable[[str], str],
+    charset: str = "utf-8",
 ) -> bytes:
     """Rewrite all URL-bearing references in `html_bytes` to proxied form.
+
+    `charset` is the encoding the upstream bytes are actually in (resolved
+    by the proxy from the Content-Type header / <meta charset>). We feed it
+    to the lxml parser so non-UTF-8 pages (Latin-1, windows-1252, …) decode
+    correctly. The output is always re-serialized as UTF-8 bytes, and any
+    stale `<meta charset>` is normalized to utf-8 so the iframe never
+    re-guesses the encoding.
 
     Returns the rewritten HTML as bytes. Empty input returns empty.
     """
@@ -63,8 +71,9 @@ def rewrite_html(
 
     # lxml is forgiving — even malformed HTML produces a tree. We use
     # `fromstring` rather than `parse` because we're working with bytes
-    # in memory, and we explicitly handle the encoding via the parser.
-    parser = lxml_html.HTMLParser(encoding="utf-8")
+    # in memory. The parser's `encoding` overrides any <meta charset> in
+    # the document, so we pass the charset the proxy already resolved.
+    parser = lxml_html.HTMLParser(encoding=charset or "utf-8")
     try:
         tree = lxml_html.fromstring(html_bytes, parser=parser)
     except Exception:
@@ -79,8 +88,27 @@ def rewrite_html(
     _rewrite_inline_styles(tree, base_url=base_url, proxy=proxy)
     _rewrite_style_tags(tree, base_url=base_url, proxy=proxy)
     _rewrite_meta_refresh(tree, base_url=base_url, proxy=proxy)
+    _normalize_meta_charset(tree)
 
     return lxml_html.tostring(tree, encoding="utf-8")
+
+
+def _normalize_meta_charset(tree) -> None:
+    """Rewrite any <meta charset> / <meta http-equiv content-type> to utf-8.
+
+    The body is re-serialized as UTF-8, so a leftover declaration of the
+    original charset would tell the iframe to decode UTF-8 bytes as, say,
+    Latin-1 — reintroducing mojibake even with a correct response header.
+    """
+    for meta in tree.iter("meta"):
+        if meta.get("charset") is not None:
+            meta.set("charset", "utf-8")
+            continue
+        http_equiv = (meta.get("http-equiv") or "").lower()
+        if http_equiv == "content-type":
+            content = meta.get("content") or ""
+            if "charset" in content.lower():
+                meta.set("content", "text/html; charset=utf-8")
 
 
 def _should_rewrite(url: str) -> bool:

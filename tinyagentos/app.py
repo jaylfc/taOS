@@ -1263,6 +1263,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     except ImportError:
         pass  # Lobby not present in public release
 
+    # --- Agent Debugger Routes ---
+    from tinyagentos.routes.agent_debugger import router as agent_debugger_router
+    app.include_router(agent_debugger_router)
+
     # --- Memory Management Routes ---
     from tinyagentos.routes.memory_management import router as memory_management_router
     app.include_router(memory_management_router)
@@ -1278,6 +1282,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.taosmd import router as taosmd_router
     app.include_router(taosmd_router)
+
+    from tinyagentos.routes.gh_webhook import router as gh_webhook_router
+    app.include_router(gh_webhook_router)
 
     return app
 

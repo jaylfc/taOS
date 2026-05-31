@@ -1,5 +1,6 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
+import { motion, useReducedMotion } from "motion/react";
 import { useProcessStore, type WindowState, type SnapPosition } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { getSnapBounds } from "@/hooks/use-snap-zones";
@@ -13,11 +14,19 @@ interface Props {
 }
 
 export function Window({ win, onDrag, onDragStop }: Props) {
-  const { focusWindow, closeWindow, minimizeWindow, maximizeWindow, updatePosition, updateSize, snapWindow } =
+  const { focusWindow, closeWindow, removeWindow, minimizeWindow, maximizeWindow, updatePosition, updateSize, snapWindow } =
     useProcessStore();
   const app = getApp(win.appId);
   const preSnapRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const isMobile = useIsMobile();
+  const reduceMotion = useReducedMotion();
+  // GPU drag hint: only promote the inner chrome to its own layer while the
+  // user is actively dragging/resizing. Permanent will-change bloats GPU
+  // memory (a real concern on the Pi), so we toggle it on/off.
+  const [dragging, setDragging] = useState(false);
+  // Track the previous minimized state so a restore (true→false) plays the
+  // minimize/restore curve, not the faster open curve used on first mount.
+  const wasMinimizedRef = useRef(win.minimized);
 
   // Dock is fixed at `bottom-3` (12px gap) with height 64px, plus a
   // little breathing room so the window doesn't visually collide with
@@ -57,6 +66,7 @@ export function Window({ win, onDrag, onDragStop }: Props) {
   }
 
   const handleDragStart = useCallback(() => {
+    setDragging(true);
     focusWindow(win.id);
     if (win.snapped) {
       preSnapRef.current = { ...win.position, ...win.size };
@@ -73,6 +83,7 @@ export function Window({ win, onDrag, onDragStop }: Props) {
 
   const handleDragStop = useCallback(
     (_e: unknown, d: { x: number; y: number }) => {
+      setDragging(false);
       const snap = onDragStop();
       if (snap) {
         preSnapRef.current = { x: d.x, y: d.y, w: win.size.w, h: win.size.h };
@@ -86,14 +97,36 @@ export function Window({ win, onDrag, onDragStop }: Props) {
 
   const handleResizeStop = useCallback(
     (_e: unknown, _dir: unknown, ref: HTMLElement) => {
+      setDragging(false);
       updateSize(win.id, ref.offsetWidth, ref.offsetHeight);
     },
     [updateSize, win.id],
   );
 
-  if (win.minimized) return null;
-
   const minSize = app?.minSize ?? { w: 300, h: 200 };
+
+  // Apple-grade window lifecycle animation. The motion.div is the inner
+  // chrome (Rnd remains the outer positioner — different elements, so the
+  // two transforms never conflict). State priority: closing > minimized >
+  // visible. Reduced-motion users get instant transitions.
+  const animate = win.closing
+    ? { opacity: 0, scale: 0.96, y: 0 }
+    : win.minimized
+      ? { opacity: 0, scale: 0.2, y: 220 }
+      : { opacity: 1, scale: 1, y: 0 };
+
+  // A restore is a minimized true→false transition; play the restore curve
+  // for it (and for the minimize itself), not the faster first-mount open.
+  const isRestoring = wasMinimizedRef.current && !win.minimized;
+  wasMinimizedRef.current = win.minimized;
+
+  const transition = reduceMotion
+    ? { duration: 0 }
+    : win.closing
+      ? { duration: 0.13, ease: [0.4, 0, 1, 1] as const }
+      : win.minimized || isRestoring
+        ? { duration: 0.26, ease: [0.4, 0, 0.2, 1] as const }
+        : { duration: 0.18, ease: [0.16, 1, 0.3, 1] as const };
 
   return (
     <Rnd
@@ -108,18 +141,31 @@ export function Window({ win, onDrag, onDragStop }: Props) {
       onDragStart={handleDragStart}
       onDrag={handleDrag}
       onDragStop={handleDragStop}
+      onResizeStart={() => setDragging(true)}
       onResizeStop={handleResizeStop}
       onMouseDown={() => focusWindow(win.id)}
       bounds="parent"
       onContextMenu={(e: React.MouseEvent) => e.stopPropagation()}
     >
-      <div
+      <motion.div
         className={`flex flex-col h-full rounded-[var(--spacing-window-radius)] overflow-hidden border ${
           win.focused
             ? "border-shell-border-strong shadow-[var(--shadow-window)]"
             : "border-shell-border shadow-[var(--shadow-window-unfocused)]"
         }`}
-        style={{ backgroundColor: "var(--color-shell-bg)" }}
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={animate}
+        transition={transition}
+        onAnimationComplete={() => {
+          if (win.closing) removeWindow(win.id);
+        }}
+        style={{
+          backgroundColor: "var(--color-shell-bg)",
+          transformOrigin: "center center",
+          willChange: dragging ? "transform" : "auto",
+          contain: "layout paint",
+          pointerEvents: win.minimized ? "none" : undefined,
+        }}
       >
         {/* Titlebar — macOS-style traffic lights. Icons appear inside each
             button when the user hovers anywhere on the group (matches the
@@ -198,7 +244,7 @@ export function Window({ win, onDrag, onDragStop }: Props) {
             launchNonce={win.launchNonce}
           />
         </div>
-      </div>
+      </motion.div>
     </Rnd>
   );
 }

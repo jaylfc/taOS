@@ -1,0 +1,91 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import type { InstalledService } from "@/hooks/use-installed-services";
+
+// Mockable list of installed services returned by the hook.
+let mockServices: InstalledService[] = [];
+
+vi.mock("@/hooks/use-installed-services", () => ({
+  useInstalledServices: () => mockServices,
+}));
+
+// Shortcut registry is a no-op in tests.
+vi.mock("@/hooks/use-shortcut-registry", () => ({
+  useShortcut: () => {},
+}));
+
+// Capture window-open calls so we can assert the launch URL.
+const openWindow = vi.fn(() => "wid-1");
+vi.mock("@/stores/process-store", () => ({
+  useProcessStore: () => ({ openWindow }),
+}));
+
+// Registry: getAllApps returns no core apps so the test isolates the Apps
+// section; getApp/getOrRegisterServiceApp echo a minimal manifest.
+vi.mock("@/registry/app-registry", () => ({
+  getAllApps: () => [],
+  getApp: (id: string) => ({ id, defaultSize: { w: 100, h: 100 } }),
+  getOrRegisterServiceApp: (appId: string, displayName: string) => ({
+    id: `service:${appId}`,
+    name: displayName,
+    defaultSize: { w: 1100, h: 750 },
+  }),
+}));
+
+import { Launchpad } from "../Launchpad";
+
+const searxng: InstalledService = {
+  app_id: "searxng",
+  display_name: "SearXNG",
+  icon: null,
+  url: "/apps/searxng/",
+  category: "infrastructure",
+  backend: "docker",
+  status: "running",
+};
+
+const gitea: InstalledService = {
+  app_id: "gitea-lxc",
+  display_name: "Gitea",
+  icon: "/static/app-icons/gitea.svg",
+  url: "/apps/gitea-lxc/",
+  category: "dev-tool",
+  backend: "lxc",
+  status: "running",
+};
+
+describe("Launchpad Apps section", () => {
+  beforeEach(() => {
+    mockServices = [];
+    openWindow.mockClear();
+  });
+
+  it("does not render an Apps section when no apps are installed", () => {
+    mockServices = [];
+    render(<Launchpad open onClose={() => {}} />);
+    expect(screen.queryByText("Apps")).toBeNull();
+  });
+
+  it("renders an Apps section with a shortcut per installed app/service", () => {
+    mockServices = [searxng, gitea];
+    render(<Launchpad open onClose={() => {}} />);
+
+    expect(screen.getByText("Apps")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open SearXNG" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Gitea" })).toBeTruthy();
+  });
+
+  it("opens the proxied service URL when an app shortcut is launched", () => {
+    mockServices = [searxng];
+    render(<Launchpad open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open SearXNG" }));
+
+    // ServiceAppWindow receives the proxied URL so SearXNG renders its search page.
+    expect(openWindow).toHaveBeenCalledWith(
+      "service:searxng",
+      { w: 1100, h: 750 },
+      { url: "/apps/searxng/", displayName: "SearXNG" },
+    );
+  });
+});

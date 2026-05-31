@@ -70,6 +70,12 @@ export default defineConfig({
           if (id.includes("react-grid-layout") || id.includes("react-resizable") || id.includes("react-rnd")) {
             return "vendor-layout";
           }
+          // Window lifecycle animations (motion/framer). Eagerly loaded — the
+          // Window chrome is part of the shell — but kept in its own chunk so
+          // it caches independently and doesn't churn the main bundle's hash.
+          if (id.includes("/motion/") || id.includes("/motion-dom/") || id.includes("/motion-utils/")) {
+            return "vendor-motion";
+          }
           if (id.includes("@radix-ui")) return "vendor-radix";
           // Icons live in their own chunk so the hash stays stable
           // across app code changes (good HTTP cache hits). It's ~800

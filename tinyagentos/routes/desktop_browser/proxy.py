@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -57,12 +58,55 @@ _HOP_TIMEOUT = 5.0      # seconds — per-operation (connect + read) limit per h
 _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
 
 # Headers we strip from upstream responses before returning to the client.
+# `content-type` is stripped here and re-set from `media_type` on the
+# response. This is critical: for HTML we re-serialize the upstream body
+# as UTF-8 bytes (see rewriter/injector), so carrying through the upstream
+# charset (e.g. `text/html; charset=ISO-8859-1`) would mislabel UTF-8 bytes
+# and the iframe would decode them as Latin-1 — the classic `Â©` mojibake.
 _STRIP_RESPONSE_HEADERS = frozenset({
     "set-cookie", "set-cookie2",
     "content-security-policy", "content-security-policy-report-only",
     "x-frame-options",
     "content-length", "transfer-encoding", "content-encoding",
+    "content-type",
 })
+
+# charset= token in a Content-Type header value.
+_CT_CHARSET_RE = re.compile(r"charset\s*=\s*([\"']?)([^\";,\s]+)\1", re.IGNORECASE)
+# <meta charset="..."> and <meta http-equiv="Content-Type" content="...charset=...">
+_META_CHARSET_RE = re.compile(
+    rb"""<meta[^>]+charset\s*=\s*["']?\s*([a-zA-Z0-9_\-]+)""",
+    re.IGNORECASE,
+)
+
+
+def _detect_charset(content_type: str, body: bytes) -> str:
+    """Resolve the charset of an upstream HTML response.
+
+    Precedence: Content-Type header charset, then a <meta charset> /
+    <meta http-equiv> declaration in the first chunk of the body, else
+    UTF-8. The returned label is validated against the codec registry;
+    an unknown label falls back to UTF-8.
+    """
+    label = ""
+    m = _CT_CHARSET_RE.search(content_type or "")
+    if m:
+        label = m.group(2).strip()
+    if not label:
+        # Only sniff the head of the document — meta charset must appear
+        # within the first 1024 bytes per the HTML spec.
+        mm = _META_CHARSET_RE.search(body[:2048])
+        if mm:
+            label = mm.group(1).decode("ascii", "ignore").strip()
+    if not label:
+        return "utf-8"
+    try:
+        import codecs
+
+        codecs.lookup(label)
+    except (LookupError, ValueError):
+        return "utf-8"
+    return label
 
 
 @router.get("/api/desktop/browser/proxy")
@@ -202,8 +246,10 @@ async def proxy_get(
         def _proxy_url(absolute: str) -> str:
             return f"{proxy_prefix}{quote(absolute, safe='')}"
 
+        charset = _detect_charset(content_type, response.content)
         rewritten = rewrite_html(
             response.content, base_url=str(response.url), proxy=_proxy_url,
+            charset=charset,
         )
 
         ws_scheme = "wss" if request.url.scheme == "https" else "ws"
@@ -256,7 +302,7 @@ async def proxy_get(
             content=injected,
             status_code=response.status_code,
             headers=out_headers,
-            media_type="text/html",
+            media_type="text/html; charset=utf-8",
         )
 
     # Non-HTML — pass through bytes verbatim
