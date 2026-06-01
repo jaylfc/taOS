@@ -89,3 +89,4 @@ screenshots.zip
 data/.auth_user.json
 data/browser_cookie_key.hex
 /node_modules
+/ignore
