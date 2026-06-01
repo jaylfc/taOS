@@ -91,3 +91,12 @@ data/.auth_user.json
 data/browser_cookie_key.hex
 /node_modules
 /ignore
+
+# Electron build artifacts
+electron/dist/
+electron/out/
+
+# Platform installer artifacts
+*.dmg
+*.exe
+*.msi

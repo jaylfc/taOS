@@ -1,0 +1,171 @@
+name: Build Electron installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-mac-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install Python deps
+        run: pip install -e ".[dev]"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Build SPA frontend
+        run: |
+          cd desktop
+          npm ci --silent
+          npm run build
+
+      - name: Install electron + electron-builder
+        run: |
+          cd electron
+          npm ci --silent
+
+      - name: Build DMG
+        run: |
+          cd electron
+          npx electron-builder --mac --arm64=${{ matrix.arch == 'arm64' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyAgentOS-mac-${{ matrix.arch }}
+          path: electron/dist/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-win-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install Python deps
+        run: pip install -e ".[dev]"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Build SPA frontend
+        run: |
+          cd desktop
+          npm ci --silent
+          npm run build
+        shell: bash
+
+      - name: Install electron + electron-builder
+        run: |
+          cd electron
+          npm ci --silent
+        shell: bash
+
+      - name: Build EXE + MSI
+        run: |
+          cd electron
+          npx electron-builder --win
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyAgentOS-win-exe
+          path: electron/dist/*.exe
+          if-no-files-found: error
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyAgentOS-win-msi
+          path: electron/dist/*.msi
+          if-no-files-found: warn
+
+  release:
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: TinyAgentOS-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: TinyAgentOS ${{ github.ref_name }}
+          body: |
+            ## TinyAgentOS ${{ github.ref_name }}
+
+            ### Desktop Installers
+            - **macOS**: TinyAgentOS-*.dmg (Apple Silicon + Intel)
+            - **Windows**: TinyAgentOS-*-setup.exe (NSIS installer) + TinyAgentOS-*.msi (MSI)
+
+            ### What's new
+            See the commit log for details.
+
+            ### Docker
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+          files: |
+            *.dmg
+            *.exe
+            *.msi
+          draft: false
+          prerelease: false

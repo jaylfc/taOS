@@ -1,0 +1,58 @@
+appId: com.tinyagentos.desktop
+productName: TinyAgentOS
+copyright: Copyright (c) 2026 jaylfc
+
+directories:
+  output: dist
+  buildResources: .
+
+extraResources:
+  - from: ../
+    to: .
+    filter:
+      - "tinyagentos/**"
+      - "data/**"
+      - "app-catalog/**"
+      - "static/**"
+      - "pyproject.toml"
+      - "!**/__pycache__"
+      - "!**/*.pyc"
+      - "!node_modules"
+      - "!.venv"
+      - "!.git"
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  category: public.app-category.productivity
+  icon: ../static/icon-512.png
+  hardenedRuntime: true
+  artifactName: "TinyAgentOS-${version}-mac-${arch}.${ext}"
+
+dmg:
+  title: "TinyAgentOS ${version}"
+  artifactName: "TinyAgentOS-${version}.${ext}"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: msi
+      arch:
+        - x64
+  icon: ../static/icon-512.png
+  artifactName: "TinyAgentOS-${version}-${arch}.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  artifactName: "TinyAgentOS-${version}-setup.${ext}"
+
+msi:
+  artifactName: "TinyAgentOS-${version}.${ext}"

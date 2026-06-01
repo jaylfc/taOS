@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - taos-net
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - taos-net
+
+  tinyagentos:
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    ports:
+      - "6969:6969"
+      - "6970:6970"
+    volumes:
+      - taos_data:/app/data
+      - taos_static:/app/static
+    environment:
+      TAOS_HOST: "0.0.0.0"
+      TAOS_PORT: "6969"
+      TAOS_BROWSER_PROXY_PORT: "6970"
+      TAOS_DATA_DIR: /app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - taos-net
+
+networks:
+  taos-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  ollama_data:
+  taos_data:
+  taos_static:
