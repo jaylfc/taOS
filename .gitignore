@@ -14,6 +14,7 @@ mac/launcher/.build/
 *.pem
 .superpowers/
 .worktrees/
+.opencode/
 
 # User config — never commit (contains IPs, backend URLs, agent definitions)
 data/config.yaml
