@@ -28,8 +28,8 @@ FROM python:3.12-slim
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        libtorrent-rasterbar2.0 \
-        libsqlcipher0 \
+        libtorrent-rasterbar2.0t64 \
+        libsqlcipher1 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
