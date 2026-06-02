@@ -194,3 +194,45 @@ class BrowserSessionManager:
         )
         await db.commit()
         return True
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 node placement
+# ---------------------------------------------------------------------------
+
+# Min specs for a Tier-2 browser node (the 4GB Pi must never qualify).
+TIER2_MIN_RAM_MB = 4096
+TIER2_MIN_CORES = 4
+
+
+def pick_browser_node(
+    cluster,
+    *,
+    min_ram_mb: int = TIER2_MIN_RAM_MB,
+    min_cores: int = TIER2_MIN_CORES,
+) -> str | None:
+    """Return the name of an online worker meeting Tier-2 specs, else None.
+
+    Reads WorkerInfo.hardware for ram_mb + cpu cores.  Prefers GPU-capable
+    nodes (cuda=True or vram_mb > 0), then lowest load.
+    """
+    candidates = []
+    for w in cluster.get_workers():
+        if w.status != "online":
+            continue
+        hw = w.hardware if isinstance(w.hardware, dict) else {}
+        ram = hw.get("ram_mb", 0) if isinstance(hw.get("ram_mb"), int) else 0
+        cpu = hw.get("cpu")
+        cores = cpu.get("cores", 0) if isinstance(cpu, dict) else 0
+        if ram < min_ram_mb or cores < min_cores:
+            continue
+        gpu = hw.get("gpu")
+        has_gpu = False
+        if isinstance(gpu, dict):
+            has_gpu = bool(gpu.get("cuda")) or (gpu.get("vram_mb") or 0) > 0
+        candidates.append((not has_gpu, w.load, w.name))
+
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][2]

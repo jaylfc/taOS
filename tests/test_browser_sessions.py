@@ -4,7 +4,7 @@ import pytest
 import pytest_asyncio
 from pathlib import Path
 
-from tinyagentos.browser_sessions import BrowserSessionManager
+from tinyagentos.browser_sessions import BrowserSessionManager, pick_browser_node
 
 
 @pytest_asyncio.fixture
@@ -106,3 +106,88 @@ async def test_terminate_session(mgr):
     # Unknown id returns False
     result2 = await mgr.terminate_session("does-not-exist")
     assert result2 is False
+
+
+# ---------------------------------------------------------------------------
+# pick_browser_node tests
+# ---------------------------------------------------------------------------
+
+def _hw(ram_mb: int = 8192, cores: int = 8, cuda: bool = False, vram_mb: int = 0) -> dict:
+    """Build a minimal hardware dict matching the HardwareProfile asdict shape."""
+    return {
+        "ram_mb": ram_mb,
+        "cpu": {"cores": cores},
+        "gpu": {"cuda": cuda, "vram_mb": vram_mb},
+    }
+
+
+class _FakeWorker:
+    def __init__(self, name: str, status: str, hardware: dict, load: float = 0.0) -> None:
+        self.name = name
+        self.status = status
+        self.hardware = hardware
+        self.load = load
+
+
+class _FakeCluster:
+    def __init__(self, workers: list) -> None:
+        self._workers = workers
+
+    def get_workers(self) -> list:
+        return self._workers
+
+
+class TestPickBrowserNode:
+    def test_no_workers_returns_none(self):
+        cluster = _FakeCluster([])
+        assert pick_browser_node(cluster) is None
+
+    def test_under_spec_ram_returns_none(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", _hw(ram_mb=2048, cores=8)),
+        ])
+        assert pick_browser_node(cluster) is None
+
+    def test_offline_capable_node_returns_none(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "offline", _hw(ram_mb=8192, cores=8)),
+        ])
+        assert pick_browser_node(cluster) is None
+
+    def test_single_capable_node_returned(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", _hw(ram_mb=8192, cores=8)),
+        ])
+        assert pick_browser_node(cluster) == "w1"
+
+    def test_prefers_gpu_capable_node(self):
+        cluster = _FakeCluster([
+            _FakeWorker("cpu-node", "online", _hw(ram_mb=8192, cores=8, cuda=False), load=0.1),
+            _FakeWorker("gpu-node", "online", _hw(ram_mb=8192, cores=8, cuda=True, vram_mb=8192), load=0.5),
+        ])
+        assert pick_browser_node(cluster) == "gpu-node"
+
+    def test_same_gpu_status_prefers_lower_load(self):
+        cluster = _FakeCluster([
+            _FakeWorker("heavy", "online", _hw(ram_mb=8192, cores=8), load=0.8),
+            _FakeWorker("light", "online", _hw(ram_mb=8192, cores=8), load=0.2),
+        ])
+        assert pick_browser_node(cluster) == "light"
+
+    def test_under_spec_cores_returns_none(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", _hw(ram_mb=8192, cores=2)),
+        ])
+        assert pick_browser_node(cluster) is None
+
+    def test_missing_hardware_keys_treated_as_zero(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", {}),
+        ])
+        assert pick_browser_node(cluster) is None
+
+    def test_exact_min_spec_qualifies(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", _hw(ram_mb=4096, cores=4)),
+        ])
+        assert pick_browser_node(cluster) == "w1"
