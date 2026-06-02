@@ -337,6 +337,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.agent_browsers import AgentBrowsersManager
     agent_browsers = AgentBrowsersManager(db_path=data_dir / "agent-browsers.db", mock=True)
 
+    from tinyagentos.browser_sessions import BrowserSessionManager
+    browser_sessions = BrowserSessionManager(data_dir / "browser_sessions.db")
+
     from taosmd import BrowsingHistory as BrowsingHistoryStore
     browsing_history = BrowsingHistoryStore(db_path=data_dir / "browsing-history.db")
 
@@ -385,6 +388,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await knowledge_monitor.start()
         await agent_browsers.init()
         app.state.agent_browsers = agent_browsers
+        await browser_sessions.init()
+        app.state.browser_sessions = browser_sessions
+        import secrets as _secrets
+        app.state.browser_session_signing_key = _secrets.token_bytes(32)
         await browsing_history.init()
         app.state.browsing_history = browsing_history
         await knowledge_graph.init()
@@ -871,6 +878,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await knowledge_monitor.stop()
         await knowledge_store.close()
         await agent_browsers.close()
+        await browser_sessions.close()
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
@@ -1203,6 +1211,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.agent_browsers import router as agent_browsers_router
     app.include_router(agent_browsers_router)
+
+    from tinyagentos.routes.browser_sessions import router as browser_sessions_router
+    app.include_router(browser_sessions_router)
 
     from tinyagentos.routes.reddit import router as reddit_router
     app.include_router(reddit_router)
