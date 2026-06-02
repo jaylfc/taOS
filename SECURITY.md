@@ -27,9 +27,10 @@ publicly.
 
 ## Supported versions
 
-taOS is developed on `master`, which is what running installs track. Fixes
-land on `master`; there is no separate long-term support branch. Please test
-against the latest `master` before reporting.
+Active development happens on `dev`; `master` is the stable branch that running
+installs track. Fixes are promoted from `dev` to `master` once tested; there is
+no separate long-term support branch. Please test against the latest `master`
+before reporting (or `dev` if the issue is in unreleased work).
 
 ## Scope
 
@@ -45,6 +46,10 @@ Out of scope:
 
 - Findings that require a pre-compromised host or physical access
 - Denial of service from unrealistic traffic volumes
-- Vulnerabilities in third-party dependencies that are already public and
-  have an upstream fix (open a normal dependency-bump PR instead)
 - Issues only reproducible on unsupported, modified, or end-of-life setups
+
+For a public vulnerability in a third-party dependency: if taOS is still on the
+affected version, please report it privately here first (don't open a public PR
+that signals taOS is exploitable before the bump lands) — we'll prioritise the
+upgrade. If the dependency is already patched in taOS, a normal public
+dependency-bump PR is fine.
