@@ -1,6 +1,9 @@
 """Tests for tinyagentos.worker.browser_container."""
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from tinyagentos.worker.browser_container import (
@@ -9,6 +12,7 @@ from tinyagentos.worker.browser_container import (
     NEKO_PROFILE_MOUNT,
     NEKO_SCREEN,
     BrowserContainerRunner,
+    BrowserContainerError,
     PortAllocator,
     build_neko_run_args,
 )
@@ -231,3 +235,86 @@ class TestBrowserContainerRunnerMock:
         r2 = await runner.start(session_id="sess-2", profile_volume="vol2")
         assert r1["http_port"] != r2["http_port"]
         assert r1["epr_lo"] != r2["epr_lo"]
+
+
+# ---------------------------------------------------------------------------
+# _ensure_image tests (real-mode subprocess mocking)
+# ---------------------------------------------------------------------------
+
+def _make_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+    """Return an AsyncMock simulating asyncio.subprocess.Process."""
+    proc = AsyncMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    return proc
+
+
+@pytest.mark.asyncio
+class TestEnsureImage:
+    async def test_image_present_no_pull(self):
+        """When docker image inspect succeeds, docker pull is NOT called."""
+        inspect_proc = _make_proc(returncode=0)
+
+        call_args_list = []
+
+        async def fake_exec(*args, **kwargs):
+            call_args_list.append(args)
+            return inspect_proc
+
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=False)
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await runner._ensure_image(DEFAULT_NEKO_IMAGE)
+
+        # Only the inspect call should have been made
+        assert len(call_args_list) == 1
+        assert call_args_list[0][1] == "image"  # docker image inspect ...
+
+    async def test_image_absent_triggers_pull(self):
+        """When docker image inspect fails, docker pull is invoked."""
+        inspect_proc = _make_proc(returncode=1)
+        pull_proc = _make_proc(returncode=0)
+
+        call_args_list = []
+
+        async def fake_exec(*args, **kwargs):
+            call_args_list.append(args)
+            if args[1] == "image":
+                return inspect_proc
+            return pull_proc
+
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=False)
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await runner._ensure_image(DEFAULT_NEKO_IMAGE)
+
+        commands = [a[1] for a in call_args_list]
+        assert "image" in commands
+        assert "pull" in commands
+
+    async def test_pull_failure_raises(self):
+        """When docker pull fails, BrowserContainerError is raised."""
+        inspect_proc = _make_proc(returncode=1)
+        pull_proc = _make_proc(returncode=1, stderr=b"manifest unknown")
+
+        async def fake_exec(*args, **kwargs):
+            if args[1] == "image":
+                return inspect_proc
+            return pull_proc
+
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=False)
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(BrowserContainerError, match="docker pull"):
+                await runner._ensure_image(DEFAULT_NEKO_IMAGE)
+
+    async def test_mock_mode_skips_ensure_image(self):
+        """In mock=True mode _ensure_image returns immediately without subprocess calls."""
+        called = []
+
+        async def fake_exec(*args, **kwargs):
+            called.append(args)
+            return _make_proc(returncode=0)
+
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=True)
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await runner._ensure_image(DEFAULT_NEKO_IMAGE)
+
+        assert called == []

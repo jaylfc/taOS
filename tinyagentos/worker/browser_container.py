@@ -121,6 +121,29 @@ class BrowserContainerRunner:
         self.gpu = gpu
         self._allocator = allocator or PortAllocator()
 
+    async def _ensure_image(self, image: str) -> None:
+        """Pull ``image`` if it is not already present locally."""
+        if self.mock:
+            return
+        inspect_proc = await asyncio.create_subprocess_exec(
+            "docker", "image", "inspect", image,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await inspect_proc.communicate()
+        if inspect_proc.returncode == 0:
+            return
+        logger.info("pulling Neko image %s", image)
+        pull_proc = await asyncio.create_subprocess_exec(
+            "docker", "pull", image,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await pull_proc.communicate()
+        if pull_proc.returncode != 0:
+            detail = stderr.decode().strip()
+            raise BrowserContainerError(f"docker pull {image} failed: {detail}")
+
     async def start(self, *, session_id: str, profile_volume: str) -> dict:
         """Start a Neko container and return connection details.
 
@@ -143,6 +166,8 @@ class BrowserContainerRunner:
         if self.mock:
             container_id = f"mock-neko-{session_id[:8]}"
         else:
+            image = DEFAULT_NEKO_GPU_IMAGE if self.gpu else DEFAULT_NEKO_IMAGE
+            await self._ensure_image(image)
             argv = build_neko_run_args(
                 container_name=container_name,
                 profile_volume=profile_volume,
@@ -153,6 +178,7 @@ class BrowserContainerRunner:
                 user_pwd=user_pwd,
                 admin_pwd=admin_pwd,
                 gpu=self.gpu,
+                image=image,
             )
             try:
                 proc = await asyncio.create_subprocess_exec(
