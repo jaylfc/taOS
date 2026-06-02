@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from tinyagentos.browser_sessions import BrowserSessionManager
+from tinyagentos.browser_sessions import BrowserSessionManager, BrowserWorkerError
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +23,7 @@ class _StubWorker:
     hardware: dict = field(default_factory=dict)
     load: float = 0.0
     capabilities: list[str] = field(default_factory=lambda: ["browser"])
+    url: str = "http://worker.example:7080"
 
 
 class _StubCluster:
@@ -30,6 +32,12 @@ class _StubCluster:
 
     def get_workers(self) -> list[_StubWorker]:
         return self._workers
+
+    def get_worker(self, name: str) -> _StubWorker | None:
+        for w in self._workers:
+            if w.name == name:
+                return w
+        return None
 
 
 def _capable_worker() -> _StubWorker:
@@ -47,6 +55,19 @@ def _no_cluster() -> _StubCluster:
 
 def _capable_cluster() -> _StubCluster:
     return _StubCluster(workers=[_capable_worker()])
+
+
+def _make_mock_httpx_client(status_code: int, json_body: dict):
+    """Return a patched httpx.AsyncClient context manager returning a stub response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body
+    resp.text = str(json_body)
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=resp)
+    return mock_client
 
 
 # ---------------------------------------------------------------------------
@@ -125,15 +146,62 @@ async def test_post_session_unauthenticated(app, tmp_path):
     await app.state.browser_sessions.close()
 
 
+_WORKER_START_BODY = {
+    "container_id": "ctr-test-01",
+    "neko_url": "http://10.0.0.5:8800/?usr=neko&pwd=testpwd",
+    "cdp_url": None,
+    "http_port": 8800,
+    "epr_lo": 59000,
+    "epr_hi": 59009,
+}
+
+
 @pytest.mark.asyncio
 async def test_post_session_capable_node_returns_201(client):
-    """Authed POST with a capable node returns 201 and a pending session."""
-    resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
+    """Authed POST with a capable node returns 201 and a running session."""
+    mock_client = _make_mock_httpx_client(200, _WORKER_START_BODY)
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
     assert resp.status_code == 201
     body = resp.json()
-    assert body["status"] == "pending"
+    assert body["status"] == "running"
     assert body["url"] == "https://example.com"
+    assert body["container_id"] == "ctr-test-01"
     assert "id" in body
+
+
+@pytest.mark.asyncio
+async def test_post_session_worker_start_failure_returns_502(client):
+    """When start_on_worker raises BrowserWorkerError the route returns 502."""
+    mock_client = _make_mock_httpx_client(500, {"error": "docker failed"})
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
+    assert resp.status_code == 502
+    assert resp.json()["error"] == "worker_start_failed"
+
+
+@pytest.mark.asyncio
+async def test_post_session_specific_node_returns_201(client):
+    """Authed POST with explicit node= returns 201 when node is capable."""
+    mock_client = _make_mock_httpx_client(200, _WORKER_START_BODY)
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post(
+            "/api/browser/sessions",
+            json={"url": "https://example.com", "node": "node-1"},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_post_session_specific_unknown_node_returns_409(client):
+    """Authed POST with explicit node that is not capable returns 409."""
+    resp = await client.post(
+        "/api/browser/sessions",
+        json={"url": "https://example.com", "node": "nonexistent-node"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "no_capable_node"
 
 
 @pytest.mark.asyncio
@@ -150,9 +218,11 @@ async def test_post_session_no_capable_node_returns_409(client_no_node):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_get_own_pending_session_no_stream_token(client):
-    """GET own pending session returns 200 with no stream_token."""
-    create_resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
+async def test_get_own_running_session_has_stream_token(client):
+    """GET own running session returns 200 with a stream_token."""
+    mock_client = _make_mock_httpx_client(200, _WORKER_START_BODY)
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        create_resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
     assert create_resp.status_code == 201
     session_id = create_resp.json()["id"]
 
@@ -160,8 +230,8 @@ async def test_get_own_pending_session_no_stream_token(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == session_id
-    assert body["status"] == "pending"
-    assert "stream_token" not in body
+    assert body["status"] == "running"
+    assert "stream_token" in body
 
 
 @pytest.mark.asyncio
@@ -208,12 +278,63 @@ async def test_get_other_users_session_returns_404(app, tmp_path):
 
 @pytest.mark.asyncio
 async def test_terminate_own_session_returns_ok(client):
-    """Terminate own session returns {ok: true}."""
-    create_resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
+    """Terminate own running session calls stop_on_worker and returns {ok: true}."""
+    start_mock = _make_mock_httpx_client(200, _WORKER_START_BODY)
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=start_mock):
+        create_resp = await client.post("/api/browser/sessions", json={"url": "https://example.com"})
     assert create_resp.status_code == 201
     session_id = create_resp.json()["id"]
 
-    resp = await client.post(f"/api/browser/sessions/{session_id}/terminate")
+    stop_mock = _make_mock_httpx_client(200, {"ok": True})
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=stop_mock):
+        resp = await client.post(f"/api/browser/sessions/{session_id}/terminate")
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
+    # Verify stop was called
+    stop_mock.post.assert_awaited_once()
+    call_kwargs = stop_mock.post.call_args
+    assert "/worker/browser/stop" in call_kwargs.args[0]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/browser/nodes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_browser_nodes_unauthenticated(app, tmp_path):
+    """Unauthenticated GET /api/browser/nodes must return 401."""
+    app.state.browser_sessions = BrowserSessionManager(tmp_path / "bs_nodes.db", mock=True)
+    await app.state.browser_sessions.init()
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _capable_cluster()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/api/browser/nodes")
+    assert resp.status_code == 401
+    await app.state.browser_sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_get_browser_nodes_returns_capable_nodes(client):
+    """GET /api/browser/nodes returns the list of capable nodes."""
+    resp = await client.get("/api/browser/nodes")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "nodes" in body
+    assert len(body["nodes"]) == 1
+    node = body["nodes"][0]
+    assert node["name"] == "node-1"
+    assert "gpu" in node
+    assert "ram_mb" in node
+    assert "cores" in node
+    assert "load" in node
+
+
+@pytest.mark.asyncio
+async def test_get_browser_nodes_empty_when_no_capable_workers(client_no_node):
+    """GET /api/browser/nodes returns empty list when no capable workers."""
+    resp = await client_no_node.get("/api/browser/nodes")
+    assert resp.status_code == 200
+    assert resp.json() == {"nodes": []}
