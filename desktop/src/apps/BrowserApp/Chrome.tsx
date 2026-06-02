@@ -19,6 +19,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { AgentPickerPopover } from "./AgentPickerPopover";
 import { AgentPresencePill } from "./AgentPresencePill";
 import { CoPilotBanner } from "./CoPilotBanner";
+import { EscalateButton } from "./EscalateButton";
 
 interface ChromeProps {
   windowId: string;
@@ -128,6 +129,11 @@ export function Chrome({ windowId }: ChromeProps) {
       >
         <RotateCw size={16} />
       </button>
+
+      {/* Escalate to full browser (Neko session) */}
+      <div className="relative flex items-center">
+        <EscalateButton tabUrl={activeTab.url} />
+      </div>
 
       {/* Spacer pushes the profile chip to the right */}
       <div className="flex-1" />
