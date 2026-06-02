@@ -51,9 +51,14 @@ The app catalog is one of the easiest ways to contribute. See [Adding an App to 
 2. Create a branch: `git checkout -b feat/my-feature`
 3. Make your changes and add tests
 4. Run `pytest tests/ -v` — all tests must pass
-5. Open a pull request against `main`
+5. Open a pull request against **`dev`**, not `master`
 
 Keep pull requests focused. One feature or fix per PR is easier to review.
+
+> **Branches:** `master` is the stable branch that installs track, so it only
+> receives tested changes promoted from `dev`. All contributions target `dev`.
+> If you open a PR against `master` by mistake, no problem — we'll retarget it
+> to `dev` (the commits and review carry over).
 
 ### Documentation
 
