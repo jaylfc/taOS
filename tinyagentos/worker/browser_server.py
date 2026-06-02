@@ -49,7 +49,7 @@ def create_browser_worker_app(
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     @app.post("/worker/browser/start")
-    async def start_session(body: _StartRequest, request: Request) -> dict:
+    async def start_session(body: _StartRequest, request: Request):
         _check_auth(request)
         try:
             result = await runner.start(

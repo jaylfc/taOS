@@ -42,7 +42,7 @@ def build_neko_run_args(
         image = DEFAULT_NEKO_GPU_IMAGE if gpu else DEFAULT_NEKO_IMAGE
 
     args = [
-        "docker", "run", "-d",
+        "docker", "run", "-d", "--rm",
         "--name", container_name,
         "-p", f"{http_port}:8080",
         "-p", f"{epr_lo}-{epr_hi}:{epr_lo}-{epr_hi}/udp",
@@ -128,7 +128,9 @@ class BrowserContainerRunner:
         http_port, epr_lo, epr_hi.
         """
         http_port, epr_lo, epr_hi = self._allocator.allocate()
-        container_name = f"taos-neko-{session_id[:12]}"
+        # Full session_id (a uuid hex) — avoids name collisions from a
+        # truncated prefix; Docker accepts the length.
+        container_name = f"taos-neko-{session_id}"
         user_pwd = secrets.token_urlsafe(16)
         admin_pwd = secrets.token_urlsafe(16)
 

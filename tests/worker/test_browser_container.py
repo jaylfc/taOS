@@ -37,6 +37,11 @@ class TestBuildNekoRunArgs:
         args = build_neko_run_args(**self._base_kwargs())
         assert args[:3] == ["docker", "run", "-d"]
 
+    def test_uses_rm_for_auto_cleanup(self):
+        # --rm so stopped containers don't accumulate / block name reuse.
+        args = build_neko_run_args(**self._base_kwargs())
+        assert "--rm" in args
+
     def test_container_name(self):
         args = build_neko_run_args(**self._base_kwargs())
         idx = args.index("--name")
