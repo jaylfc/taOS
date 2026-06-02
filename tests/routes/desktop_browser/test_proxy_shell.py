@@ -120,3 +120,33 @@ class TestNotImplementedStub:
                 params={"profile_id": "personal", "url": "http://example.com/"},
             )
         assert resp.status_code != 501
+
+
+class TestStripPort:
+    """_strip_port must drop the port without mangling IPv6 literals."""
+
+    def test_host_with_port(self):
+        from tinyagentos.routes.desktop_browser.proxy import _strip_port
+
+        assert _strip_port("example.com:6969") == "example.com"
+
+    def test_host_without_port(self):
+        from tinyagentos.routes.desktop_browser.proxy import _strip_port
+
+        assert _strip_port("example.com") == "example.com"
+
+    def test_ipv6_with_port(self):
+        from tinyagentos.routes.desktop_browser.proxy import _strip_port
+
+        assert _strip_port("[2001:db8::1]:443") == "[2001:db8::1]"
+
+    def test_ipv6_without_port_not_mangled(self):
+        from tinyagentos.routes.desktop_browser.proxy import _strip_port
+
+        # A naive rsplit(":", 1) would return "[::1" here.
+        assert _strip_port("[::1]") == "[::1]"
+
+    def test_empty(self):
+        from tinyagentos.routes.desktop_browser.proxy import _strip_port
+
+        assert _strip_port("") == ""
