@@ -5,7 +5,7 @@ import pytest
 import httpx
 from httpx import ASGITransport
 
-from tinyagentos.worker.browser_container import BrowserContainerRunner
+from tinyagentos.worker.browser_container import BrowserContainerError, BrowserContainerRunner
 from tinyagentos.worker.browser_server import create_browser_worker_app
 
 
@@ -90,6 +90,25 @@ class TestBrowserServerNoAuth:
                 json={"container_id": data["container_id"], "http_port": data["http_port"]},
             )
         assert resp.json() == {"ok": True}
+
+    async def test_start_container_error_is_500(self):
+        """A BrowserContainerError from the runner surfaces as HTTP 500."""
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=True)
+
+        async def _boom(*args, **kwargs):
+            raise BrowserContainerError("docker run failed (rc=1): boom")
+
+        runner.start = _boom  # type: ignore[method-assign]
+        app = create_browser_worker_app(runner)
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            resp = await client.post(
+                "/worker/browser/start",
+                json={"session_id": "sess-err", "profile_volume": "vol1"},
+            )
+        assert resp.status_code == 500
+        assert "error" in resp.json()
 
 
 # ---------------------------------------------------------------------------

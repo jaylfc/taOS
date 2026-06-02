@@ -9,6 +9,7 @@ Chromium containers on a capable cluster node.
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.worker.browser_container import BrowserContainerError, BrowserContainerRunner
@@ -57,7 +58,7 @@ def create_browser_worker_app(
             )
         except BrowserContainerError as exc:
             logger.warning("start_session failed: %s", exc)
-            raise HTTPException(status_code=500, detail=str(exc))
+            return JSONResponse(status_code=500, content={"error": str(exc)})
         return result
 
     @app.post("/worker/browser/stop")

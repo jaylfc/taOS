@@ -161,8 +161,13 @@ class BrowserContainerRunner:
                 stdout, stderr = await proc.communicate()
                 if proc.returncode != 0:
                     self._allocator.release(http_port)
+                    detail = stderr.decode().strip()
+                    logger.warning(
+                        "docker run failed for session %s (rc=%s): %s",
+                        session_id, proc.returncode, detail,
+                    )
                     raise BrowserContainerError(
-                        f"docker run failed (rc={proc.returncode}): {stderr.decode().strip()}"
+                        f"docker run failed (rc={proc.returncode}): {detail}"
                     )
                 container_id = stdout.decode().strip()
             except BrowserContainerError:

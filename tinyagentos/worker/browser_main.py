@@ -9,7 +9,7 @@ Usage::
 
     python -m tinyagentos.worker.browser_main \\
         --controller http://taos.local:6969 \\
-        --node-ip 192.168.1.10 \\
+        --node-ip 10.0.0.5 \\
         [--name my-browser-node] \\
         [--http-api-port 7080] \\
         [--gpu] \\

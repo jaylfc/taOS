@@ -183,3 +183,45 @@ class TestRegisterWithBrowserCaps:
         assert "browser" in caps
         assert "llm-chat" in caps
         assert "embedding" in caps
+
+    async def test_heartbeat_includes_browser_capability(self):
+        """heartbeat() unions extra_capabilities into the posted caps too."""
+        agent = WorkerAgent(
+            "http://controller:6969",
+            name="browser-node",
+            extra_capabilities=["browser"],
+            advertise_url="http://10.0.0.5:7080",
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        captured: list[dict] = []
+
+        async def _mock_post(url, json=None, **kwargs):
+            if json is not None:
+                captured.append(json)
+            return mock_response
+
+        snap = {
+            "storage_cap_bytes": 0,
+            "storage_used_bytes": 0,
+            "bytes_deduped_total": 0,
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(side_effect=_mock_post)
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                with patch(
+                    "tinyagentos.cluster.worker_capacity.capacity_snapshot",
+                    return_value=snap,
+                ):
+                    status = await agent.heartbeat()
+
+        assert status == 200
+        assert len(captured) == 1
+        assert "browser" in captured[0]["capabilities"]
