@@ -150,3 +150,33 @@ class TestStripPort:
         from tinyagentos.routes.desktop_browser.proxy import _strip_port
 
         assert _strip_port("") == ""
+
+
+class TestRequestScheme:
+    """_request_scheme honours x-forwarded-proto and clamps to http/https."""
+
+    @staticmethod
+    def _req(*, xff=None, scheme="http"):
+        from types import SimpleNamespace
+        headers = {"x-forwarded-proto": xff} if xff is not None else {}
+        return SimpleNamespace(headers=headers, url=SimpleNamespace(scheme=scheme))
+
+    def test_plain_http(self):
+        from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(scheme="http")) == "http"
+
+    def test_direct_https(self):
+        from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(scheme="https")) == "https"
+
+    def test_forwarded_proto_https_wins_over_http_url(self):
+        from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(xff="https", scheme="http")) == "https"
+
+    def test_forwarded_proto_comma_list_takes_first(self):
+        from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(xff="https, http", scheme="http")) == "https"
+
+    def test_bogus_forwarded_proto_clamped_to_http(self):
+        from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(xff="javascript", scheme="http")) == "http"

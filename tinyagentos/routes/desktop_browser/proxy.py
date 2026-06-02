@@ -302,7 +302,10 @@ async def proxy_get(
             charset=charset,
         )
 
-        ws_scheme = "wss" if request.url.scheme == "https" else "ws"
+        # Use the effective scheme (honours x-forwarded-proto behind a TLS
+        # terminator), matching the CSP below — otherwise a reverse-proxied
+        # HTTPS deploy injects ws:// and the copilot socket fails.
+        ws_scheme = "wss" if _request_scheme(request) == "https" else "ws"
         ws_url = (
             f"{ws_scheme}://{request.url.netloc}/api/desktop/browser/copilot"
             f"?profile_id={quote(profile_id, safe='')}"
