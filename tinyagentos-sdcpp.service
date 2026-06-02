@@ -5,18 +5,18 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=jay
-WorkingDirectory=/home/jay/tinyagentos
+User=TAOS_USER
+WorkingDirectory=TAOS_INSTALL_DIR
 
 # sd-server binary from leejet/stable-diffusion.cpp build.
 # Model path is passed via environment so it can be changed without
 # editing this unit.
-Environment=SDCPP_MODEL=/home/jay/tinyagentos/data/models/dreamshaper-8-lcm-iq4_nl-gguf.gguf
+Environment=SDCPP_MODEL=TAOS_INSTALL_DIR/data/models/dreamshaper-8-lcm-iq4_nl-gguf.gguf
 Environment=SDCPP_HOST=127.0.0.1
 Environment=SDCPP_PORT=7864
 Environment=SDCPP_THREADS=6
 
-ExecStart=/home/jay/.local/bin/sd-server \
+ExecStart=/home/TAOS_USER/.local/bin/sd-server \
   --listen-ip ${SDCPP_HOST} \
   --listen-port ${SDCPP_PORT} \
   -m ${SDCPP_MODEL} \
@@ -24,7 +24,7 @@ ExecStart=/home/jay/.local/bin/sd-server \
 
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/jay/tinyagentos/data/sd-server.log
+StandardOutput=append:TAOS_INSTALL_DIR/data/sd-server.log
 StandardError=inherit
 
 # Runtime hygiene: cap memory and dump core only on serious faults

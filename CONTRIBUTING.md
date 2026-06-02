@@ -193,7 +193,7 @@ Run a specific test file:
 pytest tests/test_catalog_sync.py -v
 ```
 
-The project has 959 tests. CI runs against Python 3.10, 3.11, 3.12, and 3.13 via GitHub Actions on every pull request. A PR cannot be merged until all four matrix jobs pass.
+The project has ~3,590 tests. CI runs against Python 3.12 and 3.13 on every pull request (two matrix jobs). Python 3.11 is added on the nightly scheduled run. A PR cannot be merged until all matrix jobs pass.
 
 When adding a feature, add tests that cover the new behaviour. When fixing a bug, add a regression test.
 
@@ -205,15 +205,15 @@ When adding a feature, add tests that cover the new behaviour. When fixing a bug
 tinyagentos/
   app.py               # FastAPI application factory, lifespan, route registration
   config.py            # Platform config, hardware detection
-  routes/              # One module per feature area (26 route modules)
-  templates/           # Jinja2 + htmx HTML templates (44 templates)
+  routes/              # One module per feature area (77 route modules)
+  templates/           # Minimal: only agent_debugger.html remains (frontend is a React SPA)
   channel_hub/         # Framework-agnostic messaging (6 connectors + message router)
-  adapters/            # Framework adapters (17 adapters, ~25 lines each)
+  adapters/            # Framework adapters (15 adapters, ~25 lines each)
   cluster/             # Distributed compute (worker registration, task routing, optimiser)
   worker/              # Cross-platform worker apps (system tray, Android, iOS)
   stores/              # Data access layer (SQLite via aiosqlite)
-app-catalog/           # YAML manifests for installable apps (87 apps)
-tests/                 # pytest test suite (858 tests)
+app-catalog/           # YAML manifests for installable apps (108 apps)
+tests/                 # pytest test suite (~3,590 tests)
 ```
 
 Routes are registered in `app.py`. Each route module imports its own store. Templates use htmx for partial page updates — full-page navigations are rare.
