@@ -7,4 +7,8 @@
 # service in `deactivating` with the port dead for minutes — which also makes the
 # in-app Update appear to fail, since it restarts the service. Draining must be
 # best-effort and quick; anything slower belongs in an async background task.
-curl -fsS -X POST --max-time 25 http://localhost:6969/api/system/prepare-shutdown || true
+#
+# Honour the configured controller port: systemd passes TAOS_PORT into this
+# hook's environment (see install-server.sh), so a custom-port install drains
+# the right origin instead of a hardcoded 6969 that would silently no-op.
+curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown" || true
