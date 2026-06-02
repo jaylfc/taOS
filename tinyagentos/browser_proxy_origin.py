@@ -113,6 +113,10 @@ _SHARED_STATE_ALLOWLIST: frozenset[str] = frozenset({
     "browser_proxy_signing_key",
     "browser_store",
     "copilot_hub",
+    # Ports (non-sensitive) so the proxy fetch can build a frame-ancestors
+    # CSP that lets the shell origin (main port) embed this proxy origin.
+    "main_port",
+    "browser_proxy_port",
 })
 
 

@@ -30,7 +30,10 @@ ExecStartPre=/bin/sh -c '\
     echo "[taos] desktop source newer than bundle — rebuilding..." && \
     cd desktop && npm install --silent && npm run build; \
   fi'
-ExecStart=TAOS_PYTHON -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port TAOS_PORT
+# Launch via the module entrypoint (not uvicorn directly) so the dual-port
+# browser-proxy origin starts. __main__.main() reads TAOS_HOST/TAOS_PORT and
+# TAOS_BROWSER_PROXY_PORT from the Environment block injected by install-server.sh.
+ExecStart=TAOS_PYTHON -m tinyagentos
 ExecStop=TAOS_STOP_SCRIPT
 # Reload sends SIGHUP to the main process, causing uvicorn to re-exec in-place.
 # Used by the in-app "Restart Server" button when systemctl restart requires auth.

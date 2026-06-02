@@ -109,6 +109,29 @@ def _detect_charset(content_type: str, body: bytes) -> str:
     return label
 
 
+def _shell_origin(request: Request) -> str | None:
+    """Origin of the taOS shell that frames this proxied page.
+
+    The shell runs on the main port; the proxy serves from a separate
+    origin (the proxy port). For the iframe to load, the proxied page's
+    ``frame-ancestors`` must name the shell origin (same host, main port).
+
+    Returns ``scheme://host:main_port`` derived from the request host, or
+    ``None`` in single-port mode (proxy served from the main origin, where
+    ``frame-ancestors 'self'`` already covers it).
+    """
+    state = request.app.state
+    main_port = getattr(state, "main_port", None)
+    proxy_port = getattr(state, "browser_proxy_port", 0)
+    if not main_port or main_port == proxy_port:
+        return None
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0]
+    if not host:
+        return None
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+    return f"{scheme}://{host}:{main_port}"
+
+
 @router.get("/api/desktop/browser/proxy")
 async def proxy_get(
     profile_id: str,
@@ -302,7 +325,7 @@ async def proxy_get(
                 )
             )
 
-        out_headers["content-security-policy"] = proxied_response_csp()
+        out_headers["content-security-policy"] = proxied_response_csp(_shell_origin(request))
         return Response(
             content=injected,
             status_code=response.status_code,

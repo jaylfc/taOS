@@ -1119,8 +1119,10 @@ install_linux_systemd_system() {
         -e "s|TAOS_STOP_SCRIPT|/usr/local/bin/taos-graceful-stop|g" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
         | $sudo_cmd tee "$unit" > /dev/null
-    # Inject TAOS_BROWSER_PROXY_PORT into the unit's Environment block.
-    $sudo_cmd sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
+    # Inject bind host/port + proxy port into the unit's Environment block.
+    # ExecStart now runs `python -m tinyagentos`, which reads these (rather
+    # than uvicorn CLI args), so the dual-port browser-proxy origin starts.
+    $sudo_cmd sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
     log "installed $unit (system unit, runs as $USER)"
 
     # Install pre-shutdown hook
@@ -1162,8 +1164,10 @@ install_linux_systemd_user() {
         -e "/ExecStartPre/,/|| true'$/d" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
         > "$unit"
-    # Inject TAOS_BROWSER_PROXY_PORT into the unit's Environment block.
-    sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
+    # Inject bind host/port + proxy port into the unit's Environment block.
+    # ExecStart now runs `python -m tinyagentos`, which reads these (rather
+    # than uvicorn CLI args), so the dual-port browser-proxy origin starts.
+    sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
     log "installed $unit (user unit fallback — sudo unavailable)"
 
     # Make the user manager start on boot without an active login. Must

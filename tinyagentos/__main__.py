@@ -43,6 +43,12 @@ def main() -> None:
 
     app = create_app(data_dir=data_dir)
 
+    # Record the main origin port so the browser proxy can build a
+    # frame-ancestors CSP that lets the shell (main port) embed the
+    # proxy origin (proxy port). See proxy._shell_origin.
+    if hasattr(app, "state"):
+        app.state.main_port = port
+
     if not proxy_port or proxy_port == port:
         # Single-port fallback: the browser proxy stays on the main origin
         # (as it has historically). No separate-origin / SW isolation, but

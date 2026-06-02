@@ -100,3 +100,29 @@ class TestProxiedResponseCsp:
         csp = proxied_response_csp()
         assert not csp.endswith("; ")
         assert not csp.endswith(";")
+
+    @staticmethod
+    def _frame_ancestors(csp: str) -> str:
+        for d in csp.split(";"):
+            d = d.strip()
+            if d.startswith("frame-ancestors"):
+                return d
+        return ""
+
+    def test_frame_ancestors_self_only_without_shell_origin(self):
+        """Single-port fallback (proxy on the main origin): 'self' alone."""
+        from tinyagentos.routes.desktop_browser.csp import proxied_response_csp
+
+        csp = proxied_response_csp()
+        assert self._frame_ancestors(csp) == "frame-ancestors 'self'"
+
+    def test_frame_ancestors_includes_shell_origin_when_given(self):
+        """Dual-origin: the shell (main port) must be allowed to embed the
+        proxy origin, else the iframe is blocked by frame-ancestors."""
+        from tinyagentos.routes.desktop_browser.csp import proxied_response_csp
+
+        csp = proxied_response_csp("http://taos.example:6969")
+        assert (
+            self._frame_ancestors(csp)
+            == "frame-ancestors 'self' http://taos.example:6969"
+        )
