@@ -16,7 +16,7 @@ Environment=SDCPP_HOST=127.0.0.1
 Environment=SDCPP_PORT=7864
 Environment=SDCPP_THREADS=6
 
-ExecStart=/home/TAOS_USER/.local/bin/sd-server \
+ExecStart=TAOS_HOME/.local/bin/sd-server \
   --listen-ip ${SDCPP_HOST} \
   --listen-port ${SDCPP_PORT} \
   -m ${SDCPP_MODEL} \

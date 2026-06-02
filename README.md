@@ -88,7 +88,7 @@ TinyAgentOS ships with a full browser-based desktop environment. Open it at `htt
 The Activity app includes a Cluster overview panel showing live worker status and resource stats alongside the process monitor. The Model Browser surfaces cloud models (from configured providers) alongside local catalog models, with a provider badge per entry. The deploy wizard accepts cloud models as inference targets.
 
 <p align="center">
-  <img src="docs/images/desktop-store.png" alt="App store — 108 catalog apps, 15 agent frameworks, hardware-filtered" width="100%">
+  <img src="docs/images/desktop-store.png" alt="App store — 108 catalog apps, 16 agent frameworks, hardware-filtered" width="100%">
 </p>
 
 <p align="center"><sub>The Store — agent frameworks, models, plugins, services. One-click install, hardware-filtered.</sub></p>

@@ -14,8 +14,8 @@ WorkingDirectory=TAOS_INSTALL_DIR
 # Default backend: ez_rknn_async (tp_mode=all on unet/vae_decoder).
 # To revert to rknn-toolkit-lite2 / darkbit1001's rknnlcm.py, add:
 #   Environment=RKNN_SD_LEGACY_WRAPPER=1
-Environment=RKNN_SD_MODEL_DIR=/home/TAOS_USER/.local/share/tinyagentos/rknn-sd/model
-Environment=RKNN_SD_WRAPPER=/home/TAOS_USER/.local/share/tinyagentos/rknn-sd/rknnlcm.py
+Environment=RKNN_SD_MODEL_DIR=TAOS_HOME/.local/share/tinyagentos/rknn-sd/model
+Environment=RKNN_SD_WRAPPER=TAOS_HOME/.local/share/tinyagentos/rknn-sd/rknnlcm.py
 Environment=RKNN_SD_HOST=127.0.0.1
 Environment=RKNN_SD_PORT=7863
 Environment=PYTHONPATH=TAOS_INSTALL_DIR
