@@ -343,6 +343,7 @@ _NVIDIA_VRAM_MB = [
     ("gtx 1070 ti",     8192),
     ("gtx 1070",        8192),
     ("gtx 1060",        6144),
+    ("gtx 1050 ti",     4096),
     # Datacenter / workstation
     ("h100",           81920),
     ("a100 80",        81920),
@@ -381,6 +382,42 @@ def _nvidia_vram_for_model(model: str) -> int:
         return 0
     needle = model.lower()
     for key, mb in _NVIDIA_VRAM_MB:
+        if key in needle:
+            return mb
+    return 0
+
+
+# VRAM lookup table for AMD Radeon RX GPUs. Keyed by normalised model
+# substrings matched case-insensitively. Longer/more-specific keys first.
+_AMD_VRAM_MB = [
+    # RX 7000 series (RDNA 3)
+    ("rx 7900 xtx",    24576),
+    ("rx 7900 xt",     20480),
+    ("rx 7800 xt",     16384),
+    ("rx 7700 xt",     12288),
+    ("rx 7600 xt",      16384),
+    ("rx 7600",         8192),
+    # RX 6000 series (RDNA 2)
+    ("rx 6900 xt",     16384),
+    ("rx 6800 xt",     16384),
+    ("rx 6800",        16384),
+    ("rx 6750 xt",     12288),
+    ("rx 6700 xt",     12288),
+    ("rx 6700",        10240),
+    ("rx 6650 xt",      8192),
+    ("rx 6600 xt",      8192),
+    ("rx 6600",         8192),
+    ("rx 6500 xt",      4096),
+    ("rx 6400",         4096),
+]
+
+
+def _amd_vram_for_model(model: str) -> int:
+    """Return known VRAM in MB for an AMD Radeon GPU model name, or 0 if unknown."""
+    if not model:
+        return 0
+    needle = model.lower()
+    for key, mb in _AMD_VRAM_MB:
         if key in needle:
             return mb
     return 0
@@ -444,6 +481,7 @@ def _detect_gpu() -> GpuInfo:
                 break
         gpu.rocm = Path("/opt/rocm").exists()
         gpu.vulkan = gpu.rocm
+        gpu.vram_mb = _amd_vram_for_model(gpu.model)
     else:
         # Check for integrated Mali (ARM) — multiple detection paths
         mali_found = False
