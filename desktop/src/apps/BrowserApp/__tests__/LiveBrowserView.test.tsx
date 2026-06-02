@@ -6,11 +6,13 @@ import { useBrowserStore } from "@/stores/browser-store";
 
 const originalFetch = global.fetch;
 
+const WIN_ID = "win-1";
+
 beforeEach(() => {
   useBrowserStore.setState({ windows: {} });
-  useBrowserStore.getState().createWindow("win-1", "personal");
-  const tabId = useBrowserStore.getState().getWindow("win-1")!.tabs[0].id;
-  useBrowserStore.getState().navigateTab("win-1", tabId, "https://example.com/");
+  useBrowserStore.getState().createWindow(WIN_ID, "personal");
+  const tabId = useBrowserStore.getState().getWindow(WIN_ID)!.tabs[0].id;
+  useBrowserStore.getState().navigateTab(WIN_ID, tabId, "https://example.com/");
 });
 
 afterEach(() => {
@@ -65,8 +67,10 @@ describe("EscalateButton — no-node gate", () => {
       json: async () => ({ error: "no_capable_node" }),
     } as Response);
 
-    const tabUrl = useBrowserStore.getState().getWindow("win-1")!.tabs[0].url;
-    render(<EscalateButton tabUrl={tabUrl} />);
+    const win = useBrowserStore.getState().getWindow(WIN_ID)!;
+    const tabId = win.tabs[0].id;
+    const tabUrl = win.tabs[0].url;
+    render(<EscalateButton tabUrl={tabUrl} tabId={tabId} windowId={WIN_ID} />);
 
     fireEvent.click(screen.getByRole("button", { name: /open in full browser/i }));
 
@@ -89,7 +93,14 @@ describe("EscalateButton — no-node gate", () => {
       json: async () => ({ error: "no_capable_node" }),
     } as Response);
 
-    render(<EscalateButton tabUrl="https://example.com/" />);
+    const win = useBrowserStore.getState().getWindow(WIN_ID)!;
+    render(
+      <EscalateButton
+        tabUrl="https://example.com/"
+        tabId={win.tabs[0].id}
+        windowId={WIN_ID}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /open in full browser/i }));
 
     await waitFor(() => screen.getByRole("alert"));
@@ -112,11 +123,105 @@ describe("EscalateButton — no-node gate", () => {
         json: async () => ({ id: "sess-1", status: "pending", neko_url: null }),
       } as Response);
 
-    render(<EscalateButton tabUrl="https://example.com/" />);
+    const win = useBrowserStore.getState().getWindow(WIN_ID)!;
+    render(
+      <EscalateButton
+        tabUrl="https://example.com/"
+        tabId={win.tabs[0].id}
+        windowId={WIN_ID}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /open in full browser/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/Starting full browser/i)).toBeTruthy();
+    });
+  });
+});
+
+// ── Test C: EscalateButton sets liveSession in store on success ───────────────
+
+describe("EscalateButton — sets tab liveSession on success", () => {
+  it("calls setTabLiveSession when POST returns a running session", async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        session: {
+          id: "sess-2",
+          status: "running",
+          neko_url: "http://neko.local:8080/room",
+          stream_token: "tok-xyz",
+        },
+      }),
+    } as Response);
+
+    const win = useBrowserStore.getState().getWindow(WIN_ID)!;
+    const tabId = win.tabs[0].id;
+    render(
+      <EscalateButton
+        tabUrl="https://example.com/"
+        tabId={tabId}
+        windowId={WIN_ID}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open in full browser/i }));
+
+    await waitFor(() => {
+      const tab = useBrowserStore.getState().getWindow(WIN_ID)!.tabs.find(
+        (t) => t.id === tabId,
+      );
+      expect(tab?.liveSession).toEqual({
+        nekoUrl: "http://neko.local:8080/room",
+        streamToken: "tok-xyz",
+      });
+    });
+
+    // EscalateButton itself should NOT render a LiveBrowserView iframe
+    expect(screen.queryByTitle("Full browser")).toBeNull();
+  });
+
+  it("sets liveSession via poll when session is initially pending", async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({
+          session: { id: "sess-3", status: "pending", neko_url: null, stream_token: null },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "sess-3",
+          status: "running",
+          neko_url: "http://neko.local:8080/room",
+          stream_token: "tok-poll",
+        }),
+      } as Response);
+
+    const win = useBrowserStore.getState().getWindow(WIN_ID)!;
+    const tabId = win.tabs[0].id;
+    render(
+      <EscalateButton
+        tabUrl="https://example.com/"
+        tabId={tabId}
+        windowId={WIN_ID}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open in full browser/i }));
+
+    await waitFor(() => {
+      const tab = useBrowserStore.getState().getWindow(WIN_ID)!.tabs.find(
+        (t) => t.id === tabId,
+      );
+      expect(tab?.liveSession).toEqual({
+        nekoUrl: "http://neko.local:8080/room",
+        streamToken: "tok-poll",
+      });
     });
   });
 });

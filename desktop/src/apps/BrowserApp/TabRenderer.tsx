@@ -33,6 +33,7 @@ import { openParentWs } from "./agent-ws-bridge";
 import type { AgentWsHandle } from "./agent-ws-bridge";
 import { detectLiveExclusion } from "./live-exclusion";
 import { ReaderMode } from "./ReaderMode";
+import { LiveBrowserView } from "./LiveBrowserView";
 import { AgentPanel } from "./AgentPanel";
 import { PageContextMenu } from "./PageContextMenu";
 import type { Tab } from "./types";
@@ -277,6 +278,22 @@ export function TabRenderer({ windowId }: TabRendererProps) {
           }
 
           const showReader = isActive && !!tab.readerActive && !!tab.readerExtract;
+
+          // Full Neko session replaces the proxy iframe for the active tab
+          if (isActive && tab.liveSession) {
+            return (
+              <div
+                key={tab.id}
+                style={{ position: "absolute", inset: 0 }}
+                data-window-tab={tab.id}
+              >
+                <LiveBrowserView
+                  nekoUrl={tab.liveSession.nekoUrl}
+                  streamToken={tab.liveSession.streamToken}
+                />
+              </div>
+            );
+          }
 
           return (
             <div

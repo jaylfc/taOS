@@ -132,7 +132,7 @@ export function Chrome({ windowId }: ChromeProps) {
 
       {/* Escalate to full browser (Neko session) */}
       <div className="relative flex items-center">
-        <EscalateButton tabUrl={activeTab.url} />
+        <EscalateButton tabUrl={activeTab.url} tabId={activeTab.id} windowId={windowId} />
       </div>
 
       {/* Spacer pushes the profile chip to the right */}

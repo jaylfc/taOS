@@ -4,15 +4,18 @@
  * Extracted as a standalone component so it's independently testable without
  * mounting the full BrowserApp tree.
  *
- * State machine (local only — no store changes):
- *   idle → starting (POST 201) → polling → live  (render LiveBrowserView)
- *   idle → no_node             (POST 409)         (render gate banner)
+ * State machine (local only — transient UI states):
+ *   idle → starting (POST 201) → polling → calls store.setTabLiveSession
+ *   idle → no_node             (POST 409) → render gate banner
+ *
+ * On success the liveSession is stored in the tab via setTabLiveSession so
+ * TabRenderer can render LiveBrowserView in the tab body (not the toolbar).
  *
  * Polling: every ~1.5 s, cap 20 tries (~30 s).
  */
 import { useState, useRef, useCallback } from "react";
 import { MonitorPlay } from "lucide-react";
-import { LiveBrowserView } from "./LiveBrowserView";
+import { useBrowserStore } from "@/stores/browser-store";
 
 interface BrowserSession {
   id: string;
@@ -25,7 +28,6 @@ type EscalateState =
   | { phase: "idle" }
   | { phase: "starting" }
   | { phase: "polling"; sessionId: string }
-  | { phase: "live"; nekoUrl: string; streamToken: string }
   | { phase: "no_node" };
 
 const POLL_INTERVAL_MS = 1500;
@@ -34,13 +36,19 @@ const POLL_MAX_TRIES = 20;
 interface EscalateButtonProps {
   /** The URL of the current tab — sent as the body of POST /api/browser/sessions */
   tabUrl: string;
+  /** The id of the active tab — used to set liveSession in the store on success */
+  tabId: string;
+  /** The windowId — used to set liveSession in the store on success */
+  windowId: string;
 }
 
-export function EscalateButton({ tabUrl }: EscalateButtonProps) {
+export function EscalateButton({ tabUrl, tabId, windowId }: EscalateButtonProps) {
   const [state, setState] = useState<EscalateState>({ phase: "idle" });
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triesRef = useRef(0);
   const cancelledRef = useRef(false);
+
+  const setTabLiveSession = useBrowserStore((s) => s.setTabLiveSession);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -48,6 +56,11 @@ export function EscalateButton({ tabUrl }: EscalateButtonProps) {
       pollRef.current = null;
     }
   }, []);
+
+  const goLive = useCallback((nekoUrl: string, streamToken: string) => {
+    setTabLiveSession(windowId, tabId, { nekoUrl, streamToken });
+    setState({ phase: "idle" });
+  }, [setTabLiveSession, windowId, tabId]);
 
   const poll = useCallback((sessionId: string) => {
     if (cancelledRef.current) return;
@@ -68,11 +81,7 @@ export function EscalateButton({ tabUrl }: EscalateButtonProps) {
         }
         const session: BrowserSession = await resp.json();
         if (session.status === "running" && session.neko_url && session.stream_token) {
-          setState({
-            phase: "live",
-            nekoUrl: session.neko_url,
-            streamToken: session.stream_token,
-          });
+          goLive(session.neko_url, session.stream_token);
         } else {
           // Still pending — schedule next poll
           pollRef.current = setTimeout(() => poll(sessionId), POLL_INTERVAL_MS);
@@ -81,7 +90,7 @@ export function EscalateButton({ tabUrl }: EscalateButtonProps) {
       .catch(() => {
         if (!cancelledRef.current) setState({ phase: "idle" });
       });
-  }, []);
+  }, [goLive]);
 
   const handleEscalate = useCallback(async () => {
     if (state.phase !== "idle") return;
@@ -129,20 +138,13 @@ export function EscalateButton({ tabUrl }: EscalateButtonProps) {
 
     // If already running (fast path), go live immediately
     if (session.status === "running" && session.neko_url && session.stream_token) {
-      setState({ phase: "live", nekoUrl: session.neko_url, streamToken: session.stream_token });
+      goLive(session.neko_url, session.stream_token);
       return;
     }
 
     setState({ phase: "polling", sessionId: session.id });
     poll(session.id);
-  }, [state.phase, tabUrl, poll]);
-
-  // If live, render the browser view filling the parent
-  if (state.phase === "live") {
-    return (
-      <LiveBrowserView nekoUrl={state.nekoUrl} streamToken={state.streamToken} />
-    );
-  }
+  }, [state.phase, tabUrl, poll, goLive]);
 
   return (
     <>

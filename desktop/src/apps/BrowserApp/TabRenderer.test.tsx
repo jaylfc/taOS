@@ -308,6 +308,57 @@ describe("TabRenderer — graceful handling", () => {
   });
 });
 
+describe("TabRenderer — liveSession renders LiveBrowserView", () => {
+  it("renders a LiveBrowserView iframe (src contains nekoUrl) instead of the proxy iframe when liveSession is set", async () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://example.com/",
+    );
+    useBrowserStore.getState().setTabLiveSession(TEST_WINDOW_ID, tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-live",
+    });
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframes = container.querySelectorAll("iframe");
+    // Should be exactly one iframe — the LiveBrowserView one
+    expect(iframes.length).toBe(1);
+    const iframe = iframes[0] as HTMLIFrameElement;
+    expect(iframe.src).toContain("http://neko.local:8080/room");
+    expect(iframe.src).toContain("tok-live");
+    expect(iframe.title).toBe("Full browser");
+  });
+
+  it("returns to the proxy iframe after liveSession is cleared (navigateTab)", async () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://example.com/",
+    );
+    useBrowserStore.getState().setTabLiveSession(TEST_WINDOW_ID, tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-live",
+    });
+    // Navigate away — clears liveSession
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://other.com/",
+    );
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframes = container.querySelectorAll("iframe");
+    expect(iframes.length).toBe(1);
+    const iframe = iframes[0] as HTMLIFrameElement;
+    // Should NOT be the Neko URL
+    expect(iframe.src).not.toContain("neko.local");
+    expect(iframe.title).not.toBe("Full browser");
+  });
+});
+
 describe("TabRenderer — reader mode", () => {
   it("renders ReaderMode for active tab when readerActive is true", () => {
     const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.activeTabId;
