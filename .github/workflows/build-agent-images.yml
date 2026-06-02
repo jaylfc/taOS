@@ -30,7 +30,7 @@ jobs:
             debarch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       # Approach A: install incus in the runner and build the base image
       # by launching a real container. GitHub's ubuntu-latest and
