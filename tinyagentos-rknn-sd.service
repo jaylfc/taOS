@@ -8,17 +8,17 @@ After=tinyagentos.service
 
 [Service]
 Type=simple
-User=jay
-WorkingDirectory=/home/jay/tinyagentos
+User=TAOS_USER
+WorkingDirectory=TAOS_INSTALL_DIR
 
 # Default backend: ez_rknn_async (tp_mode=all on unet/vae_decoder).
 # To revert to rknn-toolkit-lite2 / darkbit1001's rknnlcm.py, add:
 #   Environment=RKNN_SD_LEGACY_WRAPPER=1
-Environment=RKNN_SD_MODEL_DIR=/home/jay/.local/share/tinyagentos/rknn-sd/model
-Environment=RKNN_SD_WRAPPER=/home/jay/.local/share/tinyagentos/rknn-sd/rknnlcm.py
+Environment=RKNN_SD_MODEL_DIR=/home/TAOS_USER/.local/share/tinyagentos/rknn-sd/model
+Environment=RKNN_SD_WRAPPER=/home/TAOS_USER/.local/share/tinyagentos/rknn-sd/rknnlcm.py
 Environment=RKNN_SD_HOST=127.0.0.1
 Environment=RKNN_SD_PORT=7863
-Environment=PYTHONPATH=/home/jay/tinyagentos
+Environment=PYTHONPATH=TAOS_INSTALL_DIR
 Environment=PYTHONUNBUFFERED=1
 
 # The wrapper loads 2.3 GB of RKNN weights onto the NPU at startup,
@@ -26,11 +26,11 @@ Environment=PYTHONUNBUFFERED=1
 # the unit is dead.
 TimeoutStartSec=90
 
-ExecStart=/usr/local/bin/python3.12 -m tinyagentos.services.rknn_sd_server
+ExecStart=TAOS_PYTHON -m tinyagentos.services.rknn_sd_server
 
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/jay/tinyagentos/data/rknn-sd-server.log
+StandardOutput=append:TAOS_INSTALL_DIR/data/rknn-sd-server.log
 StandardError=inherit
 
 # The UNet alone is 1.8 GB and the full pipeline peaks around 5.6 GB
