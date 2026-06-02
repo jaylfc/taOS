@@ -124,7 +124,7 @@ jobs:
           sudo incus image export taos-openclaw-base "./taos-openclaw-base-linux-$ARCH"
           ls -la "./taos-openclaw-base-linux-$ARCH"*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: taos-openclaw-base-${{ matrix.arch }}
           path: taos-openclaw-base-linux-${{ matrix.arch }}.tar.gz
