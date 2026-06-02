@@ -39,7 +39,10 @@ Restart=always
 RestartSec=3
 # Slow boot on low-end ARM SBCs (Pi ~58s) sits too close to systemd's 90s default.
 TimeoutStartSec=180
-TimeoutStopSec=360
+# Bounded so a hung graceful-stop hook can never strand the service in
+# `deactivating` (which also breaks the in-app Update). Paired with the short
+# --max-time in taos-graceful-stop.sh.
+TimeoutStopSec=45
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
