@@ -191,3 +191,71 @@ class TestPickBrowserNode:
             _FakeWorker("w1", "online", _hw(ram_mb=4096, cores=4)),
         ])
         assert pick_browser_node(cluster) == "w1"
+
+
+# ---------------------------------------------------------------------------
+# reap_idle tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reap_idle_returns_only_stale_session(mgr):
+    base = 1_000_000.0
+    fresh_session = await mgr.create_session("user", "user-1", "https://fresh.com", now=base)
+    stale_session = await mgr.create_session("user", "user-2", "https://stale.com", now=base)
+
+    await mgr.mark_running(
+        fresh_session["id"],
+        node="n1", container_id="ctr-1", neko_url="http://neko:8080", cdp_url="ws://cdp:9222",
+        now=base,
+    )
+    await mgr.mark_running(
+        stale_session["id"],
+        node="n2", container_id="ctr-2", neko_url="http://neko:8081", cdp_url="ws://cdp:9223",
+        now=base,
+    )
+
+    # Fresh session touched recently; stale session last touched 1000s ago
+    now = base + 2000.0
+    await mgr.touch_active(fresh_session["id"], now=now - 10)
+    await mgr.touch_active(stale_session["id"], now=base + 100)  # 1900s ago relative to now
+
+    reaped = await mgr.reap_idle(now=now)
+
+    assert reaped == [stale_session["id"]]
+
+    stale_row = await mgr.get_session(stale_session["id"])
+    assert stale_row["status"] == "idle"
+
+    fresh_row = await mgr.get_session(fresh_session["id"])
+    assert fresh_row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_pending_session(mgr):
+    base = 1_000_000.0
+    pending_session = await mgr.create_session("user", "user-1", "https://pending.com", now=base)
+    # pending session has an old last_active but should NOT be reaped (only running sessions are)
+
+    now = base + 2000.0
+    reaped = await mgr.reap_idle(now=now)
+
+    assert pending_session["id"] not in reaped
+    row = await mgr.get_session(pending_session["id"])
+    assert row["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_nothing_stale_returns_empty(mgr):
+    base = 1_000_000.0
+    session = await mgr.create_session("user", "user-1", "https://active.com", now=base)
+    await mgr.mark_running(
+        session["id"],
+        node="n1", container_id="ctr-1", neko_url="http://neko:8080", cdp_url="ws://cdp:9222",
+        now=base,
+    )
+    # Touch it fresh relative to now
+    now = base + 100.0
+    await mgr.touch_active(session["id"], now=now - 10)
+
+    reaped = await mgr.reap_idle(now=now)
+    assert reaped == []

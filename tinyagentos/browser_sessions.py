@@ -13,6 +13,8 @@ from pathlib import Path
 
 import aiosqlite
 
+IDLE_TIMEOUT_S = 600
+
 BROWSER_SESSIONS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS browser_sessions (
     id           TEXT PRIMARY KEY,
@@ -180,6 +182,36 @@ class BrowserSessionManager:
             (now, now, session_id),
         )
         await db.commit()
+
+    async def reap_idle(
+        self,
+        *,
+        now: float | None = None,
+        timeout_s: int = IDLE_TIMEOUT_S,
+    ) -> list[str]:
+        """Mark running sessions idle when last_active is older than timeout_s.
+
+        Returns the list of reaped session ids.  Mock mode: only the DB
+        transition (status -> 'idle'), keeping the row/profile.  Real
+        container stop is wired in a later task.
+        """
+        db = self._assert_db()
+        if now is None:
+            now = time.time()
+        cutoff = now - timeout_s
+        cursor = await db.execute(
+            "SELECT id FROM browser_sessions WHERE status='running' AND last_active < ?",
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        ids = [r[0] for r in rows]
+        if ids:
+            await db.execute(
+                f"UPDATE browser_sessions SET status='idle', updated_at=? WHERE id IN ({','.join('?' * len(ids))})",
+                (now, *ids),
+            )
+            await db.commit()
+        return ids
 
     async def terminate_session(self, session_id: str) -> bool:
         """Set status='stopped'.  Returns False if the session does not exist."""
