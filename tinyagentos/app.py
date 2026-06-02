@@ -510,14 +510,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     auth_token = getattr(app.state, "browser_worker_auth_token", None)
                     reaped = await mgr.reap_idle()  # flips stale running→idle, returns ids
                     for sid in reaped:
-                        s = await mgr.get_session(sid)
-                        if s and s.get("node") and s.get("container_id"):
-                            w = cluster.get_worker(s["node"])
-                            if w is not None:
-                                await mgr.stop_on_worker(
-                                    sid, worker_url=w.url, container_id=s["container_id"],
-                                    auth_token=auth_token, set_status=None,
-                                )
+                        try:
+                            s = await mgr.get_session(sid)
+                            if s and s.get("node") and s.get("container_id"):
+                                w = cluster.get_worker(s["node"])
+                                if w is not None:
+                                    await mgr.stop_on_worker(
+                                        sid, worker_url=w.url, container_id=s["container_id"],
+                                        auth_token=auth_token, set_status=None,
+                                    )
+                        except Exception as _sid_e:
+                            logger.warning("browser reap: stop for %s failed: %s", sid, _sid_e)
                 except Exception as _e:
                     logger.warning("browser reap failed: %s", _e)
                 await _asyncio.sleep(300)
