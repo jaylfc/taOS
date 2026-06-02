@@ -1,19 +1,29 @@
 import { Sparkles } from "lucide-react";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
+import { useThemeStore } from "@/stores/theme-store";
 
 /**
- * SafetyFloor — the system-owned, always-present assistant button.
+ * SafetyFloor — the system-owned assistant button of last resort.
  *
- * Mounted by the shell in a guaranteed top layer (z-index 10000, above
- * the effects layer and all windows) and outside any themeable region,
- * so no theme can ever hide it. This is the un-overridable escape hatch:
- * the user can always summon the taOS assistant to fix a broken theme.
+ * The standard assistant trigger lives in the top bar (TopBar). When the
+ * active theme hides that bar, the user would lose all access to the
+ * assistant — so this fallback is mounted in a guaranteed top layer
+ * (z-index 10000, above the effects layer and all windows) and outside any
+ * themeable region. It is the un-overridable escape hatch enforcing the
+ * `requires: ["assistant"]` safety contract.
+ *
+ * It renders ONLY when the active theme hides the top bar; otherwise it
+ * would duplicate the existing top-bar button (e.g. on the default theme).
  *
  * It opens the SAME assistant panel as every other trigger by calling
  * the shared taos-agent-store — it does not own its own panel state.
  */
 export function SafetyFloor() {
   const openPanel = useTaosAgentStore((s) => s.openPanel);
+  const topBarHidden = useThemeStore((s) => s.structure?.topBar?.variant === "hidden");
+
+  // Standard chrome present → the top-bar assistant button already covers it.
+  if (!topBarHidden) return null;
 
   return (
     <div style={{ position: "fixed", zIndex: 10000, top: 4, right: 8, pointerEvents: "auto" }}>

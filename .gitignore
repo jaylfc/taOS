@@ -88,3 +88,7 @@ models/minilm-onnx/minilm-l6-rk3588.rknn
 screenshots.zip
 data/.auth_user.json
 data/browser_cookie_key.hex
+
+# Vite/TS incremental build artifact — regenerated on every build, must not be tracked
+# (a tracked copy dirties the tree and blocks the in-app git-pull update).
+desktop/tsconfig.tsbuildinfo
