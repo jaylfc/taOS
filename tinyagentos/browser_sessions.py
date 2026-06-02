@@ -243,14 +243,23 @@ def pick_browser_node(
     min_ram_mb: int = TIER2_MIN_RAM_MB,
     min_cores: int = TIER2_MIN_CORES,
 ) -> str | None:
-    """Return the name of an online worker meeting Tier-2 specs, else None.
+    """Return the name of an online, browser-capable worker meeting Tier-2
+    specs, else None.
 
-    Reads WorkerInfo.hardware for ram_mb + cpu cores.  Prefers GPU-capable
-    nodes (cuda=True or vram_mb > 0), then lowest load.
+    Requires the worker to advertise the ``browser`` capability (only a node
+    running the lightweight browser-worker does), then reads
+    WorkerInfo.hardware for ram_mb + cpu cores.  Prefers GPU-capable nodes
+    (cuda=True or vram_mb > 0), then lowest load.
+
+    The capability requirement is what keeps the controller host (e.g. the
+    4 GB Pi) from ever being picked — it never advertises ``browser`` —
+    rather than relying on it reporting under the RAM floor.
     """
     candidates = []
     for w in cluster.get_workers():
         if w.status != "online":
+            continue
+        if "browser" not in (getattr(w, "capabilities", None) or []):
             continue
         hw = w.hardware if isinstance(w.hardware, dict) else {}
         ram = hw.get("ram_mb", 0) if isinstance(hw.get("ram_mb"), int) else 0
