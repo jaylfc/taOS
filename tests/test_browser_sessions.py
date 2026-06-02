@@ -122,11 +122,19 @@ def _hw(ram_mb: int = 8192, cores: int = 8, cuda: bool = False, vram_mb: int = 0
 
 
 class _FakeWorker:
-    def __init__(self, name: str, status: str, hardware: dict, load: float = 0.0) -> None:
+    def __init__(
+        self,
+        name: str,
+        status: str,
+        hardware: dict,
+        load: float = 0.0,
+        capabilities: list[str] | None = None,
+    ) -> None:
         self.name = name
         self.status = status
         self.hardware = hardware
         self.load = load
+        self.capabilities = capabilities if capabilities is not None else ["browser"]
 
 
 class _FakeCluster:
@@ -191,6 +199,12 @@ class TestPickBrowserNode:
             _FakeWorker("w1", "online", _hw(ram_mb=4096, cores=4)),
         ])
         assert pick_browser_node(cluster) == "w1"
+
+    def test_capable_node_without_browser_capability_returns_none(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", _hw(ram_mb=8192, cores=8), capabilities=["embed"]),
+        ])
+        assert pick_browser_node(cluster) is None
 
 
 # ---------------------------------------------------------------------------

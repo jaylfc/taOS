@@ -21,6 +21,7 @@ class _StubWorker:
     status: str = "online"
     hardware: dict = field(default_factory=dict)
     load: float = 0.0
+    capabilities: list[str] = field(default_factory=lambda: ["browser"])
 
 
 class _StubCluster:
