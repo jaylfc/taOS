@@ -136,10 +136,17 @@ def _request_scheme(request: Request) -> str:
 
     Honours ``x-forwarded-proto`` (which may be a comma list behind chained
     proxies — take the first) so a hostile/odd value can't deform the CSP.
+    A malformed forwarded scheme falls back to the request's own scheme
+    rather than hard-coding ``http`` — otherwise a genuinely HTTPS request
+    carrying a junk header would be downgraded to ``ws://`` and lose the
+    HTTPS CSP path.
     """
-    scheme = (
-        request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+    forwarded = (
+        request.headers.get("x-forwarded-proto") or ""
     ).split(",")[0].strip().lower()
+    if forwarded in ("http", "https"):
+        return forwarded
+    scheme = (request.url.scheme or "http").lower()
     return scheme if scheme in ("http", "https") else "http"
 
 

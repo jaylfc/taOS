@@ -177,6 +177,14 @@ class TestRequestScheme:
         from tinyagentos.routes.desktop_browser.proxy import _request_scheme
         assert _request_scheme(self._req(xff="https, http", scheme="http")) == "https"
 
-    def test_bogus_forwarded_proto_clamped_to_http(self):
+    def test_bogus_forwarded_proto_falls_back_to_request_scheme(self):
+        # A junk x-forwarded-proto must NOT downgrade a genuinely HTTPS
+        # request — fall back to the request's own scheme.
         from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(xff="javascript", scheme="https")) == "https"
         assert _request_scheme(self._req(xff="javascript", scheme="http")) == "http"
+
+    def test_bogus_request_scheme_clamped_to_http(self):
+        # No valid scheme anywhere → safe default of http.
+        from tinyagentos.routes.desktop_browser.proxy import _request_scheme
+        assert _request_scheme(self._req(xff="javascript", scheme="ftp")) == "http"
