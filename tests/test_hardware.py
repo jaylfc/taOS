@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import patch
 from tinyagentos.hardware import detect_hardware, get_hardware_profile, HardwareProfile
 from tinyagentos import hardware as hardware_mod
+from tinyagentos.hardware import _nvidia_vram_for_model, _amd_vram_for_model
 
 import pytest_asyncio
 
@@ -166,6 +167,44 @@ class TestGetHardwareProfile:
         profile = get_hardware_profile(path)
         assert profile.ram_mb > 0
         assert path.exists()  # auto-saved
+
+
+class TestNvidiaVramTable:
+    def test_gtx_1050_ti_resolves_to_4096(self):
+        assert _nvidia_vram_for_model("NVIDIA GeForce GTX 1050 Ti") == 4096
+
+    def test_gtx_1050_ti_case_insensitive(self):
+        assert _nvidia_vram_for_model("gtx 1050 ti") == 4096
+
+    def test_rtx_3090_resolves_correctly(self):
+        assert _nvidia_vram_for_model("NVIDIA GeForce RTX 3090") == 24576
+
+    def test_unknown_model_returns_zero(self):
+        assert _nvidia_vram_for_model("NVIDIA GeForce GTX 580") == 0
+
+    def test_empty_model_returns_zero(self):
+        assert _nvidia_vram_for_model("") == 0
+
+
+class TestAmdVramTable:
+    def test_rx_7900_xtx_resolves_to_24576(self):
+        assert _amd_vram_for_model("AMD Radeon RX 7900 XTX") == 24576
+
+    def test_rx_7900_xtx_case_insensitive(self):
+        assert _amd_vram_for_model("rx 7900 xtx") == 24576
+
+    def test_rx_6600_resolves_to_8192(self):
+        assert _amd_vram_for_model("AMD Radeon RX 6600") == 8192
+
+    def test_rx_7900_xt_does_not_match_xtx(self):
+        # RX 7900 XT is 20480, not 24576 — ensure longer key matches first
+        assert _amd_vram_for_model("AMD Radeon RX 7900 XT") == 20480
+
+    def test_unknown_amd_card_returns_zero(self):
+        assert _amd_vram_for_model("AMD Radeon HD 7970") == 0
+
+    def test_empty_model_returns_zero(self):
+        assert _amd_vram_for_model("") == 0
 
 
 @pytest.mark.asyncio
