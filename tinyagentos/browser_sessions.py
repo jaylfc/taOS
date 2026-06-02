@@ -7,11 +7,19 @@ and neko/CDP endpoints.  In ``mock=True`` mode all Docker/HTTP calls are
 skipped so the manager can be used in unit tests without a container runtime.
 """
 
+import logging
 import time
 import uuid
 from pathlib import Path
 
 import aiosqlite
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class BrowserWorkerError(Exception):
+    """Raised when a worker browser-container call fails."""
 
 IDLE_TIMEOUT_S = 600
 
@@ -213,6 +221,105 @@ class BrowserSessionManager:
             await db.commit()
         return ids
 
+    async def mark_error(self, session_id: str, *, now: float | None = None) -> None:
+        db = self._assert_db()
+        if now is None:
+            now = time.time()
+        await db.execute(
+            "UPDATE browser_sessions SET status='error', updated_at=? WHERE id=?",
+            (now, session_id),
+        )
+        await db.commit()
+
+    async def start_on_worker(
+        self,
+        session_id: str,
+        *,
+        node: str,
+        worker_url: str,
+        profile_volume: str,
+        auth_token: str | None = None,
+    ) -> dict:
+        """POST /worker/browser/start on the given worker and update the session.
+
+        On success marks the session running and returns the refreshed session dict.
+        On any failure marks the session as 'error' and raises BrowserWorkerError.
+        """
+        headers = {}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{worker_url.rstrip('/')}/worker/browser/start",
+                    json={"session_id": session_id, "profile_volume": profile_volume},
+                    headers=headers,
+                )
+        except Exception as exc:
+            await self.mark_error(session_id)
+            raise BrowserWorkerError(f"worker request failed: {exc}") from exc
+
+        if resp.status_code != 200:
+            await self.mark_error(session_id)
+            raise BrowserWorkerError(
+                f"worker returned {resp.status_code}: {resp.text[:200]}"
+            )
+
+        data = resp.json()
+        await self.mark_running(
+            session_id,
+            node=node,
+            container_id=data["container_id"],
+            neko_url=data["neko_url"],
+            cdp_url=data["cdp_url"],
+        )
+        return await self.get_session(session_id)
+
+    async def stop_on_worker(
+        self,
+        session_id: str,
+        *,
+        worker_url: str,
+        container_id: str,
+        http_port: int | None = None,
+        auth_token: str | None = None,
+        set_status: str | None = "stopped",
+    ) -> None:
+        """POST /worker/browser/stop on the given worker.  Best-effort — all
+        errors are logged as warnings and swallowed.  The profile volume is
+        intentionally kept.
+
+        If ``set_status`` is not None the session row's status is updated.
+        Pass ``set_status=None`` when the caller (reap loop) has already
+        transitioned the status.
+        """
+        headers = {}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{worker_url.rstrip('/')}/worker/browser/stop",
+                    json={"container_id": container_id, "http_port": http_port},
+                    headers=headers,
+                )
+            if resp.status_code != 200:
+                logger.warning(
+                    "stop_on_worker for %s returned %s: %s",
+                    session_id, resp.status_code, resp.text[:200],
+                )
+        except Exception as exc:
+            logger.warning("stop_on_worker for %s failed: %s", session_id, exc)
+
+        if set_status is not None:
+            db = self._assert_db()
+            now = time.time()
+            await db.execute(
+                "UPDATE browser_sessions SET status=?, updated_at=? WHERE id=?",
+                (set_status, now, session_id),
+            )
+            await db.commit()
+
     async def terminate_session(self, session_id: str) -> bool:
         """Set status='stopped'.  Returns False if the session does not exist."""
         db = self._assert_db()
@@ -237,6 +344,34 @@ TIER2_MIN_RAM_MB = 4096
 TIER2_MIN_CORES = 4
 
 
+def _capable_workers(
+    cluster,
+    min_ram_mb: int,
+    min_cores: int,
+) -> list:
+    """Return online workers advertising the ``browser`` capability that meet
+    the given RAM and core floor, sorted GPU-first then by ascending load."""
+    candidates = []
+    for w in cluster.get_workers():
+        if w.status != "online":
+            continue
+        if "browser" not in (getattr(w, "capabilities", None) or []):
+            continue
+        hw = w.hardware if isinstance(w.hardware, dict) else {}
+        ram = hw.get("ram_mb", 0) if isinstance(hw.get("ram_mb"), int) else 0
+        cpu = hw.get("cpu")
+        cores = cpu.get("cores", 0) if isinstance(cpu, dict) else 0
+        if ram < min_ram_mb or cores < min_cores:
+            continue
+        gpu = hw.get("gpu")
+        has_gpu = False
+        if isinstance(gpu, dict):
+            has_gpu = bool(gpu.get("cuda")) or (gpu.get("vram_mb") or 0) > 0
+        candidates.append((not has_gpu, w.load, w))
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    return [t[2] for t in candidates]
+
+
 def pick_browser_node(
     cluster,
     *,
@@ -255,25 +390,35 @@ def pick_browser_node(
     4 GB Pi) from ever being picked — it never advertises ``browser`` —
     rather than relying on it reporting under the RAM floor.
     """
-    candidates = []
-    for w in cluster.get_workers():
-        if w.status != "online":
-            continue
-        if "browser" not in (getattr(w, "capabilities", None) or []):
-            continue
+    workers = _capable_workers(cluster, min_ram_mb, min_cores)
+    return workers[0].name if workers else None
+
+
+def list_browser_nodes(
+    cluster,
+    *,
+    min_ram_mb: int = TIER2_MIN_RAM_MB,
+    min_cores: int = TIER2_MIN_CORES,
+) -> list[dict]:
+    """Return a list of capable browser nodes, GPU-first then by ascending load.
+
+    Each entry has keys: name, gpu (bool), ram_mb (int), cores (int), load (float).
+    """
+    result = []
+    for w in _capable_workers(cluster, min_ram_mb, min_cores):
         hw = w.hardware if isinstance(w.hardware, dict) else {}
         ram = hw.get("ram_mb", 0) if isinstance(hw.get("ram_mb"), int) else 0
         cpu = hw.get("cpu")
         cores = cpu.get("cores", 0) if isinstance(cpu, dict) else 0
-        if ram < min_ram_mb or cores < min_cores:
-            continue
         gpu = hw.get("gpu")
         has_gpu = False
         if isinstance(gpu, dict):
             has_gpu = bool(gpu.get("cuda")) or (gpu.get("vram_mb") or 0) > 0
-        candidates.append((not has_gpu, w.load, w.name))
-
-    if not candidates:
-        return None
-    candidates.sort()
-    return candidates[0][2]
+        result.append({
+            "name": w.name,
+            "gpu": has_gpu,
+            "ram_mb": ram,
+            "cores": cores,
+            "load": w.load,
+        })
+    return result

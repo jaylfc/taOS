@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 import pytest_asyncio
 from pathlib import Path
 
-from tinyagentos.browser_sessions import BrowserSessionManager, pick_browser_node
+from tinyagentos.browser_sessions import (
+    BrowserSessionManager,
+    BrowserWorkerError,
+    list_browser_nodes,
+    pick_browser_node,
+)
 
 
 @pytest_asyncio.fixture
@@ -273,3 +280,206 @@ async def test_reap_idle_nothing_stale_returns_empty(mgr):
 
     reaped = await mgr.reap_idle(now=now)
     assert reaped == []
+
+
+# ---------------------------------------------------------------------------
+# start_on_worker / stop_on_worker / mark_error tests
+# ---------------------------------------------------------------------------
+
+def _make_mock_response(status_code: int, json_body: dict):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body
+    resp.text = str(json_body)
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_start_on_worker_success(mgr):
+    session = await mgr.create_session("user", "u1", "https://example.com")
+    sid = session["id"]
+
+    worker_resp = _make_mock_response(200, {
+        "container_id": "ctr-xyz",
+        "neko_url": "http://10.0.0.5:8800/?usr=neko&pwd=abc",
+        "cdp_url": None,
+        "http_port": 8800,
+        "epr_lo": 59000,
+        "epr_hi": 59009,
+    })
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=worker_resp)
+
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        result = await mgr.start_on_worker(
+            sid,
+            node="node-1",
+            worker_url="http://worker.example:7080",
+            profile_volume=f"taos-browser-{sid}",
+        )
+
+    assert result["status"] == "running"
+    assert result["container_id"] == "ctr-xyz"
+    assert result["neko_url"] == "http://10.0.0.5:8800/?usr=neko&pwd=abc"
+    assert result["node"] == "node-1"
+
+    # Confirm DB was updated
+    fetched = await mgr.get_session(sid)
+    assert fetched["status"] == "running"
+    assert fetched["container_id"] == "ctr-xyz"
+
+
+@pytest.mark.asyncio
+async def test_start_on_worker_non_200_marks_error_and_raises(mgr):
+    session = await mgr.create_session("user", "u2", "https://example.com")
+    sid = session["id"]
+
+    worker_resp = _make_mock_response(500, {"error": "docker failed"})
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=worker_resp)
+
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(BrowserWorkerError):
+            await mgr.start_on_worker(
+                sid,
+                node="node-1",
+                worker_url="http://worker.example:7080",
+                profile_volume=f"taos-browser-{sid}",
+            )
+
+    fetched = await mgr.get_session(sid)
+    assert fetched["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_start_on_worker_exception_marks_error_and_raises(mgr):
+    session = await mgr.create_session("user", "u3", "https://example.com")
+    sid = session["id"]
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=Exception("connection refused"))
+
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(BrowserWorkerError):
+            await mgr.start_on_worker(
+                sid,
+                node="node-1",
+                worker_url="http://worker.example:7080",
+                profile_volume=f"taos-browser-{sid}",
+            )
+
+    fetched = await mgr.get_session(sid)
+    assert fetched["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_stop_on_worker_failure_does_not_raise(mgr):
+    session = await mgr.create_session("user", "u4", "https://example.com")
+    sid = session["id"]
+    await mgr.mark_running(
+        sid, node="node-1", container_id="ctr-1",
+        neko_url="http://neko:8080", cdp_url=None,
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=Exception("network error"))
+
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        # Must not raise
+        await mgr.stop_on_worker(
+            sid, worker_url="http://worker.example:7080",
+            container_id="ctr-1",
+        )
+
+    fetched = await mgr.get_session(sid)
+    assert fetched["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stop_on_worker_set_status_none_leaves_status_unchanged(mgr):
+    session = await mgr.create_session("user", "u5", "https://example.com")
+    sid = session["id"]
+    await mgr.mark_running(
+        sid, node="node-1", container_id="ctr-2",
+        neko_url="http://neko:8081", cdp_url=None,
+    )
+    # Simulate reap already flipped to idle
+    db = mgr._assert_db()
+    await db.execute("UPDATE browser_sessions SET status='idle' WHERE id=?", (sid,))
+    await db.commit()
+
+    worker_resp = _make_mock_response(200, {"ok": True})
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=worker_resp)
+
+    with patch("tinyagentos.browser_sessions.httpx.AsyncClient", return_value=mock_client):
+        await mgr.stop_on_worker(
+            sid, worker_url="http://worker.example:7080",
+            container_id="ctr-2", set_status=None,
+        )
+
+    fetched = await mgr.get_session(sid)
+    assert fetched["status"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# list_browser_nodes tests
+# ---------------------------------------------------------------------------
+
+class TestListBrowserNodes:
+    def test_returns_only_capable_nodes(self):
+        cluster = _FakeCluster([
+            _FakeWorker("capable", "online", _hw(ram_mb=8192, cores=8)),
+            _FakeWorker("no-cap", "online", _hw(ram_mb=8192, cores=8), capabilities=["embed"]),
+            _FakeWorker("offline", "offline", _hw(ram_mb=8192, cores=8)),
+        ])
+        nodes = list_browser_nodes(cluster)
+        assert len(nodes) == 1
+        assert nodes[0]["name"] == "capable"
+
+    def test_node_dict_shape(self):
+        cluster = _FakeCluster([
+            _FakeWorker("w1", "online", _hw(ram_mb=8192, cores=8, cuda=True, vram_mb=4096), load=0.3),
+        ])
+        nodes = list_browser_nodes(cluster)
+        assert len(nodes) == 1
+        n = nodes[0]
+        assert n["name"] == "w1"
+        assert n["gpu"] is True
+        assert n["ram_mb"] == 8192
+        assert n["cores"] == 8
+        assert n["load"] == 0.3
+
+    def test_gpu_first_ordering(self):
+        cluster = _FakeCluster([
+            _FakeWorker("cpu-node", "online", _hw(ram_mb=8192, cores=8, cuda=False), load=0.1),
+            _FakeWorker("gpu-node", "online", _hw(ram_mb=8192, cores=8, cuda=True, vram_mb=8192), load=0.5),
+        ])
+        nodes = list_browser_nodes(cluster)
+        assert nodes[0]["name"] == "gpu-node"
+        assert nodes[1]["name"] == "cpu-node"
+
+    def test_same_gpu_tier_sorted_by_load(self):
+        cluster = _FakeCluster([
+            _FakeWorker("heavy", "online", _hw(ram_mb=8192, cores=8), load=0.8),
+            _FakeWorker("light", "online", _hw(ram_mb=8192, cores=8), load=0.2),
+        ])
+        nodes = list_browser_nodes(cluster)
+        assert nodes[0]["name"] == "light"
+        assert nodes[1]["name"] == "heavy"
+
+    def test_empty_cluster_returns_empty_list(self):
+        cluster = _FakeCluster([])
+        assert list_browser_nodes(cluster) == []
