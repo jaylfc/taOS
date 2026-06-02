@@ -128,14 +128,19 @@ def _shell_origin(request: Request) -> str | None:
     host = _strip_port(request.headers.get("host") or "")
     if not host:
         return None
-    # Behind a proxy, x-forwarded-proto may be a comma list ("https, http").
-    # Clamp to a known scheme so a hostile value can't deform the CSP.
+    return f"{_request_scheme(request)}://{host}:{main_port}"
+
+
+def _request_scheme(request: Request) -> str:
+    """The effective scheme of the request, clamped to http/https.
+
+    Honours ``x-forwarded-proto`` (which may be a comma list behind chained
+    proxies — take the first) so a hostile/odd value can't deform the CSP.
+    """
     scheme = (
         request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
     ).split(",")[0].strip().lower()
-    if scheme not in ("http", "https"):
-        scheme = "http"
-    return f"{scheme}://{host}:{main_port}"
+    return scheme if scheme in ("http", "https") else "http"
 
 
 def _strip_port(host_header: str) -> str:
@@ -347,7 +352,10 @@ async def proxy_get(
                 )
             )
 
-        out_headers["content-security-policy"] = proxied_response_csp(_shell_origin(request))
+        out_headers["content-security-policy"] = proxied_response_csp(
+            _shell_origin(request),
+            upgrade_insecure=_request_scheme(request) == "https",
+        )
         return Response(
             content=injected,
             status_code=response.status_code,
