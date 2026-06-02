@@ -501,6 +501,29 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         asyncio.create_task(_ephemeral_sweep_loop(app))
 
+        async def _browser_reap_loop(app: FastAPI) -> None:
+            import asyncio as _asyncio
+            mgr = app.state.browser_sessions
+            cluster = app.state.cluster_manager
+            while True:
+                try:
+                    auth_token = getattr(app.state, "browser_worker_auth_token", None)
+                    reaped = await mgr.reap_idle()  # flips stale running→idle, returns ids
+                    for sid in reaped:
+                        s = await mgr.get_session(sid)
+                        if s and s.get("node") and s.get("container_id"):
+                            w = cluster.get_worker(s["node"])
+                            if w is not None:
+                                await mgr.stop_on_worker(
+                                    sid, worker_url=w.url, container_id=s["container_id"],
+                                    auth_token=auth_token, set_status=None,
+                                )
+                except Exception as _e:
+                    logger.warning("browser reap failed: %s", _e)
+                await _asyncio.sleep(300)
+
+        asyncio.create_task(_browser_reap_loop(app))
+
         # Per-agent state lives on the host and is mounted into containers.
         # See docs/design/framework-agnostic-runtime.md.
         app.state.agent_workspaces_dir = data_dir / "agent-workspaces"
