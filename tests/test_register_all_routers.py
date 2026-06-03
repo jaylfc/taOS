@@ -7,7 +7,21 @@ from tinyagentos.routes import register_all_routers
 
 def test_create_app_registers_routers(tmp_data_dir):
     app = create_app(data_dir=tmp_data_dir)
-    assert len(app.routes) > 50, f"Expected >50 routes, got {len(app.routes)}"
+    paths = {getattr(r, "path", "") for r in app.routes}
+    # One representative path per major router — if a router stops being
+    # registered, the corresponding path vanishes and this fails.
+    expected = {
+        "/api/agents",
+        "/api/memory/stats",
+        "/api/chat/channels/{channel_id}",
+        "/api/canvas",
+        "/api/models",
+        "/api/cluster/workers",
+        "/api/settings/platform",
+        "/api/store/app/{app_id}",
+    }
+    missing = expected - paths
+    assert not missing, f"expected routes missing (router not registered?): {sorted(missing)}"
 
 
 def test_memory_management_included_once(tmp_data_dir):

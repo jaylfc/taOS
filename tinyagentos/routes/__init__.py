@@ -131,6 +131,9 @@ def register_all_routers(app):
     from tinyagentos.routes.chat import router as chat_router
     app.include_router(chat_router)
 
+    from tinyagentos.routes.canvas import router as canvas_router
+    app.include_router(canvas_router)
+
     from tinyagentos.routes.desktop import router as desktop_router
     app.include_router(desktop_router)
 
