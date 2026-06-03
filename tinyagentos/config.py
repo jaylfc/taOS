@@ -13,7 +13,7 @@ from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 VALID_ON_WORKER_FAILURE = {"pause", "fallback", "escalate-immediately"}
 
 DEFAULT_CONFIG = {
-    "server": {"host": "0.0.0.0", "port": 6969},
+    "server": {"host": "0.0.0.0", "port": 6969, "browser_proxy_port": 6970},
     "backends": [],
     "qmd": {"url": "http://localhost:7832"},
     "agents": [],

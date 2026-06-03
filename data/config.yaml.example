@@ -1,6 +1,11 @@
 server:
   host: 0.0.0.0
   port: 6969
+  # Second origin for the sandboxed browser proxy so the proxied iframe can
+  # take allow-same-origin and register a service worker without exposing
+  # any taOS API. Env override: TAOS_BROWSER_PROXY_PORT. Set to 0 to disable
+  # the separate origin (the proxy then stays on the main port).
+  browser_proxy_port: 6970
 
 backends:
   - name: local-npu

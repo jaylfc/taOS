@@ -13,12 +13,51 @@
   if (window.__taosCopilot) return;
   window.__taosCopilot = true;
 
-  // ─── Service Worker note ────────────────────────────────────────────────────
-  // SW registration moved to the parent shell (BrowserApp.tsx). This iframe
-  // runs with sandbox="allow-scripts allow-forms allow-popups allow-downloads"
-  // (no allow-same-origin), so navigator.serviceWorker is unavailable here.
-  // The parent registers /__taos/sw.js and primes it via postMessage after
-  // each tab navigation (TabRenderer.tsx).
+  // ─── Service Worker registration + priming ──────────────────────────────────
+  // The proxied iframe now has a REAL, separate origin (the proxy-origin port)
+  // and runs with allow-same-origin, so navigator.serviceWorker IS available
+  // here. We register /__taos/sw.js (scope "/") from inside the iframe — the SW
+  // belongs to the proxy origin, NOT the shell — and prime it with the page's
+  // real base URL + profile id so it can rewrite relative SPA fetches back
+  // through the proxy. Priming context comes from meta tags the backend
+  // injector templates into this page (the sandbox blocks reaching the parent
+  // for it).
+  (function registerProxyServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+
+    function readMeta(name) {
+      var el = document.querySelector('meta[name="' + name + '"]');
+      return el ? (el.getAttribute('content') || '') : '';
+    }
+    var pageBaseUrl = readMeta('taos-page-base') || location.href;
+    var profileId = readMeta('taos-profile-id') || 'personal';
+
+    function prime(sw) {
+      if (!sw) return;
+      try {
+        sw.postMessage({
+          type: 'taos-sw:prime',
+          pageBaseUrl: pageBaseUrl,
+          profileId: profileId,
+        });
+      } catch (_e) { /* SW gone — ignore */ }
+    }
+
+    navigator.serviceWorker.register('/__taos/sw.js', { scope: '/' }).then(
+      function () {
+        // Prime via .ready so the message is delivered whether or not the SW
+        // has claimed this client yet. The active worker (or, on first install,
+        // the one that just took control on next load) gets the page base.
+        navigator.serviceWorker.ready.then(function (reg) {
+          prime(reg.active);
+        });
+        if (navigator.serviceWorker.controller) {
+          prime(navigator.serviceWorker.controller);
+        }
+      },
+      function () { /* registration failed (e.g. http) — SPA fetch falls back */ }
+    );
+  })();
 
   // ─── WebSocket constructor patch ─────────────────────────────────────────────
   // PR 8 ships a no-op patch that logs cross-origin WS attempts. PR 9 (or

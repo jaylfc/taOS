@@ -198,3 +198,45 @@ def find_model_hosts(
             return ModelLocation(kind="cloud")
 
     return ModelLocation(kind="not_found")
+
+
+def collect_cloud_model_ids(config) -> list[str]:
+    """Best-effort list of cloud-provider model ids advertised in config.backends.
+
+    Cloud provider types are :data:`tinyagentos.providers.CLOUD_TYPES`. Never
+    raises — on any error returns what was gathered so far.
+    """
+    # Lazy import to avoid any import cycle with providers.
+    from tinyagentos.providers import CLOUD_TYPES  # noqa: PLC0415
+
+    cloud_models: list[str] = []
+    try:
+        for b in config.backends or []:
+            if b.get("type") in CLOUD_TYPES:
+                for m in b.get("models") or []:
+                    mid = (m.get("id") or m.get("name") or "") if isinstance(m, dict) else str(m)
+                    if mid:
+                        cloud_models.append(mid)
+    except Exception:  # noqa: BLE001
+        pass
+    return cloud_models
+
+
+def resolve_model_location(request, model_id: str) -> ModelLocation:
+    """Resolve *model_id* against controller catalog + cluster workers + configured
+    cloud providers, reading state off ``request.app.state``.
+
+    Returns a :class:`ModelLocation`.
+    """
+    state = request.app.state
+    cluster = getattr(state, "cluster_manager", None)
+    catalog = getattr(state, "backend_catalog", None)
+    local_models = catalog.all_models() if catalog is not None else []
+    config = getattr(state, "config", None)
+    cloud_models = collect_cloud_model_ids(config) if config is not None else []
+    return find_model_hosts(
+        model_id,
+        cluster_state=cluster,
+        local_models=local_models,
+        cloud_models=cloud_models,
+    )
