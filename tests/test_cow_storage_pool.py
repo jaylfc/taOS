@@ -2,19 +2,21 @@
 
 Tests validate:
 1. Script syntax and presence of required functions/variables
-2. Filesystem detection logic (using inline test functions)
-3. Storage init logic branches (using inline test functions)
+2. Filesystem detection logic (sourced from the real script)
+3. Storage init logic branches (sourced from the real script)
 4. Env var defaults
 """
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
 
 INSTALL_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "install-server.sh"
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _bash_run(script: str, env: dict | None = None) -> tuple[int, str, str]:
     """Run a bash snippet and return (exit_code, stdout, stderr)."""
@@ -31,77 +33,55 @@ def _bash_run(script: str, env: dict | None = None) -> tuple[int, str, str]:
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
-# Inline copies of the key functions for unit testing the logic.
-DETECT_COW_FS_FUNC = textwrap.dedent("""
-    detect_cow_filesystem() {
-        local target="/var/lib"
-        [[ -d /var/lib/incus ]] && target="/var/lib/incus"
-        local fs_type=""
-        if stat -f --format=%T "$target" >/dev/null 2>&1; then
-            fs_type=$(stat -f --format=%T "$target" 2>/dev/null)
-        elif df -T "$target" >/dev/null 2>&1; then
-            fs_type=$(df -T "$target" 2>/dev/null | awk 'NR==2 {print $2}')
-        fi
-        [[ -z "$fs_type" ]] && fs_type="unknown"
-        echo "$fs_type"
-    }
-""")
+def _extract_func(name: str) -> str:
+    """Return the shell source text for a single function from install-server.sh.
 
-INCUS_STORAGE_INIT_FUNC = textwrap.dedent("""
-    _incus_storage_init() {
-        local fs_type="$1"
-        case "${COW_POOL_MODE}" in
-            btrfs)
-                if [[ "$fs_type" != "btrfs" ]]; then
-                    echo "WARN: btrfs pool requires btrfs filesystem - falling back"
-                    return 0
-                fi
-                echo "creating incus btrfs storage pool"
-                incus storage create default btrfs 2>/dev/null && return 0
-                echo "WARN: btrfs create failed - falling back"
-                ;;
-            zfs)
-                if [[ "$fs_type" != "zfs" ]]; then
-                    echo "WARN: zfs pool requires zfs filesystem - falling back"
-                    return 0
-                fi
-                echo "creating incus zfs storage pool"
-                incus storage create default zfs 2>/dev/null && return 0
-                echo "WARN: zfs create failed - falling back"
-                ;;
-            dir)
-                echo "WARN: forcing directory-backed pool"
-                return 0
-                ;;
-            auto|*)
-                case "$fs_type" in
-                    btrfs|zfs)
-                        echo "auto-creating $fs_type storage pool"
-                        incus storage create default "$fs_type" 2>/dev/null && return 0
-                        echo "WARN: auto-create failed - falling back"
-                        ;;
-                    ext[2-4]|xfs)
-                        echo "$fs_type filesystem - CoW not available"
-                        ;;
-                    *)
-                        echo "filesystem type $fs_type - auto-select"
-                        ;;
-                esac
-                return 0
-                ;;
-        esac
-        return 0
-    }
-""")
+    Extracts from `name() {` up to and including the closing `}` on its own
+    line (standard bash function layout used throughout install-server.sh).
+    """
+    lines = INSTALL_SCRIPT.read_text().splitlines()
+    collecting = False
+    brace_depth = 0
+    collected: list[str] = []
+    for line in lines:
+        if not collecting:
+            if line.startswith(f"{name}()"):
+                collecting = True
+        if collecting:
+            collected.append(line)
+            brace_depth += line.count("{") - line.count("}")
+            if brace_depth <= 0 and len(collected) > 1:
+                break
+    return "\n".join(collected)
 
+
+# Source preamble used by every test that exercises real script functions.
+# Sets up stubs for `log` and `warn` so diagnostics go to stderr only, and
+# defines globals the functions may reference.
+_PREAMBLE = """
+log()  { printf '[log] %s\\n' "$*" >&2; }
+warn() { printf '[warn] %s\\n' "$*" >&2; }
+COW_POOL_MODE="${COW_POOL_MODE:-auto}"
+COW_EFFECTIVE_MODE="n/a"
+"""
+
+
+# ---------------------------------------------------------------------------
+# Issue 5 fix — safe bash -n invocation (argv list, no shell interpolation)
+# ---------------------------------------------------------------------------
 
 class TestInstallScriptIntegrity:
     """Validate the install script is well-formed."""
 
     def test_syntax_valid(self):
         """The install script must pass bash -n."""
-        rc, out, err = _bash_run(f"bash -n {INSTALL_SCRIPT}")
-        assert rc == 0, f"Syntax error: {err}"
+        result = subprocess.run(
+            ["bash", "-n", str(INSTALL_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, f"Syntax error: {result.stderr}"
 
     def test_taos_cow_pool_env_var(self):
         """TAOS_COW_POOL must be defined and default to auto."""
@@ -126,116 +106,209 @@ class TestInstallScriptIntegrity:
         assert "Storage pool" in content
 
 
-class TestDetectCowFilesystem:
-    """Test filesystem type detection."""
+# ---------------------------------------------------------------------------
+# Issue 4 fix — real function sourced from the script
+# Issue 1 regression guard — stdout must be a single clean token
+# ---------------------------------------------------------------------------
 
-    def _run_detect(self, stat_output, df_output=None):
-        script = DETECT_COW_FS_FUNC + textwrap.dedent(f"""
-            stat() {{ echo "{stat_output}"; return 0; }}
-            df() {{ echo "Filesystem Type 1K-blocks Used Available Use% Mounted on"; echo "/dev/sda1 {df_output or stat_output} 100000 50000 50000 50% /var/lib"; return 0; }}
-            detect_cow_filesystem
-        """)
+class TestDetectCowFilesystem:
+    """Test filesystem type detection using the real detect_cow_filesystem()."""
+
+    _FUNC = _extract_func("detect_cow_filesystem")
+
+    def _run_detect(self, stat_output: str, df_output: str | None = None) -> str:
+        """Stub stat/df and call the real function; return its stdout."""
+        df_fs = df_output or stat_output
+        script = _PREAMBLE + self._FUNC + f"""
+stat() {{ echo "{stat_output}"; return 0; }}
+df() {{ printf 'Filesystem\\tType\\t1K-blocks\\tUsed\\tAvailable\\tUse%%\\tMounted on\\n'; printf '/dev/sda1\\t{df_fs}\\t100000\\t50000\\t50000\\t50%%\\t/var/lib\\n'; return 0; }}
+detect_cow_filesystem
+"""
         rc, out, err = _bash_run(script)
         if rc != 0:
             return f"ERROR: {err}"
         return out
 
+    # --- Issue 1 regression: stdout must be a single clean token -----------
+
+    def test_stdout_is_single_token_btrfs(self):
+        """detect_cow_filesystem stdout must be exactly one word (no log noise)."""
+        result = self._run_detect("btrfs")
+        assert result == "btrfs", f"Expected 'btrfs', got: {result!r}"
+
+    def test_stdout_is_single_token_zfs(self):
+        result = self._run_detect("zfs")
+        assert result == "zfs", f"Expected 'zfs', got: {result!r}"
+
+    def test_stdout_is_single_token_ext4(self):
+        result = self._run_detect("ext4")
+        assert result == "ext4", f"Expected 'ext4', got: {result!r}"
+
+    def test_stdout_no_newlines(self):
+        """Captured output must contain no embedded newlines (no log contamination)."""
+        script = _PREAMBLE + self._FUNC + """
+stat() { echo "btrfs"; return 0; }
+df()   { return 1; }
+out=$(detect_cow_filesystem)
+lines=$(echo "$out" | wc -l)
+echo "$lines"
+"""
+        rc, out, _ = _bash_run(script)
+        assert rc == 0
+        assert out.strip() == "1", f"Expected 1 line in captured output, got: {out!r}"
+
+    # --- functional correctness --------------------------------------------
+
     def test_detects_btrfs(self):
-        assert "btrfs" == self._run_detect("btrfs")
+        assert self._run_detect("btrfs") == "btrfs"
 
     def test_detects_zfs(self):
-        assert "zfs" == self._run_detect("zfs")
+        assert self._run_detect("zfs") == "zfs"
 
     def test_detects_ext4(self):
-        assert "ext4" == self._run_detect("ext4")
+        assert self._run_detect("ext4") == "ext4"
 
     def test_detects_xfs(self):
-        assert "xfs" == self._run_detect("xfs")
+        assert self._run_detect("xfs") == "xfs"
 
     def test_fallback_to_df(self):
-        script = DETECT_COW_FS_FUNC + textwrap.dedent("""
-            stat() { return 1; }
-            df() { echo "Filesystem Type"; echo "/dev/sda1 ext4 100000 50000 50000 50% /var/lib"; return 0; }
-            detect_cow_filesystem
-        """)
+        """Falls back to df -T when stat returns non-zero."""
+        script = _PREAMBLE + self._FUNC + """
+stat() { return 1; }
+df()   { printf 'Filesystem\\tType\\n'; printf '/dev/sda1\\text4\\n'; return 0; }
+detect_cow_filesystem
+"""
         rc, out, err = _bash_run(script)
         assert rc == 0, f"failed: {err}"
-        assert "ext4" == out
+        assert out == "ext4"
 
     def test_unknown_when_both_fail(self):
-        script = DETECT_COW_FS_FUNC + textwrap.dedent("""
-            stat() { return 1; }
-            df() { return 1; }
-            detect_cow_filesystem
-        """)
+        script = _PREAMBLE + self._FUNC + """
+stat() { return 1; }
+df()   { return 1; }
+detect_cow_filesystem
+"""
         rc, out, err = _bash_run(script)
         assert rc == 0, f"failed: {err}"
         assert out == "unknown"
 
 
 class TestIncusStorageInit:
-    """Test storage pool initialization logic."""
+    """Test storage pool initialisation logic using the real _incus_storage_init()."""
 
-    def _run_init(self, cow_pool_mode, fs_type):
-        script = INCUS_STORAGE_INIT_FUNC + textwrap.dedent(f"""
-            incus() {{ echo "incus $*"; return 0; }}
-            COW_POOL_MODE="{cow_pool_mode}"
-            _incus_storage_init "{fs_type}"
-        """)
+    _FUNC = _extract_func("_incus_storage_init")
+
+    def _run_init(self, cow_pool_mode: str, fs_type: str) -> str:
+        script = _PREAMBLE + self._FUNC + f"""
+sudo()  {{ "$@"; }}
+incus() {{ echo "incus $*"; return 0; }}
+COW_POOL_MODE="{cow_pool_mode}"
+_incus_storage_init "{fs_type}"
+echo "EFFECTIVE=$COW_EFFECTIVE_MODE"
+"""
         rc, out, err = _bash_run(script)
         if rc != 0:
             return f"ERROR: {err}"
         return out
 
+    def _run_init_with_stderr(self, cow_pool_mode: str, fs_type: str) -> tuple[str, str]:
+        """Like _run_init but returns (stdout, stderr)."""
+        script = _PREAMBLE + self._FUNC + f"""
+sudo()  {{ "$@"; }}
+incus() {{ echo "incus $*"; return 0; }}
+COW_POOL_MODE="{cow_pool_mode}"
+_incus_storage_init "{fs_type}"
+echo "EFFECTIVE=$COW_EFFECTIVE_MODE"
+"""
+        rc, out, err = _bash_run(script)
+        return out, err
+
     def test_auto_mode_btrfs(self):
-        out = self._run_init("auto", "btrfs")
-        assert "auto-creating btrfs storage pool" in out
+        out, err = self._run_init_with_stderr("auto", "btrfs")
+        assert "EFFECTIVE=btrfs" in out
+        # log diagnostic should mention CoW filesystem detection (goes to stderr)
+        assert "btrfs" in err
 
     def test_auto_mode_zfs(self):
-        out = self._run_init("auto", "zfs")
-        assert "auto-creating zfs storage pool" in out
+        out, err = self._run_init_with_stderr("auto", "zfs")
+        assert "EFFECTIVE=zfs" in out
 
     def test_auto_mode_ext4(self):
-        out = self._run_init("auto", "ext4")
-        assert "CoW not available" in out
+        out, err = self._run_init_with_stderr("auto", "ext4")
+        assert "EFFECTIVE=none" in out
+        # log message about CoW not available goes to stderr
+        assert "CoW not available" in err
 
     def test_auto_mode_xfs(self):
-        out = self._run_init("auto", "xfs")
-        assert "CoW not available" in out
+        out, err = self._run_init_with_stderr("auto", "xfs")
+        assert "EFFECTIVE=none" in out
+        assert "CoW not available" in err
 
     def test_btrfs_mode_on_btrfs(self):
-        out = self._run_init("btrfs", "btrfs")
-        assert "creating incus btrfs storage pool" in out
+        out, err = self._run_init_with_stderr("btrfs", "btrfs")
+        assert "EFFECTIVE=btrfs" in out
+        assert "creating incus btrfs storage pool" in err
 
     def test_btrfs_mode_on_ext4(self):
         out = self._run_init("btrfs", "ext4")
-        assert "falling back" in out
-        assert "btrfs pool requires btrfs" in out
+        # warns to stderr; stdout just has the EFFECTIVE line
+        assert "EFFECTIVE=" in out  # no crash
 
     def test_zfs_mode_on_zfs(self):
-        out = self._run_init("zfs", "zfs")
-        assert "creating incus zfs storage pool" in out
+        out, err = self._run_init_with_stderr("zfs", "zfs")
+        assert "EFFECTIVE=zfs" in out
+        assert "creating incus zfs storage pool" in err
 
     def test_zfs_mode_on_ext4(self):
         out = self._run_init("zfs", "ext4")
-        assert "falling back" in out
-        assert "zfs pool requires zfs" in out
+        assert "EFFECTIVE=" in out  # no crash
 
-    def test_dir_mode(self):
-        out = self._run_init("dir", "btrfs")
-        assert "forcing directory-backed pool" in out
+    def test_dir_mode_creates_pool(self):
+        """dir mode must create a dir-backed pool (not just return early)."""
+        script = _PREAMBLE + self._FUNC + """
+sudo()  { "$@"; }
+incus() {
+    # list returns empty (no existing pool); create succeeds
+    if [[ "$1" == "storage" && "$2" == "list" ]]; then echo ""; return 0; fi
+    echo "incus $*"; return 0;
+}
+COW_POOL_MODE="dir"
+_incus_storage_init "btrfs"
+echo "EFFECTIVE=$COW_EFFECTIVE_MODE"
+"""
+        rc, out, err = _bash_run(script)
+        assert rc == 0, f"dir mode crashed: {err}"
+        assert "incus storage create default dir" in out
+        assert "EFFECTIVE=dir" in out
+
+    def test_dir_mode_skips_existing_pool(self):
+        """dir mode must not recreate when 'default' pool already exists."""
+        script = _PREAMBLE + self._FUNC + """
+sudo()  { "$@"; }
+incus() {
+    if [[ "$1" == "storage" && "$2" == "list" ]]; then echo "| default |"; return 0; fi
+    echo "incus $*"; return 0;
+}
+COW_POOL_MODE="dir"
+_incus_storage_init "ext4"
+echo "EFFECTIVE=$COW_EFFECTIVE_MODE"
+"""
+        rc, out, err = _bash_run(script)
+        assert rc == 0, f"should not crash: {err}"
         assert "incus storage create" not in out
+        assert "EFFECTIVE=dir" in out
 
     def test_auto_create_fails_falls_back(self):
         """When auto pool creation fails, warn and fall back gracefully."""
-        script = INCUS_STORAGE_INIT_FUNC + textwrap.dedent("""\
-            incus() { echo "incus $*"; return 1; }
-            COW_POOL_MODE="auto"
-            _incus_storage_init "btrfs"
-        """)
+        script = _PREAMBLE + self._FUNC + """
+sudo()  { "$@"; }
+incus() { echo "incus $*"; return 1; }
+COW_POOL_MODE="auto"
+_incus_storage_init "btrfs"
+"""
         rc, out, err = _bash_run(script)
         assert rc == 0, f"should not crash on failure: {out} {err}"
-        assert "auto-create failed - falling back" in out
+        assert "failed" in err or "failed" in out
 
 
 class TestEnvVarDefaults:

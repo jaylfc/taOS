@@ -486,7 +486,7 @@ detect_cow_filesystem() {
     fi
 
     [[ -z "$fs_type" ]] && fs_type="unknown"
-    log "filesystem at $target: $fs_type"
+    log "filesystem at $target: $fs_type" >&2
     echo "$fs_type"
 }
 
@@ -505,7 +505,10 @@ _incus_storage_init() {
                 return 0
             fi
             log "creating incus btrfs storage pool for CoW container clones (<=5s deploys)"
-            sudo incus storage create default btrfs 2>/dev/null && return 0
+            if sudo incus storage create default btrfs 2>/dev/null; then
+                COW_EFFECTIVE_MODE="btrfs"
+                return 0
+            fi
             warn "incus storage create default btrfs failed - falling back to incus admin init --auto"
             ;;
         zfs)
@@ -515,11 +518,22 @@ _incus_storage_init() {
                 return 0
             fi
             log "creating incus zfs storage pool for CoW container clones (<=5s deploys)"
-            sudo incus storage create default zfs 2>/dev/null && return 0
+            if sudo incus storage create default zfs 2>/dev/null; then
+                COW_EFFECTIVE_MODE="zfs"
+                return 0
+            fi
             warn "incus storage create default zfs failed - falling back to incus admin init --auto"
             ;;
         dir)
             warn "TAOS_COW_POOL=dir - forcing directory-backed pool (no CoW, slower clones)"
+            if sudo incus storage list 2>/dev/null | grep -q '\bdefault\b'; then
+                log "incus storage pool 'default' already exists - skipping create"
+            else
+                sudo incus storage create default dir 2>/dev/null \
+                    || { warn "incus storage create default dir failed"; return 1; }
+                log "incus directory-backed storage pool 'default' created"
+            fi
+            COW_EFFECTIVE_MODE="dir"
             return 0
             ;;
         auto|*)
@@ -528,6 +542,7 @@ _incus_storage_init() {
                     log "CoW filesystem ($fs_type) detected - auto-creating $fs_type storage pool for fast clones (<=5s deploys)"
                     if sudo incus storage create default "$fs_type" 2>/dev/null; then
                         log "incus $fs_type storage pool 'default' created - clones will use CoW"
+                        COW_EFFECTIVE_MODE="$fs_type"
                         return 0
                     fi
                     warn "incus storage create default $fs_type failed - falling back to incus admin init --auto (dir pool)"
@@ -535,9 +550,11 @@ _incus_storage_init() {
                 ext[2-4]|xfs)
                     log "$fs_type filesystem - CoW not available; container clones will be full copies (slower)"
                     log "  for <=5s deploys, run incus on a btrfs or ZFS volume"
+                    COW_EFFECTIVE_MODE="none"
                     ;;
                 *)
                     log "filesystem type '$fs_type' - incus will auto-select the best available driver"
+                    COW_EFFECTIVE_MODE="none"
                     ;;
             esac
             return 0
@@ -550,6 +567,10 @@ detect_and_advise_cow() {
     COW_FS_TYPE="$(detect_cow_filesystem)"
 }
 detect_and_advise_cow
+
+# Effective storage mode is set later by _incus_storage_init (btrfs/zfs/dir/none)
+# or left as "n/a" when no incus pool is configured (Docker/Podman/macOS).
+COW_EFFECTIVE_MODE="n/a"
 
 # --- container runtime — install Incus if nothing is present -------------
 #
@@ -1560,12 +1581,17 @@ if [[ "$TAOS_BROWSER_PROXY_PORT" != "0" ]]; then
     log "                open both ports in your firewall if accessing remotely"
 fi
 log "  Install dir : $INSTALL_DIR"
-log "  Storage pool: ${COW_FS_TYPE:-unknown} filesystem"
-if [[ "${COW_FS_TYPE:-}" == "btrfs" || "${COW_FS_TYPE:-}" == "zfs" ]]; then
+log "  Storage pool: ${COW_EFFECTIVE_MODE:-n/a} (detected fs: ${COW_FS_TYPE:-unknown})"
+if [[ "${COW_EFFECTIVE_MODE:-}" == "btrfs" || "${COW_EFFECTIVE_MODE:-}" == "zfs" ]]; then
     log "    * CoW clones enabled - container deploys <=5 seconds"
+elif [[ "${COW_EFFECTIVE_MODE:-}" == "dir" ]]; then
+    log "    i Directory-backed pool - no CoW (TAOS_COW_POOL=dir was set)"
+    log "    For faster deploys: re-run on a btrfs or ZFS volume (TAOS_COW_POOL=auto)"
+elif [[ "${COW_EFFECTIVE_MODE:-}" == "n/a" ]]; then
+    log "    i Storage pool not managed by taOS (Docker/Podman/macOS host)"
 else
     log "    i CoW not available - deploys are full file copies (slower)"
-    log "    For faster deploys: run incus on btrfs or ZFS (set TAOS_COW_POOL=1 to enable)"
+    log "    For faster deploys: run incus on btrfs or ZFS (set TAOS_COW_POOL=btrfs or TAOS_COW_POOL=zfs)"
 fi
 log ""
 if have_root_or_sudo; then
