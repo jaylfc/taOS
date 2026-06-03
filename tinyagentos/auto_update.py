@@ -59,6 +59,31 @@ async def _run(args: list[str], cwd: Path) -> tuple[int, str]:
     return proc.returncode or 0, (stdout.decode() if stdout else "")
 
 
+async def update_tracking_branch(project_dir: Path) -> str:
+    """The branch this install tracks for updates.
+
+    Returns the currently checked-out branch (e.g. ``master`` on a stable
+    install, ``dev`` on a dev/test box). Falls back to ``master`` when the
+    repo is in detached HEAD (tag/SHA-pinned deploys) or the branch can't be
+    determined, preserving the historical stable-channel behaviour.
+    """
+    rc, out = await _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], project_dir)
+    branch = out.strip() if rc == 0 else ""
+    return branch if branch and branch != "HEAD" else "master"
+
+
+async def remote_is_strictly_ahead(project_dir: Path, current: str, remote: str) -> bool:
+    """True only if ``current`` is a strict ancestor of ``remote`` — i.e. the
+    remote is genuinely newer. Prevents offering an older or divergent commit
+    (e.g. master's tip when running ahead on dev) as an "update"."""
+    if not current or not remote or current == remote:
+        return False
+    rc, _ = await _run(
+        ["git", "merge-base", "--is-ancestor", current, remote], project_dir
+    )
+    return rc == 0
+
+
 class AutoUpdateService:
     """Background service that periodically checks GitHub for updates.
 
@@ -126,7 +151,10 @@ class AutoUpdateService:
             pass
         else:
             current = await self._current_commit()
-            if new_commit != current:
+            # Only an update if the remote is strictly newer than us — never
+            # flag an older/divergent commit (e.g. master's tip while we run
+            # ahead on dev) as available.
+            if await remote_is_strictly_ahead(self._project_dir, current, new_commit):
                 # Skip re-notifying for a commit we've already flagged.
                 if prefs.get("last_notified_commit") != new_commit:
                     await self._notify_available(current, new_commit)
@@ -151,13 +179,17 @@ class AutoUpdateService:
             )
 
     async def _probe_remote(self) -> Optional[str]:
-        """Return the current HEAD commit of origin/master, or None on failure."""
+        """Return the tip of the tracked remote branch (the branch this install
+        is on), or None on failure."""
+        branch = await update_tracking_branch(self._project_dir)
         rc, _ = await _run(
-            ["git", "fetch", "--quiet", "origin", "master"], self._project_dir
+            ["git", "fetch", "--quiet", "origin", branch], self._project_dir
         )
         if rc != 0:
             return None
-        rc2, out = await _run(["git", "rev-parse", "origin/master"], self._project_dir)
+        rc2, out = await _run(
+            ["git", "rev-parse", f"origin/{branch}"], self._project_dir
+        )
         if rc2 != 0:
             return None
         return out.strip()
