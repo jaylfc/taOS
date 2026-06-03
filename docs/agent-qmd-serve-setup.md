@@ -31,10 +31,10 @@ Host (Orange Pi / x86)
 
 ```bash
 # Inside the agent's LXC container
-# Pin to a known-good version to avoid surprise breakage on fresh
-# installs.  The npm package is pre-built; installing from the git
-# source requires a TypeScript build step.
-npm install -g @jaylfc/qmd@2.1.1
+# Always install the latest published qmd so deployments match the
+# maintainer's setup.  The npm package is pre-built; installing from the
+# git source requires a TypeScript build step.
+npm install -g @jaylfc/qmd@latest
 ```
 
 ## Configure QMD to Use Remote Backend

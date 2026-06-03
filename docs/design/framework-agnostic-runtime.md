@@ -284,9 +284,11 @@ path breaks.
 ## Updating the qmd fork
 
 taOS runs a fork of [tobilg/qmd](https://github.com/tobilg/qmd) at
-[jaylfc/qmd](https://github.com/jaylfc/qmd) (branch `feat/remote-llm-provider`).
-The fork adds multi-tenant serve mode, per-tenant `dbPath` routing, and
-ingest/delete-chunk endpoints.  These changes are not yet upstream.
+[jaylfc/qmd](https://github.com/jaylfc/qmd) (branch `main`), published to npm
+as `@jaylfc/qmd`. The fork adds multi-tenant serve mode, per-tenant `dbPath`
+routing, ingest/delete-chunk endpoints, and a pluggable model backend
+(`qmd serve`, remote `--server`/RemoteLLM, `--backend ollama`).  These changes
+are not yet upstream.
 
 ### When to rebase
 
@@ -305,7 +307,7 @@ Rebase onto upstream when:
 
 2. **Rebase the fork onto upstream.**
    ```bash
-   git checkout feat/remote-llm-provider
+   git checkout main
    git rebase upstream/main
    ```
    Resolve conflicts.  taOS-specific changes are concentrated in:
@@ -327,10 +329,10 @@ Rebase onto upstream when:
    npm publish
    ```
 
-5. **Update the pinned version in taOS.**
-   - Bump the version in `scripts/install-server.sh` (search for `@jaylfc/qmd@`)
-   - Update `docs/agent-qmd-serve-setup.md` with the new version
-   - Commit: `chore: bump qmd pin to <new-version>`
+5. **That's it — taOS installs `@jaylfc/qmd@latest`.**
+   `scripts/install-server.sh` installs the package unpinned, so fresh
+   deployments pick up the newly published version automatically. There is
+   no version to bump in taOS.
 
 ### When upstream PR #511 merges
 
