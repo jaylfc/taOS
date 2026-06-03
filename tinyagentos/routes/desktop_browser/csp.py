@@ -57,15 +57,37 @@ _DIRECTIVES = (
     "font-src 'self' data:",
     # Form submissions may not target third parties.
     "form-action 'self'",
-    # Disallow anyone embedding our proxied page in their own iframe
-    # (defence against clickjacking on the user-facing /proxy URL).
-    "frame-ancestors 'self'",
-    # Block legacy mixed-content in case the proxied page uses http://
-    # subresources after we serve over https://.
-    "upgrade-insecure-requests",
 )
 
 
-def proxied_response_csp() -> str:
-    """Return the strict CSP header value for proxied HTML responses."""
-    return "; ".join(_DIRECTIVES)
+def proxied_response_csp(
+    shell_origin: str | None = None, *, upgrade_insecure: bool = False
+) -> str:
+    """Return the strict CSP header value for proxied HTML responses.
+
+    ``frame-ancestors`` is computed here rather than baked into the static
+    directives: the proxied page is embedded by the taOS shell, which lives
+    on a *different* origin (the main port) than the proxy origin. Plain
+    ``frame-ancestors 'self'`` would block that framing entirely. We allow
+    ``'self'`` plus the shell origin (same host, main port) when known, so
+    only the taOS shell — not arbitrary third parties — can embed it,
+    preserving the clickjacking defence on the user-facing /proxy URL.
+
+    ``shell_origin`` should be ``scheme://host[:port]`` of the main taOS
+    origin. When ``None`` (single-port fallback, where the proxy is served
+    from the main origin itself), ``'self'`` alone is correct.
+
+    ``upgrade_insecure`` adds ``upgrade-insecure-requests``. This MUST only be
+    set when the proxy origin is served over HTTPS: rewritten subresources
+    point at the proxy origin (``http://host:proxy_port/...`` on a plain-HTTP
+    LAN deploy), and this directive would force-upgrade them to ``https://``
+    that the HTTP-only origin can't serve — breaking every stylesheet, script,
+    and image. Pass the request scheme through so HTTP deploys stay functional.
+    """
+    ancestors = "frame-ancestors 'self'"
+    if shell_origin:
+        ancestors += f" {shell_origin}"
+    directives = [*_DIRECTIVES, ancestors]
+    if upgrade_insecure:
+        directives.append("upgrade-insecure-requests")
+    return "; ".join(directives)

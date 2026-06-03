@@ -133,3 +133,53 @@ self.addEventListener("fetch", (event: FetchEvent) => {
 
   // Everything else: pass through.
 });
+
+// ---------------------------------------------------------------------------
+// Web push
+// ---------------------------------------------------------------------------
+
+self.addEventListener("push", (event: PushEvent) => {
+  // Server pushes a JSON payload {title, body, tag?, icon?, data?}.
+  // Fallback to a generic message if parsing fails or the push has no payload.
+  let payload: Record<string, unknown> | null = null;
+  try {
+    payload = event.data ? (event.data.json() as Record<string, unknown>) : null;
+  } catch {
+    payload = null;
+  }
+  if (!payload || typeof payload !== "object") {
+    payload = { title: "taOS", body: "New activity" };
+  }
+  const title = typeof payload["title"] === "string" ? payload["title"] : "taOS";
+  const options: NotificationOptions = {
+    body: typeof payload["body"] === "string" ? payload["body"] : "",
+    tag: typeof payload["tag"] === "string" ? payload["tag"] : undefined,
+    icon: typeof payload["icon"] === "string" ? payload["icon"] : undefined,
+    data: payload["data"] && typeof payload["data"] === "object" ? payload["data"] : {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event: NotificationEvent) => {
+  // Close the notification, then focus an existing same-origin window
+  // (posting the click data so the shell can route to the right tab)
+  // or open a new one at root.
+  event.notification.close();
+  const data = (event.notification.data as Record<string, unknown>) || {};
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientsList) => {
+        for (const client of clientsList) {
+          if (client.url && new URL(client.url).origin === self.location.origin) {
+            (client as WindowClient).postMessage({ type: "taos-push:click", data });
+            return (client as WindowClient).focus();
+          }
+        }
+        if (self.clients.openWindow) {
+          return self.clients.openWindow("/");
+        }
+        return null;
+      })
+  );
+});

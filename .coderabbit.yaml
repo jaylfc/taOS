@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit auto-reviews only the default branch (master) by default.
+# We develop on dev (integration) and promote to master (stable), so
+# enable auto-review on both — otherwise dev PRs go unreviewed until the
+# dev -> master promotion.
+reviews:
+  auto_review:
+    enabled: true
+    base_branches:
+      - master
+      - dev
