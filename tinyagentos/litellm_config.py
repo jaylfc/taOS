@@ -239,9 +239,15 @@ def generate_litellm_config(
         backend_name = backend.get("name", "")
         if backend_name.startswith("local-") and url:
             for manifest_id in _local_backend_models_from_registry(backend, registry):
-                # Skip if already added (e.g. cloud per-model loop above
-                # already registered it under the same name).
-                if any(e.get("model_name") == manifest_id for e in model_list):
+                # Skip if an EXACT duplicate for this same backend already
+                # exists (same model_name AND same api_base).  A different
+                # backend serving the same manifest_id is a distinct entry
+                # (multi-backend failover) and must NOT be skipped.
+                if any(
+                    e.get("model_name") == manifest_id
+                    and e.get("litellm_params", {}).get("api_base") == url
+                    for e in model_list
+                ):
                     continue
                 per_model_params: dict = {
                     "model": f"{prefix}/{manifest_id}",

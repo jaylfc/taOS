@@ -34,6 +34,8 @@ class HistoryMixin:
         """Substring match on url + title for the (user, profile). Most-recent first."""
         if not user_id or not profile_id:
             raise ValueError("user_id and profile_id required")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
         assert self._db is not None
         like = f"%{query}%"
         cursor = await self._db.execute(

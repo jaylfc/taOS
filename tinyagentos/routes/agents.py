@@ -200,6 +200,10 @@ class DeployAgentRequest(BaseModel):
     memory_config: dict | None = None
     source_persona_id: str | None = None
     save_to_library: dict | None = None  # {"name": str, "description": str|None}
+    # KV-cache quantisation — sent by DeployWizard; defaults mirror normalize_agent.
+    kv_cache_quant_k: str = "fp16"
+    kv_cache_quant_v: str = "fp16"
+    kv_cache_quant_boundary_layers: int = 0
 
 
 @router.post("/api/agents/deploy")
@@ -288,6 +292,10 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     new_agent["memory_config"] = body.memory_config
     new_agent["source_persona_id"] = body.source_persona_id
     new_agent["migrated_to_v2_personas"] = True
+    # Apply KV-cache quantisation choices from the deploy wizard.
+    new_agent["kv_cache_quant_k"] = body.kv_cache_quant_k
+    new_agent["kv_cache_quant_v"] = body.kv_cache_quant_v
+    new_agent["kv_cache_quant_boundary_layers"] = body.kv_cache_quant_boundary_layers
 
     config.agents.append(new_agent)
     await save_config_locked(config, config.config_path)

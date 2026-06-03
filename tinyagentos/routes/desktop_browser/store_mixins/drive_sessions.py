@@ -98,6 +98,8 @@ class DriveSessionsMixin:
         idle_timeout_s: float = 30.0,
     ) -> int:
         """Atomically delete rows idle for >= idle_timeout_s. Returns rowcount."""
+        if idle_timeout_s <= 0:
+            raise ValueError("idle_timeout_s must be positive")
         assert self._db is not None
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=idle_timeout_s)).isoformat()
         cursor = await self._db.execute(

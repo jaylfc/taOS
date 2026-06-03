@@ -37,6 +37,8 @@ class BookmarksMixin:
         """Return bookmarks for (user, profile), optionally substring-filtered."""
         if not user_id or not profile_id:
             raise ValueError("user_id and profile_id required")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
         assert self._db is not None
         if query:
             like = f"%{query}%"

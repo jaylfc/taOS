@@ -59,6 +59,8 @@ class PinsMixin:
             raise ValueError("tab_id is required")
         if not agent_id:
             raise ValueError("agent_id is required")
+        if max_pins <= 0:
+            raise ValueError("max_pins must be positive")
         assert self._db is not None
         pinned_at = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
@@ -97,6 +99,12 @@ class PinsMixin:
         tab_id: str,
     ) -> list[dict]:
         """Returns list of {agent_id, pinned_at} ordered by pinned_at ASC."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        if not profile_id:
+            raise ValueError("profile_id is required")
+        if not tab_id:
+            raise ValueError("tab_id is required")
         assert self._db is not None
         cursor = await self._db.execute(
             "SELECT agent_id, pinned_at FROM agent_pins "
@@ -109,6 +117,8 @@ class PinsMixin:
 
     async def list_pins_for_user(self, *, user_id: str) -> list[dict]:
         """Returns list of {profile_id, tab_id, agent_id, pinned_at}."""
+        if not user_id:
+            raise ValueError("user_id is required")
         assert self._db is not None
         cursor = await self._db.execute(
             "SELECT profile_id, tab_id, agent_id, pinned_at FROM agent_pins "
@@ -129,6 +139,12 @@ class PinsMixin:
         tab_id: str,
     ) -> int:
         """Returns the number of pins on the (user, profile, tab) tuple."""
+        if not user_id:
+            raise ValueError("user_id is required")
+        if not profile_id:
+            raise ValueError("profile_id is required")
+        if not tab_id:
+            raise ValueError("tab_id is required")
         assert self._db is not None
         cursor = await self._db.execute(
             "SELECT COUNT(*) FROM agent_pins "
