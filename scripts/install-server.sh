@@ -594,6 +594,15 @@ ensure_container_runtime() {
     # Check if any supported runtime is already present
     if command -v incus >/dev/null 2>&1; then
         log "container runtime: incus $(incus --version 2>/dev/null | head -1) — ok"
+        # incus pre-existed, so _incus_storage_init below never runs and
+        # COW_EFFECTIVE_MODE would stay "n/a" (which reads as "no incus").
+        # Reflect the existing default pool's driver in the summary instead.
+        local _existing_drv
+        _existing_drv=$(sudo incus storage show default 2>/dev/null | sed -n 's/^driver:[[:space:]]*//p' | head -1)
+        case "$_existing_drv" in
+            btrfs|zfs) COW_EFFECTIVE_MODE="$_existing_drv" ;;
+            *)         COW_EFFECTIVE_MODE="existing" ;;
+        esac
         return 0
     fi
     if command -v docker >/dev/null 2>&1; then
@@ -1598,6 +1607,8 @@ elif [[ "${COW_EFFECTIVE_MODE:-}" == "dir" ]]; then
     log "    For faster deploys: re-run on a btrfs or ZFS volume (TAOS_COW_POOL=auto)"
 elif [[ "${COW_EFFECTIVE_MODE:-}" == "n/a" ]]; then
     log "    i Storage pool not managed by taOS (Docker/Podman/macOS host)"
+elif [[ "${COW_EFFECTIVE_MODE:-}" == "existing" ]]; then
+    log "    i Using your pre-existing Incus storage pool"
 else
     log "    i CoW not available - deploys are full file copies (slower)"
     log "    For faster deploys: run incus on btrfs or ZFS (set TAOS_COW_POOL=btrfs or TAOS_COW_POOL=zfs)"
