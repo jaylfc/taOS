@@ -19,7 +19,7 @@ qmd:
 # Agent memory (qmd index databases) lives on the cluster's shared storage,
 # mounted on every worker at /srv/taos/agent-memory/. Each worker LXC runs a
 # single qmd serve which routes requests to the right tenant's database via
-# the per-tenant dbPath parameter (see @jaylfc/qmd@2.1.1+). This means an
+# the per-tenant dbPath parameter (see @jaylfc/qmd). This means an
 # agent can migrate between worker nodes without copying its memory — the
 # memory follows the agent identity, not the host.
 agents: []

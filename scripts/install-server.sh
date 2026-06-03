@@ -1127,11 +1127,11 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # pre-built (dist/ is not committed to the source repo),
             # so installing from a git SHA requires a TypeScript
             # build step — use the npm registry instead.
-            # To update: verify the new version against taOS, then
-            # bump the pinned version here.
+            # Always install the latest published @jaylfc/qmd so fresh
+            # deployments match the maintainer's setup (intentionally unpinned).
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
-            log "npm install -g @jaylfc/qmd@2.1.1 (log: $qmd_install_log)"
-            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@2.1.1" >"$qmd_install_log" 2>&1; then
+            log "npm install -g @jaylfc/qmd@latest (log: $qmd_install_log)"
+            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@latest" >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"
