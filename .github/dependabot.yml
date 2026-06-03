@@ -3,6 +3,7 @@ updates:
   # Python (controller + worker)
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -14,6 +15,7 @@ updates:
   # Desktop SPA (Vite/React)
   - package-ecosystem: "npm"
     directory: "/desktop"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -25,6 +27,7 @@ updates:
   # GitHub Actions workflows
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
