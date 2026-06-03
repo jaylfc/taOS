@@ -129,6 +129,25 @@ def slugify_agent_name(name: str) -> str:
     return slug[:63]
 
 
+def unique_agent_slug(config: "AppConfig", display_name: str) -> str:
+    """Slugify display_name and append -2, -3, … until the slug is unique.
+
+    Checks for collisions against config.agents by matching the ``name``
+    field, mirroring the semantics of agent_db.find_agent.
+
+    Raises ValueError if no unique slug can be found within 100 attempts.
+    """
+    slug = slugify_agent_name(display_name)
+    unique_slug = slug
+    suffix = 2
+    while any(a.get("name") == unique_slug for a in config.agents):
+        unique_slug = f"{slug}-{suffix}"
+        suffix += 1
+        if suffix > 100:
+            raise ValueError("Could not generate a unique agent slug")
+    return unique_slug
+
+
 def _default_on_worker_failure(agent: dict) -> str:
     """Return the default on_worker_failure policy for an agent dict.
 

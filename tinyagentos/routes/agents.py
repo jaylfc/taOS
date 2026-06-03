@@ -11,7 +11,7 @@ from pydantic import BaseModel
 import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
-from tinyagentos.config import save_config_locked, validate_agent_name, slugify_agent_name
+from tinyagentos.config import save_config_locked, validate_agent_name, unique_agent_slug
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
@@ -105,14 +105,10 @@ async def add_agent(request: Request, body: AgentCreate):
     if name_error:
         return JSONResponse({"error": name_error}, status_code=400)
 
-    slug = slugify_agent_name(display_name)
-    unique_slug = slug
-    suffix = 2
-    while find_agent(config, unique_slug):
-        unique_slug = f"{slug}-{suffix}"
-        suffix += 1
-        if suffix > 100:
-            return JSONResponse({"error": "Could not generate a unique agent slug"}, status_code=400)
+    try:
+        unique_slug = unique_agent_slug(config, display_name)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
     agent = body.model_dump()
     agent["name"] = unique_slug
@@ -472,14 +468,10 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     if name_error:
         return JSONResponse({"error": name_error}, status_code=400)
     # Derive a container-safe slug and ensure uniqueness
-    slug = slugify_agent_name(display_name)
-    unique_slug = slug
-    suffix = 2
-    while find_agent(config, unique_slug):
-        unique_slug = f"{slug}-{suffix}"
-        suffix += 1
-        if suffix > 100:
-            return JSONResponse({"error": "Could not generate a unique agent slug"}, status_code=400)
+    try:
+        unique_slug = unique_agent_slug(config, display_name)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     # Rewrite body.name to the unique slug; the original user-entered name
     # is preserved as display_name for the UI.
     body.name = unique_slug
@@ -987,13 +979,10 @@ async def restore_archived_agent(request: Request, archive_id: str):
     container = f"taos-agent-{desired_slug}"
 
     # Resolve slug collisions with currently-live agents.
-    final_slug = desired_slug
-    suffix = 2
-    while find_agent(config, final_slug):
-        final_slug = f"{desired_slug}-{suffix}"
-        suffix += 1
-        if suffix > 100:
-            return JSONResponse({"error": "Could not resolve restore slug"}, status_code=500)
+    try:
+        final_slug = unique_agent_slug(config, desired_slug)
+    except ValueError:
+        return JSONResponse({"error": "Could not resolve restore slug"}, status_code=500)
 
     data_dir = request.app.state.data_dir
     archive_base = data_dir / entry.get("archive_dir", "")
