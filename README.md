@@ -6,8 +6,6 @@
 
 > **Beta (2026-06-02).** This is beta software meant for testers running it on their own hardware, so expect rough edges. The install script, backend, API, memory system (taOSmd), and multi-framework group chat all work; the desktop GUI is wired up for everyday use but a few flows (some agent management, worker connections, model routing) are still being smoothed out. Star or watch the repo to follow progress and catch the next release.
 
-## Star History
-
 <p align="center">
 <a href="https://www.star-history.com/?repos=jaylfc%2Ftinyagentos&type=date&legend=top-left">
  <picture>
