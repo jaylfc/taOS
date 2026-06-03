@@ -30,7 +30,7 @@ jobs:
             debarch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       # Approach A: install incus in the runner and build the base image
       # by launching a real container. GitHub's ubuntu-latest and
@@ -124,7 +124,7 @@ jobs:
           sudo incus image export taos-openclaw-base "./taos-openclaw-base-linux-$ARCH"
           ls -la "./taos-openclaw-base-linux-$ARCH"*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: taos-openclaw-base-${{ matrix.arch }}
           path: taos-openclaw-base-linux-${{ matrix.arch }}.tar.gz
@@ -136,7 +136,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: taos-openclaw-base-*
           merge-multiple: true
@@ -155,7 +155,7 @@ jobs:
       # releases. Consumers (taOS deployer) point at the images repo directly.
       # Reuses ADD_TO_PROJECT_PAT (classic repo-scoped PAT already configured
       # on this repo) — it has Contents: write on jaylfc/tinyagentos-images.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           repository: jaylfc/tinyagentos-images
           token: ${{ secrets.ADD_TO_PROJECT_PAT }}
