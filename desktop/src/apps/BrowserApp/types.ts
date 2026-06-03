@@ -37,6 +37,8 @@ export interface Tab {
   readerExtract?: ReaderExtract | null;
   /** Agent IDs pinned to this tab — sticky across navigation and discard. */
   pinnedAgentIds: string[];
+  /** Set when a full Neko browser session is live for this tab. */
+  liveSession?: { nekoUrl: string; streamToken: string };
 }
 
 export interface RecentlyClosedTab {

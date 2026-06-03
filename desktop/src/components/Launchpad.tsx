@@ -124,7 +124,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
           {filteredServices.length > 0 && (
             <div>
               <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-3 px-1">
-                Services
+                Apps
               </h3>
               <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-3">
                 {filteredServices.map((svc) => (

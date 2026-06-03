@@ -318,6 +318,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     skills = SkillStore(data_dir / "skills.db")
+    from tinyagentos.themes.store import ThemeStore
+    themes = ThemeStore(data_dir / "themes.sqlite3")
     knowledge_store = KnowledgeStore(
         data_dir / "knowledge.db",
         media_dir=data_dir / "knowledge-media",
@@ -339,6 +341,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.agent_browsers import AgentBrowsersManager
     agent_browsers = AgentBrowsersManager(db_path=data_dir / "agent-browsers.db", mock=True)
+
+    from tinyagentos.browser_sessions import BrowserSessionManager
+    browser_sessions = BrowserSessionManager(data_dir / "browser_sessions.db")
 
     from taosmd import BrowsingHistory as BrowsingHistoryStore
     browsing_history = BrowsingHistoryStore(db_path=data_dir / "browsing-history.db")
@@ -375,6 +380,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await user_memory.init()
         await installed_apps.init()
         await skills.init()
+        await themes.init()
+        app.state.themes = themes
         await knowledge_store.init()
         await mcp_store.init()
         await agent_tokens_store.init()
@@ -411,6 +418,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
         await agent_browsers.init()
         app.state.agent_browsers = agent_browsers
+        await browser_sessions.init()
+        app.state.browser_sessions = browser_sessions
+        import secrets as _secrets
+        app.state.browser_session_signing_key = _secrets.token_bytes(32)
         await browsing_history.init()
         app.state.browsing_history = browsing_history
         await knowledge_graph.init()
@@ -519,6 +530,32 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await _asyncio.sleep(300)
 
         asyncio.create_task(_ephemeral_sweep_loop(app))
+
+        async def _browser_reap_loop(app: FastAPI) -> None:
+            import asyncio as _asyncio
+            mgr = app.state.browser_sessions
+            cluster = app.state.cluster_manager
+            while True:
+                try:
+                    auth_token = getattr(app.state, "browser_worker_auth_token", None)
+                    reaped = await mgr.reap_idle()  # flips stale running→idle, returns ids
+                    for sid in reaped:
+                        try:
+                            s = await mgr.get_session(sid)
+                            if s and s.get("node") and s.get("container_id"):
+                                w = cluster.get_worker(s["node"])
+                                if w is not None:
+                                    await mgr.stop_on_worker(
+                                        sid, worker_url=w.url, container_id=s["container_id"],
+                                        auth_token=auth_token, set_status=None,
+                                    )
+                        except Exception as _sid_e:
+                            logger.warning("browser reap: stop for %s failed: %s", sid, _sid_e)
+                except Exception as _e:
+                    logger.warning("browser reap failed: %s", _e)
+                await _asyncio.sleep(300)
+
+        asyncio.create_task(_browser_reap_loop(app))
 
         # Per-agent state lives on the host and is mounted into containers.
         # See docs/design/framework-agnostic-runtime.md.
@@ -893,9 +930,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await scheduler_history_store.close()
         await benchmark_store.close()
         await skills.close()
+        await themes.close()
         await knowledge_monitor.stop()
         await knowledge_store.close()
         await agent_browsers.close()
+        await browser_sessions.close()
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
@@ -1021,6 +1060,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
     app.state.skills = skills
+    app.state.themes = themes
     app.state.knowledge_store = knowledge_store
     app.state.ingest_pipeline = knowledge_ingest
     app.state.knowledge_monitor = knowledge_monitor
@@ -1124,6 +1164,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.store_install import router as store_install_router
     app.include_router(store_install_router)
+
+    from tinyagentos.routes.guides import router as guides_router
+    app.include_router(guides_router)
 
     from tinyagentos.routes.models import router as models_router
     app.include_router(models_router)
@@ -1239,6 +1282,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes.agent_browsers import router as agent_browsers_router
     app.include_router(agent_browsers_router)
 
+    from tinyagentos.routes.browser_sessions import router as browser_sessions_router
+    app.include_router(browser_sessions_router)
+
     from tinyagentos.routes.reddit import router as reddit_router
     app.include_router(reddit_router)
 
@@ -1293,6 +1339,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.routes import admin_prompts as admin_prompts_routes
     app.include_router(admin_prompts_routes.router)
 
+    from tinyagentos.routes import themes as themes_routes
+    app.include_router(themes_routes.router)
+
     from tinyagentos.routes import framework as framework_routes
     app.include_router(framework_routes.router)
 
@@ -1325,6 +1374,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.routes.api_index import router as api_index_router
     app.include_router(api_index_router)
+
+    from tinyagentos.routes.gh_webhook import router as gh_webhook_router
+    app.include_router(gh_webhook_router)
 
     return app
 

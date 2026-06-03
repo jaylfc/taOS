@@ -79,3 +79,31 @@ class TestServiceWorkerAsset:
         r = await client.get("/__taos/sw.js")
         body = r.text
         assert "self.location.origin" in body
+
+    @pytest.mark.asyncio
+    async def test_prime_message_validates_source(self, client):
+        """taos-sw:prime handler must reject messages with no source so
+        a detached/injected call cannot re-prime the SW (Fix 3)."""
+        r = await client.get("/__taos/sw.js")
+        body = r.text
+        # The handler must check event.source before processing the prime.
+        assert "event.source" in body
+        assert "if (!event.source)" in body or "if (!event.source) return" in body
+
+    @pytest.mark.asyncio
+    async def test_prime_message_validates_profile_id(self, client):
+        """profileId must be validated against a safe slug regex so a
+        malicious page cannot inject path-traversal characters (Fix 3)."""
+        r = await client.get("/__taos/sw.js")
+        body = r.text
+        # Regex guard for profileId.
+        assert "[a-zA-Z0-9_-]" in body
+
+    @pytest.mark.asyncio
+    async def test_prime_message_validates_page_base_url_origin(self, client):
+        """pageBaseUrl must resolve to this origin; absolute URLs pointing
+        elsewhere must be rejected (Fix 3)."""
+        r = await client.get("/__taos/sw.js")
+        body = r.text
+        # Origin check: resolved URL origin must equal self.location.origin.
+        assert "resolved.origin !== self.location.origin" in body

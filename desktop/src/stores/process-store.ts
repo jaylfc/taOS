@@ -19,6 +19,7 @@ export interface WindowState {
   maximized: boolean;
   snapped: SnapPosition;
   focused: boolean;
+  closing?: boolean;
   props?: Record<string, unknown>;
   launchNonce: number;
 }
@@ -29,6 +30,7 @@ interface ProcessStore {
 
   openWindow: (appId: string, defaultSize: { w: number; h: number }, props?: Record<string, unknown>) => string;
   closeWindow: (id: string) => void;
+  removeWindow: (id: string) => void;
   focusWindow: (id: string) => void;
   minimizeWindow: (id: string) => void;
   restoreWindow: (id: string) => void;
@@ -84,6 +86,17 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
   },
 
   closeWindow(id) {
+    // Mark the window as closing so the Window component can run its
+    // close animation. The window stays mounted until the animation
+    // completes and calls removeWindow(id).
+    set((s) => ({
+      windows: s.windows.map((w) =>
+        w.id === id ? { ...w, closing: true } : w
+      ),
+    }));
+  },
+
+  removeWindow(id) {
     set((s) => ({ windows: s.windows.filter((w) => w.id !== id) }));
   },
 

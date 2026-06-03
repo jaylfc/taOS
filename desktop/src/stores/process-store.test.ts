@@ -37,6 +37,22 @@ describe("process-store openWindow", () => {
     expect(win.launchNonce).toBe(1);
   });
 
+  it("marks a window as closing instead of removing it on closeWindow", () => {
+    const id = useProcessStore.getState().openWindow("browser", { w: 800, h: 600 });
+    useProcessStore.getState().closeWindow(id);
+    const win = useProcessStore.getState().windows.find((w) => w.id === id);
+    // Still mounted in the array so the Window can run its close animation.
+    expect(win).toBeDefined();
+    expect(win!.closing).toBe(true);
+  });
+
+  it("removes a window from the array on removeWindow", () => {
+    const id = useProcessStore.getState().openWindow("browser", { w: 800, h: 600 });
+    useProcessStore.getState().closeWindow(id);
+    useProcessStore.getState().removeWindow(id);
+    expect(useProcessStore.getState().windows.find((w) => w.id === id)).toBeUndefined();
+  });
+
   it("restores a minimized window when re-opened", () => {
     const id = useProcessStore.getState().openWindow("browser", { w: 800, h: 600 });
     useProcessStore.getState().minimizeWindow(id);

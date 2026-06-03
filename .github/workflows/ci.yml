@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
   pull_request:
-    branches: [master]
+    branches: [master, dev]
   schedule:
     # 06:00 UTC daily run keeps the 3.11 leg honest without making every
     # PR wait 14 extra minutes on it. 3.11 is consistently ~2x slower

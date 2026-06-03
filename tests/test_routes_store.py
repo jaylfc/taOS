@@ -297,3 +297,85 @@ class TestInstallV2UpdatesRuntimeLocation:
         assert backend == "lxc"
 
 
+@pytest.mark.asyncio
+class TestDockerInstallRecordsRuntimeLocation:
+    """Local docker services (e.g. SearxNG) must record a runtime location so
+    they appear in /api/apps/installed and get a Launchpad shortcut.
+
+    Regression: the docker branch previously fell through to a block that only
+    recorded a location for remote installs (and with port=0), so a local
+    docker install succeeded but never surfaced a shortcut.
+    """
+
+    @pytest.fixture
+    def docker_catalog_dir(self, tmp_path):
+        svc = tmp_path / "catalog" / "services" / "searxng"
+        svc.mkdir(parents=True)
+        (svc / "manifest.yaml").write_text(yaml.dump({
+            "id": "searxng", "name": "SearXNG", "type": "service",
+            "category": "infrastructure", "version": "2024.12.0",
+            "description": "Privacy-respecting metasearch engine",
+            "requires": {"ram_mb": 128, "ports": [8080]},
+            "install": {
+                "method": "docker",
+                "image": "searxng/searxng:latest",
+                "ports": [8080],
+            },
+        }))
+        return tmp_path / "catalog"
+
+    @pytest_asyncio.fixture
+    async def docker_client(self, tmp_data_dir, docker_catalog_dir):
+        app = create_app(data_dir=tmp_data_dir, catalog_dir=docker_catalog_dir)
+        store = app.state.metrics
+        if store._db is not None:
+            await store.close()
+        await store.init()
+        await app.state.qmd_client.init()
+        await app.state.installed_apps.init()
+        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+        _rec = app.state.auth.find_user("admin")
+        _token = app.state.auth.create_session(user_id=_rec["id"] if _rec else "", long_lived=True)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test", cookies={"taos_session": _token}) as c:
+            yield c, app
+        await store.close()
+        await app.state.qmd_client.close()
+        await app.state.http_client.aclose()
+
+    async def test_local_docker_install_records_runtime_location_and_appears(
+        self, docker_client
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        client, app = docker_client
+
+        # Mock DockerInstaller so no real docker/compose runs; both pull and
+        # the auto-start succeed.
+        with patch(
+            "tinyagentos.installers.docker_installer.DockerInstaller"
+        ) as MockDocker:
+            instance = MockDocker.return_value
+            instance.install = AsyncMock(return_value={"success": True, "path": "/tmp/x"})
+            instance.start = AsyncMock(return_value={"success": True, "output": ""})
+
+            resp = await client.post(
+                "/api/store/install-v2", json={"app_id": "searxng"}
+            )
+        assert resp.status_code == 200
+
+        # Runtime location recorded with the declared host port + docker backend.
+        loc = await app.state.installed_apps.get_runtime_location("searxng")
+        assert loc is not None
+        assert loc["runtime_host"] == "127.0.0.1"
+        assert loc["runtime_port"] == 8080
+        assert loc["backend"] == "docker"
+
+        # And it surfaces in /api/apps/installed so the Launchpad shows a shortcut.
+        listed = await client.get("/api/apps/installed")
+        assert listed.status_code == 200
+        item = next(i for i in listed.json() if i["app_id"] == "searxng")
+        assert item["url"] == "/apps/searxng/"
+        assert item["status"] == "running"
+
+

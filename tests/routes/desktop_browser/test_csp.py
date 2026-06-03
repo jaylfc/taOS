@@ -100,3 +100,45 @@ class TestProxiedResponseCsp:
         csp = proxied_response_csp()
         assert not csp.endswith("; ")
         assert not csp.endswith(";")
+
+    @staticmethod
+    def _frame_ancestors(csp: str) -> str:
+        for d in csp.split(";"):
+            d = d.strip()
+            if d.startswith("frame-ancestors"):
+                return d
+        return ""
+
+    def test_frame_ancestors_self_only_without_shell_origin(self):
+        """Single-port fallback (proxy on the main origin): 'self' alone."""
+        from tinyagentos.routes.desktop_browser.csp import proxied_response_csp
+
+        csp = proxied_response_csp()
+        assert self._frame_ancestors(csp) == "frame-ancestors 'self'"
+
+    def test_frame_ancestors_includes_shell_origin_when_given(self):
+        """Dual-origin: the shell (main port) must be allowed to embed the
+        proxy origin, else the iframe is blocked by frame-ancestors."""
+        from tinyagentos.routes.desktop_browser.csp import proxied_response_csp
+
+        csp = proxied_response_csp("http://taos.example:6969")
+        assert (
+            self._frame_ancestors(csp)
+            == "frame-ancestors 'self' http://taos.example:6969"
+        )
+
+    def test_no_upgrade_insecure_by_default(self):
+        """On an HTTP deploy, upgrade-insecure-requests would force rewritten
+        proxy subresources to https:// the HTTP-only origin can't serve,
+        breaking every stylesheet/script/image. Must be absent by default."""
+        from tinyagentos.routes.desktop_browser.csp import proxied_response_csp
+
+        assert "upgrade-insecure-requests" not in proxied_response_csp()
+
+    def test_upgrade_insecure_added_only_when_requested(self):
+        """When the proxy is served over HTTPS, the directive is safe and
+        included."""
+        from tinyagentos.routes.desktop_browser.csp import proxied_response_csp
+
+        csp = proxied_response_csp(upgrade_insecure=True)
+        assert "upgrade-insecure-requests" in csp

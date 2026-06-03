@@ -20,6 +20,7 @@ const apps: AppManifest[] = [
   { id: "agents", name: "Agents", icon: "bot", category: "platform", component: () => import("@/apps/AgentsApp").then((m) => ({ default: m.AgentsApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 2 },
   { id: "files", name: "Files", icon: "folder", category: "platform", component: () => import("@/apps/FilesApp").then((m) => ({ default: m.FilesApp })), defaultSize: { w: 900, h: 550 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: true, launchpadOrder: 3 },
   { id: "store", name: "Store", icon: "shopping-bag", category: "platform", component: () => import("@/apps/StoreApp").then((m) => ({ default: m.StoreApp })), defaultSize: { w: 1000, h: 700 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: true, launchpadOrder: 4 },
+  { id: "guides", name: "Guides", icon: "book-open", category: "platform", component: () => import("@/apps/GuidesApp").then((m) => ({ default: m.GuidesApp })), defaultSize: { w: 900, h: 650 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 4.25 },
   { id: "settings", name: "Settings", icon: "settings", category: "platform", component: () => import("@/apps/SettingsApp").then((m) => ({ default: m.SettingsApp })), defaultSize: { w: 800, h: 550 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 5 },
   { id: "models", name: "Models", icon: "brain", category: "platform", component: () => import("@/apps/ModelsApp").then((m) => ({ default: m.ModelsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6 },
   { id: "providers", name: "Providers", icon: "cloud", category: "platform", component: () => import("@/apps/ProvidersApp").then((m) => ({ default: m.ProvidersApp })), defaultSize: { w: 950, h: 640 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6.5 },
@@ -66,6 +67,35 @@ export function getAppsByCategory(category: AppManifest["category"]): AppManifes
 
 export function getAllApps(): AppManifest[] {
   return [...apps].sort((a, b) => a.launchpadOrder - b.launchpadOrder);
+}
+
+const prefetched = new Set<string>();
+// Tracks apps that failed prefetch; not retried to avoid repeated errors on every hover.
+const prefetchFailed = new Set<string>();
+
+/**
+ * Warm the dynamic-import chunk for an app so a later cold-open feels instant.
+ *
+ * Best-effort and memoized: each app is only prefetched once per session and
+ * errors are swallowed (a failed prefetch must never affect the UI). Works for
+ * any registered manifest, including service/userspace apps (`service:*`).
+ */
+export function prefetchApp(appId: string): void {
+  if (prefetched.has(appId) || prefetchFailed.has(appId)) return;
+  const app = getApp(appId);
+  if (!app) return;
+  prefetched.add(appId);
+  try {
+    void Promise.resolve(app.component()).catch((err) => {
+      console.warn("Failed to prefetch app:", appId, err);
+      prefetched.delete(appId);
+      prefetchFailed.add(appId);
+    });
+  } catch (err) {
+    console.warn("Failed to prefetch app:", appId, err);
+    prefetched.delete(appId);
+    prefetchFailed.add(appId);
+  }
 }
 
 /**

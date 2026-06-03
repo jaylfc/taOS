@@ -132,6 +132,10 @@ async def client(app, tmp_data_dir):
     await canvas_store.init()
     agent_tokens_store = app.state.agent_tokens_store
     await agent_tokens_store.init()
+    themes = app.state.themes
+    if themes._db is not None:
+        await themes.close()
+    await themes.init()
     # BrowserApp v2 stores
     from tinyagentos.routes.desktop_browser.store import BrowserStore, BrowserCookieStore
     _browser_store = BrowserStore(tmp_data_dir / "browser.sqlite3")

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -57,12 +58,112 @@ _HOP_TIMEOUT = 5.0      # seconds — per-operation (connect + read) limit per h
 _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
 
 # Headers we strip from upstream responses before returning to the client.
+# `content-type` is stripped here and re-set from `media_type` on the
+# response. This is critical: for HTML we re-serialize the upstream body
+# as UTF-8 bytes (see rewriter/injector), so carrying through the upstream
+# charset (e.g. `text/html; charset=ISO-8859-1`) would mislabel UTF-8 bytes
+# and the iframe would decode them as Latin-1 — the classic `Â©` mojibake.
 _STRIP_RESPONSE_HEADERS = frozenset({
     "set-cookie", "set-cookie2",
     "content-security-policy", "content-security-policy-report-only",
     "x-frame-options",
     "content-length", "transfer-encoding", "content-encoding",
+    "content-type",
 })
+
+# charset= token in a Content-Type header value.
+_CT_CHARSET_RE = re.compile(r"charset\s*=\s*([\"']?)([^\";,\s]+)\1", re.IGNORECASE)
+# <meta charset="..."> and <meta http-equiv="Content-Type" content="...charset=...">
+_META_CHARSET_RE = re.compile(
+    rb"""<meta[^>]+charset\s*=\s*["']?\s*([a-zA-Z0-9_\-]+)""",
+    re.IGNORECASE,
+)
+
+
+def _detect_charset(content_type: str, body: bytes) -> str:
+    """Resolve the charset of an upstream HTML response.
+
+    Precedence: Content-Type header charset, then a <meta charset> /
+    <meta http-equiv> declaration in the first chunk of the body, else
+    UTF-8. The returned label is validated against the codec registry;
+    an unknown label falls back to UTF-8.
+    """
+    label = ""
+    m = _CT_CHARSET_RE.search(content_type or "")
+    if m:
+        label = m.group(2).strip()
+    if not label:
+        # Only sniff the head of the document — meta charset must appear
+        # within the first 1024 bytes per the HTML spec.
+        mm = _META_CHARSET_RE.search(body[:2048])
+        if mm:
+            label = mm.group(1).decode("ascii", "ignore").strip()
+    if not label:
+        return "utf-8"
+    try:
+        import codecs
+
+        codecs.lookup(label)
+    except (LookupError, ValueError):
+        return "utf-8"
+    return label
+
+
+def _shell_origin(request: Request) -> str | None:
+    """Origin of the taOS shell that frames this proxied page.
+
+    The shell runs on the main port; the proxy serves from a separate
+    origin (the proxy port). For the iframe to load, the proxied page's
+    ``frame-ancestors`` must name the shell origin (same host, main port).
+
+    Returns ``scheme://host:main_port`` derived from the request host, or
+    ``None`` in single-port mode (proxy served from the main origin, where
+    ``frame-ancestors 'self'`` already covers it).
+    """
+    state = request.app.state
+    main_port = getattr(state, "main_port", None)
+    proxy_port = getattr(state, "browser_proxy_port", 0)
+    if not main_port or main_port == proxy_port:
+        return None
+    host = _strip_port(request.headers.get("host") or "")
+    if not host:
+        return None
+    return f"{_request_scheme(request)}://{host}:{main_port}"
+
+
+def _request_scheme(request: Request) -> str:
+    """The effective scheme of the request, clamped to http/https.
+
+    Honours ``x-forwarded-proto`` (which may be a comma list behind chained
+    proxies — take the first) so a hostile/odd value can't deform the CSP.
+    A malformed forwarded scheme falls back to the request's own scheme
+    rather than hard-coding ``http`` — otherwise a genuinely HTTPS request
+    carrying a junk header would be downgraded to ``ws://`` and lose the
+    HTTPS CSP path.
+    """
+    forwarded = (
+        request.headers.get("x-forwarded-proto") or ""
+    ).split(",")[0].strip().lower()
+    if forwarded in ("http", "https"):
+        return forwarded
+    scheme = (request.url.scheme or "http").lower()
+    return scheme if scheme in ("http", "https") else "http"
+
+
+def _strip_port(host_header: str) -> str:
+    """Return the host without its port, handling IPv6 literals.
+
+    ``example.com:6969`` → ``example.com``; ``[::1]:6969`` → ``[::1]``;
+    bare ``[::1]`` (no port) stays intact (a naive rsplit(":") would mangle it).
+    """
+    host = host_header.strip()
+    if not host:
+        return ""
+    if host.startswith("["):
+        # IPv6 literal: keep through the closing bracket, drop any :port after.
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
+    return host.rsplit(":", 1)[0] if ":" in host else host
 
 
 @router.get("/api/desktop/browser/proxy")
@@ -202,16 +303,26 @@ async def proxy_get(
         def _proxy_url(absolute: str) -> str:
             return f"{proxy_prefix}{quote(absolute, safe='')}"
 
+        charset = _detect_charset(content_type, response.content)
         rewritten = rewrite_html(
             response.content, base_url=str(response.url), proxy=_proxy_url,
+            charset=charset,
         )
 
-        ws_scheme = "wss" if request.url.scheme == "https" else "ws"
+        # Use the effective scheme (honours x-forwarded-proto behind a TLS
+        # terminator), matching the CSP below — otherwise a reverse-proxied
+        # HTTPS deploy injects ws:// and the copilot socket fails.
+        ws_scheme = "wss" if _request_scheme(request) == "https" else "ws"
         ws_url = (
             f"{ws_scheme}://{request.url.netloc}/api/desktop/browser/copilot"
             f"?profile_id={quote(profile_id, safe='')}"
         )
-        injected = inject_into_head(rewritten, ws_url=ws_url)
+        injected = inject_into_head(
+            rewritten,
+            ws_url=ws_url,
+            page_base_url=str(response.url),
+            profile_id=profile_id,
+        )
 
         # Page-change broadcast for any agents pinned to this tab.
         # Non-blocking — never delay the user's page load on agent fan-out.
@@ -251,12 +362,15 @@ async def proxy_get(
                 )
             )
 
-        out_headers["content-security-policy"] = proxied_response_csp()
+        out_headers["content-security-policy"] = proxied_response_csp(
+            _shell_origin(request),
+            upgrade_insecure=_request_scheme(request) == "https",
+        )
         return Response(
             content=injected,
             status_code=response.status_code,
             headers=out_headers,
-            media_type="text/html",
+            media_type="text/html; charset=utf-8",
         )
 
     # Non-HTML — pass through bytes verbatim

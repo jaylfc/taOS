@@ -27,17 +27,20 @@ async def activity(request: Request):
         get_zram_stats,
     )
 
-    hw = request.app.state.hardware_profile
+    hw = getattr(request.app.state, "hardware_profile", None)
     try:
-        hw_data = asdict(hw)
-    except TypeError:
+        hw_data = asdict(hw) if hw is not None else {}
+    except (TypeError, AttributeError):
         hw_data = {}
 
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
 
     gpu_type = getattr(getattr(hw, "gpu", None), "type", None) or ""
-    vram_pct, vram_used_mb, vram_total_mb = get_vram_usage(gpu_type)
+    try:
+        vram_pct, vram_used_mb, vram_total_mb = get_vram_usage(gpu_type)
+    except Exception:
+        vram_pct = vram_used_mb = vram_total_mb = None
 
     try:
         load_avg = list(psutil.getloadavg()) if hasattr(psutil, "getloadavg") else None
@@ -72,6 +75,41 @@ async def activity(request: Request):
     npu_tops = npu_block.get("tops") if isinstance(npu_block, dict) else None
     gpu_name = gpu_block.get("type") if isinstance(gpu_block, dict) else None
 
+    try:
+        cpu_cores = get_cpu_per_core()
+    except Exception:
+        cpu_cores = []
+
+    try:
+        npu_cores = get_npu_per_core()
+    except Exception:
+        npu_cores = []
+
+    try:
+        gpu_load = get_gpu_load()
+    except Exception:
+        gpu_load = {}
+
+    try:
+        thermal = get_thermal_zones()
+    except Exception:
+        thermal = []
+
+    try:
+        zram = get_zram_stats()
+    except Exception:
+        zram = {}
+
+    try:
+        net_rates = get_network_rates()
+    except Exception:
+        net_rates = {}
+
+    try:
+        procs = get_top_processes(limit=10)
+    except Exception:
+        procs = []
+
     return JSONResponse({
         "timestamp": time.time(),
         "hardware": {
@@ -82,7 +120,7 @@ async def activity(request: Request):
             "ram_mb": hw_data.get("ram_mb") if isinstance(hw_data, dict) else None,
         },
         "cpu": {
-            "cores": get_cpu_per_core(),
+            "cores": cpu_cores,
             "load_avg": load_avg,
             "overall_percent": psutil.cpu_percent(),
         },
@@ -96,21 +134,21 @@ async def activity(request: Request):
             "swap_percent": swap.percent,
         },
         "npu": {
-            "cores": get_npu_per_core(),
+            "cores": npu_cores,
             "freq_hz": get_npu_frequency(),
             "type": npu_type,
             "tops": npu_tops,
         },
         "gpu": {
-            "load": get_gpu_load(),
+            "load": gpu_load,
             "vram_percent": vram_pct,
             "vram_used_mb": vram_used_mb,
             "vram_total_mb": vram_total_mb,
             "type": gpu_name,
         },
-        "thermal": get_thermal_zones(),
-        "zram": get_zram_stats(),
+        "thermal": thermal,
+        "zram": zram,
         "disk": disk_info,
-        "network": get_network_rates(),
-        "processes": get_top_processes(limit=10),
+        "network": net_rates,
+        "processes": procs,
     })
