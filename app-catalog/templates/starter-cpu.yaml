@@ -1,0 +1,13 @@
+# Store template — CPU-only starter pack (any hardware)
+id: starter-cpu
+name: "CPU-Only Starter Pack"
+type: template
+hardware_tier: cpu-only
+description: "Lightweight AI stack that runs on any CPU. No GPU required."
+download_size_mb: 2800
+apps:
+  - qwen2.5-1.5b         # Chat — 1.5B via llama.cpp, any CPU
+  - bge-small-en-v1.5    # Embeddings — compact 384-dim
+  - whisper-tiny         # Speech-to-text — 39M, CPU
+  - kokoro-tts           # Text-to-speech — 82M, CPU
+  - piper-en-lessac      # Alternative TTS voice
