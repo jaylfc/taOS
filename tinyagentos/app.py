@@ -787,26 +787,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("resource scheduler failed to build — routes will use static config")
             app.state.resource_scheduler = None
         # Detect and set container runtime
-        from tinyagentos.containers.backend import detect_runtime, set_backend
-        from tinyagentos.containers.lxc import LXCBackend
-        from tinyagentos.containers.docker import DockerBackend
-        runtime = getattr(config, "container_runtime", "auto")
-        if runtime == "auto":
-            runtime = detect_runtime()
-        if runtime == "apple":
-            from tinyagentos.containers.apple_backend import AppleContainerBackend
-            set_backend(AppleContainerBackend())
-        elif runtime == "lxc":
-            set_backend(LXCBackend())
-        elif runtime in ("docker", "podman"):
-            set_backend(DockerBackend(binary=runtime))
-        else:
-            logger.warning(
-                "No container backend detected (Incus / Docker / Podman / Apple). "
-                "Cluster features and worker containers will be disabled. "
-                "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
-                "'sudo dnf install incus' on Fedora) and restart taOS."
-            )
+        from tinyagentos.containers.backend import configure_container_runtime
+        configure_container_runtime(config)
 
         # Disk quota monitor — build and attach to app state so the route
         # handler can reuse the same instance (preserves in-memory last_state).
@@ -1059,26 +1041,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
-        from tinyagentos.containers.backend import detect_runtime, set_backend
-        from tinyagentos.containers.lxc import LXCBackend
-        from tinyagentos.containers.docker import DockerBackend
-        _runtime = getattr(config, "container_runtime", "auto")
-        if _runtime == "auto":
-            _runtime = detect_runtime()
-        if _runtime == "apple":
-            from tinyagentos.containers.apple_backend import AppleContainerBackend
-            set_backend(AppleContainerBackend())
-        elif _runtime == "lxc":
-            set_backend(LXCBackend())
-        elif _runtime in ("docker", "podman"):
-            set_backend(DockerBackend(binary=_runtime))
-        else:
-            logger.warning(
-                "No container backend detected (Incus / Docker / Podman / Apple). "
-                "Cluster features and worker containers will be disabled. "
-                "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
-                "'sudo dnf install incus' on Fedora) and restart taOS."
-            )
+        from tinyagentos.containers.backend import configure_container_runtime
+        configure_container_runtime(config)
     except Exception:
         logger.exception("container backend auto-init failed")
 

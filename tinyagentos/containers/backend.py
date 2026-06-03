@@ -286,3 +286,39 @@ def set_backend(backend: ContainerBackend) -> None:
     """Set the active container backend."""
     global _active_backend
     _active_backend = backend
+
+
+def configure_container_runtime(config: object = None) -> str | None:
+    """Detect the container runtime, set it as the active backend, and return it.
+
+    Reads ``config.container_runtime`` (default ``"auto"``) to allow the
+    operator to pin a specific runtime.  When ``"auto"``, ``detect_runtime()``
+    is called to probe the host.
+
+    Returns the runtime name (``"apple"``, ``"lxc"``, ``"docker"``, or
+    ``"podman"``), or ``None`` (after logging a warning) if no runtime is
+    available.
+    """
+    from tinyagentos.containers.lxc import LXCBackend
+    from tinyagentos.containers.docker import DockerBackend
+
+    runtime = getattr(config, "container_runtime", "auto")
+    if runtime == "auto":
+        runtime = detect_runtime()
+    if runtime == "apple":
+        from tinyagentos.containers.apple_backend import AppleContainerBackend
+        set_backend(AppleContainerBackend())
+        return runtime
+    if runtime == "lxc":
+        set_backend(LXCBackend())
+        return runtime
+    if runtime in ("docker", "podman"):
+        set_backend(DockerBackend(binary=runtime))
+        return runtime
+    logger.warning(
+        "No container backend detected (Incus / Docker / Podman / Apple). "
+        "Cluster features and worker containers will be disabled. "
+        "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
+        "'sudo dnf install incus' on Fedora) and restart taOS."
+    )
+    return None
