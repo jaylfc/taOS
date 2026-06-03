@@ -7,6 +7,8 @@ from unittest.mock import patch
 def test_main_uses_env_host_port(monkeypatch):
     monkeypatch.setenv("TAOS_HOST", "127.0.0.1")
     monkeypatch.setenv("TAOS_PORT", "7117")
+    # Disable dual-port: these tests only exercise host/port env-var resolution.
+    monkeypatch.setenv("TAOS_BROWSER_PROXY_PORT", "0")
     from tinyagentos import __main__ as m
 
     captured = {}
@@ -26,6 +28,8 @@ def test_main_uses_env_host_port(monkeypatch):
 def test_main_falls_back_to_config_when_env_unset(monkeypatch):
     monkeypatch.delenv("TAOS_HOST", raising=False)
     monkeypatch.delenv("TAOS_PORT", raising=False)
+    # Disable dual-port: these tests only exercise host/port env-var resolution.
+    monkeypatch.setenv("TAOS_BROWSER_PROXY_PORT", "0")
     from tinyagentos import __main__ as m
 
     captured = {}

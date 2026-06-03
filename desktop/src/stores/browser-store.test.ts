@@ -537,6 +537,75 @@ describe("browser-store: switchProfile snapshot/restore", () => {
   });
 });
 
+describe("browser-store: setTabLiveSession", () => {
+  beforeEach(async () => {
+    const mod = await import("./browser-store");
+    mod.useBrowserStore.setState({ windows: {} });
+  });
+
+  it("sets liveSession on the correct tab", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabLiveSession("win-1", tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-abc",
+    });
+
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.liveSession).toEqual({
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-abc",
+    });
+  });
+
+  it("clears liveSession when called with null", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabLiveSession("win-1", tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-abc",
+    });
+    s.setTabLiveSession("win-1", tabId, null);
+
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.liveSession).toBeUndefined();
+  });
+
+  it("only updates the targeted tab, not others", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabA = s.getWindow("win-1")!.tabs[0].id;
+    const tabB = s.addTab("win-1", "https://b.test/");
+
+    s.setTabLiveSession("win-1", tabA, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-a",
+    });
+
+    const tabBData = s.getWindow("win-1")!.tabs.find((t) => t.id === tabB);
+    expect(tabBData?.liveSession).toBeUndefined();
+  });
+
+  it("navigateTab clears liveSession", async () => {
+    const s = await freshStore();
+    s.createWindow("win-1", "personal");
+    const tabId = s.getWindow("win-1")!.tabs[0].id;
+
+    s.setTabLiveSession("win-1", tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-abc",
+    });
+    s.navigateTab("win-1", tabId, "https://new-page.test/");
+
+    const tab = s.getWindow("win-1")!.tabs[0];
+    expect(tab.liveSession).toBeUndefined();
+  });
+});
+
 describe("browser-store: pinnedAgentIds", () => {
   beforeEach(async () => {
     const mod = await import("./browser-store");

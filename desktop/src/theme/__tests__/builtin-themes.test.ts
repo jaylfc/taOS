@@ -1,0 +1,17 @@
+// desktop/src/theme/__tests__/builtin-themes.test.ts
+import { describe, it, expect } from "vitest";
+import { BUILTIN_THEMES } from "../builtin-themes";
+import { ALLOWED_TOKENS } from "../theme-config";
+
+describe("builtin themes", () => {
+  it("includes an undeletable Default and a Matrix Terminal", () => {
+    const ids = BUILTIN_THEMES.map((t) => t.theme_id);
+    expect(ids).toContain("default");
+    expect(ids).toContain("matrix-terminal");
+    expect(BUILTIN_THEMES.find((t) => t.theme_id === "default")!.builtin).toBe(true);
+  });
+  it("only uses allowlisted tokens", () => {
+    for (const t of BUILTIN_THEMES)
+      for (const k of Object.keys(t.config.tokens)) expect(ALLOWED_TOKENS.has(k)).toBe(true);
+  });
+});
