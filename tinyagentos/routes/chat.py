@@ -545,7 +545,7 @@ async def pin_message_endpoint(message_id: str, request: Request):
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
         if token:
-            session_user = auth.get_user(token=token)
+            session_user = auth.session_user(token)
     pinned_by = f"user:{session_user['id']}" if session_user else "user:unknown"
     try:
         await msg_store.pin_message(msg["channel_id"], message_id, pinned_by=pinned_by)
@@ -599,7 +599,7 @@ async def edit_message_endpoint(message_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.get_user(token=token)
+        session_user = auth.session_user(token)
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
@@ -625,7 +625,7 @@ async def delete_message_endpoint(message_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.get_user(token=token)
+        session_user = auth.session_user(token)
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
@@ -865,7 +865,7 @@ async def rewind_read_cursor_endpoint(channel_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.get_user(token=token)
+        session_user = auth.session_user(token)
     if session_user is None:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     await ch_store.rewind_read_cursor(
