@@ -43,7 +43,8 @@ async def update_canvas(request: Request, canvas_id: str):
     # Broadcast to canvas viewers
     hub = request.app.state.chat_hub
     canvas = await canvas_store.get(canvas_id)
-    await hub.broadcast(f"canvas:{canvas_id}", {"type": "canvas_update", "content": canvas["content"], "title": canvas["title"]})
+    if canvas:
+        await hub.broadcast(f"canvas:{canvas_id}", {"type": "canvas_update", "content": canvas["content"], "title": canvas["title"]})
     return {"status": "updated"}
 
 

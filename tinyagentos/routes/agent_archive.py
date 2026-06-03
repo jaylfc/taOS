@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import Request
 
@@ -156,7 +157,7 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     if archive_target and archive_target != "pool:":
         if archive_target.startswith("path:"):
             dest_dir = archive_target[len("path:"):]
-            tarball_dir = data_dir / "archive" / archive_subdir
+            tarball_dir = Path(dest_dir) / archive_subdir
             tarball_dir.mkdir(parents=True, exist_ok=True)
             tarball_path = tarball_dir / f"{snapshot_name}.tar.gz"
             from tinyagentos.containers import _run as _c_run

@@ -56,15 +56,19 @@ export function UpdatesSection() {
   }, []);
 
   const savePrefs = useCallback(async (next: AutoUpdatePrefs) => {
+    const prev = prefs;
     setPrefs(next);
     try {
-      await fetch("/api/preferences/auto-update", {
+      const res = await fetch("/api/preferences/auto-update", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(next),
       });
-    } catch { /* ignore network */ }
-  }, []);
+      if (!res.ok) { setPrefs(prev); }   // revert on server error
+    } catch {
+      setPrefs(prev);                    // revert on network failure
+    }
+  }, [prefs]);
 
   const checkUpdates = async () => {
     setChecking(true);
@@ -120,10 +124,16 @@ export function UpdatesSection() {
   };
 
   const triggerRestart = async () => {
-    setShowRestartModal(true);
     try {
-      await fetch("/api/system/restart/prepare", { method: "POST" });
-    } catch { /* ignore — modal polls status */ }
+      const res = await fetch("/api/system/restart/prepare", { method: "POST" });
+      if (res.ok) {
+        setShowRestartModal(true);
+      } else {
+        setStatus("Could not start restart.");
+      }
+    } catch {
+      setStatus("Could not reach the restart endpoint.");
+    }
   };
 
   const hasPendingRestart = !!updateStatus?.pending_restart_sha;

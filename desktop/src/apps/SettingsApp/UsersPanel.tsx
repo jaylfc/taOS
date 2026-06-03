@@ -103,21 +103,26 @@ function AddUserModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
     if (!username.trim()) return;
     setLoading(true);
     setError("");
-    const resp = await fetch("/auth/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ username: username.trim() }),
-    });
-    setLoading(false);
-    if (!resp.ok) {
-      const d = await resp.json().catch(() => ({}));
-      setError((d as { error?: string }).error ?? "Failed to add user");
-      return;
+    try {
+      const resp = await fetch("/auth/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username: username.trim() }),
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        setError((d as { error?: string }).error ?? "Failed to add user");
+        return;
+      }
+      const d = await resp.json();
+      setCode(d.invite_code);
+      onAdded();
+    } catch {
+      setError("Network error, please try again.");
+    } finally {
+      setLoading(false);
     }
-    const d = await resp.json();
-    setCode(d.invite_code);
-    onAdded();
   };
 
   return (
@@ -165,19 +170,24 @@ function ResetPasswordModal({ username, onClose, onReset }: { username: string; 
 
   const doReset = async () => {
     setLoading(true);
-    const resp = await fetch(`/auth/users/${encodeURIComponent(username)}/reset`, {
-      method: "POST",
-      credentials: "include",
-    });
-    setLoading(false);
-    if (!resp.ok) {
-      const d = await resp.json().catch(() => ({}));
-      setError((d as { error?: string }).error ?? "Failed to reset");
-      return;
+    try {
+      const resp = await fetch(`/auth/users/${encodeURIComponent(username)}/reset`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        setError((d as { error?: string }).error ?? "Failed to reset");
+        return;
+      }
+      const d = await resp.json();
+      setCode(d.invite_code);
+      onReset();
+    } catch {
+      setError("Network error, please try again.");
+    } finally {
+      setLoading(false);
     }
-    const d = await resp.json();
-    setCode(d.invite_code);
-    onReset();
   };
 
   return (
@@ -224,19 +234,24 @@ function ChangePasswordModal({ username, onClose }: { username: string; onClose:
     if (!valid) return;
     setLoading(true);
     setError("");
-    const resp = await fetch(`/auth/users/${encodeURIComponent(username)}/password`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ current, new: next }),
-    });
-    setLoading(false);
-    if (!resp.ok) {
-      const d = await resp.json().catch(() => ({}));
-      setError((d as { error?: string }).error ?? "Failed to change password");
-      return;
+    try {
+      const resp = await fetch(`/auth/users/${encodeURIComponent(username)}/password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ current, new: next }),
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        setError((d as { error?: string }).error ?? "Failed to change password");
+        return;
+      }
+      setDone(true);
+    } catch {
+      setError("Network error, please try again.");
+    } finally {
+      setLoading(false);
     }
-    setDone(true);
   };
 
   return (
@@ -287,18 +302,23 @@ function DeleteUserModal({ username, onClose, onDeleted }: { username: string; o
 
   const doDelete = async () => {
     setLoading(true);
-    const resp = await fetch(`/auth/users/${encodeURIComponent(username)}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    setLoading(false);
-    if (!resp.ok) {
-      const d = await resp.json().catch(() => ({}));
-      setError((d as { error?: string }).error ?? "Failed to remove user");
-      return;
+    try {
+      const resp = await fetch(`/auth/users/${encodeURIComponent(username)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        setError((d as { error?: string }).error ?? "Failed to remove user");
+        return;
+      }
+      onDeleted();
+      onClose();
+    } catch {
+      setError("Network error, please try again.");
+    } finally {
+      setLoading(false);
     }
-    onDeleted();
-    onClose();
   };
 
   return (

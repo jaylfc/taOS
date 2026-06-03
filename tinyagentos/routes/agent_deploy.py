@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+if TYPE_CHECKING:
+    from tinyagentos.routes.agents import DeployAgentRequest
+
 logger = logging.getLogger(__name__)
 
 
-def validate_framework_and_ram(request: Request, body) -> "JSONResponse | None":
+def validate_framework_and_ram(request: Request, body: "DeployAgentRequest") -> "JSONResponse | None":
     """Validate the requested framework against the catalog and check available RAM.
 
     Returns a JSONResponse with an error payload if validation fails, or None
@@ -29,8 +33,8 @@ def validate_framework_and_ram(request: Request, body) -> "JSONResponse | None":
         if hw is not None and hw.ram_mb > 0:
             framework = registry.get(body.framework)
             framework_ram = framework.requires.get("ram_mb", 0) if framework else 0
-            # Controller needs ~500 MB + Debian base ~256 MB +
-            # framework dependencies + a small model (~2 GB headroom).
+            # Controller overhead ~500 MB + framework dependencies +
+            # model headroom ~2 GB (the headroom absorbs the Debian base).
             _CONTROLLER_OVERHEAD_MB = 500
             _MODEL_DEPS_OVERHEAD_MB = 2048
             min_ram = _CONTROLLER_OVERHEAD_MB + framework_ram + _MODEL_DEPS_OVERHEAD_MB
@@ -53,7 +57,7 @@ def validate_framework_and_ram(request: Request, body) -> "JSONResponse | None":
     return None
 
 
-def resolve_deploy_routing(request: Request, body) -> "JSONResponse | None":
+def resolve_deploy_routing(request: Request, body: "DeployAgentRequest") -> "JSONResponse | None":
     """Resolve cross-worker deploy routing for the requested model.
 
     Resolution order (task #176 stub):
