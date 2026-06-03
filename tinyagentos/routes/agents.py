@@ -763,19 +763,29 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     return {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
 
 
+async def _bulk_container_op(config, op):
+    """Run an async container op over every configured agent, collecting per-agent results.
+
+    `op` is an async callable taking the container name (e.g. start_container).
+    Returns {agent_name: {"success": bool}} or {"success": False, "error": str} on exception.
+    """
+    results = {}
+    for agent in config.agents:
+        name = agent["name"]
+        try:
+            result = await op(f"taos-agent-{name}")
+            results[name] = {"success": result.get("success", False)}
+        except Exception as e:
+            results[name] = {"success": False, "error": str(e)}
+    return results
+
+
 @router.post("/api/agents/bulk/start")
 async def bulk_start_agents(request: Request):
     """Start all agent containers."""
     from tinyagentos.containers import start_container
     config = request.app.state.config
-    results = {}
-    for agent in config.agents:
-        name = agent["name"]
-        try:
-            result = await start_container(f"taos-agent-{name}")
-            results[name] = {"success": result.get("success", False)}
-        except Exception as e:
-            results[name] = {"success": False, "error": str(e)}
+    results = await _bulk_container_op(config, start_container)
     return {"action": "start", "results": results}
 
 
@@ -788,14 +798,7 @@ async def bulk_stop_agents(request: Request):
     report = {}
     if orchestrator is not None:
         report = await orchestrator.prepare("all", "stop")
-    results = {}
-    for agent in config.agents:
-        name = agent["name"]
-        try:
-            result = await stop_container(f"taos-agent-{name}")
-            results[name] = {"success": result.get("success", False)}
-        except Exception as e:
-            results[name] = {"success": False, "error": str(e)}
+    results = await _bulk_container_op(config, stop_container)
     return {"action": "stop", "prepare_report": report, "results": results}
 
 
@@ -804,14 +807,7 @@ async def bulk_restart_agents(request: Request):
     """Restart all agent containers."""
     from tinyagentos.containers import restart_container
     config = request.app.state.config
-    results = {}
-    for agent in config.agents:
-        name = agent["name"]
-        try:
-            result = await restart_container(f"taos-agent-{name}")
-            results[name] = {"success": result.get("success", False)}
-        except Exception as e:
-            results[name] = {"success": False, "error": str(e)}
+    results = await _bulk_container_op(config, restart_container)
     return {"action": "restart", "results": results}
 
 
