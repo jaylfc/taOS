@@ -75,7 +75,7 @@ class TestEmbeddingDiscovery:
             {"name": "npu", "type": "rkllama", "url": "http://localhost:8080", "priority": 1},
         ]
         with patch(
-            "tinyagentos.llm_proxy._discover_ollama_models",
+            "tinyagentos.litellm_config._discover_ollama_models",
             return_value=["qwen3-4b-chat", "qwen3-embedding-0.6b", "qwen3-reranker-0.6b"],
         ):
             config = generate_litellm_config(backends)
@@ -101,7 +101,7 @@ class TestEmbeddingDiscovery:
         backends = [
             {"name": "npu", "type": "rkllama", "url": "http://localhost:8080", "priority": 1},
         ]
-        with patch("tinyagentos.llm_proxy._discover_ollama_models", return_value=[]):
+        with patch("tinyagentos.litellm_config._discover_ollama_models", return_value=[]):
             config = generate_litellm_config(backends)
         names = [e["model_name"] for e in config["model_list"]]
         assert names == ["default"]
@@ -117,7 +117,7 @@ class TestEmbeddingDiscovery:
         def _fake_probe(url, timeout=2.0):
             return ["bge-small-en-v1.5"] if "a" in url else ["nomic-embed-text-v1.5"]
 
-        with patch("tinyagentos.llm_proxy._discover_ollama_models", side_effect=_fake_probe):
+        with patch("tinyagentos.litellm_config._discover_ollama_models", side_effect=_fake_probe):
             config = generate_litellm_config(backends)
 
         alias_entries = [e for e in config["model_list"] if e["model_name"] == EMBEDDING_ALIAS]
@@ -185,7 +185,7 @@ class TestCloudBackends:
             {"name": "blank-openrouter", "type": "openrouter",
              "url": "https://openrouter.ai/api/v1", "priority": 6},
         ]
-        with caplog.at_level(logging.WARNING, logger="tinyagentos.llm_proxy"):
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.litellm_config"):
             generate_litellm_config(backends)
 
         msgs = [r.getMessage() for r in caplog.records]
@@ -208,7 +208,7 @@ class TestCloudBackends:
             "models": [{"id": "kilo-auto/free"}],
             "api_key_secret": "KILO_KEY",
         }]
-        with caplog.at_level(logging.WARNING, logger="tinyagentos.llm_proxy"):
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.litellm_config"):
             generate_litellm_config(backends)
         assert not any(
             "missing url or models" in r.getMessage() for r in caplog.records
@@ -389,7 +389,8 @@ class TestLLMProxyOwnership:
 
         monkeypatch.setattr(mod.subprocess, "Popen", _FakePopen)
         # Avoid resolving a real litellm binary on the test host.
-        monkeypatch.setattr(mod, "_discover_ollama_models", lambda *a, **kw: [])
+        import tinyagentos.litellm_config as litellm_cfg_mod
+        monkeypatch.setattr(litellm_cfg_mod, "_discover_ollama_models", lambda *a, **kw: [])
 
         p = mod.LLMProxy(port=4000)
         await p.start(backends=[])
