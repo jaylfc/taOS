@@ -360,7 +360,9 @@ async def list_store_templates():
                 data = yaml.safe_load(f)
         except Exception:
             continue
-        if not data or data.get("type") != "template":
+        # yaml.safe_load can return a scalar/list for valid-but-wrong YAML;
+        # guard so a malformed template file is skipped, not a 500.
+        if not isinstance(data, dict) or data.get("type") != "template":
             continue
         templates.append(data)
 
