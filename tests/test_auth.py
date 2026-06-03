@@ -690,3 +690,36 @@ class TestMiddlewareBearerPath:
             headers={"Authorization": "Bearer nope"},
         )
         assert resp.status_code == 401
+
+
+class TestSessionUserNoFallback:
+    """session_user must resolve to *nobody* on a bad/empty token, unlike
+    get_user (which falls back to the first user). Author-ownership checks in
+    chat.py rely on this distinction, so lock the invariant in.
+    """
+
+    def test_session_user_bad_token_is_none(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("alice", "Alice", "", "pw")
+        assert mgr.session_user("not-a-real-token") is None
+
+    def test_session_user_empty_token_is_none(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("alice", "Alice", "", "pw")
+        assert mgr.session_user("") is None
+
+    def test_get_user_bad_token_falls_back_to_first_user(self, tmp_path):
+        # Documents the footgun session_user avoids: get_user with a present
+        # but invalid token returns the first user, which is wrong for
+        # identity/ownership decisions.
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("alice", "Alice", "", "pw")
+        assert mgr.get_user(token="not-a-real-token") is not None
+
+    def test_session_user_valid_token_returns_owner(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("alice", "Alice", "", "pw")
+        rec = mgr.find_user("alice")
+        token = mgr.create_session(user_id=rec["id"])
+        u = mgr.session_user(token)
+        assert u is not None and u["id"] == rec["id"]
