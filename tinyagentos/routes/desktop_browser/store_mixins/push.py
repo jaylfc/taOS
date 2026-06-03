@@ -27,6 +27,12 @@ class PushMixin:
             raise ValueError("user_id is required")
         if not device_id:
             raise ValueError("device_id is required")
+        if not endpoint:
+            raise ValueError("endpoint is required")
+        if not p256dh_key:
+            raise ValueError("p256dh_key is required")
+        if not auth_key:
+            raise ValueError("auth_key is required")
         import time
         assert self._db is not None
         now = int(time.time())

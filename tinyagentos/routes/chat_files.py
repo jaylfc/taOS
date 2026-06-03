@@ -89,6 +89,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), channel_id
     stored_name = f"{file_id}{ext}"
     dest = upload_dir / stored_name
     content = await file.read()
+    if len(content) > _MAX_ATTACHMENT_BYTES:
+        return JSONResponse({"error": "file too large (100 MB max)"}, status_code=413)
     dest.write_bytes(content)
 
     attachment = {

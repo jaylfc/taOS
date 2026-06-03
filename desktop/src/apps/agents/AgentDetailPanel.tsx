@@ -76,8 +76,14 @@ export function AgentDetailPanel({
   }, [logs]);
 
   const dismissMigrationBanner = async () => {
-    await fetch(`/api/agents/${encodeURIComponent(agentName)}/dismiss-migration-banner`, { method: "POST" });
-    onAgentUpdated();
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agentName)}/dismiss-migration-banner`, { method: "POST" });
+      if (res.ok) {
+        onAgentUpdated();
+      }
+    } catch {
+      // Network error — banner stays visible; user can retry.
+    }
   };
 
   const addPersonaClick = async () => {
