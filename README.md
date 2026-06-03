@@ -8,6 +8,7 @@
 
 ## Star History
 
+<p align="center">
 <a href="https://www.star-history.com/?repos=jaylfc%2Ftinyagentos&type=date&legend=top-left">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jaylfc/tinyagentos&type=date&theme=dark&legend=top-left" />
@@ -15,6 +16,7 @@
    <img alt="Star History Chart" width="600" src="https://api.star-history.com/chart?repos=jaylfc/tinyagentos&type=date&legend=top-left" />
  </picture>
 </a>
+</p>
 
 Self-hosted AI agent platform that runs on whatever hardware you have. An old laptop, a Raspberry Pi, a gaming PC, an SBC gathering dust, or all of them at once. TinyAgentOS turns your spare hardware into a distributed AI compute cluster.
 
