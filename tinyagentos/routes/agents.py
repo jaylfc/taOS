@@ -12,16 +12,9 @@ import taosmd.agents as tm_agents
 
 from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, slugify_agent_name
-from tinyagentos.providers import CLOUD_TYPES
-
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
-
-# Cloud provider backend types whose advertised models are routable for a
-# deploy / model-change. Single source of truth is providers.CLOUD_TYPES
-# (#351); aliased here so the call sites below read clearly.
-_CLOUD_PROVIDER_TYPES = CLOUD_TYPES
 
 router = APIRouter()
 
@@ -537,41 +530,9 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     # deploy with a clear 409 when the user's pin conflicts with where
     # the model actually is.
     if body.model:
-        from tinyagentos.cluster.model_resolver import find_model_hosts
+        from tinyagentos.cluster.model_resolver import resolve_model_location
 
-        cluster = getattr(request.app.state, "cluster_manager", None)
-        catalog = getattr(request.app.state, "backend_catalog", None)
-        local_models = catalog.all_models() if catalog is not None else []
-
-        # Cloud model ids are whatever openai/anthropic-typed backends
-        # advertise. Keep this a best-effort: missing provider state just
-        # means cloud models resolve as "not_found" and the caller can
-        # retry once providers are configured.
-        cloud_models: list[str] = []
-        try:
-            for b in config.backends or []:
-                # All cloud provider types, not just openai/anthropic — kilocode,
-                # openrouter and openai-compatible advertise routable cloud models
-                # too. Mirrors providers.CLOUD_TYPES (#351 tracks consolidating
-                # these lists). Without this, deploying an agent on e.g.
-                # kilo-auto/free 404s as "model not found".
-                if b.get("type") in _CLOUD_PROVIDER_TYPES:
-                    for m in b.get("models") or []:
-                        if isinstance(m, dict):
-                            mid = m.get("id") or m.get("name") or ""
-                        else:
-                            mid = str(m)
-                        if mid:
-                            cloud_models.append(mid)
-        except Exception:  # noqa: BLE001
-            pass
-
-        location = find_model_hosts(
-            body.model,
-            cluster_state=cluster,
-            local_models=local_models,
-            cloud_models=cloud_models,
-        )
+        location = resolve_model_location(request, body.model)
 
         if location.kind == "not_found":
             return JSONResponse(
@@ -1351,32 +1312,9 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         return JSONResponse({"error": "model must not be empty"}, status_code=400)
 
     # Validate reachability against the live cluster state.
-    from tinyagentos.cluster.model_resolver import find_model_hosts
+    from tinyagentos.cluster.model_resolver import resolve_model_location
 
-    cluster = getattr(request.app.state, "cluster_manager", None)
-    catalog = getattr(request.app.state, "backend_catalog", None)
-    local_models = catalog.all_models() if catalog is not None else []
-
-    cloud_models: list[str] = []
-    try:
-        for b in config.backends or []:
-            # All cloud provider types (see _CLOUD_PROVIDER_TYPES / #351), so a
-            # model change to a kilocode/openrouter/openai-compatible model
-            # resolves instead of 404ing.
-            if b.get("type") in _CLOUD_PROVIDER_TYPES:
-                for m in b.get("models") or []:
-                    mid = (m.get("id") or m.get("name") or "") if isinstance(m, dict) else str(m)
-                    if mid:
-                        cloud_models.append(mid)
-    except Exception:  # noqa: BLE001
-        pass
-
-    location = find_model_hosts(
-        model_id,
-        cluster_state=cluster,
-        local_models=local_models,
-        cloud_models=cloud_models,
-    )
+    location = resolve_model_location(request, model_id)
 
     if location.kind == "not_found":
         return JSONResponse(
