@@ -86,20 +86,24 @@ class TestSsrfGate:
 
 @pytest.mark.asyncio
 class TestParameterValidation:
-    async def test_missing_url_returns_422(self, client):
+    async def test_missing_url_returns_400(self, client):
         resp = await client.get(
             "/api/desktop/browser/proxy",
             params={"profile_id": "personal"},
         )
-        # FastAPI returns 422 for missing required query params
-        assert resp.status_code == 422
+        # profile_id/url are Optional in the signature (to allow the __taos_*
+        # GET-form fallback), so the route validates them and returns a clear
+        # 400 rather than FastAPI's generic 422.
+        assert resp.status_code == 400
+        assert "url" in resp.json()["error"]
 
-    async def test_missing_profile_returns_422(self, client):
+    async def test_missing_profile_returns_400(self, client):
         resp = await client.get(
             "/api/desktop/browser/proxy",
             params={"url": "http://example.com/"},
         )
-        assert resp.status_code == 422
+        assert resp.status_code == 400
+        assert "profile_id" in resp.json()["error"]
 
 
 @pytest.mark.asyncio

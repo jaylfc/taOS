@@ -23,7 +23,6 @@ class TestAttributeRewriting:
         ("src", "img"),
         ("src", "script"),
         ("src", "iframe"),
-        ("action", "form"),
     ])
     def test_rewrites_relative_url(self, attr, tag):
         from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
@@ -176,3 +175,59 @@ class TestCharsetHandling:
         lower = out.lower()
         assert b"charset=\"utf-8\"" in lower
         assert b"iso-8859-1" not in lower
+
+
+class TestFormRewriting:
+    """Forms route through the proxy; GET and POST need different handling."""
+
+    def test_get_form_uses_bare_path_and_hidden_inputs(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        html = (
+            b'<html><body><form action="/search" method="get">'
+            b'<input name="q"></form></body></html>'
+        )
+        out = rewrite_html(
+            html, base_url="https://www.google.com/", proxy=_proxy, profile_id="p",
+        ).decode()
+
+        # Bare proxy path (no query — a GET submit would clobber it anyway).
+        assert 'action="/api/desktop/browser/proxy"' in out
+        # Routing carried as reserved hidden inputs that survive the submit.
+        assert 'name="__taos_url"' in out
+        assert 'value="https://www.google.com/search"' in out
+        assert 'name="__taos_pid"' in out
+        assert 'value="p"' in out
+
+    def test_get_form_defaults_when_no_method(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        html = b'<html><body><form action="/s"><input name="q"></form></body></html>'
+        out = rewrite_html(
+            html, base_url="https://ex.com/", proxy=_proxy, profile_id="p",
+        ).decode()
+        assert 'action="/api/desktop/browser/proxy"' in out
+        assert 'value="https://ex.com/s"' in out
+
+    def test_post_form_keeps_query_encoded_action(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        html = (
+            b'<html><body><form action="/login" method="POST">'
+            b'<input name="u"></form></body></html>'
+        )
+        out = rewrite_html(
+            html, base_url="https://ex.com/", proxy=_proxy, profile_id="p",
+        ).decode()
+        # POST keeps the query-encoded proxied action; no hidden routing inputs.
+        assert "url=https%3A%2F%2Fex.com%2Flogin" in out
+        assert "__taos_url" not in out
+
+    def test_form_without_action_targets_current_page(self):
+        from tinyagentos.routes.desktop_browser.rewriter import rewrite_html
+
+        html = b'<html><body><form><input name="q"></form></body></html>'
+        out = rewrite_html(
+            html, base_url="https://ex.com/page", proxy=_proxy, profile_id="p",
+        ).decode()
+        assert 'value="https://ex.com/page"' in out

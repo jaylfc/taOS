@@ -23,7 +23,15 @@ import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse, urlsplit
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 import httpx
 from fastapi import Depends, Request
@@ -61,6 +69,26 @@ _MAX_REQUEST_BYTES = 10 * 1024 * 1024   # 10 MB cap on forwarded request bodies 
 # framing — never the client's cookies (we use the server-side jar), Host,
 # auth, or other ambient headers, which could leak or be abused.
 _FORWARD_REQUEST_HEADERS = frozenset({"content-type"})
+
+# Reserved query keys for GET-form routing (mirror rewriter._FORM_*). A GET
+# form submit replaces the action's query with its own fields, so the routing
+# params arrive under these names; anything else in the query is the site's
+# form data, merged into the target URL.
+_FORM_PID_FIELD = "__taos_pid"
+_FORM_URL_FIELD = "__taos_url"
+_FORM_TAB_FIELD = "__taos_tab"
+
+
+def _merge_query_params(url: str, extra: list[tuple[str, str]]) -> str:
+    """Append *extra* query params to *url*, preserving any it already has.
+
+    Used to fold a GET form's submitted fields into the target URL. Only the
+    query is touched — scheme/host/path are unchanged, so the SSRF re-check on
+    the merged URL sees the same host.
+    """
+    parts = urlsplit(url)
+    merged = parse_qsl(parts.query, keep_blank_values=True) + extra
+    return urlunsplit(parts._replace(query=urlencode(merged)))
 
 # Headers we strip from upstream responses before returning to the client.
 # `content-type` is stripped here and re-set from `media_type` on the
@@ -173,17 +201,53 @@ def _strip_port(host_header: str) -> str:
 
 @router.api_route("/api/desktop/browser/proxy", methods=["GET", "POST"])
 async def proxy_get(
-    profile_id: str,
-    url: str,
     request: Request,
+    profile_id: str | None = None,
+    url: str | None = None,
     tab_id: str | None = None,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
-    """Real proxy fetch. Handles GET and POST (form submissions — cookie
-    consent, search, login — which the rewriter routes here as POSTs)."""
+    """Real proxy fetch. Handles GET and POST form submissions (cookie consent,
+    search, login).
+
+    GET forms replace the action's query string with their own fields on
+    submit, so the routing params arrive under reserved hidden-input names
+    (``__taos_pid`` / ``__taos_url``) instead, and the remaining fields are
+    merged into the target URL here. POST forms keep the query-encoded
+    ``profile_id``/``url`` and carry their fields in the body.
+    """
     user_id = str(current_user.get("id") or "")
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    # Resolve routing params. A GET form submit carries our routing in the
+    # reserved __taos_* hidden inputs (the rewriter injects them); when those
+    # are present, ANY plain profile_id/url/tab_id in the query is the SITE's
+    # own form field (a page is free to name a field "url"), so it must be
+    # merged into the target — never consumed as routing or stripped. Direct
+    # navigation has no __taos_* and uses the plain query params for routing.
+    qp = request.query_params
+    form_mode = _FORM_URL_FIELD in qp or _FORM_PID_FIELD in qp
+    if form_mode:
+        profile_id = qp.get(_FORM_PID_FIELD)
+        url = qp.get(_FORM_URL_FIELD)
+        tab_id = qp.get(_FORM_TAB_FIELD)
+        reserved = {_FORM_PID_FIELD, _FORM_URL_FIELD, _FORM_TAB_FIELD}
+    else:
+        # profile_id/url/tab_id are already bound from the query by FastAPI.
+        reserved = {"profile_id", "url", "tab_id"}
+    if not profile_id:
+        return JSONResponse({"error": "profile_id required"}, status_code=400)
+    if not url:
+        return JSONResponse({"error": "url required"}, status_code=400)
+
+    # Everything that isn't a reserved routing key is one of the site's own
+    # form fields (e.g. ?q=cats, or a field literally named "url"). Merge those
+    # into the target URL's query before fetching. Normal links carry their own
+    # query percent-encoded *inside* the url param, so they add no extras here.
+    extra_fields = [(k, v) for k, v in qp.multi_items() if k not in reserved]
+    if extra_fields:
+        url = _merge_query_params(url, extra_fields)
 
     # Capture the request method + body so form POSTs reach upstream. GET/HEAD
     # carry no body. The body is size-capped before we buffer the whole thing.
@@ -345,7 +409,7 @@ async def proxy_get(
         charset = _detect_charset(content_type, response.content)
         rewritten = rewrite_html(
             response.content, base_url=str(response.url), proxy=_proxy_url,
-            charset=charset,
+            charset=charset, profile_id=profile_id,
         )
 
         # Use the effective scheme (honours x-forwarded-proto behind a TLS
