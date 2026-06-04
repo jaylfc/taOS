@@ -77,10 +77,6 @@ _FORWARD_REQUEST_HEADERS = frozenset({"content-type"})
 _FORM_PID_FIELD = "__taos_pid"
 _FORM_URL_FIELD = "__taos_url"
 _FORM_TAB_FIELD = "__taos_tab"
-_RESERVED_QUERY_KEYS = frozenset({
-    "profile_id", "url", "tab_id",
-    _FORM_PID_FIELD, _FORM_URL_FIELD, _FORM_TAB_FIELD,
-})
 
 
 def _merge_query_params(url: str, extra: list[tuple[str, str]]) -> str:
@@ -224,21 +220,32 @@ async def proxy_get(
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
 
-    # Resolve routing params: query first, then the reserved GET-form fields.
+    # Resolve routing params. A GET form submit carries our routing in the
+    # reserved __taos_* hidden inputs (the rewriter injects them); when those
+    # are present, ANY plain profile_id/url/tab_id in the query is the SITE's
+    # own form field (a page is free to name a field "url"), so it must be
+    # merged into the target — never consumed as routing or stripped. Direct
+    # navigation has no __taos_* and uses the plain query params for routing.
     qp = request.query_params
-    profile_id = profile_id or qp.get(_FORM_PID_FIELD)
-    url = url or qp.get(_FORM_URL_FIELD)
-    tab_id = tab_id or qp.get(_FORM_TAB_FIELD)
+    form_mode = _FORM_URL_FIELD in qp or _FORM_PID_FIELD in qp
+    if form_mode:
+        profile_id = qp.get(_FORM_PID_FIELD)
+        url = qp.get(_FORM_URL_FIELD)
+        tab_id = qp.get(_FORM_TAB_FIELD)
+        reserved = {_FORM_PID_FIELD, _FORM_URL_FIELD, _FORM_TAB_FIELD}
+    else:
+        # profile_id/url/tab_id are already bound from the query by FastAPI.
+        reserved = {"profile_id", "url", "tab_id"}
     if not profile_id:
         return JSONResponse({"error": "profile_id required"}, status_code=400)
     if not url:
         return JSONResponse({"error": "url required"}, status_code=400)
 
-    # GET-form submission: everything that isn't a reserved routing param is
-    # one of the site's own form fields (e.g. ?q=cats). Merge those into the
-    # target URL's query before fetching. Normal links carry their own query
-    # percent-encoded *inside* the url param, so they produce no extras here.
-    extra_fields = [(k, v) for k, v in qp.multi_items() if k not in _RESERVED_QUERY_KEYS]
+    # Everything that isn't a reserved routing key is one of the site's own
+    # form fields (e.g. ?q=cats, or a field literally named "url"). Merge those
+    # into the target URL's query before fetching. Normal links carry their own
+    # query percent-encoded *inside* the url param, so they add no extras here.
+    extra_fields = [(k, v) for k, v in qp.multi_items() if k not in reserved]
     if extra_fields:
         url = _merge_query_params(url, extra_fields)
 

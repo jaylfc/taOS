@@ -184,3 +184,31 @@ class TestProxyGetForm:
         )
         assert resp.status_code == 400
         assert "url" in resp.json()["error"]
+
+    @respx.mock
+    async def test_site_field_named_url_does_not_collide(self, client):
+        # A GET form whose own field is literally named "url"/"profile_id" must
+        # be forwarded to the target, NOT mistaken for taOS routing. Routing
+        # comes from the reserved __taos_* fields only.
+        route = respx.route(
+            method="GET", url__startswith="https://site.example/search",
+        ).mock(return_value=Response(200, content=b"ok", headers={"content-type": "text/html"}))
+        with _SSRF_PATCH:
+            resp = await client.get(
+                "/api/desktop/browser/proxy",
+                params=[
+                    ("__taos_pid", "personal"),
+                    ("__taos_url", "https://site.example/search"),
+                    ("url", "https://evil.example/inject"),   # site's own field
+                    ("profile_id", "site-value"),             # site's own field
+                    ("q", "cats"),
+                ],
+            )
+        assert resp.status_code == 200
+        sent = str(route.calls.last.request.url)
+        # Routed to the reserved target, not the site's "url" field.
+        assert sent.startswith("https://site.example/search")
+        # The colliding site fields are forwarded to the target, not dropped.
+        assert "q=cats" in sent
+        assert "url=https" in sent and "evil.example" in sent
+        assert "profile_id=site-value" in sent
