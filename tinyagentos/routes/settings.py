@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
+from tinyagentos.auto_update import resolve_tracked_branch
 
 logger = logging.getLogger(__name__)
 
@@ -786,3 +787,24 @@ async def rebuild_frontend(request: Request):
         "status": "rebuilt",
         "message": "Desktop bundle rebuilt. Hard-refresh the browser to see new components.",
     }
+
+
+async def _remote_branches(project_dir: str) -> list[str]:
+    """Branch names available on origin, via git ls-remote --heads."""
+    rc, out = await _run_capture(["git", "ls-remote", "--heads", "origin"], cwd=project_dir, timeout=30.0)
+    if rc != 0:
+        return []
+    names = []
+    for line in out.splitlines():
+        if "refs/heads/" in line:
+            names.append(line.split("refs/heads/", 1)[1].strip())
+    return sorted(set(n for n in names if n))
+
+
+@router.get("/api/settings/branches")
+async def list_branches(request: Request):
+    """List branches available on origin + the one this install tracks."""
+    project_dir = str(Path(__file__).parent.parent.parent)
+    branches = await _remote_branches(project_dir)
+    current = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
+    return {"branches": branches, "current": current}
