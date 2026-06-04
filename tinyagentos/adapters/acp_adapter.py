@@ -208,6 +208,20 @@ class ACPAdapter:
                 self._proc.terminate()
             except ProcessLookupError:
                 pass
+            # Reap the child so a per-turn driver doesn't accumulate zombies
+            # (and to avoid the "Event loop is closed" __del__ noise). Bounded,
+            # then SIGKILL if it ignores SIGTERM.
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                try:
+                    self._proc.kill()
+                    # Reap after SIGKILL too, or the child lingers as a zombie.
+                    await self._proc.wait()
+                except ProcessLookupError:
+                    pass
+            except ProcessLookupError:
+                pass
 
     # ------------------------------------------------------- JSON-RPC plumbing
 
