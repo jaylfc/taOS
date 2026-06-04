@@ -389,6 +389,51 @@ beyond `incusbr0`.
 
 See `docs/design/lxc-docker-coexistence.md` for the full policy, install-scenario coverage, and operational runbook.
 
+## Synced model management
+
+Each agent has a `permitted_models` set (the subset of LiteLLM virtual-key model scopes
+the agent is allowed to use) and a primary `model`. When taOS updates either, it also
+pushes the change into the framework's native config file inside the container so the
+framework's own model picker reflects the new state immediately.
+
+**Forward push** (`tinyagentos/framework_model_sync.py::push_model_config_to_framework`):
+patches `/root/.openclaw/openclaw.json` (OpenClaw) or `/root/.hermes/config.yaml` (Hermes)
+inside the container via `incus exec`.
+
+**Reverse reconcile** (`FrameworkModelReconciler`, same file): a background task reads each
+framework's live primary-model field every 60 seconds and writes it back to the taOS agent
+record when it changed (user switched the model from the framework's native TUI).
+
+**API surface** (in `tinyagentos/routes/agents.py`):
+- `GET /api/agents/{name}/permitted-models` — list the permitted set
+- `PUT /api/agents/{name}/permitted-models` — replace the set, re-scopes the LiteLLM key
+- `GET /api/agents/me/models` — agent-facing: list models the calling agent may use
+- `POST /api/agents/me/model` — agent-facing: switch the primary model (within permitted set)
+- `POST /api/agents/{name}/model` — admin: switch the primary model for a named agent
+
+The `permitted_models` field is the LiteLLM key's `models` scope. An empty set means the
+agent inherits all models the key was minted for.
+
+## Hermes environment variables
+
+The Hermes bridge installer (`tinyagentos/scripts/install_hermes.sh`) writes
+`/root/.hermes/.env` with the following variables:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `OPENAI_API_KEY` | LiteLLM virtual key | Used by the Hermes gateway for LLM calls |
+| `OPENAI_BASE_URL` | `http://127.0.0.1:4000/v1` | Points at the host LiteLLM proxy |
+| `HERMES_INFERENCE_PROVIDER` | `custom` | Tells Hermes to use the OpenAI-compat endpoint |
+| `HERMES_DEFAULT_MODEL` | agent's primary model | |
+| `API_SERVER_ENABLED` | `true` | Required — enables the Hermes REST API server |
+| `API_SERVER_HOST` | `127.0.0.1` | Loopback only |
+| `API_SERVER_PORT` | `8642` | Port the taOS-Hermes bridge connects to |
+| `API_SERVER_KEY` | LiteLLM virtual key | **Required** — Hermes refuses to start its api_server without this; reuses the LiteLLM key |
+
+`API_SERVER_KEY` is required by recent `hermes-agent` versions even for a loopback-only
+bind; omitting it causes the api_server to refuse connections and the taOS-Hermes bridge
+to log "All connection attempts failed".
+
 ## Related code
 
 - `tinyagentos/trace_store.py` — `AgentTraceStore` + `TraceStoreRegistry`
@@ -399,3 +444,9 @@ See `docs/design/lxc-docker-coexistence.md` for the full policy, install-scenari
 - `tinyagentos/containers/__init__.py` — `set_env`, `snapshot_create`,
   `snapshot_restore`, `snapshot_list`; `add_proxy_device` attaches incus
   proxy devices so the container reaches host services via 127.0.0.1
+- `tinyagentos/framework_model_sync.py` — `push_model_config_to_framework`,
+  `read_framework_primary`, `FrameworkModelReconciler`
+- `tinyagentos/routes/librarian.py` — `GET/PATCH /api/agents/{slug}/librarian`;
+  per-agent fields: `enabled`, `tasks`, `fanout`, `fanout_auto_scale`, `model`
+  (per-agent model override; a system-wide default is tracked separately in taosmd,
+  not yet exposed as a `/api/memory/model` endpoint on this branch)
