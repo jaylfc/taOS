@@ -183,18 +183,23 @@ async def _refresh_all_cloud_backends(app_state, config, proxy) -> int:
     return len(cloud)
 
 
-def _cloud_model_ids(backend: dict) -> list[str]:
-    """Sorted model id list for a backend, for change detection."""
-    return sorted(
+def _cloud_model_ids(backend: dict) -> set[str]:
+    """Set of model ids for a backend, for change detection.
+
+    A set (not a list) so detection is duplicate-insensitive: a transient
+    duplicate id in a re-probed catalog must not read as a real change and
+    trigger a needless LiteLLM reload.
+    """
+    return {
         (m.get("id") or m.get("name") or "") if isinstance(m, dict) else str(m)
         for m in (backend.get("models") or [])
-    )
+    }
 
 
 async def refresh_cloud_backends_if_changed(app_state, config, proxy) -> bool:
     """Re-probe cloud backends; persist + reload LiteLLM ONLY if a model list
     actually changed (so a stable catalog doesn't trigger needless reloads that
-    disrupt in-flight requests). Returns True if a reload happened.
+    disrupt in-flight requests). Returns True only if a reload actually happened.
 
     This is what the periodic refresher calls — it keeps LiteLLM's model_list
     fresh as upstream provider catalogs gain/lose models, without a restart.
@@ -211,9 +216,13 @@ async def refresh_cloud_backends_if_changed(app_state, config, proxy) -> bool:
     if before == after:
         return False
     await save_config_locked(config, config.config_path)
-    if proxy and proxy.is_running():
-        resolved = await _resolve_backend_secrets(app_state, config.backends)
-        await proxy.reload_config(config.backends, secrets=resolved)
+    if not (proxy and proxy.is_running()):
+        # Catalog changed and we persisted it, but with no live proxy there is
+        # nothing to reload — don't claim a reload that didn't happen.
+        logger.info("provider refresh: cloud model list changed — persisted (LiteLLM not running, no reload)")
+        return False
+    resolved = await _resolve_backend_secrets(app_state, config.backends)
+    await proxy.reload_config(config.backends, secrets=resolved)
     logger.info("provider refresh: cloud model list changed — reloaded LiteLLM")
     return True
 
