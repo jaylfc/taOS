@@ -100,7 +100,12 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
           />
         )}
 
-        <div className="flex-1 relative overflow-hidden">
+        {/* `flex` is required: TabRenderer's root is `flex flex-1` and only
+            grows to fill height when its parent is itself a flex container.
+            Without it the renderer collapses to 0 height and the page area is
+            blank (the desktop layout mounts TabRenderer directly in the column
+            flex root, so it doesn't hit this). */}
+        <div className="flex flex-1 relative overflow-hidden">
           <TabRenderer windowId={windowId} />
           {tabOverviewOpen && (
             <TabOverview
