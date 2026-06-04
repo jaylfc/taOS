@@ -112,9 +112,9 @@ and [model-torrent-mesh.md](../design/model-torrent-mesh.md) — add an
 embedding model to the catalog and LiteLLM config, then redeploy (or
 just restart the agent, since `TAOS_EMBEDDING_URL` is the same).
 
-## Test
+## Verifying a swap preserves state
 
-An automated test of this runbook lives at
-`tests/test_framework_swap.py`. It deploys an agent with framework A,
-writes a file into `/workspace`, performs a framework swap, and asserts the
-file is still present after redeploy. If that test breaks, this runbook is lying.
+There is no automated test for this runbook yet. To verify a swap by hand:
+deploy an agent on framework A, write a file into its `/workspace`, perform the
+swap, and confirm the file is still present after redeploy. If the workspace or
+memory is empty afterwards, the state export/import step was missed.
