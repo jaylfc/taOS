@@ -72,6 +72,20 @@ async def update_tracking_branch(project_dir: Path) -> str:
     return branch if branch and branch != "HEAD" else "master"
 
 
+async def resolve_tracked_branch(settings_store, project_dir: Path) -> str:
+    """The branch to track for updates: the user's saved ``tracked_branch``
+    preference (set via the branch selector) when present, else the
+    checked-out branch (``update_tracking_branch``)."""
+    try:
+        prefs = await settings_store.get_preference("user", PREF_NAMESPACE)
+        chosen = (prefs or {}).get("tracked_branch")
+        if chosen and isinstance(chosen, str) and chosen.strip():
+            return chosen.strip()
+    except Exception:
+        logger.warning("resolve_tracked_branch: pref read failed; using checked-out branch")
+    return await update_tracking_branch(project_dir)
+
+
 async def remote_is_strictly_ahead(project_dir: Path, current: str, remote: str) -> bool:
     """True only if ``current`` is a strict ancestor of ``remote`` — i.e. the
     remote is genuinely newer. Prevents offering an older or divergent commit
@@ -181,7 +195,7 @@ class AutoUpdateService:
     async def _probe_remote(self) -> Optional[str]:
         """Return the tip of the tracked remote branch (the branch this install
         is on), or None on failure."""
-        branch = await update_tracking_branch(self._project_dir)
+        branch = await resolve_tracked_branch(self._settings, self._project_dir)
         rc, _ = await _run(
             ["git", "fetch", "--quiet", "origin", branch], self._project_dir
         )
