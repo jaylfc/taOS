@@ -42,6 +42,17 @@ export function UpdatesPanel() {
   const [switching, setSwitching] = useState(false);
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false);
   const branchFetched = useRef(false);
+  const confirmBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Focus management for the confirm dialog: move focus into the dialog when it
+  // opens and return it to the previously focused control when it closes, so
+  // keyboard/screen-reader users get and keep the confirmation context.
+  useEffect(() => {
+    if (!showSwitchConfirm) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    confirmBtnRef.current?.focus();
+    return () => previouslyFocused?.focus?.();
+  }, [showSwitchConfirm]);
 
   // Load current prefs + info on mount
   useEffect(() => {
@@ -149,10 +160,11 @@ export function UpdatesPanel() {
     }
   };
 
-  // Fetch branches once when Advanced is first opened
+  // Fetch branches once when Advanced is first opened. Only mark as fetched on
+  // success so a transient 500/network error can be retried by re-opening
+  // Advanced, rather than wedging the panel until a full page refresh.
   useEffect(() => {
     if (!advancedOpen || branchFetched.current) return;
-    branchFetched.current = true;
     (async () => {
       try {
         const r = await fetch("/api/settings/branches");
@@ -160,6 +172,7 @@ export function UpdatesPanel() {
           const data: BranchInfo = await r.json();
           setBranchInfo(data);
           setSelectedBranch(data.current);
+          branchFetched.current = true;
         } else {
           setStatus("Could not load branch list.");
         }
@@ -344,10 +357,22 @@ export function UpdatesPanel() {
 
       {/* Branch-switch confirm dialog */}
       {showSwitchConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-shell-surface border border-white/10 rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 space-y-4">
-            <h3 className="text-sm font-semibold">Switch branch?</h3>
-            <p className="text-xs text-shell-text-secondary leading-relaxed">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => setShowSwitchConfirm(false)}
+          onKeyDown={(e) => { if (e.key === "Escape") setShowSwitchConfirm(false); }}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="switch-branch-title"
+          aria-describedby="switch-branch-desc"
+        >
+          <div
+            className="bg-shell-surface border border-white/10 rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="switch-branch-title" className="text-sm font-semibold">Switch branch?</h3>
+            <p id="switch-branch-desc" className="text-xs text-shell-text-secondary leading-relaxed">
               This switches taOS to <span className="font-mono font-semibold">{selectedBranch}</span> and restarts.
               Your data/ is backed up first (data-backups/).
               Switching to an older branch may leave data written by a newer version unreadable.
@@ -356,7 +381,7 @@ export function UpdatesPanel() {
               <Button size="sm" variant="outline" onClick={() => setShowSwitchConfirm(false)}>
                 Cancel
               </Button>
-              <Button size="sm" onClick={confirmSwitchBranch} aria-label="Confirm">
+              <Button ref={confirmBtnRef} size="sm" onClick={confirmSwitchBranch} aria-label="Confirm">
                 Confirm
               </Button>
             </div>

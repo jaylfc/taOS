@@ -33,6 +33,7 @@ class UpdateResult:
     stash_restored: bool = False
     branch_tag: Optional[str] = None
     message: str = ""
+    ok: bool = True  # False when a step failed and no (or partial) switch happened
 
 
 async def _run(args: list[str], cwd: Path) -> tuple[int, str]:
@@ -170,7 +171,7 @@ async def switch_to_branch(branch: str, project_dir: Path) -> UpdateResult:
     # that actually runs git, so it validates as well (defence in depth).
     from tinyagentos.auto_update import is_valid_branch_name
     if not is_valid_branch_name(branch):
-        return UpdateResult(previous_sha="", new_sha="",
+        return UpdateResult(previous_sha="", new_sha="", ok=False,
                             message=f"Refused to switch: invalid branch name {branch!r}.")
 
     ts = int(time.time())
@@ -180,7 +181,7 @@ async def switch_to_branch(branch: str, project_dir: Path) -> UpdateResult:
     rc, out = await _run(["git", "fetch", "origin", "--", branch], project_dir)
     if rc != 0:
         logger.warning("update_runner: fetch failed: %s", out[:500])
-        return UpdateResult(previous_sha="", new_sha="",
+        return UpdateResult(previous_sha="", new_sha="", ok=False,
                             message=f"Fetch failed — no changes applied. ({out.strip()[:200]})")
 
     _, sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
@@ -198,10 +199,38 @@ async def switch_to_branch(branch: str, project_dir: Path) -> UpdateResult:
 
     stash_msg = f"taos-switch-{ts}"
     if dirty:
-        await _run(["git", "stash", "push", "-u", "-m", stash_msg], project_dir)
+        rc_stash, stash_out = await _run(
+            ["git", "stash", "push", "-u", "-m", stash_msg], project_dir
+        )
+        # A failed stash must NOT set stash_ref — otherwise the later `stash pop`
+        # would apply an unrelated older stash. Abort before anything
+        # destructive so the working tree is left exactly as we found it.
+        if rc_stash != 0:
+            logger.warning("update_runner: stash failed: %s", stash_out[:300])
+            result.ok = False
+            result.message = (
+                f"Could not stash local changes — no switch performed. "
+                f"({stash_out.strip()[:200]})"
+            )
+            return result
         result.stash_ref = "stash@{0}"
 
-    await _run(["git", "checkout", "-B", branch, f"origin/{branch}"], project_dir)
+    rc_co, co_out = await _run(
+        ["git", "checkout", "-B", branch, f"origin/{branch}"], project_dir
+    )
+    # A failed checkout must NOT fall through to merge/reset — a hard reset would
+    # rewrite the CURRENT branch to origin/<target>. Restore the stash and bail.
+    if rc_co != 0:
+        logger.warning("update_runner: checkout failed: %s", co_out[:300])
+        if result.stash_ref:
+            rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
+            result.stash_restored = rc_pop == 0
+        result.ok = False
+        result.message = (
+            f"Checkout to {branch} failed — no switch performed. "
+            f"({co_out.strip()[:200]})"
+        )
+        return result
 
     rc_merge, _ = await _run(["git", "merge", "--ff-only", f"origin/{branch}"], project_dir)
     if rc_merge != 0:

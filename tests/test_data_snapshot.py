@@ -54,3 +54,21 @@ def test_backup_dir_is_owner_only(tmp_path):
     dest = snapshot_data_dir(data)
     mode = stat.S_IMODE(os.stat(dest).st_mode)
     assert mode == 0o700
+
+
+def test_copied_contents_are_owner_only(tmp_path):
+    # The security contract is about the copied secrets, not just the top dir.
+    # Seed a world-readable file + subdir so we prove perms are tightened.
+    data = tmp_path / "data"; data.mkdir()
+    secrets_db = data / "secrets.db"; secrets_db.write_text("KEY")
+    os.chmod(secrets_db, 0o644)
+    sub = data / "vault"; sub.mkdir(); os.chmod(sub, 0o755)
+    nested = sub / "token.json"; nested.write_text("{}"); os.chmod(nested, 0o644)
+
+    dest = snapshot_data_dir(data)
+
+    # No copied file may be group- or world-readable/writable.
+    group_world = stat.S_IRWXG | stat.S_IRWXO
+    assert stat.S_IMODE(os.stat(dest / "secrets.db").st_mode) & group_world == 0
+    assert stat.S_IMODE(os.stat(dest / "vault").st_mode) & group_world == 0
+    assert stat.S_IMODE(os.stat(dest / "vault" / "token.json").st_mode) & group_world == 0

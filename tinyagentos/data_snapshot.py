@@ -18,6 +18,34 @@ logger = logging.getLogger(__name__)
 _EXCLUDE = {"models", "workspace", "data-backups"}
 
 
+def _harden_perms(root: Path) -> None:
+    """Recursively restrict *root* to owner-only: dirs 0o700, files 0o600.
+
+    ``copytree``/``copy2`` preserve the source modes, so without this a secret
+    copied into the backup could remain group/world-readable even though the
+    top-level backup dir is 0o700. Best-effort: per-entry failures are ignored
+    (non-POSIX / no perms). Symlinks are skipped — chmod would alter the link
+    target's permissions, not the link.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames:
+            p = os.path.join(dirpath, name)
+            if os.path.islink(p):
+                continue
+            try:
+                os.chmod(p, 0o700)
+            except OSError:
+                pass
+        for name in filenames:
+            p = os.path.join(dirpath, name)
+            if os.path.islink(p):
+                continue
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+
+
 def snapshot_data_dir(data_dir: Path) -> Optional[Path]:
     """Copy data_dir into data-backups/pre-switch-<ts>/, skipping _EXCLUDE.
 
@@ -54,5 +82,7 @@ def snapshot_data_dir(data_dir: Path) -> Optional[Path]:
                 shutil.copy2(entry, dest / entry.name, follow_symlinks=False)
         except OSError as exc:
             logger.warning("snapshot_data_dir: failed to copy %s: %s", entry.name, exc)
+    # Tighten copied contents — copytree/copy2 preserved their source modes.
+    _harden_perms(dest)
     logger.info("snapshot_data_dir: backed up data/ to %s", dest)
     return dest

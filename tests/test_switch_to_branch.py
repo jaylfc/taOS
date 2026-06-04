@@ -36,6 +36,7 @@ def test_switches_to_existing_branch(remote_and_clone):
     assert cur == "dev"
     assert (clone / "d").exists()
     assert res.new_sha == _sha(clone)
+    assert res.ok is True
 
 
 def test_stashes_dirty_tree_and_tags_recovery(remote_and_clone):
@@ -46,6 +47,10 @@ def test_stashes_dirty_tree_and_tags_recovery(remote_and_clone):
     assert cur == "dev"
     tags = subprocess.run(["git", "tag"], cwd=clone, capture_output=True, text=True).stdout
     assert "taos-pre-switch-" in tags
+    # The whole point of stashing is that the dirty edit SURVIVES the switch.
+    # Without asserting the restored content, a broken stash-pop would pass.
+    assert res.stash_restored is True
+    assert (clone / "f").read_text() == "dirty-edit"
 
 
 def test_fetch_failure_is_non_destructive(tmp_path):
@@ -56,4 +61,5 @@ def test_fetch_failure_is_non_destructive(tmp_path):
     res = asyncio.run(switch_to_branch("dev", r))
     after = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=r, capture_output=True, text=True).stdout.strip()
     assert after == before == "master"
+    assert res.ok is False
     assert "Fetch failed" in res.message or res.new_sha == res.previous_sha

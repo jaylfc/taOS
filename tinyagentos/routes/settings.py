@@ -846,7 +846,10 @@ async def set_update_channel(request: Request, body: UpdateChannel):
     snapshot_path = snapshot_data_dir(data_dir)
 
     result = await switch_to_branch(branch, project_dir)
-    if result.new_sha == result.previous_sha and "Fetch failed" in result.message:
+    # switch_to_branch sets ok=False (and performs no destructive change) on any
+    # failed step — fetch, stash, checkout. Surface it rather than proceeding to
+    # rebuild/restart on a branch that never actually switched.
+    if not result.ok:
         return JSONResponse({"error": result.message}, status_code=500)
 
     prefs = await store.get_preference("user", PREF_NAMESPACE) or {}
@@ -863,7 +866,11 @@ async def set_update_channel(request: Request, body: UpdateChannel):
 
     import asyncio as _asyncio
     from tinyagentos.routes.system import _do_restart
-    _asyncio.create_task(_do_restart(request.app.state))
+    # Hold a reference so the task isn't garbage-collected before it runs
+    # (asyncio keeps only weak refs to tasks) — otherwise the restart can drop.
+    request.app.state.update_channel_restart_task = _asyncio.create_task(
+        _do_restart(request.app.state)
+    )
     return {
         "status": "switching",
         "branch": branch,
