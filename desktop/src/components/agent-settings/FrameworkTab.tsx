@@ -83,8 +83,9 @@ export function FrameworkTab(
       setPermittedCurrent(data.current);
       setDraftPermitted(data.permitted);
       setDraftDirty(false);
+      // Only reveal the section once the set loaded — on error it stays hidden.
+      setPermittedLoaded(true);
     } catch { /* non-critical — section stays hidden */ }
-    finally { setPermittedLoaded(true); }
   }
 
   function addToPermitted(modelId: string) {
