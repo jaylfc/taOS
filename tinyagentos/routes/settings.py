@@ -12,7 +12,10 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
-from tinyagentos.auto_update import resolve_tracked_branch
+from tinyagentos.auto_update import resolve_tracked_branch, PREF_NAMESPACE
+from tinyagentos.data_snapshot import snapshot_data_dir
+from tinyagentos.update_runner import switch_to_branch
+from tinyagentos.restart_orchestrator import write_pending_restart
 
 logger = logging.getLogger(__name__)
 
@@ -603,11 +606,95 @@ async def force_update_check(request: Request):
 
 
 
+async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str]:
+    """Sync deps, rebuild the SPA, flag the pending restart, trigger restart.
+
+    Returns (returncode, output); non-zero means a step failed.
+    """
+    # Pip install to pick up new deps. Capture output and surface failures —
+    # silently swallowing a failed install lands users on a grey-screen the
+    # next time they restart, because the new code imports a module that's
+    # not on disk. See issue #323's sibling failure mode.
+    venv_python: Path | None = None
+    for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
+        if candidate.exists():
+            pip_cmd = str(candidate)
+            venv_python = candidate.parent / "python"
+            break
+    else:
+        pip_cmd = "pip"
+    pip_returncode, pip_output = await _run_capture(
+        [pip_cmd, "install", "-e", "."],
+        cwd=str(project_dir),
+    )
+    if pip_returncode != 0:
+        return pip_returncode, pip_output
+
+    # Import smoke test in a fresh interpreter — verifies the new code can
+    # actually load with the freshly installed deps. Without this a partial
+    # pip install (returncode 0 but a wheel quietly skipped) still grey-screens
+    # the user on restart.
+    #
+    # Walk the package tree dynamically (issue #327) so new modules added in
+    # later PRs are validated automatically without anyone remembering to
+    # update a hardcoded import list. Errors during walk_packages or import
+    # bubble up via the smoke proc's exit code.
+    if venv_python is not None and venv_python.exists():
+        smoke_script = (
+            "import importlib, pkgutil, sys, traceback\n"
+            "import tinyagentos\n"
+            "errors = []\n"
+            "for m in pkgutil.walk_packages(tinyagentos.__path__, prefix='tinyagentos.'):\n"
+            "    name = m.name\n"
+            "    # Skip optional dev/test scaffolding; stay on production code paths.\n"
+            "    if any(part in name for part in ('test', '_pycache_', '.scripts.')):\n"
+            "        continue\n"
+            "    try:\n"
+            "        importlib.import_module(name)\n"
+            "    except Exception:\n"
+            "        errors.append(name + ':\\n' + traceback.format_exc())\n"
+            "if errors:\n"
+            "    print('Import smoke FAILED for', len(errors), 'modules:\\n')\n"
+            "    print('\\n---\\n'.join(errors[:10]))\n"
+            "    sys.exit(1)\n"
+            "print('Import smoke OK')\n"
+        )
+        smoke_returncode, smoke_output = await _run_capture(
+            [str(venv_python), "-c", smoke_script],
+            cwd=str(project_dir),
+            timeout=60.0,  # imports should be fast; 60s is generous
+        )
+        if smoke_returncode != 0:
+            return smoke_returncode, smoke_output
+
+    # Force a desktop bundle rebuild on every applied update. The mtime-based
+    # staleness check in rebuild_desktop_bundle_if_stale is unreliable when
+    # static/desktop/ is committed and a PR lands source-only (no rebuilt
+    # bundle in the commit) — git pull touches both source and bundle in the
+    # same instant and the heuristic can pick the wrong winner. Force-rebuilding
+    # is the only reliable path; the cost is one ~30s npm build on Update click.
+    from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
+    rebuild_result = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
+    if rebuild_result.rebuilt:
+        logger.info("Desktop rebuild: %s", rebuild_result.message)
+    if not rebuild_result.success:
+        # Update is still applied to disk, but the frontend won't be in sync
+        # until the rebuild succeeds. Surface this clearly rather than
+        # silently leaving the user with a stale UI.
+        logger.warning(
+            "Update pulled but desktop rebuild failed: %s", rebuild_result.message
+        )
+
+    if target_sha:
+        write_pending_restart(target_sha)
+
+    return 0, ""
+
+
 @router.post("/api/settings/update")
 async def apply_update(request: Request):
     """Pull latest TinyAgentOS code from GitHub."""
     import asyncio
-    from tinyagentos.restart_orchestrator import write_pending_restart
     project_dir = Path(__file__).parent.parent.parent
 
     # systemd ExecStartPre rebuilds produce new content-hashed files in
@@ -645,98 +732,6 @@ async def apply_update(request: Request):
     if proc.returncode != 0:
         return JSONResponse({"error": f"Update failed: {output}"}, status_code=500)
 
-    # Pip install to pick up new deps. Capture output and surface failures —
-    # silently swallowing a failed install lands users on a grey-screen the
-    # next time they restart, because the new code imports a module that's
-    # not on disk. See issue #323's sibling failure mode.
-    venv_python: Path | None = None
-    for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
-        if candidate.exists():
-            pip_cmd = str(candidate)
-            venv_python = candidate.parent / "python"
-            break
-    else:
-        pip_cmd = "pip"
-    pip_returncode, pip_output = await _run_capture(
-        [pip_cmd, "install", "-e", "."],
-        cwd=str(project_dir),
-    )
-    if pip_returncode != 0:
-        return JSONResponse(
-            {
-                "error": "Dependency install failed — update aborted to avoid grey-screen on restart.",
-                "git_output": output.strip(),
-                "pip_output": pip_output.strip()[-2000:],
-            },
-            status_code=500,
-        )
-
-    # Import smoke test in a fresh interpreter — verifies the new code can
-    # actually load with the freshly installed deps. Without this a partial
-    # pip install (returncode 0 but a wheel quietly skipped) still grey-screens
-    # the user on restart.
-    #
-    # Walk the package tree dynamically (issue #327) so new modules added in
-    # later PRs are validated automatically without anyone remembering to
-    # update a hardcoded import list. Errors during walk_packages or import
-    # bubble up via the smoke proc's exit code.
-    if venv_python is not None and venv_python.exists():
-        smoke_script = (
-            "import importlib, pkgutil, sys, traceback\n"
-            "import tinyagentos\n"
-            "errors = []\n"
-            "for m in pkgutil.walk_packages(tinyagentos.__path__, prefix='tinyagentos.'):\n"
-            "    name = m.name\n"
-            "    # Skip optional dev/test scaffolding; stay on production code paths.\n"
-            "    if any(part in name for part in ('test', '_pycache_', '.scripts.')):\n"
-            "        continue\n"
-            "    try:\n"
-            "        importlib.import_module(name)\n"
-            "    except Exception:\n"
-            "        errors.append(name + ':\\n' + traceback.format_exc())\n"
-            "if errors:\n"
-            "    print('Import smoke FAILED for', len(errors), 'modules:\\n')\n"
-            "    print('\\n---\\n'.join(errors[:10]))\n"
-            "    sys.exit(1)\n"
-            "print('Import smoke OK')\n"
-        )
-        smoke_returncode, smoke_output = await _run_capture(
-            [str(venv_python), "-c", smoke_script],
-            cwd=str(project_dir),
-            timeout=60.0,  # imports should be fast; 60s is generous
-        )
-        if smoke_returncode != 0:
-            return JSONResponse(
-                {
-                    "error": (
-                        "Update applied to disk but post-install import test failed "
-                        "— restart would grey-screen. Fix the import error before restarting."
-                    ),
-                    "git_output": output.strip(),
-                    "pip_output": pip_output.strip()[-2000:],
-                    "import_error": smoke_output.strip()[-2000:],
-                },
-                status_code=500,
-            )
-
-    # Force a desktop bundle rebuild on every applied update. The mtime-based
-    # staleness check in rebuild_desktop_bundle_if_stale is unreliable when
-    # static/desktop/ is committed and a PR lands source-only (no rebuilt
-    # bundle in the commit) — git pull touches both source and bundle in the
-    # same instant and the heuristic can pick the wrong winner. Force-rebuilding
-    # is the only reliable path; the cost is one ~30s npm build on Update click.
-    from tinyagentos.desktop_rebuild import rebuild_desktop_bundle_if_stale
-    rebuild_result = await rebuild_desktop_bundle_if_stale(project_dir, force=True)
-    if rebuild_result.rebuilt:
-        logger.info("Desktop rebuild: %s", rebuild_result.message)
-    if not rebuild_result.success:
-        # Update is still applied to disk, but the frontend won't be in sync
-        # until the rebuild succeeds. Surface this clearly rather than
-        # silently leaving the user with a stale UI.
-        logger.warning(
-            "Update pulled but desktop rebuild failed: %s", rebuild_result.message
-        )
-
     # Record the new SHA so the restart modal can confirm the update was applied
     # and the Updates section can show the pending-restart banner.
     sha_proc = await asyncio.create_subprocess_exec(
@@ -746,8 +741,17 @@ async def apply_update(request: Request):
     )
     sha_out, _ = await sha_proc.communicate()
     new_sha = sha_out.decode().strip() if sha_out else ""
-    if new_sha:
-        write_pending_restart(new_sha)
+
+    rc, out = await _pip_rebuild_restart(project_dir, new_sha)
+    if rc != 0:
+        return JSONResponse(
+            {
+                "error": "Dependency install failed — update aborted to avoid grey-screen on restart.",
+                "git_output": output.strip(),
+                "pip_output": out.strip()[-2000:],
+            },
+            status_code=500,
+        )
 
     # Always restart after a successful update.
     import asyncio as _asyncio
@@ -808,3 +812,54 @@ async def list_branches(request: Request):
     branches = await _remote_branches(project_dir)
     current = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
     return {"branches": branches, "current": current}
+
+
+class UpdateChannel(BaseModel):
+    branch: str
+
+
+@router.post("/api/settings/update-channel")
+async def set_update_channel(request: Request, body: UpdateChannel):
+    """Switch the install to a different branch: snapshot data/, git switch,
+    persist the tracked_branch pref, then pip/rebuild/restart to apply."""
+    project_dir = Path(__file__).parent.parent.parent
+    branch = body.branch.strip()
+
+    available = await _remote_branches(str(project_dir))
+    if branch not in available:
+        return JSONResponse({"error": f"unknown branch '{branch}'"}, status_code=400)
+
+    store = request.app.state.desktop_settings
+    current = await resolve_tracked_branch(store, project_dir)
+    if branch == current:
+        return {"status": "unchanged", "branch": branch}
+
+    data_dir = request.app.state.config_path.parent
+    snapshot_path = snapshot_data_dir(data_dir)
+
+    result = await switch_to_branch(branch, project_dir)
+    if result.new_sha == result.previous_sha and "Fetch failed" in result.message:
+        return JSONResponse({"error": result.message}, status_code=500)
+
+    prefs = await store.get_preference("user", PREF_NAMESPACE) or {}
+    prefs["tracked_branch"] = branch
+    await store.save_preference("user", PREF_NAMESPACE, prefs)
+
+    rc, out = await _pip_rebuild_restart(project_dir, result.new_sha)
+    if rc != 0:
+        return JSONResponse(
+            {"error": f"Switched to {branch} but rebuild failed: {out[:300]}",
+             "snapshot": str(snapshot_path) if snapshot_path else None},
+            status_code=500,
+        )
+
+    import asyncio as _asyncio
+    from tinyagentos.routes.system import _do_restart
+    _asyncio.create_task(_do_restart(request.app.state))
+    return {
+        "status": "switching",
+        "branch": branch,
+        "snapshot": str(snapshot_path) if snapshot_path else None,
+        "recovery_tag": result.recovery_tag,
+        "message": result.message,
+    }
