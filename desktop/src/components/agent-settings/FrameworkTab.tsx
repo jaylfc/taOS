@@ -1,12 +1,62 @@
 import { useEffect, useState } from "react";
 import { fetchFrameworkState, FrameworkState, startFrameworkUpdate } from "@/lib/framework-api";
+import { ModelPickerModal } from "@/components/ModelPickerModal";
+import type { AgentModel } from "@/components/ModelPickerFlow";
 
-export function FrameworkTab({ agent, onUpdated }: { agent: { name: string }; onUpdated: () => void }) {
+export function FrameworkTab(
+  { agent, onUpdated }: { agent: { name: string; model?: string }; onUpdated: () => void },
+) {
   const [state, setState] = useState<FrameworkState | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+
+  // Model change — swap the agent's primary model without a redeploy
+  // (POST /api/agents/{name}/model updates the LiteLLM route + resumes).
+  const [currentModel, setCurrentModel] = useState<string | undefined>(agent.model);
+  const [models, setModels] = useState<AgentModel[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelErr, setModelErr] = useState<string | null>(null);
+
+  // Routable models = LiteLLM /v1/models passthrough (single source of truth
+  // for what an agent can use). Loaded when the picker is first opened.
+  async function openPicker() {
+    setPickerOpen(true);
+    if (modelsLoaded) return;
+    try {
+      const res = await fetch("/api/providers/models?refresh=true", {
+        headers: { Accept: "application/json" },
+      });
+      const data = res.ok ? await res.json() : { data: [] };
+      setModels((data.data ?? []).map((m: { id: string }) => ({
+        id: m.id, name: m.id, hostKind: "cloud" as const,
+      })));
+    } catch { /* leave empty — picker shows no models */ }
+    finally { setModelsLoaded(true); }
+  }
+
+  async function changeModel(modelId: string) {
+    setModelErr(null);
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent.name)}/model`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelId }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        setModelErr(String(e.error ?? e.detail ?? `Failed (${res.status})`));
+        return;
+      }
+      setCurrentModel(modelId);
+      setPickerOpen(false);
+      onUpdated();
+    } catch {
+      setModelErr("Couldn't reach the server.");
+    }
+  }
 
   async function load() {
     try { setState(await fetchFrameworkState(agent.name)); setErr(null); }
@@ -50,6 +100,19 @@ export function FrameworkTab({ agent, onUpdated }: { agent: { name: string }; on
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="text-sm">This agent runs <b>{state.framework}</b></div>
+
+      {/* Model — change the agent's primary model without a redeploy. */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="opacity-60 text-sm">Model</span>
+        <code className="text-sm">{currentModel || "(not set)"}</code>
+        <button
+          onClick={openPicker}
+          className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
+        >
+          Change model
+        </button>
+      </div>
+      {modelErr && <div className="text-xs text-red-400">{modelErr}</div>}
       <dl className="grid grid-cols-[120px_1fr] gap-y-1 text-sm">
         <dt className="opacity-60">Installed</dt>
         <dd><code>{state.installed.tag ?? "(unknown)"}</code> · <code>{state.installed.sha ?? "—"}</code></dd>
@@ -109,6 +172,15 @@ export function FrameworkTab({ agent, onUpdated }: { agent: { name: string }; on
       )}
 
       <div className="mt-auto pt-4 text-xs opacity-50">Switch framework — coming soon</div>
+
+      <ModelPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        models={models}
+        modelsLoaded={modelsLoaded}
+        onSelect={(modelId) => changeModel(modelId)}
+        title="Change model"
+      />
     </div>
   );
 }
