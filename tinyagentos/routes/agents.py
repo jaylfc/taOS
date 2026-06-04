@@ -66,6 +66,56 @@ async def list_archived_agents(request: Request):
     return config.archived_agents
 
 
+def _resolve_agent_by_bearer(request: Request) -> dict | None:
+    """Return the agent whose llm_key matches the Authorization: Bearer token.
+
+    Returns None if the header is missing/malformed or no agent matches.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth[7:]
+    if not token:
+        return None
+    config = request.app.state.config
+    return next((a for a in config.agents if a.get("llm_key") == token), None)
+
+
+@router.get("/api/agents/me/models")
+async def agent_get_own_models(request: Request):
+    """Return the calling agent's permitted model set (authed by its LiteLLM key)."""
+    agent = _resolve_agent_by_bearer(request)
+    if agent is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    permitted = [m for m in (agent.get("permitted_models") or [agent.get("model")]) if m]
+    return {"permitted": permitted, "current": agent.get("model")}
+
+
+class AgentSelfModelUpdate(BaseModel):
+    model: str
+
+
+@router.post("/api/agents/me/model")
+async def agent_set_own_model(request: Request, body: AgentSelfModelUpdate):
+    """Move the calling agent's active primary within its permitted set (authed by its LiteLLM key)."""
+    agent = _resolve_agent_by_bearer(request)
+    if agent is None:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    model = body.model
+    permitted = [m for m in (agent.get("permitted_models") or [agent.get("model")]) if m]
+    if model not in permitted:
+        return JSONResponse(
+            {"error": f"model '{model}' is not in this agent's permitted set", "permitted": permitted},
+            status_code=403,
+        )
+
+    agent["model"] = model
+    config = request.app.state.config
+    await save_config_locked(config, config.config_path)
+    return {"status": "updated", "current": model}
+
+
 @router.get("/api/agents/{name}/deploy-status")
 async def get_deploy_status(request: Request, name: str):
     """Get the background deploy task status for an agent."""
@@ -731,6 +781,14 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     agent["model"] = model_id
     was_paused = agent.get("paused", False)
     agent["paused"] = False
+
+    # Ensure the new primary is in the permitted set and scope the key to
+    # the full permitted set (not just [model_id]).
+    permitted = agent.get("permitted_models") or []
+    if model_id not in permitted:
+        permitted = [model_id, *permitted]
+    agent["permitted_models"] = permitted
+
     await save_config_locked(config, config.config_path)
 
     # Re-scope the agent's LiteLLM virtual key so it's actually ALLOWED to use
@@ -745,7 +803,7 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     key_rescoped = False
     if proxy is not None and llm_key:
         try:
-            key_rescoped = await proxy.update_agent_key(llm_key, [model_id])
+            key_rescoped = await proxy.update_agent_key(llm_key, permitted)
         except Exception:
             logger.exception("update_agent_model: re-scoping key for %s failed", name)
 
@@ -753,7 +811,71 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         "status": "updated",
         "name": name,
         "model": model_id,
+        "permitted": permitted,
         "resumed": was_paused,
         "location": location.kind,
+        "key_rescoped": key_rescoped,
+    }
+
+
+@router.get("/api/agents/{name}/permitted-models")
+async def get_permitted_models(request: Request, name: str):
+    """Return the permitted model set and current primary for an agent."""
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    permitted = [m for m in (agent.get("permitted_models") or [agent.get("model")]) if m]
+    return {"permitted": permitted, "current": agent.get("model")}
+
+
+class PermittedModelsUpdate(BaseModel):
+    models: list[str]
+
+
+@router.put("/api/agents/{name}/permitted-models")
+async def set_permitted_models(request: Request, name: str, body: PermittedModelsUpdate):
+    """Set the permitted model set for an agent and re-scope its LiteLLM key."""
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+
+    if not body.models:
+        return JSONResponse({"error": "models must not be empty"}, status_code=400)
+
+    from tinyagentos.cluster.model_resolver import resolve_model_location
+
+    for model_id in body.models:
+        location = resolve_model_location(request, model_id)
+        if location.kind == "not_found":
+            return JSONResponse(
+                {"error": f"model '{model_id}' is not reachable anywhere in the cluster right now.", "model": model_id},
+                status_code=409,
+            )
+
+    # Ensure the current primary is always in the permitted set.
+    permitted = list(body.models)
+    current = agent.get("model")
+    if current and current not in permitted:
+        permitted = [current, *permitted]
+
+    agent["permitted_models"] = permitted
+    await save_config_locked(config, config.config_path)
+
+    proxy = getattr(request.app.state, "llm_proxy", None)
+    llm_key = agent.get("llm_key")
+    key_rescoped = False
+    if proxy is not None and llm_key:
+        try:
+            key_rescoped = await proxy.update_agent_key(llm_key, permitted)
+        except Exception:
+            logger.exception("set_permitted_models: re-scoping key for %s failed", name)
+
+    return {
+        "status": "updated",
+        "name": name,
+        "permitted": permitted,
+        "current": agent.get("model"),
         "key_rescoped": key_rescoped,
     }
