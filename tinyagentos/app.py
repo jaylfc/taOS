@@ -680,6 +680,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await auto_updater.start()
         except Exception:
             logger.exception("auto-update service failed to start")
+        # Keep LiteLLM's model_list fresh as cloud provider catalogs change
+        # upstream (e.g. a newly published model), without a restart.
+        from tinyagentos.provider_refresh import CloudProviderRefresher
+        provider_refresher = CloudProviderRefresher(app.state)
+        app.state.provider_refresher = provider_refresher
+        try:
+            await provider_refresher.start()
+        except Exception:
+            logger.exception("cloud provider refresher failed to start")
         await cluster_manager.start()
         # Enroll this controller as the 'local' cluster worker so route-layer
         # code (get_local_worker) picks up the in-memory signing key.
@@ -917,6 +926,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await monitor.stop()
         try:
             await auto_updater.stop()
+        except Exception:
+            pass
+        try:
+            await provider_refresher.stop()
         except Exception:
             pass
         await app.state.mcp_supervisor.stop_all()
