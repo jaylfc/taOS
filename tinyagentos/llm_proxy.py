@@ -357,6 +357,40 @@ class LLMProxy:
             logger.warning(f"Failed to create LiteLLM key for {agent_name}: {e}")
         return None
 
+    async def update_agent_key(self, key: str, models: list[str]) -> bool:
+        """Re-scope an existing virtual key's allowed models via /key/update.
+
+        Keeps the key VALUE unchanged (no container env push / restart needed):
+        the framework's ``/v1/models`` with this key then reflects the new
+        permitted set, so it natively sees exactly what the agent is allowed to
+        use. Returns True on success. No-op (False) in routing-only mode (no DB)
+        — there are no per-agent keys to scope there.
+        """
+        if not self.is_running() or not self.database_url or not key:
+            return False
+        if not models:
+            # An empty scope is a caller error, not a request to allow nothing.
+            # Refuse rather than silently substitute a bogus "default" model
+            # (which would scope the key to a model that does not exist).
+            logger.warning("update_agent_key called with empty models; refusing to re-scope key")
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.url}/key/update",
+                    json={"key": key, "models": models},
+                    headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"},
+                )
+                if resp.status_code == 200:
+                    return True
+                logger.warning(
+                    "LiteLLM /key/update returned %d body=%.200s",
+                    resp.status_code, resp.text,
+                )
+        except Exception as e:
+            logger.warning("Failed to update LiteLLM key models: %s", e)
+        return False
+
     async def delete_agent_key(self, key: str) -> bool:
         """Delete a per-agent virtual key."""
         if not self.is_running():
