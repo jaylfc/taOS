@@ -8,39 +8,40 @@
 # taos-bridge channel is no longer installed/needed.
 set -euo pipefail
 
-# When the deployer launched this container from the pre-built
-# taos-openclaw-base image, Node + openclaw + recycle-bin are already
-# installed. In that case skip everything up to the config/env writes
-# and the systemd unit — those still need per-deploy values.
+# The pre-built taos-openclaw-base image warms Node + system deps + a recent
+# openclaw. We still always install openclaw@latest from npm (the base image's
+# baked version may lag) and re-write per-deploy config/env + the systemd unit.
 # See tinyagentos/agent_image.py and .github/workflows/build-agent-images.yml.
 TAOS_BASE_IMAGE_PRESENT="${TAOS_BASE_IMAGE_PRESENT:-0}"
-if [ "$TAOS_BASE_IMAGE_PRESENT" = "1" ]; then
-  echo "[openclaw] base image present — skipping Node + openclaw install"
-else
-  echo "[openclaw] installing Node 22.x (NodeSource) + openclaw prebuilt from GitHub Releases"
-fi
+echo "[openclaw] installing upstream OpenClaw (openclaw@latest from npm)"
 
 # ---------------------------------------------------------------------------
-# 1. Node 22.14+ via NodeSource (Debian bookworm default is Node 18, too old).
-#    Also ensure:
-#    - 'file' is present — used to sanity-check the downloaded tarball.
-#    - 'git' is present — openclaw's transitive dep libsignal
-#      (@whiskeysockets/baileys -> libsignal@git+https://github.com/...)
-#      is a git-URL dependency and npm needs git to fetch it at install time.
+# 1. Node >= 22.19 via NodeSource (upstream OpenClaw's minimum; Debian default
+#    is too old). Also ensure 'git' — OpenClaw has a git-URL transitive dep
+#    (libsignal via @whiskeysockets/baileys) that npm fetches at install time.
 #
-#    All three are baked into the pre-built base image; skip when it's present.
+#    Checked the FULL version, not just major: Node 22.0–22.18 satisfies a
+#    major-only "== 22" guard but is too old for OpenClaw and only fails later.
+#    Run unconditionally — a base image with an older baked Node must be
+#    upgraded too (the check is a no-op when Node is already current).
 # ---------------------------------------------------------------------------
-if [ "$TAOS_BASE_IMAGE_PRESENT" != "1" ]; then
-  if ! command -v node >/dev/null 2>&1 || [ "$(node -v | sed 's/^v//; s/\..*//')" -lt 22 ]; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
-  fi
-  if ! command -v file >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends file
-  fi
-  if ! command -v git >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
-  fi
+_node_ok() {
+  command -v node >/dev/null 2>&1 || return 1
+  local v maj min
+  v=$(node -v | sed 's/^v//')      # e.g. 22.22.3
+  maj=${v%%.*}
+  min=${v#*.}; min=${min%%.*}
+  [ "$maj" -gt 22 ] && return 0
+  [ "$maj" -eq 22 ] && [ "$min" -ge 19 ] && return 0
+  return 1
+}
+if ! _node_ok; then
+  echo "[openclaw] installing Node >=22.19 via NodeSource"
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
+fi
+if ! command -v git >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
 fi
 
 # ----------------------------------------------------------------------
