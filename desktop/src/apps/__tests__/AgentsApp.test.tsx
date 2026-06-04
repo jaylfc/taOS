@@ -142,3 +142,28 @@ describe("AgentsApp — AgentShortcutRow wiring (Task 27)", () => {
     expect(screen.queryByRole("dialog", { name: /agent details/i })).toBeNull();
   });
 });
+
+describe("AgentsApp — framework label", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") {
+        return Promise.resolve({
+          ok: true, headers: { get: () => "application/json" },
+          json: () => Promise.resolve(MOCK_AGENTS),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: true, headers: { get: () => "application/json" },
+        json: () => Promise.resolve([]),
+      } as unknown as Response);
+    }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows each agent's framework as a labelled pill", async () => {
+    render(<AgentsApp windowId="test" />);
+    // The row surfaces the framework name (not just the emoji) for clarity.
+    expect(await screen.findByLabelText(/Framework: openclaw/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Framework: smolagents/i)).toBeInTheDocument();
+  });
+});

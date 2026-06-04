@@ -39,6 +39,22 @@ export function AgentRow({
     agent.framework_version_sha &&
     latestForAgent &&
     latestForAgent.sha !== agent.framework_version_sha;
+  // The framework an agent runs on (openclaw, hermes, …). The emoji alone is
+  // ambiguous, so surface the name as a small pill. "none"/"generic" agents
+  // have no meaningful framework to show.
+  const frameworkLabel =
+    agent.framework && !["none", "generic"].includes(agent.framework)
+      ? agent.framework
+      : null;
+  const FrameworkPill = frameworkLabel ? (
+    <span
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium lowercase shrink-0 bg-white/5 text-shell-text-secondary border border-white/10"
+      title={`Framework: ${frameworkLabel}`}
+      aria-label={`Framework: ${frameworkLabel}`}
+    >
+      {frameworkLabel}
+    </span>
+  ) : null;
 
   const btnCls = isMobile ? "h-11 w-11" : "h-8 w-8";
   // Only allow management actions while the agent is running
@@ -142,6 +158,7 @@ export function AgentRow({
         <div className="flex items-center gap-2 mt-1 min-w-0">
           <Server size={11} className="text-shell-text-tertiary shrink-0" />
           <span className="text-xs text-shell-text-secondary truncate flex-1 min-w-0">{agent.host}</span>
+          {FrameworkPill}
           <span className="text-xs text-shell-text-tertiary tabular-nums shrink-0">
             {agent.vectors.toLocaleString()} vectors
           </span>
@@ -200,6 +217,7 @@ export function AgentRow({
           {emoji}
         </span>
         <span className="font-medium text-sm truncate">{agent.display_name || agent.name}</span>
+        {FrameworkPill}
         {updateAvailable && (
           <span
             aria-label="framework update available"
