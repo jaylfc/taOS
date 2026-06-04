@@ -807,6 +807,14 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         except Exception:
             logger.exception("update_agent_model: re-scoping key for %s failed", name)
 
+    framework = agent.get("framework")
+    if framework in ("openclaw", "hermes"):
+        from tinyagentos.framework_model_sync import push_model_config_to_framework
+        try:
+            await push_model_config_to_framework(name, framework, agent["model"], permitted)
+        except Exception:
+            logger.exception("model sync: pushing framework config for %s failed", name)
+
     return {
         "status": "updated",
         "name": name,
@@ -873,6 +881,14 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
             key_rescoped = await proxy.update_agent_key(llm_key, permitted)
         except Exception:
             logger.exception("set_permitted_models: re-scoping key for %s failed", name)
+
+    framework = agent.get("framework")
+    if framework in ("openclaw", "hermes"):
+        from tinyagentos.framework_model_sync import push_model_config_to_framework
+        try:
+            await push_model_config_to_framework(name, framework, agent["model"], permitted)
+        except Exception:
+            logger.exception("model sync: pushing framework config for %s failed", name)
 
     return {
         "status": "updated",

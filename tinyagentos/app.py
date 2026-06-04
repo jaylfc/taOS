@@ -689,6 +689,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await provider_refresher.start()
         except Exception:
             logger.exception("cloud provider refresher failed to start")
+        # Reverse sync: detect when a user changes the model in the
+        # framework's native TUI and update the taOS agent record.
+        from tinyagentos.framework_model_sync import FrameworkModelReconciler
+        framework_reconciler = FrameworkModelReconciler(app.state)
+        app.state.framework_reconciler = framework_reconciler
+        try:
+            await framework_reconciler.start()
+        except Exception:
+            logger.exception("framework model reconciler failed to start")
         await cluster_manager.start()
         # Enroll this controller as the 'local' cluster worker so route-layer
         # code (get_local_worker) picks up the in-memory signing key.
@@ -930,6 +939,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             pass
         try:
             await provider_refresher.stop()
+        except Exception:
+            pass
+        try:
+            await framework_reconciler.stop()
         except Exception:
             pass
         await app.state.mcp_supervisor.stop_all()
