@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchFrameworkState, FrameworkState, startFrameworkUpdate } from "@/lib/framework-api";
+import { fetchFrameworkState, FrameworkState, startFrameworkUpdate, fetchPermittedModels, setPermittedModels } from "@/lib/framework-api";
 import { ModelPickerModal } from "@/components/ModelPickerModal";
 import type { AgentModel } from "@/components/ModelPickerFlow";
 
@@ -20,10 +20,19 @@ export function FrameworkTab(
   const [pickerOpen, setPickerOpen] = useState(false);
   const [modelErr, setModelErr] = useState<string | null>(null);
 
+  // Permitted models set — the list of models this agent is allowed to use.
+  const [permittedCurrent, setPermittedCurrent] = useState<string>("");
+  const [permittedLoaded, setPermittedLoaded] = useState(false);
+  const [addPickerOpen, setAddPickerOpen] = useState(false);
+  const [permittedSaving, setPermittedSaving] = useState(false);
+  const [permittedErr, setPermittedErr] = useState<string | null>(null);
+  // Local draft — initialised from GET, only committed to backend on Save
+  const [draftPermitted, setDraftPermitted] = useState<string[]>([]);
+  const [draftDirty, setDraftDirty] = useState(false);
+
   // Routable models = LiteLLM /v1/models passthrough (single source of truth
   // for what an agent can use). Loaded when the picker is first opened.
-  async function openPicker() {
-    setPickerOpen(true);
+  async function ensureModelsLoaded() {
     if (modelsLoaded) return;
     try {
       const res = await fetch("/api/providers/models?refresh=true", {
@@ -35,6 +44,16 @@ export function FrameworkTab(
       })));
     } catch { /* leave empty — picker shows no models */ }
     finally { setModelsLoaded(true); }
+  }
+
+  async function openPicker() {
+    setPickerOpen(true);
+    await ensureModelsLoaded();
+  }
+
+  async function openAddPicker() {
+    setAddPickerOpen(true);
+    await ensureModelsLoaded();
   }
 
   async function changeModel(modelId: string) {
@@ -58,12 +77,57 @@ export function FrameworkTab(
     }
   }
 
+  async function loadPermitted() {
+    try {
+      const data = await fetchPermittedModels(agent.name);
+      setPermittedCurrent(data.current);
+      setDraftPermitted(data.permitted);
+      setDraftDirty(false);
+    } catch { /* non-critical — section stays hidden */ }
+    finally { setPermittedLoaded(true); }
+  }
+
+  function addToPermitted(modelId: string) {
+    if (draftPermitted.includes(modelId)) return;
+    const next = [...draftPermitted, modelId];
+    setDraftPermitted(next);
+    setDraftDirty(true);
+    setAddPickerOpen(false);
+  }
+
+  function removeFromPermitted(modelId: string) {
+    // The current/primary model cannot be removed — the backend would just
+    // re-add it, so we prevent the confusing round-trip here.
+    if (modelId === permittedCurrent) return;
+    const next = draftPermitted.filter((m) => m !== modelId);
+    setDraftPermitted(next);
+    setDraftDirty(true);
+  }
+
+  async function savePermitted() {
+    setPermittedSaving(true);
+    setPermittedErr(null);
+    try {
+      const data = await setPermittedModels(agent.name, draftPermitted);
+      setPermittedCurrent(data.current);
+      setDraftPermitted(data.permitted);
+      setDraftDirty(false);
+    } catch (e: any) {
+      setPermittedErr(String(e?.message ?? e));
+    } finally {
+      setPermittedSaving(false);
+    }
+  }
+
   async function load() {
     try { setState(await fetchFrameworkState(agent.name)); setErr(null); }
     catch (e: any) { setErr(String(e)); }
   }
 
-  useEffect(() => { load(); }, [agent.name]);
+  useEffect(() => {
+    load();
+    loadPermitted();
+  }, [agent.name]);
 
   useEffect(() => {
     if (state?.update_status !== "updating") return;
@@ -107,12 +171,80 @@ export function FrameworkTab(
         <code className="text-sm">{currentModel || "(not set)"}</code>
         <button
           onClick={openPicker}
+          aria-label="Change model"
           className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
         >
           Change model
         </button>
       </div>
       {modelErr && <div className="text-xs text-red-400">{modelErr}</div>}
+
+      {/* Permitted models — the set of models this agent is allowed to use. */}
+      {permittedLoaded && (
+        <section aria-label="Permitted models">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="opacity-60 text-sm">Permitted models</span>
+            <button
+              onClick={openAddPicker}
+              aria-label="Add permitted model"
+              className="bg-white/10 hover:bg-white/15 px-2.5 py-1 rounded text-xs"
+            >
+              + Add
+            </button>
+          </div>
+
+          {draftPermitted.length === 0 ? (
+            <p className="text-xs opacity-50">No models in the permitted set yet.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2" aria-label="Permitted model chips">
+              {draftPermitted.map((m) => {
+                const isCurrent = m === permittedCurrent;
+                return (
+                  <li
+                    key={m}
+                    className="flex items-center gap-1.5 bg-white/10 rounded px-2 py-0.5 text-xs"
+                  >
+                    <code>{m}</code>
+                    {isCurrent && (
+                      <span
+                        className="bg-blue-600/50 text-blue-200 px-1.5 py-0.5 rounded text-[10px] leading-none"
+                        aria-label="current primary model"
+                      >
+                        current
+                      </span>
+                    )}
+                    <button
+                      onClick={() => removeFromPermitted(m)}
+                      disabled={isCurrent}
+                      aria-label={isCurrent ? `Cannot remove current model ${m}` : `Remove ${m} from permitted models`}
+                      className="opacity-60 hover:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed leading-none"
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {permittedErr && (
+            <div className="text-xs text-red-400 mt-2">{permittedErr}</div>
+          )}
+
+          {draftDirty && (
+            <button
+              onClick={savePermitted}
+              disabled={permittedSaving}
+              aria-label="Save permitted models"
+              aria-busy={permittedSaving}
+              className="mt-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-xs"
+            >
+              {permittedSaving ? "Saving…" : "Save"}
+            </button>
+          )}
+        </section>
+      )}
+
       <dl className="grid grid-cols-[120px_1fr] gap-y-1 text-sm">
         <dt className="opacity-60">Installed</dt>
         <dd><code>{state.installed.tag ?? "(unknown)"}</code> · <code>{state.installed.sha ?? "—"}</code></dd>
@@ -173,6 +305,7 @@ export function FrameworkTab(
 
       <div className="mt-auto pt-4 text-xs opacity-50">Switch framework — coming soon</div>
 
+      {/* Change model picker (primary model) */}
       <ModelPickerModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
@@ -180,6 +313,16 @@ export function FrameworkTab(
         modelsLoaded={modelsLoaded}
         onSelect={(modelId) => changeModel(modelId)}
         title="Change model"
+      />
+
+      {/* Add to permitted set picker */}
+      <ModelPickerModal
+        open={addPickerOpen}
+        onClose={() => setAddPickerOpen(false)}
+        models={models}
+        modelsLoaded={modelsLoaded}
+        onSelect={(modelId) => addToPermitted(modelId)}
+        title="Add permitted model"
       />
     </div>
   );
