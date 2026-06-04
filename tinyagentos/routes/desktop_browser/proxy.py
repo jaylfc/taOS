@@ -56,6 +56,11 @@ _MAX_REDIRECTS = 5
 _FETCH_TIMEOUT = 15.0   # seconds — total deadline including all redirect hops
 _HOP_TIMEOUT = 5.0      # seconds — per-operation (connect + read) limit per hop
 _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
+_MAX_REQUEST_BYTES = 10 * 1024 * 1024   # 10 MB cap on forwarded request bodies (POST forms/uploads)
+# Request headers we forward to upstream for non-GET methods. Only the content
+# framing — never the client's cookies (we use the server-side jar), Host,
+# auth, or other ambient headers, which could leak or be abused.
+_FORWARD_REQUEST_HEADERS = frozenset({"content-type"})
 
 # Headers we strip from upstream responses before returning to the client.
 # `content-type` is stripped here and re-set from `media_type` on the
@@ -166,7 +171,7 @@ def _strip_port(host_header: str) -> str:
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
-@router.get("/api/desktop/browser/proxy")
+@router.api_route("/api/desktop/browser/proxy", methods=["GET", "POST"])
 async def proxy_get(
     profile_id: str,
     url: str,
@@ -174,10 +179,28 @@ async def proxy_get(
     tab_id: str | None = None,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
-    """Real proxy fetch — replaces PR 2's 501 stub."""
+    """Real proxy fetch. Handles GET and POST (form submissions — cookie
+    consent, search, login — which the rewriter routes here as POSTs)."""
     user_id = str(current_user.get("id") or "")
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    # Capture the request method + body so form POSTs reach upstream. GET/HEAD
+    # carry no body. The body is size-capped before we buffer the whole thing.
+    method = request.method.upper()
+    req_body: bytes = b""
+    fwd_headers: dict[str, str] = {}
+    if method not in ("GET", "HEAD"):
+        # Reject oversize via Content-Length when present (cheap, before read).
+        clen = request.headers.get("content-length")
+        if clen and clen.isdigit() and int(clen) > _MAX_REQUEST_BYTES:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        req_body = await request.body()
+        if len(req_body) > _MAX_REQUEST_BYTES:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        for hk, hv in request.headers.items():
+            if hk.lower() in _FORWARD_REQUEST_HEADERS:
+                fwd_headers[hk] = hv
 
     # Bootstrap default profiles (idempotent — safe per-request)
     browser_store = request.app.state.browser_store
@@ -215,6 +238,10 @@ async def proxy_get(
 
     async def _fetch_with_redirects() -> httpx.Response | None:
         nonlocal current_url
+        # Method + body for the current hop. Redirects may downgrade these
+        # (see the 3xx handling below). Start from the client's request.
+        hop_method = method
+        hop_body = req_body
         _resp: httpx.Response | None = None
         async with httpx.AsyncClient(
             follow_redirects=False, timeout=_HOP_TIMEOUT,
@@ -226,8 +253,14 @@ async def proxy_get(
                     cookie_store, user_id=user_id, profile_id=profile_id, host=host,
                 )
 
+                send_body = hop_body if hop_method not in ("GET", "HEAD") else None
                 try:
-                    _resp = await http.get(current_url, cookies=jar)
+                    _resp = await http.request(
+                        hop_method, current_url,
+                        cookies=jar,
+                        content=send_body,
+                        headers=fwd_headers if send_body is not None else None,
+                    )
                 except httpx.HTTPError as e:
                     _logger.info("browser proxy fetch error: err=%s", e)
                     return None
@@ -253,6 +286,12 @@ async def proxy_get(
                         )
                         _ssrf_blocked_url.append(next_url)
                         return None
+                    # Method semantics on redirect (mirrors browsers/RFC 7231):
+                    # 301/302/303 downgrade a non-GET to GET and drop the body;
+                    # 307/308 preserve the method and body.
+                    if _resp.status_code in (301, 302, 303) and hop_method != "GET":
+                        hop_method = "GET"
+                        hop_body = b""
                     current_url = next_url
                     continue
 
