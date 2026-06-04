@@ -7,7 +7,6 @@ from taosmd.agents import AgentNotFoundError
 
 _DEFAULT_LIBRARIAN = {
     "enabled": True,
-    "model": None,
     "tasks": {t: True for t in tm_agents.LIBRARIAN_TASKS},
     "fanout": {"default": "low", "auto_scale": True},
 }
@@ -59,25 +58,9 @@ class TestPatchLibrarian:
         assert resp.status_code == 200
         assert received["name"] == "atlas"
         assert received["kwargs"]["enabled"] is False
-        # clear_model=False (default) must NOT be forwarded
+        # model/clear_model are no longer forwarded (dropped fields)
+        assert "model" not in received["kwargs"]
         assert "clear_model" not in received["kwargs"]
-
-    async def test_patch_librarian_forwards_clear_model_when_true(self, client, monkeypatch):
-        received: dict = {}
-
-        def _set(name, **kwargs):
-            received["kwargs"] = kwargs
-            return dict(_DEFAULT_LIBRARIAN)
-
-        monkeypatch.setattr(tm_agents, "set_librarian", _set)
-
-        resp = await client.patch(
-            "/api/agents/atlas/librarian",
-            json={"clear_model": True},
-        )
-
-        assert resp.status_code == 200
-        assert received["kwargs"].get("clear_model") is True
 
     async def test_patch_librarian_404_for_unknown_agent(self, client, monkeypatch):
         def _raise(name, **kwargs):

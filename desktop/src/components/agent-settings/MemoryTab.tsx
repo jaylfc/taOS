@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { detectHwClass, type HwClass } from "@/lib/hw-detect";
 
 interface MemoryTabProps {
   agent: { name: string; memory_plugin?: string };
@@ -8,7 +7,6 @@ interface MemoryTabProps {
 
 interface LibrarianConfig {
   enabled?: boolean;
-  model?: string | null;
   tasks?: Record<string, boolean>;
   fanout?: { default?: string; auto_scale?: boolean };
 }
@@ -24,11 +22,6 @@ export function MemoryTab({ agent, onUpdated }: MemoryTabProps) {
   const [librarian, setLibrarian] = useState<LibrarianConfig | null>(null);
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [advanced, setAdvanced] = useState(false);
-  const [hw, setHw] = useState<HwClass>("cpu");
-
-  useEffect(() => {
-    detectHwClass().then(setHw);
-  }, []);
 
   useEffect(() => {
     fetch(`/api/agents/${agent.name}/librarian`)
@@ -126,34 +119,6 @@ export function MemoryTab({ agent, onUpdated }: MemoryTabProps) {
               onChange={(e) => patchLib({ enabled: e.target.checked })}
               aria-label="Enable Librarian"
             />
-          </label>
-
-          <label className="flex flex-col gap-1">
-            <span className="text-xs uppercase opacity-60">Model</span>
-            <select
-              value={librarian.model ?? ""}
-              onChange={(e) =>
-                patchLib(
-                  e.target.value
-                    ? { model: e.target.value }
-                    : { clear_model: true }
-                )
-              }
-              className="border border-white/10 rounded bg-shell-bg px-2 py-1 text-sm text-shell-text-secondary focus:outline-none focus:ring-1 focus:ring-white/20"
-              aria-label="Librarian model"
-            >
-              <option value="">Use install default</option>
-              <option value="ollama:qwen3:4b">
-                {hw === "rk3588"
-                  ? "ollama:qwen3:4b"
-                  : "ollama:qwen3:4b \u2713 recommended"}
-              </option>
-              <option value="dulimov/Qwen3-4B-rk3588-1.2.1-base">
-                {hw === "rk3588"
-                  ? "Qwen3-4B NPU (RK3588) \u2713 recommended"
-                  : "Qwen3-4B NPU (RK3588)"}
-              </option>
-            </select>
           </label>
 
           <button
