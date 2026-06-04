@@ -500,13 +500,13 @@ async def set_container_runtime(request: Request):
 async def check_for_updates(request: Request):
     """Check if a newer version of TinyAgentOS is available on GitHub."""
     import asyncio
-    from tinyagentos.auto_update import update_tracking_branch, remote_is_strictly_ahead
+    from tinyagentos.auto_update import remote_is_strictly_ahead
     project_dir = str(Path(__file__).parent.parent.parent)
 
-    # Track whichever branch this install is on (master on stable, dev on a
-    # dev/test box) rather than hard-coding master — otherwise a dev box is
-    # told a stale master commit is "available" and Install Update fails.
-    branch = await update_tracking_branch(project_dir)
+    # Track the user's selected branch (Updates → Advanced selector), or the
+    # checked-out branch when unset — never a hard-coded master, otherwise a
+    # dev box is told a stale master commit is "available" and Install fails.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
 
     # Fetch remote refs so origin/<branch> is current, then compare SHAs.
     # Parsing dry-run output is unreliable on shallow clones / no tracking branch.
@@ -719,8 +719,7 @@ async def apply_update(request: Request):
     # Git pull — pull the branch this install tracks (master on stable, dev on
     # a dev/test box). Pulling a hard-coded master onto a dev box fails ff-only
     # (dev is ahead of master) and the update silently never applies.
-    from tinyagentos.auto_update import update_tracking_branch
-    branch = await update_tracking_branch(project_dir)
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, project_dir)
     proc = await asyncio.create_subprocess_exec(
         "git", "pull", "--ff-only", "origin", branch,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,

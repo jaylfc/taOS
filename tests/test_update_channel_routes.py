@@ -115,3 +115,51 @@ class TestUpdateChannelRoute:
         assert saved.get("tracked_branch") == "dev"
 
         await ds.close()
+
+
+class TestUpdateCheckFollowsTrackedBranch:
+    @pytest.mark.asyncio
+    async def test_update_check_follows_tracked_branch_pref(self, client, monkeypatch):
+        """check_for_updates must resolve the tracked branch and compare against
+        origin/<that branch> — not a hard-coded master."""
+        import asyncio as _asyncio
+
+        import tinyagentos.routes.settings as s
+
+        resolve_calls = []
+        refs_seen = []
+
+        async def fake_resolve(store, project_dir):
+            resolve_calls.append(True)
+            return "my-feature"
+
+        class _FakeProc:
+            def __init__(self, out=b""):
+                self._out = out
+
+            async def communicate(self):
+                return self._out, b""
+
+        async def fake_exec(*args, **kwargs):
+            # args = ("git", <subcommand>, ...). Record any ref argument so we
+            # can assert the resolved branch flowed into the git comparison.
+            refs_seen.extend(a for a in args if isinstance(a, str))
+            return _FakeProc(b"deadbeef\n")
+
+        async def fake_strictly_ahead(project_dir, local_sha, remote_sha):
+            return False
+
+        monkeypatch.setattr(s, "resolve_tracked_branch", fake_resolve, raising=False)
+        monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec, raising=False)
+        monkeypatch.setattr(
+            "tinyagentos.auto_update.remote_is_strictly_ahead",
+            fake_strictly_ahead,
+            raising=False,
+        )
+
+        r = await client.get("/api/settings/update-check")
+        assert r.status_code == 200
+        assert resolve_calls, "check_for_updates did not resolve the tracked branch"
+        # The resolved branch must reach the git ref comparison.
+        assert "origin/my-feature" in refs_seen
+        assert "my-feature" in refs_seen  # git fetch origin <branch>
