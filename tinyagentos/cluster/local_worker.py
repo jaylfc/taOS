@@ -28,7 +28,12 @@ def _cpu_load() -> float:
         return 0.0
 
 
-async def local_heartbeat_loop(manager: ClusterManager, config, interval: float = 15.0) -> None:
+async def local_heartbeat_loop(
+    manager: ClusterManager,
+    config,
+    interval: float = 15.0,
+    backends_provider=None,
+) -> None:
     """Self-heartbeat the 'local' worker (the controller itself).
 
     The controller never receives heartbeats from elsewhere — it IS the
@@ -36,13 +41,29 @@ async def local_heartbeat_loop(manager: ClusterManager, config, interval: float 
     timeout and its backends/loaded-models would never refresh. Heartbeating
     here keeps it online and, by passing the live backends, keeps its backend
     + derived model list current the same way a remote worker's agent does.
+
+    ``backends_provider`` is an optional zero-arg callable returning the live
+    backend dicts (``{name, type, url, models, ...}``). Prefer it over
+    ``config.backends``: the configured list carries no live model data, while
+    the live catalog actually knows which models are loaded right now. Falls
+    back to ``config.backends`` when no provider is given or it raises.
     """
+    # psutil.cpu_percent(interval=None) returns 0.0 on its first call (no prior
+    # sample to diff against). Prime it once so the first heartbeat carries a
+    # real reading rather than a meaningless zero.
+    _cpu_load()
     while True:
+        backends = list(getattr(config, "backends", None) or [])
+        if backends_provider is not None:
+            try:
+                backends = list(backends_provider() or [])
+            except Exception:
+                logger.exception("local heartbeat: backends_provider failed; using config")
         try:
             manager.heartbeat(
                 "local",
                 load=_cpu_load(),
-                backends=list(getattr(config, "backends", None) or []),
+                backends=backends,
             )
         except Exception:
             logger.exception("local heartbeat failed")

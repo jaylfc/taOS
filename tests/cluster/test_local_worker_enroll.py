@@ -81,6 +81,60 @@ class TestLocalHeartbeat:
 
         asyncio.run(run())
 
+    def test_heartbeat_loop_prefers_live_backends_provider(self):
+        """When a backends_provider is given it overrides config.backends, so
+        the local worker reports the live (loaded-model) catalog."""
+        from tinyagentos.cluster.local_worker import enroll_local_worker, local_heartbeat_loop
+
+        async def run():
+            mgr = ClusterManager()
+            await enroll_local_worker(mgr)
+            cfg = MagicMock()
+            cfg.backends = [{"name": "stale", "type": "x", "url": "u", "models": [{"name": "old"}]}]
+            live = [{"name": "rkllama", "type": "rkllama", "url": "u2",
+                     "models": [{"name": "qwen-live"}]}]
+            task = asyncio.create_task(
+                local_heartbeat_loop(mgr, cfg, interval=0.01, backends_provider=lambda: live)
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            w = mgr.get_worker("local")
+            assert w.backends == live
+            assert "qwen-live" in w.models
+            assert "old" not in w.models  # config list was NOT used
+
+        asyncio.run(run())
+
+    def test_heartbeat_loop_falls_back_to_config_when_provider_raises(self):
+        from tinyagentos.cluster.local_worker import enroll_local_worker, local_heartbeat_loop
+
+        async def run():
+            mgr = ClusterManager()
+            await enroll_local_worker(mgr)
+            cfg = MagicMock()
+            cfg.backends = [{"name": "cfg", "type": "x", "url": "u", "models": [{"name": "fallback"}]}]
+
+            def boom():
+                raise RuntimeError("catalog not ready")
+
+            task = asyncio.create_task(
+                local_heartbeat_loop(mgr, cfg, interval=0.01, backends_provider=boom)
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            w = mgr.get_worker("local")
+            assert "fallback" in w.models  # gracefully used config.backends
+
+        asyncio.run(run())
+
     def test_enroll_generates_random_signing_key(self):
         import tinyagentos.cluster.local_worker as lw
         from tinyagentos.cluster.local_worker import enroll_local_worker
