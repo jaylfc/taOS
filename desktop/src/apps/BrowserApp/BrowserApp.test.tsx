@@ -4,6 +4,11 @@ import { BrowserApp } from "./BrowserApp";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useProcessStore } from "@/stores/process-store";
 
+vi.mock("@/hooks/use-is-mobile", () => ({
+  useIsMobile: vi.fn(() => false),
+}));
+import { useIsMobile } from "@/hooks/use-is-mobile";
+
 const TEST_WINDOW_ID = "win-test";
 
 const originalFetch = global.fetch;
@@ -56,6 +61,31 @@ describe("BrowserApp — composition", () => {
     render(<BrowserApp windowId={TEST_WINDOW_ID} />);
     const win = useBrowserStore.getState().getWindow(TEST_WINDOW_ID);
     expect(win?.profileId).toBe("work"); // Existing window preserved, NOT overwritten with "personal"
+  });
+});
+
+describe("BrowserApp — mobile layout", () => {
+  beforeEach(() => {
+    vi.mocked(useIsMobile).mockReturnValue(true);
+  });
+  afterEach(() => {
+    vi.mocked(useIsMobile).mockReturnValue(false);
+  });
+
+  it("renders the iframe inside a flex container so TabRenderer fills height", () => {
+    // Regression: the mobile content wrapper must be `display:flex`, otherwise
+    // TabRenderer's `flex flex-1` root collapses to 0 height and the page area
+    // renders blank on mobile/PWA.
+    const { container } = render(<BrowserApp windowId={TEST_WINDOW_ID} />);
+    const iframe = container.querySelector("iframe");
+    expect(iframe).toBeTruthy();
+
+    // The content wrapper holds TabRenderer (`flex flex-1` root). It is the
+    // div that is both `flex-1 relative` and the parent of TabRenderer's root.
+    const wrapper = container.querySelector(".flex-1.relative.overflow-hidden");
+    expect(wrapper).toBeTruthy();
+    // Must be a flex container so TabRenderer's `flex-1` root fills the height.
+    expect(wrapper?.classList.contains("flex")).toBe(true);
   });
 });
 
