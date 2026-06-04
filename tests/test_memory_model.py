@@ -97,3 +97,16 @@ class TestPutMemoryModel:
 
         assert resp.status_code == 501
         assert "taosmd" in resp.json()["detail"]
+
+    async def test_put_forbidden_for_non_admin(self, client, app, monkeypatch):
+        # System-wide setting: a non-admin session must be rejected (403) before
+        # the setter is ever invoked.
+        called = {"set": False}
+        monkeypatch.setattr(librarian_mod.taosmd, "set_memory_model",
+                            lambda m, clear=False: called.__setitem__("set", True))
+        monkeypatch.setattr(app.state.auth, "session_user", lambda token: {"is_admin": False})
+
+        resp = await client.put("/api/memory/model", json={"model": "ollama:qwen3:4b"})
+
+        assert resp.status_code == 403
+        assert called["set"] is False

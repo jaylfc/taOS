@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -52,7 +52,13 @@ async def get_memory_model():
 
 
 @router.put("/api/memory/model")
-async def set_memory_model(body: MemoryModelUpdate):
+async def set_memory_model(request: Request, body: MemoryModelUpdate):
+    # System-wide setting — only an admin may change which model powers memory
+    # for the whole install. (GET stays open: it returns only a model-id string.)
+    from tinyagentos.routes.auth import _require_admin
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     setter = getattr(taosmd, "set_memory_model", None)
     if setter is None:
         return JSONResponse(status_code=501, content={"detail": "installed taosmd has no system memory-model API"})
