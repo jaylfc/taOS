@@ -733,10 +733,27 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     agent["paused"] = False
     await save_config_locked(config, config.config_path)
 
+    # Re-scope the agent's LiteLLM virtual key so it's actually ALLOWED to use
+    # the new model — without this the change only updates taOS's record and
+    # LiteLLM would 403 the new model. The key value is unchanged, so no
+    # container restart/env push is needed; the framework's /v1/models (with
+    # this key) reflects the new permitted set immediately. (Routing-only mode
+    # without a key DB is a no-op.) Pushing model.primary into the framework
+    # config + reverse reconcile from the framework are tracked in #570.
+    proxy = getattr(request.app.state, "llm_proxy", None)
+    llm_key = agent.get("llm_key")
+    key_rescoped = False
+    if proxy is not None and llm_key:
+        try:
+            key_rescoped = await proxy.update_agent_key(llm_key, [model_id])
+        except Exception:
+            logger.exception("update_agent_model: re-scoping key for %s failed", name)
+
     return {
         "status": "updated",
         "name": name,
         "model": model_id,
         "resumed": was_paused,
         "location": location.kind,
+        "key_rescoped": key_rescoped,
     }
