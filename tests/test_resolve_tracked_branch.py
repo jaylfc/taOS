@@ -1,6 +1,10 @@
 import asyncio
 import pytest
-from tinyagentos.auto_update import resolve_tracked_branch, PREF_NAMESPACE
+from tinyagentos.auto_update import (
+    is_valid_branch_name,
+    resolve_tracked_branch,
+    PREF_NAMESPACE,
+)
 
 
 class _FakeSettings:
@@ -40,3 +44,26 @@ def test_tolerates_settings_failure(repo):
     class Boom:
         async def get_preference(self, *a): raise RuntimeError("db down")
     assert asyncio.run(resolve_tracked_branch(Boom(), repo)) == "master"
+
+
+@pytest.mark.parametrize("name", [
+    "master", "dev", "feature/foo", "release-1.2", "user/fix_bug-3",
+])
+def test_is_valid_branch_name_accepts_plain_refs(name):
+    assert is_valid_branch_name(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "--upload-pack=touch /tmp/pwned",  # flag injection
+    "-x", "", "  ", "a b", "a..b", "a~b", "a^b", "a:b", "a?b", "a*b",
+    "a[b", "a\\b", "a//b", "/lead", "trail/", "ref.lock", "x@{0}",
+    "a\tb", "a\nb", "x.", "a" * 256,
+])
+def test_is_valid_branch_name_rejects_unsafe(name):
+    assert is_valid_branch_name(name) is False
+
+
+def test_rejects_malformed_stored_pref_and_falls_back(repo):
+    # A flag-like value must never reach git argv — fall back to checked-out.
+    s = _FakeSettings({"tracked_branch": "--upload-pack=evil"})
+    assert asyncio.run(resolve_tracked_branch(s, repo)) == "master"

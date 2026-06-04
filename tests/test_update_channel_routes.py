@@ -39,6 +39,27 @@ class TestUpdateChannelRoute:
         assert "unknown" in body["error"]
 
     @pytest.mark.asyncio
+    async def test_rejects_flag_injection_branch(self, client, monkeypatch):
+        import tinyagentos.routes.settings as s
+
+        called = []
+
+        async def fake_lsremote(project_dir):
+            called.append(True)
+            return ["master", "dev"]
+
+        monkeypatch.setattr(s, "_remote_branches", fake_lsremote, raising=False)
+
+        r = await client.post(
+            "/api/settings/update-channel",
+            json={"branch": "--upload-pack=touch /tmp/x"},
+        )
+        assert r.status_code == 400
+        assert "invalid" in r.json()["error"]
+        # Rejected by the format guard before we ever hit the remote.
+        assert called == []
+
+    @pytest.mark.asyncio
     async def test_noop_on_same_branch(self, client, monkeypatch):
         import tinyagentos.routes.settings as s
 

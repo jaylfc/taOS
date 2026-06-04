@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
-from tinyagentos.auto_update import resolve_tracked_branch, PREF_NAMESPACE
+from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
 from tinyagentos.data_snapshot import snapshot_data_dir
 from tinyagentos.update_runner import switch_to_branch
 from tinyagentos.restart_orchestrator import write_pending_restart
@@ -511,7 +511,9 @@ async def check_for_updates(request: Request):
     # Fetch remote refs so origin/<branch> is current, then compare SHAs.
     # Parsing dry-run output is unreliable on shallow clones / no tracking branch.
     fetch_proc = await asyncio.create_subprocess_exec(
-        "git", "fetch", "origin", branch,
+        # `--` forces `branch` to be read as a refspec, never an option, even
+        # though resolve_tracked_branch already validates it (defence in depth).
+        "git", "fetch", "origin", "--", branch,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         cwd=project_dir,
     )
@@ -721,7 +723,9 @@ async def apply_update(request: Request):
     # (dev is ahead of master) and the update silently never applies.
     branch = await resolve_tracked_branch(request.app.state.desktop_settings, project_dir)
     proc = await asyncio.create_subprocess_exec(
-        "git", "pull", "--ff-only", "origin", branch,
+        # `--` forces `branch` to be a refspec, never an option (flag-injection
+        # defence); resolve_tracked_branch also validates it.
+        "git", "pull", "--ff-only", "origin", "--", branch,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         cwd=str(project_dir),
     )
@@ -823,6 +827,11 @@ async def set_update_channel(request: Request, body: UpdateChannel):
     persist the tracked_branch pref, then pip/rebuild/restart to apply."""
     project_dir = Path(__file__).parent.parent.parent
     branch = body.branch.strip()
+
+    # Reject anything that isn't a plain ref name before it reaches git argv
+    # (flag-injection defence) — independent of the remote-membership check.
+    if not is_valid_branch_name(branch):
+        return JSONResponse({"error": f"invalid branch name '{branch}'"}, status_code=400)
 
     available = await _remote_branches(str(project_dir))
     if branch not in available:

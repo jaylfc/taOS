@@ -165,10 +165,19 @@ async def switch_to_branch(branch: str, project_dir: Path) -> UpdateResult:
     tracking branch if needed), ff-merges or hard-resets to origin/<branch>
     (tagging divergence), then restores the stash best-effort.
     """
+    # Guard against flag-injection: `branch` reaches git argv (fetch/checkout)
+    # and `origin/<branch>` refs. Callers validate too, but this is the unit
+    # that actually runs git, so it validates as well (defence in depth).
+    from tinyagentos.auto_update import is_valid_branch_name
+    if not is_valid_branch_name(branch):
+        return UpdateResult(previous_sha="", new_sha="",
+                            message=f"Refused to switch: invalid branch name {branch!r}.")
+
     ts = int(time.time())
 
     logger.info("update_runner: fetching origin/%s", branch)
-    rc, out = await _run(["git", "fetch", "origin", branch], project_dir)
+    # `--` forces `branch` to be read as a refspec, never an option.
+    rc, out = await _run(["git", "fetch", "origin", "--", branch], project_dir)
     if rc != 0:
         logger.warning("update_runner: fetch failed: %s", out[:500])
         return UpdateResult(previous_sha="", new_sha="",
