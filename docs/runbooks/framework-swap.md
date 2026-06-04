@@ -9,63 +9,78 @@ This runbook is the operational face of the
 If this runbook stops working, the rule has been violated somewhere and the
 violation is a bug.
 
+> **Snapshot model (Phase 2.A):** workspace, memory, and home all live **inside the
+> container rootfs** — not in host-side bind mounts. A framework swap therefore works
+> differently from the old bind-mount model: you must export the agent's state from the
+> old container before destroying it, then import it into the new one. The trace directory
+> (`{data_dir}/trace/{name}/`) remains on the host as the sole bind mount and is
+> unaffected by a swap.
+
 ## Pre-flight
 
-Before swapping, confirm the following — they should be true of every agent
-produced by `taos agent deploy`, but a one-second check costs nothing:
+Before swapping, confirm the following:
 
-1. `data/agent-workspaces/{name}/` exists on the host and contains the
-   agent's files.
-2. `data/agent-memory/{name}/` exists on the host. This is what the
-   container sees at `/memory`.
-3. The target framework is present in the catalog
+1. The agent's container is healthy: `incus info taos-agent-{name}` (LXC) or
+   `docker inspect taos-agent-{name}` (Docker) shows it running.
+2. The target framework is present in the catalog
    (`GET /api/catalog/apps?type=agent-framework`) or is a raw pip-installable
    package name.
+3. You have enough disk for two containers to exist briefly in parallel (the old
+   container is kept until the swap is verified).
 
 ## Procedure
 
 ```bash
-# 1. Stop the running container. State on disk is untouched.
+# 1. Stop the running container. State inside the container is untouched.
 taos agent stop my-research-agent
 
-# 2. Destroy the container. Only the container is destroyed — the mounted
-#    /workspace and /memory directories survive because they live on the
-#    host, not inside the container image.
+# 2. Export agent state from the container (workspace + memory + any other files
+#    the agent produced). Adjust paths as needed for your framework.
+incus exec taos-agent-my-research-agent -- tar czf /tmp/agent-state.tar.gz \
+    /workspace /memory /root/.openclaw 2>/dev/null || true
+incus file pull taos-agent-my-research-agent/tmp/agent-state.tar.gz \
+    /tmp/my-research-agent-state.tar.gz
+
+# 3. Undeploy the old container. This destroys it.
 taos agent undeploy my-research-agent
 
-# 3. Redeploy with the new framework. The deployer bind-mounts the existing
-#    workspace and memory directories into the new container, so the agent
-#    wakes up with every previous memory intact.
+# 4. Redeploy with the new framework. The deployer creates a fresh container.
 taos agent deploy \
     --name my-research-agent \
     --framework autogen \
-    --model qwen3-4b-q4 \
-    --memory-limit 2GB
+    --model qwen3-4b-q4
 
-# 4. Verify the agent retains its state.
-taos agent exec my-research-agent -- ls /workspace
-taos agent exec my-research-agent -- ls /memory
+# 5. Restore agent state into the new container.
+incus file push /tmp/my-research-agent-state.tar.gz \
+    taos-agent-my-research-agent/tmp/agent-state.tar.gz
+incus exec taos-agent-my-research-agent -- tar xzf /tmp/agent-state.tar.gz \
+    -C / --strip-components=0 2>/dev/null || true
+
+# 6. Start the agent and verify state.
+taos agent start my-research-agent
+incus exec taos-agent-my-research-agent -- ls /workspace
+incus exec taos-agent-my-research-agent -- ls /memory
 ```
 
-The deploy in step 3 is identical to a first-time deploy. The deployer
-doesn't know (or care) that this name previously existed — it creates the
-host-side directories if missing (idempotent) and mounts them into the new
-container. That's what makes this operation free.
+The state directories (`/workspace`, `/memory`) are framework-agnostic. Framework-specific
+config (e.g. `/root/.openclaw/`) is framework-specific and normally should be regenerated
+by the new deploy, not restored from the old container.
 
 ## What carries over
 
-| Thing | Carries? | Why |
+| Thing | Carries? | How |
 |---|---|---|
-| Workspace files | **Yes** | Lives in `data/agent-workspaces/{name}/`, mounted |
-| Vector store / embeddings | **Yes** | Lives in `data/agent-memory/{name}/`, mounted |
-| User memory grants | **Yes** | Lives in `data/user_memory.db` on host, agent reaches it via `TAOS_USER_MEMORY_URL` |
-| Secret grants | **Yes** | Lives in `data/secrets.db` on host, agent fetches via API |
-| Skill assignments | **Yes** | Lives in `data/skills.db` on host, agent reaches them via `TAOS_SKILLS_URL` |
-| Chat / conversation history | **Yes** | Lives in `data/chat.db` on host |
-| Agent-to-agent messages | **Yes** | Lives in `data/agent_messages.db` on host |
+| Workspace files | **Yes** | Tar export/import (step 2/5) |
+| Vector store / embeddings | **Yes** | Tar export/import |
+| Trace history | **Yes** | Lives in `{data_dir}/trace/{name}/` on host — unaffected by swap |
+| User memory grants | **Yes** | Lives in host DB, accessed via `TAOS_USER_MEMORY_URL` |
+| Secret grants | **Yes** | Lives in host DB, fetched via API |
+| Chat / conversation history | **Yes** | Lives in host `data/chat.db` |
+| Agent-to-agent messages | **Yes** | Lives in host `data/agent_messages.db` |
 | LLM proxy API key | **No** | Rotated on deploy — new key minted, old key revoked |
+| Framework-specific runtime config | **No** | Regenerated by `install.sh` for the new framework |
 | In-flight pip install cache | **No** | Container-local, expected to vanish |
-| Framework-specific ephemeral state | **No** | That's the point — the new framework is a clean slate |
+| Framework-specific ephemeral state | **No** | That's the point — new framework starts clean |
 
 ## What does NOT carry over, and why that's usually fine
 
@@ -81,14 +96,12 @@ container. That's what makes this operation free.
 
 ## Troubleshooting
 
-**"Agent starts with empty memory"**: the mount didn't land. Check
-`incus config device show taos-agent-{name}` (LXC) or `docker inspect
-taos-agent-{name}` (Docker) for the `/workspace` and `/memory` mounts. If
-they're missing, the deployer wasn't given `data_dir` — this is a bug,
-file an issue.
+**"Agent starts with empty memory"**: the tar restore didn't run, or the paths differ
+between frameworks. Check `incus exec taos-agent-{name} -- ls /memory` and `/workspace`.
+If empty, re-run steps 5-6.
 
 **"Agent can't reach the LLM proxy"**: the `OPENAI_BASE_URL` env var
-wasn't injected. Check with `taos agent exec {name} -- env | grep OPENAI`.
+wasn't injected. Check with `incus exec taos-agent-{name} -- env | grep OPENAI`.
 If empty, the host-side LiteLLM proxy was likely down during deploy.
 Restart the service and redeploy.
 
@@ -103,6 +116,5 @@ just restart the agent, since `TAOS_EMBEDDING_URL` is the same).
 
 An automated test of this runbook lives at
 `tests/test_framework_swap.py`. It deploys an agent with framework A,
-writes a file into `/workspace`, destroys the container, redeploys with
-framework B, and asserts the file is still there. If that test breaks,
-this runbook is lying.
+writes a file into `/workspace`, performs a framework swap, and asserts the
+file is still present after redeploy. If that test breaks, this runbook is lying.

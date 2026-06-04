@@ -75,7 +75,7 @@ At the end, it prints your device's IP address:
 
 Open that URL in your browser. You're done with installation.
 
-**If your network supports mDNS** (most home networks do), you can also use `http://tinyagentos.local:6969` from any device on the same network — no need to look up the IP.
+**If your network supports mDNS** (most home networks do), you can also use `http://taos.local:6969` from any device on the same network — no need to look up the IP.
 
 ---
 

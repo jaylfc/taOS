@@ -1,16 +1,41 @@
 # OpenClaw Integration Reference
 
-**Status:** Research complete — primary sources fetched 2026-04-16. Code-level implementation not started.
-**Last updated:** 2026-04-16
-**Supersedes:** `app-catalog/agents/openclaw/scripts/install.sh` stub (Python FastAPI, will be discarded)
+**Status:** Protocol/install/config research (§1–§5) is current reference material.
+§6 mapping table and §7 roadmap describe the **historical fork-bridge design** — the live
+implementation uses upstream npm + ACP instead. See the implementation summary before reading §6–§7.
+**Last updated:** 2026-04-16 (research); 2026-06-04 (implementation summary added)
+
+---
+
+## Implementation summary (as-built, 2026-06-04)
+
+The fork/bridge design documented in §6–§7 was superseded before it shipped. The live
+implementation is:
+
+- **Install:** `npm install -g openclaw@latest` (upstream npm, no fork). See
+  `app-catalog/agents/openclaw/scripts/install.sh`.
+- **Runtime:** taOS drives each agent turn **in** via ACP — it runs
+  `openclaw acp --session agent:main:main` inside the container using `incus exec` and
+  streams replies back. See `tinyagentos/openclaw_acp_runtime.py`.
+- **No fork.** `jaylfc/openclaw` is archived. `src/taos-bridge.ts` was never shipped.
+  Do not install `github:jaylfc/openclaw#<sha>` — it no longer exists.
+- **Bridge SSE endpoints survive** (`GET /api/openclaw/sessions/{agent}/events`,
+  `POST /api/openclaw/sessions/{agent}/reply`, `GET /api/openclaw/bootstrap`) — they
+  live in `tinyagentos/routes/openclaw.py` and are reused by the Hermes bridge adapter
+  (`tinyagentos/scripts/install_hermes.sh`). They are not dead code.
+- The gateway port 18789 is reserved for operator tooling (config reload, log tailing)
+  and is not used by taOS for normal chat turns.
+
+§6 and §7 are retained as historical design reference only. Do not implement them.
 
 ---
 
 ## What this doc is for
 
-This is the team's primary reference for wiring real OpenClaw into taOS. It covers the gateway protocol in detail, installation and runtime behaviour on Linux/arm64, the full configuration schema, the extension model, known limitations, a capability-mapping table, and a step-by-step MVP-to-full roadmap.
-
-It is **not** a product spec or a work-tracking document. It does not contain code changes. It does not represent the current state of the codebase — it represents what the integration should look like once built, grounded in primary sources from the OpenClaw repo and docs site (fetched April 2026).
+This is the team's primary reference for the OpenClaw gateway protocol, installation and
+runtime behaviour on Linux/arm64, the full configuration schema, the extension model, and
+known limitations. §6–§7 document the original fork-bridge design and are kept for
+historical context; they do not describe the live implementation.
 
 ---
 
@@ -599,17 +624,19 @@ Version 24 is recommended. The README quick start references `Node 22.16+` as mi
 
 The package manager is `pnpm@10.32.1` — only needed for source builds. Global npm installs work with npm, pnpm, or bun.
 
-> **taOS deployer note:** Debian bookworm's default `nodejs` apt package ships version 18, which does not satisfy openclaw's `>=22.14.0` engine requirement. The deployer must install Node 22.14+ (or 24) via NodeSource or nvm _before_ running `npm install -g openclaw`. See Step 1a in §7 for the exact NodeSource install snippet.
+> **taOS deployer note:** Debian bookworm's default `nodejs` apt package ships version 18, which does not satisfy openclaw's engine requirement. The deployer must install Node 22.19+ (or 24) via NodeSource before running `npm install -g openclaw`. The install script (`app-catalog/agents/openclaw/scripts/install.sh`) enforces `>=22.19` (not just `>=22.14.0`) because earlier 22.x releases have known issues with openclaw's dependency tree; it uses NodeSource `setup_22.x` and validates the minor version explicitly.
 
 ### 2.3 Install methods
 
-**Global npm install (taOS's path):**
+**Global npm install (taOS's path, as-built):**
 ```bash
 npm install -g openclaw@latest
-openclaw onboard --install-daemon
+# taOS does NOT call `openclaw onboard --install-daemon` — see §2.7.
+# install.sh writes openclaw.json + env directly and installs its own
+# system-level openclaw.service unit.
 ```
 
-**`openclaw onboard --install-daemon`** does the following:
+**`openclaw onboard --install-daemon`** does the following (for reference; taOS bypasses this):
 - Creates `~/.openclaw/` directory and initial `openclaw.json` config
 - On Linux/WSL2: installs a **systemd user service** (`openclaw.service` under `~/.config/systemd/user/`)
 - On macOS: installs a **LaunchAgent** (`~/Library/LaunchAgents/ai.openclaw.gateway.plist`)
@@ -1092,15 +1119,23 @@ Control-plane write RPCs are rate-limited to **3 requests per 60 seconds**. For 
 
 The `message` field in `ChatEventSchema` is typed as `Type.Optional(Type.Unknown())`. The exact runtime shape (string for text, structured object for tool results) is not schema-enforced. The taOS relay must handle both cases defensively.
 
-### 5.9 Node 22.14 vs 22.16 discrepancy
+### 5.9 Node 22.14 vs 22.16 vs 22.19 discrepancy
 
-`package.json` engine: `>=22.14.0`. README: `Node 22.16+`. taOS should pin Node 24 to avoid the ambiguity.
+`package.json` engine: `>=22.14.0`. README: `Node 22.16+`. taOS's install script enforces
+`>=22.19` (full-version check, not just major) because earlier 22.x point releases fail at
+runtime even though they satisfy a major-only guard. Pin Node 24 to avoid all ambiguity.
 
 ---
 
-## 6. taOS integration mapping
+## 6. taOS integration mapping (HISTORICAL — superseded)
 
-The MVP integration path is the **bridge adapter** — openclaw's fork patch fetches a bootstrap document from a taOS-hosted endpoint and configures openclaw's native clients from it. The operator-client (raw WS from taOS) approach was considered first; it is kept here as a documented fallback only, because it couples taOS to openclaw's v3 gateway protocol version, meaning every openclaw protocol bump can break the fleet. The bridge isolates that coupling to a single ~200 LoC patch inside the fork.
+> **Note:** This mapping table describes the fork-bridge design that was never shipped.
+> The live implementation uses upstream npm + ACP (see implementation summary at the top of
+> this doc). This section is retained for historical context only.
+
+The planned MVP integration path was the **bridge adapter** — openclaw's fork patch fetching
+a bootstrap document from a taOS-hosted endpoint and configuring openclaw's native clients
+from it. That design was abandoned in favour of upstream npm + ACP before implementation.
 
 | OpenClaw capability | taOS maps it to | Mechanism | Priority |
 |---|---|---|---|
@@ -1135,13 +1170,18 @@ The MVP integration path is the **bridge adapter** — openclaw's fork patch fet
 
 ---
 
-## 7. MVP-to-full roadmap
+## 7. MVP-to-full roadmap (HISTORICAL — superseded)
+
+> **Note:** This roadmap was written for the fork-bridge design. It was not executed.
+> The live integration is upstream npm + ACP (see implementation summary). Steps below
+> are retained for historical record only.
 
 ### Step 1: MVP — replace the stub with real openclaw (bridge adapter)
 
-**Goal:** A real openclaw gateway running inside an LXC container, wired to taOS via the bridge adapter, using LiteLLM as the LLM backend, with streaming text responses flowing into the taOS Messages UI.
+**[NOT IMPLEMENTED — replaced by ACP approach]**
 
-**Integration approach:** bridge adapter (`src/taos-bridge.ts` fork patch). The operator-client WS approach is the documented fallback — see §6.
+**Original goal:** A real openclaw gateway wired to taOS via the bridge adapter and fork patch.
+**Actual implementation:** upstream `npm install -g openclaw@latest` + `openclaw_acp_runtime.py`.
 
 **Review-gate refinements baked into this step:**
 
@@ -1161,72 +1201,16 @@ Fork already exists at `github.com/jaylfc/openclaw`. Pick a current baseline SHA
 
 New `install.sh` flow:
 
-```bash
-# 1. Install Node 22.14+ via NodeSource (Debian bookworm default is Node 18, too old)
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs
+**[NOT IMPLEMENTED — see implementation summary]**
 
-# 2. Install our forked openclaw at a pinned SHA — never @latest
-npm install -g github:jaylfc/openclaw#<sha>
+The install script that shipped (`app-catalog/agents/openclaw/scripts/install.sh`) installs
+upstream `openclaw@latest` from npm (not a fork), writes `openclaw.json` and env from
+injected env vars, and runs `openclaw gateway` (not `openclaw acp`) as the systemd unit.
+The gateway stays running as before; taOS drives turns via ACP, not via the WS gateway.
 
-# 3. Optional: pre-cached tarball fallback for airgapped rebuild
-#    If /opt/tinyagentos/vendor/openclaw-<sha>.tgz exists, use it instead of github
-
-# 4. Verify installation
-openclaw --version
-
-# 5. Create config directory (will be populated by deployer-generated config via bind mount)
-mkdir -p /root/.openclaw
-chmod 700 /root/.openclaw
-
-# 6. Write systemd unit for openclaw gateway
-cat > /etc/systemd/system/openclaw.service << 'EOF'
-[Unit]
-Description=OpenClaw Gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=-/root/.openclaw/env
-ExecStart=/usr/local/bin/openclaw gateway --port 18789
-Restart=on-failure
-RestartSec=5
-User=root
-WorkingDirectory=/root
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable openclaw.service
-
-# 7. Wait for gateway to start; openclaw health exits non-zero if unreachable
-for i in $(seq 1 15); do
-    if openclaw health --timeout 2000 > /dev/null 2>&1; then
-        echo "openclaw: gateway ready"
-        exit 0
-    fi
-    sleep 2
-done
-echo "openclaw: gateway failed to start" >&2
-exit 1
-```
-<!-- source: github.com/openclaw/openclaw/blob/main/docs/cli/health.md -->
-
-Remove the Python stub (`server.py`, venv creation, FastAPI install).
-
-**Pi/ARM note:** on low-RAM ARM hosts (Orange Pi 5 Plus has 16 GB so this is not critical, but relevant for smaller SBCs), the upstream Pi deployment guide recommends adding a 2 GB swapfile and setting `vm.swappiness=10`, plus `NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache` and `OPENCLAW_NO_RESPAWN=1` for repeated CLI invocations. Also, `gpu_mem=16` in `/boot/config.txt` frees RAM on headless setups.
+**Pi/ARM note:** on low-RAM ARM hosts the upstream Pi deployment guide recommends adding a
+2 GB swapfile and setting `vm.swappiness=10`, plus `NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache`.
 <!-- source: github.com/openclaw/openclaw/blob/main/docs/install/raspberry-pi.md -->
-
-Update `app-catalog/agents/openclaw/manifest.yaml`:
-- `disk_mb`: 500 → 2000 (real openclaw is 1-2 GB on disk)
-- `requires.ram_mb`: increase to 1024 (Node.js + npm modules heavier than Python venv)
-
-**Test:** `ss -tlnp | grep 18789` succeeds inside container.
 
 #### 1b. Generate `openclaw.json` at deploy time
 
