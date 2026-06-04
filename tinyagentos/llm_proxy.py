@@ -368,11 +368,17 @@ class LLMProxy:
         """
         if not self.is_running() or not self.database_url or not key:
             return False
+        if not models:
+            # An empty scope is a caller error, not a request to allow nothing.
+            # Refuse rather than silently substitute a bogus "default" model
+            # (which would scope the key to a model that does not exist).
+            logger.warning("update_agent_key called with empty models; refusing to re-scope key")
+            return False
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(
                     f"{self.url}/key/update",
-                    json={"key": key, "models": models or ["default"]},
+                    json={"key": key, "models": models},
                     headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"},
                 )
                 if resp.status_code == 200:

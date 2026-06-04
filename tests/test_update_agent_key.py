@@ -47,3 +47,14 @@ async def test_update_agent_key_false_on_error(monkeypatch):
     import tinyagentos.llm_proxy as M
     monkeypatch.setattr(M.httpx, "AsyncClient", lambda **k: _Client(500))
     assert await _FakeProxy().update_agent_key("sk-x", ["a"]) is False
+
+
+@pytest.mark.asyncio
+async def test_update_agent_key_refuses_empty_models(monkeypatch):
+    # An empty scope must NOT silently become ["default"] — refuse and never
+    # hit /key/update (which would scope the key to a non-existent model).
+    cap = {}
+    import tinyagentos.llm_proxy as M
+    monkeypatch.setattr(M.httpx, "AsyncClient", lambda **k: _Client(200, cap))
+    assert await _FakeProxy().update_agent_key("sk-x", []) is False
+    assert cap == {}
