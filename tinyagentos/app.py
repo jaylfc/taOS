@@ -685,9 +685,33 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # code (get_local_worker) picks up the in-memory signing key.
         from tinyagentos.cluster.local_worker import enroll_local_worker
         from tinyagentos.cluster.worker_registry import set_active_manager
+        from dataclasses import asdict as _asdict
         _bind_port = config.server.get("port", 6969)
-        await enroll_local_worker(cluster_manager, bind_port=_bind_port)
+        # Give the local worker the controller's own hardware + backends so the
+        # Cluster view shows the host's real CPU/RAM/NPU and loaded backends.
+        _local_hw = _asdict(hardware_profile) if hardware_profile is not None else {}
+        await enroll_local_worker(
+            cluster_manager,
+            bind_port=_bind_port,
+            hardware=_local_hw,
+            backends=list(config.backends or []),
+        )
         set_active_manager(cluster_manager)
+        # Self-heartbeat the local worker so it stays online + refreshes its
+        # backends/loaded-models like a real worker (it never gets heartbeats
+        # from elsewhere — it IS the controller). Source backends from the LIVE
+        # catalog (which probes for loaded models), not config.backends (static,
+        # no model data). The lambda is evaluated each tick so it self-heals
+        # once the catalog has completed its first probe.
+        from tinyagentos.cluster.local_worker import local_heartbeat_loop
+        app.state.local_heartbeat_task = asyncio.create_task(
+            local_heartbeat_loop(
+                cluster_manager,
+                config,
+                backends_provider=lambda: [e.to_dict() for e in backend_catalog.backends()],
+            ),
+            name="local-heartbeat",
+        )
         # Start the live backend catalog — everything that asks "what's
         # available?" reads from this rather than the filesystem.
         try:
@@ -879,6 +903,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await c.stop()
         await score_cache.stop()
         await backend_catalog.stop()
+        _hb_task = getattr(app.state, "local_heartbeat_task", None)
+        if _hb_task is not None:
+            _hb_task.cancel()
+            # Await it so the loop has actually exited before teardown moves on
+            # (cancel() alone doesn't guarantee the coroutine has unwound).
+            try:
+                await _hb_task
+            except asyncio.CancelledError:
+                pass
         await cluster_manager.stop()
         llm_proxy.stop()
         await monitor.stop()
