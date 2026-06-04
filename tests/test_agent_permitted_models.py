@@ -199,6 +199,22 @@ async def test_put_permitted_unreachable_model_returns_409(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_put_permitted_unreachable_current_returns_409(monkeypatch):
+    # The auto-added current model must also be validated — an unreachable
+    # current model must not be injected into the permitted set / key scope.
+    _patch_save(monkeypatch)
+    _patch_resolver(monkeypatch, {"stale-current": "not_found"})
+    from tinyagentos.routes.agents import set_permitted_models, PermittedModelsUpdate
+    agents = [{"name": "alpha", "model": "stale-current", "llm_key": "sk-a"}]
+    req = _FakeRequest(agents)
+    body = PermittedModelsUpdate(models=["qwen3"])  # all reachable, but current is not
+    resp = await set_permitted_models(req, "alpha", body)
+    assert resp.status_code == 409
+    import json
+    assert json.loads(resp.body)["model"] == "stale-current"
+
+
+@pytest.mark.asyncio
 async def test_put_permitted_prepends_current_if_omitted(monkeypatch):
     _patch_save(monkeypatch)
     _patch_resolver(monkeypatch, {})

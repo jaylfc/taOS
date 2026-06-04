@@ -844,21 +844,23 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
     if not body.models:
         return JSONResponse({"error": "models must not be empty"}, status_code=400)
 
+    # Build the final set up front — the current primary must always be a
+    # member — so it is validated alongside the requested models. Otherwise an
+    # unreachable current model could be injected into the key scope unchecked.
+    permitted = list(body.models)
+    current = agent.get("model")
+    if current and current not in permitted:
+        permitted = [current, *permitted]
+
     from tinyagentos.cluster.model_resolver import resolve_model_location
 
-    for model_id in body.models:
+    for model_id in permitted:
         location = resolve_model_location(request, model_id)
         if location.kind == "not_found":
             return JSONResponse(
                 {"error": f"model '{model_id}' is not reachable anywhere in the cluster right now.", "model": model_id},
                 status_code=409,
             )
-
-    # Ensure the current primary is always in the permitted set.
-    permitted = list(body.models)
-    current = agent.get("model")
-    if current and current not in permitted:
-        permitted = [current, *permitted]
 
     agent["permitted_models"] = permitted
     await save_config_locked(config, config.config_path)
