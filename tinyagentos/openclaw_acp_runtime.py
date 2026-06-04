@@ -54,8 +54,9 @@ async def drive_turn(
         await record_reply(slug, body)
 
     cfg = ACPConfig(command=command, session_key=OPENCLAW_SESSION_KEY)
-    adapter = adapter_factory(cfg, sink)
+    adapter = None
     try:
+        adapter = adapter_factory(cfg, sink)
         await adapter.spawn()
         await adapter.initialize()
         session_id = await adapter.new_session()
@@ -63,13 +64,22 @@ async def drive_turn(
         logger.info("openclaw acp turn slug=%s stopReason=%s", slug, stop_reason)
         return stop_reason
     except Exception:
+        # Never let a transport/adapter failure escape — always degrade to a
+        # chat-visible error so the turn ends cleanly. The record_reply itself
+        # is guarded too (its failure must not mask the original).
         logger.exception("openclaw acp turn failed for %s", slug)
-        # Surface a turn-level error to the chat the same way a bridge error would.
-        await record_reply(slug, {
-            "kind": "error",
-            "trace_id": trace_id,
-            "error": "agent turn failed (ACP transport)",
-        })
+        try:
+            await record_reply(slug, {
+                "kind": "error",
+                "trace_id": trace_id,
+                "error": "agent turn failed (ACP transport)",
+            })
+        except Exception:
+            logger.exception("openclaw acp: error reply also failed for %s", slug)
         return "error"
     finally:
-        await adapter.close()
+        if adapter is not None:
+            try:
+                await adapter.close()
+            except Exception:
+                logger.exception("openclaw acp: adapter close failed for %s", slug)

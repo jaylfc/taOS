@@ -216,6 +216,8 @@ class ACPAdapter:
             except asyncio.TimeoutError:
                 try:
                     self._proc.kill()
+                    # Reap after SIGKILL too, or the child lingers as a zombie.
+                    await self._proc.wait()
                 except ProcessLookupError:
                     pass
             except ProcessLookupError:
