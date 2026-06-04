@@ -111,9 +111,13 @@ class ACPAdapter:
         self._stdin: asyncio.StreamWriter | None = None
         self._stdout: asyncio.StreamReader | None = None
         self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
         # JSON-RPC id -> Future for in-flight outbound requests.
         self._pending: dict[int, asyncio.Future] = {}
         self._next_id = 0
+        # Accumulates assistant text across agent_message_chunk updates so the
+        # turn's `final` reply carries the full message (not just the deltas).
+        self._assistant_buf = ""
         # The trace_id of the turn currently in flight (for mapping updates).
         self._active_trace: str | None = None
         # Per-tool-call accumulated state so a tool_call_update can be paired
@@ -143,7 +147,24 @@ class ACPAdapter:
             env=self._cfg.env,
         )
         assert self._proc.stdin and self._proc.stdout
+        # Drain stderr continuously. If we pipe it but never read, a chatty
+        # server fills the OS pipe buffer and the child deadlocks. We log lines
+        # at debug for diagnostics rather than discarding blind.
+        if self._proc.stderr is not None:
+            self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc.stderr))
         await self.start(self._proc.stdin, self._proc.stdout)
+
+    async def _drain_stderr(self, stream: asyncio.StreamReader) -> None:
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    return
+                logger.debug("acp stderr: %s", line.decode("utf-8", "replace").rstrip()[:300])
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
 
     async def start(
         self, stdin: asyncio.StreamWriter, stdout: asyncio.StreamReader
@@ -154,6 +175,14 @@ class ACPAdapter:
         self._reader_task = asyncio.create_task(self._read_loop())
         self._started.set()
 
+    def _fail_pending(self, exc: Exception) -> None:
+        """Reject every in-flight request so callers fail fast instead of
+        blocking until request_timeout when the transport dies."""
+        pending, self._pending = self._pending, {}
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_exception(exc)
+
     async def close(self) -> None:
         if self._reader_task:
             self._reader_task.cancel()
@@ -161,6 +190,14 @@ class ACPAdapter:
                 await self._reader_task
             except asyncio.CancelledError:
                 pass
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except asyncio.CancelledError:
+                pass
+        # Don't leave callers awaiting a response that can never arrive.
+        self._fail_pending(ACPProtocolError("ACP transport closed"))
         if self._stdin:
             try:
                 self._stdin.close()
@@ -207,7 +244,10 @@ class ACPAdapter:
         while True:
             line = await self._stdout.readline()
             if not line:
-                break  # EOF — server exited
+                # EOF — server exited. Reject in-flight requests immediately so
+                # initialize()/new_session()/prompt() fail fast, not on timeout.
+                self._fail_pending(ACPProtocolError("ACP server closed the stream"))
+                break
             line = line.strip()
             if not line:
                 continue
@@ -260,27 +300,32 @@ class ACPAdapter:
 
     async def prompt(self, session_id: str, text: str, trace_id: str | None = None) -> str:
         """Run one turn. Returns the stopReason. Streams mapped events to sink."""
-        self._active_trace = trace_id or uuid.uuid4().hex
-        result = await self._request(
-            "session/prompt",
-            {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]},
-        )
-        stop_reason = result.get("stopReason", "end_turn")
-        # Flush accumulated assistant text as the turn's final message.
-        await self._emit({"kind": "final", "trace_id": self._active_trace, "content": ""})
-        if stop_reason in ("refusal",):
-            await self._emit(
-                {
-                    "kind": "error",
-                    "trace_id": self._active_trace,
-                    "error": f"agent stopped: {stop_reason}",
-                }
+        trace = trace_id or uuid.uuid4().hex
+        self._active_trace = trace
+        self._assistant_buf = ""
+        try:
+            result = await self._request(
+                "session/prompt",
+                {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]},
             )
-        trace = self._active_trace
-        self._active_trace = None
-        self._tool_titles.clear()
-        logger.debug("acp turn %s ended: stopReason=%s", trace, stop_reason)
-        return stop_reason
+            stop_reason = result.get("stopReason", "end_turn")
+            # Flush the accumulated assistant text as the turn's final message,
+            # so sinks that don't reassemble deltas still get the full reply.
+            await self._emit({"kind": "final", "trace_id": trace, "content": self._assistant_buf})
+            # Per the module contract, both refusal and error stop reasons are
+            # surfaced as an error event (not just refusal).
+            if stop_reason in ("refusal", "error"):
+                await self._emit(
+                    {"kind": "error", "trace_id": trace, "error": f"agent stopped: {stop_reason}"}
+                )
+            logger.debug("acp turn %s ended: stopReason=%s", trace, stop_reason)
+            return stop_reason
+        finally:
+            # Always clear turn state, even on timeout/EOF/JSON-RPC error, so a
+            # failed turn can't poison the next one with stale trace/tool data.
+            self._active_trace = None
+            self._tool_titles.clear()
+            self._assistant_buf = ""
 
     # ----------------------------------------------- notification -> taOS map
 
@@ -295,6 +340,9 @@ class ACPAdapter:
         if kind == "agent_message_chunk":
             text = _content_text(update.get("content"))
             if text:
+                # Accumulate for the turn's `final` reply, and stream as a delta.
+                if trace == self._active_trace:
+                    self._assistant_buf += text
                 await self._emit({"kind": "delta", "trace_id": trace, "content": text})
 
         elif kind == "agent_thought_chunk":

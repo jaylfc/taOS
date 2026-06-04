@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from tinyagentos.adapters.acp_adapter import ACPAdapter, ACPConfig
+from tinyagentos.adapters.acp_adapter import ACPAdapter, ACPConfig, ACPProtocolError
 
 
 class MockACPServer:
@@ -274,6 +274,12 @@ async def test_handshake_and_full_turn_mapping(sink, collected):
     deltas = "".join(c["content"] for c in collected if c["kind"] == "delta")
     assert deltas == "Let me check that. Done."
 
+    # The `final` reply carries the full accumulated assistant text (not "")
+    # so sinks that don't reassemble deltas still get the complete message.
+    finals = [c for c in collected if c["kind"] == "final"]
+    assert len(finals) == 1
+    assert finals[0]["content"] == "Let me check that. Done."
+
     # tool_call carries the tool title + rawInput as args (arg fidelity).
     tcs = [c for c in collected if c["kind"] == "tool_call" and not c["tool"].startswith("permission:")]
     assert len(tcs) == 1
@@ -383,3 +389,24 @@ class TestSessionBinding:
         cfg = ACPConfig(command=["openclaw", "acp", "--session", "x"], session_key="agent:main:main")
         ad = ACPAdapter(cfg, sink=lambda r: None)
         assert ad._effective_command().count("--session") == 1
+
+
+@pytest.mark.asyncio
+async def test_eof_fails_pending_requests_fast():
+    """When the ACP server's stream closes, in-flight requests fail
+    immediately with a transport error instead of hanging to request_timeout."""
+    pipe = _MemoryPipe()
+    client_writer, client_reader = pipe.client_io()
+    adapter = ACPAdapter(ACPConfig(command=["mock"], request_timeout=30), sink=lambda r: None)
+    await adapter.start(client_writer, client_reader)
+
+    # Start a request, let it register its pending future + send, THEN kill the
+    # stream — the read loop must reject the pending future on EOF.
+    task = asyncio.create_task(adapter.initialize())
+    await asyncio.sleep(0)
+    pipe.b_to_a.feed_eof()
+
+    with pytest.raises(ACPProtocolError):
+        await asyncio.wait_for(task, timeout=2)
+
+    await adapter.close()
