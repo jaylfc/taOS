@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { Settings, RefreshCw, AlertCircle, Check } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Settings, RefreshCw, AlertCircle, Check, ChevronDown, ChevronRight } from "lucide-react";
 import { Button, Card, Label, Switch } from "@/components/ui";
 import { RestartProgressModal } from "@/apps/SettingsApp/_shared";
 
@@ -20,7 +20,12 @@ interface UpdateStatus {
   auto_check: boolean;
 }
 
-export function UpdatesSection() {
+interface BranchInfo {
+  branches: string[];
+  current: string;
+}
+
+export function UpdatesPanel() {
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -29,6 +34,14 @@ export function UpdatesSection() {
   const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [showRestartModal, setShowRestartModal] = useState(false);
+
+  // Advanced / branch selector state
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [branchInfo, setBranchInfo] = useState<BranchInfo | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState<string>("");
+  const [switching, setSwitching] = useState(false);
+  const [showSwitchConfirm, setShowSwitchConfirm] = useState(false);
+  const branchFetched = useRef(false);
 
   // Load current prefs + info on mount
   useEffect(() => {
@@ -136,6 +149,49 @@ export function UpdatesSection() {
     }
   };
 
+  // Fetch branches once when Advanced is first opened
+  useEffect(() => {
+    if (!advancedOpen || branchFetched.current) return;
+    branchFetched.current = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/settings/branches");
+        if (r.ok) {
+          const data: BranchInfo = await r.json();
+          setBranchInfo(data);
+          setSelectedBranch(data.current);
+        } else {
+          setStatus("Could not load branch list.");
+        }
+      } catch {
+        setStatus("Could not reach branch endpoint.");
+      }
+    })();
+  }, [advancedOpen]);
+
+  const confirmSwitchBranch = async () => {
+    setShowSwitchConfirm(false);
+    setSwitching(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/settings/update-channel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch: selectedBranch }),
+      });
+      const data = await res.json().catch(() => ({})) as { status?: string; branch?: string; snapshot?: string; recovery_tag?: string; message?: string; error?: string };
+      if (res.ok && !data.error) {
+        setStatus(data.message ?? data.snapshot ?? `Switching to ${data.branch ?? selectedBranch}…`);
+        setShowRestartModal(true);
+      } else {
+        setStatus(data.error ?? "Branch switch failed.");
+      }
+    } catch {
+      setStatus("Could not reach the update-channel endpoint.");
+    }
+    setSwitching(false);
+  };
+
   const hasPendingRestart = !!updateStatus?.pending_restart_sha;
 
   return (
@@ -233,7 +289,80 @@ export function UpdatesSection() {
           </div>
 
         </div>
+
+        {/* Advanced disclosure */}
+        <div className="border-t border-white/5 pt-4">
+          <button
+            type="button"
+            aria-label="Advanced"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-shell-text-tertiary hover:text-shell-text-secondary transition-colors"
+          >
+            {advancedOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            Advanced
+          </button>
+
+          {advancedOpen && (
+            <div className="mt-3 space-y-3">
+              <div className="flex items-end gap-2 flex-wrap">
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="branch-select" className="text-[11px] text-shell-text-tertiary">
+                    Branch
+                  </label>
+                  <select
+                    id="branch-select"
+                    aria-label="Branch"
+                    value={selectedBranch}
+                    onChange={(e) => setSelectedBranch(e.target.value)}
+                    className="text-sm bg-white/5 border border-white/10 rounded px-2 py-1 text-shell-text-primary focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    {branchInfo?.branches.map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={switching || !selectedBranch || selectedBranch === branchInfo?.current}
+                  onClick={() => setShowSwitchConfirm(true)}
+                  aria-label="Switch branch"
+                >
+                  {switching ? "Switching…" : "Switch branch"}
+                </Button>
+              </div>
+              {branchInfo && (
+                <p className="text-[11px] text-shell-text-tertiary">
+                  Current branch: <span className="font-mono">{branchInfo.current}</span>
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </Card>
+
+      {/* Branch-switch confirm dialog */}
+      {showSwitchConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-shell-surface border border-white/10 rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 space-y-4">
+            <h3 className="text-sm font-semibold">Switch branch?</h3>
+            <p className="text-xs text-shell-text-secondary leading-relaxed">
+              This switches taOS to <span className="font-mono font-semibold">{selectedBranch}</span> and restarts.
+              Your data/ is backed up first (data-backups/).
+              Switching to an older branch may leave data written by a newer version unreadable.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button size="sm" variant="outline" onClick={() => setShowSwitchConfirm(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={confirmSwitchBranch} aria-label="Confirm">
+                Confirm
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showRestartModal && (
         <RestartProgressModal onClose={() => setShowRestartModal(false)} />
@@ -241,3 +370,6 @@ export function UpdatesSection() {
     </section>
   );
 }
+
+// Alias for backward compatibility with existing imports
+export { UpdatesPanel as UpdatesSection };
