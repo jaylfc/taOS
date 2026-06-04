@@ -229,8 +229,10 @@ class AutoUpdateService:
         """Return the tip of the tracked remote branch (the branch this install
         is on), or None on failure."""
         branch = await resolve_tracked_branch(self._settings, self._project_dir)
+        # `--` keeps `branch` in refspec position; resolve_tracked_branch also
+        # validates it (flag-injection defence in depth).
         rc, _ = await _run(
-            ["git", "fetch", "--quiet", "origin", branch], self._project_dir
+            ["git", "fetch", "--quiet", "origin", "--", branch], self._project_dir
         )
         if rc != 0:
             return None
