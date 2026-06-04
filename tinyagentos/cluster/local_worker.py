@@ -6,21 +6,65 @@ calls). The signing key is in-memory only (regenerated on restart).
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 
+logger = logging.getLogger(__name__)
+
 # Module-level. Survives across calls within the same process. Reset on restart.
 _LOCAL_SIGNING_KEY: bytes | None = None
 
 
-async def enroll_local_worker(manager: ClusterManager, bind_port: int = 6969) -> None:
-    """Register the 'local' worker in *manager*. Idempotent.
+def _cpu_load() -> float:
+    """Best-effort 0-1 CPU utilisation for the local worker's load field."""
+    try:
+        import psutil
+        return min(1.0, max(0.0, psutil.cpu_percent(interval=None) / 100.0))
+    except Exception:
+        return 0.0
+
+
+async def local_heartbeat_loop(manager: ClusterManager, config, interval: float = 15.0) -> None:
+    """Self-heartbeat the 'local' worker (the controller itself).
+
+    The controller never receives heartbeats from elsewhere — it IS the
+    server — so without this it would be marked offline after the heartbeat
+    timeout and its backends/loaded-models would never refresh. Heartbeating
+    here keeps it online and, by passing the live backends, keeps its backend
+    + derived model list current the same way a remote worker's agent does.
+    """
+    while True:
+        try:
+            manager.heartbeat(
+                "local",
+                load=_cpu_load(),
+                backends=list(getattr(config, "backends", None) or []),
+            )
+        except Exception:
+            logger.exception("local heartbeat failed")
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+
+async def enroll_local_worker(
+    manager: ClusterManager,
+    bind_port: int = 6969,
+    hardware: dict | None = None,
+    backends: list[dict] | None = None,
+) -> None:
+    """Register the 'local' worker (the controller itself) in *manager*. Idempotent.
 
     On first call, generates a 32-byte random signing key and registers the
-    worker. On subsequent calls (same process, same manager) the existing
-    worker is left untouched.
+    worker with the controller's own hardware + backends so the Cluster view
+    shows the host's real CPU/RAM/NPU and loaded backends rather than
+    "Unknown CPU / CPU only / No backends loaded". On subsequent calls (same
+    process, same manager) the existing worker is left untouched.
     """
     global _LOCAL_SIGNING_KEY
 
@@ -36,5 +80,7 @@ async def enroll_local_worker(manager: ClusterManager, bind_port: int = 6969) ->
         worker_url=f"http://127.0.0.1:{bind_port}",
         signing_key=_LOCAL_SIGNING_KEY,
         platform="local",
+        hardware=hardware or {},
+        backends=list(backends or []),
     )
     await manager.register_worker(worker)

@@ -331,6 +331,10 @@ class ClusterManager:
         while True:
             now = time.time()
             for worker in self._workers.values():
+                # The 'local' worker is the controller itself — it never sends
+                # heartbeats (it IS the server), so never mark it offline.
+                if worker.name == "local":
+                    continue
                 if worker.status == "online" and (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
                     worker.status = "offline"
                     logger.warning(f"Worker '{worker.name}' marked offline (no heartbeat for {HEARTBEAT_TIMEOUT}s)")

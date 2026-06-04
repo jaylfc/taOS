@@ -38,6 +38,49 @@ class TestEnrollLocalWorker:
         worker = mgr.get_worker("local")
         assert worker.worker_url == "http://127.0.0.1:6969"
 
+    def test_enroll_sets_hardware_and_backends(self):
+        from tinyagentos.cluster.local_worker import enroll_local_worker
+
+        hw = {"cpu": {"cores": 8, "arch": "aarch64"}, "ram_mb": 15600,
+              "npu": {"name": "rknpu"}}
+        backends = [{"name": "rkllama", "type": "rkllama", "url": "http://localhost:8080"}]
+        mgr = ClusterManager()
+        asyncio.run(enroll_local_worker(mgr, hardware=hw, backends=backends))
+        worker = mgr.get_worker("local")
+        assert worker.hardware == hw
+        assert worker.backends == backends
+
+
+class TestLocalHeartbeat:
+    """The controller self-heartbeats its own 'local' worker."""
+
+    def test_heartbeat_loop_keeps_local_online_and_fresh(self):
+        from tinyagentos.cluster.local_worker import enroll_local_worker, local_heartbeat_loop
+
+        async def run():
+            mgr = ClusterManager()
+            await enroll_local_worker(mgr)
+            # Force it stale + a fake config with one backend.
+            mgr.get_worker("local").last_heartbeat = 0.0
+            cfg = MagicMock()
+            cfg.backends = [{"name": "rkllama", "type": "rkllama",
+                             "url": "http://localhost:8080", "models": [{"name": "gemma"}]}]
+            task = asyncio.create_task(local_heartbeat_loop(mgr, cfg, interval=0.01))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            w = mgr.get_worker("local")
+            assert w.status == "online"
+            assert w.last_heartbeat > 0.0
+            assert w.backends == cfg.backends
+            # heartbeat derives the model list from the backends
+            assert "gemma" in w.models
+
+        asyncio.run(run())
+
     def test_enroll_generates_random_signing_key(self):
         import tinyagentos.cluster.local_worker as lw
         from tinyagentos.cluster.local_worker import enroll_local_worker
