@@ -159,12 +159,17 @@ export function App() {
   // id; on desktop the window manager already renders it, so this just focuses.
   useEffect(() => {
     const handler = (e: Event) => {
-      const wid = (e as CustomEvent<{ windowId?: string }>).detail?.windowId;
+      // Validate the event's detail shape at runtime rather than trusting a cast.
+      const detail = (e as CustomEvent<unknown>).detail;
+      const wid =
+        detail && typeof (detail as { windowId?: unknown }).windowId === "string"
+          ? (detail as { windowId: string }).windowId
+          : null;
       if (wid) setActiveWindowId(wid);
     };
     window.addEventListener("taos:activate-window", handler);
     return () => window.removeEventListener("taos:activate-window", handler);
-  }, []);
+  }, [setActiveWindowId]);
 
   useSessionPersistence();
 
