@@ -153,6 +153,19 @@ export function App() {
     return () => window.removeEventListener("open-launchpad", handler);
   }, []);
 
+  // Surface a window opened programmatically from inside an app (e.g. an agent
+  // shortcut launching a terminal/browser). On mobile a window is only visible
+  // when it is the active window, so callers dispatch this with the new window
+  // id; on desktop the window manager already renders it, so this just focuses.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const wid = (e as CustomEvent<{ windowId?: string }>).detail?.windowId;
+      if (wid) setActiveWindowId(wid);
+    };
+    window.addEventListener("taos:activate-window", handler);
+    return () => window.removeEventListener("taos:activate-window", handler);
+  }, []);
+
   useSessionPersistence();
 
   // Re-apply the persisted active theme on app boot so a reload keeps the

@@ -312,10 +312,18 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
       failed("Server response was missing a launch URL.");
       return;
     }
+    // On mobile a freshly opened window only shows once it's the active window
+    // (App.tsx renders MobileAppWindow for activeWindowId). openWindow alone
+    // leaves it invisible, so announce the new window id for activation.
+    const surface = (wid: string | undefined) => {
+      if (isMobile && wid) {
+        window.dispatchEvent(new CustomEvent("taos:activate-window", { detail: { windowId: wid } }));
+      }
+    };
     const kind = shortcut.kind;
     if (kind === "dashboard") {
       const app = getApp("browser");
-      if (app) openWindow("browser", app.defaultSize, { initialUrl: redirect_url });
+      if (app) surface(openWindow("browser", app.defaultSize, { initialUrl: redirect_url }));
     } else if (kind === "tui" || kind === "container-terminal") {
       const { ticket, wsUrl, redeemUrl } = deriveTerminalShortcutTarget(
         redirect_url,
@@ -339,9 +347,9 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
         console.warn(`shortcut /redeem failed for ${agentId}:`, e);
       }
       const app = getApp("terminal");
-      if (app) openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } });
+      if (app) surface(openWindow("terminal", app.defaultSize, { shortcut: { wsUrl, ticket } }));
     }
-  }, [openWindow]);
+  }, [openWindow, isMobile]);
 
   function handleWizardClose(deployed?: boolean) {
     setWizardOpen(false);
