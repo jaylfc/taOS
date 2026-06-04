@@ -92,14 +92,10 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
           apt-get install -y -qq --no-install-recommends nodejs
 
-          # openclaw prebuilt tarball from the fork's rolling release.
-          TARBALL="/tmp/openclaw-taos-fork-${ARCH}.tgz"
-          curl -fsSL --max-time 120 \
-            -o "$TARBALL" \
-            "https://github.com/jaylfc/openclaw/releases/latest/download/openclaw-taos-fork-linux-${ARCH}.tgz"
-          file "$TARBALL" | grep -qE "gzip|compressed"
-          npm install -g --unsafe-perm --ignore-scripts "$TARBALL"
-          rm -f "$TARBALL"
+          # Upstream OpenClaw from npm (latest) — no fork. The deploy-time
+          # install.sh also installs openclaw@latest, so this just warms the
+          # base image with a current build.
+          npm install -g --unsafe-perm openclaw@latest
 
           # Sanity check
           test -f /usr/lib/node_modules/openclaw/dist/entry.js \

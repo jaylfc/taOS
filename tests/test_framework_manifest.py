@@ -1,10 +1,13 @@
 import pytest
 from tinyagentos.frameworks import FRAMEWORKS, validate_framework_manifest, FrameworkManifestError
 
-def test_openclaw_has_update_metadata():
+def test_openclaw_is_npm_based_no_fork_release_source():
+    # OpenClaw installs from npm (openclaw@latest) and is driven over ACP — no
+    # fork, so no GitHub-asset release_source/asset_pattern. npm version
+    # tracking lands with #570.
     fw = FRAMEWORKS["openclaw"]
-    assert fw["release_source"] == "github:jaylfc/openclaw"
-    assert "{arch}" in fw["release_asset_pattern"]
+    assert "release_source" not in fw
+    assert "release_asset_pattern" not in fw
     assert fw["install_script"] == "/usr/local/bin/taos-framework-update"
     assert fw["service_name"] == "openclaw"
 
