@@ -37,7 +37,7 @@ def test_hermes_shortcuts_exact():
     shortcuts = _shortcuts("hermes")
     assert len(shortcuts) == 3
     assert shortcuts[0]["kind"] == "container-terminal"
-    assert shortcuts[1]["command"] == "hermes"
+    assert shortcuts[1]["command"] == "hermes --tui"
     assert shortcuts[2]["command"] == "hermes doctor"
 
 

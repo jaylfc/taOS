@@ -30,8 +30,8 @@ FRAMEWORKS: dict[str, dict] = {
         "shortcuts": [
             {"kind": "container-terminal", "label": "Container shell",
              "icon": "terminal", "requires_capability": "agent.shell"},
-            {"kind": "tui", "label": "OpenClaw agent",
-             "command": "openclaw agent",
+            {"kind": "tui", "label": "OpenClaw TUI",
+             "command": "openclaw tui",
              "icon": "tui", "requires_capability": "agent.terminal"},
             {"kind": "tui", "label": "OpenClaw doctor",
              "command": "openclaw doctor",
@@ -121,8 +121,8 @@ FRAMEWORKS: dict[str, dict] = {
         "shortcuts": [
             {"kind": "container-terminal", "label": "Container shell",
              "icon": "terminal", "requires_capability": "agent.shell"},
-            {"kind": "tui", "label": "Hermes chat",
-             "command": "hermes",
+            {"kind": "tui", "label": "Hermes TUI",
+             "command": "hermes --tui",
              "icon": "tui", "requires_capability": "agent.terminal"},
             {"kind": "tui", "label": "Hermes doctor",
              "command": "hermes doctor",

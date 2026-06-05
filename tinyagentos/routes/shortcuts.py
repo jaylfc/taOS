@@ -109,5 +109,14 @@ async def launch_shortcut(
         ttl=30,
     )
 
-    redirect_url = f"{worker_url}/redeem?t={token}"
+    # The browser must reach /redeem (and the follow-up PTY/dashboard WebSocket,
+    # which the frontend derives from this URL's host) on the host IT used to
+    # reach the controller — NOT the worker's internal loopback. worker_url is
+    # http://127.0.0.1:<port> (correct for server-side calls, but unreachable
+    # from a remote browser). Build the redeem URL from the request Host header
+    # so it works over LAN IP, mDNS (taos.local), or a relay.
+    fwd_proto = request.headers.get("x-forwarded-proto")
+    scheme = fwd_proto.split(",")[0].strip() if fwd_proto else request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    redirect_url = f"{scheme}://{host}/redeem?t={token}"
     return {"redirect_url": redirect_url, "expires_in": 30}
