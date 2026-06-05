@@ -17,6 +17,8 @@ import {
   fetchCloudProviders,
   HOST_BADGE_CLASS,
 } from "@/lib/models";
+import { useProcessStore } from "@/stores/process-store";
+import { getApp } from "@/registry/app-registry";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -145,6 +147,12 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
 
   const [isFallback, setIsFallback] = useState(false);
+
+  const openWindow = useProcessStore((s) => s.openWindow);
+  const openProvidersApp = () => {
+    const app = getApp("providers");
+    if (app) openWindow("providers", app.defaultSize);
+  };
 
   const fetchModels = useCallback(async () => {
     // Kick off cluster workers + providers in parallel with /api/models so the
@@ -433,6 +441,19 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
         {loading ? (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading models...
+          </div>
+        ) : isFallback && downloaded.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6 py-16">
+            <Brain size={40} className="text-shell-text-tertiary opacity-30" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-shell-text">No models yet</p>
+              <p className="text-xs text-shell-text-tertiary max-w-xs">
+                Add a provider to see cloud models, or connect a worker with a local model.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={openProvidersApp}>
+              Open Providers
+            </Button>
           </div>
         ) : (
           <>
