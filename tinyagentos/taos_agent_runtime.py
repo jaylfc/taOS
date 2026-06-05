@@ -81,7 +81,12 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
             litellm_key = stored_key
             if llm_proxy is not None:
                 try:
-                    await llm_proxy.update_agent_key(stored_key, permitted_models)
+                    rescoped = await llm_proxy.update_agent_key(stored_key, permitted_models)
+                    if not rescoped:
+                        logger.warning(
+                            "taos_agent_runtime: re-scoping the taOS agent key returned False "
+                            "(key scope may be stale)"
+                        )
                 except Exception:
                     logger.debug("taos_agent_runtime: re-scoping stored key failed", exc_info=True)
         elif llm_proxy is not None:

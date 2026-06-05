@@ -50,9 +50,15 @@ SYSTEM_PROMPT: str = _load_manual()
 
 
 def _mask_key(key: str | None) -> str | None:
-    """Return a masked form of a LiteLLM key (first 6 + … + last 4), or None."""
-    if not key or len(key) < 12:
-        return key or None
+    """Return a masked form of a LiteLLM key (first 6 + … + last 4), or None.
+
+    Keys too short for that pattern are fully masked rather than surfaced raw
+    (GET /api/taos-agent/config returns this value).
+    """
+    if not key:
+        return None
+    if len(key) < 12:
+        return "…"
     return key[:6] + "…" + key[-4:]
 
 
