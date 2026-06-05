@@ -2,7 +2,9 @@
 # Device nodes (/dev/mpp_service, /dev/dri, /dev/rga) are passed at `docker run`
 # by the host-tier resolver, not baked in. Software encode is the fallback when
 # this image/devices aren't available (see resolve_neko_image).
-FROM ghcr.io/m1k1o/neko/arm-chromium:latest
+# Multi-arch base (has a linux/arm64 variant — verified on the Pi). The old
+# `arm-chromium` tag does not exist.
+FROM ghcr.io/m1k1o/neko/chromium:latest
 
 # Rockchip MPP + RGA + Mali userspace for GStreamer rkmpp HW encode/decode.
 RUN apt-get update && apt-get install -y --no-install-recommends \
