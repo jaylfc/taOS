@@ -338,3 +338,115 @@ async def test_get_browser_nodes_empty_when_no_capable_workers(client_no_node):
     resp = await client_no_node.get("/api/browser/nodes")
     assert resp.status_code == 200
     assert resp.json() == {"nodes": []}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/browser/sessions/mine  (Task 8)
+# ---------------------------------------------------------------------------
+
+_HOST_RUNNER_BODY = {
+    "container_id": "host-ctr-01",
+    "neko_url": "http://host:8800/?usr=neko&pwd=hostpwd",
+    "cdp_url": None,
+    "http_port": 8800,
+    "epr_lo": 59000,
+    "epr_hi": 59009,
+}
+
+
+def _make_mock_runner(body: dict):
+    """Return a mock BrowserContainerRunner whose start() returns body."""
+    runner = MagicMock()
+    runner.start = AsyncMock(return_value=body)
+    return runner
+
+
+@pytest_asyncio.fixture
+async def client_host_capable(app, tmp_path):
+    """Client where host is capable (16GB) and no cluster workers are needed."""
+    bs = BrowserSessionManager(tmp_path / "bs_host.db", mock=True)
+    await bs.init()
+
+    app.state.browser_sessions = bs
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _no_cluster()
+    # host has 16 GB RAM — passes HOST_MIN_RAM_MB (6144 MB) gate
+    app.state.host_hardware = {"ram_mb": 16384}
+    app.state.browser_container_runner = _make_mock_runner(_HOST_RUNNER_BODY)
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        yield c
+
+    await bs.close()
+
+
+@pytest_asyncio.fixture
+async def client_no_capable_node(app, tmp_path):
+    """Client where host is not capable and no cluster workers exist."""
+    bs = BrowserSessionManager(tmp_path / "bs_none.db", mock=True)
+    await bs.init()
+
+    app.state.browser_sessions = bs
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _no_cluster()
+    # host has only 4 GB RAM — below HOST_MIN_RAM_MB (6144 MB) gate
+    app.state.host_hardware = {"ram_mb": 4096}
+    app.state.browser_container_runner = MagicMock()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        yield c
+
+    await bs.close()
+
+
+@pytest.mark.asyncio
+async def test_get_my_session_creates_and_starts_on_host(client_host_capable):
+    """GET /mine on a capable host creates a session, starts it on host, returns it."""
+    resp = await client_host_capable.get("/api/browser/sessions/mine")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["container_id"] == "host-ctr-01"
+    assert body["node"] == "host"
+    assert "id" in body
+
+
+@pytest.mark.asyncio
+async def test_get_my_session_running_with_neko_url_has_stream_token(client_host_capable):
+    """GET /mine when session is running + neko_url present includes a stream_token."""
+    resp = await client_host_capable.get("/api/browser/sessions/mine")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body.get("neko_url") == _HOST_RUNNER_BODY["neko_url"]
+    assert "stream_token" in body
+    assert isinstance(body["stream_token"], str)
+    assert len(body["stream_token"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_get_my_session_no_capable_node_returns_409(client_no_capable_node):
+    """GET /mine when no node is capable returns 409 no_capable_node."""
+    resp = await client_no_capable_node.get("/api/browser/sessions/mine")
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "no_capable_node"

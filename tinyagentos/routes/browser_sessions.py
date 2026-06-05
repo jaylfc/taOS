@@ -16,7 +16,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.auth import get_current_user
-from tinyagentos.browser_sessions import BrowserWorkerError, list_browser_nodes, pick_browser_node
+from tinyagentos.browser_sessions import (
+    BrowserWorkerError,
+    list_browser_nodes,
+    pick_browser_node,
+    resolve_browser_target,
+)
 from tinyagentos.routes.desktop_browser.session_token import mint_session_token
 
 logger = logging.getLogger(__name__)
@@ -83,6 +88,59 @@ async def get_browser_nodes(
         return JSONResponse({"error": "session has no user id"}, status_code=401)
     nodes = list_browser_nodes(request.app.state.cluster_manager)
     return {"nodes": nodes}
+
+
+@router.get("/api/browser/sessions/mine")
+async def get_my_session(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """Return the caller's always-on browser session, creating and starting it if needed.
+
+    Placement order: host (if RAM-capable) -> best cluster worker -> 409.
+    When running with a neko_url, attaches a short-lived stream_token.
+
+    NOTE: app.state.browser_container_runner and app.state.host_hardware must be
+    wired in app setup before this route is used in production (follow-up task).
+    """
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.get_or_create_mine(user_id)
+
+    if session["status"] in ("pending", "idle"):
+        cluster = request.app.state.cluster_manager
+        host_hw = getattr(request.app.state, "host_hardware", None)
+        target = resolve_browser_target(cluster, host_hw)
+        if target is None:
+            return JSONResponse({"error": "no_capable_node"}, status_code=409)
+        kind, node = target
+        vol = f"taos-browser-{session['id']}"
+        try:
+            if kind == "host":
+                runner = request.app.state.browser_container_runner
+                session = await mgr.start_on_host(session["id"], profile_volume=vol, runner=runner)
+            else:
+                worker = cluster.get_worker(node)
+                auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+                session = await mgr.start_on_worker(
+                    session["id"],
+                    node=node,
+                    worker_url=worker.url,
+                    profile_volume=vol,
+                    auth_token=auth_token,
+                )
+        except BrowserWorkerError:
+            return JSONResponse({"error": "worker_start_failed"}, status_code=502)
+
+    if session.get("status") == "running" and session.get("neko_url"):
+        signing_key = request.app.state.browser_session_signing_key
+        _, token = mint_session_token(session["id"], user_id, signing_key)
+        return JSONResponse({**session, "stream_token": token})
+
+    return JSONResponse(session)
 
 
 @router.get("/api/browser/sessions/{session_id}")
