@@ -99,6 +99,22 @@ def build_neko_run_args(
     return args
 
 
+def build_volume_export_args(volume: str) -> list[str]:
+    """docker run that streams the volume's contents to stdout as a tar."""
+    return [
+        "docker", "run", "--rm", "-v", f"{volume}:/from", "alpine",
+        "tar", "-C", "/from", "-cf", "-", ".",
+    ]
+
+
+def build_volume_import_args(volume: str) -> list[str]:
+    """docker run that reads a tar from stdin into the (auto-created) volume."""
+    return [
+        "docker", "run", "--rm", "-i", "-v", f"{volume}:/to", "alpine",
+        "tar", "-C", "/to", "-xf", "-",
+    ]
+
+
 class PortAllocator:
     """Hands out a unique HTTP port + a small UDP EPR range per session.
 

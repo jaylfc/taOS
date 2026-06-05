@@ -99,3 +99,23 @@ async def test_runner_software_fallback_in_mock():
     runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=None)
     out = await runner.start(session_id="s2", profile_volume="v")
     assert out["encode"] == "software"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: volume export/import argv builders
+# ---------------------------------------------------------------------------
+
+from tinyagentos.worker.browser_container import build_volume_export_args, build_volume_import_args
+
+
+def test_volume_export_args_tars_the_mount():
+    argv = build_volume_export_args("taos-browser-s1")
+    assert argv[:3] == ["docker", "run", "--rm"]
+    assert "taos-browser-s1:/from" in argv
+    assert "tar" in argv and "-C" in argv
+
+
+def test_volume_import_args_untars_into_target_volume():
+    argv = build_volume_import_args("taos-browser-s1")
+    assert "taos-browser-s1:/to" in argv
+    assert "tar" in argv
