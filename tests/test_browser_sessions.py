@@ -125,6 +125,38 @@ async def test_start_on_host_marks_error_on_failure(mgr):
 
 
 @pytest.mark.asyncio
+async def test_migrate_session_emits_and_transitions(mgr):
+    s = await mgr.create_session("user", "u1", "https://x")
+    await mgr.mark_running(s["id"], node="host", container_id="c1", neko_url="n1", cdp_url=None)
+    events = []
+    async def emit(kind, payload): events.append((kind, payload))
+    moved = []
+    async def move_volume(volume, src_node, dst_node): moved.append((volume, src_node, dst_node))
+    async def stop_source(session): pass
+    async def start_target(session, target):
+        await mgr.mark_running(session["id"], node=target, container_id="c2", neko_url="n2", cdp_url=None)
+        return await mgr.get_session(session["id"])
+
+    out = await mgr.migrate_session(
+        s["id"], target="fedora-browser",
+        stop_source=stop_source, move_volume=move_volume, start_target=start_target, emit=emit,
+    )
+    assert out["status"] == "running"
+    assert out["node"] == "fedora-browser"
+    assert moved == [(f"taos-browser-{s['id']}", "host", "fedora-browser")]
+    kinds = [k for k, _ in events]
+    assert kinds == ["session_migrating", "session_resumed"]
+    assert events[0][1]["session_id"] == s["id"] and events[0][1]["target"] == "fedora-browser"
+
+
+@pytest.mark.asyncio
+async def test_migrate_session_unknown_returns_none(mgr):
+    async def noop(*a, **k): pass
+    out = await mgr.migrate_session("nope", target="x", stop_source=noop, move_volume=noop, start_target=noop, emit=noop)
+    assert out is None
+
+
+@pytest.mark.asyncio
 async def test_mark_migrating_and_back(mgr):
     s = await mgr.create_session("user", "u1", "https://x")
     await mgr.mark_running(s["id"], node="host", container_id="c", neko_url="n", cdp_url=None)

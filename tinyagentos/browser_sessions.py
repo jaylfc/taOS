@@ -331,6 +331,35 @@ class BrowserSessionManager:
             )
             await db.commit()
 
+    async def migrate_session(
+        self, session_id: str, *, target: str,
+        stop_source, move_volume, start_target, emit,
+    ) -> dict | None:
+        """Move a session to `target` node: signal → suspend → move profile →
+        resume → signal. Effects (stop/move/start/emit) are injected. Returns the
+        refreshed running session, or None if the session does not exist.
+
+        emit(kind, payload) is called with kind in {"session_migrating","session_resumed"}
+        so agents on the session pause and await reconnection.
+        """
+        session = await self.get_session(session_id)
+        if session is None:
+            return None
+        source_node = session.get("node") or "host"
+        volume = f"taos-browser-{session_id}"
+        await emit("session_migrating", {"session_id": session_id, "from": source_node, "target": target})
+        await self.mark_migrating(session_id)
+        try:
+            await stop_source(session)
+            await move_volume(volume, source_node, target)
+            refreshed = await start_target(session, target)
+        except Exception:
+            await self.mark_error(session_id)
+            await emit("session_resumed", {"session_id": session_id, "node": source_node, "error": True})
+            raise
+        await emit("session_resumed", {"session_id": session_id, "node": target})
+        return refreshed
+
     async def migrate_agent_browsers(self, rows: list[dict], *, now: float | None = None) -> int:
         """Copy agent_browsers profile rows into browser_sessions as agent sessions.
         Idempotent on (owner_id, profile_name). Returns count inserted."""
