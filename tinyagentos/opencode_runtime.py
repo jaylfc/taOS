@@ -97,6 +97,12 @@ class OpenCodeServer:
         }
         config_path = config_dir / "opencode.json"
         config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # The config embeds the agent's LiteLLM key in plaintext — keep it
+        # owner-only (mirrors install_hermes.sh's chmod 600 on ~/.hermes/.env).
+        try:
+            os.chmod(config_path, 0o600)
+        except OSError:
+            logger.debug("opencode_runtime: could not chmod %s", config_path)
         logger.debug("opencode_runtime: wrote config to %s", config_path)
 
     # ---------------------------------------------------------------- lifecycle
@@ -128,6 +134,11 @@ class OpenCodeServer:
         if self.is_running() and await self._health_check():
             return
 
+        # A live-but-unhealthy child must be reaped before respawning, or we
+        # orphan it and the new server collides on the same port.
+        if self.is_running():
+            await self.stop()
+
         self.write_config()
 
         env = {
@@ -151,14 +162,14 @@ class OpenCodeServer:
             self._proc.pid, self._cfg.port,
         )
 
-        # Poll GET /doc until 200 or deadline.
-        elapsed = 0.0
-        while elapsed < deadline_s:
+        # Poll GET /doc until 200 or a wall-clock deadline. Using the loop clock
+        # (not a poll-count) so a slow health check can't overrun deadline_s.
+        deadline = asyncio.get_running_loop().time() + deadline_s
+        while asyncio.get_running_loop().time() < deadline:
             if await self._health_check():
-                logger.info("opencode_runtime: server healthy after %.1fs", elapsed)
+                logger.info("opencode_runtime: server healthy")
                 return
             await asyncio.sleep(poll_s)
-            elapsed += poll_s
 
         raise TimeoutError(
             f"opencode server on port {self._cfg.port} did not become healthy "

@@ -61,6 +61,14 @@ class TestWriteConfig:
         assert "gpt-4o" in provider["models"]
         assert "gpt-3.5-turbo" in provider["models"]
 
+    def test_config_is_owner_only_readable(self, tmp_path):
+        # The config embeds the LiteLLM key in plaintext — must be 0600.
+        import os
+        cfg = _make_server_cfg(tmp_path)
+        OpenCodeServer(cfg).write_config()
+        config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+        assert oct(os.stat(config_path).st_mode & 0o777) == "0o600"
+
     def test_creates_parent_dirs(self, tmp_path):
         # No .config/opencode directory exists yet — write_config must mkdir.
         nested = tmp_path / "nested" / "home"
