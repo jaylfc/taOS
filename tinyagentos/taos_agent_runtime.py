@@ -52,30 +52,54 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
         existing = None
 
     if existing is None:
-        # Read the permitted_models set from the namespace so the key is scoped
-        # to the full set the admin configured, not just the current model.
+        # Read the taos_agent prefs once: the permitted set (to scope the key)
+        # and a persisted own-key (so we reuse it instead of re-minting).
         permitted_models: list[str] = [model]
+        stored_key: str | None = None
+        prefs: dict = {}
         desktop_settings = getattr(app_state, "desktop_settings", None)
         if desktop_settings is not None:
             try:
-                prefs = await desktop_settings.get_preference("user", "taos_agent")
+                prefs = await desktop_settings.get_preference("user", "taos_agent") or {}
                 stored = prefs.get("permitted_models", [])
                 if stored:
                     # Always ensure the current model is in the set.
                     permitted_models = list(stored)
                     if model not in permitted_models:
                         permitted_models = [model, *permitted_models]
+                stored_key = prefs.get("llm_key") or None
             except Exception:
-                logger.debug("taos_agent_runtime: could not read permitted_models from prefs", exc_info=True)
+                logger.debug("taos_agent_runtime: could not read taos_agent prefs", exc_info=True)
 
-        # Mint the taOS agent's own LiteLLM virtual key scoped to permitted_models.
+        # The taOS agent's own LiteLLM virtual key. Reuse the persisted one
+        # (re-scoping it to the current permitted set), else mint once and persist
+        # it. create_agent_key uses a fixed alias, so re-minting would 400 on the
+        # alias collision — persisting the value avoids that and keeps it stable.
         llm_proxy = getattr(app_state, "llm_proxy", None)
         litellm_key: str | None = None
-        if llm_proxy is not None:
+        if stored_key:
+            litellm_key = stored_key
+            if llm_proxy is not None:
+                try:
+                    rescoped = await llm_proxy.update_agent_key(stored_key, permitted_models)
+                    if not rescoped:
+                        logger.warning(
+                            "taos_agent_runtime: re-scoping the taOS agent key returned False "
+                            "(key scope may be stale)"
+                        )
+                except Exception:
+                    logger.debug("taos_agent_runtime: re-scoping stored key failed", exc_info=True)
+        elif llm_proxy is not None:
             try:
                 litellm_key = await llm_proxy.create_agent_key("taos-agent", models=permitted_models)
             except Exception:
                 logger.debug("taos_agent_runtime: create_agent_key failed", exc_info=True)
+            if litellm_key and desktop_settings is not None:
+                try:
+                    prefs["llm_key"] = litellm_key
+                    await desktop_settings.save_preference("user", "taos_agent", prefs)
+                except Exception:
+                    logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
         if not litellm_key:
             litellm_key = TAOS_LITELLM_MASTER_KEY
         app_state.taos_opencode_key = litellm_key

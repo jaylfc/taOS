@@ -330,3 +330,57 @@ async def test_ensure_server_falls_back_to_master_key(tmp_path, monkeypatch):
     assert len(spawned_cfgs) == 1
     assert spawned_cfgs[0].litellm_key == TAOS_LITELLM_MASTER_KEY
     assert state.taos_opencode_key == TAOS_LITELLM_MASTER_KEY
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_reuses_persisted_key(tmp_path, monkeypatch):
+    """A persisted own-key is reused and re-scoped, never re-minted (the fixed
+    key alias would otherwise 400 on the second mint)."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    spawned_cfgs: list = []
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            spawned_cfgs.append(cfg)
+            self._cfg = cfg
+        async def ensure_running(self, **kwargs):
+            pass
+        async def stop(self):
+            pass
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    class _FakeSettings:
+        async def get_preference(self, user, ns):
+            return {"llm_key": "sk-persisted-9", "permitted_models": ["gpt-4o", "claude"]}
+        async def save_preference(self, user, ns, prefs):
+            pass
+
+    mock_proxy = MagicMock()
+    mock_proxy.create_agent_key = AsyncMock(return_value="sk-NEW-should-not-be-used")
+    mock_proxy.update_agent_key = AsyncMock(return_value=True)
+    mock_proxy.is_running.return_value = True
+
+    state = SimpleNamespace(
+        data_dir=tmp_path,
+        llm_proxy=mock_proxy,
+        desktop_settings=_FakeSettings(),
+        taos_opencode_password=None,
+        taos_opencode_server=None,
+        taos_opencode_model=None,
+        taos_opencode_session_id=None,
+    )
+
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+
+    # Reused the persisted key, did NOT re-mint, and re-scoped it to the set.
+    assert spawned_cfgs[0].litellm_key == "sk-persisted-9"
+    assert state.taos_opencode_key == "sk-persisted-9"
+    mock_proxy.create_agent_key.assert_not_called()
+    mock_proxy.update_agent_key.assert_awaited()
