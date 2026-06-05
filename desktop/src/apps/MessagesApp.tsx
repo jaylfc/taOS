@@ -65,6 +65,8 @@ import {
   writeLastChannel,
 } from "./MessagesApp.a2aSelection";
 import { displayAuthor } from "./chat/format-author";
+import { useProcessStore } from "@/stores/process-store";
+import { getApp } from "@/registry/app-registry";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -244,8 +246,14 @@ export function MessagesApp({
 }) {
   const isMobile = useIsMobile();
   const { keyboardInset } = useVisualViewport();
+  const openWindow = useProcessStore((s) => s.openWindow);
+  const openAgentsApp = () => {
+    const app = getApp("agents");
+    if (app) openWindow("agents", app.defaultSize);
+  };
 
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelsLoaded, setChannelsLoaded] = useState(false);
   const shellFileDropTarget = useDropTarget({
     accept: ["file"],
     onDrop: async (payload) => {
@@ -335,6 +343,8 @@ export function MessagesApp({
       }
     } catch {
       /* offline */
+    } finally {
+      setChannelsLoaded(true);
     }
   }, [scope?.projectId]);
 
@@ -1097,6 +1107,12 @@ export function MessagesApp({
     { label: "Groups", icon: <Users size={13} />, items: grouped.group },
   ];
 
+  const allEmpty =
+    channelsLoaded &&
+    SECTIONS.every((s) => s.items.length === 0) &&
+    archivedChannels.length === 0 &&
+    projectGroups.length === 0;
+
   /* ---------------------------------------------------------------- */
   /*  Channel list — iOS 26 grouped on mobile, flat sidebar on desktop */
   /* ---------------------------------------------------------------- */
@@ -1115,7 +1131,20 @@ export function MessagesApp({
         )}
       </div>
 
-      {SECTIONS.map((section) => (
+      {allEmpty ? (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px", textAlign: "center", gap: 12 }}>
+          <MessageCircle size={36} style={{ color: "rgba(255,255,255,0.15)" }} aria-hidden="true" />
+          <p style={{ fontSize: 15, fontWeight: 600, color: "rgba(255,255,255,0.7)", margin: 0 }}>No conversations yet</p>
+          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.35)", margin: 0 }}>Deploy an agent to start chatting</p>
+          <button
+            type="button"
+            onClick={openAgentsApp}
+            style={{ marginTop: 4, fontSize: 13, padding: "8px 16px", borderRadius: 10, background: "rgba(59,130,246,0.2)", border: "1px solid rgba(59,130,246,0.3)", color: "rgba(147,197,253,0.9)", cursor: "pointer" }}
+          >
+            Open Agents
+          </button>
+        </div>
+      ) : SECTIONS.map((section) => (
         <div key={section.label} style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
             {section.icon} {section.label}
@@ -1338,7 +1367,21 @@ export function MessagesApp({
 
       {/* channel list */}
       <div className="flex-1 overflow-y-auto py-1">
-        {SECTIONS.map((section) => (
+        {allEmpty ? (
+          <div className="flex flex-col items-center justify-center h-full px-4 py-10 text-center gap-2.5">
+            <MessageCircle size={28} className="text-white/15" aria-hidden="true" />
+            <p className="text-[13px] font-medium text-white/60">No conversations yet</p>
+            <p className="text-[11px] text-white/30">Deploy an agent to start chatting</p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openAgentsApp}
+              className="mt-1 text-xs"
+            >
+              Open Agents
+            </Button>
+          </div>
+        ) : SECTIONS.map((section) => (
           <div key={section.label}>
             <div className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/30 flex items-center gap-1.5">
               {section.icon} {section.label}
