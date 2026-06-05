@@ -135,10 +135,6 @@
   background-size: 100% 100%;
 }
 
-/* Push the dock up slightly in browser mode to clear the tab bar. The
-   attribute selector matches the CSS-module-hashed MobileDock class
-   (e.g. MobileDock_dock__ab12); scoped under .taos-browser so it only
-   applies in browser (non-PWA) mode. */
-.taos-browser [class*="MobileDock"] {
-  padding-bottom: 4px;
-}
+/* MobileDock bottom padding in browser mode is handled via the isBrowserMobile
+   prop passed from App.tsx — the component uses inline styles so a CSS
+   selector cannot override them reliably. See MobileDock.tsx. */

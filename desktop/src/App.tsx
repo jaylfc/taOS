@@ -320,6 +320,7 @@ export function App() {
         onToggleSwitcher={() => setCardSwitcherOpen((v) => !v)}
         onOpenLaunchpad={() => { setCardSwitcherOpen(false); setSearchOpen(false); setLaunchpadOpen((v) => !v); }}
         activeAppId={activeWindow?.appId ?? null}
+        isBrowserMobile={isBrowserMobile}
       />
       <CardSwitcher
         open={cardSwitcherOpen}
