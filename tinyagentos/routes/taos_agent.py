@@ -1,4 +1,4 @@
-"""taOS Assistant — settings, config and chat completion endpoint.
+"""taOS agent — settings, config and chat completion endpoint.
 
 GET  /api/taos-agent/settings          → {model: str | null}
 PATCH /api/taos-agent/settings         → accepts {model: str}, persists via desktop_settings
@@ -36,7 +36,7 @@ _DONE = object()
 
 
 # Read the system-prompt manual once at startup (or import time).
-# If the file is absent the assistant still works — it just won't have a
+# If the file is absent the taOS agent still works — it just won't have a
 # system prompt until the file is created and the server restarted.
 def _load_manual() -> str:
     try:
@@ -194,7 +194,7 @@ async def chat(request: Request, body: ChatRequest):
     model = prefs.get("model")
     if not model:
         return JSONResponse(
-            {"error": "No model configured. Open taOS Assistant settings and pick a model first."},
+            {"error": "No model configured. Open taOS agent settings and pick a model first."},
             status_code=400,
         )
 
