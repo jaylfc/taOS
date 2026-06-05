@@ -33,7 +33,11 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
   const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
 
   const apps = useMemo(() => {
-    const all = getAllApps();
+    // Installed services render once under the Services section below (from
+    // /api/apps/installed). Exclude any dynamically-registered service:* apps
+    // from the registry grouping so they don't also appear under a built-in
+    // category (e.g. SearXNG showing under both Platform and Services).
+    const all = getAllApps().filter((a) => !a.id.startsWith("service:"));
     if (!query.trim()) return all;
     const q = query.toLowerCase();
     return all.filter((a) => a.name.toLowerCase().includes(q));
@@ -129,7 +133,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
           {filteredServices.length > 0 && (
             <div>
               <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
-                Apps
+                Services
               </h3>
               <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
                 {filteredServices.map((svc) => (
