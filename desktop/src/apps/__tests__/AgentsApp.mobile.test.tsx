@@ -101,19 +101,19 @@ describe("AgentsApp mobile layout (390px viewport)", () => {
   });
 
   it("renders agent name on its own line with status chip alongside it", async () => {
-    const { findByText } = render(<AgentsApp windowId="test" />);
+    render(<AgentsApp windowId="test" />);
 
     // Agent name must be visible
-    const nameEl = await findByText("My Agent");
+    const nameEl = await screen.findByText("My Agent");
     expect(nameEl).toBeTruthy();
 
-    // Status chip must be visible
-    const statusEl = await findByText("running");
-    expect(statusEl).toBeTruthy();
+    // Status chip must be visible (taOS agent is also "running", so match at least one)
+    const statusEls = await screen.findAllByText("running");
+    expect(statusEls.length).toBeGreaterThan(0);
 
-    // Host must be visible on a second row
-    const hostEl = await findByText("localhost");
-    expect(hostEl).toBeTruthy();
+    // Host must be visible on a second row (may appear multiple times for system + regular agent)
+    const hostEls = await screen.findAllByText("localhost");
+    expect(hostEls.length).toBeGreaterThan(0);
   });
 
   it("renders all 4 action buttons with accessible labels", async () => {

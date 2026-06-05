@@ -12,13 +12,28 @@ import { Button } from "@/components/ui";
 import { type Agent, type DiskState, type ArchivedAgent } from "./agents/types";
 import { AgentRow } from "./agents/AgentRow";
 import { AgentDetailPanel, type DetailTab } from "./agents/AgentDetailPanel";
+import { TaosAgentDetailPanel } from "./agents/TaosAgentDetailPanel";
 import { DeployWizard } from "./agents/DeployWizard";
 import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
-import { TaosAgentCard } from "@/components/TaosAgentCard";
+import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
 
 /* ------------------------------------------------------------------ */
 /*  AgentsApp (main)                                                   */
 /* ------------------------------------------------------------------ */
+
+// Minimal fixed representation of the taOS system agent as an Agent shape.
+// Status is always "running" — it is host-resident and cannot be stopped.
+const TAOS_AGENT_STUB: Agent = {
+  name: "taos-agent",
+  display_name: "taOS agent",
+  host: "localhost",
+  color: "#6366f1",
+  emoji: "🤖",
+  status: "running",
+  vectors: 0,
+  framework: "opencode",
+  paused: false,
+};
 
 export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -26,9 +41,14 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [detail, setDetail] = useState<{ name: string; tab: DetailTab } | null>(null);
+  const [taosDetailOpen, setTaosDetailOpen] = useState(false);
   const [diskStates, setDiskStates] = useState<Record<string, DiskState>>({});
   const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
   const [latestByFramework, setLatestByFramework] = useState<Record<string, LatestVersion>>({});
+  // Hydrate the taOS agent stub with live model info (display only — the detail
+  // panel fetches its own config on open). We only use this to show the current
+  // model in the row's framework pill area; failures are silently ignored.
+  const [taosModel, setTaosModel] = useState<string | undefined>(undefined);
   const isMobile = useIsMobile();
   const openWindow = useProcessStore((s) => s.openWindow);
 
@@ -135,6 +155,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
 
   useEffect(() => {
     fetchLatestFrameworks().then(setLatestByFramework).catch(() => {});
+    fetchTaosAgentConfig().then((cfg) => setTaosModel(cfg.model ?? undefined)).catch(() => {});
   }, []);
 
   async function handleResume(name: string) {
@@ -393,7 +414,17 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           <div className="flex flex-col h-full min-h-0">
             <div className="p-4">
               <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
-              <TaosAgentCard />
+              <AgentRow
+                agent={{ ...TAOS_AGENT_STUB, display_name: taosModel ? `taOS agent — ${taosModel}` : "taOS agent" }}
+                diskState={null}
+                latestByFramework={latestByFramework}
+                onViewLogs={() => setTaosDetailOpen(true)}
+                onViewSkills={() => setTaosDetailOpen(true)}
+                onViewMessages={() => setTaosDetailOpen(true)}
+                onDelete={() => {}}
+                onResume={() => {}}
+                protected
+              />
             </div>
             <div className="flex flex-col items-center justify-center flex-1 gap-4 text-shell-text-tertiary px-4 pb-8">
               <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
@@ -418,7 +449,17 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
         ) : agents.length === 0 ? (
           <div className="p-4">
             <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
-            <TaosAgentCard />
+            <AgentRow
+              agent={{ ...TAOS_AGENT_STUB, display_name: taosModel ? `taOS agent — ${taosModel}` : "taOS agent" }}
+              diskState={null}
+              latestByFramework={latestByFramework}
+              onViewLogs={() => setTaosDetailOpen(true)}
+              onViewSkills={() => setTaosDetailOpen(true)}
+              onViewMessages={() => setTaosDetailOpen(true)}
+              onDelete={() => {}}
+              onResume={() => {}}
+              protected
+            />
             <ArchivedAgentsPanel
               archived={archived}
               onRestore={handleRestore}
@@ -429,7 +470,17 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           <div className="p-4">
             {/* System agent — always shown above the deployed agents list */}
             <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
-            <TaosAgentCard />
+            <AgentRow
+              agent={{ ...TAOS_AGENT_STUB, display_name: taosModel ? `taOS agent — ${taosModel}` : "taOS agent" }}
+              diskState={null}
+              latestByFramework={latestByFramework}
+              onViewLogs={() => setTaosDetailOpen(true)}
+              onViewSkills={() => setTaosDetailOpen(true)}
+              onViewMessages={() => setTaosDetailOpen(true)}
+              onDelete={() => {}}
+              onResume={() => {}}
+              protected
+            />
 
             {/* Disk quota notification cards */}
             {agents
@@ -559,6 +610,38 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           />
         );
       })()}
+
+      {/* taOS agent detail panel */}
+      {taosDetailOpen && (
+        isMobile ? (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="taOS agent settings"
+            className="absolute inset-0 z-30 flex flex-col bg-shell-bg text-zinc-200"
+          >
+            <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
+              <button
+                type="button"
+                aria-label="Back to agents"
+                onClick={() => setTaosDetailOpen(false)}
+                className="rounded-lg px-2 py-1 text-sm text-zinc-300"
+              >
+                ‹ Back
+              </button>
+              <div className="flex-1 truncate text-center text-sm font-medium text-zinc-200">
+                taOS agent
+              </div>
+              <span className="w-10" aria-hidden="true" />
+            </div>
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+              <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} fullHeight />
+            </div>
+          </div>
+        ) : (
+          <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} />
+        )
+      )}
 
       {/* Deploy wizard overlay */}
       <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
