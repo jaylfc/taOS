@@ -254,8 +254,8 @@ async def proxy_call(request: Request):
     return JSONResponse(result, status_code=status_code)
 
 
-# --- taOS assistant theme tools ----------------------------------------------
-# These three endpoints are the agent-facing tools that let the taOS assistant
+# --- taOS agent theme tools ----------------------------------------------
+# These three endpoints are the agent-facing tools that let the taOS agent
 # discover the theme vocabulary, create a validated theme, and request a preview.
 
 
