@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NEKO_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 DEFAULT_NEKO_GPU_IMAGE = "ghcr.io/m1k1o/neko/nvidia-chromium:latest"
-DEFAULT_NEKO_RK3588_IMAGE = "ghcr.io/jaylfc/taos-neko-chromium-rk3588:latest"
+# Temporarily the validated multi-arch base (runs healthy on the Pi, software
+# encode). The custom rkmpp HW-encode image (built FROM this + Rockchip GStreamer
+# from the Armbian/Rockchip repos) is tracked in #624; flip this back once it's
+# built + published. Device nodes are still passed (harmless on RK3588).
+DEFAULT_NEKO_RK3588_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 NEKO_SCREEN = "1280x720@30"
 NEKO_PROFILE_MOUNT = "/home/neko"
 
