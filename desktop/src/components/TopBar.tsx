@@ -118,8 +118,8 @@ export function TopBar({ onSearchOpen, onAssistantOpen }: Props) {
       <button
         onClick={onAssistantOpen}
         className="ml-3 p-1 rounded hover:bg-shell-surface-hover transition-colors text-shell-text-secondary"
-        aria-label="Open taOS Assistant"
-        title="taOS Assistant"
+        aria-label="Open taOS agent"
+        title="taOS agent"
       >
         <Sparkles size={14} />
       </button>

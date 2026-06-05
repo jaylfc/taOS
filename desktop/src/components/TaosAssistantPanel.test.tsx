@@ -43,8 +43,8 @@ describe("TaosAssistantPanel", () => {
 
   it("shows title when open", () => {
     render(<TaosAssistantPanel />);
-    expect(screen.getByRole("dialog", { name: /taOS Assistant/i })).toBeInTheDocument();
-    expect(screen.getByText("taOS Assistant")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /taOS agent/i })).toBeInTheDocument();
+    expect(screen.getByText("taOS agent")).toBeInTheDocument();
   });
 
   it("shows empty state with pick-model button when no model", () => {
@@ -55,7 +55,7 @@ describe("TaosAssistantPanel", () => {
 
   it("shows message input disabled when no model", () => {
     render(<TaosAssistantPanel />);
-    const textarea = screen.getByRole("textbox", { name: /message taOS Assistant/i });
+    const textarea = screen.getByRole("textbox", { name: /message taOS agent/i });
     expect(textarea).toBeDisabled();
   });
 
@@ -80,7 +80,7 @@ describe("TaosAssistantPanel", () => {
 
   it("close button calls closePanel", () => {
     render(<TaosAssistantPanel />);
-    const closeBtn = screen.getByRole("button", { name: /close taOS Assistant/i });
+    const closeBtn = screen.getByRole("button", { name: /close taOS agent/i });
     fireEvent.click(closeBtn);
     expect(useTaosAgentStore.getState().isOpen).toBe(false);
   });

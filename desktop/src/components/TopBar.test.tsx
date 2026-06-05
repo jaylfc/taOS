@@ -31,15 +31,15 @@ describe("TopBar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the taOS Assistant sparkles button", () => {
+  it("renders the taOS agent sparkles button", () => {
     render(<TopBar onSearchOpen={onSearchOpen} onAssistantOpen={onAssistantOpen} />);
-    const btn = screen.getByRole("button", { name: /open taOS Assistant/i });
+    const btn = screen.getByRole("button", { name: /open taOS agent/i });
     expect(btn).toBeInTheDocument();
   });
 
   it("calls onAssistantOpen when sparkles button is clicked", () => {
     render(<TopBar onSearchOpen={onSearchOpen} onAssistantOpen={onAssistantOpen} />);
-    const btn = screen.getByRole("button", { name: /open taOS Assistant/i });
+    const btn = screen.getByRole("button", { name: /open taOS agent/i });
     fireEvent.click(btn);
     expect(onAssistantOpen).toHaveBeenCalledOnce();
   });

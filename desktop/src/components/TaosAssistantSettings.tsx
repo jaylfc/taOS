@@ -109,7 +109,7 @@ export function TaosAssistantSettings({ open, onClose }: Props) {
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 shrink-0">
           <h2 id="taos-assistant-settings-title" className="text-sm font-semibold">
-            taOS Assistant — Settings
+            taOS agent — Settings
           </h2>
           {model && (
             <span className="text-xs text-shell-text-tertiary mr-auto ml-3 truncate max-w-[120px]">
@@ -126,7 +126,7 @@ export function TaosAssistantSettings({ open, onClose }: Props) {
         </div>
         <div className="px-5 py-5 flex-1 min-h-0 overflow-y-auto">
           <p className="text-xs text-shell-text-secondary mb-4">
-            Pick the model the taOS Assistant will use. You can change this at any time.
+            Pick the model the taOS agent will use. You can change this at any time.
           </p>
           <ModelPickerFlow
             models={models}
