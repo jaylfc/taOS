@@ -321,6 +321,26 @@ class BrowserSessionManager:
             )
             await db.commit()
 
+    async def list_visible_sessions(self, owner_id: str, *, owned_agent_ids: set[str]) -> list[dict]:
+        """The user's own sessions plus sessions of agents the user owns."""
+        db = self._assert_db()
+        cursor = await db.execute(
+            """SELECT id, owner_type, owner_id, profile_name, url, node, status,
+                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+               FROM browser_sessions
+               WHERE status != 'stopped'
+               ORDER BY created_at DESC""",
+        )
+        rows = await cursor.fetchall()
+        out = []
+        for r in rows:
+            s = _row_to_session(r)
+            if s["owner_type"] == "user" and s["owner_id"] == owner_id:
+                out.append(s)
+            elif s["owner_type"] == "agent" and s["owner_id"] in owned_agent_ids:
+                out.append(s)
+        return out
+
     async def get_or_create_mine(self, owner_id: str, *, url: str = "about:blank",
                                  profile_name: str = "default") -> dict:
         """Return the user's single live (pending/running/idle) session, creating

@@ -38,6 +38,19 @@ def test_target_prefers_explicit_then_host_then_worker():
 
 
 @pytest.mark.asyncio
+async def test_list_visible_sessions(mgr):
+    await mgr.get_or_create_mine("user-1", url="https://mine")
+    await mgr.create_session("agent", "agent-A", "https://a")
+    await mgr.create_session("agent", "agent-B", "https://b")
+    # user-1 owns agent-A only
+    visible = await mgr.list_visible_sessions("user-1", owned_agent_ids={"agent-A"})
+    kinds = {(s["owner_type"], s["owner_id"]) for s in visible}
+    assert ("user", "user-1") in kinds
+    assert ("agent", "agent-A") in kinds
+    assert ("agent", "agent-B") not in kinds
+
+
+@pytest.mark.asyncio
 async def test_reap_idle_skips_user_sessions(mgr):
     u = await mgr.create_session("user", "user-1", "https://u")
     a = await mgr.create_session("agent", "agent-1", "https://a")
