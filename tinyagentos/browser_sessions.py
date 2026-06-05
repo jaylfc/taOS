@@ -320,6 +320,24 @@ class BrowserSessionManager:
             )
             await db.commit()
 
+    async def get_or_create_mine(self, owner_id: str, *, url: str = "about:blank",
+                                 profile_name: str = "default") -> dict:
+        """Return the user's single live (pending/running/idle) session, creating
+        one if none exists. Stopped/error sessions are not reused."""
+        db = self._assert_db()
+        cursor = await db.execute(
+            """SELECT id, owner_type, owner_id, profile_name, url, node, status,
+                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+               FROM browser_sessions
+               WHERE owner_type='user' AND owner_id=? AND status IN ('pending','running','idle')
+               ORDER BY created_at DESC LIMIT 1""",
+            (owner_id,),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            return _row_to_session(row)
+        return await self.create_session("user", owner_id, url, profile_name)
+
     async def start_on_host(self, session_id: str, *, profile_volume: str, runner) -> dict:
         """Start a Neko container in-process via BrowserContainerRunner (host-local).
 

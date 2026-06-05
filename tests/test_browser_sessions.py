@@ -38,6 +38,25 @@ def test_target_prefers_explicit_then_host_then_worker():
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_mine_is_idempotent(mgr):
+    a = await mgr.get_or_create_mine("user-1", url="https://start.page")
+    b = await mgr.get_or_create_mine("user-1", url="https://other.page")
+    assert a["id"] == b["id"]          # one session per user
+    assert a["owner_type"] == "user"
+    # a different user gets a different session
+    c = await mgr.get_or_create_mine("user-2", url="https://start.page")
+    assert c["id"] != a["id"]
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_recreates_after_stop(mgr):
+    a = await mgr.get_or_create_mine("user-1", url="https://x")
+    await mgr.terminate_session(a["id"])           # status -> stopped
+    b = await mgr.get_or_create_mine("user-1", url="https://x")
+    assert b["id"] != a["id"]                       # stopped one not reused
+
+
+@pytest.mark.asyncio
 async def test_start_on_host_marks_running(mgr):
     session = await mgr.create_session("user", "user-1", "https://example.com")
     sid = session["id"]
