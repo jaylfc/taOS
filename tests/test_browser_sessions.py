@@ -124,6 +124,17 @@ async def test_start_on_host_marks_error_on_failure(mgr):
     assert (await mgr.get_session(sid))["status"] == "error"
 
 
+@pytest.mark.asyncio
+async def test_mark_migrating_and_back(mgr):
+    s = await mgr.create_session("user", "u1", "https://x")
+    await mgr.mark_running(s["id"], node="host", container_id="c", neko_url="n", cdp_url=None)
+    await mgr.mark_migrating(s["id"])
+    assert (await mgr.get_session(s["id"]))["status"] == "migrating"
+    # migrating sessions are NOT idle-reaped (like running user sessions)
+    reaped = await mgr.reap_idle(now=10**12)
+    assert s["id"] not in reaped
+
+
 @pytest_asyncio.fixture
 async def mgr(tmp_path):
     m = BrowserSessionManager(db_path=tmp_path / "browser_sessions.db", mock=True)

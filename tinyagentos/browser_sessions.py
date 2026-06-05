@@ -222,6 +222,16 @@ class BrowserSessionManager:
             await db.commit()
         return ids
 
+    async def mark_migrating(self, session_id: str, *, now: float | None = None) -> None:
+        db = self._assert_db()
+        if now is None:
+            now = time.time()
+        await db.execute(
+            "UPDATE browser_sessions SET status='migrating', updated_at=? WHERE id=?",
+            (now, session_id),
+        )
+        await db.commit()
+
     async def mark_error(self, session_id: str, *, now: float | None = None) -> None:
         db = self._assert_db()
         if now is None:
