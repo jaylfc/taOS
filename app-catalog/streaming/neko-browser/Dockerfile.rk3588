@@ -1,0 +1,20 @@
+# taOS Neko Chromium for RK3588 (Orange Pi 5 Plus) — HW decode + WebRTC encode via VPU.
+# Device nodes (/dev/mpp_service, /dev/dri, /dev/rga) are passed at `docker run`
+# by the host-tier resolver, not baked in. Software encode is the fallback when
+# this image/devices aren't available (see resolve_neko_image).
+FROM ghcr.io/m1k1o/neko/arm-chromium:latest
+
+# Rockchip MPP + RGA + Mali userspace for GStreamer rkmpp HW encode/decode.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gstreamer1.0-rockchip \
+        librockchip-mpp1 \
+        librga2 \
+    && rm -rf /var/lib/apt/lists/* || true
+
+LABEL taos.app.id="neko-browser" \
+      taos.streaming.encode="rkmpp" \
+      taos.hardware.soc="rk3588"
+
+# Prefer the VPU encoder; Neko reads its pipeline from env / its own config.
+ENV NEKO_VIDEO_CODEC=h264 \
+    GST_PLUGIN_FEATURE_RANK="mpph264enc:512"
