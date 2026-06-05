@@ -37,6 +37,33 @@ def test_target_prefers_explicit_then_host_then_worker():
     assert resolve_browser_target(_FakeCluster([]), {"ram_mb": 4096}, explicit_node=None) is None
 
 
+@pytest.mark.asyncio
+async def test_start_on_host_marks_running(mgr):
+    session = await mgr.create_session("user", "user-1", "https://example.com")
+    sid = session["id"]
+    runner = MagicMock()
+    runner.start = AsyncMock(return_value={
+        "container_id": "c-1", "neko_url": "http://host:8800/?usr=neko&pwd=x",
+        "cdp_url": None, "http_port": 8800, "epr_lo": 59000, "epr_hi": 59009,
+    })
+    out = await mgr.start_on_host(sid, profile_volume="taos-browser-%s" % sid, runner=runner)
+    assert out["status"] == "running"
+    assert out["container_id"] == "c-1"
+    assert out["node"] == "host"
+    runner.start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_on_host_marks_error_on_failure(mgr):
+    session = await mgr.create_session("user", "user-1", "https://example.com")
+    sid = session["id"]
+    runner = MagicMock()
+    runner.start = AsyncMock(side_effect=RuntimeError("docker down"))
+    with pytest.raises(BrowserWorkerError):
+        await mgr.start_on_host(sid, profile_volume="v", runner=runner)
+    assert (await mgr.get_session(sid))["status"] == "error"
+
+
 @pytest_asyncio.fixture
 async def mgr(tmp_path):
     m = BrowserSessionManager(db_path=tmp_path / "browser_sessions.db", mock=True)

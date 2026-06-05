@@ -320,6 +320,26 @@ class BrowserSessionManager:
             )
             await db.commit()
 
+    async def start_on_host(self, session_id: str, *, profile_volume: str, runner) -> dict:
+        """Start a Neko container in-process via BrowserContainerRunner (host-local).
+
+        Mirrors start_on_worker but drives the runner directly. On failure marks
+        the session 'error' and raises BrowserWorkerError.
+        """
+        try:
+            data = await runner.start(session_id=session_id, profile_volume=profile_volume)
+        except Exception as exc:
+            await self.mark_error(session_id)
+            raise BrowserWorkerError(f"host browser start failed: {exc}") from exc
+        await self.mark_running(
+            session_id,
+            node="host",
+            container_id=data["container_id"],
+            neko_url=data["neko_url"],
+            cdp_url=data.get("cdp_url"),
+        )
+        return await self.get_session(session_id)
+
     async def terminate_session(self, session_id: str) -> bool:
         """Set status='stopped'.  Returns False if the session does not exist."""
         db = self._assert_db()
