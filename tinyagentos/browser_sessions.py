@@ -439,3 +439,23 @@ def host_is_browser_capable(host_hardware: dict | None) -> bool:
         return False
     ram = host_hardware.get("ram_mb", 0)
     return isinstance(ram, int) and ram >= HOST_MIN_RAM_MB
+
+
+def resolve_browser_target(
+    cluster,
+    host_hardware: dict | None,
+    *,
+    explicit_node: str | None = None,
+) -> tuple[str, str | None] | None:
+    """Pick where a browser session runs.
+
+    Order: explicit worker (if capable) -> host (if capable) -> best worker.
+    Returns ("host", None), ("worker", <name>), or None if nowhere is capable.
+    """
+    if explicit_node is not None:
+        names = {n["name"] for n in list_browser_nodes(cluster)}
+        return ("worker", explicit_node) if explicit_node in names else None
+    if host_is_browser_capable(host_hardware):
+        return ("host", None)
+    node = pick_browser_node(cluster)
+    return ("worker", node) if node else None

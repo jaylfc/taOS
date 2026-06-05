@@ -12,6 +12,7 @@ from tinyagentos.browser_sessions import (
     list_browser_nodes,
     pick_browser_node,
     host_is_browser_capable,
+    resolve_browser_target,
 )
 
 HOST_MIN_RAM_MB = 6144  # floor for running the browser locally; 8GB+ hosts pass, 4GB-class hosts are tier-gated to a cluster device
@@ -26,6 +27,14 @@ def test_host_not_capable_below_floor():
     assert host_is_browser_capable({"ram_mb": 4096}) is False
     assert host_is_browser_capable({}) is False
     assert host_is_browser_capable(None) is False
+
+
+def test_target_prefers_explicit_then_host_then_worker():
+    cap_host = {"ram_mb": 8192}
+    # explicit worker wins when capable
+    assert resolve_browser_target(_FakeCluster([]), cap_host, explicit_node=None) == ("host", None)
+    # no capable host -> falls through to worker selection (None here, no workers)
+    assert resolve_browser_target(_FakeCluster([]), {"ram_mb": 4096}, explicit_node=None) is None
 
 
 @pytest_asyncio.fixture
