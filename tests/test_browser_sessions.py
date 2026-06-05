@@ -11,7 +11,21 @@ from tinyagentos.browser_sessions import (
     BrowserWorkerError,
     list_browser_nodes,
     pick_browser_node,
+    host_is_browser_capable,
 )
+
+HOST_MIN_RAM_MB = 6144  # floor for running the browser locally; 8GB+ hosts pass, 4GB-class hosts are tier-gated to a cluster device
+
+
+def test_host_capable_when_ram_meets_floor():
+    assert host_is_browser_capable({"ram_mb": 8192}) is True
+    assert host_is_browser_capable({"ram_mb": 16384}) is True
+
+
+def test_host_not_capable_below_floor():
+    assert host_is_browser_capable({"ram_mb": 4096}) is False
+    assert host_is_browser_capable({}) is False
+    assert host_is_browser_capable(None) is False
 
 
 @pytest_asyncio.fixture

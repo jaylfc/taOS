@@ -422,3 +422,20 @@ def list_browser_nodes(
             "load": w.load,
         })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Host browser-capability check
+# ---------------------------------------------------------------------------
+
+# The host runs the browser in-process (not as a Tier-2 worker). It qualifies
+# only above a RAM floor; 4GB-class hosts are tier-gated to a cluster device instead.
+HOST_MIN_RAM_MB = 6144
+
+
+def host_is_browser_capable(host_hardware: dict | None) -> bool:
+    """True when the controller host can run a local browser container."""
+    if not isinstance(host_hardware, dict):
+        return False
+    ram = host_hardware.get("ram_mb", 0)
+    return isinstance(ram, int) and ram >= HOST_MIN_RAM_MB
