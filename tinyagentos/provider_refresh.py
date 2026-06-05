@@ -70,7 +70,11 @@ class CloudProviderRefresher:
 
     async def _refresh_once(self) -> None:
         # Imported lazily to avoid a route<-service import cycle at module load.
-        from tinyagentos.routes.providers import refresh_cloud_backends_if_changed
+        from tinyagentos.routes.providers import (
+            refresh_cloud_backends_if_changed,
+            _fetch_litellm_models,
+        )
+        import time as _time
 
         config = getattr(self._state, "config", None)
         if config is None:
@@ -79,3 +83,17 @@ class CloudProviderRefresher:
         reloaded = await refresh_cloud_backends_if_changed(self._state, config, proxy)
         if reloaded:
             logger.info("cloud provider refresh: catalog changed, LiteLLM reloaded")
+        # Always update the models cache after a background probe so the
+        # picker serves a warm result without a live LiteLLM round-trip.
+        # Skip when LiteLLM isn't running (nothing to read back yet).
+        if proxy and proxy.is_running():
+            data = await _fetch_litellm_models(proxy)
+            if data:
+                payload: dict = {"data": data, "object": "list"}
+                self._state.litellm_models_cache = payload
+                import asyncio as _asyncio
+                self._state.litellm_models_cache_at = _asyncio.get_event_loop().time()
+                self._state.litellm_models_cache_wallclock = _time.time()
+                logger.debug(
+                    "cloud provider refresh: models cache updated (%d models)", len(data)
+                )
