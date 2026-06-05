@@ -21,6 +21,7 @@ export function AgentRow({
   onDelete,
   onResume,
   leftActions,
+  protected: isProtected = false,
 }: {
   agent: Agent;
   diskState?: DiskState | null;
@@ -31,6 +32,8 @@ export function AgentRow({
   onDelete: (name: string) => void;
   onResume: (name: string) => void;
   leftActions?: ReactNode;
+  /** When true, destructive actions (delete, resume-from-paused) are hidden. */
+  protected?: boolean;
 }) {
   const isMobile = useIsMobile();
   const emoji = resolveAgentEmoji(agent.emoji, agent.framework);
@@ -66,7 +69,7 @@ export function AgentRow({
 
   const actionButtons = (
     <>
-      {agent.paused && (
+      {!isProtected && agent.paused && (
         <Button
           variant="ghost"
           size="icon"
@@ -111,16 +114,18 @@ export function AgentRow({
       >
         <MessageSquare size={15} />
       </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className={`${btnCls} hover:bg-red-500/15 hover:text-red-400`}
-        onClick={() => onDelete(agent.name)}
-        aria-label={`Delete ${agent.name}`}
-        title="Delete"
-      >
-        <Trash2 size={15} />
-      </Button>
+      {!isProtected && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={`${btnCls} hover:bg-red-500/15 hover:text-red-400`}
+          onClick={() => onDelete(agent.name)}
+          aria-label={`Delete ${agent.name}`}
+          title="Delete"
+        >
+          <Trash2 size={15} />
+        </Button>
+      )}
     </>
   );
 

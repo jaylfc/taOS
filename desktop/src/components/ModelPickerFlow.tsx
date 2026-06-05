@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { ChevronLeft, Monitor, Server, Cloud, Search, X } from "lucide-react";
+import { ChevronLeft, Monitor, Server, Cloud, Search, X, RefreshCw } from "lucide-react";
 import { HOST_BADGE_CLASS } from "@/lib/models";
 
 export interface AgentModel {
@@ -15,6 +15,9 @@ interface Props {
   onSelect: (modelId: string, model: AgentModel) => void;
   onBack?: () => void;    // inline mode: shown on source screen as "Back"
   onCancel?: () => void;  // modal mode: shown on source screen as "Cancel"
+  onRefresh?: () => void; // optional: called when the user clicks the refresh button
+  refreshing?: boolean;   // true while a refresh is in-flight
+  cachedAt?: number;      // wall-clock seconds of last successful catalog fetch
 }
 
 type Screen = "source" | "provider" | "list";
@@ -26,7 +29,16 @@ const SOURCE_META: Record<Source, { label: string; icon: React.ReactNode; desc: 
   cloud:  { label: "Cloud",  icon: <Cloud   size={18} />, desc: "Cloud provider API"          },
 };
 
-export function ModelPickerFlow({ models, modelsLoaded, onSelect, onBack, onCancel }: Props) {
+function _formatCachedAt(ts: number | undefined): string | null {
+  if (!ts || ts <= 0) return null;
+  const diffSec = Math.floor(Date.now() / 1000 - ts);
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
+}
+
+export function ModelPickerFlow({ models, modelsLoaded, onSelect, onBack, onCancel, onRefresh, refreshing = false, cachedAt }: Props) {
   const [screen, setScreen]                   = useState<Screen>("source");
   const [selectedSource, setSelectedSource]   = useState<Source | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -124,6 +136,7 @@ export function ModelPickerFlow({ models, modelsLoaded, onSelect, onBack, onCanc
   /* ── Source screen ─────────────────────────────── */
   if (screen === "source") {
     const exitLabel = onCancel ? "Cancel" : "Back";
+    const cachedLabel = _formatCachedAt(cachedAt);
     return (
       <div className="space-y-2">
         {(onBack || onCancel) && (
@@ -135,7 +148,27 @@ export function ModelPickerFlow({ models, modelsLoaded, onSelect, onBack, onCanc
             {exitLabel}
           </button>
         )}
-        <span className="block text-xs text-shell-text-secondary mb-2">Where is the model?</span>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-shell-text-secondary">Where is the model?</span>
+          {onRefresh && (
+            <div className="flex items-center gap-1.5">
+              {cachedLabel && !refreshing && (
+                <span className="text-[10px] text-shell-text-tertiary" title="Cloud catalog last updated">
+                  {cachedLabel}
+                </span>
+              )}
+              <button
+                onClick={onRefresh}
+                disabled={refreshing || !modelsLoaded}
+                aria-label="Refresh model catalog"
+                className="flex items-center gap-1 text-xs text-shell-text-tertiary hover:text-shell-text disabled:opacity-40 transition-colors"
+              >
+                <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+                {refreshing ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+          )}
+        </div>
         {!modelsLoaded && (
           <p className="text-xs text-shell-text-tertiary py-2">Loading models…</p>
         )}
