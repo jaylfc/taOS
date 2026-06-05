@@ -250,5 +250,8 @@ def register_all_routers(app):
     from tinyagentos.routes.taosmd import router as taosmd_router
     app.include_router(taosmd_router)
 
+    from tinyagentos.routes.setup import router as setup_router
+    app.include_router(setup_router)
+
     from tinyagentos.routes.gh_webhook import router as gh_webhook_router
     app.include_router(gh_webhook_router)
