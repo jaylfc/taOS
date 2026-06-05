@@ -1,0 +1,197 @@
+# Upstream dependency inventory — single source of truth for tracking the
+# third-party software taOS integrates deeply, so we can monitor their repos
+# for releases + change notes and stay aware of new features to adopt.
+#
+# Tracked here = DEEP integrations + ecosystem fast-movers ONLY.
+# Transitive npm/pypi deps are handled mechanically by Dependabot and are NOT
+# listed here. See issue #596 for the monitoring + feature-awareness layer that
+# consumes this file.
+#
+# Entry schema:
+#   id:           short stable key
+#   name:         display name
+#   repo:         owner/name on GitHub  (or "VERIFY: <where to find it>")
+#   ecosystem:    github-release | npm | pypi | source
+#   current:      version taOS currently uses ("track-latest" if unpinned)
+#   integration:  where/how taOS uses it
+#   watch:        true to include in release monitoring
+
+agent_frameworks:
+  - id: opencode
+    name: opencode
+    repo: anomalyco/opencode
+    ecosystem: npm            # package: opencode-ai
+    current: "1.15.13"
+    integration: taOS agent harness + App Builder; driven headless via opencode_adapter/opencode_runtime (#588)
+    watch: true
+  - id: openclaw
+    name: OpenClaw
+    repo: openclaw/openclaw
+    ecosystem: npm            # package: openclaw
+    current: track-latest     # npm @latest; version-probe gap tracked in #570
+    integration: agent framework, driven over ACP (acp_adapter / openclaw_acp_runtime)
+    watch: true
+  - id: hermes
+    name: Hermes
+    repo: "VERIFY: PyPI hermes-agent -> project homepage"
+    ecosystem: pypi           # package: hermes-agent
+    current: "0.15.1"
+    integration: agent framework; HTTP api_server + hermes bridge
+    watch: true
+  - id: smolagents
+    name: SmolAgents
+    repo: huggingface/smolagents
+    ecosystem: pypi           # package: smolagents
+    current: track-latest
+    integration: agent framework (smolagents_adapter)
+    watch: true
+  - id: langroid
+    name: Langroid
+    repo: langroid/langroid
+    ecosystem: pypi           # package: langroid
+    current: track-latest
+    integration: agent framework (langroid_adapter)
+    watch: true
+  - id: openai_agents_sdk
+    name: OpenAI Agents SDK
+    repo: openai/openai-agents-python
+    ecosystem: pypi           # package: openai-agents
+    current: track-latest
+    integration: agent framework (openai_agents_sdk_adapter)
+    watch: true
+  - id: pocketflow
+    name: PocketFlow
+    repo: "VERIFY: from app-catalog/agents/pocketflow/scripts/install.sh"
+    ecosystem: pypi
+    current: track-latest
+    integration: agent framework (pocketflow_adapter)
+    watch: true
+  - id: agent_zero
+    name: Agent Zero
+    repo: "VERIFY: from app-catalog/agents/agent_zero/scripts/install.sh"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (agent_zero_adapter)
+    watch: true
+  # The *claw family + others below: repos not yet confirmed. Complete from each
+  # framework's app-catalog/agents/<id>/scripts/install.sh before enabling watch.
+  - id: ironclaw
+    name: IronClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (ironclaw_adapter)
+    watch: false
+  - id: microclaw
+    name: MicroClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (microclaw_adapter)
+    watch: false
+  - id: moltis
+    name: Moltis
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (moltis_adapter)
+    watch: false
+  - id: nanoclaw
+    name: NanoClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (nanoclaw_adapter)
+    watch: false
+  - id: nullclaw
+    name: NullClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (nullclaw_adapter)
+    watch: false
+  - id: picoclaw
+    name: PicoClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (picoclaw_adapter)
+    watch: false
+  - id: shibaclaw
+    name: ShibaClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (shibaclaw_adapter)
+    watch: false
+  - id: zeroclaw
+    name: ZeroClaw
+    repo: "VERIFY"
+    ecosystem: source
+    current: track-latest
+    integration: agent framework (zeroclaw_adapter)
+    watch: false
+
+llm_gateway:
+  - id: litellm
+    name: LiteLLM
+    repo: BerriAI/litellm
+    ecosystem: pypi           # package: litellm
+    current: track-latest
+    integration: the host LLM proxy (llm_proxy.py); single gateway for chat + embeddings + per-agent virtual keys
+    watch: true
+  - id: ai_sdk_openai_compatible
+    name: "@ai-sdk/openai-compatible"
+    repo: vercel/ai
+    ecosystem: npm            # package: @ai-sdk/openai-compatible
+    current: track-latest
+    integration: opencode's provider used to point opencode at the LiteLLM proxy
+    watch: true
+
+model_runtimes:
+  - id: llama_cpp
+    name: llama.cpp
+    repo: ggml-org/llama.cpp
+    ecosystem: github-release
+    current: track-latest
+    integration: local model inference backend
+    watch: true
+  - id: ollama
+    name: Ollama
+    repo: ollama/ollama
+    ecosystem: github-release
+    current: track-latest
+    integration: local model backend
+    watch: true
+  - id: mlx
+    name: MLX
+    repo: ml-explore/mlx
+    ecosystem: github-release
+    current: track-latest
+    integration: Apple Silicon inference (Mac target)
+    watch: true
+  - id: rkllama
+    name: rkllama
+    repo: "VERIFY: RK3588 NPU llama runtime used on the Orange Pi"
+    ecosystem: source
+    current: track-latest
+    integration: NPU model backend (rkllama provider) on RK3588
+    watch: false
+
+containers:
+  - id: incus
+    name: Incus
+    repo: lxc/incus
+    ecosystem: github-release
+    current: track-latest
+    integration: LXC container runtime for agent + app-userspace deploys
+    watch: true
+
+memory:
+  - id: taosmd
+    name: taOSmd
+    repo: jaylfc/taosmd
+    ecosystem: source         # our own repo; separate agent maintains it
+    current: track-latest
+    integration: the memory system (librarian/extraction/judge); see get_memory_model/set_memory_model
+    watch: true
