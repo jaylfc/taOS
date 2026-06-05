@@ -4,6 +4,7 @@ from __future__ import annotations
 
 Routes:
   POST   /api/browser/sessions            create a new session
+  GET    /api/browser/sessions            list visible sessions (user + owned agents)
   GET    /api/browser/sessions/{id}       get session (with stream token if running)
   POST   /api/browser/sessions/{id}/terminate  stop a session
 """
@@ -90,6 +91,30 @@ async def get_browser_nodes(
     return {"nodes": nodes}
 
 
+@router.get("/api/browser/sessions")
+async def list_sessions(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """List sessions visible to the current user: their own sessions plus sessions of
+    agents they own.
+
+    # TODO(multi-user): owned_agent_ids should be scoped to agents owned by this user
+    # once per-user agent ownership is introduced.
+    """
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    # All configured agents are considered owned by the requesting user for now.
+    config = request.app.state.config
+    owned_agent_ids = {a.get("name") for a in config.agents if a.get("name")}
+
+    mgr = request.app.state.browser_sessions
+    sessions = await mgr.list_visible_sessions(user_id, owned_agent_ids=owned_agent_ids)
+    return {"sessions": sessions}
+
+
 @router.get("/api/browser/sessions/mine")
 async def get_my_session(
     request: Request,
@@ -158,7 +183,16 @@ async def get_session(
     if session is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
 
-    if session["owner_type"] != "user" or session["owner_id"] != user_id:
+    # All configured agents are considered owned by the requesting user for now.
+    # TODO(multi-user): scope owned_agent_ids to agents owned by this user.
+    config = request.app.state.config
+    owned_agent_ids = {a.get("name") for a in config.agents if a.get("name")}
+
+    is_own_session = session["owner_type"] == "user" and session["owner_id"] == user_id
+    is_owned_agent_session = (
+        session["owner_type"] == "agent" and session["owner_id"] in owned_agent_ids
+    )
+    if not is_own_session and not is_owned_agent_session:
         return JSONResponse({"error": "not_found"}, status_code=404)
 
     if session["status"] == "running" and session.get("neko_url"):

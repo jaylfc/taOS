@@ -584,3 +584,146 @@ async def test_migrate_session_unknown_target_returns_409(app, tmp_path):
     assert resp.status_code == 409
     assert resp.json()["error"] == "no_capable_node"
     await bs.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/browser/sessions  (C2a — list visible sessions)
+# ---------------------------------------------------------------------------
+
+async def _authed_client(app, tmp_path, db_name: str):
+    """Helper: init a BrowserSessionManager + create+return an authed (uid, client, bs) triple."""
+    bs = BrowserSessionManager(tmp_path / db_name, mock=True)
+    await bs.init()
+
+    app.state.browser_sessions = bs
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _no_cluster()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+    return uid, token, bs
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_returns_own_and_agent_sessions(app, tmp_path):
+    """GET /api/browser/sessions returns own session AND an agent session whose name
+    is in config.agents, but NOT an agent session whose name is not in config.agents."""
+    uid, token, bs = await _authed_client(app, tmp_path, "bs_list.db")
+
+    # routes/conftest creates the app with agents=[]; seed one agent into config.
+    app.state.config.agents.append({"name": "test-agent"})
+
+    own_session = await bs.create_session("user", uid, "https://example.com")
+    agent_in_cfg = await bs.create_session("agent", "test-agent", "https://agent.example.com")
+    agent_not_in_cfg = await bs.create_session("agent", "unknown-agent", "https://other.example.com")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        resp = await c.get("/api/browser/sessions")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "sessions" in body
+    ids = {s["id"] for s in body["sessions"]}
+    assert own_session["id"] in ids
+    assert agent_in_cfg["id"] in ids
+    assert agent_not_in_cfg["id"] not in ids
+
+    await bs.close()
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_excludes_stopped(app, tmp_path):
+    """GET /api/browser/sessions does not return stopped sessions."""
+    uid, token, bs = await _authed_client(app, tmp_path, "bs_list2.db")
+
+    own_session = await bs.create_session("user", uid, "https://example.com")
+    await bs.terminate_session(own_session["id"])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        resp = await c.get("/api/browser/sessions")
+
+    assert resp.status_code == 200
+    ids = {s["id"] for s in resp.json()["sessions"]}
+    assert own_session["id"] not in ids
+
+    await bs.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/browser/sessions/{id}  — agent session ownership (C2a)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_agent_session_in_config_returns_200_with_stream_token(app, tmp_path):
+    """GET /{id} for a running agent session whose agent IS in config.agents returns 200 + stream_token."""
+    uid, token, bs = await _authed_client(app, tmp_path, "bs_agent_get.db")
+
+    # routes/conftest creates the app with agents=[]; seed one agent into config.
+    app.state.config.agents.append({"name": "test-agent"})
+
+    session = await bs.create_session("agent", "test-agent", "https://agent.example.com")
+    sid = session["id"]
+    await bs.mark_running(
+        sid,
+        node="node-1",
+        container_id="ctr-agent-01",
+        neko_url="http://10.0.0.5:8800/?usr=neko&pwd=pwd",
+        cdp_url=None,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        resp = await c.get(f"/api/browser/sessions/{sid}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == sid
+    assert body["status"] == "running"
+    assert "stream_token" in body
+
+    await bs.close()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_session_not_in_config_returns_404(app, tmp_path):
+    """GET /{id} for an agent session whose agent is NOT in config.agents returns 404."""
+    uid, token, bs = await _authed_client(app, tmp_path, "bs_agent_404.db")
+
+    # "unknown-agent" is not in config.agents
+    session = await bs.create_session("agent", "unknown-agent", "https://agent.example.com")
+    sid = session["id"]
+    await bs.mark_running(
+        sid,
+        node="node-1",
+        container_id="ctr-unknown-01",
+        neko_url="http://10.0.0.5:8800/?usr=neko&pwd=pwd",
+        cdp_url=None,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        resp = await c.get(f"/api/browser/sessions/{sid}")
+
+    assert resp.status_code == 404
+
+    await bs.close()
