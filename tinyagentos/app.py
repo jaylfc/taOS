@@ -903,6 +903,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("mdns publisher failed to start — continuing without")
             app.state.mdns_publisher = None
 
+        # System event bus — unified typed-event broadcast.
+        from tinyagentos.events import EventBus, SystemEventStore
+        _system_events = SystemEventStore(data_dir / "system-events.db")
+        await _system_events.init()
+        app.state.system_events = _system_events
+        app.state.event_bus = EventBus()
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers —
         # agents and LiteLLM keep running independently, so there's nothing to

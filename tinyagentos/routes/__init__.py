@@ -252,3 +252,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.gh_webhook import router as gh_webhook_router
     app.include_router(gh_webhook_router)
+
+    from tinyagentos.routes.events import router as events_router
+    app.include_router(events_router)
