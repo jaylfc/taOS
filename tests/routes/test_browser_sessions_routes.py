@@ -450,3 +450,137 @@ async def test_get_my_session_no_capable_node_returns_409(client_no_capable_node
     resp = await client_no_capable_node.get("/api/browser/sessions/mine")
     assert resp.status_code == 409
     assert resp.json()["error"] == "no_capable_node"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/browser/sessions/{id}/migrate  (Task 4)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_migrate_session_calls_migrate_and_returns_session(app, tmp_path):
+    """POST /migrate delegates to mgr.migrate_session and returns the refreshed session."""
+    bs = BrowserSessionManager(tmp_path / "bs_mig.db", mock=True)
+    await bs.init()
+
+    # Create and start a session
+    session = await bs.create_session("user", "dummy-uid", "https://example.com")
+    sid = session["id"]
+    await bs.mark_running(sid, node="host", container_id="c1", neko_url="http://host:8800/", cdp_url=None)
+
+    app.state.browser_sessions = bs
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _StubCluster(workers=[
+        _StubWorker(
+            name="fedora-browser",
+            status="online",
+            hardware={"ram_mb": 16384, "cpu": {"cores": 16}, "gpu": {"cuda": True, "vram_mb": 12288}},
+            url="http://fedora.example:7080",
+        )
+    ])
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+
+    # Re-own the session under the real user id
+    db = bs._assert_db()
+    await db.execute("UPDATE browser_sessions SET owner_id=? WHERE id=?", (uid, sid))
+    await db.commit()
+
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    migrate_called_with = {}
+
+    async def _fake_migrate(session_id, *, target, stop_source, move_volume, start_target, emit):
+        migrate_called_with["session_id"] = session_id
+        migrate_called_with["target"] = target
+        # Simulate a successful migration
+        await bs.mark_running(session_id, node=target, container_id="c2", neko_url="http://fedora:8800/", cdp_url=None)
+        return await bs.get_session(session_id)
+
+    with patch.object(bs, "migrate_session", side_effect=_fake_migrate):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies={"taos_session": token},
+        ) as c:
+            resp = await c.post(
+                f"/api/browser/sessions/{sid}/migrate",
+                json={"target": "fedora-browser"},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["node"] == "fedora-browser"
+    assert migrate_called_with["session_id"] == sid
+    assert migrate_called_with["target"] == "fedora-browser"
+    await bs.close()
+
+
+@pytest.mark.asyncio
+async def test_migrate_session_unknown_session_returns_404(app, tmp_path):
+    """POST /migrate for an unknown session returns 404."""
+    bs = BrowserSessionManager(tmp_path / "bs_mig2.db", mock=True)
+    await bs.init()
+
+    app.state.browser_sessions = bs
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _capable_cluster()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        resp = await c.post("/api/browser/sessions/no-such-id/migrate", json={"target": "node-1"})
+
+    assert resp.status_code == 404
+    await bs.close()
+
+
+@pytest.mark.asyncio
+async def test_migrate_session_unknown_target_returns_409(app, tmp_path):
+    """POST /migrate with a target that isn't a capable node returns 409."""
+    bs = BrowserSessionManager(tmp_path / "bs_mig3.db", mock=True)
+    await bs.init()
+
+    session = await bs.create_session("user", "dummy-uid", "https://example.com")
+    sid = session["id"]
+    await bs.mark_running(sid, node="host", container_id="c1", neko_url="http://host:8800/", cdp_url=None)
+
+    app.state.browser_sessions = bs
+    app.state.browser_session_signing_key = b"0" * 32
+    app.state.cluster_manager = _capable_cluster()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+
+    db = bs._assert_db()
+    await db.execute("UPDATE browser_sessions SET owner_id=? WHERE id=?", (uid, sid))
+    await db.commit()
+
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        resp = await c.post(
+            f"/api/browser/sessions/{sid}/migrate",
+            json={"target": "nonexistent-node"},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "no_capable_node"
+    await bs.close()

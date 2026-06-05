@@ -203,3 +203,98 @@ async def terminate_session(
     else:
         await mgr.terminate_session(session_id)
     return {"ok": True}
+
+
+class MigrateBody(BaseModel):
+    target: str
+
+
+@router.post("/api/browser/sessions/{session_id}/migrate")
+async def migrate_session(
+    session_id: str,
+    body: MigrateBody,
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """Move a running session to ``target`` (host or a capable worker).
+
+    Graceful suspend -> move profile -> resume, emitting session_migrating /
+    session_resumed so agents on the session pause and await reconnection.
+
+    NOTE: the real cross-node profile-volume transfer and the agent-signal
+    broadcast channel are confirmed by the host<->Fedora integration round-trip
+    (sub-plan F Task 5). Here ``move_volume`` and ``emit`` are best-effort +
+    logged; the orchestration + transitions are what these routes exercise.
+    """
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    mgr = request.app.state.browser_sessions
+    session = await mgr.get_session(session_id)
+    if session is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if session["owner_type"] != "user" or session["owner_id"] != user_id:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    cluster = request.app.state.cluster_manager
+    target = body.target
+    capable = {n["name"] for n in list_browser_nodes(cluster)}
+    if target != "host" and target not in capable:
+        return JSONResponse({"error": "no_capable_node", "target": target}, status_code=409)
+
+    runner = getattr(request.app.state, "browser_container_runner", None)
+    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+    vol = f"taos-browser-{session_id}"
+
+    async def emit(kind: str, payload: dict) -> None:
+        # Best-effort lifecycle signal; the broadcast channel agents subscribe to
+        # is confirmed during the F Task-5 round-trip.
+        logger.info("browser session %s: %s %s", session_id, kind, payload)
+
+    async def stop_source(sess: dict) -> None:
+        node = sess.get("node") or "host"
+        if node == "host":
+            if runner is not None and sess.get("container_id"):
+                await runner.stop(container_id=sess["container_id"])
+        else:
+            worker = cluster.get_worker(node)
+            if worker is not None and sess.get("container_id"):
+                await mgr.stop_on_worker(
+                    sess["id"], worker_url=worker.url,
+                    container_id=sess["container_id"], auth_token=auth_token,
+                    set_status=None,
+                )
+
+    async def move_volume(volume: str, src_node: str, dst_node: str) -> None:
+        # Real cross-node tar export/import is wired + verified in F Task 5.
+        logger.warning(
+            "browser session %s: profile volume %s move %s->%s pending integration",
+            session_id, volume, src_node, dst_node,
+        )
+
+    async def start_target(sess: dict, tgt: str) -> dict:
+        if tgt == "host":
+            return await mgr.start_on_host(sess["id"], profile_volume=vol, runner=runner)
+        worker = cluster.get_worker(tgt)
+        return await mgr.start_on_worker(
+            sess["id"], node=tgt, worker_url=worker.url,
+            profile_volume=vol, auth_token=auth_token,
+        )
+
+    try:
+        refreshed = await mgr.migrate_session(
+            session_id, target=target,
+            stop_source=stop_source, move_volume=move_volume,
+            start_target=start_target, emit=emit,
+        )
+    except BrowserWorkerError:
+        return JSONResponse({"error": "migration_failed"}, status_code=502)
+
+    if refreshed is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if refreshed.get("status") == "running" and refreshed.get("neko_url"):
+        signing_key = request.app.state.browser_session_signing_key
+        _, token = mint_session_token(session_id, user_id, signing_key)
+        return {**refreshed, "stream_token": token}
+    return dict(refreshed)
