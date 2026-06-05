@@ -37,7 +37,7 @@ function renderWidget(type: string) {
 }
 
 export function WidgetLayer() {
-  const { widgets, showWidgets, addWidget, removeWidget, updateLayout } = useWidgetStore();
+  const { widgets, showWidgets, hydrated, addWidget, removeWidget, updateLayout } = useWidgetStore();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [containerWidth, setContainerWidth] = useState(1200);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -74,7 +74,10 @@ export function WidgetLayer() {
     [updateLayout],
   );
 
-  if (!showWidgets) return null;
+  // Hide until the store has loaded from localStorage + resolved the server
+  // fetch. Rendering before hydration shows DEFAULT_WIDGETS and then replaces
+  // them, causing a visible flash + grid re-layout on mobile cold start.
+  if (!hydrated || !showWidgets) return null;
 
   const gridLayout: Layout[] = widgets.map((w) => ({
     i: w.id,
