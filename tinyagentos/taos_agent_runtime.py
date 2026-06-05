@@ -25,6 +25,9 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
     changed since last start the old server is stopped and a new one is
     created so the LiteLLM provider config and key scope track the chosen model.
 
+    The key is scoped to the full ``permitted_models`` set read from the
+    ``taos_agent`` desktop_settings namespace (falls back to ``[model]``).
+
     Returns the running :class:`~tinyagentos.opencode_runtime.OpenCodeServer`.
     """
     # Generate a stable per-process password once.
@@ -49,12 +52,28 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
         existing = None
 
     if existing is None:
-        # Mint the taOS agent's own LiteLLM virtual key.
+        # Read the permitted_models set from the namespace so the key is scoped
+        # to the full set the admin configured, not just the current model.
+        permitted_models: list[str] = [model]
+        desktop_settings = getattr(app_state, "desktop_settings", None)
+        if desktop_settings is not None:
+            try:
+                prefs = await desktop_settings.get_preference("user", "taos_agent")
+                stored = prefs.get("permitted_models", [])
+                if stored:
+                    # Always ensure the current model is in the set.
+                    permitted_models = list(stored)
+                    if model not in permitted_models:
+                        permitted_models = [model, *permitted_models]
+            except Exception:
+                logger.debug("taos_agent_runtime: could not read permitted_models from prefs", exc_info=True)
+
+        # Mint the taOS agent's own LiteLLM virtual key scoped to permitted_models.
         llm_proxy = getattr(app_state, "llm_proxy", None)
         litellm_key: str | None = None
         if llm_proxy is not None:
             try:
-                litellm_key = await llm_proxy.create_agent_key("taos-agent", models=[model])
+                litellm_key = await llm_proxy.create_agent_key("taos-agent", models=permitted_models)
             except Exception:
                 logger.debug("taos_agent_runtime: create_agent_key failed", exc_info=True)
         if not litellm_key:
@@ -70,7 +89,7 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
             server_password=app_state.taos_opencode_password,
             litellm_base_url="http://127.0.0.1:4000/v1",
             litellm_key=litellm_key,
-            model_ids=[model],
+            model_ids=permitted_models,
         )
         server = OpenCodeServer(cfg)
         app_state.taos_opencode_server = server

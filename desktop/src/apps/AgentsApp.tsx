@@ -14,6 +14,7 @@ import { AgentRow } from "./agents/AgentRow";
 import { AgentDetailPanel, type DetailTab } from "./agents/AgentDetailPanel";
 import { DeployWizard } from "./agents/DeployWizard";
 import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
+import { TaosAgentCard } from "@/components/TaosAgentCard";
 
 /* ------------------------------------------------------------------ */
 /*  AgentsApp (main)                                                   */
@@ -389,27 +390,35 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             Loading agents...
           </div>
         ) : agents.length === 0 && archived.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-4 text-shell-text-tertiary">
-            <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
-              style={{ background: "linear-gradient(135deg, rgba(139,146,163,0.15), rgba(91,97,112,0.08))" }}
-            >
-              <Bot size={36} className="text-accent/50" />
+          <div className="flex flex-col h-full min-h-0">
+            <div className="p-4">
+              <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
+              <TaosAgentCard />
             </div>
-            <div className="text-center">
-              <p className="text-base font-medium text-shell-text-secondary mb-1">No agents deployed yet</p>
-              <p className="text-xs text-shell-text-tertiary max-w-xs">Deploy your first AI agent to start automating tasks on your device.</p>
+            <div className="flex flex-col items-center justify-center flex-1 gap-4 text-shell-text-tertiary px-4 pb-8">
+              <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, rgba(139,146,163,0.15), rgba(91,97,112,0.08))" }}
+              >
+                <Bot size={36} className="text-accent/50" />
+              </div>
+              <div className="text-center">
+                <p className="text-base font-medium text-shell-text-secondary mb-1">No agents deployed yet</p>
+                <p className="text-xs text-shell-text-tertiary max-w-xs">Deploy your first AI agent to start automating tasks on your device.</p>
+              </div>
+              <Button
+                onClick={() => setWizardOpen(true)}
+                className="text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0 mt-1"
+                style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
+              >
+                <Plus size={15} />
+                Deploy your first agent
+              </Button>
             </div>
-            <Button
-              onClick={() => setWizardOpen(true)}
-              className="text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0 mt-1"
-              style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
-            >
-              <Plus size={15} />
-              Deploy your first agent
-            </Button>
           </div>
         ) : agents.length === 0 ? (
           <div className="p-4">
+            <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
+            <TaosAgentCard />
             <ArchivedAgentsPanel
               archived={archived}
               onRestore={handleRestore}
@@ -418,6 +427,10 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         ) : (
           <div className="p-4">
+            {/* System agent — always shown above the deployed agents list */}
+            <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
+            <TaosAgentCard />
+
             {/* Disk quota notification cards */}
             {agents
               .filter((a) => diskStates[a.name] != null && diskStates[a.name]!.state !== "ok")
