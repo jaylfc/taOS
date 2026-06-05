@@ -71,6 +71,7 @@ def build_neko_run_args(
     admin_pwd: str,
     gpu: bool = False,
     image: str | None = None,
+    device_args: list[str] | None = None,
 ) -> list[str]:
     """Return the full ``docker run`` argv (starting with 'docker') for a Neko
     Chromium session, per the validated spike recipe."""
@@ -90,6 +91,8 @@ def build_neko_run_args(
         "--shm-size=2g",
         "-v", f"{profile_volume}:{NEKO_PROFILE_MOUNT}",
     ]
+    for dev in device_args or []:
+        args += ["--device", dev]
     if gpu:
         args += ["--gpus", "all"]
     args.append(image)

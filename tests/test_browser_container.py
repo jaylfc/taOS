@@ -48,3 +48,30 @@ def test_apple_and_unknown_fall_back_to_software():
 def test_resolve_handles_none_profile():
     spec = resolve_neko_image(None)
     assert spec.encode == "software"
+
+
+# ---------------------------------------------------------------------------
+# Task 2: device passthrough in build_neko_run_args
+# ---------------------------------------------------------------------------
+
+from tinyagentos.worker.browser_container import build_neko_run_args
+
+
+def _args(**kw):
+    base = dict(container_name="c", profile_volume="v", node_ip="10.0.0.2",
+                http_port=8800, epr_lo=59000, epr_hi=59009, user_pwd="u", admin_pwd="a")
+    base.update(kw)
+    return build_neko_run_args(**base)
+
+
+def test_device_args_spliced_when_given():
+    argv = _args(device_args=["/dev/mpp_service", "/dev/dri"])
+    assert "--device" in argv
+    assert "/dev/mpp_service" in argv
+    # each device is preceded by a --device flag
+    assert argv.count("--device") == 2
+
+
+def test_no_device_args_by_default():
+    argv = _args()
+    assert "--device" not in argv
