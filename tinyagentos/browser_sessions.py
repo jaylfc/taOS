@@ -321,6 +321,35 @@ class BrowserSessionManager:
             )
             await db.commit()
 
+    async def migrate_agent_browsers(self, rows: list[dict], *, now: float | None = None) -> int:
+        """Copy agent_browsers profile rows into browser_sessions as agent sessions.
+        Idempotent on (owner_id, profile_name). Returns count inserted."""
+        db = self._assert_db()
+        if now is None:
+            now = time.time()
+        existing: set[tuple[str, str]] = set()
+        cur = await db.execute(
+            "SELECT owner_id, profile_name FROM browser_sessions WHERE owner_type='agent'")
+        for owner_id, profile_name in await cur.fetchall():
+            existing.add((owner_id, profile_name))
+        inserted = 0
+        for r in rows:
+            key = (r["agent_name"], r.get("profile_name", "default"))
+            if key in existing:
+                continue
+            await db.execute(
+                """INSERT INTO browser_sessions
+                   (id, owner_type, owner_id, profile_name, url, node, status,
+                    container_id, neko_url, cdp_url, created_at, updated_at, last_active)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (uuid.uuid4().hex, "agent", key[0], key[1], None, r.get("node"),
+                 "stopped", None, None, None, now, now, now),
+            )
+            existing.add(key)
+            inserted += 1
+        await db.commit()
+        return inserted
+
     async def list_visible_sessions(self, owner_id: str, *, owned_agent_ids: set[str]) -> list[dict]:
         """The user's own sessions plus sessions of agents the user owns."""
         db = self._assert_db()

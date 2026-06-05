@@ -38,6 +38,21 @@ def test_target_prefers_explicit_then_host_then_worker():
 
 
 @pytest.mark.asyncio
+async def test_migrate_agent_browsers_idempotent(mgr):
+    rows = [
+        {"agent_name": "agent-A", "profile_name": "default", "node": "host", "status": "stopped", "container_id": None},
+        {"agent_name": "agent-A", "profile_name": "work", "node": "host", "status": "stopped", "container_id": None},
+    ]
+    n1 = await mgr.migrate_agent_browsers(rows)
+    n2 = await mgr.migrate_agent_browsers(rows)   # second run is a no-op
+    assert n1 == 2
+    assert n2 == 0
+    sessions = await mgr.list_sessions("agent", "agent-A")
+    assert {s["profile_name"] for s in sessions} == {"default", "work"}
+    assert all(s["status"] == "stopped" for s in sessions)
+
+
+@pytest.mark.asyncio
 async def test_list_visible_sessions(mgr):
     await mgr.get_or_create_mine("user-1", url="https://mine")
     await mgr.create_session("agent", "agent-A", "https://a")
