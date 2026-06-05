@@ -79,7 +79,10 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
             app_state.taos_opencode_session_id = None
 
     server = app_state.taos_opencode_server
-    await server.ensure_running()
+    # Generous deadline: opencode's first run on a fresh home performs a one-time
+    # SQLite migration that can take a couple of minutes; a short deadline would
+    # spuriously time out the very first taOS-agent chat.
+    await server.ensure_running(deadline_s=180.0)
     return server
 
 
