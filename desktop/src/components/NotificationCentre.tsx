@@ -20,6 +20,9 @@ export function NotificationCentre() {
     <>
       <div className="fixed inset-0 z-[10000]" onClick={closeCentre} />
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Notifications"
         className={
           isMobile
             ? "fixed left-2 right-2 z-[10001] rounded-xl border border-white/10 overflow-hidden flex flex-col"
@@ -58,7 +61,7 @@ export function NotificationCentre() {
                 </button>
               </>
             )}
-            <button onClick={closeCentre} className="p-1.5 rounded hover:bg-white/5">
+            <button onClick={closeCentre} className="p-1.5 rounded hover:bg-white/5" aria-label="Close notifications">
               <X size={14} className="text-shell-text-tertiary" />
             </button>
           </div>
@@ -97,6 +100,7 @@ export function NotificationCentre() {
                       dismiss(n.id);
                     }}
                     className="p-0.5 rounded hover:bg-white/10 shrink-0"
+                    aria-label={`Dismiss: ${n.title}`}
                   >
                     <X size={12} className="text-shell-text-tertiary" />
                   </button>

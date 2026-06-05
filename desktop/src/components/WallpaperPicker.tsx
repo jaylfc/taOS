@@ -22,6 +22,9 @@ export function WallpaperPicker({ open, onClose }: Props) {
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Change Wallpaper"
         className="w-full max-w-[500px] max-h-full flex flex-col rounded-xl border border-shell-border-strong overflow-hidden"
         style={{ backgroundColor: "rgba(26, 27, 46, 0.98)" }}
         onClick={(e) => e.stopPropagation()}
@@ -43,6 +46,8 @@ export function WallpaperPicker({ open, onClose }: Props) {
               onClick={() => {
                 setWallpaper(wp.id);
               }}
+              aria-label={wp.label}
+              aria-pressed={wallpaperId === wp.id}
               className={`relative rounded-lg overflow-hidden border-2 transition-all ${
                 wallpaperId === wp.id
                   ? "border-accent ring-1 ring-accent/30"

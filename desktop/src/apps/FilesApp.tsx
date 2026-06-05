@@ -1238,7 +1238,7 @@ export function FilesApp({
         <div className="mx-3 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 text-xs">
           <AlertCircle size={14} className="shrink-0" />
           <span className="flex-1">{error}</span>
-          <button onClick={() => setError(null)} className="hover:text-red-300">&times;</button>
+          <button onClick={() => setError(null)} className="hover:text-red-300" aria-label="Dismiss error">&times;</button>
         </div>
       )}
 
