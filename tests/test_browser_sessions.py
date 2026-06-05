@@ -38,6 +38,19 @@ def test_target_prefers_explicit_then_host_then_worker():
 
 
 @pytest.mark.asyncio
+async def test_reap_idle_skips_user_sessions(mgr):
+    u = await mgr.create_session("user", "user-1", "https://u")
+    a = await mgr.create_session("agent", "agent-1", "https://a")
+    for sid in (u["id"], a["id"]):
+        await mgr.mark_running(sid, node="host", container_id="c", neko_url="n", cdp_url=None)
+    # force both well past the timeout
+    reaped = await mgr.reap_idle(now=10**12)
+    assert a["id"] in reaped
+    assert u["id"] not in reaped
+    assert (await mgr.get_session(u["id"]))["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_get_or_create_mine_is_idempotent(mgr):
     a = await mgr.get_or_create_mine("user-1", url="https://start.page")
     b = await mgr.get_or_create_mine("user-1", url="https://other.page")
@@ -291,7 +304,7 @@ class TestPickBrowserNode:
 async def test_reap_idle_returns_only_stale_session(mgr):
     base = 1_000_000.0
     fresh_session = await mgr.create_session("user", "user-1", "https://fresh.com", now=base)
-    stale_session = await mgr.create_session("user", "user-2", "https://stale.com", now=base)
+    stale_session = await mgr.create_session("agent", "agent-1", "https://stale.com", now=base)
 
     await mgr.mark_running(
         fresh_session["id"],

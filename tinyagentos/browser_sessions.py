@@ -208,7 +208,8 @@ class BrowserSessionManager:
             now = time.time()
         cutoff = now - timeout_s
         cursor = await db.execute(
-            "SELECT id FROM browser_sessions WHERE status='running' AND last_active < ?",
+            "SELECT id FROM browser_sessions "
+            "WHERE status='running' AND owner_type != 'user' AND last_active < ?",
             (cutoff,),
         )
         rows = await cursor.fetchall()
