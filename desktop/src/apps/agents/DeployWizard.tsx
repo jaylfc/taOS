@@ -372,6 +372,8 @@ export function DeployWizard({
   // Step 3
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelsRefreshing, setModelsRefreshing] = useState(false);
+  const [modelsCachedAt, setModelsCachedAt] = useState<number>(0);
   const [selectedModel, setSelectedModel] = useState<string>("");
 
   // Advanced (no wizard step — defaults to unlimited)
@@ -608,6 +610,9 @@ export function DeployWizard({
         const mct = modelsRes.headers.get("content-type") ?? "";
         if (modelsRes.ok && mct.includes("application/json")) {
           const body = await modelsRes.json();
+          if (typeof body?.cached_at === "number" && body.cached_at > 0) {
+            setModelsCachedAt(body.cached_at);
+          }
           const data: { id?: string }[] = Array.isArray(body?.data) ? body.data : [];
           const seen = new Set<string>();
           for (const entry of data) {
@@ -654,6 +659,80 @@ export function DeployWizard({
     })();
   }, [open]);
 
+  // Force-refresh the cloud model catalog via the dedicated endpoint.
+  // Called by the refresh button in ModelPickerFlow.
+  async function handleRefreshModels() {
+    if (modelsRefreshing) return;
+    setModelsRefreshing(true);
+    try {
+      const res = await fetch("/api/providers/models/refresh", { method: "POST" });
+      if (res.ok) {
+        const body = await res.json();
+        if (typeof body?.cached_at === "number" && body.cached_at > 0) {
+          setModelsCachedAt(body.cached_at);
+        }
+        // Re-build cloud portion of the model list from the refreshed data.
+        const [providersRes] = await Promise.all([
+          fetch("/api/providers", { headers: { Accept: "application/json" } }),
+        ]);
+        const providerByModelId = new Map<string, { name: string; kind: "cloud" | "worker" | "controller" }>();
+        if (providersRes.ok) {
+          const providers = await providersRes.json();
+          for (const p of (Array.isArray(providers) ? providers : [])) {
+            const isCloud = (CLOUD_PROVIDER_TYPES as readonly string[]).includes(p.type);
+            const isNetwork = typeof p.source === "string" && p.source.startsWith("worker:");
+            const kind: "cloud" | "worker" | "controller" =
+              isCloud ? "cloud" : isNetwork ? "worker" : "controller";
+            const pname = p.name ?? p.type;
+            const pModels: { id?: string; name?: string }[] = Array.isArray(p.models) ? p.models : [];
+            for (const m of pModels) {
+              const mid = m.id ?? m.name;
+              if (mid && !providerByModelId.has(mid)) {
+                providerByModelId.set(mid, { name: pname, kind });
+              }
+            }
+          }
+        }
+        const refreshedCloud: Model[] = [];
+        const data: { id?: string }[] = Array.isArray(body?.data) ? body.data : [];
+        const seen = new Set<string>();
+        for (const entry of data) {
+          const mid = entry?.id;
+          if (!mid || typeof mid !== "string") continue;
+          if (mid === "default" || mid === "taos-embedding-default") continue;
+          const provider = providerByModelId.get(mid);
+          if (!provider) continue;
+          const key = `${provider.kind}:${provider.name}:${mid}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          refreshedCloud.push({
+            id: mid,
+            name: `${mid} (${provider.name})`,
+            host: provider.name,
+            hostKind: provider.kind,
+          });
+        }
+        // Merge: keep local/worker, replace cloud slice.
+        setModels(prev => {
+          const nonCloud = prev.filter(m => m.hostKind !== "cloud" && m.hostKind !== "worker" || !refreshedCloud.some(c => c.id === m.id));
+          const merged = [...nonCloud.filter(m => m.hostKind !== "cloud"), ...refreshedCloud];
+          const deduped: Model[] = [];
+          const ds = new Set<string>();
+          for (const m of merged) {
+            const k = `${m.hostKind ?? "?"}:${m.host ?? "?"}:${m.id}`;
+            if (ds.has(k)) continue;
+            ds.add(k);
+            deduped.push(m);
+          }
+          return deduped;
+        });
+      }
+    } catch { /* non-fatal */ }
+    finally {
+      setModelsRefreshing(false);
+    }
+  }
+
   // Reset when opened
   useEffect(() => {
     if (open) {
@@ -669,6 +748,8 @@ export function DeployWizard({
       setSelectedModel("");
       setModels([]);
       setModelsLoaded(false);
+      setModelsRefreshing(false);
+      setModelsCachedAt(0);
       setMemory("");
       setCpus("");
       setMemoryPlugin("taosmd");
@@ -1066,6 +1147,9 @@ export function DeployWizard({
                   modelsLoaded={modelsLoaded}
                   onSelect={(id) => setSelectedModel(id)}
                   onBack={() => setStep(2)}
+                  onRefresh={handleRefreshModels}
+                  refreshing={modelsRefreshing}
+                  cachedAt={modelsCachedAt}
                 />
               )}
             </div>
