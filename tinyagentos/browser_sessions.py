@@ -547,3 +547,44 @@ def resolve_browser_target(
         return ("host", None)
     node = pick_browser_node(cluster)
     return ("worker", node) if node else None
+
+
+# ---------------------------------------------------------------------------
+# App.state wiring helper
+# ---------------------------------------------------------------------------
+
+async def wire_browser_runtime(
+    app_state,
+    hardware_profile,
+    agent_browsers,
+    browser_sessions: "BrowserSessionManager",
+    *,
+    host_ip: str,
+) -> None:
+    """Populate app.state with the two attributes the /api/browser/sessions/mine
+    route reads, and fold existing agent_browsers profiles into the unified
+    session store.
+
+    Must be called from the lifespan after browser_sessions.init() and the
+    signing-key line.  Designed for easy unit testing via a SimpleNamespace
+    app_state and stub objects.
+
+    Args:
+        app_state:          app.state (or any SimpleNamespace in tests)
+        hardware_profile:   the host HardwareProfile dataclass instance
+        agent_browsers:     the AgentBrowsersManager already in app.state
+        browser_sessions:   the BrowserSessionManager already in app.state
+        host_ip:            LAN-reachable IP for NEKO_WEBRTC_NAT1TO1 (NOT 127.0.0.1)
+    """
+    import dataclasses
+
+    from tinyagentos.worker.browser_container import BrowserContainerRunner
+
+    runner = BrowserContainerRunner(node_ip=host_ip, hw_profile=hardware_profile)
+    app_state.browser_container_runner = runner
+
+    hw_dict = dataclasses.asdict(hardware_profile) if hardware_profile is not None else {}
+    app_state.host_hardware = hw_dict
+
+    rows = await agent_browsers.list_profiles()
+    await browser_sessions.migrate_agent_browsers(rows)
