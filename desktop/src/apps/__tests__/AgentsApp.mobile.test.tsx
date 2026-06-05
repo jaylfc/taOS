@@ -101,19 +101,19 @@ describe("AgentsApp mobile layout (390px viewport)", () => {
   });
 
   it("renders agent name on its own line with status chip alongside it", async () => {
-    const { findByText } = render(<AgentsApp windowId="test" />);
+    render(<AgentsApp windowId="test" />);
 
     // Agent name must be visible
-    const nameEl = await findByText("My Agent");
+    const nameEl = await screen.findByText("My Agent");
     expect(nameEl).toBeTruthy();
 
-    // Status chip must be visible
-    const statusEl = await findByText("running");
-    expect(statusEl).toBeTruthy();
+    // Status chip must be visible (taOS agent is also "running", so match at least one)
+    const statusEls = await screen.findAllByText("running");
+    expect(statusEls.length).toBeGreaterThan(0);
 
-    // Host must be visible on a second row
-    const hostEl = await findByText("localhost");
-    expect(hostEl).toBeTruthy();
+    // Host must be visible on a second row (may appear multiple times for system + regular agent)
+    const hostEls = await screen.findAllByText("localhost");
+    expect(hostEls.length).toBeGreaterThan(0);
   });
 
   it("renders all 4 action buttons with accessible labels", async () => {
@@ -131,23 +131,19 @@ describe("AgentsApp mobile layout (390px viewport)", () => {
     expect(deleteBtn).toBeTruthy();
   });
 
-  it("renders a Back button in a full-screen dialog when the detail panel is opened on mobile", async () => {
+  it("renders a Back button in a full-window detail view when the detail panel is opened on mobile", async () => {
     render(<AgentsApp windowId="test" />);
 
     // Wait for the agent list to load and click the skills button
     const skillsBtn = await screen.findByRole("button", { name: /manage skills for my-agent/i });
     fireEvent.click(skillsBtn);
 
-    // The full-screen overlay must render with a back button
+    // The full-window detail view must render with a back button
     const backBtn = screen.getByRole("button", { name: /back to agents/i });
     expect(backBtn).toBeTruthy();
-
-    // The overlay must be a dialog with aria-modal
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
   });
 
-  it("closes the full-screen panel when the Back button is clicked", async () => {
+  it("returns to the agent list when the Back button is clicked", async () => {
     render(<AgentsApp windowId="test" />);
 
     const skillsBtn = await screen.findByRole("button", { name: /manage skills for my-agent/i });
@@ -156,8 +152,8 @@ describe("AgentsApp mobile layout (390px viewport)", () => {
     const backBtn = screen.getByRole("button", { name: /back to agents/i });
     fireEvent.click(backBtn);
 
-    // Panel must be gone
-    expect(screen.queryByRole("dialog")).toBeNull();
+    // Back button must be gone and the agent list heading must reappear
     expect(screen.queryByRole("button", { name: /back to agents/i })).toBeNull();
+    expect(screen.getByText("My Agent")).toBeTruthy();
   });
 });
