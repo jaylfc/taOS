@@ -154,10 +154,12 @@ class BrowserContainerRunner:
         mock: bool = False,
         gpu: bool = False,
         allocator: PortAllocator | None = None,
+        hw_profile=None,
     ) -> None:
         self.node_ip = node_ip
         self.mock = mock
         self.gpu = gpu
+        self.hw_profile = hw_profile
         self._allocator = allocator or PortAllocator()
 
     async def _ensure_image(self, image: str) -> None:
@@ -201,11 +203,12 @@ class BrowserContainerRunner:
         # need it absent.
         neko_url = f"http://{self.node_ip}:{http_port}/?usr=neko&pwd={user_pwd}"
         cdp_url = None  # CDP not exposed by this image in Phase 1 (deferred to Phase 2)
+        spec = resolve_neko_image(self.hw_profile)
 
         if self.mock:
             container_id = f"mock-neko-{session_id[:8]}"
         else:
-            image = DEFAULT_NEKO_GPU_IMAGE if self.gpu else DEFAULT_NEKO_IMAGE
+            image = spec.image
             await self._ensure_image(image)
             argv = build_neko_run_args(
                 container_name=container_name,
@@ -216,8 +219,9 @@ class BrowserContainerRunner:
                 epr_hi=epr_hi,
                 user_pwd=user_pwd,
                 admin_pwd=admin_pwd,
-                gpu=self.gpu,
+                gpu=spec.gpu,
                 image=image,
+                device_args=spec.device_args,
             )
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -251,6 +255,8 @@ class BrowserContainerRunner:
             "http_port": http_port,
             "epr_lo": epr_lo,
             "epr_hi": epr_hi,
+            "image": spec.image,
+            "encode": spec.encode,
         }
 
     async def stop(self, *, container_id: str, http_port: int | None = None) -> dict:

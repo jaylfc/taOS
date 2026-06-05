@@ -75,3 +75,27 @@ def test_device_args_spliced_when_given():
 def test_no_device_args_by_default():
     argv = _args()
     assert "--device" not in argv
+
+
+# ---------------------------------------------------------------------------
+# Task 3: BrowserContainerRunner consumes the resolver
+# ---------------------------------------------------------------------------
+
+import pytest
+from tinyagentos.worker.browser_container import BrowserContainerRunner, DEFAULT_NEKO_RK3588_IMAGE
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_rk3588_spec_in_mock():
+    hw = _hw(soc="rk3588")  # helper from Task 1 test
+    runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=hw)
+    out = await runner.start(session_id="s1", profile_volume="v")
+    assert out["image"] == DEFAULT_NEKO_RK3588_IMAGE
+    assert out["encode"] == "rkmpp"
+
+
+@pytest.mark.asyncio
+async def test_runner_software_fallback_in_mock():
+    runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=None)
+    out = await runner.start(session_id="s2", profile_volume="v")
+    assert out["encode"] == "software"
