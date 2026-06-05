@@ -312,15 +312,18 @@ class OpenCodeAdapter:
                 ),
             ) as stream:
                 # Now fire the async prompt.
+                prompt_body: dict = {
+                    "model": {
+                        "providerID": self._cfg.model_provider_id,
+                        "modelID": self._cfg.model_id,
+                    },
+                    "parts": [{"type": "text", "text": text}],
+                }
+                if self._cfg.system:
+                    prompt_body["system"] = self._cfg.system
                 prompt_resp = await client.post(
                     f"{self._base}/session/{self.session_id}/prompt_async",
-                    json={
-                        "model": {
-                            "providerID": self._cfg.model_provider_id,
-                            "modelID": self._cfg.model_id,
-                        },
-                        "parts": [{"type": "text", "text": text}],
-                    },
+                    json=prompt_body,
                 )
                 if prompt_resp.status_code not in (200, 204):
                     await _emit("error", {

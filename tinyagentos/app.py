@@ -932,6 +932,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 pass
         await cluster_manager.stop()
         llm_proxy.stop()
+        try:
+            from tinyagentos.taos_agent_runtime import stop_taos_opencode_server
+            await stop_taos_opencode_server(app.state)
+        except Exception:
+            logger.exception("taos opencode server stop failed")
         await monitor.stop()
         try:
             await auto_updater.stop()

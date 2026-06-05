@@ -2,29 +2,34 @@
 
 GET  /api/taos-agent/settings  → {model: str | null}
 PATCH /api/taos-agent/settings → accepts {model: str}, persists via desktop_settings
-POST  /api/taos-agent/chat     → streams chat completion via LiteLLM proxy (NDJSON)
+POST  /api/taos-agent/chat     → streams chat completion via opencode (NDJSON)
 
 The system prompt is read from docs/taos-agent-manual.md at module import time.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 
-import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
+from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _PREF_NAMESPACE = "taos_agent"
-_LITELLM_URL = "http://localhost:4000"
 _MANUAL_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "taos-agent-manual.md"
+
+# Sentinel object placed on the queue to signal the stream is done.
+_DONE = object()
+
 
 # Read the system-prompt manual once at startup (or import time).
 # If the file is absent the assistant still works — it just won't have a
@@ -35,6 +40,7 @@ def _load_manual() -> str:
     except FileNotFoundError:
         logger.warning("taos-agent-manual.md not found at %s", _MANUAL_PATH)
         return ""
+
 
 SYSTEM_PROMPT: str = _load_manual()
 
@@ -65,7 +71,7 @@ async def patch_settings(request: Request, body: SettingsPatch):
 
 @router.post("/api/taos-agent/chat")
 async def chat(request: Request, body: ChatRequest):
-    """Stream a chat completion through the LiteLLM proxy.
+    """Stream a chat completion through a host opencode server.
 
     Returns NDJSON where each line is a JSON object with a ``delta`` string
     field, followed by a final ``{"done": true}`` line.  The frontend reads
@@ -80,12 +86,6 @@ async def chat(request: Request, body: ChatRequest):
             status_code=400,
         )
 
-    # Build the messages list: system prompt prepended, then user messages.
-    messages: list[dict] = []
-    if SYSTEM_PROMPT:
-        messages.append({"role": "system", "content": SYSTEM_PROMPT})
-    messages.extend(body.messages)
-
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     proxy_running = llm_proxy is not None and llm_proxy.is_running()
     if not proxy_running:
@@ -94,52 +94,86 @@ async def chat(request: Request, body: ChatRequest):
             status_code=503,
         )
 
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": True,
-    }
+    # Ensure the host opencode server is running.
+    try:
+        server = await ensure_taos_opencode_server(request.app.state, model)
+    except Exception:
+        logger.exception("taos-agent: failed to start opencode server")
+        return JSONResponse(
+            {"error": "taOS agent runtime unavailable. Check that opencode is installed."},
+            status_code=503,
+        )
+
+    # Extract the latest user message text.
+    text = body.messages[-1].get("content", "") if body.messages else ""
+    if not text:
+        return JSONResponse({"error": "Empty message."}, status_code=400)
+
+    app_state = request.app.state
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def sink(reply: dict) -> None:
+        """Map adapter reply dicts onto NDJSON queue items."""
+        kind = reply.get("kind")
+        if kind == "delta":
+            queue.put_nowait({"delta": reply.get("content", "")})
+        elif kind == "error":
+            queue.put_nowait({"error": reply.get("error", "error")})
+            queue.put_nowait(_DONE)
+        elif kind == "final":
+            # Text already arrived as deltas; final just signals completion.
+            queue.put_nowait(_DONE)
+        # reasoning / tool_call / tool_result — not rendered by the panel; ignore.
+
+    cfg = OpenCodeConfig(
+        base_url=server.base_url,
+        server_password=app_state.taos_opencode_password,
+        model_provider_id="litellm",
+        model_id=model,
+        system=SYSTEM_PROMPT or None,
+    )
+    adapter = OpenCodeAdapter(cfg, sink)
+    # Reuse the persistent session so opencode keeps conversation history.
+    adapter.session_id = getattr(app_state, "taos_opencode_session_id", None)
+
+    async def _drive() -> None:
+        """Run the opencode turn; always puts a done-sentinel when finished."""
+        try:
+            await adapter.ensure_session()
+            app_state.taos_opencode_session_id = adapter.session_id
+            trace_id = uuid.uuid4().hex
+            await adapter.prompt(text, trace_id=trace_id)
+            await adapter.close()
+        except Exception as exc:
+            logger.exception("taos-agent: drive task error")
+            queue.put_nowait({"error": str(exc)})
+        finally:
+            queue.put_nowait(_DONE)
+
+    drive_task = asyncio.create_task(_drive())
 
     async def _generate():
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                async with client.stream(
-                    "POST",
-                    f"{_LITELLM_URL}/v1/chat/completions",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                ) as resp:
-                    if resp.status_code != 200:
-                        body_text = await resp.aread()
-                        error_msg = body_text.decode(errors="replace")[:500]
-                        yield json.dumps({"error": f"LLM proxy error {resp.status_code}: {error_msg}"}) + "\n"
-                        return
-
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        delta = (
-                            chunk.get("choices", [{}])[0]
-                            .get("delta", {})
-                            .get("content", "")
-                        )
-                        if delta:
-                            yield json.dumps({"delta": delta}) + "\n"
-        except httpx.ConnectError:
-            yield json.dumps({"error": "Cannot connect to LiteLLM proxy."}) + "\n"
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                yield json.dumps(item) + "\n"
         except Exception as exc:
-            logger.exception("taos-agent chat error")
+            logger.exception("taos-agent: generator error")
             yield json.dumps({"error": str(exc)}) + "\n"
+        finally:
+            # Ensure the drive task is awaited so exceptions surface in logs.
+            if not drive_task.done():
+                drive_task.cancel()
+                try:
+                    await drive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            elif not drive_task.cancelled():
+                exc = drive_task.exception()
+                if exc is not None:
+                    logger.error("taos-agent: drive task raised %r", exc)
         yield json.dumps({"done": True}) + "\n"
 
     return StreamingResponse(

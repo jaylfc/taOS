@@ -544,3 +544,71 @@ class TestOpenCodeAdapterClose:
         adapter._client = fake
         await adapter.close()
         fake.aclose.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# OpenCodeConfig.system → prompt_async body
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptBody:
+    """Assert that the system field is included in prompt_async when configured
+    and omitted when None."""
+
+    def _make_adapter_and_interceptor(self, system: str | None):
+        """Build an adapter with a fake HTTP client that captures the
+        prompt_async POST body.  Returns (adapter, captured_bodies list)."""
+        cfg = OpenCodeConfig(
+            base_url="http://127.0.0.1:5888",
+            model_provider_id="litellm",
+            model_id="gpt-4o",
+            system=system,
+        )
+        captured: list[dict] = []
+
+        sse_body = _build_sse_bytes(
+            {
+                "type": "session.idle",
+                "properties": {"sessionID": "ses_sys"},
+            }
+        )
+        stream_ctx = _FakeStreamResponse(sse_body)
+
+        session_resp = MagicMock()
+        session_resp.status_code = 200
+        session_resp.raise_for_status = MagicMock()
+        session_resp.json = MagicMock(return_value={"id": "ses_sys"})
+
+        async def fake_post(url, **kwargs):
+            if "prompt_async" in url:
+                captured.append(kwargs.get("json", {}))
+                resp = MagicMock()
+                resp.status_code = 204
+                return resp
+            return session_resp
+
+        fake_client = MagicMock()
+        fake_client.is_closed = False
+        fake_client.post = AsyncMock(side_effect=fake_post)
+        fake_client.stream = MagicMock(return_value=stream_ctx)
+        fake_client.aclose = AsyncMock()
+
+        async def fake_get_client():
+            return fake_client
+
+        adapter = OpenCodeAdapter(cfg, sink=lambda r: None)
+        adapter._get_client = fake_get_client  # type: ignore[method-assign]
+        return adapter, captured
+
+    @pytest.mark.asyncio
+    async def test_system_included_when_configured(self):
+        adapter, captured = self._make_adapter_and_interceptor("You are helpful.")
+        await adapter.prompt("hello")
+        assert len(captured) == 1
+        assert captured[0].get("system") == "You are helpful."
+
+    @pytest.mark.asyncio
+    async def test_system_omitted_when_none(self):
+        adapter, captured = self._make_adapter_and_interceptor(None)
+        await adapter.prompt("hello")
+        assert len(captured) == 1
+        assert "system" not in captured[0]
