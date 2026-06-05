@@ -10,13 +10,49 @@ module can be used in unit tests without a Docker daemon.
 import asyncio
 import logging
 import secrets
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_NEKO_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 DEFAULT_NEKO_GPU_IMAGE = "ghcr.io/m1k1o/neko/nvidia-chromium:latest"
+DEFAULT_NEKO_RK3588_IMAGE = "ghcr.io/jaylfc/taos-neko-chromium-rk3588:latest"
 NEKO_SCREEN = "1280x720@30"
 NEKO_PROFILE_MOUNT = "/home/neko"
+
+
+@dataclass
+class NekoImageSpec:
+    image: str
+    encode: str                        # rkmpp | nvenc | vaapi | software
+    device_args: list[str] = field(default_factory=list)  # paths for --device
+    gpu: bool = False                  # add `--gpus all`
+
+
+def resolve_neko_image(hw_profile) -> NekoImageSpec:
+    """Pick the Neko image + encode path + container devices for a host.
+
+    Keyed off HardwareProfile. Software encode is the universal fallback, so an
+    unknown/None profile still yields a working (CPU-encoded) browser.
+    """
+    soc = (getattr(getattr(hw_profile, "cpu", None), "soc", "") or "").lower()
+    gpu = getattr(hw_profile, "gpu", None)
+    gpu_type = (getattr(gpu, "type", "") or "").lower()
+    cuda = bool(getattr(gpu, "cuda", False))
+    vulkan = bool(getattr(gpu, "vulkan", False))
+
+    if "rk3588" in soc or "rk3576" in soc:
+        return NekoImageSpec(
+            image=DEFAULT_NEKO_RK3588_IMAGE,
+            encode="rkmpp",
+            device_args=["/dev/mpp_service", "/dev/dri", "/dev/rga"],
+            gpu=False,
+        )
+    if cuda:
+        return NekoImageSpec(image=DEFAULT_NEKO_GPU_IMAGE, encode="nvenc", gpu=True)
+    if gpu_type in ("intel", "amd") or vulkan:
+        return NekoImageSpec(image=DEFAULT_NEKO_IMAGE, encode="vaapi", device_args=["/dev/dri"])
+    return NekoImageSpec(image=DEFAULT_NEKO_IMAGE, encode="software")
 
 
 class BrowserContainerError(Exception):
