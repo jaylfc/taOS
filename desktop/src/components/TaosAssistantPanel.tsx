@@ -133,7 +133,7 @@ export function TaosAssistantPanel() {
           backdrop blur for the macOS-style sidebar feel. */}
       <div
         role="dialog"
-        aria-label="taOS Assistant"
+        aria-label="taOS agent"
         aria-modal="true"
         className="fixed right-0 z-[101] flex flex-col border-l border-white/10 shadow-2xl"
         style={{
@@ -154,7 +154,7 @@ export function TaosAssistantPanel() {
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5 shrink-0">
           <Sparkles size={15} className="text-accent shrink-0" />
-          <span className="text-sm font-semibold flex-1">taOS Assistant</span>
+          <span className="text-sm font-semibold flex-1">taOS agent</span>
           <button
             className="p-1 rounded hover:bg-shell-surface-hover transition-colors text-shell-text-secondary"
             aria-label="Assistant settings"
@@ -164,7 +164,7 @@ export function TaosAssistantPanel() {
           </button>
           <button
             className="p-1 rounded hover:bg-shell-surface-hover transition-colors text-shell-text-secondary"
-            aria-label="Close taOS Assistant"
+            aria-label="Close taOS agent"
             onClick={closePanel}
           >
             <X size={14} />
@@ -229,10 +229,10 @@ export function TaosAssistantPanel() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={noModel ? "Choose a model first…" : "Ask taOS Assistant…"}
+              placeholder={noModel ? "Choose a model first…" : "Ask taOS agent…"}
               disabled={noModel || streaming}
               rows={2}
-              aria-label="Message taOS Assistant"
+              aria-label="Message taOS agent"
               className="flex-1 resize-none rounded-lg border border-white/10 bg-shell-bg-deep text-sm text-shell-text placeholder:text-shell-text-tertiary focus:outline-none focus:border-accent/40 px-3 py-2 disabled:opacity-40"
               style={{ minHeight: 64, maxHeight: 160 }}
             />
