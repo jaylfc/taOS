@@ -1,6 +1,6 @@
 """taOS agent opencode server lifecycle helpers.
 
-Manages the single host opencode server used exclusively by the taOS assistant
+Manages the single host opencode server used exclusively by the taOS agent
 chat endpoint.  The server is started lazily on first chat request and kept
 alive for the process lifetime.  The persistent session id is stored on
 app.state so opencode remembers conversation history across requests.

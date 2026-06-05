@@ -28,7 +28,7 @@ export function SafetyFloor() {
   return (
     <div style={{ position: "fixed", zIndex: 10000, top: 4, right: 8, pointerEvents: "auto" }}>
       <button
-        aria-label="taOS assistant"
+        aria-label="taOS agent"
         onClick={openPanel}
         className="rounded-full p-2 bg-shell-surface-active hover:brightness-110 transition-[filter]"
       >
