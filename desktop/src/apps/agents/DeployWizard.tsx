@@ -16,6 +16,8 @@ import type { PersonaSelection } from "@/components/persona-picker/types";
 import { slugifyClient, isValidSlug, SLUG_REGEX } from "@/lib/slug";
 import { type Framework, type Model } from "./types";
 import { COLORS, MEMORY_STEPS_MB } from "./constants";
+import { useProcessStore } from "@/stores/process-store";
+import { getApp } from "@/registry/app-registry";
 
 /* ------------------------------------------------------------------ */
 /*  MemoryWizardStep                                                   */
@@ -377,6 +379,12 @@ export function DeployWizard({
   // Advanced (no wizard step — defaults to unlimited)
   const [memory, setMemory] = useState("");
   const [cpus, setCpus] = useState("");
+
+  const openWindow = useProcessStore((s) => s.openWindow);
+  const openProvidersApp = () => {
+    const app = getApp("providers");
+    if (app) openWindow("providers", app.defaultSize);
+  };
 
   // Step 4 — Memory layer
   // null = no choice yet (show picker); "taosmd" = enabled; null plugin = skipped
@@ -1061,12 +1069,32 @@ export function DeployWizard({
                 </div>
               ) : (
                 /* Tiered picker — source → provider → list */
-                <ModelPickerFlow
-                  models={models}
-                  modelsLoaded={modelsLoaded}
-                  onSelect={(id) => setSelectedModel(id)}
-                  onBack={() => setStep(2)}
-                />
+                <>
+                  {modelsLoaded && models.length === 0 && (
+                    <div className="mb-3 px-3 py-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 flex items-start gap-2.5">
+                      <span className="text-amber-400 shrink-0 mt-0.5 text-xs leading-none">!</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-shell-text-secondary">
+                          You haven't added a provider yet — models appear here once a provider is configured.
+                        </p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={openProvidersApp}
+                        className="shrink-0 text-xs h-auto py-0.5 px-2 text-amber-300 hover:text-amber-200"
+                      >
+                        Add Provider
+                      </Button>
+                    </div>
+                  )}
+                  <ModelPickerFlow
+                    models={models}
+                    modelsLoaded={modelsLoaded}
+                    onSelect={(id) => setSelectedModel(id)}
+                    onBack={() => setStep(2)}
+                  />
+                </>
               )}
             </div>
           )}
