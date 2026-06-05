@@ -712,10 +712,13 @@ export function DeployWizard({
             hostKind: provider.kind,
           });
         }
-        // Merge: keep local/worker, replace cloud slice.
+        // Merge: keep local/worker, replace cloud slice only.
+        // Filter refreshedCloud to strictly cloud entries so worker-hosted models
+        // that share an id with a cloud model are never incorrectly dropped.
+        const cloudOnly = refreshedCloud.filter(m => m.hostKind === "cloud");
         setModels(prev => {
-          const nonCloud = prev.filter(m => m.hostKind !== "cloud" && m.hostKind !== "worker" || !refreshedCloud.some(c => c.id === m.id));
-          const merged = [...nonCloud.filter(m => m.hostKind !== "cloud"), ...refreshedCloud];
+          const nonCloud = prev.filter(m => m.hostKind !== "cloud");
+          const merged = [...nonCloud, ...cloudOnly];
           const deduped: Model[] = [];
           const ds = new Set<string>();
           for (const m of merged) {

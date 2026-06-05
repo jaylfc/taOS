@@ -507,11 +507,14 @@ async def add_provider(request: Request, body: ProviderCreate):
         resolved = await _resolve_backend_secrets(request.app.state, config.backends)
         await proxy.reload_config(config.backends, secrets=resolved)
     # Invalidate the models cache so the next dialog open re-reads LiteLLM
-    # with the newly-added provider.
+    # with the newly-added provider.  Clear the payload too so an empty
+    # live fetch after a config change cannot fall back to a stale catalog.
     try:
         request.app.state.litellm_models_cache_at = 0.0
-    except Exception:
-        pass
+        request.app.state.litellm_models_cache = None
+        request.app.state.litellm_models_cache_wallclock = 0.0
+    except Exception as exc:
+        logger.debug("providers: models cache invalidation skipped: %s", exc)
     return {"status": "added", "name": body.name}
 
 @router.patch("/api/providers/{name}")
@@ -554,11 +557,15 @@ async def patch_provider(request: Request, name: str, body: ProviderPatch):
         resolved = await _resolve_backend_secrets(request.app.state, config.backends)
         await proxy.reload_config(config.backends, secrets=resolved)
     # Invalidate the models cache so the next dialog open re-reads LiteLLM
-    # with the updated routing. Best-effort — cache is optional.
+    # with the updated routing.  Clear the payload too so an empty live
+    # fetch after a config change cannot fall back to a stale catalog.
+    # Best-effort — cache is optional.
     try:
         request.app.state.litellm_models_cache_at = 0.0
-    except Exception:
-        pass
+        request.app.state.litellm_models_cache = None
+        request.app.state.litellm_models_cache_wallclock = 0.0
+    except Exception as exc:
+        logger.debug("providers: models cache invalidation skipped: %s", exc)
     _ = routing_changed  # retained for future use; currently all PATCHes re-probe
     return {"status": "updated", "name": name}
 
@@ -646,8 +653,10 @@ async def force_refresh_models(request: Request):
     pull in newly-added providers without waiting for the background
     refresher cycle.
 
-    Response shape is identical to GET /api/providers/models with
-    ``refreshed=true``.
+    Response shape is identical to GET /api/providers/models.
+    ``refreshed`` is ``True`` when a fresh fetch succeeded, ``False``
+    when the live fetch returned empty and the last-good cache was
+    served as a fallback.
     """
     app_state = request.app.state
     proxy = getattr(app_state, "llm_proxy", None)
@@ -740,9 +749,12 @@ async def delete_provider(request: Request, name: str):
         resolved = await _resolve_backend_secrets(request.app.state, config.backends)
         await proxy.reload_config(config.backends, secrets=resolved)
     # Invalidate the models cache so the deleted provider's models no longer
-    # appear in the picker on the next open.
+    # appear in the picker on the next open.  Clear the payload too so an
+    # empty live fetch after deletion cannot fall back to a stale catalog.
     try:
         request.app.state.litellm_models_cache_at = 0.0
-    except Exception:
-        pass
+        request.app.state.litellm_models_cache = None
+        request.app.state.litellm_models_cache_wallclock = 0.0
+    except Exception as exc:
+        logger.debug("providers: models cache invalidation skipped: %s", exc)
     return {"status": "deleted", "name": name}

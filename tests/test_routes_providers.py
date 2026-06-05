@@ -416,10 +416,13 @@ class TestModelsPassthrough:
     async def test_add_provider_invalidates_cache(self, client, app):
         """Adding a provider must invalidate the models cache so the next
         dialog open re-reads LiteLLM with the new provider included.
+        Payload must also be cleared so an empty live fetch after the add
+        cannot fall back to the pre-add stale catalog.
         """
         import asyncio as _asyncio
         app.state.litellm_models_cache = {"data": [{"id": "x"}], "object": "list"}
         app.state.litellm_models_cache_at = _asyncio.get_event_loop().time()
+        app.state.litellm_models_cache_wallclock = _time.time()
 
         with patch(
             "tinyagentos.routes.providers._discover_provider_models",
@@ -431,11 +434,15 @@ class TestModelsPassthrough:
                 "url": "http://localhost:11434",
             })
         assert resp.status_code == 200
-        # Cache timestamp must be 0 (invalidated).
+        # Both the timestamp and the payload must be cleared.
         assert app.state.litellm_models_cache_at == 0.0
+        assert app.state.litellm_models_cache is None
+        assert app.state.litellm_models_cache_wallclock == 0.0
 
     async def test_delete_provider_invalidates_cache(self, client, app):
-        """Deleting a provider must invalidate the models cache."""
+        """Deleting a provider must invalidate the models cache and clear
+        the payload so a stale catalog is never served after deletion.
+        """
         import asyncio as _asyncio
         # Add then delete.
         await client.post("/api/providers", json={
@@ -445,7 +452,53 @@ class TestModelsPassthrough:
         })
         app.state.litellm_models_cache = {"data": [{"id": "y"}], "object": "list"}
         app.state.litellm_models_cache_at = _asyncio.get_event_loop().time()
+        app.state.litellm_models_cache_wallclock = _time.time()
 
         resp = await client.delete("/api/providers/to-delete-cache")
         assert resp.status_code == 200
         assert app.state.litellm_models_cache_at == 0.0
+        assert app.state.litellm_models_cache is None
+        assert app.state.litellm_models_cache_wallclock == 0.0
+
+    async def test_config_change_invalidation_prevents_stale_fallback(self, client, app):
+        """After a config-change invalidation (add/delete/patch), a live
+        fetch that returns empty must NOT fall back to the pre-change
+        payload — the payload was cleared so the empty path is taken.
+        """
+        import asyncio as _asyncio
+        stale_payload = {"data": [{"id": "old/model"}], "object": "list"}
+        app.state.litellm_models_cache = stale_payload
+        app.state.litellm_models_cache_at = _asyncio.get_event_loop().time()
+        app.state.litellm_models_cache_wallclock = _time.time()
+
+        # Simulate: delete a provider (invalidates + clears payload).
+        await client.post("/api/providers", json={
+            "name": "stale-test",
+            "type": "ollama",
+            "url": "http://localhost:11436",
+        })
+        app.state.litellm_models_cache = stale_payload
+        app.state.litellm_models_cache_at = _asyncio.get_event_loop().time()
+        app.state.litellm_models_cache_wallclock = _time.time()
+
+        resp = await client.delete("/api/providers/stale-test")
+        assert resp.status_code == 200
+        # Payload must be None so next GET with an empty live fetch returns []
+        # not the stale catalog.
+        assert app.state.litellm_models_cache is None
+
+        # Now simulate: next GET hits empty live fetch.  With payload=None the
+        # empty branch fires — no stale data.
+        with patch(
+            "tinyagentos.routes.providers._refresh_all_cloud_backends",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "tinyagentos.routes.providers._fetch_litellm_models",
+            new=AsyncMock(return_value=[]),
+        ):
+            resp2 = await client.get("/api/providers/models")
+        assert resp2.status_code == 200
+        body = resp2.json()
+        # Must be empty — the stale payload was not served.
+        assert body["data"] == []
+        assert body["refreshed"] is True
