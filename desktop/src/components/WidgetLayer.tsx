@@ -44,15 +44,19 @@ export function WidgetLayer() {
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    // Gate on hydration: the container only renders once hydrated + showWidgets
+    // are true (see the early return below), so this must re-run then to attach.
+    if (!hydrated || !showWidgets || !containerRef.current) return;
+    const node = containerRef.current;
+    setContainerWidth(node.clientWidth);
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setContainerWidth(entry.contentRect.width);
       }
     });
-    observer.observe(containerRef.current);
+    observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [hydrated, showWidgets]);
 
   useEffect(() => {
     if (!pickerOpen) return;
