@@ -953,6 +953,30 @@ class TestBackgroundDeploy:
         resp = await client.get("/api/agents/nonexistent/deploy-status")
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_deploy_failure_emits_notification(self, client, app):
+        """When background deploy fails, a notification must be pushed so the
+        tray surfaces the error rather than leaving the user stuck on 'deploying'."""
+        import asyncio
+
+        with patch(
+            "tinyagentos.deployer.deploy_agent",
+            new_callable=AsyncMock,
+            return_value={"success": False, "error": "container create failed"},
+        ):
+            await client.post("/api/agents/deploy", json={
+                "name": "notif-fail-test",
+                "framework": "none",
+            })
+            # Yield to the event loop so the background task runs to completion.
+            await asyncio.sleep(0.1)
+
+        notifs = await app.state.notifications.list(limit=20)
+        error_notifs = [n for n in notifs if "notif-fail-test" in n.get("message", "")]
+        assert error_notifs, "Expected a notification for the failed deploy"
+        assert error_notifs[0].get("level") == "error"
+        assert "container create failed" in error_notifs[0].get("message", "")
+
 
 class TestUndeployAgent:
     @pytest.mark.asyncio

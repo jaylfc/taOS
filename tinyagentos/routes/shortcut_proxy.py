@@ -436,6 +436,13 @@ async def shortcut_terminal_ws(
 
     try:
         pty_handle = await asyncio.to_thread(_get_container_pty, agent_name, cmd)
+    except RuntimeError as exc:
+        logger.warning("terminal: no container backend for %s: %s", agent_name, exc)
+        await websocket.close(
+            code=1011,
+            reason="No container backend available. Install Incus or Docker and restart taOS.",
+        )
+        return
     except Exception as exc:
         logger.warning("terminal: spawn_pty failed for %s: %s", agent_name, exc)
         await websocket.close(code=1011, reason="PTY spawn failed")
