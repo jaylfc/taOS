@@ -51,7 +51,6 @@ function PowerMenu() {
           sideOffset={6}
           className="z-50 min-w-[180px] rounded-xl border border-white/10 bg-shell-surface p-1.5 shadow-2xl backdrop-blur-xl"
           style={{ backgroundColor: "rgba(28,26,44,0.96)" }}
-          onEscapeKeyDown={() => {}}
         >
           <DropdownMenu.Item
             className={menuItem}
