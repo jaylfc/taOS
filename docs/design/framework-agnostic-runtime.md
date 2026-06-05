@@ -17,6 +17,14 @@ its container rootfs and travels with it as a snapshot archive.
 See `docs/design/architecture-pivot-v2.md` for the full decision record that
 produced this thesis.
 
+> **Note (opencode, 2026-06):** opencode is a supported framework like OpenClaw
+> and Hermes (installed from upstream npm, driven via `adapters/opencode_adapter.py`
+> + `opencode_runtime.py`). It also powers the **built-in taOS agent**, which is
+> the one host-resident exception to "one container per agent": the taOS agent
+> runs a host opencode server (`taos_agent_runtime.py`) so it can diagnose and
+> fix the instance, with its own scoped LiteLLM key and a persistent session.
+> See `docs/taos-agent-manual.md` and issue #588.
+
 ## The rule, stated precisely
 
 An agent container is allowed to contain:
