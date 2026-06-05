@@ -70,6 +70,9 @@ class OpenCodeServer:
     def __init__(self, config: OpenCodeServerConfig) -> None:
         self._cfg = config
         self._proc: asyncio.subprocess.Process | None = None
+        # Server output is redirected to this file handle (never PIPE — an
+        # unread pipe deadlocks the long-lived server once its buffer fills).
+        self._log_fh = None
 
     # ---------------------------------------------------------------- config
 
@@ -148,13 +151,23 @@ class OpenCodeServer:
         if self._cfg.server_password:
             env["OPENCODE_SERVER_PASSWORD"] = self._cfg.server_password
 
+        # Redirect output to a log file rather than PIPE: a long-lived server
+        # with an unread PIPE deadlocks once the OS buffer fills, and we still
+        # want the serve logs for diagnosing the host taOS agent.
+        log_path = Path(self._cfg.home) / ".config" / "opencode" / "serve.log"
+        self._log_fh = open(log_path, "ab")
+        try:
+            os.chmod(log_path, 0o600)
+        except OSError:
+            pass
+
         self._proc = await asyncio.create_subprocess_exec(
             self._cfg.binary,
             "serve",
             "--port", str(self._cfg.port),
             "--hostname", "127.0.0.1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=self._log_fh,
+            stderr=asyncio.subprocess.STDOUT,
             env=env,
         )
         logger.info(
@@ -179,20 +192,26 @@ class OpenCodeServer:
     async def stop(self) -> None:
         """Terminate the server process.  Safe to call when not running."""
         proc = self._proc
-        if proc is None or proc.returncode is not None:
-            return
-        try:
-            proc.terminate()
+        if proc is not None and proc.returncode is None:
             try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+                proc.terminate()
                 try:
-                    proc.kill()
-                    await proc.wait()
-                except ProcessLookupError:
-                    pass
-        except ProcessLookupError:
-            pass
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except ProcessLookupError:
+                        pass
+            except ProcessLookupError:
+                pass
+        # Close the serve-log handle (opened per spawn).
+        if self._log_fh is not None:
+            try:
+                self._log_fh.close()
+            except OSError:
+                pass
+            self._log_fh = None
 
     # ---------------------------------------------------------------- health
 
