@@ -252,7 +252,7 @@ async def test_ensure_server_uses_agent_key_when_available(tmp_path, monkeypatch
             spawned_cfgs.append(cfg)
             self._cfg = cfg
 
-        async def ensure_running(self):
+        async def ensure_running(self, **kwargs):
             pass
 
         async def stop(self):
@@ -300,7 +300,7 @@ async def test_ensure_server_falls_back_to_master_key(tmp_path, monkeypatch):
             spawned_cfgs.append(cfg)
             self._cfg = cfg
 
-        async def ensure_running(self):
+        async def ensure_running(self, **kwargs):
             pass
 
         @property
