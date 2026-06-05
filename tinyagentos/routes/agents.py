@@ -88,7 +88,9 @@ class IdempotencyCache:
         """Store *result* and wake all waiters on *key*."""
         entry = self._entries.get(key)
         if entry is None:
-            self._entries[key] = (asyncio.Event(), result)
+            event = asyncio.Event()
+            event.set()
+            self._entries[key] = (event, result)
             return
         event, _ = entry
         self._entries[key] = (event, result)
@@ -165,38 +167,48 @@ async def add_agent(request: Request, body: AgentCreate):
     # --- Idempotency guard ---
     idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
     idempotency_key = request.headers.get("Idempotency-Key")
-    if idempotency_key and idempotency_cache is not None:
-        mode, event = idempotency_cache.try_reserve(idempotency_key)
+    # Scope the cache key by endpoint so /api/agents and /api/agents/deploy
+    # cannot collide even when the client reuses the same header value.
+    scoped_key = (
+        f"{request.method}:{request.url.path}:{idempotency_key}"
+        if idempotency_key
+        else None
+    )
+    if scoped_key and idempotency_cache is not None:
+        mode, event = idempotency_cache.try_reserve(scoped_key)
         if mode == "wait":
             await event.wait()
-            return idempotency_cache.get(idempotency_key)
+            return idempotency_cache.get(scoped_key)
 
-    config = request.app.state.config
-    display_name = body.name.strip()
-    name_error = validate_agent_name(display_name)
-    if name_error:
-        return JSONResponse({"error": name_error}, status_code=400)
+    result: dict | None = None
+    try:
+        config = request.app.state.config
+        display_name = body.name.strip()
+        name_error = validate_agent_name(display_name)
+        if name_error:
+            result = {"error": name_error}
+            return JSONResponse(result, status_code=400)
 
-    slug = slugify_agent_name(display_name)
-    unique_slug = slug
-    suffix = 2
-    while find_agent(config, unique_slug):
-        unique_slug = f"{slug}-{suffix}"
-        suffix += 1
-        if suffix > 100:
-            return JSONResponse({"error": "Could not generate a unique agent slug"}, status_code=400)
+        slug = slugify_agent_name(display_name)
+        unique_slug = slug
+        suffix = 2
+        while find_agent(config, unique_slug):
+            unique_slug = f"{slug}-{suffix}"
+            suffix += 1
+            if suffix > 100:
+                result = {"error": "Could not generate a unique agent slug"}
+                return JSONResponse(result, status_code=400)
 
-    agent = body.model_dump()
-    agent["name"] = unique_slug
-    agent["display_name"] = display_name
-    config.agents.append(agent)
-    await save_config_locked(config, config.config_path)
-    result = {"status": "created", "name": unique_slug, "display_name": display_name}
-
-    if idempotency_key and idempotency_cache is not None:
-        idempotency_cache.set(idempotency_key, result)
-
-    return result
+        agent = body.model_dump()
+        agent["name"] = unique_slug
+        agent["display_name"] = display_name
+        config.agents.append(agent)
+        await save_config_locked(config, config.config_path)
+        result = {"status": "created", "name": unique_slug, "display_name": display_name}
+        return result
+    finally:
+        if scoped_key and idempotency_cache is not None and result is not None:
+            idempotency_cache.set(scoped_key, result)
 
 
 @router.put("/api/agents/{name}")
@@ -546,16 +558,25 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     # --- Idempotency guard ---
     idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
     idempotency_key = request.headers.get("Idempotency-Key")
-    if idempotency_key and idempotency_cache is not None:
-        mode, event = idempotency_cache.try_reserve(idempotency_key)
+    # Scope the cache key by endpoint so /api/agents and /api/agents/deploy
+    # cannot collide even when the client reuses the same header value.
+    scoped_key = (
+        f"{request.method}:{request.url.path}:{idempotency_key}"
+        if idempotency_key
+        else None
+    )
+    if scoped_key and idempotency_cache is not None:
+        mode, event = idempotency_cache.try_reserve(scoped_key)
         if mode == "wait":
             await event.wait()
-            return idempotency_cache.get(idempotency_key)
+            return idempotency_cache.get(scoped_key)
 
     config = request.app.state.config
     display_name = body.name.strip()
     name_error = validate_agent_name(display_name)
     if name_error:
+        if scoped_key and idempotency_cache is not None:
+            idempotency_cache.set(scoped_key, {"error": name_error})
         return JSONResponse({"error": name_error}, status_code=400)
     # Derive a container-safe slug and ensure uniqueness
     slug = slugify_agent_name(display_name)
@@ -565,6 +586,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         unique_slug = f"{slug}-{suffix}"
         suffix += 1
         if suffix > 100:
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, {"error": "Could not generate a unique agent slug"})
             return JSONResponse({"error": "Could not generate a unique agent slug"}, status_code=400)
     # Rewrite body.name to the unique slug; the original user-entered name
     # is preserved as display_name for the UI.
@@ -574,6 +597,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         registry = request.app.state.registry
         known = {a.id for a in registry.list_available(type_filter="agent-framework")}
         if body.framework not in known:
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, {"error": f"Unknown framework '{body.framework}'"})
             return JSONResponse({"error": f"Unknown framework '{body.framework}'. Available: {sorted(known)}"}, status_code=400)
 
         # Pre-flight RAM check — low-RAM hosts (≤4GB) silently fail at
@@ -591,21 +616,21 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             _MODEL_DEPS_OVERHEAD_MB = 2048
             min_ram = _CONTROLLER_OVERHEAD_MB + framework_ram + _MODEL_DEPS_OVERHEAD_MB
             if hw.ram_mb < min_ram:
-                return JSONResponse(
-                    {
-                        "error": (
-                            f"Your device has {hw.ram_mb / 1024:.1f} GB RAM. "
-                            f"{body.framework} needs at least "
-                            f"{min_ram / 1024:.1f} GB to run with a model. "
-                            f"Deploy this agent on a worker with more RAM, or "
-                            f"pick a smaller framework."
-                        ),
-                        "ram_mb": hw.ram_mb,
-                        "min_ram_mb": min_ram,
-                        "framework": body.framework,
-                    },
-                    status_code=400,
-                )
+                err_body = {
+                    "error": (
+                        f"Your device has {hw.ram_mb / 1024:.1f} GB RAM. "
+                        f"{body.framework} needs at least "
+                        f"{min_ram / 1024:.1f} GB to run with a model. "
+                        f"Deploy this agent on a worker with more RAM, or "
+                        f"pick a smaller framework."
+                    ),
+                    "ram_mb": hw.ram_mb,
+                    "min_ram_mb": min_ram,
+                    "framework": body.framework,
+                }
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, err_body)
+                return JSONResponse(err_body, status_code=400)
 
     # ------------------------------------------------------------------
     # Cross-worker deploy routing (task #176 stub)
@@ -653,35 +678,35 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         )
 
         if location.kind == "not_found":
-            return JSONResponse(
-                {
-                    "error": (
-                        f"model '{body.model}' was not found on the controller, "
-                        f"on any online worker, or among configured cloud providers. "
-                        f"Download it first or pick a model that is already in the cluster."
-                    ),
-                },
-                status_code=404,
-            )
+            err_body = {
+                "error": (
+                    f"model '{body.model}' was not found on the controller, "
+                    f"on any online worker, or among configured cloud providers. "
+                    f"Download it first or pick a model that is already in the cluster."
+                ),
+            }
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, err_body)
+            return JSONResponse(err_body, status_code=404)
 
         if location.kind == "worker":
             # Case 5: pin conflict — user asked for a specific worker
             # that does not hold the model.
             if body.target_worker and body.target_worker not in location.hosts:
-                return JSONResponse(
-                    {
-                        "error": (
-                            f"model '{body.model}' is not on worker "
-                            f"'{body.target_worker}'. It is available on: "
-                            f"{location.hosts}. Deploy there, or wait for "
-                            f"Phase 1.5 network model placement."
-                        ),
-                        "model": body.model,
-                        "pinned_worker": body.target_worker,
-                        "available_on": location.hosts,
-                    },
-                    status_code=409,
-                )
+                err_body = {
+                    "error": (
+                        f"model '{body.model}' is not on worker "
+                        f"'{body.target_worker}'. It is available on: "
+                        f"{location.hosts}. Deploy there, or wait for "
+                        f"Phase 1.5 network model placement."
+                    ),
+                    "model": body.model,
+                    "pinned_worker": body.target_worker,
+                    "available_on": location.hosts,
+                }
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, err_body)
+                return JSONResponse(err_body, status_code=409)
 
             # Cases 3 + 4: route to the worker that holds the model.
             # Phase 1.5 will actually instruct the worker to launch; for
@@ -691,21 +716,21 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             # for an agent that lives on Fedora would confuse both the
             # UI and the LXC bulk-ops endpoints.
             chosen = body.target_worker or location.canonical_host
-            return JSONResponse(
-                {
-                    "status": "routed",
-                    "name": body.name,
-                    "model": body.model,
-                    "worker": chosen,
-                    "available_on": location.hosts,
-                    "message": (
-                        f"model '{body.model}' lives on worker '{chosen}'. "
-                        f"Routed deploy target only — remote launch lands "
-                        f"with Phase 1.5 network model placement."
-                    ),
-                },
-                status_code=202,
-            )
+            routed_body = {
+                "status": "routed",
+                "name": body.name,
+                "model": body.model,
+                "worker": chosen,
+                "available_on": location.hosts,
+                "message": (
+                    f"model '{body.model}' lives on worker '{chosen}'. "
+                    f"Routed deploy target only — remote launch lands "
+                    f"with Phase 1.5 network model placement."
+                ),
+            }
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, routed_body)
+            return JSONResponse(routed_body, status_code=202)
         # kind == "controller" or "cloud": fall through to the unchanged
         # controller-local deploy path below.
 
@@ -717,10 +742,10 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         pass  # idempotent — agent already registered, proceed normally
     except Exception as e:
         logger.exception("register_agent(%s) failed", unique_slug)
-        return JSONResponse(
-            {"error": f"Could not register agent with taosmd: {e}"},
-            status_code=500,
-        )
+        err_body = {"error": f"Could not register agent with taosmd: {e}"}
+        if scoped_key and idempotency_cache is not None:
+            idempotency_cache.set(scoped_key, err_body)
+        return JSONResponse(err_body, status_code=500)
 
     # Add agent entry immediately with deploying status. qmd_url has
     # been removed from the agent schema — every agent reads and writes
@@ -888,8 +913,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
 
     result = {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
 
-    if idempotency_key and idempotency_cache is not None:
-        idempotency_cache.set(idempotency_key, result)
+    if scoped_key and idempotency_cache is not None:
+        idempotency_cache.set(scoped_key, result)
 
     return result
 

@@ -137,6 +137,42 @@ class TestWorkerCanRun:
             {"arch": "x86_64"},
         ) is False
 
+    def test_arch_unknown_worker_is_incompatible(self):
+        """A worker that reports no cpu.arch must NOT match a model requiring
+        a specific architecture — an absent arch is treated as incompatible."""
+        worker_hw = {
+            "ram_mb": 8192,
+            "gpu": {"type": "nvidia", "cuda": True, "vram_mb": 8192},
+            "cpu": {},  # no arch reported
+            "npu": {"type": "none"},
+        }
+        assert _worker_can_run(worker_hw, {"arch": "x86_64"}) is False
+
+    def test_gpu_accel_mlx_on_apple_worker_passes(self):
+        """A model requiring gpu_accel=mlx is compatible with an Apple GPU worker."""
+        worker_hw = {
+            "ram_mb": 16384,
+            "gpu": {"type": "apple", "mlx": True, "vram_mb": 16384},
+            "cpu": {"arch": "aarch64"},
+            "npu": {"type": "none"},
+        }
+        assert _worker_can_run(worker_hw, {"gpu_accel": "mlx"}) is True
+
+    def test_gpu_accel_mlx_on_nvidia_worker_fails(self):
+        """A model requiring gpu_accel=mlx must NOT be promoted on a non-Apple worker."""
+        worker = _make_worker_hw(gpu_type="nvidia", gpu_cuda=True)
+        assert _worker_can_run(worker, {"gpu_accel": "mlx"}) is False
+
+    def test_gpu_accel_mlx_on_amd_worker_fails(self):
+        """gpu_accel=mlx is Apple-only; AMD workers must not match."""
+        worker_hw = {
+            "ram_mb": 16384,
+            "gpu": {"type": "amd", "rocm": True, "vram_mb": 16384},
+            "cpu": {"arch": "x86_64"},
+            "npu": {"type": "none"},
+        }
+        assert _worker_can_run(worker_hw, {"gpu_accel": "mlx"}) is False
+
     def test_apple_silicon_unified_memory(self):
         worker_hw = {
             "ram_mb": 16384,

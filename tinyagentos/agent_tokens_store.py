@@ -75,6 +75,7 @@ class AgentTokensStore(BaseStore):
 
         now = datetime.now(timezone.utc).isoformat()
 
+        row: aiosqlite.Row | None = None
         try:
             # BEGIN IMMEDIATE acquires the reserved lock straight away so
             # other workers see the intent before we commit — no window
@@ -85,6 +86,15 @@ class AgentTokensStore(BaseStore):
                 "VALUES (?, ?, ?)",
                 (agent_name, token, now),
             )
+            # Capture the row by primary key INSIDE the transaction so a
+            # concurrent revoke() cannot remove it between the commit and
+            # a post-commit re-read.
+            row = await (
+                await self._db.execute(
+                    "SELECT id, agent_name, token, created_at, revoked_at "
+                    "FROM agent_tokens WHERE id = last_insert_rowid()",
+                )
+            ).fetchone()
             await self._db.commit()
         except aiosqlite.IntegrityError:
             await self._db.execute("ROLLBACK")
@@ -92,14 +102,6 @@ class AgentTokensStore(BaseStore):
         except Exception:
             await self._db.execute("ROLLBACK")
             raise
-
-        row = await (
-            await self._db.execute(
-                "SELECT id, agent_name, token, created_at, revoked_at "
-                "FROM agent_tokens WHERE agent_name = ? AND revoked_at IS NULL",
-                (agent_name,),
-            )
-        ).fetchone()
 
         if row is None:
             raise RuntimeError(f"Token for '{agent_name}' not found after issue")

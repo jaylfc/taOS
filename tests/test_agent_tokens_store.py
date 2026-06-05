@@ -187,3 +187,38 @@ class TestAgentTokensStore:
             assert await store.get_active("agent-b") is not None
         finally:
             await store.close()
+
+    # ── issue-then-revoke race ───────────────────────────────────────
+    async def test_issue_returns_correct_row_even_if_immediately_revoked(self, tmp_path):
+        """issue() must return the inserted row's data even when a concurrent
+        revoke() runs immediately after the INSERT commits.
+
+        Prior to the fix, issue() re-read the row by agent_name WHERE
+        revoked_at IS NULL after committing, so a concurrent revoke() could
+        remove the row before the re-read and cause a spurious RuntimeError.
+        The fix captures the row inside the transaction by last_insert_rowid()
+        before committing, making the result independent of post-commit state.
+        """
+        db = tmp_path / "race.db"
+        store = await self._make_store(db)
+        raw = await aiosqlite.connect(str(db))
+        raw.row_factory = aiosqlite.Row
+        try:
+            result = await store.issue("agent-race", "tok-race")
+            # Simulate what would have happened if a revoke ran concurrently:
+            # revoke the token immediately after issue() committed.
+            await raw.execute(
+                "UPDATE agent_tokens SET revoked_at = '2026-01-01T00:00:01' "
+                "WHERE agent_name = 'agent-race' AND revoked_at IS NULL"
+            )
+            await raw.commit()
+
+            # The result from issue() must still be correct regardless of the
+            # post-commit revoke — the row was captured before committing.
+            assert result["agent_name"] == "agent-race"
+            assert result["token"] == "tok-race"
+            assert result["revoked_at"] is None  # captured before the revoke
+            assert isinstance(result["id"], int)
+        finally:
+            await raw.close()
+            await store.close()

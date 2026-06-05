@@ -658,7 +658,7 @@ async def worker_remote_command(request: Request, name: str, body: WorkerRemoteR
         return JSONResponse({"error": str(exc)}, status_code=502)
 
 
-@router.get("/api/cluster/promote-archived")
+@router.post("/api/cluster/promote-archived")
 async def promote_archived_models(request: Request):
     """Manual trigger: scan all online workers and promote any archived
     models that are now compatible with cluster hardware.
