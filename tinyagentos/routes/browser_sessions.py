@@ -12,7 +12,7 @@ Routes:
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -119,8 +119,16 @@ async def list_sessions(
 async def get_my_session(
     request: Request,
     current_user: dict[str, Any] = Depends(get_current_user),
+    device: str = Query(default="desktop"),
 ):
     """Return the caller's always-on browser session, creating and starting it if needed.
+
+    Pass ``?device=mobile`` for a phone client — the session runs portrait
+    (800x1600@30) with a mobile Chromium UA + touch so sites serve mobile
+    layouts. ``?device=desktop`` (default) runs landscape 1280x720.
+
+    If a running session exists in the opposite mode, it is re-presented:
+    container stopped (profile volume kept), restarted in the target mode.
 
     Placement order: host (if RAM-capable) -> best cluster worker -> 409.
     When running with a neko_url, attaches a short-lived stream_token.
@@ -132,8 +140,10 @@ async def get_my_session(
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
 
+    mobile = device == "mobile"
+
     mgr = request.app.state.browser_sessions
-    session = await mgr.get_or_create_mine(user_id)
+    session = await mgr.get_or_create_mine(user_id, mobile=mobile)
 
     if session["status"] in ("pending", "idle"):
         cluster = request.app.state.cluster_manager
@@ -146,7 +156,8 @@ async def get_my_session(
         try:
             if kind == "host":
                 runner = request.app.state.browser_container_runner
-                session = await mgr.start_on_host(session["id"], profile_volume=vol, runner=runner)
+                session = await mgr.start_on_host(session["id"], profile_volume=vol,
+                                                   runner=runner, mobile=mobile)
             else:
                 worker = cluster.get_worker(node)
                 auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
@@ -156,6 +167,7 @@ async def get_my_session(
                     worker_url=worker.url,
                     profile_volume=vol,
                     auth_token=auth_token,
+                    mobile=mobile,
                 )
         except BrowserWorkerError:
             return JSONResponse({"error": "worker_start_failed"}, status_code=502)

@@ -35,12 +35,18 @@ CREATE TABLE IF NOT EXISTS browser_sessions (
     container_id TEXT,
     neko_url     TEXT,
     cdp_url      TEXT,
+    is_mobile    INTEGER NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL,
     last_active  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bs_owner ON browser_sessions(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_bs_status ON browser_sessions(status);
+"""
+
+# Migration: add is_mobile column to existing databases that predate this column.
+BROWSER_SESSIONS_MIGRATION = """
+ALTER TABLE browser_sessions ADD COLUMN is_mobile INTEGER NOT NULL DEFAULT 0;
 """
 
 
@@ -56,9 +62,10 @@ def _row_to_session(row: tuple) -> dict:
         "container_id": row[7],
         "neko_url": row[8],
         "cdp_url": row[9],
-        "created_at": row[10],
-        "updated_at": row[11],
-        "last_active": row[12],
+        "is_mobile": bool(row[10]),
+        "created_at": row[11],
+        "updated_at": row[12],
+        "last_active": row[13],
     }
 
 
@@ -78,6 +85,11 @@ class BrowserSessionManager:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.db_path))
         await self._db.executescript(BROWSER_SESSIONS_SCHEMA)
+        # Best-effort migration for databases created before is_mobile was added.
+        try:
+            await self._db.execute(BROWSER_SESSIONS_MIGRATION)
+        except Exception:
+            pass  # Column already exists
         await self._db.commit()
 
     async def close(self) -> None:
@@ -104,6 +116,7 @@ class BrowserSessionManager:
         url: str,
         profile_name: str = "default",
         *,
+        mobile: bool = False,
         now: float | None = None,
     ) -> dict:
         db = self._assert_db()
@@ -113,10 +126,10 @@ class BrowserSessionManager:
         await db.execute(
             """INSERT INTO browser_sessions
                (id, owner_type, owner_id, profile_name, url, node, status,
-                container_id, neko_url, cdp_url, created_at, updated_at, last_active)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                container_id, neko_url, cdp_url, is_mobile, created_at, updated_at, last_active)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session_id, owner_type, owner_id, profile_name, url, None, "pending",
-             None, None, None, now, now, now),
+             None, None, None, int(mobile), now, now, now),
         )
         await db.commit()
         return {
@@ -130,6 +143,7 @@ class BrowserSessionManager:
             "container_id": None,
             "neko_url": None,
             "cdp_url": None,
+            "is_mobile": mobile,
             "created_at": now,
             "updated_at": now,
             "last_active": now,
@@ -139,7 +153,7 @@ class BrowserSessionManager:
         db = self._assert_db()
         cursor = await db.execute(
             """SELECT id, owner_type, owner_id, profile_name, url, node, status,
-                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+                      container_id, neko_url, cdp_url, is_mobile, created_at, updated_at, last_active
                FROM browser_sessions WHERE id = ?""",
             (session_id,),
         )
@@ -150,7 +164,7 @@ class BrowserSessionManager:
         db = self._assert_db()
         cursor = await db.execute(
             """SELECT id, owner_type, owner_id, profile_name, url, node, status,
-                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+                      container_id, neko_url, cdp_url, is_mobile, created_at, updated_at, last_active
                FROM browser_sessions
                WHERE owner_type = ? AND owner_id = ?
                ORDER BY created_at DESC""",
@@ -250,6 +264,7 @@ class BrowserSessionManager:
         worker_url: str,
         profile_volume: str,
         auth_token: str | None = None,
+        mobile: bool = False,
     ) -> dict:
         """POST /worker/browser/start on the given worker and update the session.
 
@@ -263,7 +278,8 @@ class BrowserSessionManager:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{worker_url.rstrip('/')}/worker/browser/start",
-                    json={"session_id": session_id, "profile_volume": profile_volume},
+                    json={"session_id": session_id, "profile_volume": profile_volume,
+                          "mobile": mobile},
                     headers=headers,
                 )
         except Exception as exc:
@@ -394,7 +410,7 @@ class BrowserSessionManager:
         db = self._assert_db()
         cursor = await db.execute(
             """SELECT id, owner_type, owner_id, profile_name, url, node, status,
-                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+                      container_id, neko_url, cdp_url, is_mobile, created_at, updated_at, last_active
                FROM browser_sessions
                WHERE status != 'stopped'
                ORDER BY created_at DESC""",
@@ -410,13 +426,24 @@ class BrowserSessionManager:
         return out
 
     async def get_or_create_mine(self, owner_id: str, *, url: str = "about:blank",
-                                 profile_name: str = "default") -> dict:
+                                 profile_name: str = "default",
+                                 mobile: bool = False) -> dict:
         """Return the user's single live (pending/running/idle) session, creating
-        one if none exists. Stopped/error sessions are not reused."""
+        one if none exists. Stopped/error sessions are not reused.
+
+        If a running/pending/idle session exists with a DIFFERENT presentation
+        mode (mobile vs desktop), it is re-presented: the container is stopped
+        (profile volume kept) and the session row is reset to 'pending' in the
+        target mode.  The caller is then responsible for starting the container
+        in the new mode (same as when a fresh session is created).
+
+        v1 limitation: simultaneous desktop+mobile viewers can flap. CDP
+        live-toggle without a container restart is a future v2.
+        """
         db = self._assert_db()
         cursor = await db.execute(
             """SELECT id, owner_type, owner_id, profile_name, url, node, status,
-                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+                      container_id, neko_url, cdp_url, is_mobile, created_at, updated_at, last_active
                FROM browser_sessions
                WHERE owner_type='user' AND owner_id=? AND status IN ('pending','running','idle')
                ORDER BY created_at DESC LIMIT 1""",
@@ -424,17 +451,33 @@ class BrowserSessionManager:
         )
         row = await cursor.fetchone()
         if row is not None:
-            return _row_to_session(row)
-        return await self.create_session("user", owner_id, url, profile_name)
+            session = _row_to_session(row)
+            if bool(session["is_mobile"]) == mobile:
+                # Same mode — return as-is; caller starts it if pending/idle.
+                return session
+            # Different mode — re-present: reset to pending in the new mode.
+            now = time.time()
+            await db.execute(
+                """UPDATE browser_sessions
+                   SET status='pending', is_mobile=?, container_id=NULL,
+                       neko_url=NULL, cdp_url=NULL, node=NULL, updated_at=?
+                   WHERE id=?""",
+                (int(mobile), now, session["id"]),
+            )
+            await db.commit()
+            return await self.get_session(session["id"])  # type: ignore[return-value]
+        return await self.create_session("user", owner_id, url, profile_name, mobile=mobile)
 
-    async def start_on_host(self, session_id: str, *, profile_volume: str, runner) -> dict:
+    async def start_on_host(self, session_id: str, *, profile_volume: str, runner,
+                             mobile: bool = False) -> dict:
         """Start a Neko container in-process via BrowserContainerRunner (host-local).
 
         Mirrors start_on_worker but drives the runner directly. On failure marks
         the session 'error' and raises BrowserWorkerError.
         """
         try:
-            data = await runner.start(session_id=session_id, profile_volume=profile_volume)
+            data = await runner.start(session_id=session_id, profile_volume=profile_volume,
+                                      mobile=mobile)
         except Exception as exc:
             await self.mark_error(session_id)
             raise BrowserWorkerError(f"host browser start failed: {exc}") from exc

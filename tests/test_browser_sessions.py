@@ -89,6 +89,63 @@ async def test_get_or_create_mine_is_idempotent(mgr):
     assert c["id"] != a["id"]
 
 
+# ---------------------------------------------------------------------------
+# Mobile/re-present tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_mobile_creates_mobile_session(mgr):
+    s = await mgr.get_or_create_mine("user-m", mobile=True)
+    assert s["is_mobile"] is True
+    assert s["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_desktop_creates_desktop_session(mgr):
+    s = await mgr.get_or_create_mine("user-d", mobile=False)
+    assert s["is_mobile"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_same_mode_no_restart(mgr):
+    """Calling get_or_create_mine with the same mode returns the same session."""
+    s1 = await mgr.get_or_create_mine("user-same", mobile=False)
+    await mgr.mark_running(s1["id"], node="host", container_id="c1", neko_url="n1", cdp_url=None)
+    s2 = await mgr.get_or_create_mine("user-same", mobile=False)
+    assert s1["id"] == s2["id"]
+    assert s2["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_re_presents_on_mode_change(mgr):
+    """Switching from desktop to mobile resets the session to pending and flips is_mobile."""
+    # Start a running desktop session
+    s_desktop = await mgr.get_or_create_mine("user-switch", mobile=False)
+    await mgr.mark_running(
+        s_desktop["id"], node="host", container_id="ctr-d", neko_url="n1", cdp_url=None
+    )
+
+    # Now request mobile — should re-present (same session id, reset to pending)
+    s_mobile = await mgr.get_or_create_mine("user-switch", mobile=True)
+    assert s_mobile["id"] == s_desktop["id"]          # same row, same profile
+    assert s_mobile["is_mobile"] is True
+    assert s_mobile["status"] == "pending"            # container cleared, caller will restart
+    assert s_mobile["container_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_re_presents_mobile_to_desktop(mgr):
+    """Switching back from mobile to desktop also re-presents."""
+    s_mobile = await mgr.get_or_create_mine("user-back", mobile=True)
+    await mgr.mark_running(
+        s_mobile["id"], node="host", container_id="ctr-m", neko_url="nm", cdp_url=None
+    )
+    s_desktop = await mgr.get_or_create_mine("user-back", mobile=False)
+    assert s_desktop["id"] == s_mobile["id"]
+    assert s_desktop["is_mobile"] is False
+    assert s_desktop["status"] == "pending"
+
+
 @pytest.mark.asyncio
 async def test_get_or_create_mine_recreates_after_stop(mgr):
     a = await mgr.get_or_create_mine("user-1", url="https://x")

@@ -209,6 +209,9 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
     }
   }, []);
 
+  // Declared early so fetchMine can capture it in its closure.
+  const isMobile = useIsMobile();
+
   // ── Session list poller ──────────────────────────────────────────────────
 
   const fetchSessionList = useCallback(async () => {
@@ -241,7 +244,8 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
 
     let resp: Response;
     try {
-      resp = await fetch("/api/browser/sessions/mine", { credentials: "include" });
+      const deviceParam = isMobile ? "mobile" : "desktop";
+      resp = await fetch(`/api/browser/sessions/mine?device=${deviceParam}`, { credentials: "include" });
     } catch {
       if (!cancelledRef.current) {
         setViewState({ phase: "error", message: "Could not reach the taOS server." });
@@ -288,7 +292,7 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
 
     setViewState({ phase: "connecting" });
     schedulePoll(session.id);
-  }, [stopPolling]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stopPolling, isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Agent session flow ───────────────────────────────────────────────────
 
@@ -430,8 +434,6 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
       void fetchAgentSession(selected.sessionId, selected.agentName, true);
     }
   }, [selected, fetchMine, fetchAgentSession]);
-
-  const isMobile = useIsMobile();
 
   // ── Render ───────────────────────────────────────────────────────────────
 
