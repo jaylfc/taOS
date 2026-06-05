@@ -381,6 +381,67 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     }
   }
 
+  // Full-window detail view for a regular agent
+  if (detail) {
+    const agent = agents.find((a) => a.name === detail.name);
+    if (agent) {
+      return (
+        <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
+          {/* Back header */}
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0">
+            <button
+              type="button"
+              aria-label="Back to agents"
+              onClick={() => setDetail(null)}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-shell-text-secondary hover:text-shell-text hover:bg-white/5 transition-colors"
+            >
+              ← Back
+            </button>
+            <span className="text-sm font-medium text-shell-text truncate">
+              {agent.display_name || agent.name}
+            </span>
+          </div>
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+            <AgentDetailPanel
+              agent={agent}
+              initialTab={detail.tab}
+              onClose={() => setDetail(null)}
+              onAgentUpdated={fetchAgents}
+              fullHeight
+            />
+          </div>
+          <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
+        </div>
+      );
+    }
+    // Agent not found — fall through to list (clears stale detail)
+    setDetail(null);
+  }
+
+  // Full-window detail view for the taOS system agent
+  if (taosDetailOpen) {
+    return (
+      <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
+        {/* Back header */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0">
+          <button
+            type="button"
+            aria-label="Back to agents"
+            onClick={() => setTaosDetailOpen(false)}
+            className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-shell-text-secondary hover:text-shell-text hover:bg-white/5 transition-colors"
+          >
+            ← Back
+          </button>
+          <span className="text-sm font-medium text-shell-text truncate">taOS agent</span>
+        </div>
+        <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+          <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} fullHeight />
+        </div>
+        <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none relative">
       {/* Toolbar */}
@@ -555,93 +616,6 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         )}
       </div>
-
-      {/* Detail panel (Logs + Skills tabs) */}
-      {detail && (() => {
-        const agent = agents.find((a) => a.name === detail.name);
-        if (!agent) return null;
-        if (isMobile) {
-          // Render in-place over the agent list, scoped to the AgentsApp's
-          // relative wrapper. The previous implementation portaled to
-          // document.body with fixed inset-0, which escaped the
-          // MobileAppWindow chrome and covered the whole viewport — the
-          // user lost the app's title bar and the safe-area insets had to
-          // be reapplied here. Inline absolute keeps the app window
-          // visible and matches how ProjectsApp renders its workspace.
-          return (
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label={`Agent details — ${agent.display_name || agent.name}`}
-              className="absolute inset-0 z-30 flex flex-col bg-shell-bg text-zinc-200"
-            >
-              <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
-                <button
-                  type="button"
-                  aria-label="Back to agents"
-                  onClick={() => setDetail(null)}
-                  className="rounded-lg px-2 py-1 text-sm text-zinc-300"
-                >
-                  ‹ Back
-                </button>
-                <div className="flex-1 truncate text-center text-sm font-medium text-zinc-200">
-                  {agent.display_name || agent.name}
-                </div>
-                <span className="w-10" aria-hidden="true" />
-              </div>
-              <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-                <AgentDetailPanel
-                  agent={agent}
-                  initialTab={detail.tab}
-                  onClose={() => setDetail(null)}
-                  onAgentUpdated={fetchAgents}
-                  fullHeight
-                />
-              </div>
-            </div>
-          );
-        }
-        return (
-          <AgentDetailPanel
-            agent={agent}
-            initialTab={detail.tab}
-            onClose={() => setDetail(null)}
-            onAgentUpdated={fetchAgents}
-          />
-        );
-      })()}
-
-      {/* taOS agent detail panel */}
-      {taosDetailOpen && (
-        isMobile ? (
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="taOS agent settings"
-            className="absolute inset-0 z-30 flex flex-col bg-shell-bg text-zinc-200"
-          >
-            <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
-              <button
-                type="button"
-                aria-label="Back to agents"
-                onClick={() => setTaosDetailOpen(false)}
-                className="rounded-lg px-2 py-1 text-sm text-zinc-300"
-              >
-                ‹ Back
-              </button>
-              <div className="flex-1 truncate text-center text-sm font-medium text-zinc-200">
-                taOS agent
-              </div>
-              <span className="w-10" aria-hidden="true" />
-            </div>
-            <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
-              <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} fullHeight />
-            </div>
-          </div>
-        ) : (
-          <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} />
-        )
-      )}
 
       {/* Deploy wizard overlay */}
       <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
