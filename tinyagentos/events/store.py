@@ -43,6 +43,7 @@ class SystemEventStore(BaseStore):
         await self._db.commit()
 
     async def list(self, limit: int = 100, kind: str | None = None) -> list[dict]:
+        limit = max(1, min(int(limit), 1000))
         if kind is not None:
             sql = (
                 "SELECT id, kind, source, targets, level, payload, ts, trace_id "

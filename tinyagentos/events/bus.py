@@ -122,8 +122,9 @@ class EventBus:
             except Exception:
                 logger.exception("EventBus: notifications.add failed for event %s", event.trace_id)
 
-        # d. Agent messages
-        for target in event.targets:
+        # d. Agent messages — deduplicate targets to avoid duplicate sends
+        _seen_targets: dict[str, None] = dict.fromkeys(event.targets)
+        for target in _seen_targets:
             if target in ("user", _BROADCAST_CHANNEL):
                 continue
             try:
@@ -139,13 +140,13 @@ class EventBus:
                     target, event.trace_id,
                 )
 
-        # e. In-process pub/sub
+        # e. In-process pub/sub — deduplicate, then ensure broadcast is published
+        #    exactly once even if it appeared in targets.
         async with self._lock:
-            # Publish to every named target channel
-            for target in event.targets:
+            for target in _seen_targets:
                 await self._publish_to_channel(target, event)
-            # Always publish to the broadcast channel
-            await self._publish_to_channel(_BROADCAST_CHANNEL, event)
+            if _BROADCAST_CHANNEL not in _seen_targets:
+                await self._publish_to_channel(_BROADCAST_CHANNEL, event)
 
 
 # ------------------------------------------------------------------

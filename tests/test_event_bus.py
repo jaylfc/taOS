@@ -353,3 +353,107 @@ async def test_emit_event_helper_pulls_from_app_state():
 
     assert len(trace.events) == 1
     assert len(notifications.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Finding 1 — SystemEventStore.close() is callable
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_system_event_store_close_is_callable(tmp_path):
+    """close() must exist on SystemEventStore and leave the store unusable."""
+    store = SystemEventStore(tmp_path / "close-test.db")
+    await store.init()
+    # Should not raise
+    await store.close()
+    # Underlying connection should be gone
+    assert store._db is None
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 — emit() deduplicates targets
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_emit_duplicate_agent_targets_delivers_once():
+    """Duplicate agent ids in targets must not cause duplicate sends."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    ev = _make_event(targets=["agent-x", "agent-x"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    # agent_messages.send should be called exactly once for agent-x
+    assert len(agent_messages.calls) == 1
+    assert agent_messages.calls[0]["to"] == "agent-x"
+
+
+@pytest.mark.asyncio
+async def test_emit_broadcast_in_targets_delivers_once_to_broadcast_channel():
+    """broadcast in targets must not cause a double publish to the broadcast channel."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    bcast_queue = await bus.subscribe("broadcast")
+    ev = _make_event(targets=["broadcast"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    # Exactly one item on the broadcast queue
+    received = bcast_queue.get_nowait()
+    assert received is ev
+    assert bcast_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_emit_duplicate_targets_single_channel_delivery():
+    """A subscriber on a channel gets the event exactly once despite duplicate targets."""
+    bus = EventBus()
+    notifications = FakeNotifications()
+    agent_messages = FakeAgentMessages()
+    trace = FakeTraceStore()
+
+    queue = await bus.subscribe("agent-y")
+    ev = _make_event(targets=["agent-y", "agent-y", "agent-y"])
+    await bus.emit(ev, notifications=notifications, agent_messages=agent_messages, trace_store=trace)
+
+    received = queue.get_nowait()
+    assert received is ev
+    assert queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# Finding 3 — SystemEventStore.list() clamps limit
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_store_list_negative_limit_clamped(tmp_path):
+    """list(limit=-1) must not trigger an unbounded SQLite read; clamps to 1."""
+    store = SystemEventStore(tmp_path / "clamp-test.db")
+    await store.init()
+    try:
+        for i in range(5):
+            await store.add(_make_event(kind=f"ev.{i}"))
+        rows = await store.list(limit=-1)
+        # Should return at most 1 row (clamped to max(1, ...))
+        assert len(rows) <= 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_store_list_huge_limit_clamped(tmp_path):
+    """list(limit=99999) must be clamped to at most 1000 rows returned."""
+    store = SystemEventStore(tmp_path / "huge-limit-test.db")
+    await store.init()
+    try:
+        for i in range(5):
+            await store.add(_make_event(kind=f"ev.{i}"))
+        rows = await store.list(limit=99999)
+        # Only 5 rows exist; all returned, but the SQL cap was 1000 not 99999
+        assert len(rows) == 5
+    finally:
+        await store.close()

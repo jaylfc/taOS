@@ -1005,6 +1005,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_store.close()
         await secrets_store.close()
         await notif_store.close()
+        await app.state.system_events.close()
         await metrics_store.close()
         await qmd_client.close()
         await http_client.aclose()
