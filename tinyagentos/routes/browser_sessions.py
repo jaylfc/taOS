@@ -145,6 +145,27 @@ async def get_my_session(
     mgr = request.app.state.browser_sessions
     session = await mgr.get_or_create_mine(user_id, mobile=mobile)
 
+    # A device-class switch re-presents the session: stop the old container
+    # first so it releases its port + profile-volume lock before the new one.
+    old = session.pop("_represent_old", None) if isinstance(session, dict) else None
+    if old and old.get("container_id"):
+        try:
+            if old.get("node") in (None, "host"):
+                runner = request.app.state.browser_container_runner
+                await runner.stop(container_id=old["container_id"], http_port=old.get("http_port"))
+            else:
+                cluster = request.app.state.cluster_manager
+                worker = cluster.get_worker(old["node"])
+                if worker is not None:
+                    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+                    await mgr.stop_on_worker(
+                        session["id"], worker_url=worker.url,
+                        container_id=old["container_id"], http_port=old.get("http_port"),
+                        auth_token=auth_token,
+                    )
+        except Exception as exc:
+            logger.warning("re-present: failed to stop old container %s: %s", old.get("container_id"), exc)
+
     if session["status"] in ("pending", "idle"):
         cluster = request.app.state.cluster_manager
         host_hw = getattr(request.app.state, "host_hardware", None)

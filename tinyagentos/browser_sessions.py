@@ -455,7 +455,18 @@ class BrowserSessionManager:
             if bool(session["is_mobile"]) == mobile:
                 # Same mode — return as-is; caller starts it if pending/idle.
                 return session
-            # Different mode — re-present: reset to pending in the new mode.
+            # Different mode — re-present. Capture the old container so the
+            # caller can stop it (freeing its port + profile-volume lock)
+            # before starting the new one; then reset to pending in the new mode.
+            old_container = session.get("container_id")
+            old_node = session.get("node")
+            old_port = None
+            if session.get("neko_url"):
+                from urllib.parse import urlparse
+                try:
+                    old_port = urlparse(session["neko_url"]).port
+                except Exception:
+                    old_port = None
             now = time.time()
             await db.execute(
                 """UPDATE browser_sessions
@@ -465,7 +476,14 @@ class BrowserSessionManager:
                 (int(mobile), now, session["id"]),
             )
             await db.commit()
-            return await self.get_session(session["id"])  # type: ignore[return-value]
+            new_session = await self.get_session(session["id"])
+            if old_container and new_session is not None:
+                new_session["_represent_old"] = {
+                    "container_id": old_container,
+                    "node": old_node,
+                    "http_port": old_port,
+                }
+            return new_session  # type: ignore[return-value]
         return await self.create_session("user", owner_id, url, profile_name, mobile=mobile)
 
     async def start_on_host(self, session_id: str, *, profile_volume: str, runner,

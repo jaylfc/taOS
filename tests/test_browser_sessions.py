@@ -131,6 +131,9 @@ async def test_get_or_create_mine_re_presents_on_mode_change(mgr):
     assert s_mobile["is_mobile"] is True
     assert s_mobile["status"] == "pending"            # container cleared, caller will restart
     assert s_mobile["container_id"] is None
+    # The old container is surfaced so the route stops it (frees its port + volume)
+    assert s_mobile["_represent_old"]["container_id"] == "ctr-d"
+    assert s_mobile["_represent_old"]["node"] == "host"
 
 
 @pytest.mark.asyncio
