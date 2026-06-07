@@ -11,6 +11,7 @@ import asyncio
 import logging
 import secrets
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,16 @@ DEFAULT_NEKO_GPU_IMAGE = "ghcr.io/m1k1o/neko/nvidia-chromium:latest"
 # built + published. Device nodes are still passed (harmless on RK3588).
 DEFAULT_NEKO_RK3588_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 NEKO_SCREEN = "1280x720@30"
+NEKO_SCREEN_MOBILE = "800x1600@30"
 NEKO_PROFILE_MOUNT = "/home/neko"
+
+# Path to the mobile Chromium supervisord config, relative to the repo root.
+# browser_container.py lives at tinyagentos/worker/browser_container.py so
+# three parents up reaches the repo root.
+_REPO_ROOT = Path(__file__).parent.parent.parent
+MOBILE_CHROMIUM_CONF = (
+    _REPO_ROOT / "app-catalog" / "streaming" / "neko-browser" / "mobile-chromium.conf"
+)
 
 
 @dataclass
@@ -76,18 +86,26 @@ def build_neko_run_args(
     gpu: bool = False,
     image: str | None = None,
     device_args: list[str] | None = None,
+    mobile: bool = False,
 ) -> list[str]:
     """Return the full ``docker run`` argv (starting with 'docker') for a Neko
-    Chromium session, per the validated spike recipe."""
+    Chromium session, per the validated spike recipe.
+
+    When ``mobile=True`` the container runs portrait (800x1600@30) and mounts
+    the mobile Chromium supervisord config so Chromium presents a mobile UA,
+    touch events, and a 3x device scale factor.
+    """
     if image is None:
         image = DEFAULT_NEKO_GPU_IMAGE if gpu else DEFAULT_NEKO_IMAGE
+
+    screen = NEKO_SCREEN_MOBILE if mobile else NEKO_SCREEN
 
     args = [
         "docker", "run", "-d", "--rm",
         "--name", container_name,
         "-p", f"{http_port}:8080",
         "-p", f"{epr_lo}-{epr_hi}:{epr_lo}-{epr_hi}/udp",
-        "-e", f"NEKO_DESKTOP_SCREEN={NEKO_SCREEN}",
+        "-e", f"NEKO_DESKTOP_SCREEN={screen}",
         "-e", f"NEKO_MEMBER_MULTIUSER_USER_PASSWORD={user_pwd}",
         "-e", f"NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD={admin_pwd}",
         "-e", f"NEKO_WEBRTC_EPR={epr_lo}-{epr_hi}",
@@ -95,6 +113,8 @@ def build_neko_run_args(
         "--shm-size=2g",
         "-v", f"{profile_volume}:{NEKO_PROFILE_MOUNT}",
     ]
+    if mobile:
+        args += ["-v", f"{MOBILE_CHROMIUM_CONF}:/etc/neko/supervisord/chromium.conf:ro"]
     for dev in device_args or []:
         args += ["--device", dev]
     if gpu:
@@ -205,11 +225,14 @@ class BrowserContainerRunner:
             detail = stderr.decode().strip()
             raise BrowserContainerError(f"docker pull {image} failed: {detail}")
 
-    async def start(self, *, session_id: str, profile_volume: str) -> dict:
+    async def start(self, *, session_id: str, profile_volume: str, mobile: bool = False) -> dict:
         """Start a Neko container and return connection details.
 
         Returns a dict with keys: container_id, neko_url, cdp_url,
         http_port, epr_lo, epr_hi.
+
+        When ``mobile=True`` the container runs portrait (800x1600@30) with a
+        mobile Chromium UA + touch events so sites serve mobile layouts.
         """
         http_port, epr_lo, epr_hi = self._allocator.allocate()
         # Full session_id (a uuid hex) — avoids name collisions from a
@@ -242,6 +265,7 @@ class BrowserContainerRunner:
                 gpu=spec.gpu,
                 image=image,
                 device_args=spec.device_args,
+                mobile=mobile,
             )
             try:
                 proc = await asyncio.create_subprocess_exec(

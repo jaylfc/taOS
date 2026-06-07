@@ -389,22 +389,38 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         # Auto-start docker compose so the service is actually serving
         # on its declared ports. Pip installs don't have a generic start
         # command — those are libraries the user invokes from code.
-        # docker pull succeeded → image is on disk, the install is
-        # 'installed' even if compose up trips on a port collision /
-        # daemon hiccup. We surface a warning instead of failing the
-        # whole install so the user can `docker compose up -d` manually
-        # without re-pulling.
         if backend == "docker":
             try:
                 start_result = await installer.start(app_id)
                 if not start_result.get("success"):
-                    logger.warning(
-                        "_legacy_install: docker pull succeeded but compose up failed for %s: %s",
-                        app_id, start_result.get("output", "")[:500],
+                    detail = start_result.get("output", "") or start_result.get("error", "")
+                    logger.error(
+                        "_legacy_install: docker compose up failed for %s: %s",
+                        app_id, detail[:500],
+                    )
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": (
+                                f"App container failed to start: {detail[:200] or 'unknown error'}. "
+                                "Port conflict or image error — check logs."
+                            ),
+                        },
+                        status_code=500,
                     )
             except (FileNotFoundError, OSError, RuntimeError) as exc:
-                logger.warning(
+                logger.error(
                     "_legacy_install: docker compose up raised for %s: %s", app_id, exc,
+                )
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": (
+                            f"App container failed to start: {exc}. "
+                            "Port conflict or image error — check logs."
+                        ),
+                    },
+                    status_code=500,
                 )
 
     # Default: delegate to InstalledAppsStore (records the install in db / store).

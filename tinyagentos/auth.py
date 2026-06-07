@@ -4,14 +4,22 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 from fastapi import HTTPException, Request
 
 from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
+
+_ph = PasswordHasher()
+
+# Lock that makes the SHA-256→argon2 upgrade read-modify-write atomic across threads.
+_hash_upgrade_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -72,15 +80,62 @@ class _PersistentSessions:
 
 
 def hash_password(password: str, salt: str = "") -> str:
-    if not salt:
-        salt = secrets.token_hex(16)
+    """Hash a password with argon2id.
+
+    The ``salt`` parameter is accepted for backward-compatibility but ignored —
+    argon2 manages its own salt internally.  Old callers that passed an explicit
+    salt (e.g. legacy tests) will silently receive a fresh argon2 hash.
+    """
+    return _ph.hash(password)
+
+
+def _hash_password_sha256(password: str, salt: str) -> str:
+    """Internal: produce the old SHA-256 hash for migration verification only."""
     hashed = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
     return f"{salt}:{hashed}"
 
 
 def verify_password(password: str, stored: str) -> bool:
-    salt = stored.split(":")[0]
-    return hash_password(password, salt) == stored
+    """Verify *password* against *stored* hash.
+
+    Supports both the legacy ``<salt>:<sha256hex>`` format and the new argon2
+    format (identified by the ``$argon2`` prefix).  Callers that need to know
+    whether the hash was upgraded should use ``verify_and_maybe_rehash``.
+    """
+    if stored.startswith("$argon2"):
+        try:
+            return _ph.verify(stored, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+    # Legacy SHA-256 format: "<salt>:<hex>"
+    parts = stored.split(":", 1)
+    if len(parts) != 2:
+        return False
+    salt = parts[0]
+    return _hash_password_sha256(password, salt) == stored
+
+
+def verify_and_maybe_rehash(password: str, stored: str) -> tuple[bool, str | None]:
+    """Verify *password* and return ``(ok, new_hash_or_None)``.
+
+    If the stored hash is the legacy SHA-256 format and the password is correct,
+    returns a fresh argon2 hash in the second element so the caller can
+    transparently upgrade the stored value.  Returns ``(True, None)`` when the
+    stored hash is already argon2.  Returns ``(False, None)`` on mismatch.
+    """
+    if stored.startswith("$argon2"):
+        try:
+            ok = _ph.verify(stored, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False, None
+        # argon2-cffi can also signal that re-hash is needed (param changes)
+        if ok and _ph.check_needs_rehash(stored):
+            return True, _ph.hash(password)
+        return ok, None
+    # Legacy SHA-256
+    if not verify_password(password, stored):
+        return False, None
+    return True, _ph.hash(password)
 
 
 class AuthManager:
@@ -114,7 +169,7 @@ class AuthManager:
         self._sessions_file = data_dir / ".auth_sessions"
         self._sessions = _PersistentSessions(self._sessions_file)
         self.session_ttl = 86400 * 7  # 7 days, default
-        self.long_session_ttl = 86400 * 365  # 1 year for "stay signed in"
+        self.long_session_ttl = 86400 * 30  # 30 days for "stay signed in"
 
     # ------------------------------------------------------------------ #
     #  Profile storage helpers                                             #
@@ -245,8 +300,10 @@ class AuthManager:
         users = self._read_users()
         if users.get("users"):
             raise ValueError("a user is already configured")
-        if not username or not password:
+        if not username:
             raise ValueError("username and password are required")
+        if not password or len(password) < 8:
+            raise ValueError("password must be at least 8 characters")
         record = {
             "id": secrets.token_urlsafe(8),
             "username": username,
@@ -267,14 +324,14 @@ class AuthManager:
     # ------------------------------------------------------------------ #
 
     def add_user_invite(self, username: str, invited_by_username: str) -> str:
-        """Create a pending user and return the 8-digit invite code."""
+        """Create a pending user and return a high-entropy invite code."""
         if not username:
             raise ValueError("username is required")
         data = self._read_users()
         for u in data.get("users", []):
             if u.get("username") == username:
                 raise ValueError(f"username '{username}' is already taken")
-        code = f"{secrets.randbelow(100_000_000):08d}"
+        code = secrets.token_urlsafe(16)
         record = {
             "id": secrets.token_urlsafe(8),
             "username": username,
@@ -296,8 +353,8 @@ class AuthManager:
         password: str,
     ) -> dict:
         """Convert a pending invite into a full user record."""
-        if not password or len(password) < 4:
-            raise ValueError("password must be at least 4 characters")
+        if not password or len(password) < 8:
+            raise ValueError("password must be at least 8 characters")
         data = self._read_users()
         users = data.get("users", [])
         target_idx = None
@@ -334,7 +391,7 @@ class AuthManager:
             if u.get("username") == username:
                 if "password_hash" not in u and "pending_invite" not in u:
                     raise ValueError("user record is malformed")
-                code = f"{secrets.randbelow(100_000_000):08d}"
+                code = secrets.token_urlsafe(16)
                 u.pop("password_hash", None)
                 u["pending_invite"] = code
                 u["invited_at"] = int(time.time())
@@ -374,13 +431,26 @@ class AuthManager:
             if username:
                 candidates = [u for u in users if u.get("username") == username]
             for u in candidates:
-                # Full user — verify password
+                # Full user — verify password (with transparent SHA-256→argon2 upgrade)
                 if "password_hash" in u:
-                    if verify_password(password, u.get("password_hash", "")):
+                    ok, new_hash = verify_and_maybe_rehash(password, u.get("password_hash", ""))
+                    if ok:
+                        if new_hash:
+                            # Upgrade the stored hash in-place.
+                            # Lock ensures the read-modify-write is atomic when
+                            # concurrent logins race on the same legacy hash.
+                            with _hash_upgrade_lock:
+                                data = self._read_users()
+                                for i, ru in enumerate(data.get("users", [])):
+                                    if ru.get("id") == u.get("id"):
+                                        data["users"][i]["password_hash"] = new_hash
+                                        break
+                                self._write_users(data)
+                            u["password_hash"] = new_hash
                         return (True, u)
                 # Pending user — accept invite code as "password"
                 elif "pending_invite" in u:
-                    if u["pending_invite"] == password:
+                    if secrets.compare_digest(u["pending_invite"], password):
                         return (True, u)
             return (False, None)
 
@@ -388,13 +458,16 @@ class AuthManager:
         if not self._password_file.exists():
             return (False, None)
         stored = self._password_file.read_text().strip()
-        if verify_password(password, stored):
+        ok, new_hash = verify_and_maybe_rehash(password, stored)
+        if ok:
+            if new_hash:
+                self._password_file.write_text(new_hash)
             return (True, None)
         return (False, None)
 
     def change_password(self, username: str, current_password: str, new_password: str) -> bool:
         """Self-change, requires current password."""
-        if not new_password or len(new_password) < 4:
+        if not new_password or len(new_password) < 8:
             return False
         data = self._read_users()
         users = data.get("users", [])

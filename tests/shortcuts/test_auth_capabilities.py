@@ -32,7 +32,7 @@ def test_new_user_has_only_chat_capability(tmp_path):
     mgr = AuthManager(tmp_path)
     mgr.setup_user("admin", "Admin", "", "adminpass")
     code = mgr.add_user_invite("testcap_user", "admin")
-    user = mgr.complete_invite("testcap_user", code, "Test Cap", "", "hunter2")
+    user = mgr.complete_invite("testcap_user", code, "Test Cap", "", "hunter2x")
     caps = set(user.get("capabilities", []))
     assert caps == {"chat"}
 
@@ -42,7 +42,7 @@ def test_capabilities_persisted_on_user_record(tmp_path):
     mgr = AuthManager(tmp_path)
     mgr.setup_user("admin", "Admin", "", "adminpass")
     code = mgr.add_user_invite("testcap_persist", "admin")
-    user = mgr.complete_invite("testcap_persist", code, "Test Persist", "", "hunter2")
+    user = mgr.complete_invite("testcap_persist", code, "Test Persist", "", "hunter2x")
     fetched = mgr.get_user_by_id(user["id"])
     assert "capabilities" in fetched
     assert set(fetched["capabilities"]) == {"chat"}

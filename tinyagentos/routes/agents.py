@@ -605,20 +605,38 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             else:
                 if agent is not None:
                     agent["status"] = "failed"
+                err_msg = result.get("error", "unknown error")
                 deploy_tasks[body.name] = {
                     "status": "failed",
                     "name": body.name,
-                    "error": result.get("error", "unknown error"),
+                    "error": err_msg,
                 }
+                notif = getattr(request.app.state, "notifications", None)
+                if notif:
+                    await notif.add(
+                        title=f"Deploy failed: {body.name}",
+                        message=f"Deploy failed for {body.name}: {err_msg}",
+                        level="error",
+                        source="agents.deploy",
+                    )
         except Exception as exc:  # noqa: BLE001
             agent = find_agent(config, body.name)
             if agent is not None:
                 agent["status"] = "failed"
+            err_msg = str(exc)
             deploy_tasks[body.name] = {
                 "status": "failed",
                 "name": body.name,
-                "error": str(exc),
+                "error": err_msg,
             }
+            notif = getattr(request.app.state, "notifications", None)
+            if notif:
+                await notif.add(
+                    title=f"Deploy failed: {body.name}",
+                    message=f"Deploy failed for {body.name}: {err_msg}",
+                    level="error",
+                    source="agents.deploy",
+                )
         finally:
             await save_config_locked(config, config.config_path)
 
