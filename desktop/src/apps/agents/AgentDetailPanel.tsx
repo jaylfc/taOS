@@ -15,9 +15,9 @@ import {
 } from "@/components/ui";
 import { MigrationBanner } from "@/components/MigrationBanner";
 import { type Agent } from "./types";
-import { useAgentShortcuts, type AgentShortcut } from "@/hooks/use-agent-shortcuts";
+import { useAgentShortcuts, type AgentShortcut, type ShortcutIcon } from "@/hooks/use-agent-shortcuts";
 
-const SHORTCUT_ICON: Record<string, React.ComponentType<{ size?: number }>> = {
+const SHORTCUT_ICON: Record<ShortcutIcon, React.ComponentType<{ size?: number }>> = {
   terminal: Terminal,
   tui: Wrench,
   dashboard: ExternalLink,
