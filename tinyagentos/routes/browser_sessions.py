@@ -12,7 +12,7 @@ Routes:
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -119,8 +119,16 @@ async def list_sessions(
 async def get_my_session(
     request: Request,
     current_user: dict[str, Any] = Depends(get_current_user),
+    device: str = Query(default="desktop"),
 ):
     """Return the caller's always-on browser session, creating and starting it if needed.
+
+    Pass ``?device=mobile`` for a phone client — the session runs portrait
+    (800x1600@30) with a mobile Chromium UA + touch so sites serve mobile
+    layouts. ``?device=desktop`` (default) runs landscape 1280x720.
+
+    If a running session exists in the opposite mode, it is re-presented:
+    container stopped (profile volume kept), restarted in the target mode.
 
     Placement order: host (if RAM-capable) -> best cluster worker -> 409.
     When running with a neko_url, attaches a short-lived stream_token.
@@ -132,8 +140,34 @@ async def get_my_session(
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
 
+    mobile = device == "mobile"
+
     mgr = request.app.state.browser_sessions
-    session = await mgr.get_or_create_mine(user_id)
+    session = await mgr.get_or_create_mine(user_id, mobile=mobile)
+    if session is None:
+        return JSONResponse({"error": "failed to create browser session"}, status_code=500)
+
+    # A device-class switch re-presents the session: stop the old container
+    # first so it releases its port + profile-volume lock before the new one.
+    old = session.pop("_represent_old", None) if isinstance(session, dict) else None
+    if old and old.get("container_id"):
+        try:
+            if old.get("node") in (None, "host"):
+                runner = request.app.state.browser_container_runner
+                await runner.stop(container_id=old["container_id"], http_port=old.get("http_port"))
+            else:
+                cluster = request.app.state.cluster_manager
+                worker = cluster.get_worker(old["node"])
+                if worker is not None:
+                    auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
+                    await mgr.stop_on_worker(
+                        session["id"], worker_url=worker.url,
+                        container_id=old["container_id"], http_port=old.get("http_port"),
+                        auth_token=auth_token,
+                        set_status=None,
+                    )
+        except Exception as exc:
+            logger.warning("re-present: failed to stop old container %s: %s", old.get("container_id"), exc)
 
     if session["status"] in ("pending", "idle"):
         cluster = request.app.state.cluster_manager
@@ -146,7 +180,8 @@ async def get_my_session(
         try:
             if kind == "host":
                 runner = request.app.state.browser_container_runner
-                session = await mgr.start_on_host(session["id"], profile_volume=vol, runner=runner)
+                session = await mgr.start_on_host(session["id"], profile_volume=vol,
+                                                   runner=runner, mobile=mobile)
             else:
                 worker = cluster.get_worker(node)
                 auth_token = getattr(request.app.state, "browser_worker_auth_token", None)
@@ -156,6 +191,7 @@ async def get_my_session(
                     worker_url=worker.url,
                     profile_volume=vol,
                     auth_token=auth_token,
+                    mobile=mobile,
                 )
         except BrowserWorkerError:
             return JSONResponse({"error": "worker_start_failed"}, status_code=502)

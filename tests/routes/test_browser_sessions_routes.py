@@ -547,6 +547,35 @@ async def test_migrate_session_unknown_session_returns_404(app, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_my_session_device_mobile_param_flows_through(client_host_capable):
+    """GET /mine?device=mobile starts the session and returns a mobile session."""
+    resp = await client_host_capable.get("/api/browser/sessions/mine?device=mobile")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body.get("is_mobile") is True
+
+
+@pytest.mark.asyncio
+async def test_get_my_session_device_desktop_param(client_host_capable):
+    """GET /mine?device=desktop (explicit) starts as desktop."""
+    resp = await client_host_capable.get("/api/browser/sessions/mine?device=desktop")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body.get("is_mobile") is False
+
+
+@pytest.mark.asyncio
+async def test_get_my_session_default_is_desktop(client_host_capable):
+    """GET /mine with no device param defaults to desktop."""
+    resp = await client_host_capable.get("/api/browser/sessions/mine")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("is_mobile") is False
+
+
+@pytest.mark.asyncio
 async def test_migrate_session_unknown_target_returns_409(app, tmp_path):
     """POST /migrate with a target that isn't a capable node returns 409."""
     bs = BrowserSessionManager(tmp_path / "bs_mig3.db", mock=True)

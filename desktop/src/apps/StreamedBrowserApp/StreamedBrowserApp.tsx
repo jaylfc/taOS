@@ -27,6 +27,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveBrowserView } from "@/apps/BrowserApp/LiveBrowserView";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { Loader2, MonitorPlay, AlertCircle, Monitor, Bot } from "lucide-react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 
@@ -71,11 +72,55 @@ interface SwitcherProps {
   sessions: SessionSummary[];
   selected: Selection;
   onSelect: (sel: Selection) => void;
+  isMobile: boolean;
 }
 
-function SessionSwitcher({ sessions, selected, onSelect }: SwitcherProps) {
+function SessionSwitcher({ sessions, selected, onSelect, isMobile }: SwitcherProps) {
   const agentSessions = sessions.filter((s) => s.owner_type === "agent");
   const isMineSel = selected.kind === "mine";
+
+  // Mobile: collapse the sidebar to a thin horizontal selector, and hide it
+  // entirely when there's only the user's own browser so the stream is full-bleed.
+  if (isMobile) {
+    if (agentSessions.length === 0 && selected.kind === "mine") return null;
+    return (
+      <nav
+        aria-label="Browser sessions"
+        className="flex flex-row gap-1.5 shrink-0 border-b border-shell-border-subtle bg-shell-surface px-2 py-1.5 overflow-x-auto"
+      >
+        <button
+          type="button"
+          aria-current={isMineSel ? "true" : undefined}
+          onClick={() => onSelect({ kind: "mine" })}
+          className={[
+            "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs whitespace-nowrap shrink-0 transition-colors",
+            isMineSel ? "bg-white/[0.12] text-shell-text" : "text-shell-text-secondary hover:bg-white/[0.06]",
+          ].join(" ")}
+        >
+          <Monitor size={13} aria-hidden="true" />
+          <span>My browser</span>
+        </button>
+        {agentSessions.map((s) => {
+          const isSel = selected.kind === "agent" && selected.sessionId === s.id;
+          return (
+            <button
+              key={s.id}
+              type="button"
+              aria-current={isSel ? "true" : undefined}
+              onClick={() => onSelect({ kind: "agent", sessionId: s.id, agentName: s.owner_id })}
+              className={[
+                "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs whitespace-nowrap shrink-0 transition-colors",
+                isSel ? "bg-white/[0.12] text-shell-text" : "text-shell-text-secondary hover:bg-white/[0.06]",
+              ].join(" ")}
+            >
+              <Bot size={13} aria-hidden="true" />
+              <span className="max-w-[120px] truncate">{s.owner_id}</span>
+            </button>
+          );
+        })}
+      </nav>
+    );
+  }
 
   return (
     <nav
@@ -164,6 +209,9 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
     }
   }, []);
 
+  // Declared early so fetchMine can capture it in its closure.
+  const isMobile = useIsMobile();
+
   // ── Session list poller ──────────────────────────────────────────────────
 
   const fetchSessionList = useCallback(async () => {
@@ -196,7 +244,8 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
 
     let resp: Response;
     try {
-      resp = await fetch("/api/browser/sessions/mine", { credentials: "include" });
+      const deviceParam = isMobile ? "mobile" : "desktop";
+      resp = await fetch(`/api/browser/sessions/mine?device=${deviceParam}`, { credentials: "include" });
     } catch {
       if (!cancelledRef.current) {
         setViewState({ phase: "error", message: "Could not reach the taOS server." });
@@ -243,7 +292,7 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
 
     setViewState({ phase: "connecting" });
     schedulePoll(session.id);
-  }, [stopPolling]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stopPolling, isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Agent session flow ───────────────────────────────────────────────────
 
@@ -484,8 +533,8 @@ export function StreamedBrowserApp({ windowId: _windowId }: StreamedBrowserAppPr
   };
 
   return (
-    <div className="flex w-full h-full overflow-hidden bg-shell-bg">
-      <SessionSwitcher sessions={sessions} selected={selected} onSelect={setSelected} />
+    <div className={`flex ${isMobile ? "flex-col" : "flex-row"} w-full h-full overflow-hidden bg-shell-bg`}>
+      <SessionSwitcher sessions={sessions} selected={selected} onSelect={setSelected} isMobile={isMobile} />
       {renderContent()}
     </div>
   );

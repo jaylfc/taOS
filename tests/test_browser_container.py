@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from tinyagentos.worker.browser_container import (
     resolve_neko_image, NekoImageSpec,
     DEFAULT_NEKO_IMAGE, DEFAULT_NEKO_GPU_IMAGE, DEFAULT_NEKO_RK3588_IMAGE,
+    NEKO_SCREEN, NEKO_SCREEN_MOBILE, MOBILE_CHROMIUM_CONF,
 )
 
 
@@ -119,3 +120,49 @@ def test_volume_import_args_untars_into_target_volume():
     argv = build_volume_import_args("taos-browser-s1")
     assert "taos-browser-s1:/to" in argv
     assert "tar" in argv
+
+
+# ---------------------------------------------------------------------------
+# Mobile mode: build_neko_run_args(mobile=True/False)
+# ---------------------------------------------------------------------------
+
+def test_mobile_args_uses_portrait_screen_and_conf_mount():
+    argv = _args(mobile=True)
+    # Portrait screen env var
+    assert f"NEKO_DESKTOP_SCREEN={NEKO_SCREEN_MOBILE}" in argv
+    # mobile-chromium.conf bind-mount present
+    conf_mount = f"{MOBILE_CHROMIUM_CONF}:/etc/neko/supervisord/chromium.conf:ro"
+    assert conf_mount in argv
+
+
+def test_desktop_args_uses_landscape_screen_no_conf_mount():
+    argv = _args(mobile=False)
+    # Landscape screen
+    assert f"NEKO_DESKTOP_SCREEN={NEKO_SCREEN}" in argv
+    # No conf mount
+    assert "/etc/neko/supervisord/chromium.conf" not in " ".join(argv)
+
+
+def test_mobile_conf_file_exists():
+    """The mobile-chromium.conf must actually exist in the repo."""
+    assert MOBILE_CHROMIUM_CONF.exists(), f"Missing: {MOBILE_CHROMIUM_CONF}"
+
+
+# ---------------------------------------------------------------------------
+# BrowserContainerRunner.start mobile mock round-trip
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_runner_start_mobile_mock_returns_details():
+    runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=None)
+    out = await runner.start(session_id="mobile-session", profile_volume="v", mobile=True)
+    assert "container_id" in out
+    assert "neko_url" in out
+
+
+@pytest.mark.asyncio
+async def test_runner_start_desktop_mock_returns_details():
+    runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=None)
+    out = await runner.start(session_id="desktop-session", profile_volume="v", mobile=False)
+    assert "container_id" in out
+    assert "neko_url" in out
