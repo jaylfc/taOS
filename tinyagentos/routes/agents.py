@@ -282,7 +282,10 @@ async def add_agent(request: Request, body: AgentCreate):
         mode, event = idempotency_cache.try_reserve(scoped_key)
         if mode == "wait":
             await event.wait()
-            return idempotency_cache.get(scoped_key)
+            cached = idempotency_cache.get(scoped_key)
+            if cached is None:
+                return JSONResponse({"error": "concurrent request failed"}, status_code=503)
+            return cached
 
     # Wrap so any unexpected exception still unblocks idempotency waiters.
     try:
@@ -445,7 +448,10 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         mode, event = idempotency_cache.try_reserve(scoped_key)
         if mode == "wait":
             await event.wait()
-            return idempotency_cache.get(scoped_key)
+            cached = idempotency_cache.get(scoped_key)
+            if cached is None:
+                return JSONResponse({"error": "concurrent request failed"}, status_code=503)
+            return cached
 
     # Wrap so any unexpected exception still unblocks idempotency waiters.
     try:

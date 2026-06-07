@@ -36,6 +36,8 @@ class ClusterManager:
         # Track worker names seen at least once so we only fire worker.join
         # on the very first appearance within this process lifetime.
         self._ever_seen: set[str] = set()
+        # Strong references to background tasks to prevent GC before completion.
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def start(self):
         self._monitor_task = asyncio.create_task(self._monitor_loop())
@@ -113,8 +115,9 @@ class ClusterManager:
                     info.name,
                 )
 
-        import asyncio as _asyncio
-        _asyncio.create_task(_promote_bg())
+        task = asyncio.create_task(_promote_bg())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def kv_quant_union(self) -> list[str]:
         """Return the set-union of KV cache quant types across all online workers.
