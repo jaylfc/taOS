@@ -49,7 +49,7 @@ export function AgentDetailPanel({
   const [logs, setLogs] = useState<string>("Fetching logs...");
   const scrollRef = useRef<HTMLPreElement>(null);
   const agentName = agent.name;
-  const { shortcuts, loading: shortcutsLoading } = useAgentShortcuts(agentName);
+  const { shortcuts, loading: shortcutsLoading, error: shortcutsError, refetch: refetchShortcuts } = useAgentShortcuts(agentName);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -202,6 +202,13 @@ export function AgentDetailPanel({
             </div>
             {shortcutsLoading ? (
               <p className="text-sm text-shell-text-tertiary">Loading shortcuts…</p>
+            ) : shortcutsError ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-sm text-shell-text-secondary">Failed to load shortcuts: {shortcutsError}</p>
+                <Button variant="outline" size="sm" className="self-start" onClick={refetchShortcuts}>
+                  Retry
+                </Button>
+              </div>
             ) : shortcuts.length === 0 ? (
               <p className="text-sm text-shell-text-tertiary">No shortcuts configured for this agent.</p>
             ) : (

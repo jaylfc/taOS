@@ -15,12 +15,14 @@ interface UseAgentShortcutsResult {
   shortcuts: AgentShortcut[];
   loading: boolean;
   error: string | null;
+  refetch: () => void;
 }
 
 export function useAgentShortcuts(agentId: string): UseAgentShortcutsResult {
   const [shortcuts, setShortcuts] = useState<AgentShortcut[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +53,7 @@ export function useAgentShortcuts(agentId: string): UseAgentShortcutsResult {
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, tick]);
 
-  return { shortcuts, loading, error };
+  return { shortcuts, loading, error, refetch: () => setTick((t) => t + 1) };
 }
