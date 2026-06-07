@@ -152,6 +152,11 @@ describe("ContextMenu keyboard navigation", () => {
 
     // First item of updated items should now be focused
     expect(document.activeElement?.textContent).toBe("Share");
+
+    // activeIndex must be synced: the newly focused item should carry tabIndex=0
+    const updatedMenuItems = screen.getAllByRole("menuitem");
+    expect(updatedMenuItems[0].getAttribute("tabIndex")).toBe("0");
+    expect(updatedMenuItems[1].getAttribute("tabIndex")).toBe("-1");
   });
 
   it("ArrowDown when focus is outside list moves to first enabled item", () => {

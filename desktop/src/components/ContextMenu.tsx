@@ -34,7 +34,10 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   // Focus the first enabled menuitem on open, and refocus if items change while open
   useEffect(() => {
     const buttons = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])');
-    buttons?.[0]?.focus();
+    if (buttons?.[0]) {
+      buttons[0].focus();
+      setActiveIndex(0);
+    }
   }, [items]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -91,6 +94,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       ref={menuRef}
       role="menu"
       aria-label="Context menu"
+      aria-orientation="vertical"
       onKeyDown={handleKeyDown}
       className="fixed z-[10001] min-w-[200px] py-1 rounded-lg border border-shell-border-strong overflow-hidden"
       style={{
