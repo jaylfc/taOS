@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections import OrderedDict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -53,8 +55,37 @@ class IdempotencyCache:
     concurrent retry with the same Idempotency-Key create a duplicate.
     """
 
+    _TTL_SECONDS: float = 3600.0  # cached results expire after 1 hour
+    _MAX_SIZE: int = 1000         # LRU cap; oldest completed entry evicted first
+
     def __init__(self) -> None:
-        self._entries: dict[str, tuple[asyncio.Event, dict | None]] = {}
+        # Values: (event, result_or_None, inserted_at)
+        self._entries: OrderedDict[str, tuple[asyncio.Event, dict | None, float]] = OrderedDict()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _is_expired(self, inserted_at: float) -> bool:
+        return (time.monotonic() - inserted_at) >= self._TTL_SECONDS
+
+    def _evict_if_needed(self) -> None:
+        """Drop the oldest *completed* entry when over the size cap."""
+        while len(self._entries) >= self._MAX_SIZE:
+            # Walk from the front (oldest) and evict the first completed entry.
+            # In-flight entries (event not set) are skipped so we never pull
+            # the rug out from under a waiter.
+            for k, (ev, _res, _ts) in self._entries.items():
+                if ev.is_set():
+                    del self._entries[k]
+                    break
+            else:
+                # All remaining entries are in-flight; nothing safe to evict.
+                break
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def try_reserve(self, key: str) -> tuple[str, asyncio.Event]:
         """Attempt to reserve *key*.
@@ -66,32 +97,51 @@ class IdempotencyCache:
         the key — await ``event.wait()`` and call ``get()`` for the
         result.
         """
-        if key in self._entries:
-            event, _ = self._entries[key]
-            return ("wait", event)
+        entry = self._entries.get(key)
+        if entry is not None:
+            ev, _res, inserted_at = entry
+            # Treat TTL-expired *completed* entries as absent so a fresh
+            # request doesn't get a stale cached result.
+            if ev.is_set() and self._is_expired(inserted_at):
+                del self._entries[key]
+            else:
+                # Move to end (most-recently-used) so LRU eviction keeps
+                # frequently retried keys alive longest.
+                self._entries.move_to_end(key)
+                return ("wait", ev)
 
+        self._evict_if_needed()
         event = asyncio.Event()
-        self._entries[key] = (event, None)
+        self._entries[key] = (event, None, time.monotonic())
         return ("proceed", event)
 
     def set(self, key: str, result: dict) -> None:
         """Store *result* and wake all waiters on *key*."""
         entry = self._entries.get(key)
         if entry is None:
+            self._evict_if_needed()
             event = asyncio.Event()
             event.set()
-            self._entries[key] = (event, result)
+            self._entries[key] = (event, result, time.monotonic())
             return
-        event, _ = entry
-        self._entries[key] = (event, result)
+        event, _, inserted_at = entry
+        self._entries[key] = (event, result, inserted_at)
+        self._entries.move_to_end(key)
         event.set()
 
     def get(self, key: str) -> dict | None:
-        """Return the cached result for *key*, or ``None``."""
+        """Return the cached result for *key*, or ``None``.
+
+        Returns ``None`` for unknown or TTL-expired keys.
+        """
         entry = self._entries.get(key)
         if entry is None:
             return None
-        _, result = entry
+        ev, result, inserted_at = entry
+        if ev.is_set() and self._is_expired(inserted_at):
+            del self._entries[key]
+            return None
+        self._entries.move_to_end(key)
         return result
 
 

@@ -1,5 +1,6 @@
 """Tests for IdempotencyCache — concurrency-safe request deduplication."""
 import asyncio
+import time
 
 import pytest
 
@@ -93,3 +94,91 @@ class TestIdempotencyCache:
         # All subsequent retrievals return the same result
         assert cache.get("req-1") == {"status": "deployed"}
         assert cache.get("req-1") == {"status": "deployed"}
+
+
+class TestIdempotencyCacheEviction:
+    """LRU eviction and TTL expiry tests."""
+
+    def test_lru_eviction_past_max_size(self):
+        """When the cache exceeds _MAX_SIZE completed entries, the oldest
+        completed entry is evicted so size stays bounded."""
+        cache = IdempotencyCache()
+        # Lower the cap so the test doesn't need to insert 1000 items.
+        cache._MAX_SIZE = 5
+
+        # Fill with 5 completed entries.
+        for i in range(5):
+            key = f"key-{i}"
+            cache.try_reserve(key)
+            cache.set(key, {"n": i})
+
+        # All 5 are present.
+        assert len(cache._entries) == 5
+
+        # Adding a 6th triggers eviction of the oldest (key-0).
+        cache.try_reserve("key-new")
+        cache.set("key-new", {"n": 99})
+
+        assert len(cache._entries) == 5
+        assert cache.get("key-0") is None          # evicted
+        assert cache.get("key-new") == {"n": 99}   # newest present
+
+    def test_lru_does_not_evict_in_flight_entries(self):
+        """In-flight entries (event not yet set) must not be evicted even
+        when the cache is at capacity — evicting them would strand waiters."""
+        cache = IdempotencyCache()
+        cache._MAX_SIZE = 3
+
+        # Reserve 3 keys but don't complete them (in-flight).
+        for i in range(3):
+            cache.try_reserve(f"inflight-{i}")
+
+        # Trying to add a 4th should NOT evict any in-flight entry because
+        # _evict_if_needed skips entries whose event is not set.
+        cache.try_reserve("new-key")
+
+        # All 4 entries still present (no safe eviction target).
+        assert len(cache._entries) == 4
+
+    def test_ttl_expiry_on_get_returns_none(self):
+        """get() returns None and removes the entry once TTL has elapsed."""
+        cache = IdempotencyCache()
+        cache.try_reserve("old-key")
+        cache.set("old-key", {"status": "created"})
+
+        # Back-date the insertion timestamp to simulate TTL expiry.
+        ev, res, _ts = cache._entries["old-key"]
+        cache._entries["old-key"] = (ev, res, time.monotonic() - cache._TTL_SECONDS - 1)
+
+        assert cache.get("old-key") is None
+        assert "old-key" not in cache._entries
+
+    def test_ttl_expiry_on_try_reserve_allows_fresh_reserve(self):
+        """try_reserve on a TTL-expired key returns 'proceed' and issues a
+        new event, allowing the request to be processed again."""
+        cache = IdempotencyCache()
+        cache.try_reserve("stale")
+        cache.set("stale", {"status": "created"})
+
+        # Expire the entry.
+        ev, res, _ts = cache._entries["stale"]
+        cache._entries["stale"] = (ev, res, time.monotonic() - cache._TTL_SECONDS - 1)
+
+        mode, new_event = cache.try_reserve("stale")
+        assert mode == "proceed"
+        assert not new_event.is_set()
+
+    def test_non_expired_entry_not_evicted_by_ttl(self):
+        """Fresh entries survive TTL checks and remain accessible."""
+        cache = IdempotencyCache()
+        cache.try_reserve("fresh")
+        cache.set("fresh", {"status": "ok"})
+
+        # Should still be present immediately after set().
+        assert cache.get("fresh") == {"status": "ok"}
+
+    def test_max_size_constant_is_sensible(self):
+        """Sanity-check: default _MAX_SIZE is 1000 and _TTL_SECONDS is 3600."""
+        cache = IdempotencyCache()
+        assert cache._MAX_SIZE == 1000
+        assert cache._TTL_SECONDS == 3600.0
