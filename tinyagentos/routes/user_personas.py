@@ -29,13 +29,13 @@ class UpdatePersonaBody(BaseModel):
 
 @router.get("/api/user-personas")
 async def list_personas(request: Request):
-    personas = _store(request).list()
+    personas = await _store(request).alist()
     return JSONResponse({"personas": personas})
 
 
 @router.post("/api/user-personas")
 async def create_persona(request: Request, body: CreatePersonaBody):
-    pid = _store(request).create(
+    pid = await _store(request).acreate(
         name=body.name,
         soul_md=body.soul_md or "",
         agent_md=body.agent_md or "",
@@ -46,7 +46,7 @@ async def create_persona(request: Request, body: CreatePersonaBody):
 
 @router.get("/api/user-personas/{pid}")
 async def get_persona(request: Request, pid: str):
-    persona = _store(request).get(pid)
+    persona = await _store(request).aget(pid)
     if persona is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(persona)
@@ -54,14 +54,14 @@ async def get_persona(request: Request, pid: str):
 
 @router.patch("/api/user-personas/{pid}")
 async def update_persona(request: Request, pid: str, body: UpdatePersonaBody):
-    if _store(request).get(pid) is None:
+    if await _store(request).aget(pid) is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
-    _store(request).update(pid, **fields)
+    await _store(request).aupdate(pid, **fields)
     return JSONResponse({"ok": True})
 
 
 @router.delete("/api/user-personas/{pid}")
 async def delete_persona(request: Request, pid: str):
-    _store(request).delete(pid)
+    await _store(request).adelete(pid)
     return JSONResponse({"ok": True})

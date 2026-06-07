@@ -13,6 +13,8 @@ from typing import Optional
 
 import aiosqlite
 
+from tinyagentos.db_migrations import apply_wal_pragmas_async
+
 
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS benchmarks (
@@ -49,6 +51,7 @@ class BenchmarkStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.path))
         self._db.row_factory = aiosqlite.Row
+        await apply_wal_pragmas_async(self._db)
         await self._db.executescript(CREATE_SQL)
         await self._db.commit()
 
