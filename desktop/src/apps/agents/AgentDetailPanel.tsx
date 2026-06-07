@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Bot, Box, ScrollText, X, Wrench, MessageSquare, Archive } from "lucide-react";
+import { Bot, Box, ScrollText, X, Wrench, MessageSquare, Archive, Terminal, ExternalLink, Stethoscope, Play } from "lucide-react";
 import { AgentSkillsPanel } from "../AgentSkillsPanel";
 import { AgentMessagesPanel } from "../AgentMessagesPanel";
 import { PersonaTab } from "@/components/agent-settings/PersonaTab";
@@ -15,30 +15,41 @@ import {
 } from "@/components/ui";
 import { MigrationBanner } from "@/components/MigrationBanner";
 import { type Agent } from "./types";
+import { useAgentShortcuts, type AgentShortcut, type ShortcutIcon } from "@/hooks/use-agent-shortcuts";
+
+const SHORTCUT_ICON: Record<ShortcutIcon, React.ComponentType<{ size?: number }>> = {
+  terminal: Terminal,
+  tui: Wrench,
+  dashboard: ExternalLink,
+  diagnostic: Stethoscope,
+};
 
 /* ------------------------------------------------------------------ */
 /*  AgentDetailPanel (Logs + Skills tabs)                              */
 /* ------------------------------------------------------------------ */
 
-export type DetailTab = "logs" | "persona" | "memory" | "framework" | "skills" | "messages";
+export type DetailTab = "logs" | "persona" | "memory" | "framework" | "skills" | "messages" | "shortcuts";
 
 export function AgentDetailPanel({
   agent,
   initialTab,
   onClose,
   onAgentUpdated,
+  onShortcutLaunch,
   fullHeight = false,
 }: {
   agent: Agent;
   initialTab: DetailTab;
   onClose: () => void;
   onAgentUpdated: () => void;
+  onShortcutLaunch: (agentId: string, shortcut: AgentShortcut) => void;
   fullHeight?: boolean;
 }) {
   const [tab, setTab] = useState<DetailTab>(initialTab);
   const [logs, setLogs] = useState<string>("Fetching logs...");
   const scrollRef = useRef<HTMLPreElement>(null);
   const agentName = agent.name;
+  const { shortcuts, loading: shortcutsLoading, error: shortcutsError, refetch: refetchShortcuts } = useAgentShortcuts(agentName);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -138,6 +149,10 @@ export function AgentDetailPanel({
               <MessageSquare size={13} className="mr-1.5" />
               Messages
             </TabsTrigger>
+            <TabsTrigger value="shortcuts">
+              <Terminal size={13} className="mr-1.5" />
+              Shortcuts
+            </TabsTrigger>
           </TabsList>
         </div>
         <Button
@@ -176,6 +191,47 @@ export function AgentDetailPanel({
         </TabsContent>
         <TabsContent value="messages" className="h-full mt-0">
           <AgentMessagesPanel agentName={agent.name} />
+        </TabsContent>
+        <TabsContent value="shortcuts" className="h-full mt-0 overflow-auto">
+          <div className="p-4 flex flex-col gap-4">
+            <div>
+              <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-1">Developer access</p>
+              <p className="text-xs text-shell-text-secondary">
+                These shortcuts open developer tools for this agent. They are intended for advanced users and debugging — most users will not need them.
+              </p>
+            </div>
+            {shortcutsLoading ? (
+              <p className="text-sm text-shell-text-tertiary">Loading shortcuts…</p>
+            ) : shortcutsError ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-sm text-shell-text-secondary">Failed to load shortcuts: {shortcutsError}</p>
+                <Button variant="outline" size="sm" className="self-start" onClick={refetchShortcuts}>
+                  Retry
+                </Button>
+              </div>
+            ) : shortcuts.length === 0 ? (
+              <p className="text-sm text-shell-text-tertiary">No shortcuts configured for this agent.</p>
+            ) : (
+              <div className="flex flex-col gap-2" role="list" aria-label="Agent shortcuts">
+                {shortcuts.map((shortcut) => {
+                  const Icon = SHORTCUT_ICON[shortcut.icon] ?? Play;
+                  return (
+                    <div key={shortcut.idx} role="listitem">
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start gap-3 px-3 py-2 h-auto"
+                        onClick={() => onShortcutLaunch(agentName, shortcut)}
+                        aria-label={shortcut.label}
+                      >
+                        <Icon size={15} aria-hidden="true" />
+                        <span className="text-sm">{shortcut.label}</span>
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </TabsContent>
       </div>
     </Tabs>

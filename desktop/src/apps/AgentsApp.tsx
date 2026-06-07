@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { Bot, Plus, HardDrive, MessageSquare } from "lucide-react";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
-import { AgentShortcutRow } from "@/components/AgentShortcutRow";
 import type { AgentShortcut } from "@/hooks/use-agent-shortcuts";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
@@ -407,6 +406,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               initialTab={detail.tab}
               onClose={() => setDetail(null)}
               onAgentUpdated={fetchAgents}
+              onShortcutLaunch={handleShortcutLaunch}
               fullHeight
             />
           </div>
@@ -604,7 +604,6 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                   onViewMessages={(name) => setDetail({ name, tab: "messages" })}
                   onDelete={handleDelete}
                   onResume={handleResume}
-                  leftActions={<AgentShortcutRow agentId={agent.name} onLaunch={handleShortcutLaunch} btnCls="h-11 w-11 md:h-8 md:w-8" />}
                 />
               ))}
             </div>
