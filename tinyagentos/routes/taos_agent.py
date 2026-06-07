@@ -11,6 +11,12 @@ GET  /api/taos-agent/attachments/files/{name}  → serve a stored attachment
 
 The system prompt is read from docs/taos-agent-manual.md at module import time.
 When a persona is set via PUT /api/taos-agent/persona it is used instead.
+
+Attachment storage is XSS-safe:
+- Files are stored on disk under a bare uuid (no user-controlled extension).
+- A <uuid>.json sidecar records the original filename + sniffed MIME type.
+- serve_attachment forces downloads for anything that is not a known-safe raster
+  image (svg/html/pdf etc. are never served inline same-origin).
 """
 from __future__ import annotations
 
@@ -19,11 +25,12 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
@@ -33,6 +40,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _PREF_NAMESPACE = "taos_agent"
+
+# ---------------------------------------------------------------------------
+# Attachment helpers
+# ---------------------------------------------------------------------------
+
+# Magic-byte signatures for raster image types we are willing to serve inline.
+_MAGIC: list[tuple[bytes, str]] = [
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),  # refined below
+]
+_SAFE_INLINE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+# Security headers added to every attachment response.
+_NOSNIFF = "X-Content-Type-Options"
+_CSP_SANDBOX = "Content-Security-Policy"
+_CSP_SANDBOX_VALUE = "default-src 'none'; sandbox"
+
+
+def _sniff_mime(data: bytes) -> str:
+    """Return a MIME type sniffed from *data*'s magic bytes.
+
+    Only returns types from _SAFE_INLINE_MIMES; everything else becomes
+    ``application/octet-stream`` so the browser is never given a type it
+    could render as HTML/SVG/etc.
+    """
+    for magic, mime in _MAGIC:
+        if data[:len(magic)] == magic:
+            if mime == "image/webp":
+                # RIFF....WEBP
+                if len(data) >= 12 and data[8:12] == b"WEBP":
+                    return "image/webp"
+                return "application/octet-stream"
+            return mime
+    return "application/octet-stream"
+
+
+def _sanitize_disposition_filename(name: str) -> str:
+    """Strip characters that could break a Content-Disposition header value."""
+    sanitized = re.sub(r'[\r\n\\"\'<>]', "", name).strip()
+    return sanitized or "download"
 _MANUAL_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "taos-agent-manual.md"
 
 _DONE = object()
@@ -83,40 +133,111 @@ class AttachmentMeta(BaseModel):
 @router.post("/api/taos-agent/attachments/upload")
 async def upload_attachment(request: Request, file: UploadFile = File(...)):
     """Accept a file upload, store it, and return a record the frontend can
-    embed inline when sending the chat prompt."""
+    embed inline when sending the chat prompt.
+
+    Security: the file is stored under a bare uuid (no user-controlled
+    extension).  The real MIME type is sniffed from magic bytes and stored in
+    a JSON sidecar.  serve_attachment uses those to serve safe responses.
+    """
     data_dir: Path = request.app.state.data_dir
     upload_dir = data_dir / "taos-agent-files"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    ext = Path(file.filename or "file").suffix
-    stored_name = f"{uuid.uuid4().hex[:12]}{ext}"
-    dest = upload_dir / stored_name
+
     content = await file.read()
     _MAX_BYTES = 50 * 1024 * 1024
     if len(content) > _MAX_BYTES:
         return JSONResponse({"error": "file too large (50 MB max)"}, status_code=413)
+
+    # Store under a bare uuid — no user-controlled extension.
+    file_id = uuid.uuid4().hex[:12]
+    dest = upload_dir / file_id
     dest.write_bytes(content)
-    mime, _ = mimetypes.guess_type(file.filename or "")
+
+    # Sniff the real MIME from magic bytes; do NOT trust filename or content_type.
+    sniffed_mime = _sniff_mime(content)
+    original_filename = file.filename or "uploaded"
+
+    # Persist metadata in a sidecar so serve_attachment can look it up.
+    sidecar = upload_dir / f"{file_id}.json"
+    sidecar.write_text(
+        json.dumps({"filename": original_filename, "mime": sniffed_mime}),
+        encoding="utf-8",
+    )
+
     return JSONResponse({
-        "filename": file.filename or "uploaded",
-        "mime_type": mime or file.content_type or "application/octet-stream",
+        "filename": original_filename,
+        "mime_type": sniffed_mime,
         "size": len(content),
-        "url": f"/api/taos-agent/attachments/files/{stored_name}",
+        "url": f"/api/taos-agent/attachments/files/{file_id}",
     })
 
 
 @router.get("/api/taos-agent/attachments/files/{token}")
 async def serve_attachment(request: Request, token: str):
-    """Serve a previously uploaded taOS agent attachment."""
+    """Serve a previously uploaded taOS agent attachment.
+
+    Security:
+    - Only the bare uuid is accepted as the token (no path separators).
+    - MIME is read from the sidecar (sniffed at upload time), never from the
+      filename or OS file-type detection.
+    - Known-safe raster images (png/jpeg/gif/webp) are served inline with
+      strict security headers.
+    - Everything else (svg, html, pdf, binaries …) is force-downloaded as
+      application/octet-stream so the browser cannot render it same-origin.
+    """
+    # Reject any token that looks like a path traversal attempt.
+    if "/" in token or "\\" in token or ".." in token:
+        return JSONResponse({"error": "file not found"}, status_code=404)
+
     data_dir: Path = request.app.state.data_dir
     upload_dir = data_dir / "taos-agent-files"
-    # Resolve by prefix — the actual filename is {token_prefix}-{original}
-    candidates = list(upload_dir.glob(f"{token}*"))
-    if not candidates:
+
+    file_path = upload_dir / token
+    sidecar_path = upload_dir / f"{token}.json"
+
+    # Path-safety check.
+    try:
+        if not file_path.resolve().is_relative_to(upload_dir.resolve()):
+            return JSONResponse({"error": "file not found"}, status_code=404)
+    except Exception:
         return JSONResponse({"error": "file not found"}, status_code=404)
-    file_path = candidates[0]
-    if not file_path.exists() or not file_path.resolve().is_relative_to(upload_dir.resolve()):
+
+    if not file_path.exists() or not sidecar_path.exists():
         return JSONResponse({"error": "file not found"}, status_code=404)
-    return FileResponse(file_path)
+
+    # Load metadata from sidecar.
+    try:
+        meta = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        sniffed_mime: str = meta.get("mime", "application/octet-stream")
+        original_filename: str = meta.get("filename", token)
+    except Exception:
+        sniffed_mime = "application/octet-stream"
+        original_filename = token
+
+    base_headers = {
+        _NOSNIFF: "nosniff",
+        _CSP_SANDBOX: _CSP_SANDBOX_VALUE,
+    }
+
+    if sniffed_mime in _SAFE_INLINE_MIMES:
+        # Serve known-safe raster images inline so image previews work.
+        return FileResponse(
+            file_path,
+            media_type=sniffed_mime,
+            headers=base_headers,
+        )
+
+    # Everything else: force download — never let the browser render it.
+    safe_name = _sanitize_disposition_filename(original_filename)
+    download_headers = {
+        **base_headers,
+        "Content-Disposition": f'attachment; filename="{safe_name}"',
+    }
+    return FileResponse(
+        file_path,
+        media_type="application/octet-stream",
+        headers=download_headers,
+    )
 
 
 @router.get("/api/taos-agent/settings")
