@@ -16,7 +16,10 @@ class WebChatConnector:
         self.router = router
         self._connections: dict[str, WebSocket] = {}
 
-    async def handle_websocket(self, websocket: WebSocket):
+    async def stop(self):
+        """No-op: WebChatConnector has no background task to stop."""
+
+    async def handle_websocket(self, websocket: WebSocket, user_id: str | None = None):
         await websocket.accept()
         conn_id = str(uuid.uuid4())[:8]
         self._connections[conn_id] = websocket
@@ -28,7 +31,7 @@ class WebChatConnector:
 
                 incoming = IncomingMessage(
                     id=str(uuid.uuid4())[:8],
-                    from_id=conn_id,
+                    from_id=user_id or conn_id,
                     from_name=msg_data.get("name", "User"),
                     platform="web",
                     channel_id=f"webchat-{conn_id}",
