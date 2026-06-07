@@ -281,6 +281,9 @@ async def deploy_agent(req: DeployRequest) -> dict:
         cpu_limit=req.cpu_limit,
         mounts=mounts,
         env=env,
+        # os.getuid() is the UID of the controller process (the 'taos' system
+        # user when running under systemd).  raw.idmap maps container-root to
+        # this host UID so the trace bind-mount is writable by the container.
         host_uid=os.getuid(),
         root_size_gib=req.root_size_gib,
     )

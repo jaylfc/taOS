@@ -1230,6 +1230,80 @@ else
     log "TAOS_SKIP_QMD is set — skipping qmd.service install"
 fi
 
+# --- dedicated service user -----------------------------------------------
+# The controller runs as an unprivileged system user 'taos' rather than root.
+# The installer itself still runs as root (via sudo bash); only the resulting
+# systemd unit drops to 'taos'.  The user needs access to the incus and docker
+# sockets (group membership) but no elevated privileges beyond that.
+
+ensure_taos_user() {
+    [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS (launchd agent)
+
+    # Create the system user if absent. useradd -r = system account (no home
+    # dir by default, no expiry). -M = do not create /home/taos. -d sets the
+    # "home" field in /etc/passwd to INSTALL_DIR (used by some tools for ~
+    # expansion, not an actual home directory on disk).
+    if ! id -u taos >/dev/null 2>&1; then
+        log "creating system user 'taos' for the controller service"
+        useradd -r -M -s /usr/sbin/nologin -d "$INSTALL_DIR" taos \
+            || useradd -r -M -s /sbin/nologin -d "$INSTALL_DIR" taos \
+            || { warn "useradd failed — the service will not run as 'taos'"; return 1; }
+        log "system user 'taos' created"
+    else
+        log "system user 'taos' already exists — skipping useradd"
+    fi
+
+    # Add 'taos' to the incus group so it can reach the incus socket without
+    # root. Warn (don't fail) if the group doesn't exist — the socket is still
+    # usable if incus is not installed on this host.
+    if getent group incus >/dev/null 2>&1; then
+        usermod -aG incus taos >/dev/null 2>&1 \
+            && log "added 'taos' to the 'incus' group" \
+            || warn "could not add 'taos' to the 'incus' group — agent container deploys may fail"
+    else
+        warn "'incus' group not found — skipping (install Incus first, then re-run to add 'taos' to the group)"
+    fi
+
+    # Mirror the existing docker-group handling: add 'taos' to docker so the
+    # controller can manage Store Docker apps. Warn if docker isn't present.
+    if getent group docker >/dev/null 2>&1; then
+        usermod -aG docker taos >/dev/null 2>&1 \
+            && log "added 'taos' to the 'docker' group" \
+            || warn "could not add 'taos' to the 'docker' group — Store Docker apps may fail"
+    else
+        warn "'docker' group not found — skipping (install Docker first, then re-run to add 'taos' to the group)"
+    fi
+}
+
+# --- data dir ownership + permissions ------------------------------------
+# After the venv + data dir are set up, hand ownership of the runtime data
+# tree to the 'taos' user so the service can read/write it.  Sensitive files
+# get tighter permissions (600).  Idempotent: chown/chmod are always safe
+# to re-run.
+
+set_data_dir_ownership() {
+    [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS
+    ! id -u taos >/dev/null 2>&1 && return 0  # no-op if user wasn't created
+
+    log "setting ownership of $INSTALL_DIR/data/ → taos:taos (mode 0700)"
+    # The venv + source files stay owned by root (readable by taos).
+    # Only the runtime data directory — where the controller writes secrets,
+    # sessions, and the agent trace files — needs to be owned by 'taos'.
+    chown -R taos:taos "$INSTALL_DIR/data" 2>/dev/null || true
+    chmod 0700 "$INSTALL_DIR/data"
+
+    # Tighten sensitive credential files if they already exist.
+    for f in \
+        "$INSTALL_DIR/data/.auth_password" \
+        "$INSTALL_DIR/data/.auth_user.json" \
+        "$INSTALL_DIR/data/.auth_sessions" \
+        "$INSTALL_DIR/data/.auth_local_token" \
+        "$INSTALL_DIR/data/.litellm_db_url" \
+        "$INSTALL_DIR/data/browser_cookie_key.hex"; do
+        [[ -f "$f" ]] && chmod 0600 "$f" || true
+    done
+}
+
 # --- tinyagentos.service install -----------------------------------------
 
 install_linux_systemd_system() {
@@ -1243,14 +1317,19 @@ install_linux_systemd_system() {
     # if set at install time, default to 0 (disabled).
     local taos_prefetch="${TAOS_PREFETCH_BASE_IMAGE:-0}"
 
+    # Create the dedicated service user and assign group memberships.
+    ensure_taos_user
+
     # Install graceful-stop script
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
     log "installed /usr/local/bin/taos-graceful-stop"
 
     # Stamp the template from the repo, substituting install-time variables.
+    # The service runs as the dedicated 'taos' system user, not the installer's
+    # $USER.  The installer itself still runs as root.
     sed \
-        -e "s|TAOS_USER|$USER|g" \
-        -e "s|TAOS_GROUP|$(id -gn)|g" \
+        -e "s|TAOS_USER|taos|g" \
+        -e "s|TAOS_GROUP|taos|g" \
         -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
         -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
         -e "s|TAOS_PORT|$TAOS_PORT|g" \
@@ -1262,7 +1341,10 @@ install_linux_systemd_system() {
     # ExecStart now runs `python -m tinyagentos`, which reads these (rather
     # than uvicorn CLI args), so the dual-port browser-proxy origin starts.
     $sudo_cmd sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
-    log "installed $unit (system unit, runs as $USER)"
+    log "installed $unit (system unit, runs as 'taos')"
+
+    # Hand the data directory to the service user before the unit first starts.
+    set_data_dir_ownership
 
     # Install pre-shutdown hook
     if [[ -f "$INSTALL_DIR/systemd/taos-pre-shutdown.service" ]]; then
@@ -1275,7 +1357,7 @@ install_linux_systemd_system() {
     if [[ -f /etc/systemd/system/taos-pre-shutdown.service ]]; then
         $sudo_cmd systemctl enable taos-pre-shutdown.service
     fi
-    log "controller running as system service"
+    log "controller running as system service (user: taos)"
     log "check: systemctl status tinyagentos"
     log "logs:  journalctl -u tinyagentos -f"
 }
