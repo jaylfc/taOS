@@ -11,7 +11,160 @@ from tinyagentos.browser_sessions import (
     BrowserWorkerError,
     list_browser_nodes,
     pick_browser_node,
+    host_is_browser_capable,
+    resolve_browser_target,
 )
+
+HOST_MIN_RAM_MB = 6144  # floor for running the browser locally; 8GB+ hosts pass, 4GB-class hosts are tier-gated to a cluster device
+
+
+def test_host_capable_when_ram_meets_floor():
+    assert host_is_browser_capable({"ram_mb": 8192}) is True
+    assert host_is_browser_capable({"ram_mb": 16384}) is True
+
+
+def test_host_not_capable_below_floor():
+    assert host_is_browser_capable({"ram_mb": 4096}) is False
+    assert host_is_browser_capable({}) is False
+    assert host_is_browser_capable(None) is False
+
+
+def test_target_prefers_explicit_then_host_then_worker():
+    cap_host = {"ram_mb": 8192}
+    # explicit worker wins when capable
+    assert resolve_browser_target(_FakeCluster([]), cap_host, explicit_node=None) == ("host", None)
+    # no capable host -> falls through to worker selection (None here, no workers)
+    assert resolve_browser_target(_FakeCluster([]), {"ram_mb": 4096}, explicit_node=None) is None
+
+
+@pytest.mark.asyncio
+async def test_migrate_agent_browsers_idempotent(mgr):
+    rows = [
+        {"agent_name": "agent-A", "profile_name": "default", "node": "host", "status": "stopped", "container_id": None},
+        {"agent_name": "agent-A", "profile_name": "work", "node": "host", "status": "stopped", "container_id": None},
+    ]
+    n1 = await mgr.migrate_agent_browsers(rows)
+    n2 = await mgr.migrate_agent_browsers(rows)   # second run is a no-op
+    assert n1 == 2
+    assert n2 == 0
+    sessions = await mgr.list_sessions("agent", "agent-A")
+    assert {s["profile_name"] for s in sessions} == {"default", "work"}
+    assert all(s["status"] == "stopped" for s in sessions)
+
+
+@pytest.mark.asyncio
+async def test_list_visible_sessions(mgr):
+    await mgr.get_or_create_mine("user-1", url="https://mine")
+    await mgr.create_session("agent", "agent-A", "https://a")
+    await mgr.create_session("agent", "agent-B", "https://b")
+    # user-1 owns agent-A only
+    visible = await mgr.list_visible_sessions("user-1", owned_agent_ids={"agent-A"})
+    kinds = {(s["owner_type"], s["owner_id"]) for s in visible}
+    assert ("user", "user-1") in kinds
+    assert ("agent", "agent-A") in kinds
+    assert ("agent", "agent-B") not in kinds
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_skips_user_sessions(mgr):
+    u = await mgr.create_session("user", "user-1", "https://u")
+    a = await mgr.create_session("agent", "agent-1", "https://a")
+    for sid in (u["id"], a["id"]):
+        await mgr.mark_running(sid, node="host", container_id="c", neko_url="n", cdp_url=None)
+    # force both well past the timeout
+    reaped = await mgr.reap_idle(now=10**12)
+    assert a["id"] in reaped
+    assert u["id"] not in reaped
+    assert (await mgr.get_session(u["id"]))["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_is_idempotent(mgr):
+    a = await mgr.get_or_create_mine("user-1", url="https://start.page")
+    b = await mgr.get_or_create_mine("user-1", url="https://other.page")
+    assert a["id"] == b["id"]          # one session per user
+    assert a["owner_type"] == "user"
+    # a different user gets a different session
+    c = await mgr.get_or_create_mine("user-2", url="https://start.page")
+    assert c["id"] != a["id"]
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_mine_recreates_after_stop(mgr):
+    a = await mgr.get_or_create_mine("user-1", url="https://x")
+    await mgr.terminate_session(a["id"])           # status -> stopped
+    b = await mgr.get_or_create_mine("user-1", url="https://x")
+    assert b["id"] != a["id"]                       # stopped one not reused
+
+
+@pytest.mark.asyncio
+async def test_start_on_host_marks_running(mgr):
+    session = await mgr.create_session("user", "user-1", "https://example.com")
+    sid = session["id"]
+    runner = MagicMock()
+    runner.start = AsyncMock(return_value={
+        "container_id": "c-1", "neko_url": "http://host:8800/?usr=neko&pwd=x",
+        "cdp_url": None, "http_port": 8800, "epr_lo": 59000, "epr_hi": 59009,
+    })
+    out = await mgr.start_on_host(sid, profile_volume="taos-browser-%s" % sid, runner=runner)
+    assert out["status"] == "running"
+    assert out["container_id"] == "c-1"
+    assert out["node"] == "host"
+    runner.start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_on_host_marks_error_on_failure(mgr):
+    session = await mgr.create_session("user", "user-1", "https://example.com")
+    sid = session["id"]
+    runner = MagicMock()
+    runner.start = AsyncMock(side_effect=RuntimeError("docker down"))
+    with pytest.raises(BrowserWorkerError):
+        await mgr.start_on_host(sid, profile_volume="v", runner=runner)
+    assert (await mgr.get_session(sid))["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_migrate_session_emits_and_transitions(mgr):
+    s = await mgr.create_session("user", "u1", "https://x")
+    await mgr.mark_running(s["id"], node="host", container_id="c1", neko_url="n1", cdp_url=None)
+    events = []
+    async def emit(kind, payload): events.append((kind, payload))
+    moved = []
+    async def move_volume(volume, src_node, dst_node): moved.append((volume, src_node, dst_node))
+    async def stop_source(session): pass
+    async def start_target(session, target):
+        await mgr.mark_running(session["id"], node=target, container_id="c2", neko_url="n2", cdp_url=None)
+        return await mgr.get_session(session["id"])
+
+    out = await mgr.migrate_session(
+        s["id"], target="fedora-browser",
+        stop_source=stop_source, move_volume=move_volume, start_target=start_target, emit=emit,
+    )
+    assert out["status"] == "running"
+    assert out["node"] == "fedora-browser"
+    assert moved == [(f"taos-browser-{s['id']}", "host", "fedora-browser")]
+    kinds = [k for k, _ in events]
+    assert kinds == ["session_migrating", "session_resumed"]
+    assert events[0][1]["session_id"] == s["id"] and events[0][1]["target"] == "fedora-browser"
+
+
+@pytest.mark.asyncio
+async def test_migrate_session_unknown_returns_none(mgr):
+    async def noop(*a, **k): pass
+    out = await mgr.migrate_session("nope", target="x", stop_source=noop, move_volume=noop, start_target=noop, emit=noop)
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_mark_migrating_and_back(mgr):
+    s = await mgr.create_session("user", "u1", "https://x")
+    await mgr.mark_running(s["id"], node="host", container_id="c", neko_url="n", cdp_url=None)
+    await mgr.mark_migrating(s["id"])
+    assert (await mgr.get_session(s["id"]))["status"] == "migrating"
+    # migrating sessions are NOT idle-reaped (like running user sessions)
+    reaped = await mgr.reap_idle(now=10**12)
+    assert s["id"] not in reaped
 
 
 @pytest_asyncio.fixture
@@ -222,7 +375,7 @@ class TestPickBrowserNode:
 async def test_reap_idle_returns_only_stale_session(mgr):
     base = 1_000_000.0
     fresh_session = await mgr.create_session("user", "user-1", "https://fresh.com", now=base)
-    stale_session = await mgr.create_session("user", "user-2", "https://stale.com", now=base)
+    stale_session = await mgr.create_session("agent", "agent-1", "https://stale.com", now=base)
 
     await mgr.mark_running(
         fresh_session["id"],

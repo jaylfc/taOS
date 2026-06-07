@@ -198,11 +198,12 @@ class TestDeployAgent:
             )
 
     @pytest.mark.asyncio
-    async def test_fallback_to_master_key_when_create_returns_none(self, tmp_path):
-        """When LiteLLM runs without a Postgres DB, create_agent_key
-        returns None. The deployer must fall back to the shared master
-        key so the container still gets a non-empty LITELLM_API_KEY —
-        otherwise openclaw's gateway crashes on boot."""
+    async def test_deploy_fails_when_key_mint_returns_none_no_db(self, tmp_path):
+        """When LiteLLM runs without a Postgres DB, create_agent_key returns None.
+        The deployer must refuse to fall back to the shared master key — injecting
+        it would give the agent full admin API access and access to every other
+        agent's key. Deploy must fail with a clear error directing operators to
+        configure a Postgres database."""
         mock_proxy = MagicMock()
         mock_proxy.is_running.return_value = True
         mock_proxy.url = "http://localhost:4000"
@@ -215,26 +216,55 @@ class TestDeployAgent:
             extra_config={"llm_proxy": mock_proxy},
         )
 
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-routing-only"}
+            result = await deploy_agent(req)
+            assert result["success"] is False
+            assert "routing-only" in result["error"] or "DATABASE_URL" in result["error"]
+            assert "master key" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_master_key_never_injected_into_container_env(self, tmp_path):
+        """The shared master key (sk-taos-master) must never appear in the
+        container env — not as OPENAI_API_KEY, LITELLM_API_KEY, or any other
+        variable. Only scoped per-agent virtual keys are permitted."""
+        from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+        mock_proxy = MagicMock()
+        mock_proxy.is_running.return_value = True
+        mock_proxy.url = "http://localhost:4000"
+        mock_proxy.database_url = "postgresql://u:p@h/db"
+        mock_proxy.create_agent_key = AsyncMock(return_value="sk-scoped-agent-key")
+
+        req = _req(
+            name="master-key-test",
+            data_dir=tmp_path,
+            extra_config={"llm_proxy": mock_proxy},
+        )
+
         async def mock_exec_fn(name, cmd, **kwargs):
             if "hostname -I" in " ".join(cmd):
-                return (0, "10.0.0.14")
+                return (0, "10.0.0.42")
             return (0, "ok")
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
              patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
              patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
              patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
-            mock_create.return_value = {"success": True, "name": "taos-agent-routing-only"}
+            mock_create.return_value = {"success": True, "name": "taos-agent-master-key-test"}
             result = await deploy_agent(req)
             assert result["success"] is True
             env = mock_create.call_args.kwargs["env"]
-            assert env["LITELLM_API_KEY"] == "sk-taos-master"
-            assert env["OPENAI_API_KEY"] == "sk-taos-master"
-            assert env["OPENAI_BASE_URL"] == "http://localhost:4000/v1"
-            # Embedding env must still fire under the fallback path — the
-            # LiteLLM routing-only mode serves /v1/embeddings identically.
-            assert env["TAOS_EMBEDDING_URL"] == "http://localhost:4000/v1/embeddings"
-            assert env["TAOS_EMBEDDING_MODEL"] == "taos-embedding-default"
+            # The scoped virtual key must be injected
+            assert env["OPENAI_API_KEY"] == "sk-scoped-agent-key"
+            assert env["LITELLM_API_KEY"] == "sk-scoped-agent-key"
+            # The master key must never appear anywhere in the container env
+            for var, val in env.items():
+                assert val != TAOS_LITELLM_MASTER_KEY, (
+                    f"master key leaked into container env var {var!r}"
+                )
 
     @pytest.mark.asyncio
     async def test_create_agent_key_called_with_agent_models(self, tmp_path):

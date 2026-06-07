@@ -208,7 +208,8 @@ class BrowserSessionManager:
             now = time.time()
         cutoff = now - timeout_s
         cursor = await db.execute(
-            "SELECT id FROM browser_sessions WHERE status='running' AND last_active < ?",
+            "SELECT id FROM browser_sessions "
+            "WHERE status='running' AND owner_type != 'user' AND last_active < ?",
             (cutoff,),
         )
         rows = await cursor.fetchall()
@@ -220,6 +221,16 @@ class BrowserSessionManager:
             )
             await db.commit()
         return ids
+
+    async def mark_migrating(self, session_id: str, *, now: float | None = None) -> None:
+        db = self._assert_db()
+        if now is None:
+            now = time.time()
+        await db.execute(
+            "UPDATE browser_sessions SET status='migrating', updated_at=? WHERE id=?",
+            (now, session_id),
+        )
+        await db.commit()
 
     async def mark_error(self, session_id: str, *, now: float | None = None) -> None:
         db = self._assert_db()
@@ -319,6 +330,122 @@ class BrowserSessionManager:
                 (set_status, now, session_id),
             )
             await db.commit()
+
+    async def migrate_session(
+        self, session_id: str, *, target: str,
+        stop_source, move_volume, start_target, emit,
+    ) -> dict | None:
+        """Move a session to `target` node: signal → suspend → move profile →
+        resume → signal. Effects (stop/move/start/emit) are injected. Returns the
+        refreshed running session, or None if the session does not exist.
+
+        emit(kind, payload) is called with kind in {"session_migrating","session_resumed"}
+        so agents on the session pause and await reconnection.
+        """
+        session = await self.get_session(session_id)
+        if session is None:
+            return None
+        source_node = session.get("node") or "host"
+        volume = f"taos-browser-{session_id}"
+        await emit("session_migrating", {"session_id": session_id, "from": source_node, "target": target})
+        await self.mark_migrating(session_id)
+        try:
+            await stop_source(session)
+            await move_volume(volume, source_node, target)
+            refreshed = await start_target(session, target)
+        except Exception:
+            await self.mark_error(session_id)
+            await emit("session_resumed", {"session_id": session_id, "node": source_node, "error": True})
+            raise
+        await emit("session_resumed", {"session_id": session_id, "node": target})
+        return refreshed
+
+    async def migrate_agent_browsers(self, rows: list[dict], *, now: float | None = None) -> int:
+        """Copy agent_browsers profile rows into browser_sessions as agent sessions.
+        Idempotent on (owner_id, profile_name). Returns count inserted."""
+        db = self._assert_db()
+        if now is None:
+            now = time.time()
+        existing: set[tuple[str, str]] = set()
+        cur = await db.execute(
+            "SELECT owner_id, profile_name FROM browser_sessions WHERE owner_type='agent'")
+        for owner_id, profile_name in await cur.fetchall():
+            existing.add((owner_id, profile_name))
+        inserted = 0
+        for r in rows:
+            key = (r["agent_name"], r.get("profile_name", "default"))
+            if key in existing:
+                continue
+            await db.execute(
+                """INSERT INTO browser_sessions
+                   (id, owner_type, owner_id, profile_name, url, node, status,
+                    container_id, neko_url, cdp_url, created_at, updated_at, last_active)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (uuid.uuid4().hex, "agent", key[0], key[1], None, r.get("node"),
+                 "stopped", None, None, None, now, now, now),
+            )
+            existing.add(key)
+            inserted += 1
+        await db.commit()
+        return inserted
+
+    async def list_visible_sessions(self, owner_id: str, *, owned_agent_ids: set[str]) -> list[dict]:
+        """The user's own sessions plus sessions of agents the user owns."""
+        db = self._assert_db()
+        cursor = await db.execute(
+            """SELECT id, owner_type, owner_id, profile_name, url, node, status,
+                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+               FROM browser_sessions
+               WHERE status != 'stopped'
+               ORDER BY created_at DESC""",
+        )
+        rows = await cursor.fetchall()
+        out = []
+        for r in rows:
+            s = _row_to_session(r)
+            if s["owner_type"] == "user" and s["owner_id"] == owner_id:
+                out.append(s)
+            elif s["owner_type"] == "agent" and s["owner_id"] in owned_agent_ids:
+                out.append(s)
+        return out
+
+    async def get_or_create_mine(self, owner_id: str, *, url: str = "about:blank",
+                                 profile_name: str = "default") -> dict:
+        """Return the user's single live (pending/running/idle) session, creating
+        one if none exists. Stopped/error sessions are not reused."""
+        db = self._assert_db()
+        cursor = await db.execute(
+            """SELECT id, owner_type, owner_id, profile_name, url, node, status,
+                      container_id, neko_url, cdp_url, created_at, updated_at, last_active
+               FROM browser_sessions
+               WHERE owner_type='user' AND owner_id=? AND status IN ('pending','running','idle')
+               ORDER BY created_at DESC LIMIT 1""",
+            (owner_id,),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            return _row_to_session(row)
+        return await self.create_session("user", owner_id, url, profile_name)
+
+    async def start_on_host(self, session_id: str, *, profile_volume: str, runner) -> dict:
+        """Start a Neko container in-process via BrowserContainerRunner (host-local).
+
+        Mirrors start_on_worker but drives the runner directly. On failure marks
+        the session 'error' and raises BrowserWorkerError.
+        """
+        try:
+            data = await runner.start(session_id=session_id, profile_volume=profile_volume)
+        except Exception as exc:
+            await self.mark_error(session_id)
+            raise BrowserWorkerError(f"host browser start failed: {exc}") from exc
+        await self.mark_running(
+            session_id,
+            node="host",
+            container_id=data["container_id"],
+            neko_url=data["neko_url"],
+            cdp_url=data.get("cdp_url"),
+        )
+        return await self.get_session(session_id)
 
     async def terminate_session(self, session_id: str) -> bool:
         """Set status='stopped'.  Returns False if the session does not exist."""
@@ -422,3 +549,81 @@ def list_browser_nodes(
             "load": w.load,
         })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Host browser-capability check
+# ---------------------------------------------------------------------------
+
+# The host runs the browser in-process (not as a Tier-2 worker). It qualifies
+# only above a RAM floor; 4GB-class hosts are tier-gated to a cluster device instead.
+HOST_MIN_RAM_MB = 6144
+
+
+def host_is_browser_capable(host_hardware: dict | None) -> bool:
+    """True when the controller host can run a local browser container."""
+    if not isinstance(host_hardware, dict):
+        return False
+    ram = host_hardware.get("ram_mb", 0)
+    return isinstance(ram, int) and ram >= HOST_MIN_RAM_MB
+
+
+def resolve_browser_target(
+    cluster,
+    host_hardware: dict | None,
+    *,
+    explicit_node: str | None = None,
+) -> tuple[str, str | None] | None:
+    """Pick where a browser session runs.
+
+    Order: explicit worker (if capable) -> host (if capable) -> best worker.
+    Returns ("host", None), ("worker", <name>), or None if nowhere is capable.
+    """
+    if explicit_node is not None:
+        names = {n["name"] for n in list_browser_nodes(cluster)}
+        return ("worker", explicit_node) if explicit_node in names else None
+    if host_is_browser_capable(host_hardware):
+        return ("host", None)
+    node = pick_browser_node(cluster)
+    return ("worker", node) if node else None
+
+
+# ---------------------------------------------------------------------------
+# App.state wiring helper
+# ---------------------------------------------------------------------------
+
+async def wire_browser_runtime(
+    app_state,
+    hardware_profile,
+    agent_browsers,
+    browser_sessions: "BrowserSessionManager",
+    *,
+    host_ip: str,
+) -> None:
+    """Populate app.state with the two attributes the /api/browser/sessions/mine
+    route reads, and fold existing agent_browsers profiles into the unified
+    session store.
+
+    Must be called from the lifespan after browser_sessions.init() and the
+    signing-key line.  Designed for easy unit testing via a SimpleNamespace
+    app_state and stub objects.
+
+    Args:
+        app_state:          app.state (or any SimpleNamespace in tests)
+        hardware_profile:   the host HardwareProfile dataclass instance
+        agent_browsers:     the AgentBrowsersManager already in app.state
+        browser_sessions:   the BrowserSessionManager already in app.state
+        host_ip:            LAN-reachable IP for NEKO_WEBRTC_NAT1TO1 (NOT 127.0.0.1)
+    """
+    import dataclasses
+
+    from tinyagentos.worker.browser_container import BrowserContainerRunner
+
+    runner = BrowserContainerRunner(node_ip=host_ip, hw_profile=hardware_profile)
+    app_state.browser_container_runner = runner
+
+    hw_dict = dataclasses.asdict(hardware_profile) if hardware_profile is not None else {}
+    app_state.host_hardware = hw_dict
+
+    rows = await agent_browsers.list_profiles()
+    await browser_sessions.migrate_agent_browsers(rows)
