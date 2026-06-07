@@ -1,4 +1,6 @@
+import os
 import sqlite3
+import sys
 
 import pytest
 import pytest_asyncio
@@ -7,6 +9,73 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
 from tinyagentos.routes.desktop import SPA_DIR
+
+# macOS + Python 3.14: after the interpreter loads ObjC-backed extension
+# modules (psutil, zeroconf, Pillow, lxml …), forking a child process with
+# subprocess violates macOS's "unsafe after ObjC runtime init" restriction and
+# produces SIGSEGV in git/bash children (exit code -11).  Setting this env var
+# tells the ObjC runtime to skip the fork-safety check in child processes.
+# The variable propagates automatically to every subprocess the test suite
+# spawns; it is a no-op on Linux (ignored) so CI is unaffected.
+if sys.platform == "darwin":
+    os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
+
+def _patch_aiosqlite_py314():
+    """Patch aiosqlite's worker thread for Python 3.14 compatibility.
+
+    Python 3.14 tightened thread-finalization and GC ordering, so unclosed
+    aiosqlite connections (whose background worker thread still holds a future
+    tied to an already-closed event loop) produce a SIGSEGV during interpreter
+    shutdown rather than the harmless "Exception in thread" logged on 3.12/3.13.
+
+    Root cause: the worker thread calls
+        future.get_loop().call_soon_threadsafe(set_result, future, result)
+    from a background thread.  On Python 3.14, if the event loop has already
+    been closed and partially freed, calling call_soon_threadsafe on it hits a
+    NULL pointer dereference at the C level (inside slot_tp_call /
+    _PyEval_EvalFrameDefault) — bypassing Python's exception mechanism entirely
+    and killing the process with SIGSEGV.
+
+    Fix: check loop.is_closed() before calling call_soon_threadsafe, and wrap
+    the call in a try/except RuntimeError as a belt-and-suspenders guard.
+    The is_closed() pre-check avoids the C-level crash; the try/except handles
+    the narrow race where the loop closes between the check and the call.
+
+    Applied only on Python >= 3.14 to leave CI (3.12/3.13) behaviour unchanged.
+    """
+    import aiosqlite.core as _core
+
+    _STOP = _core._STOP_RUNNING_SENTINEL
+
+    def _threadsafe_call(loop, callback, *args):
+        """Call loop.call_soon_threadsafe only if the loop is still open."""
+        try:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(callback, *args)
+        except RuntimeError:
+            # Race: loop closed between is_closed() check and the call.
+            # The test has already completed; safe to discard.
+            pass
+
+    def _safe_worker(tx):
+        while True:
+            future, function = tx.get()
+            try:
+                result = function()
+                if future:
+                    _threadsafe_call(
+                        future.get_loop(), _core.set_result, future, result
+                    )
+                if result is _STOP:
+                    break
+            except BaseException as exc:
+                if future:
+                    _threadsafe_call(
+                        future.get_loop(), _core.set_exception, future, exc
+                    )
+
+    _core._connection_worker_thread = _safe_worker
 
 
 def pytest_configure(config):
@@ -28,6 +97,12 @@ def pytest_configure(config):
         f = SPA_DIR / name
         if not f.exists():
             f.write_text(body)
+
+    # Python 3.14 changed thread-finalization ordering in a way that turns
+    # aiosqlite's unclosed-connection "Exception in thread" noise into a
+    # SIGSEGV on full-suite runs.  Apply the targeted patch only on 3.14+.
+    if sys.version_info >= (3, 14):
+        _patch_aiosqlite_py314()
 
 
 @pytest.fixture
