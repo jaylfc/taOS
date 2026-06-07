@@ -1,8 +1,9 @@
 """Tests for lazy_backend_proxy — on-demand subprocess lifecycle."""
 
 import asyncio
+import shlex
 import socket
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -164,6 +165,104 @@ class TestRealSubprocessLifecycle:
                 assert resp.status_code >= 400
         finally:
             await p.stop()
+
+
+class TestNoShellInjection:
+    """Verify Popen is never called with shell=True."""
+
+    @pytest.mark.asyncio
+    async def test_start_cmd_uses_arg_list_not_shell(self):
+        """_ensure_backend must call Popen with a list, not shell=True."""
+        start_cmd = "python3 -m http.server 9999"
+        p = _make_proxy(9999, start_cmd=start_cmd)
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # process is alive
+
+        popen_calls: list = []
+
+        def fake_popen(args, **kwargs):
+            popen_calls.append({"args": args, "kwargs": kwargs})
+            return mock_proc
+
+        mock_health = AsyncMock()
+
+        async def fake_health_check():
+            # Simulate health-check success on first call after proc start
+            p._proc = mock_proc
+            return
+
+        with patch("subprocess.Popen", side_effect=fake_popen):
+            # Bypass the health-poll loop by mocking _ensure_backend at a lower level
+            with patch.object(p, "_ensure_backend", new_callable=AsyncMock):
+                await p.start()
+                await p.stop()
+
+        # Now test _ensure_backend directly (the real one) with a fast-exit proc
+        p2 = _make_proxy(9999, start_cmd=start_cmd)
+        popen_calls2: list = []
+
+        def fake_popen2(args, **kwargs):
+            popen_calls2.append({"args": args, "kwargs": kwargs})
+            m = MagicMock()
+            # simulate process exiting immediately so cold-start fails fast
+            m.poll.return_value = 1
+            m.returncode = 1
+            return m
+
+        with patch("subprocess.Popen", side_effect=fake_popen2):
+            with patch("httpx.AsyncClient") as _mock_httpx:
+                try:
+                    await p2._ensure_backend()
+                except Exception:
+                    pass
+
+        assert len(popen_calls2) >= 1
+        first_call = popen_calls2[0]
+        # args must be a list (shlex.split result), not a plain string
+        assert isinstance(first_call["args"], list), (
+            "Popen must receive a list of args, not a shell string"
+        )
+        # shell=True must not be passed
+        assert first_call["kwargs"].get("shell") is not True, (
+            "Popen must not be called with shell=True"
+        )
+        # The split result must match shlex.split of the original command
+        assert first_call["args"] == shlex.split(start_cmd)
+
+    @pytest.mark.asyncio
+    async def test_stop_cmd_uses_arg_list_not_shell(self):
+        """_stop_subprocess must call Popen for stop_cmd with a list, not shell=True."""
+        stop_cmd = "pkill -f my-backend"
+        p = _make_proxy(9999, stop_cmd=stop_cmd)
+
+        popen_calls: list = []
+
+        def fake_popen(args, **kwargs):
+            popen_calls.append({"args": args, "kwargs": kwargs})
+            m = MagicMock()
+            m.poll.return_value = 0
+            m.wait.return_value = 0
+            return m
+
+        # Fake a running backend proc so stop_cmd branch is exercised
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        p._proc = fake_proc
+
+        with patch("subprocess.Popen", side_effect=fake_popen):
+            with patch("asyncio.to_thread", new_callable=AsyncMock):
+                await p._stop_subprocess()
+
+        assert len(popen_calls) >= 1
+        first_call = popen_calls[0]
+        assert isinstance(first_call["args"], list), (
+            "stop_cmd Popen must receive a list, not a shell string"
+        )
+        assert first_call["kwargs"].get("shell") is not True, (
+            "stop_cmd Popen must not use shell=True"
+        )
+        assert first_call["args"] == shlex.split(stop_cmd)
 
 
 class TestIdleTimeout:

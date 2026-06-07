@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import subprocess
 import time
 
@@ -177,8 +178,7 @@ class LazyBackendProxy:
             cold_start_started_at = time.monotonic()
             logger.info("lazy-proxy :%d → starting: %r", self._proxy_port, self._start_cmd)
             self._proc = subprocess.Popen(
-                self._start_cmd,
-                shell=True,
+                shlex.split(self._start_cmd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -228,8 +228,7 @@ class LazyBackendProxy:
             stop_proc: subprocess.Popen | None = None
             try:
                 stop_proc = subprocess.Popen(
-                    self._stop_cmd,
-                    shell=True,
+                    shlex.split(self._stop_cmd),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )

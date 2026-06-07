@@ -266,8 +266,8 @@ def create_bridge_app(
     @bridge.post("/keyboard")
     async def keyboard(req: KeyboardRequest):
         try:
-            proc = await asyncio.create_subprocess_shell(
-                f"xdotool key {req.keys}",
+            proc = await asyncio.create_subprocess_exec(
+                "xdotool", "key", req.keys,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -307,8 +307,8 @@ def create_bridge_app(
     @bridge.post("/type")
     async def type_text(req: TypeRequest):
         try:
-            proc = await asyncio.create_subprocess_shell(
-                f"xdotool type --clearmodifiers {req.text!r}",
+            proc = await asyncio.create_subprocess_exec(
+                "xdotool", "type", "--clearmodifiers", "--", req.text,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

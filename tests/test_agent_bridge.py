@@ -5,6 +5,8 @@ Uses httpx ASGITransport so no real server is started.
 X11/xdotool/scrot are not available in CI, so visual tests assert error status.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -99,3 +101,59 @@ async def test_files_list(client):
     data = resp.json()
     assert "entries" in data
     assert isinstance(data["entries"], list)
+
+
+# -- Security: exec arg-list tests (no shell interpretation) ------------------
+
+
+@pytest.mark.asyncio
+async def test_keyboard_uses_exec_not_shell(client):
+    """Payload with shell metacharacters must be passed as a literal arg, not executed."""
+    captured: list = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.append(args)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        resp = await client.post("/keyboard", json={"keys": "a; rm -rf /"})
+
+    assert resp.status_code == 200
+    assert len(captured) == 1
+    argv = captured[0]
+    # Must be called as exec with explicit args — no shell string
+    assert argv[0] == "xdotool"
+    assert argv[1] == "key"
+    # The injection payload is passed as a single literal argument
+    assert argv[2] == "a; rm -rf /"
+    # Must NOT be called as a single shell string
+    assert len(argv) == 3
+
+
+@pytest.mark.asyncio
+async def test_type_uses_exec_not_shell(client):
+    """Payload with shell metacharacters must be passed as a literal arg."""
+    captured: list = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.append(args)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        resp = await client.post("/type", json={"text": "$(id); evil"})
+
+    assert resp.status_code == 200
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[0] == "xdotool"
+    assert argv[1] == "type"
+    # The injection payload arrives as a literal arg, not a shell expression
+    assert "$(id); evil" in argv
+    # Ensure '--' separator is present to guard against text starting with '-'
+    assert "--" in argv
