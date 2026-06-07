@@ -1661,6 +1661,28 @@ if [[ "$SERVICE_MODE" != "skip" ]]; then
     fi
 fi
 
+# --- pre-beta install hint -----------------------------------------------
+# If a root-based pre-beta install exists at a different location than the
+# new install, point the user to the migration script so they can preserve
+# their existing data.
+
+if [[ "$os_name" == "Linux" ]]; then
+    _prebeta_found=""
+    for _cand in /root/tinyagentos /home/*/tinyagentos; do
+        [[ -d "$_cand/data" ]] || continue
+        [[ "$(realpath "$_cand" 2>/dev/null)" == "$(realpath "$INSTALL_DIR" 2>/dev/null)" ]] && continue
+        _prebeta_found="$_cand"
+        break
+    done
+    if [[ -n "$_prebeta_found" ]]; then
+        warn ""
+        warn "Pre-beta install detected at $_prebeta_found"
+        warn "To migrate your existing data to this install, run:"
+        warn "  sudo bash $INSTALL_DIR/scripts/pre-beta-to-beta.sh"
+        warn ""
+    fi
+fi
+
 # --- success summary -----------------------------------------------------
 
 host_ip=""
