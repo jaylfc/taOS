@@ -93,22 +93,28 @@ class ClusterManager:
                     level="info",
                 )
 
-        # Promote any archived models this worker can now run
-        try:
-            from tinyagentos.cluster.model_archive import (
-                promote_compatible_models,
-            )
+        # Promote any archived models this worker can now run.
+        # Scheduled as a background task so worker registration returns
+        # immediately — promotion may involve large cross-volume copies.
+        async def _promote_bg() -> None:
+            try:
+                from tinyagentos.cluster.model_archive import (
+                    promote_compatible_models,
+                )
 
-            await promote_compatible_models(
-                worker_hardware=info.hardware,
-                worker_name=info.name,
-                notifications=self._notifications,
-            )
-        except Exception:
-            logger.exception(
-                "model_archive: promotion scan failed for worker '%s'",
-                info.name,
-            )
+                await promote_compatible_models(
+                    worker_hardware=info.hardware,
+                    worker_name=info.name,
+                    notifications=self._notifications,
+                )
+            except Exception:
+                logger.exception(
+                    "model_archive: promotion scan failed for worker '%s'",
+                    info.name,
+                )
+
+        import asyncio as _asyncio
+        _asyncio.create_task(_promote_bg())
 
     def kv_quant_union(self) -> list[str]:
         """Return the set-union of KV cache quant types across all online workers.
