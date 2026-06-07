@@ -36,7 +36,7 @@ function post_customize_image__tinyagentos() {
     for grp in incus docker; do
         chroot "${SDCARD}" /bin/bash -c "
             getent group ${grp} >/dev/null 2>&1 || groupadd -r ${grp}
-            usermod -aG ${grp} taos 2>/dev/null || true
+            usermod -aG ${grp} taos
         " || display_alert "TinyAgentOS" "could not add taos to '${grp}' group" "warn"
     done
 
@@ -48,10 +48,13 @@ function post_customize_image__tinyagentos() {
     # (a signed updater suid helper) is a post-beta hardening task.
     # The data directory is then tightened on top so secrets stay 0700/0600.
     if [[ -d "${SDCARD}/opt/tinyagentos" ]]; then
-        chroot "${SDCARD}" /bin/bash -c "
-            chown -R taos:taos /opt/tinyagentos 2>/dev/null || true
-            chmod 0700 /opt/tinyagentos/data 2>/dev/null || true
-        "
-        display_alert "TinyAgentOS" "Set /opt/tinyagentos ownership to taos:taos; data/ → 0700" "info"
+        if chroot "${SDCARD}" /bin/bash -c "
+            chown -R taos:taos /opt/tinyagentos &&
+            chmod 0700 /opt/tinyagentos/data
+        "; then
+            display_alert "TinyAgentOS" "Set /opt/tinyagentos ownership to taos:taos; data/ → 0700" "info"
+        else
+            display_alert "TinyAgentOS" "Failed to set /opt/tinyagentos ownership or data/ permissions" "warn"
+        fi
     fi
 }
