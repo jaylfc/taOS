@@ -1,4 +1,6 @@
+import os
 import sqlite3
+import sys
 
 import pytest
 import pytest_asyncio
@@ -7,6 +9,85 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
 from tinyagentos.routes.desktop import SPA_DIR
+
+# macOS + Python 3.14: after the interpreter loads ObjC-backed extension
+# modules (psutil, zeroconf, Pillow, lxml …), forking a child process with
+# subprocess violates macOS's "unsafe after ObjC runtime init" restriction and
+# produces SIGSEGV in git/bash children (exit code -11).  Setting this env var
+# tells the ObjC runtime to skip the fork-safety check in child processes.
+# The variable propagates automatically to every subprocess the test suite
+# spawns; it is a no-op on Linux (ignored) so CI is unaffected.
+if sys.platform == "darwin":
+    os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
+
+def _patch_aiosqlite_py314():
+    """Patch aiosqlite's Connection for Python 3.14 / macOS compatibility.
+
+    Python 3.14 tightened thread-finalization and GC ordering.  When aiosqlite
+    connections are not explicitly closed before the asyncio event loop shuts
+    down, their background worker threads remain blocked on SimpleQueue.get().
+    At interpreter shutdown Python destroys the C-level semaphore that backs
+    SimpleQueue while the worker threads are still blocked on it, producing a
+    SIGSEGV in the main process (visible in faulthandler output as "Fatal Python
+    error: Segmentation fault" with all thread frames in _safe_worker/tx.get()).
+
+    Root cause: the background thread is not a daemon thread, so Python's
+    interpreter shutdown waits for it.  The thread is blocked on tx.get()
+    because the Connection's __del__ / stop() was not called before the event
+    loop closed (or called too late).  When the shutdown sequence eventually
+    forces cleanup, the semaphore is torn down under the blocked thread.
+
+    Fix (two layers):
+    1. Mark the worker thread daemon=True so it is killed at interpreter exit
+       rather than being joined — avoids the blocking semaphore teardown.
+    2. Guard call_soon_threadsafe with an is_closed() pre-check so the worker
+       does not crash if it receives a future tied to a dead event loop.
+
+    Applied only on Python >= 3.14 to leave CI (3.12/3.13) unchanged.
+    """
+    import aiosqlite.core as _core
+    from threading import Thread
+
+    _STOP = _core._STOP_RUNNING_SENTINEL
+
+    def _threadsafe_call(loop, callback, *args):
+        """Deliver result/exception only if the event loop is still alive."""
+        try:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(callback, *args)
+        except RuntimeError:
+            # Race: loop closed between the is_closed() check and the call.
+            pass
+
+    def _safe_worker(tx):
+        while True:
+            future, function = tx.get()
+            try:
+                result = function()
+                if future:
+                    _threadsafe_call(
+                        future.get_loop(), _core.set_result, future, result
+                    )
+                if result is _STOP:
+                    break
+            except BaseException as exc:
+                if future:
+                    _threadsafe_call(
+                        future.get_loop(), _core.set_exception, future, exc
+                    )
+
+    _core._connection_worker_thread = _safe_worker
+
+    # Monkey-patch Connection.__init__ to mark the worker thread daemon so
+    # interpreter shutdown does not wait (and deadlock) on it.
+    _orig_init = _core.Connection.__init__
+
+    def _patched_init(self, connector, iter_chunk_size, loop=None):
+        _orig_init(self, connector, iter_chunk_size, loop)
+        self._thread.daemon = True
+
+    _core.Connection.__init__ = _patched_init
 
 
 def pytest_configure(config):
@@ -28,6 +109,12 @@ def pytest_configure(config):
         f = SPA_DIR / name
         if not f.exists():
             f.write_text(body)
+
+    # Python 3.14 changed thread-finalization ordering in a way that turns
+    # aiosqlite's unclosed-connection "Exception in thread" noise into a
+    # SIGSEGV on full-suite runs.  Apply the targeted patch only on 3.14+.
+    if sys.version_info >= (3, 14):
+        _patch_aiosqlite_py314()
 
 
 @pytest.fixture
