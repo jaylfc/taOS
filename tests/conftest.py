@@ -22,40 +22,42 @@ if sys.platform == "darwin":
 
 
 def _patch_aiosqlite_py314():
-    """Patch aiosqlite's worker thread for Python 3.14 compatibility.
+    """Patch aiosqlite's Connection for Python 3.14 / macOS compatibility.
 
-    Python 3.14 tightened thread-finalization and GC ordering, so unclosed
-    aiosqlite connections (whose background worker thread still holds a future
-    tied to an already-closed event loop) produce a SIGSEGV during interpreter
-    shutdown rather than the harmless "Exception in thread" logged on 3.12/3.13.
+    Python 3.14 tightened thread-finalization and GC ordering.  When aiosqlite
+    connections are not explicitly closed before the asyncio event loop shuts
+    down, their background worker threads remain blocked on SimpleQueue.get().
+    At interpreter shutdown Python destroys the C-level semaphore that backs
+    SimpleQueue while the worker threads are still blocked on it, producing a
+    SIGSEGV in the main process (visible in faulthandler output as "Fatal Python
+    error: Segmentation fault" with all thread frames in _safe_worker/tx.get()).
 
-    Root cause: the worker thread calls
-        future.get_loop().call_soon_threadsafe(set_result, future, result)
-    from a background thread.  On Python 3.14, if the event loop has already
-    been closed and partially freed, calling call_soon_threadsafe on it hits a
-    NULL pointer dereference at the C level (inside slot_tp_call /
-    _PyEval_EvalFrameDefault) — bypassing Python's exception mechanism entirely
-    and killing the process with SIGSEGV.
+    Root cause: the background thread is not a daemon thread, so Python's
+    interpreter shutdown waits for it.  The thread is blocked on tx.get()
+    because the Connection's __del__ / stop() was not called before the event
+    loop closed (or called too late).  When the shutdown sequence eventually
+    forces cleanup, the semaphore is torn down under the blocked thread.
 
-    Fix: check loop.is_closed() before calling call_soon_threadsafe, and wrap
-    the call in a try/except RuntimeError as a belt-and-suspenders guard.
-    The is_closed() pre-check avoids the C-level crash; the try/except handles
-    the narrow race where the loop closes between the check and the call.
+    Fix (two layers):
+    1. Mark the worker thread daemon=True so it is killed at interpreter exit
+       rather than being joined — avoids the blocking semaphore teardown.
+    2. Guard call_soon_threadsafe with an is_closed() pre-check so the worker
+       does not crash if it receives a future tied to a dead event loop.
 
-    Applied only on Python >= 3.14 to leave CI (3.12/3.13) behaviour unchanged.
+    Applied only on Python >= 3.14 to leave CI (3.12/3.13) unchanged.
     """
     import aiosqlite.core as _core
+    from threading import Thread
 
     _STOP = _core._STOP_RUNNING_SENTINEL
 
     def _threadsafe_call(loop, callback, *args):
-        """Call loop.call_soon_threadsafe only if the loop is still open."""
+        """Deliver result/exception only if the event loop is still alive."""
         try:
             if not loop.is_closed():
                 loop.call_soon_threadsafe(callback, *args)
         except RuntimeError:
-            # Race: loop closed between is_closed() check and the call.
-            # The test has already completed; safe to discard.
+            # Race: loop closed between the is_closed() check and the call.
             pass
 
     def _safe_worker(tx):
@@ -76,6 +78,16 @@ def _patch_aiosqlite_py314():
                     )
 
     _core._connection_worker_thread = _safe_worker
+
+    # Monkey-patch Connection.__init__ to mark the worker thread daemon so
+    # interpreter shutdown does not wait (and deadlock) on it.
+    _orig_init = _core.Connection.__init__
+
+    def _patched_init(self, connector, iter_chunk_size, loop=None):
+        _orig_init(self, connector, iter_chunk_size, loop)
+        self._thread.daemon = True
+
+    _core.Connection.__init__ = _patched_init
 
 
 def pytest_configure(config):
