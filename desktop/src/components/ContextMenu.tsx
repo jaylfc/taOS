@@ -31,26 +31,38 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
 
-  // Focus the first enabled menuitem on open
+  // Focus the first enabled menuitem on open, and refocus if items change while open
   useEffect(() => {
     const buttons = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])');
     buttons?.[0]?.focus();
-  }, []);
+  }, [items]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const buttons = Array.from(
       menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])') ?? [],
     );
+
+    // If no enabled items, only allow Escape
+    if (buttons.length === 0) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+      return;
+    }
+
     const idx = buttons.indexOf(document.activeElement as HTMLButtonElement);
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      const next = (idx + 1) % buttons.length;
+      // idx === -1 means focus is outside the list; treat as "before first"
+      const next = idx === -1 ? 0 : (idx + 1) % buttons.length;
       buttons[next]?.focus();
       setActiveIndex(next);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      const prev = (idx - 1 + buttons.length) % buttons.length;
+      // idx === -1: treat as "after last"
+      const prev = idx === -1 ? buttons.length - 1 : (idx - 1 + buttons.length) % buttons.length;
       buttons[prev]?.focus();
       setActiveIndex(prev);
     } else if (e.key === "Home") {

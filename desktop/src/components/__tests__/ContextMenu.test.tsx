@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { ContextMenu } from "../ContextMenu";
+import { render, screen, fireEvent, act } from "@testing-library/react";
+import { useState } from "react";
+import { ContextMenu, MenuItem } from "../ContextMenu";
 
 const ITEMS = [
   { label: "Copy", action: vi.fn() },
@@ -98,5 +99,85 @@ describe("ContextMenu keyboard navigation", () => {
     // First enabled item (Copy) should be tabIndex=0
     expect(items[0].getAttribute("tabIndex")).toBe("0");
     expect(items[1].getAttribute("tabIndex")).toBe("-1");
+  });
+
+  it("arrow keys do not throw or produce NaN when all items are disabled", () => {
+    const allDisabled = [
+      { label: "Copy", action: vi.fn(), disabled: true },
+      { label: "Paste", action: vi.fn(), disabled: true },
+    ];
+    const { container } = render(<ContextMenu x={100} y={100} items={allDisabled} onClose={vi.fn()} />);
+    const menu = container.firstChild as HTMLElement;
+    // None of these should throw or attempt to focus undefined
+    expect(() => fireEvent.keyDown(menu, { key: "ArrowDown" })).not.toThrow();
+    expect(() => fireEvent.keyDown(menu, { key: "ArrowUp" })).not.toThrow();
+    expect(() => fireEvent.keyDown(menu, { key: "Home" })).not.toThrow();
+    expect(() => fireEvent.keyDown(menu, { key: "End" })).not.toThrow();
+    // Escape still calls onClose even with all disabled
+    const onClose = vi.fn();
+    const { container: c2 } = render(<ContextMenu x={100} y={100} items={allDisabled} onClose={onClose} />);
+    fireEvent.keyDown(c2.firstChild as HTMLElement, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("refocuses first enabled item when items prop changes while menu is open", () => {
+    const initialItems: MenuItem[] = [
+      { label: "Copy", action: vi.fn() },
+      { label: "Paste", action: vi.fn() },
+    ];
+    const updatedItems: MenuItem[] = [
+      { label: "Share", action: vi.fn() },
+      { label: "Export", action: vi.fn() },
+    ];
+
+    function Wrapper() {
+      const [items, setItems] = useState<MenuItem[]>(initialItems);
+      return (
+        <>
+          <button data-testid="swap" onClick={() => setItems(updatedItems)} />
+          <ContextMenu x={100} y={100} items={items} onClose={vi.fn()} />
+        </>
+      );
+    }
+
+    render(<Wrapper />);
+    // First item of initial items is focused
+    expect(document.activeElement).toBe(screen.getAllByRole("menuitem")[0]);
+    expect(document.activeElement?.textContent).toBe("Copy");
+
+    // Swap items
+    act(() => {
+      fireEvent.click(screen.getByTestId("swap"));
+    });
+
+    // First item of updated items should now be focused
+    expect(document.activeElement?.textContent).toBe("Share");
+  });
+
+  it("ArrowDown when focus is outside list moves to first enabled item", () => {
+    const { container } = renderMenu();
+    const menu = container.firstChild as HTMLElement;
+    // Move focus to a focusable element outside the menu
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    const items = screen.getAllByRole("menuitem");
+    expect(document.activeElement).toBe(items[0]); // first enabled: Copy
+    outside.remove();
+  });
+
+  it("ArrowUp when focus is outside list moves to last enabled item", () => {
+    const { container } = renderMenu();
+    const menu = container.firstChild as HTMLElement;
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+    fireEvent.keyDown(menu, { key: "ArrowUp" });
+    const items = screen.getAllByRole("menuitem");
+    expect(document.activeElement).toBe(items[3]); // last enabled: Rename
+    outside.remove();
   });
 });
