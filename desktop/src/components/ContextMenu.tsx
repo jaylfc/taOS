@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface MenuItem {
   label: string;
@@ -18,32 +18,84 @@ interface Props {
 
 export function ContextMenu({ x, y, items, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
 
+  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-    const keyHandler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
     document.addEventListener("mousedown", handler);
-    document.addEventListener("keydown", keyHandler);
-    return () => {
-      document.removeEventListener("mousedown", handler);
-      document.removeEventListener("keydown", keyHandler);
-    };
+    return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
+
+  // Focus the first enabled menuitem on open, and refocus if items change while open
+  useEffect(() => {
+    const buttons = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])');
+    if (buttons?.[0]) {
+      buttons[0].focus();
+      setActiveIndex(0);
+    }
+  }, [items]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])') ?? [],
+    );
+
+    // If no enabled items, only allow Escape
+    if (buttons.length === 0) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+      return;
+    }
+
+    const idx = buttons.indexOf(document.activeElement as HTMLButtonElement);
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      // idx === -1 means focus is outside the list; treat as "before first"
+      const next = idx === -1 ? 0 : (idx + 1) % buttons.length;
+      buttons[next]?.focus();
+      setActiveIndex(next);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      // idx === -1: treat as "after last"
+      const prev = idx === -1 ? buttons.length - 1 : (idx - 1 + buttons.length) % buttons.length;
+      buttons[prev]?.focus();
+      setActiveIndex(prev);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      buttons[0]?.focus();
+      setActiveIndex(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      buttons[buttons.length - 1]?.focus();
+      setActiveIndex(buttons.length - 1);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+    }
+  };
 
   // Ensure menu stays within viewport
   const adjustedX = Math.min(x, window.innerWidth - 220);
   const adjustedY = Math.min(y, window.innerHeight - items.length * 36 - 20);
 
+  // Roving tabindex: track which navigable (non-separator, non-disabled) item is active
+  let navigableCounter = -1;
+
   return (
     <div
       ref={menuRef}
       role="menu"
+      aria-label="Context menu"
+      aria-orientation="vertical"
+      onKeyDown={handleKeyDown}
       className="fixed z-[10001] min-w-[200px] py-1 rounded-lg border border-shell-border-strong overflow-hidden"
       style={{
         left: adjustedX,
@@ -62,10 +114,14 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
             />
           );
         }
+        const isNavigable = !item.disabled;
+        if (isNavigable) navigableCounter++;
+        const tabIndex = isNavigable && navigableCounter === activeIndex ? 0 : -1;
         return (
           <button
             key={i}
             role="menuitem"
+            tabIndex={tabIndex}
             onClick={() => {
               if (!item.disabled && item.action) {
                 item.action();
@@ -73,10 +129,10 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
               }
             }}
             disabled={item.disabled}
-            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-sm transition-colors ${
+            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-left text-sm transition-colors focus:outline-none ${
               item.disabled
                 ? "text-shell-text-tertiary cursor-default"
-                : "text-shell-text hover:bg-white/8"
+                : "text-shell-text hover:bg-white/8 focus:bg-white/8"
             }`}
           >
             {item.icon && (
