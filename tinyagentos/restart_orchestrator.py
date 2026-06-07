@@ -56,14 +56,16 @@ def read_pending_restart() -> dict | None:
     try:
         return json.loads(path.read_text())
     except Exception:
+        logger.warning("Failed to read pending-restart flag at %s", path, exc_info=True)
         return None
 
 
 def clear_pending_restart() -> None:
+    path = _pending_restart_path()
     try:
-        _pending_restart_path().unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except Exception:
-        pass
+        logger.warning("Failed to clear pending-restart flag at %s", path, exc_info=True)
 
 
 class RestartOrchestrator:
