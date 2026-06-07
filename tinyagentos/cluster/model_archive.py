@@ -123,6 +123,8 @@ def _worker_can_run(worker_hardware: dict, requirements: dict) -> bool:
             return False
         if req_gpu_accel == "vulkan" and not hw_gpu.get("vulkan"):
             return False
+        if req_gpu_accel == "mlx" and worker_gpu_type != "apple":
+            return False
 
     # NPU check
     req_npu = requirements.get("npu_type")
@@ -135,7 +137,7 @@ def _worker_can_run(worker_hardware: dict, requirements: dict) -> bool:
     req_arch = requirements.get("arch")
     if req_arch:
         worker_arch = hw_cpu.get("arch", "")
-        if worker_arch and worker_arch != req_arch:
+        if not worker_arch or worker_arch != req_arch:
             return False
 
     return True
@@ -242,13 +244,19 @@ async def promote_compatible_models(
         if promote_model(model):
             promoted.append(model_id)
             if notifications:
-                await notifications.emit_event(
-                    "model.promoted",
-                    f"Archived model '{model_id}' promoted",
-                    f"Worker '{worker_name}' can now run '{model_id}'. "
-                    f"Moved from archive to active models.",
-                    level="info",
-                )
+                try:
+                    await notifications.emit_event(
+                        "model.promoted",
+                        f"Archived model '{model_id}' promoted",
+                        f"Worker '{worker_name}' can now run '{model_id}'. "
+                        f"Moved from archive to active models.",
+                        level="info",
+                    )
+                except Exception:
+                    logger.exception(
+                        "model_archive: notification emit failed for promoted model '%s'",
+                        model_id,
+                    )
     if promoted:
         logger.info(
             "model_archive: worker '%s' promoted %d model(s): %s",
