@@ -56,15 +56,27 @@ def get_litellm_master_key(data_dir: Path | None = None) -> str:
             if key:
                 _master_key_cache[cache_key] = key
                 return key
-        # Generate and persist a new per-install key.
+        # Generate and persist a new per-install key using O_CREAT|O_EXCL so
+        # only one concurrent caller wins the creation race.  The loser gets
+        # EEXIST (FileExistsError) and reads whatever the winner wrote.
         key = "sk-taos-" + _secrets.token_urlsafe(32)
         key_path.parent.mkdir(parents=True, exist_ok=True)
-        # Write to a temp file then rename for atomicity.
-        tmp = key_path.with_suffix(".tmp")
-        tmp.write_text(key)
-        os.chmod(tmp, 0o600)
-        tmp.rename(key_path)
-        logger.info("Generated new per-install LiteLLM master key at %s", key_path)
+        encoded = key.encode()
+        try:
+            fd = os.open(str(key_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, encoded)
+            finally:
+                os.close(fd)
+            logger.info("Generated new per-install LiteLLM master key at %s", key_path)
+        except FileExistsError:
+            # Another process/thread won the race — read the key it wrote.
+            key = key_path.read_text().strip()
+            if not key:
+                raise RuntimeError(
+                    f"LiteLLM master key file {key_path} exists but is empty; "
+                    "remove it and restart to regenerate."
+                )
     else:
         # No data dir — generate an in-memory key for this process lifetime.
         key = "sk-taos-" + _secrets.token_urlsafe(32)

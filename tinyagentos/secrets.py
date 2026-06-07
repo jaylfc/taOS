@@ -5,6 +5,10 @@ import hashlib
 import os
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cryptography.fernet import Fernet
 
 from tinyagentos.base_store import BaseStore
 
@@ -72,11 +76,16 @@ def _get_fernet_key(key_dir: Path) -> bytes:
     key_path = Path(key_dir) / ".secrets_key"
     if key_path.exists():
         raw = key_path.read_bytes()
-        if len(raw) == 32:
-            _fernet_key_cache[cache_key] = raw
-            return raw
+        if len(raw) != 32:
+            raise ValueError(
+                f"Corrupt Fernet key file at {key_path}: expected 32 bytes, got "
+                f"{len(raw)}. Remove the file only if you have no secrets to recover, "
+                "then restart to generate a fresh key."
+            )
+        _fernet_key_cache[cache_key] = raw
+        return raw
 
-    # Generate a fresh random 32-byte key.
+    # Generate a fresh random 32-byte key only when the file does not exist.
     raw = os.urandom(32)
     key_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = key_path.with_suffix(".tmp")

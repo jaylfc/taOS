@@ -65,6 +65,50 @@ class TestMasterKeyGeneration:
         key = get_litellm_master_key(None)
         assert key.startswith("sk-taos-")
 
+    def test_exclusive_create_race_loser_reads_winner_key(self, tmp_path):
+        """Simulate the O_EXCL race: pre-write a key file, then call the loader.
+
+        The loader must detect the FileExistsError path and return the
+        pre-existing key rather than the freshly-generated token it minted,
+        ensuring the cache ends up with whatever key actually won on disk.
+        """
+        import os
+        key_path = tmp_path / ".litellm_master_key"
+        winner_key = "sk-taos-winner-key-abc123"
+        # Write the winner's key with O_CREAT|O_EXCL to simulate what the
+        # winning process does.
+        fd = os.open(str(key_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(fd, winner_key.encode())
+        os.close(fd)
+
+        # Now call the loader — it should see the file and return the winner's key.
+        loaded = get_litellm_master_key(tmp_path)
+        assert loaded == winner_key, (
+            "Loader must return the on-disk key (the race winner), "
+            "not a freshly generated token."
+        )
+        assert cfg_mod._master_key_cache[str(tmp_path)] == winner_key
+
+    def test_loser_path_via_file_exists_error(self, tmp_path, monkeypatch):
+        """Directly exercise the FileExistsError branch by patching os.open."""
+        import os as _os
+        key_path = tmp_path / ".litellm_master_key"
+        winner_key = "sk-taos-on-disk-winner"
+        key_path.write_text(winner_key)
+
+        original_open = _os.open
+
+        def _raise_exists(path, flags, mode=0o666):
+            if "litellm_master_key" in str(path) and (flags & _os.O_EXCL):
+                raise FileExistsError("simulated race")
+            return original_open(path, flags, mode)
+
+        monkeypatch.setattr(_os, "open", _raise_exists)
+
+        loaded = get_litellm_master_key(tmp_path)
+        assert loaded == winner_key
+        assert cfg_mod._master_key_cache[str(tmp_path)] == winner_key
+
     def test_generate_litellm_config_uses_supplied_key(self, tmp_path):
         key = get_litellm_master_key(tmp_path)
         config = generate_litellm_config([], master_key=key)

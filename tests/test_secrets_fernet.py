@@ -59,6 +59,26 @@ class TestFernetKeyFile:
         k2 = _get_fernet_key(tmp_path)
         assert k1 == k2
 
+    def test_malformed_key_file_raises_not_regenerates(self, tmp_path):
+        """A key file with wrong length must raise ValueError, not silently regenerate.
+
+        If we regenerated, every already-encrypted secret would become
+        unrecoverable (silent data loss).
+        """
+        key_path = tmp_path / ".secrets_key"
+        key_path.write_bytes(b"tooshort")
+        with pytest.raises(ValueError, match="Corrupt Fernet key file"):
+            _get_fernet_key(tmp_path)
+        # The bad file must not have been overwritten.
+        assert key_path.read_bytes() == b"tooshort"
+
+    def test_empty_key_file_raises(self, tmp_path):
+        """Zero-length key file is also malformed — must not regenerate."""
+        key_path = tmp_path / ".secrets_key"
+        key_path.write_bytes(b"")
+        with pytest.raises(ValueError, match="Corrupt Fernet key file"):
+            _get_fernet_key(tmp_path)
+
 
 class TestFernetEncryptDecrypt:
     def test_roundtrip(self, tmp_path):
