@@ -157,3 +157,113 @@ async def test_type_uses_exec_not_shell(client):
     assert "$(id); evil" in argv
     # Ensure '--' separator is present to guard against text starting with '-'
     assert "--" in argv
+
+
+# -- Security: screenshot uses exec (no shell) --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_screenshot_uses_exec_not_shell(client):
+    """Screenshot must use create_subprocess_exec — no shell interpretation."""
+    captured: list = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.append(args)
+        proc = MagicMock()
+        proc.returncode = 1  # scrot not available
+        proc.communicate = AsyncMock(return_value=(b"", b"scrot failed"))
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        resp = await client.get("/screenshot")
+
+    assert resp.status_code == 200
+    # Must have been called as exec with explicit arg list — not a shell string
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[0] == "scrot"
+    assert argv[1] == "-o"
+    assert "/tmp/screenshot.png" in argv[2]
+
+
+# -- Security: mouse uses exec + validates button -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_mouse_uses_exec_not_shell(client):
+    """Mouse coords/button must be passed as separate exec args, not in a shell string."""
+    captured: list = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.append(args)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        resp = await client.post("/mouse", json={"x": 100, "y": 200, "button": 1})
+
+    assert resp.status_code == 200
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[0] == "xdotool"
+    assert "mousemove" in argv
+    assert "100" in argv
+    assert "200" in argv
+    assert "1" in argv
+    # Must be individual args — no arg contains a space (i.e. no shell string)
+    assert all(" " not in str(a) for a in argv)
+
+
+@pytest.mark.asyncio
+async def test_mouse_rejects_invalid_button(client):
+    """Buttons outside {1,2,3,4,5} must be rejected before exec is called."""
+    captured: list = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.append(args)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        resp = await client.post("/mouse", json={"x": 50, "y": 50, "button": 99})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "error"
+    assert "Invalid button" in data["error"]
+    # exec must NOT have been called
+    assert len(captured) == 0
+
+
+# -- Security: /exec and /files/batch block shell-metachar chaining -----------
+
+
+@pytest.mark.asyncio
+async def test_exec_no_shell_chaining(client):
+    """A semicolon payload in /exec must NOT spawn a second command.
+
+    With shlex.split + create_subprocess_exec, "echo hello; echo injected"
+    becomes ["echo", "hello;", "echo", "injected"] — echo receives those
+    as arguments and emits them on a single line; no second process is spawned.
+    """
+    resp = await client.post("/exec", json={"command": "echo hello; echo injected"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == 0
+    # Single process output: all on one line, no newline separating two commands.
+    assert "\n" not in data["stdout"].strip()
+
+
+@pytest.mark.asyncio
+async def test_files_batch_no_shell_chaining(client):
+    """A semicolon payload in /files/batch must NOT spawn a second command."""
+    resp = await client.post("/files/batch", json={"command": "echo safe; echo injected"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == 0
+    # Same as /exec: single process, no newline-separated second command output.
+    assert "\n" not in data["stdout"].strip()

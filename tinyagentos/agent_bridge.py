@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -135,9 +136,14 @@ def create_bridge_app(
 
     @bridge.post("/exec")
     async def exec_command(req: ExecRequest):
+        # SECURITY: shlex.split prevents shell-metachar injection (;, |, $()) by running
+        # the command without a shell. Single commands with arguments work as before.
+        # Shell features (pipes, redirects) are intentionally NOT supported.
+        # NOTE: This endpoint must be auth-gated — it runs arbitrary commands inside
+        # the container. Verify /exec requires authentication before exposing externally.
         try:
-            proc = await asyncio.create_subprocess_shell(
-                req.command,
+            proc = await asyncio.create_subprocess_exec(
+                *shlex.split(req.command),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -205,10 +211,14 @@ def create_bridge_app(
 
     @bridge.post("/files/batch")
     async def files_batch(req: FileBatchRequest):
-        """Batch file ops are shell commands — delegate to exec."""
+        """Batch file ops via exec — delegates single commands with arguments.
+        Shell features (pipes, redirects) are NOT supported; use /exec for those.
+        # SECURITY: shlex.split without shell=True prevents metachar injection.
+        # NOTE: Must be auth-gated — runs arbitrary commands inside the container.
+        """
         try:
-            proc = await asyncio.create_subprocess_shell(
-                req.command,
+            proc = await asyncio.create_subprocess_exec(
+                *shlex.split(req.command),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -239,8 +249,8 @@ def create_bridge_app(
     @bridge.get("/screenshot")
     async def screenshot():
         try:
-            proc = await asyncio.create_subprocess_shell(
-                "scrot -o /tmp/screenshot.png",
+            proc = await asyncio.create_subprocess_exec(
+                "scrot", "-o", "/tmp/screenshot.png",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -286,9 +296,12 @@ def create_bridge_app(
     @bridge.post("/mouse")
     async def mouse(req: MouseRequest):
         try:
-            cmd = f"xdotool mousemove {req.x} {req.y} click {req.button}"
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
+            _ALLOWED_BUTTONS = {1, 2, 3, 4, 5}
+            if req.button not in _ALLOWED_BUTTONS:
+                return {"status": "error", "error": f"Invalid button: {req.button}"}
+            proc = await asyncio.create_subprocess_exec(
+                "xdotool", "mousemove", str(req.x), str(req.y),
+                "click", str(req.button),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
