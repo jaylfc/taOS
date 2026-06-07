@@ -1,16 +1,24 @@
-import { create } from "zustand";
+export interface AttachmentMeta {
+  mime_type: string;
+  url: string;
+  filename?: string;
+}
 
 export interface AssistantMessage {
   role: "user" | "assistant" | "system";
   content: string;
+  attachments?: AttachmentMeta[];
   ts: number;
 }
+
+import { create } from "zustand";
 
 interface TaosAgentState {
   isOpen: boolean;
   messages: AssistantMessage[];
   model: string | null;
   streaming: boolean;
+  settingsOpen: boolean;
 }
 
 interface TaosAgentActions {
@@ -22,6 +30,7 @@ interface TaosAgentActions {
   appendDelta: (delta: string) => void;
   setModel: (model: string | null) => void;
   setStreaming: (streaming: boolean) => void;
+  setSettingsOpen: (open: boolean) => void;
   clear: () => void;
 }
 
@@ -32,6 +41,7 @@ export const useTaosAgentStore = create<TaosAgentStore>((set) => ({
   messages: [],
   model: null,
   streaming: false,
+  settingsOpen: false,
 
   togglePanel: () => set((s) => ({ isOpen: !s.isOpen })),
   openPanel: () => set({ isOpen: true }),
@@ -54,5 +64,6 @@ export const useTaosAgentStore = create<TaosAgentStore>((set) => ({
 
   setModel: (model) => set({ model }),
   setStreaming: (streaming) => set({ streaming }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
   clear: () => set({ messages: [] }),
 }));

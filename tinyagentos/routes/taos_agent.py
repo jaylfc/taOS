@@ -1,11 +1,13 @@
-"""taOS agent — settings, config and chat completion endpoint.
+"""taOS agent — settings, config, chat and file attachments.
 
-GET  /api/taos-agent/settings          → {model: str | null}
-PATCH /api/taos-agent/settings         → accepts {model: str}, persists via desktop_settings
-GET  /api/taos-agent/config            → {model, permitted_models, persona, key_masked, framework, system}
-PUT  /api/taos-agent/permitted-models  → validate + persist permitted_models; re-scope the agent key
-PUT  /api/taos-agent/persona           → persist persona (system-prompt override)
-POST /api/taos-agent/chat              → streams chat completion via opencode (NDJSON)
+GET  /api/taos-agent/settings                  → {model: str | null}
+PATCH /api/taos-agent/settings                 → accepts {model: str}, persists via desktop_settings
+GET  /api/taos-agent/config                    → {model, permitted_models, persona, key_masked, framework, system}
+PUT  /api/taos-agent/permitted-models          → validate + persist permitted_models; re-scope the agent key
+PUT  /api/taos-agent/persona                   → persist persona (system-prompt override)
+POST /api/taos-agent/chat                      → streams chat completion via opencode (NDJSON)
+POST /api/taos-agent/attachments/upload        → accepts a file, returns a persistent attachment record
+GET  /api/taos-agent/attachments/files/{name}  → serve a stored attachment
 
 The system prompt is read from docs/taos-agent-manual.md at module import time.
 When a persona is set via PUT /api/taos-agent/persona it is used instead.
@@ -13,13 +15,15 @@ When a persona is set via PUT /api/taos-agent/persona it is used instead.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, File, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
@@ -31,13 +35,9 @@ router = APIRouter()
 _PREF_NAMESPACE = "taos_agent"
 _MANUAL_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "taos-agent-manual.md"
 
-# Sentinel object placed on the queue to signal the stream is done.
 _DONE = object()
 
 
-# Read the system-prompt manual once at startup (or import time).
-# If the file is absent the taOS agent still works — it just won't have a
-# system prompt until the file is created and the server restarted.
 def _load_manual() -> str:
     try:
         return _MANUAL_PATH.read_text(encoding="utf-8")
@@ -50,11 +50,6 @@ SYSTEM_PROMPT: str = _load_manual()
 
 
 def _mask_key(key: str | None) -> str | None:
-    """Return a masked form of a LiteLLM key (first 6 + … + last 4), or None.
-
-    Keys too short for that pattern are fully masked rather than surfaced raw
-    (GET /api/taos-agent/config returns this value).
-    """
     if not key:
         return None
     if len(key) < 12:
@@ -76,6 +71,52 @@ class PersonaUpdate(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[dict]
+    attachments: list[dict] | None = None
+    """Optional multimodal attachments for the last user turn."""
+
+
+class AttachmentMeta(BaseModel):
+    mime_type: str
+    data_b64: str
+
+
+@router.post("/api/taos-agent/attachments/upload")
+async def upload_attachment(request: Request, file: UploadFile = File(...)):
+    """Accept a file upload, store it, and return a record the frontend can
+    embed inline when sending the chat prompt."""
+    data_dir: Path = request.app.state.data_dir
+    upload_dir = data_dir / "taos-agent-files"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or "file").suffix
+    stored_name = f"{uuid.uuid4().hex[:12]}{ext}"
+    dest = upload_dir / stored_name
+    content = await file.read()
+    _MAX_BYTES = 50 * 1024 * 1024
+    if len(content) > _MAX_BYTES:
+        return JSONResponse({"error": "file too large (50 MB max)"}, status_code=413)
+    dest.write_bytes(content)
+    mime, _ = mimetypes.guess_type(file.filename or "")
+    return JSONResponse({
+        "filename": file.filename or "uploaded",
+        "mime_type": mime or file.content_type or "application/octet-stream",
+        "size": len(content),
+        "url": f"/api/taos-agent/attachments/files/{stored_name}",
+    })
+
+
+@router.get("/api/taos-agent/attachments/files/{token}")
+async def serve_attachment(request: Request, token: str):
+    """Serve a previously uploaded taOS agent attachment."""
+    data_dir: Path = request.app.state.data_dir
+    upload_dir = data_dir / "taos-agent-files"
+    # Resolve by prefix — the actual filename is {token_prefix}-{original}
+    candidates = list(upload_dir.glob(f"{token}*"))
+    if not candidates:
+        return JSONResponse({"error": "file not found"}, status_code=404)
+    file_path = candidates[0]
+    if not file_path.exists() or not file_path.resolve().is_relative_to(upload_dir.resolve()):
+        return JSONResponse({"error": "file not found"}, status_code=404)
+    return FileResponse(file_path)
 
 
 @router.get("/api/taos-agent/settings")
@@ -187,7 +228,8 @@ async def chat(request: Request, body: ChatRequest):
 
     Returns NDJSON where each line is a JSON object with a ``delta`` string
     field, followed by a final ``{"done": true}`` line.  The frontend reads
-    with a streaming fetch + TextDecoder.
+    with a streaming fetch + TextDecoder.  ``attachments`` are optional:
+    each entry embeds a stored file as a base64 image in the last user turn.
     """
     store = request.app.state.desktop_settings
     prefs = await store.get_preference("user", _PREF_NAMESPACE)
@@ -216,11 +258,6 @@ async def chat(request: Request, body: ChatRequest):
             status_code=503,
         )
 
-    # Extract the latest user message text.
-    text = body.messages[-1].get("content", "") if body.messages else ""
-    if not text:
-        return JSONResponse({"error": "Empty message."}, status_code=400)
-
     app_state = request.app.state
 
     # Use persona override if set, else fall back to the built-in manual.
@@ -238,9 +275,7 @@ async def chat(request: Request, body: ChatRequest):
             queue.put_nowait({"error": reply.get("error", "error")})
             queue.put_nowait(_DONE)
         elif kind == "final":
-            # Text already arrived as deltas; final just signals completion.
             queue.put_nowait(_DONE)
-        # reasoning / tool_call / tool_result — not rendered by the panel; ignore.
 
     cfg = OpenCodeConfig(
         base_url=server.base_url,
@@ -250,16 +285,45 @@ async def chat(request: Request, body: ChatRequest):
         system=system_prompt,
     )
     adapter = OpenCodeAdapter(cfg, sink)
-    # Reuse the persistent session so opencode keeps conversation history.
     adapter.session_id = getattr(app_state, "taos_opencode_session_id", None)
 
+    text = body.messages[-1].get("content", "") if body.messages else ""
+
+    # Resolve URL references → base64-encoded dicts the adapter can embed.
+    data_dir: Path = request.app.state.data_dir
+    upload_dir = data_dir / "taos-agent-files"
+    attachments: list[dict] = []
+    _MAX_EMBED = 50 * 1024 * 1024
+    for ref in body.attachments or []:
+        url: str = ref.get("url", "")
+        mime: str = ref.get("mime_type", "application/octet-stream")
+        # Extract stored filename from the URL path segment.
+        stored_name = url.split("/")[-1] if url else ""
+        if not stored_name:
+            continue
+        file_path = upload_dir / stored_name
+        try:
+            resolved = file_path.resolve()
+        except Exception:
+            continue
+        if not resolved.is_relative_to(upload_dir.resolve()):
+            continue
+        if not resolved.exists():
+            continue
+        data = resolved.read_bytes()
+        if len(data) > _MAX_EMBED:
+            continue
+        attachments.append({
+            "mime_type": mime,
+            "data_b64": base64.b64encode(data).decode(),
+        })
+
     async def _drive() -> None:
-        """Run the opencode turn; always puts a done-sentinel when finished."""
         try:
             await adapter.ensure_session()
             app_state.taos_opencode_session_id = adapter.session_id
             trace_id = uuid.uuid4().hex
-            await adapter.prompt(text, trace_id=trace_id)
+            await adapter.prompt(text, trace_id=trace_id, attachments=attachments)
             await adapter.close()
         except Exception as exc:
             logger.exception("taos-agent: drive task error")
@@ -280,7 +344,6 @@ async def chat(request: Request, body: ChatRequest):
             logger.exception("taos-agent: generator error")
             yield json.dumps({"error": str(exc)}) + "\n"
         finally:
-            # Ensure the drive task is awaited so exceptions surface in logs.
             if not drive_task.done():
                 drive_task.cancel()
                 try:

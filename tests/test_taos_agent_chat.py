@@ -152,7 +152,7 @@ async def test_chat_happy_path_ndjson(client, app, monkeypatch):
         async def ensure_session(self):
             self.session_id = "ses_happy"
 
-        async def prompt(self, text, trace_id=None):
+        async def prompt(self, text, trace_id=None, attachments=None):
             self._sink({"kind": "delta", "content": "Hello"})
             self._sink({"kind": "delta", "content": " world"})
             self._sink({"kind": "final", "content": "Hello world"})
@@ -213,7 +213,7 @@ async def test_chat_error_path_ndjson(client, app, monkeypatch):
         async def ensure_session(self):
             self.session_id = "ses_err"
 
-        async def prompt(self, text, trace_id=None):
+        async def prompt(self, text, trace_id=None, attachments=None):
             self._sink({"kind": "error", "error": "boom"})
 
         async def close(self):

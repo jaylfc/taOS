@@ -269,17 +269,16 @@ class OpenCodeAdapter:
         self,
         text: str,
         trace_id: str | None = None,
+        attachments: list[dict] | None = None,
     ) -> None:
-        """Send *text* to opencode and stream results to the sink.
-
-        Each event that maps to one of the 6 reply kinds is delivered to the
-        sink as a dict ``{"kind", "trace_id", ...kind-specific...}``.  ``prompt``
-        never raises — any transport or server error results in an ``error``
-        reply, mirroring the acp_adapter contract.
+        """Send *text* (+ optional multimodal *attachments*) to opencode and stream
+        results to the sink.
 
         Args:
-            text:     User message text.
-            trace_id: Optional trace id, forwarded on every emitted reply.
+            text:        User message text.
+            trace_id:    Optional trace id, forwarded on every emitted reply.
+            attachments: Optional list of ``{"mime_type": str, "data_b64": str}``
+                         dicts to embed as image/file parts alongside the text.
         """
         state: dict = {
             "session_id": self.session_id,
@@ -319,6 +318,13 @@ class OpenCodeAdapter:
                     },
                     "parts": [{"type": "text", "text": text}],
                 }
+                if attachments:
+                    for att in attachments:
+                        prompt_body["parts"].append({
+                            "type": "file",
+                            "media_type": att["mime_type"],
+                            "data": att["data_b64"],
+                        })
                 if self._cfg.system:
                     prompt_body["system"] = self._cfg.system
                 prompt_resp = await client.post(
