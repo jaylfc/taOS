@@ -12,6 +12,10 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
+from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
+from tinyagentos.data_snapshot import snapshot_data_dir
+from tinyagentos.update_runner import switch_to_branch
+from tinyagentos.restart_orchestrator import write_pending_restart
 
 logger = logging.getLogger(__name__)
 
@@ -496,12 +500,20 @@ async def set_container_runtime(request: Request):
 async def check_for_updates(request: Request):
     """Check if a newer version of TinyAgentOS is available on GitHub."""
     import asyncio
+    from tinyagentos.auto_update import remote_is_strictly_ahead
     project_dir = str(Path(__file__).parent.parent.parent)
 
-    # Fetch remote refs so origin/master is current, then compare SHAs.
+    # Track the user's selected branch (Updates → Advanced selector), or the
+    # checked-out branch when unset — never a hard-coded master, otherwise a
+    # dev box is told a stale master commit is "available" and Install fails.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
+
+    # Fetch remote refs so origin/<branch> is current, then compare SHAs.
     # Parsing dry-run output is unreliable on shallow clones / no tracking branch.
     fetch_proc = await asyncio.create_subprocess_exec(
-        "git", "fetch", "origin", "master",
+        # `--` forces `branch` to be read as a refspec, never an option, even
+        # though resolve_tracked_branch already validates it (defence in depth).
+        "git", "fetch", "origin", "--", branch,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         cwd=project_dir,
     )
@@ -518,9 +530,11 @@ async def check_for_updates(request: Request):
 
     local_sha, remote_sha = await asyncio.gather(
         _rev_parse("HEAD"),
-        _rev_parse("origin/master"),
+        _rev_parse(f"origin/{branch}"),
     )
-    has_updates = bool(local_sha and remote_sha and local_sha != remote_sha)
+    # Only a real update when the remote is strictly ahead of us — never offer
+    # an older or divergent commit.
+    has_updates = await remote_is_strictly_ahead(project_dir, local_sha, remote_sha)
 
     async def _log1(ref: str) -> str:
         p = await asyncio.create_subprocess_exec(
@@ -532,7 +546,7 @@ async def check_for_updates(request: Request):
         return out.decode().strip() if out else "unknown"
 
     current = await _log1("HEAD")
-    new_commit = await _log1("origin/master") if has_updates else None
+    new_commit = await _log1(f"origin/{branch}") if has_updates else None
 
     return {
         "has_updates": has_updates,
@@ -594,44 +608,11 @@ async def force_update_check(request: Request):
 
 
 
-@router.post("/api/settings/update")
-async def apply_update(request: Request):
-    """Pull latest TinyAgentOS code from GitHub."""
-    import asyncio
-    from tinyagentos.restart_orchestrator import write_pending_restart
-    project_dir = Path(__file__).parent.parent.parent
+async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str]:
+    """Sync deps, rebuild the SPA, flag the pending restart, trigger restart.
 
-    # systemd ExecStartPre rebuilds produce new content-hashed files in
-    # static/desktop/assets/ and modify desktop/tsconfig.tsbuildinfo on each
-    # restart, leaving the tree dirty. git pull --ff-only then refuses to
-    # overwrite the locals and the Install Update button always 500s. Wipe
-    # build outputs first — git pull restores them or the rebuild below
-    # regenerates them.
-    reset_proc = await asyncio.create_subprocess_exec(
-        "git", "checkout", "--", "desktop/tsconfig.tsbuildinfo", "static/desktop",
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        cwd=str(project_dir),
-    )
-    await reset_proc.communicate()
-    clean_proc = await asyncio.create_subprocess_exec(
-        "git", "clean", "-fd", "static/desktop/assets",
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        cwd=str(project_dir),
-    )
-    await clean_proc.communicate()
-
-    # Git pull
-    proc = await asyncio.create_subprocess_exec(
-        "git", "pull", "--ff-only", "origin", "master",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        cwd=str(project_dir),
-    )
-    stdout, _ = await proc.communicate()
-    output = stdout.decode() if stdout else ""
-
-    if proc.returncode != 0:
-        return JSONResponse({"error": f"Update failed: {output}"}, status_code=500)
-
+    Returns (returncode, output); non-zero means a step failed.
+    """
     # Pip install to pick up new deps. Capture output and surface failures —
     # silently swallowing a failed install lands users on a grey-screen the
     # next time they restart, because the new code imports a module that's
@@ -649,14 +630,7 @@ async def apply_update(request: Request):
         cwd=str(project_dir),
     )
     if pip_returncode != 0:
-        return JSONResponse(
-            {
-                "error": "Dependency install failed — update aborted to avoid grey-screen on restart.",
-                "git_output": output.strip(),
-                "pip_output": pip_output.strip()[-2000:],
-            },
-            status_code=500,
-        )
+        return pip_returncode, pip_output
 
     # Import smoke test in a fresh interpreter — verifies the new code can
     # actually load with the freshly installed deps. Without this a partial
@@ -693,18 +667,7 @@ async def apply_update(request: Request):
             timeout=60.0,  # imports should be fast; 60s is generous
         )
         if smoke_returncode != 0:
-            return JSONResponse(
-                {
-                    "error": (
-                        "Update applied to disk but post-install import test failed "
-                        "— restart would grey-screen. Fix the import error before restarting."
-                    ),
-                    "git_output": output.strip(),
-                    "pip_output": pip_output.strip()[-2000:],
-                    "import_error": smoke_output.strip()[-2000:],
-                },
-                status_code=500,
-            )
+            return smoke_returncode, smoke_output
 
     # Force a desktop bundle rebuild on every applied update. The mtime-based
     # staleness check in rebuild_desktop_bundle_if_stale is unreliable when
@@ -724,6 +687,54 @@ async def apply_update(request: Request):
             "Update pulled but desktop rebuild failed: %s", rebuild_result.message
         )
 
+    if target_sha:
+        write_pending_restart(target_sha)
+
+    return 0, ""
+
+
+@router.post("/api/settings/update")
+async def apply_update(request: Request):
+    """Pull latest TinyAgentOS code from GitHub."""
+    import asyncio
+    project_dir = Path(__file__).parent.parent.parent
+
+    # systemd ExecStartPre rebuilds produce new content-hashed files in
+    # static/desktop/assets/ and modify desktop/tsconfig.tsbuildinfo on each
+    # restart, leaving the tree dirty. git pull --ff-only then refuses to
+    # overwrite the locals and the Install Update button always 500s. Wipe
+    # build outputs first — git pull restores them or the rebuild below
+    # regenerates them.
+    reset_proc = await asyncio.create_subprocess_exec(
+        "git", "checkout", "--", "desktop/tsconfig.tsbuildinfo", "static/desktop",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await reset_proc.communicate()
+    clean_proc = await asyncio.create_subprocess_exec(
+        "git", "clean", "-fd", "static/desktop/assets",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await clean_proc.communicate()
+
+    # Git pull — pull the branch this install tracks (master on stable, dev on
+    # a dev/test box). Pulling a hard-coded master onto a dev box fails ff-only
+    # (dev is ahead of master) and the update silently never applies.
+    branch = await resolve_tracked_branch(request.app.state.desktop_settings, project_dir)
+    proc = await asyncio.create_subprocess_exec(
+        # `--` forces `branch` to be a refspec, never an option (flag-injection
+        # defence); resolve_tracked_branch also validates it.
+        "git", "pull", "--ff-only", "origin", "--", branch,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        cwd=str(project_dir),
+    )
+    stdout, _ = await proc.communicate()
+    output = stdout.decode() if stdout else ""
+
+    if proc.returncode != 0:
+        return JSONResponse({"error": f"Update failed: {output}"}, status_code=500)
+
     # Record the new SHA so the restart modal can confirm the update was applied
     # and the Updates section can show the pending-restart banner.
     sha_proc = await asyncio.create_subprocess_exec(
@@ -733,8 +744,17 @@ async def apply_update(request: Request):
     )
     sha_out, _ = await sha_proc.communicate()
     new_sha = sha_out.decode().strip() if sha_out else ""
-    if new_sha:
-        write_pending_restart(new_sha)
+
+    rc, out = await _pip_rebuild_restart(project_dir, new_sha)
+    if rc != 0:
+        return JSONResponse(
+            {
+                "error": "Dependency install failed — update aborted to avoid grey-screen on restart.",
+                "git_output": output.strip(),
+                "pip_output": out.strip()[-2000:],
+            },
+            status_code=500,
+        )
 
     # Always restart after a successful update.
     import asyncio as _asyncio
@@ -773,4 +793,88 @@ async def rebuild_frontend(request: Request):
     return {
         "status": "rebuilt",
         "message": "Desktop bundle rebuilt. Hard-refresh the browser to see new components.",
+    }
+
+
+async def _remote_branches(project_dir: str) -> list[str]:
+    """Branch names available on origin, via git ls-remote --heads."""
+    rc, out = await _run_capture(["git", "ls-remote", "--heads", "origin"], cwd=project_dir, timeout=30.0)
+    if rc != 0:
+        return []
+    names = []
+    for line in out.splitlines():
+        if "refs/heads/" in line:
+            names.append(line.split("refs/heads/", 1)[1].strip())
+    return sorted(set(n for n in names if n))
+
+
+@router.get("/api/settings/branches")
+async def list_branches(request: Request):
+    """List branches available on origin + the one this install tracks."""
+    project_dir = str(Path(__file__).parent.parent.parent)
+    branches = await _remote_branches(project_dir)
+    current = await resolve_tracked_branch(request.app.state.desktop_settings, Path(project_dir))
+    return {"branches": branches, "current": current}
+
+
+class UpdateChannel(BaseModel):
+    branch: str
+
+
+@router.post("/api/settings/update-channel")
+async def set_update_channel(request: Request, body: UpdateChannel):
+    """Switch the install to a different branch: snapshot data/, git switch,
+    persist the tracked_branch pref, then pip/rebuild/restart to apply."""
+    project_dir = Path(__file__).parent.parent.parent
+    branch = body.branch.strip()
+
+    # Reject anything that isn't a plain ref name before it reaches git argv
+    # (flag-injection defence) — independent of the remote-membership check.
+    if not is_valid_branch_name(branch):
+        return JSONResponse({"error": f"invalid branch name '{branch}'"}, status_code=400)
+
+    available = await _remote_branches(str(project_dir))
+    if branch not in available:
+        return JSONResponse({"error": f"unknown branch '{branch}'"}, status_code=400)
+
+    store = request.app.state.desktop_settings
+    current = await resolve_tracked_branch(store, project_dir)
+    if branch == current:
+        return {"status": "unchanged", "branch": branch}
+
+    data_dir = request.app.state.config_path.parent
+    snapshot_path = snapshot_data_dir(data_dir)
+
+    result = await switch_to_branch(branch, project_dir)
+    # switch_to_branch sets ok=False (and performs no destructive change) on any
+    # failed step — fetch, stash, checkout. Surface it rather than proceeding to
+    # rebuild/restart on a branch that never actually switched.
+    if not result.ok:
+        return JSONResponse({"error": result.message}, status_code=500)
+
+    prefs = await store.get_preference("user", PREF_NAMESPACE) or {}
+    prefs["tracked_branch"] = branch
+    await store.save_preference("user", PREF_NAMESPACE, prefs)
+
+    rc, out = await _pip_rebuild_restart(project_dir, result.new_sha)
+    if rc != 0:
+        return JSONResponse(
+            {"error": f"Switched to {branch} but rebuild failed: {out[:300]}",
+             "snapshot": str(snapshot_path) if snapshot_path else None},
+            status_code=500,
+        )
+
+    import asyncio as _asyncio
+    from tinyagentos.routes.system import _do_restart
+    # Hold a reference so the task isn't garbage-collected before it runs
+    # (asyncio keeps only weak refs to tasks) — otherwise the restart can drop.
+    request.app.state.update_channel_restart_task = _asyncio.create_task(
+        _do_restart(request.app.state)
+    )
+    return {
+        "status": "switching",
+        "branch": branch,
+        "snapshot": str(snapshot_path) if snapshot_path else None,
+        "recovery_tag": result.recovery_tag,
+        "message": result.message,
     }

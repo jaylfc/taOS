@@ -48,12 +48,23 @@ _CSS_URL_RE = re.compile(
 )
 
 
+# Kept in sync with the proxy route path in proxy.py. GET forms submit to this
+# bare path (their query string is replaced by the form's own fields on
+# submit), carrying the taOS routing params as hidden inputs instead.
+_PROXY_PATH = "/api/desktop/browser/proxy"
+# Reserved hidden-input names for GET-form routing — prefixed so they can't
+# collide with a site's own form field named e.g. "url" or "profile_id".
+_FORM_PID_FIELD = "__taos_pid"
+_FORM_URL_FIELD = "__taos_url"
+
+
 def rewrite_html(
     html_bytes: bytes,
     *,
     base_url: str,
     proxy: Callable[[str], str],
     charset: str = "utf-8",
+    profile_id: str | None = None,
 ) -> bytes:
     """Rewrite all URL-bearing references in `html_bytes` to proxied form.
 
@@ -84,6 +95,7 @@ def rewrite_html(
         return html_bytes
 
     _rewrite_attributes(tree, base_url=base_url, proxy=proxy)
+    _rewrite_forms(tree, base_url=base_url, proxy=proxy, profile_id=profile_id)
     _rewrite_srcset(tree, base_url=base_url, proxy=proxy)
     _rewrite_inline_styles(tree, base_url=base_url, proxy=proxy)
     _rewrite_style_tags(tree, base_url=base_url, proxy=proxy)
@@ -129,7 +141,9 @@ def _rewrite_one(url: str, *, base_url: str, proxy: Callable[[str], str]) -> str
 def _rewrite_attributes(
     tree, *, base_url: str, proxy: Callable[[str], str],
 ) -> None:
-    for attr in ("href", "src", "action"):
+    # NOTE: `action` is intentionally NOT here — form actions are handled by
+    # _rewrite_forms, which has to special-case GET vs POST submission.
+    for attr in ("href", "src"):
         for el in tree.iter():
             val = el.get(attr)
             if val is None:
@@ -137,6 +151,47 @@ def _rewrite_attributes(
             new = _rewrite_one(val, base_url=base_url, proxy=proxy)
             if new != val:
                 el.set(attr, new)
+
+
+def _rewrite_forms(
+    tree, *, base_url: str, proxy: Callable[[str], str], profile_id: str | None,
+) -> None:
+    """Rewrite <form> actions so submissions route through the proxy.
+
+    POST and GET need different treatment:
+
+    - **POST** keeps the action URL's query string on submit, so the regular
+      proxied action (``?profile_id=…&url=…``) works; the form fields ride in
+      the request body (forwarded by the proxy).
+    - **GET** *replaces* the action's query string with the form's own fields
+      on submit, which would wipe out query-encoded routing params. So we point
+      the action at the bare proxy path and carry the routing params as hidden
+      inputs (reserved names), which survive in the submitted query. The proxy
+      merges the remaining fields into the target URL.
+    """
+    for form in tree.iter("form"):
+        raw_action = form.get("action")
+        action_target = urljoin(base_url, raw_action) if raw_action else base_url
+        if not action_target.startswith(("http://", "https://")):
+            continue  # javascript:/data: etc — leave alone
+        method = (form.get("method") or "get").strip().lower()
+        if method == "post":
+            form.set("action", proxy(action_target))
+            continue
+        # GET form
+        form.set("action", _PROXY_PATH)
+        if profile_id:
+            _prepend_hidden(form, _FORM_PID_FIELD, profile_id)
+        _prepend_hidden(form, _FORM_URL_FIELD, action_target)
+
+
+def _prepend_hidden(form, name: str, value: str) -> None:
+    """Insert a hidden <input name=value> as the form's first child."""
+    inp = lxml_html.Element("input")
+    inp.set("type", "hidden")
+    inp.set("name", name)
+    inp.set("value", value)
+    form.insert(0, inp)
 
 
 def _rewrite_srcset(

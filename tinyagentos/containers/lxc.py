@@ -54,8 +54,11 @@ class _IncusPtyHandle(PtyHandle):
 def _open_incus_pty(container: str, shell_cmd: str) -> _IncusPtyHandle:
     """Open an incus exec session with a real PTY."""
     master_fd, slave_fd = pty.openpty()
+    # `incus exec` has no --tty/--interactive flags; -t/--force-interactive
+    # forces pseudo-terminal allocation. stdin/stdout are wired to the PTY slave
+    # below, so this gives a real interactive terminal in the container.
     proc = subprocess.Popen(
-        ["incus", "exec", "--tty", "--interactive", container, "--",
+        ["incus", "exec", "--force-interactive", container, "--",
          "bash", "-lc", shell_cmd],
         stdin=slave_fd,
         stdout=slave_fd,

@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import type { ThemeConfig } from "@/theme/theme-config";
+import { ALLOWED_TOKENS } from "@/theme/theme-config";
+import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 
 // Wallpapers are split into (image, fallback) pairs rather than a single
 // background-shorthand so CSS media queries can control background-size
@@ -77,6 +80,12 @@ interface ThemeStore {
   wallpaperMobileImage: string;
   wallpaperFallback: string;
   showDesktopIcons: boolean;
+  structure: Record<string, { variant?: string } & Record<string, unknown>>;
+  effects: { module: string; params?: Record<string, unknown> }[];
+
+  activeThemeId: string;
+  wallpaperByTheme: Record<string, string>;
+  themeDefaultWallpaper: Record<string, string>;
 
   setWallpaper: (id: string) => void;
   toggleDesktopIcons: () => void;
@@ -89,6 +98,12 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   wallpaperMobileImage: WALLPAPERS[0]!.mobileImage ?? WALLPAPERS[0]!.image,
   wallpaperFallback: WALLPAPERS[0]!.fallback,
   showDesktopIcons: true,
+  structure: {},
+  effects: [],
+
+  activeThemeId: "default",
+  wallpaperByTheme: {},
+  themeDefaultWallpaper: {},
 
   setWallpaper(id) {
     const wp = WALLPAPERS.find((w) => w.id === id);
@@ -108,3 +123,98 @@ export const useThemeStore = create<ThemeStore>((set) => ({
 
   getWallpapers: () => WALLPAPERS,
 }));
+
+let _applied: string[] = []; // token keys currently set, for revert
+
+export function applyThemeConfig(cfg: ThemeConfig) {
+  revertTheme();
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(cfg.tokens || {})) {
+    if (ALLOWED_TOKENS.has(k) && typeof v === "string") {
+      root.style.setProperty(k, v);
+      _applied.push(k);
+    }
+  }
+  useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [] });
+}
+
+export function revertTheme() {
+  const root = document.documentElement;
+  for (const k of _applied) root.style.removeProperty(k);
+  _applied = [];
+  useThemeStore.setState({ structure: {}, effects: [] });
+}
+
+export function setWallpaperForActiveTheme(value: string) {
+  const { activeThemeId, wallpaperByTheme } = useThemeStore.getState();
+  useThemeStore.setState({ wallpaperByTheme: { ...wallpaperByTheme, [activeThemeId]: value } });
+}
+
+export function resolveWallpaper(): string {
+  const { activeThemeId, wallpaperByTheme, themeDefaultWallpaper } = useThemeStore.getState();
+  return wallpaperByTheme[activeThemeId] ?? themeDefaultWallpaper[activeThemeId] ?? "";
+}
+
+let _priorConfig: ThemeConfig | null = null;
+
+export function previewTheme(cfg: ThemeConfig, priorCfg: ThemeConfig | null) {
+  _priorConfig = priorCfg;
+  applyThemeConfig(cfg);
+}
+
+export function revertPreview() {
+  if (_priorConfig) applyThemeConfig(_priorConfig);
+  else revertTheme();
+  _priorConfig = null;
+}
+
+// Re-apply the persisted active theme at app boot. Best-effort: any failure
+// (network, missing pref, unknown theme) leaves the default theme in place.
+export async function restoreActiveTheme(): Promise<void> {
+  try {
+    const res = await fetch("/api/preferences/themes", { credentials: "include" });
+    if (!res.ok) return;
+    const pref = (await res.json()) as { active_theme_id?: string } | null;
+    const themeId = pref?.active_theme_id;
+    if (!themeId || themeId === "default") return;
+
+    let cfg: ThemeConfig | undefined = BUILTIN_THEMES.find((t) => t.theme_id === themeId)?.config;
+    if (!cfg) {
+      const tRes = await fetch("/api/themes", { credentials: "include" });
+      if (tRes.ok) {
+        const themes = (await tRes.json()) as { theme_id: string; config: ThemeConfig }[];
+        cfg = themes.find((t) => t.theme_id === themeId)?.config;
+      }
+    }
+    if (!cfg) return;
+
+    applyThemeConfig(cfg);
+    useThemeStore.setState({
+      activeThemeId: themeId,
+      themeDefaultWallpaper: {
+        ...useThemeStore.getState().themeDefaultWallpaper,
+        ...(cfg.wallpaper ? { [themeId]: cfg.wallpaper } : {}),
+      },
+    });
+  } catch {
+    // best-effort: ignore
+  }
+}
+
+export function keepTheme(themeId: string, cfg: ThemeConfig) {
+  _priorConfig = null;
+  useThemeStore.setState({
+    activeThemeId: themeId,
+    themeDefaultWallpaper: {
+      ...useThemeStore.getState().themeDefaultWallpaper,
+      ...(cfg.wallpaper ? { [themeId]: cfg.wallpaper } : {}),
+    },
+  });
+  // persist active theme id
+  void fetch("/api/preferences/themes", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ active_theme_id: themeId }),
+  }).catch(() => {});
+}

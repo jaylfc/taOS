@@ -130,15 +130,42 @@ describe("AgentsApp — AgentShortcutRow wiring (Task 27)", () => {
     expect(rowBeta.getAttribute("data-has-launch")).toBe("true");
   });
 
-  it("does NOT render a Back button or full-screen dialog when the detail panel is opened on desktop", async () => {
+  it("renders a Back button and hides the agent list when a detail view is opened on desktop", async () => {
     render(<AgentsApp windowId="test" />);
 
-    // Open the detail panel via the logs button on the first agent
+    // Open the detail view via the logs button on the first agent
     const logsBtn = await screen.findByRole("button", { name: /view logs for agent-alpha/i });
     fireEvent.click(logsBtn);
 
-    // No back button and no dialog wrapper on desktop
-    expect(screen.queryByRole("button", { name: /back to agents/i })).toBeNull();
-    expect(screen.queryByRole("dialog", { name: /agent details/i })).toBeNull();
+    // Back button must be visible in the full-window detail view
+    expect(screen.getByRole("button", { name: /back to agents/i })).toBeTruthy();
+
+    // The agent list toolbar heading must be gone (detail replaced the list)
+    expect(screen.queryByRole("heading", { name: /^agents$/i })).toBeNull();
+  });
+});
+
+describe("AgentsApp — framework label", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") {
+        return Promise.resolve({
+          ok: true, headers: { get: () => "application/json" },
+          json: () => Promise.resolve(MOCK_AGENTS),
+        } as unknown as Response);
+      }
+      return Promise.resolve({
+        ok: true, headers: { get: () => "application/json" },
+        json: () => Promise.resolve([]),
+      } as unknown as Response);
+    }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows each agent's framework as a labelled pill", async () => {
+    render(<AgentsApp windowId="test" />);
+    // The row surfaces the framework name (not just the emoji) for clarity.
+    expect(await screen.findByLabelText(/Framework: openclaw/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Framework: smolagents/i)).toBeInTheDocument();
   });
 });

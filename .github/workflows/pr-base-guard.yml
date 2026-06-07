@@ -1,0 +1,38 @@
+name: PR base branch guard
+
+# Friendly nudge when a PR is opened against master. master is the stable
+# branch that installs track; contributions belong on dev. We don't auto-close
+# or auto-retarget — just leave a one-time comment so the author can switch the
+# base (the commits and review carry over).
+
+on:
+  pull_request_target:
+    types: [opened]
+    branches: [master]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment with retarget guidance
+        uses: actions/github-script@91a83c091797b22c5771b1d7178fd0fddacc73ea # v7.1.0
+        with:
+          script: |
+            const body = [
+              "👋 Thanks for the PR! This one targets **`master`**, which is our",
+              "stable branch (it's what live installs track). Please retarget it to",
+              "**`dev`** — click **Edit** next to the PR title and change the base",
+              "branch dropdown from `master` to `dev`. Your commits and any review",
+              "carry over, nothing is lost.",
+              "",
+              "See [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md) for the branch model.",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });

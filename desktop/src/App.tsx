@@ -8,7 +8,7 @@ import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
 import { useIsPwa } from "@/hooks/use-is-pwa";
-import { useThemeStore } from "@/stores/theme-store";
+import { useThemeStore, restoreActiveTheme } from "@/stores/theme-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp } from "@/registry/app-registry";
@@ -25,6 +25,8 @@ import { useNotificationStore } from "@/stores/notification-store";
 import { TaosAssistantPanel } from "@/components/TaosAssistantPanel";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 import { InstallPromptBanner } from "@/shell/InstallPromptBanner";
+import { EffectsLayer } from "@/theme/effects/EffectsLayer";
+import { SafetyFloor } from "@/components/SafetyFloor";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -77,7 +79,7 @@ function SystemShortcuts({ toggleSearch, toggleLaunchpad, toggleAssistant }: Sys
 
   useShortcut("Ctrl+Space", toggleSearch, "Toggle search palette", "system");
   useShortcut("Ctrl+l", toggleLaunchpad, "Toggle launchpad", "system");
-  useShortcut("Ctrl+/", toggleAssistant, "Toggle taOS Assistant", "system");
+  useShortcut("Ctrl+/", toggleAssistant, "Toggle taOS agent", "system");
   useShortcut("Ctrl+w", closeFocused, "Close focused window", "system");
   useShortcut("Ctrl+m", minimizeFocused, "Minimize focused window", "system");
   useShortcut("Ctrl+f", maximizeFocused, "Maximize/restore focused window", "system");
@@ -151,7 +153,31 @@ export function App() {
     return () => window.removeEventListener("open-launchpad", handler);
   }, []);
 
+  // Surface a window opened programmatically from inside an app (e.g. an agent
+  // shortcut launching a terminal/browser). On mobile a window is only visible
+  // when it is the active window, so callers dispatch this with the new window
+  // id; on desktop the window manager already renders it, so this just focuses.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      // Validate the event's detail shape at runtime rather than trusting a cast.
+      const detail = (e as CustomEvent<unknown>).detail;
+      const wid =
+        detail && typeof (detail as { windowId?: unknown }).windowId === "string"
+          ? (detail as { windowId: string }).windowId
+          : null;
+      if (wid) setActiveWindowId(wid);
+    };
+    window.addEventListener("taos:activate-window", handler);
+    return () => window.removeEventListener("taos:activate-window", handler);
+  }, [setActiveWindowId]);
+
   useSessionPersistence();
+
+  // Re-apply the persisted active theme on app boot so a reload keeps the
+  // user's chosen theme app-wide (not only when Settings is opened).
+  useEffect(() => {
+    void restoreActiveTheme();
+  }, []);
 
   // Welcome notification — shown once per install, gated on a
   // localStorage flag so reload / refresh / re-mount don't replay it.
@@ -235,6 +261,7 @@ export function App() {
           )}
           <div className={`transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
             <div className="h-screen w-screen flex flex-col overflow-hidden bg-shell-bg text-shell-text">
+              <EffectsLayer />
               <TopBar onSearchOpen={toggleSearch} onAssistantOpen={toggleAssistant} />
               <Desktop />
               <Dock onLaunchpadOpen={toggleLaunchpad} />
@@ -243,6 +270,7 @@ export function App() {
               <NotificationToasts />
               <NotificationCentre />
               <TaosAssistantPanel />
+              <SafetyFloor />
             </div>
           </div>
         </LoginGate>
@@ -259,6 +287,7 @@ export function App() {
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
     <div className={`taos-wallpaper h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
+      <EffectsLayer />
       {/* Install banner — shown in browser mode, hidden in PWA */}
       {isBrowserMobile && <InstallPromptBanner />}
       <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
@@ -291,6 +320,7 @@ export function App() {
         onToggleSwitcher={() => setCardSwitcherOpen((v) => !v)}
         onOpenLaunchpad={() => { setCardSwitcherOpen(false); setSearchOpen(false); setLaunchpadOpen((v) => !v); }}
         activeAppId={activeWindow?.appId ?? null}
+        isBrowserMobile={isBrowserMobile}
       />
       <CardSwitcher
         open={cardSwitcherOpen}
@@ -305,6 +335,8 @@ export function App() {
       <SearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} onOpenApp={(wid) => setActiveWindowId(wid)} />
       <NotificationToasts />
       <NotificationCentre />
+      <TaosAssistantPanel />
+      <SafetyFloor />
     </div>
       </LoginGate>
     </ShortcutProvider>

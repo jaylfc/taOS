@@ -12,10 +12,13 @@ FRAMEWORKS: dict[str, dict] = {
     "openclaw": {
         "id": "openclaw",
         "name": "OpenClaw",
-        "description": "OpenClaw LXC-native agent via HTTP proxy",
+        "description": "Upstream OpenClaw, driven over ACP (no fork)",
         "verification_status": "beta",
-        "release_source": "github:jaylfc/openclaw",
-        "release_asset_pattern": "openclaw-taos-fork-linux-{arch}.tgz",
+        # Installed from npm (openclaw@latest) — see install.sh — and driven
+        # over ACP (openclaw_acp_runtime), so there is no fork release to track.
+        # The GitHub-asset version-check doesn't fit an npm-distributed package;
+        # npm-based version tracking lands with #570. (Dropping release_source
+        # makes auto_update.poll_frameworks skip the version probe for openclaw.)
         "install_script": "/usr/local/bin/taos-framework-update",
         "service_name": "openclaw",
         "slash_commands": [
@@ -27,8 +30,8 @@ FRAMEWORKS: dict[str, dict] = {
         "shortcuts": [
             {"kind": "container-terminal", "label": "Container shell",
              "icon": "terminal", "requires_capability": "agent.shell"},
-            {"kind": "tui", "label": "OpenClaw agent",
-             "command": "openclaw agent",
+            {"kind": "tui", "label": "OpenClaw TUI",
+             "command": "openclaw tui",
              "icon": "tui", "requires_capability": "agent.terminal"},
             {"kind": "tui", "label": "OpenClaw doctor",
              "command": "openclaw doctor",
@@ -118,8 +121,8 @@ FRAMEWORKS: dict[str, dict] = {
         "shortcuts": [
             {"kind": "container-terminal", "label": "Container shell",
              "icon": "terminal", "requires_capability": "agent.shell"},
-            {"kind": "tui", "label": "Hermes chat",
-             "command": "hermes",
+            {"kind": "tui", "label": "Hermes TUI",
+             "command": "hermes --tui",
              "icon": "tui", "requires_capability": "agent.terminal"},
             {"kind": "tui", "label": "Hermes doctor",
              "command": "hermes doctor",

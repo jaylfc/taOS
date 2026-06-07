@@ -63,13 +63,33 @@ self.addEventListener('fetch', function (event) {
   }));
 });
 
-// Receive page base URL + profile ID from copilot.js
+// Receive page base URL + profile ID from copilot.js.
+// Hardened: only trusted clients can prime; profileId and pageBaseUrl are
+// validated so a malicious proxied page cannot re-prime to a different origin
+// or inject path-traversal characters into the profile ID.
 self.addEventListener('message', function (event) {
+  // Ignore messages with no source (not from a SW client).
+  if (!event.source) return;
+
   var data = event.data || {};
-  if (data.type === 'taos-sw:prime') {
-    self.__taosPageBaseUrl = data.pageBaseUrl;
-    self.__taosProfileId = data.profileId;
+  if (data.type !== 'taos-sw:prime') return;
+
+  // profileId must be a safe alphanumeric slug (no path separators / odd chars).
+  var profileId = data.profileId;
+  if (typeof profileId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(profileId)) return;
+
+  // pageBaseUrl must resolve to this origin (or be a relative path).
+  var pageBaseUrl = data.pageBaseUrl;
+  if (typeof pageBaseUrl !== 'string') return;
+  try {
+    var resolved = new URL(pageBaseUrl, self.location.origin);
+    if (resolved.origin !== self.location.origin) return;
+  } catch (_e) {
+    return;
   }
+
+  self.__taosPageBaseUrl = pageBaseUrl;
+  self.__taosProfileId = profileId;
 });
 
 self.addEventListener('push', function (event) {

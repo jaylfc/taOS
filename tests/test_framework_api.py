@@ -43,12 +43,23 @@ async def test_get_framework_no_latest_when_source_missing(client, app):
 
 @pytest.mark.asyncio
 async def test_post_update_kicks_off_task(client, app, monkeypatch):
+    # The GitHub-asset update route needs a framework with a release_source.
+    # OpenClaw is npm-based now (no release_source), so use a synthetic
+    # release-sourced framework to exercise the route mechanism generically.
+    from tinyagentos import frameworks as fw_mod
+    monkeypatch.setitem(fw_mod.FRAMEWORKS, "fwupd", {
+        "id": "fwupd", "name": "FwUpd",
+        "release_source": "github:example/fwupd",
+        "release_asset_pattern": "fwupd-{arch}.tgz",
+        "install_script": "/usr/local/bin/taos-framework-update",
+        "service_name": "fwupd",
+    })
     app.state.config.agents.append({
-        "name": "atlas-post", "framework": "openclaw",
+        "name": "atlas-post", "framework": "fwupd",
         "framework_update_status": "idle",
     })
     app.state.latest_framework_versions = {
-        "openclaw": {"tag": "T2", "sha": "b2b2b2b", "asset_url": "u"},
+        "fwupd": {"tag": "T2", "sha": "b2b2b2b", "asset_url": "u"},
     }
     kicked = {}
     async def fake(agent, manifest, latest, *, save_config):

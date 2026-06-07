@@ -1,0 +1,14 @@
+# Store template — Orange Pi 5 / RK3588 16GB starter pack
+id: starter-rk3588-16gb
+name: "Orange Pi 5 Starter Pack (16GB)"
+type: template
+hardware_tier: arm-npu-16gb
+description: "Complete edge-AI suite for RK3588 boards. Chat, speech, vision, all NPU-accelerated."
+download_size_mb: 8200
+apps:
+  - qwen2.5-3b           # Chat — Qwen 2.5 3B via rkllama, fits 16GB
+  - bge-small-en-v1.5    # Embeddings — compact 384-dim, NPU
+  - whisper-tiny         # Speech-to-text — 39M model, real-time on CPU
+  - kokoro-tts           # Text-to-speech — 82M CPU-friendly
+  - florence-2-base      # Vision — caption/OCR/detect, 0.23B
+  - open-webui           # ChatGPT-style UI

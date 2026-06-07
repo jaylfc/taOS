@@ -16,6 +16,7 @@ pulling in the full container backend abstraction.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 import os
 import platform
@@ -23,6 +24,12 @@ import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Progress state for the current (or most recent) prefetch operation.
+# Read by the /api/agent-image/status endpoint so the frontend can
+# show download progress. Keys: status (idle|downloading|importing|done|failed),
+# started_at (ISO timestamp), url (str).
+_prefetch_state: dict = {"status": "idle"}
 
 _FRAMEWORK_UPDATE_SCRIPT_SRC = Path(__file__).parent / "scripts" / "taos-framework-update.sh"
 
@@ -32,6 +39,39 @@ BASE_IMAGE_ALIAS = "taos-openclaw-base"
 RELEASE_BASE_URL = (
     "https://github.com/jaylfc/tinyagentos-images/releases/download/rolling-images"
 )
+
+
+def is_prefetch_enabled() -> bool:
+    """Return True if the user has opted in to base image prefetching.
+
+    Controlled by the environment variable ``TAOS_PREFETCH_BASE_IMAGE``.
+    Set to ``1``, ``true``, or ``yes`` (case-insensitive) to enable.
+    Default is off — no image download unless explicitly opted in.
+    """
+    val = os.environ.get("TAOS_PREFETCH_BASE_IMAGE", "").strip().lower()
+    return val in ("1", "true", "yes")
+
+
+def get_prefetch_state() -> dict:
+    """Return a copy of the current prefetch progress state."""
+    return dict(_prefetch_state)
+
+
+def register_prefetch_endpoint(app):
+    """Register /api/agent-image/status on the FastAPI app.
+
+    Called from app startup. Returns current prefetch state:
+    {status: idle|downloading|importing|done|failed, started_at: ISO, url: str}
+    """
+    from fastapi import APIRouter
+
+    router = APIRouter()
+
+    @router.get("/api/agent-image/status")
+    async def prefetch_status():
+        return dict(_prefetch_state)
+
+    app.include_router(router)
 
 
 def arch_suffix() -> str:
@@ -161,6 +201,11 @@ async def ensure_image_present(
     if await is_image_present(alias):
         return True
     import_url = url or base_image_url()
+    _prefetch_state.update(
+        status="downloading",
+        started_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+        url=import_url,
+    )
     logger.info(
         "agent_image: importing base image %s from %s (one-time bootstrap, ~300-500MB)",
         alias, import_url,
@@ -180,13 +225,16 @@ async def ensure_image_present(
             curl_out, _ = await asyncio.wait_for(curl.communicate(), timeout=900)
         except (FileNotFoundError, asyncio.TimeoutError) as exc:
             logger.warning("agent_image: download failed for %s: %s", alias, exc)
+            _prefetch_state["status"] = "failed"
             return False
         if curl.returncode != 0:
             logger.warning(
                 "agent_image: curl for %s exited %s: %s (is the image published yet?)",
                 alias, curl.returncode, (curl_out or b"").decode()[:300],
             )
+            _prefetch_state["status"] = "failed"
             return False
+        _prefetch_state["status"] = "importing"
         try:
             incus = await asyncio.create_subprocess_exec(
                 "incus", "image", "import", tmp_path, "--alias", alias,
@@ -196,18 +244,22 @@ async def ensure_image_present(
             incus_out, _ = await asyncio.wait_for(incus.communicate(), timeout=300)
         except (FileNotFoundError, asyncio.TimeoutError) as exc:
             logger.warning("agent_image: import failed for %s: %s", alias, exc)
+            _prefetch_state["status"] = "failed"
             return False
         if incus.returncode != 0:
             logger.warning(
                 "agent_image: incus image import of %s returned %s: %s",
                 alias, incus.returncode, (incus_out or b"").decode()[:500],
             )
+            _prefetch_state["status"] = "failed"
             return False
         logger.info("agent_image: %s imported OK", alias)
         await _bake_scripts_into_image(alias)
+        _prefetch_state["status"] = "done"
         return True
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("agent_image: import failed for %s: %s", alias, exc)
+        _prefetch_state["status"] = "failed"
         return False
     finally:
         try:
@@ -219,6 +271,9 @@ async def ensure_image_present(
 __all__ = [
     "BASE_IMAGE_ALIAS",
     "RELEASE_BASE_URL",
+    "is_prefetch_enabled",
+    "get_prefetch_state",
+    "register_prefetch_endpoint",
     "arch_suffix",
     "base_image_url",
     "is_image_present",

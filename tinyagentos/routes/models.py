@@ -740,7 +740,10 @@ async def delete_model(request: Request, model_id: str):
 
     deleted = []
     for f in models_dir.glob(f"{model_id}*"):
-        if f.is_file() and f.suffix in (".gguf", ".rkllm", ".bin"):
+        # Use the same canonical suffix set (case-insensitive) the scan uses,
+        # so .safetensors/.onnx models aren't left orphaned on disk after a
+        # "delete" — the narrower hardcoded list missed them.
+        if f.is_file() and f.suffix.lower() in _MODEL_FILE_SUFFIXES:
             f.unlink()
             deleted.append(f.name)
 

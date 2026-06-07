@@ -37,22 +37,26 @@ function renderWidget(type: string) {
 }
 
 export function WidgetLayer() {
-  const { widgets, showWidgets, addWidget, removeWidget, updateLayout } = useWidgetStore();
+  const { widgets, showWidgets, hydrated, addWidget, removeWidget, updateLayout } = useWidgetStore();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [containerWidth, setContainerWidth] = useState(1200);
   const containerRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    // Gate on hydration: the container only renders once hydrated + showWidgets
+    // are true (see the early return below), so this must re-run then to attach.
+    if (!hydrated || !showWidgets || !containerRef.current) return;
+    const node = containerRef.current;
+    setContainerWidth(node.clientWidth);
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setContainerWidth(entry.contentRect.width);
       }
     });
-    observer.observe(containerRef.current);
+    observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [hydrated, showWidgets]);
 
   useEffect(() => {
     if (!pickerOpen) return;
@@ -74,7 +78,10 @@ export function WidgetLayer() {
     [updateLayout],
   );
 
-  if (!showWidgets) return null;
+  // Hide until the store has loaded from localStorage + resolved the server
+  // fetch. Rendering before hydration shows DEFAULT_WIDGETS and then replaces
+  // them, causing a visible flash + grid re-layout on mobile cold start.
+  if (!hydrated || !showWidgets) return null;
 
   const gridLayout: Layout[] = widgets.map((w) => ({
     i: w.id,

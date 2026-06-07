@@ -33,7 +33,11 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
   const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
 
   const apps = useMemo(() => {
-    const all = getAllApps();
+    // Installed services render once under the Services section below (from
+    // /api/apps/installed). Exclude any dynamically-registered service:* apps
+    // from the registry grouping so they don't also appear under a built-in
+    // category (e.g. SearXNG showing under both Platform and Services).
+    const all = getAllApps().filter((a) => !a.id.startsWith("service:"));
     if (!query.trim()) return all;
     const q = query.toLowerCase();
     return all.filter((a) => a.name.toLowerCase().includes(q));
@@ -76,6 +80,9 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Launchpad"
       className="fixed top-0 left-0 right-0 z-[9000] flex flex-col backdrop-blur-md bg-black/40"
       onClick={onClose}
       style={{
@@ -84,11 +91,15 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
         paddingBottom: isMobile ? 16 : "calc(52px + env(safe-area-inset-bottom, 0px) + 16px)",
       }}
     >
+      {/* Wide outer container: ~90vw, capped at 1600px so ultrawide stays sane */}
       <div
-        className="w-full max-w-3xl mx-auto px-4 flex-1 flex flex-col min-h-0"
+        className="w-full mx-auto flex-1 flex flex-col min-h-0 px-6 sm:px-10"
+        style={{ maxWidth: "min(90vw, 1600px)" }}
       >
+        {/* Search bar: stays a comfortable narrower width, centered */}
         <div
-          className="flex items-center gap-2 px-4 py-2 mb-4 rounded-xl bg-white/10 border border-white/10 shrink-0"
+          className="flex items-center gap-2 px-4 py-2 mb-6 rounded-xl bg-white/10 border border-white/10 shrink-0 mx-auto w-full"
+          style={{ maxWidth: "min(600px, 100%)" }}
           onClick={(e) => e.stopPropagation()}
         >
           <Search size={16} className="text-shell-text-tertiary" />
@@ -99,6 +110,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
             placeholder="Search apps..."
             className="flex-1 bg-transparent text-sm text-shell-text outline-none placeholder:text-shell-text-tertiary"
             autoFocus={!isMobile}
+            aria-label="Search apps"
           />
           {query && (
             <button onClick={() => setQuery("")} aria-label="Clear search">
@@ -107,13 +119,14 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto space-y-6 pr-1">
+        <div className="flex-1 overflow-y-auto space-y-8 pr-1">
           {Object.entries(grouped).map(([category, categoryApps]) => (
             <div key={category}>
-              <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-3 px-1">
+              <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
                 {CATEGORY_LABELS[category] ?? category}
               </h3>
-              <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-3">
+              {/* Responsive grid: auto-fill columns, each icon cell min 100px wide */}
+              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
                 {categoryApps.map((app) => (
                   <LaunchpadIcon key={app.id} app={app} onClick={() => handleLaunch(app.id)} />
                 ))}
@@ -123,10 +136,10 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
 
           {filteredServices.length > 0 && (
             <div>
-              <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-3 px-1">
-                Apps
+              <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
+                Services
               </h3>
-              <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-3">
+              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
                 {filteredServices.map((svc) => (
                   <ServiceIcon
                     key={svc.app_id}

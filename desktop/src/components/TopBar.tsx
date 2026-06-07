@@ -51,7 +51,6 @@ function PowerMenu() {
           sideOffset={6}
           className="z-50 min-w-[180px] rounded-xl border border-white/10 bg-shell-surface p-1.5 shadow-2xl backdrop-blur-xl"
           style={{ backgroundColor: "rgba(28,26,44,0.96)" }}
-          onEscapeKeyDown={() => {}}
         >
           <DropdownMenu.Item
             className={menuItem}
@@ -118,8 +117,8 @@ export function TopBar({ onSearchOpen, onAssistantOpen }: Props) {
       <button
         onClick={onAssistantOpen}
         className="ml-3 p-1 rounded hover:bg-shell-surface-hover transition-colors text-shell-text-secondary"
-        aria-label="Open taOS Assistant"
-        title="taOS Assistant"
+        aria-label="Open taOS agent"
+        title="taOS agent"
       >
         <Sparkles size={14} />
       </button>

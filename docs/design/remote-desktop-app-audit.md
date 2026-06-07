@@ -80,15 +80,15 @@ preview), but the *primary reason they exist* is agent-content routing.
 ### 1. Login + multi-device authentication — **answered**
 
 - **Local LAN access:** username + password. Simple, no surprises.
-- **Remote access:** **paid only**, via tinyagentos.com (Pro tier). The relay
-  is part of the Pro offering — no free tunnel, no free dynamic-DNS shenanigans.
+- **Remote access:** out of scope for the local-first core — handled by a
+  separate, optional remote-relay service, not a free built-in tunnel.
 - **Adding a new device** to an existing taOS host: pairing-code mechanism.
   The same primitive that already exists for adding workers to the cluster
   is reused for pairing user devices.
 
-**No further design work needed for the auth model itself.** The Pro relay
-service is its own design problem (separate, server-side billing/auth product),
-out of scope for the BrowserApp work.
+**No further design work needed for the auth model itself.** The remote-relay
+service is its own design problem (separate, server-side product), out of scope
+for the BrowserApp work.
 
 ### 2. Multi-user — full OS-style separation
 
@@ -112,9 +112,9 @@ The Mac app (planned via Apple Containerization, notarised .app) is **a way to
 install taOS as the host on a Mac** — i.e. the user's Mac becomes the server.
 It is not a "Mac client" for connecting to a remote taOS.
 
-- Connecting to a taOS host (whether local Mac, Pi, or Pro relay) is always
-  via the **PWA** in any modern browser. There is no separate "client app" to
-  build.
+- Connecting to a taOS host (whether local Mac, Pi, or via the remote-relay
+  service) is always via the **PWA** in any modern browser. There is no separate
+  "client app" to build.
 - Mobile install is the same PWA, installed to the home screen. iOS 16.4+ is
   the floor.
 
@@ -127,10 +127,9 @@ It is not a "Mac client" for connecting to a remote taOS.
   the host = no taOS.
 - **User-managed exception:** user sets up a VPN themselves (Tailscale,
   WireGuard, etc.) — works because the host is reachable.
-- **Pro exception:** taOS Pro provides remote relay, which by extension covers
-  many "I'm not on the LAN" cases. Pro may also offer thin-client offline
-  caching as a feature, but that's a Pro design question, not a core platform
-  one.
+- **Remote-relay exception:** the optional remote-relay service covers many
+  "I'm not on the LAN" cases. Thin-client offline caching could live there too,
+  but that's a question for that service, not the core platform.
 
 **No offline design work needed in the core platform.**
 
@@ -185,8 +184,8 @@ In priority order:
    - **GitHubApp / XApp / RedditApp / YouTubeApp** — confirm per-agent content
      routing model, which is a different design conversation per app.
 
-4. **Pro / remote relay product** — out of scope for the core platform
-   brainstorms. Lives at tinyagentos.com.
+4. **Remote-relay service** — out of scope for the core platform brainstorms;
+   a separate, optional service.
 
 5. **Clipboard hand-off** (#7) — deferred. Revisit if user demand surfaces.
 
@@ -204,6 +203,6 @@ inherit them automatically:
 Updates to memory may be required after Foundations brainstorm:
 
 - A `project_multi_user.md` recording the OS-style user-separation decision
-- A `project_pro_remote_relay.md` recording the paid-remote-access model
+- A `project_pro_remote_relay.md` recording the remote-access model
 
 These will be added when the Foundations brainstorm runs.

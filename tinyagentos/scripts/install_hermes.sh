@@ -35,6 +35,10 @@ log "hermes at $HERMES_BIN"
 
 log "writing /root/.hermes/.env (gateway env vars)"
 mkdir -p /root/.hermes /root/.hermes/gateway
+# API_SERVER_KEY is required by recent hermes-agent versions even for a
+# loopback-only bind, or the api_server refuses to start and the bridge gets
+# "All connection attempts failed". Reuse the LiteLLM key so it matches the
+# Bearer the bridge already sends (LITELLM_API_KEY) to /v1/chat/completions.
 cat > /root/.hermes/.env <<ENVEOF
 OPENAI_API_KEY=$LLM_KEY
 OPENAI_BASE_URL=http://127.0.0.1:4000/v1
@@ -43,6 +47,7 @@ HERMES_DEFAULT_MODEL=$MODEL
 API_SERVER_ENABLED=true
 API_SERVER_HOST=127.0.0.1
 API_SERVER_PORT=8642
+API_SERVER_KEY=$LLM_KEY
 ENVEOF
 chmod 600 /root/.hermes/.env
 

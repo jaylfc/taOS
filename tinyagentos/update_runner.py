@@ -33,6 +33,7 @@ class UpdateResult:
     stash_restored: bool = False
     branch_tag: Optional[str] = None
     message: str = ""
+    ok: bool = True  # False when a step failed and no (or partial) switch happened
 
 
 async def _run(args: list[str], cwd: Path) -> tuple[int, str]:
@@ -154,4 +155,100 @@ async def update_to_master(project_dir: Path) -> UpdateResult:
 
     result.message = " ".join(parts)
     logger.info("update_runner: done — %s", result.message)
+    return result
+
+
+async def switch_to_branch(branch: str, project_dir: Path) -> UpdateResult:
+    """Switch the install to origin/<branch> safely.
+
+    Fetches the branch (bails non-destructively on failure), tags the current
+    tip for recovery, stashes a dirty tree, checks out (creating a local
+    tracking branch if needed), ff-merges or hard-resets to origin/<branch>
+    (tagging divergence), then restores the stash best-effort.
+    """
+    # Guard against flag-injection: `branch` reaches git argv (fetch/checkout)
+    # and `origin/<branch>` refs. Callers validate too, but this is the unit
+    # that actually runs git, so it validates as well (defence in depth).
+    from tinyagentos.auto_update import is_valid_branch_name
+    if not is_valid_branch_name(branch):
+        return UpdateResult(previous_sha="", new_sha="", ok=False,
+                            message=f"Refused to switch: invalid branch name {branch!r}.")
+
+    ts = int(time.time())
+
+    logger.info("update_runner: fetching origin/%s", branch)
+    # `--` forces `branch` to be read as a refspec, never an option.
+    rc, out = await _run(["git", "fetch", "origin", "--", branch], project_dir)
+    if rc != 0:
+        logger.warning("update_runner: fetch failed: %s", out[:500])
+        return UpdateResult(previous_sha="", new_sha="", ok=False,
+                            message=f"Fetch failed — no changes applied. ({out.strip()[:200]})")
+
+    _, sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
+    current_sha = sha_out.strip()
+    short_sha = current_sha[:7]
+
+    _, status_out = await _run(["git", "status", "--porcelain", "-u"], project_dir)
+    dirty = bool(status_out.strip())
+
+    result = UpdateResult(previous_sha=current_sha, new_sha=current_sha)
+
+    recovery_tag = f"taos-pre-switch-{short_sha}-{ts}"
+    await _run(["git", "tag", recovery_tag, "HEAD"], project_dir)
+    result.recovery_tag = recovery_tag
+
+    stash_msg = f"taos-switch-{ts}"
+    if dirty:
+        rc_stash, stash_out = await _run(
+            ["git", "stash", "push", "-u", "-m", stash_msg], project_dir
+        )
+        # A failed stash must NOT set stash_ref — otherwise the later `stash pop`
+        # would apply an unrelated older stash. Abort before anything
+        # destructive so the working tree is left exactly as we found it.
+        if rc_stash != 0:
+            logger.warning("update_runner: stash failed: %s", stash_out[:300])
+            result.ok = False
+            result.message = (
+                f"Could not stash local changes — no switch performed. "
+                f"({stash_out.strip()[:200]})"
+            )
+            return result
+        result.stash_ref = "stash@{0}"
+
+    rc_co, co_out = await _run(
+        ["git", "checkout", "-B", branch, f"origin/{branch}"], project_dir
+    )
+    # A failed checkout must NOT fall through to merge/reset — a hard reset would
+    # rewrite the CURRENT branch to origin/<target>. Restore the stash and bail.
+    if rc_co != 0:
+        logger.warning("update_runner: checkout failed: %s", co_out[:300])
+        if result.stash_ref:
+            rc_pop, _ = await _run(["git", "stash", "pop"], project_dir)
+            result.stash_restored = rc_pop == 0
+        result.ok = False
+        result.message = (
+            f"Checkout to {branch} failed — no switch performed. "
+            f"({co_out.strip()[:200]})"
+        )
+        return result
+
+    rc_merge, _ = await _run(["git", "merge", "--ff-only", f"origin/{branch}"], project_dir)
+    if rc_merge != 0:
+        await _run(["git", "reset", "--hard", f"origin/{branch}"], project_dir)
+
+    if result.stash_ref:
+        rc_pop, pop_out = await _run(["git", "stash", "pop"], project_dir)
+        if rc_pop == 0:
+            result.stash_restored = True
+        else:
+            logger.warning("update_runner: stash pop conflicts — left in place. %s", pop_out[:300])
+
+    _, new_sha_out = await _run(["git", "rev-parse", "HEAD"], project_dir)
+    result.new_sha = new_sha_out.strip()
+    result.message = f"Switched to {branch} ({result.previous_sha[:7]} -> {result.new_sha[:7]})."
+    if result.recovery_tag:
+        result.message += f" Previous tip saved as tag '{result.recovery_tag}'."
+    if result.stash_ref and not result.stash_restored:
+        result.message += f" Local changes preserved in stash ('{stash_msg}')."
+    logger.info("update_runner: %s", result.message)
     return result

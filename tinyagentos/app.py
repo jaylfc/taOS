@@ -71,6 +71,8 @@ from tinyagentos.webhook_notifier import WebhookNotifier
 from tinyagentos.llm_proxy import LLMProxy
 from tinyagentos.litellm_migrate import migrate as _litellm_migrate
 from tinyagentos.agent_image import ensure_image_present as _ensure_agent_image_present
+from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
+from tinyagentos.agent_image import register_prefetch_endpoint
 from tinyagentos.auto_update import AutoUpdateService
 from tinyagentos.restart_orchestrator import RestartOrchestrator, apply_pending_restart_check, resume_agents_from_notes
 from tinyagentos.channel_hub.router import MessageRouter
@@ -313,6 +315,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     skills = SkillStore(data_dir / "skills.db")
+    from tinyagentos.themes.store import ThemeStore
+    themes = ThemeStore(data_dir / "themes.sqlite3")
     knowledge_store = KnowledgeStore(
         data_dir / "knowledge.db",
         media_dir=data_dir / "knowledge-media",
@@ -334,6 +338,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.agent_browsers import AgentBrowsersManager
     agent_browsers = AgentBrowsersManager(db_path=data_dir / "agent-browsers.db", mock=True)
+
+    from tinyagentos.browser_sessions import BrowserSessionManager
+    browser_sessions = BrowserSessionManager(data_dir / "browser_sessions.db")
 
     from taosmd import BrowsingHistory as BrowsingHistoryStore
     browsing_history = BrowsingHistoryStore(db_path=data_dir / "browsing-history.db")
@@ -370,6 +377,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await user_memory.init()
         await installed_apps.init()
         await skills.init()
+        await themes.init()
+        app.state.themes = themes
         await knowledge_store.init()
         await mcp_store.init()
         mcp_supervisor = MCPSupervisor(mcp_store, catalog=registry, notif_store=notif_store, secrets_store=secrets_store)
@@ -381,6 +390,23 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await knowledge_monitor.start()
         await agent_browsers.init()
         app.state.agent_browsers = agent_browsers
+        await browser_sessions.init()
+        app.state.browser_sessions = browser_sessions
+        import secrets as _secrets
+        app.state.browser_session_signing_key = _secrets.token_bytes(32)
+        # Wire the unified browser runtime: populate browser_container_runner +
+        # host_hardware on app.state, and fold existing agent_browsers profiles
+        # into the unified session store (idempotent on each restart).
+        try:
+            from tinyagentos.services.mdns_publisher import _detect_primary_ipv4
+            from tinyagentos.browser_sessions import wire_browser_runtime
+            _host_ip = _detect_primary_ipv4() or "127.0.0.1"
+            await wire_browser_runtime(
+                app.state, hardware_profile, agent_browsers, browser_sessions,
+                host_ip=_host_ip,
+            )
+        except Exception:
+            logger.exception("browser runtime wiring failed — host browser sessions unavailable")
         await browsing_history.init()
         app.state.browsing_history = browsing_history
         await knowledge_graph.init()
@@ -490,6 +516,32 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         asyncio.create_task(_ephemeral_sweep_loop(app))
 
+        async def _browser_reap_loop(app: FastAPI) -> None:
+            import asyncio as _asyncio
+            mgr = app.state.browser_sessions
+            cluster = app.state.cluster_manager
+            while True:
+                try:
+                    auth_token = getattr(app.state, "browser_worker_auth_token", None)
+                    reaped = await mgr.reap_idle()  # flips stale running→idle, returns ids
+                    for sid in reaped:
+                        try:
+                            s = await mgr.get_session(sid)
+                            if s and s.get("node") and s.get("container_id"):
+                                w = cluster.get_worker(s["node"])
+                                if w is not None:
+                                    await mgr.stop_on_worker(
+                                        sid, worker_url=w.url, container_id=s["container_id"],
+                                        auth_token=auth_token, set_status=None,
+                                    )
+                        except Exception as _sid_e:
+                            logger.warning("browser reap: stop for %s failed: %s", sid, _sid_e)
+                except Exception as _e:
+                    logger.warning("browser reap failed: %s", _e)
+                await _asyncio.sleep(300)
+
+        asyncio.create_task(_browser_reap_loop(app))
+
         # Per-agent state lives on the host and is mounted into containers.
         # See docs/design/framework-agnostic-runtime.md.
         app.state.agent_workspaces_dir = data_dir / "agent-workspaces"
@@ -592,10 +644,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             except Exception:
                 logger.exception("litellm prisma migration failed — virtual keys will not work")
             # Kick off the one-time agent base image import in the background.
-            # Non-fatal — if GitHub is unreachable or the tarball isn't
-            # published yet, deploys fall back to images:debian/bookworm.
+            # Only runs when the user has explicitly opted in via
+            # TAOS_PREFETCH_BASE_IMAGE=1. Non-fatal — if GitHub is
+            # unreachable or the tarball isn't published yet, deploys
+            # fall back to images:debian/bookworm.
             try:
-                asyncio.create_task(_ensure_agent_image_present())
+                if _is_prefetch_enabled():
+                    asyncio.create_task(_ensure_agent_image_present())
+                else:
+                    logger.debug(
+                        "agent_image: base image prefetch disabled "
+                        "(set TAOS_PREFETCH_BASE_IMAGE=1 to enable)"
+                    )
             except Exception:
                 logger.exception("agent base image bootstrap scheduling failed")
             resolved_secrets: dict[str, str] = {}
@@ -635,14 +695,56 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await auto_updater.start()
         except Exception:
             logger.exception("auto-update service failed to start")
+        # Keep LiteLLM's model_list fresh as cloud provider catalogs change
+        # upstream (e.g. a newly published model), without a restart.
+        from tinyagentos.provider_refresh import CloudProviderRefresher
+        provider_refresher = CloudProviderRefresher(app.state)
+        app.state.provider_refresher = provider_refresher
+        try:
+            await provider_refresher.start()
+        except Exception:
+            logger.exception("cloud provider refresher failed to start")
+        # Reverse sync: detect when a user changes the model in the
+        # framework's native TUI and update the taOS agent record.
+        from tinyagentos.framework_model_sync import FrameworkModelReconciler
+        framework_reconciler = FrameworkModelReconciler(app.state)
+        app.state.framework_reconciler = framework_reconciler
+        try:
+            await framework_reconciler.start()
+        except Exception:
+            logger.exception("framework model reconciler failed to start")
         await cluster_manager.start()
         # Enroll this controller as the 'local' cluster worker so route-layer
         # code (get_local_worker) picks up the in-memory signing key.
         from tinyagentos.cluster.local_worker import enroll_local_worker
         from tinyagentos.cluster.worker_registry import set_active_manager
+        from dataclasses import asdict as _asdict
         _bind_port = config.server.get("port", 6969)
-        await enroll_local_worker(cluster_manager, bind_port=_bind_port)
+        # Give the local worker the controller's own hardware + backends so the
+        # Cluster view shows the host's real CPU/RAM/NPU and loaded backends.
+        _local_hw = _asdict(hardware_profile) if hardware_profile is not None else {}
+        await enroll_local_worker(
+            cluster_manager,
+            bind_port=_bind_port,
+            hardware=_local_hw,
+            backends=list(config.backends or []),
+        )
         set_active_manager(cluster_manager)
+        # Self-heartbeat the local worker so it stays online + refreshes its
+        # backends/loaded-models like a real worker (it never gets heartbeats
+        # from elsewhere — it IS the controller). Source backends from the LIVE
+        # catalog (which probes for loaded models), not config.backends (static,
+        # no model data). The lambda is evaluated each tick so it self-heals
+        # once the catalog has completed its first probe.
+        from tinyagentos.cluster.local_worker import local_heartbeat_loop
+        app.state.local_heartbeat_task = asyncio.create_task(
+            local_heartbeat_loop(
+                cluster_manager,
+                config,
+                backends_provider=lambda: [e.to_dict() for e in backend_catalog.backends()],
+            ),
+            name="local-heartbeat",
+        )
         # Start the live backend catalog — everything that asks "what's
         # available?" reads from this rather than the filesystem.
         try:
@@ -742,26 +844,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("resource scheduler failed to build — routes will use static config")
             app.state.resource_scheduler = None
         # Detect and set container runtime
-        from tinyagentos.containers.backend import detect_runtime, set_backend
-        from tinyagentos.containers.lxc import LXCBackend
-        from tinyagentos.containers.docker import DockerBackend
-        runtime = getattr(config, "container_runtime", "auto")
-        if runtime == "auto":
-            runtime = detect_runtime()
-        if runtime == "apple":
-            from tinyagentos.containers.apple_backend import AppleContainerBackend
-            set_backend(AppleContainerBackend())
-        elif runtime == "lxc":
-            set_backend(LXCBackend())
-        elif runtime in ("docker", "podman"):
-            set_backend(DockerBackend(binary=runtime))
-        else:
-            logger.warning(
-                "No container backend detected (Incus / Docker / Podman / Apple). "
-                "Cluster features and worker containers will be disabled. "
-                "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
-                "'sudo dnf install incus' on Fedora) and restart taOS."
-            )
+        from tinyagentos.containers.backend import configure_container_runtime
+        configure_container_runtime(config)
 
         # Disk quota monitor — build and attach to app state so the route
         # handler can reuse the same instance (preserves in-memory last_state).
@@ -834,6 +918,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("mdns publisher failed to start — continuing without")
             app.state.mdns_publisher = None
 
+        # System event bus — unified typed-event broadcast.
+        from tinyagentos.events import EventBus, SystemEventStore
+        _system_events = SystemEventStore(data_dir / "system-events.db")
+        await _system_events.init()
+        app.state.system_events = _system_events
+        app.state.event_bus = EventBus()
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers —
         # agents and LiteLLM keep running independently, so there's nothing to
@@ -852,11 +943,33 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await c.stop()
         await score_cache.stop()
         await backend_catalog.stop()
+        _hb_task = getattr(app.state, "local_heartbeat_task", None)
+        if _hb_task is not None:
+            _hb_task.cancel()
+            # Await it so the loop has actually exited before teardown moves on
+            # (cancel() alone doesn't guarantee the coroutine has unwound).
+            try:
+                await _hb_task
+            except asyncio.CancelledError:
+                pass
         await cluster_manager.stop()
         llm_proxy.stop()
+        try:
+            from tinyagentos.taos_agent_runtime import stop_taos_opencode_server
+            await stop_taos_opencode_server(app.state)
+        except Exception:
+            logger.exception("taos opencode server stop failed")
         await monitor.stop()
         try:
             await auto_updater.stop()
+        except Exception:
+            pass
+        try:
+            await provider_refresher.stop()
+        except Exception:
+            pass
+        try:
+            await framework_reconciler.stop()
         except Exception:
             pass
         await app.state.mcp_supervisor.stop_all()
@@ -865,9 +978,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await scheduler_history_store.close()
         await benchmark_store.close()
         await skills.close()
+        await themes.close()
         await knowledge_monitor.stop()
         await knowledge_store.close()
         await agent_browsers.close()
+        await browser_sessions.close()
         await browsing_history.close()
         await knowledge_graph.close()
         await archive.close()
@@ -905,6 +1020,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_store.close()
         await secrets_store.close()
         await notif_store.close()
+        await app.state.system_events.close()
         await metrics_store.close()
         await qmd_client.close()
         await http_client.aclose()
@@ -982,6 +1098,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
     app.state.skills = skills
+    app.state.themes = themes
     app.state.knowledge_store = knowledge_store
     app.state.ingest_pipeline = knowledge_ingest
     app.state.knowledge_monitor = knowledge_monitor
@@ -1013,26 +1130,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
-        from tinyagentos.containers.backend import detect_runtime, set_backend
-        from tinyagentos.containers.lxc import LXCBackend
-        from tinyagentos.containers.docker import DockerBackend
-        _runtime = getattr(config, "container_runtime", "auto")
-        if _runtime == "auto":
-            _runtime = detect_runtime()
-        if _runtime == "apple":
-            from tinyagentos.containers.apple_backend import AppleContainerBackend
-            set_backend(AppleContainerBackend())
-        elif _runtime == "lxc":
-            set_backend(LXCBackend())
-        elif _runtime in ("docker", "podman"):
-            set_backend(DockerBackend(binary=_runtime))
-        else:
-            logger.warning(
-                "No container backend detected (Incus / Docker / Podman / Apple). "
-                "Cluster features and worker containers will be disabled. "
-                "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
-                "'sudo dnf install incus' on Fedora) and restart taOS."
-            )
+        from tinyagentos.containers.backend import configure_container_runtime
+        configure_container_runtime(config)
     except Exception:
         logger.exception("container backend auto-init failed")
 
@@ -1048,243 +1147,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Desktop SPA assets are served by the desktop route handler (routes/desktop.py)
 
-    # Import and include routers
-    from tinyagentos.routes.auth import router as auth_router
-    app.include_router(auth_router)
-
-    from tinyagentos.routes.system import router as system_router
-    app.include_router(system_router)
-
-    from tinyagentos.routes.dashboard import router as dashboard_router
-    app.include_router(dashboard_router)
-
-    from tinyagentos.routes.agents import router as agents_router
-    app.include_router(agents_router)
-
-    from tinyagentos.routes.librarian import router as librarian_router
-    app.include_router(librarian_router)
-
-    from tinyagentos.routes.memory import router as memory_router
-    app.include_router(memory_router)
-
-    from tinyagentos.routes.user_memory import router as user_memory_router
-    app.include_router(user_memory_router)
-
-    from tinyagentos.routes.user_personas import router as user_personas_router
-    app.include_router(user_personas_router)
-
-    from tinyagentos.routes.settings import router as settings_router
-    app.include_router(settings_router)
-
-    from tinyagentos.routes.store import router as store_router
-    app.include_router(store_router)
-
-    from tinyagentos.routes import projects as projects_routes
-    app.include_router(projects_routes.router)
-
-    from tinyagentos.routes.store_install import router as store_install_router
-    app.include_router(store_install_router)
-
-    from tinyagentos.routes.models import router as models_router
-    app.include_router(models_router)
-
-    from tinyagentos.routes.images import router as images_router
-    app.include_router(images_router)
-
-    from tinyagentos.routes.scheduler import router as scheduler_router
-    app.include_router(scheduler_router)
-
-    from tinyagentos.routes.benchmarks import router as benchmarks_router
-    app.include_router(benchmarks_router)
-
-    from tinyagentos.routes.torrent import router as torrent_router
-    app.include_router(torrent_router)
-
-    from tinyagentos.routes.video import router as video_router
-    app.include_router(video_router)
-
-    from tinyagentos.routes.notifications import router as notifications_router
-    app.include_router(notifications_router)
-
-    from tinyagentos.routes.relationships import router as relationships_router
-    app.include_router(relationships_router)
-
-    from tinyagentos.routes.secrets import router as secrets_router
-    app.include_router(secrets_router)
-
-    from tinyagentos.routes.desktop_browser import router as desktop_browser_router
-    app.include_router(desktop_browser_router)
-
-    from tinyagentos.routes.channels import router as channels_router
-    app.include_router(channels_router)
-
-    from tinyagentos.routes.tasks import router as tasks_router
-    app.include_router(tasks_router)
-
-    from tinyagentos.routes.import_data import router as import_router
-    app.include_router(import_router)
-
-    from tinyagentos.routes.cluster import router as cluster_router
-    app.include_router(cluster_router)
-
-    from tinyagentos.routes.cluster_migrate import router as cluster_migrate_router
-    app.include_router(cluster_migrate_router)
-
-    from tinyagentos.routes.training import router as training_router
-    app.include_router(training_router)
-
-    from tinyagentos.routes.conversion import router as conversion_router
-    app.include_router(conversion_router)
-
-    from tinyagentos.routes.workspace import router as workspace_router
-    app.include_router(workspace_router)
-
-    from tinyagentos.routes.user_workspace import router as user_workspace_router
-    app.include_router(user_workspace_router)
-
-    from tinyagentos.routes.agent_workspace import router as agent_workspace_router
-    app.include_router(agent_workspace_router)
-
-    from tinyagentos.routes.project_files import router as project_files_router
-    app.include_router(project_files_router)
-
-    from tinyagentos.routes.project_canvas import router as project_canvas_router
-    app.include_router(project_canvas_router)
-
-    from tinyagentos.routes.shared_folders import router as shared_folders_router
-    app.include_router(shared_folders_router)
-
-    from tinyagentos.routes.providers import router as providers_router
-    app.include_router(providers_router)
-
-    from tinyagentos.routes.channel_hub import router as channel_hub_router_routes
-    app.include_router(channel_hub_router_routes)
-
-    from tinyagentos.routes.search import router as search_router
-    app.include_router(search_router)
-
-    from tinyagentos.routes.streaming import router as streaming_router
-    app.include_router(streaming_router)
-
-    from tinyagentos.routes.templates import router as templates_router
-    app.include_router(templates_router)
-
-    from tinyagentos.routes.chat import router as chat_router
-    app.include_router(chat_router)
-
-    from tinyagentos.routes.desktop import router as desktop_router
-    app.include_router(desktop_router)
-
-    from tinyagentos.routes.games import router as games_router
-    app.include_router(games_router)
-
-    from tinyagentos.routes.terminal import router as terminal_router
-    app.include_router(terminal_router)
-
-    from tinyagentos.routes.skills import router as skills_router
-    app.include_router(skills_router)
-
-    from tinyagentos.routes.skill_exec import router as skill_exec_router
-    app.include_router(skill_exec_router)
-
-    from tinyagentos.routes.activity import router as activity_router
-    app.include_router(activity_router)
-
-    from tinyagentos.routes.frameworks import router as frameworks_router
-    app.include_router(frameworks_router)
-
-    from tinyagentos.routes.knowledge import router as knowledge_router
-    app.include_router(knowledge_router)
-
-    from tinyagentos.routes.agent_browsers import router as agent_browsers_router
-    app.include_router(agent_browsers_router)
-
-    from tinyagentos.routes.reddit import router as reddit_router
-    app.include_router(reddit_router)
-
-    from tinyagentos.routes.github import router as github_router
-    app.include_router(github_router)
-
-    from tinyagentos.routes.youtube import router as youtube_router
-    app.include_router(youtube_router)
-
-    from tinyagentos.routes.x import router as x_router
-    app.include_router(x_router)
-
-    from tinyagentos.routes.browsing_history import router as browsing_history_router
-    app.include_router(browsing_history_router)
-
-    from tinyagentos.routes.knowledge_graph import router as kg_router
-    app.include_router(kg_router)
-
-    from tinyagentos.routes.archive import router as archive_router
-    app.include_router(archive_router)
-
-    from tinyagentos.routes.catalog import router as catalog_router
-    app.include_router(catalog_router)
-
-    from tinyagentos.routes.memory_management import router as memory_mgmt_router
-    app.include_router(memory_mgmt_router)
-
-    from tinyagentos.routes.jobs import router as jobs_router
-    app.include_router(jobs_router)
-
-    from tinyagentos.routes.mcp import router as mcp_router
-    app.include_router(mcp_router)
-
-    from tinyagentos.routes.trace import router as trace_router
-    app.include_router(trace_router)
-
-    from tinyagentos.routes.openclaw import router as openclaw_router
-    app.include_router(openclaw_router)
-
-    from tinyagentos.routes.disk_quota import router as disk_quota_router
-    app.include_router(disk_quota_router)
-
-    from tinyagentos.routes.recycle import router as recycle_router
-    app.include_router(recycle_router)
-
-    from tinyagentos.routes.service_proxy import router as service_proxy_router
-    app.include_router(service_proxy_router)
-
-    from tinyagentos.routes.apps import router as apps_router
-    app.include_router(apps_router)
-
-    from tinyagentos.routes import admin_prompts as admin_prompts_routes
-    app.include_router(admin_prompts_routes.router)
-
-    from tinyagentos.routes import framework as framework_routes
-    app.include_router(framework_routes.router)
-
-    # Lobby demo (internal only — not included in public builds)
-    try:
-        from tinyagentos.lobby.routes import router as lobby_router
-        app.include_router(lobby_router)
-    except ImportError:
-        pass  # Lobby not present in public release
-
-    # --- Agent Debugger Routes ---
-    from tinyagentos.routes.agent_debugger import router as agent_debugger_router
-    app.include_router(agent_debugger_router)
-
-    # --- Memory Management Routes ---
-    from tinyagentos.routes.memory_management import router as memory_management_router
-    app.include_router(memory_management_router)
-
-    from tinyagentos.routes.shortcuts import router as shortcuts_router
-    app.include_router(shortcuts_router)
-
-    from tinyagentos.routes.shortcut_proxy import router as shortcut_proxy_router
-    app.include_router(shortcut_proxy_router)
-
-    from tinyagentos.routes.taos_agent import router as taos_agent_router
-    app.include_router(taos_agent_router)
-
-    from tinyagentos.routes.taosmd import router as taosmd_router
-    app.include_router(taosmd_router)
-
-    from tinyagentos.routes.gh_webhook import router as gh_webhook_router
-    app.include_router(gh_webhook_router)
+    # Register all routers (extracted to routes/register_all_routers)
+    from tinyagentos.routes import register_all_routers
+    register_all_routers(app)
+
+    # Agent base image prefetch status endpoint
+    register_prefetch_endpoint(app)
 
     return app
 

@@ -406,3 +406,34 @@ class TestLoadedModelsImageBackends:
 
         assert resp.status_code == 200
         assert resp.json()["loaded"] == []
+
+
+@pytest.mark.asyncio
+class TestDeleteModel:
+    async def test_delete_removes_all_model_suffixes(self, models_app, models_client):
+        """DELETE removes every recognised model suffix (incl .safetensors/.onnx
+        and uppercase) but leaves non-model files alone. Regression: the old
+        hardcoded (.gguf,.rkllm,.bin) list orphaned .safetensors/.onnx files."""
+        models_dir = models_app.state.models_dir
+        # NB: use uppercase .GGUF only (no lowercase twin) — it proves both the
+        # .gguf suffix match AND case-insensitivity, and avoids a case-insensitive
+        # filesystem (macOS) collapsing .gguf/.GGUF into one file.
+        for fn in (
+            "test-model.GGUF",      # uppercase → exercises case-insensitive match
+            "test-model.safetensors",
+            "test-model.onnx",
+        ):
+            (models_dir / fn).write_bytes(b"x")
+        (models_dir / "test-model.txt").write_bytes(b"x")  # non-model, must survive
+
+        resp = await models_client.delete("/api/models/test-model")
+        assert resp.status_code == 200
+        deleted = set(resp.json()["deleted_files"])
+        assert {
+            "test-model.GGUF",
+            "test-model.safetensors",
+            "test-model.onnx",
+        } <= deleted
+        assert not (models_dir / "test-model.safetensors").exists()
+        assert not (models_dir / "test-model.onnx").exists()
+        assert (models_dir / "test-model.txt").exists()

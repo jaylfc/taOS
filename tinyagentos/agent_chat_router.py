@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _openclaw_transport() -> str:
+    """How taOS drives OpenClaw agents: ``acp`` (fork-free, default) drives the
+    agent over the Agent Client Protocol; ``bridge`` uses the legacy forked
+    taos-bridge SSE path. Override per-host with TAOS_OPENCLAW_TRANSPORT."""
+    return (os.environ.get("TAOS_OPENCLAW_TRANSPORT") or "acp").strip().lower()
 
 
 class AgentChatRouter:
@@ -21,9 +29,37 @@ class AgentChatRouter:
 
     def __init__(self, app_state: Any):
         self._state = app_state
+        # Holds in-flight ACP turn tasks so they aren't garbage-collected
+        # before completing (asyncio keeps only weak refs to tasks).
+        self._acp_tasks: set[asyncio.Task] = set()
+        # Per-agent lock so turns for the same agent run sequentially (a shared
+        # gateway session can't process two prompts at once) — concurrent
+        # across different agents. Preserves the bridge's queued-delivery order.
+        self._agent_locks: dict[str, asyncio.Lock] = {}
 
     async def close(self) -> None:
-        return
+        # Cancel + drain any in-flight ACP turns so shutdown doesn't orphan them.
+        tasks = list(self._acp_tasks)
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._acp_tasks.clear()
+
+    async def _run_acp_turn(
+        self, agent_name: str, text: str, trace_id, record_reply,
+    ) -> None:
+        """Drive one OpenClaw ACP turn under the agent's serialization lock."""
+        from tinyagentos.openclaw_acp_runtime import drive_turn
+
+        lock = self._agent_locks.setdefault(agent_name, asyncio.Lock())
+        async with lock:
+            await drive_turn(
+                slug=agent_name, text=text, trace_id=trace_id, record_reply=record_reply,
+            )
 
     def dispatch(self, message: dict, channel: dict) -> None:
         """Fire-and-forget entry point. Runs routing in a background task."""
@@ -168,23 +204,40 @@ class AgentChatRouter:
                 )
                 continue
 
-            manual_text = build_manual(channel, agent_name, leads)
-            agent_context = [{"role": "system", "content": manual_text}, *context]
-            await bridge.enqueue_user_message(
-                agent_name,
-                {
-                    "id": message.get("id"),
-                    "trace_id": message.get("id"),
-                    "channel_id": message.get("channel_id"),
-                    "from": message.get("author_id", "user"),
-                    "text": message.get("content", ""),
-                    "created_at": message.get("created_at"),
-                    "hops_since_user": next_hops,
-                    "force_respond": forced,
-                    "context": agent_context,
-                    "thread_id": thread_id,
-                },
-            )
+            if agent.get("framework") == "openclaw" and _openclaw_transport() == "acp":
+                # Fork-free path: drive the OpenClaw turn over ACP instead of the
+                # legacy taos-bridge SSE. The agent's gateway session carries its
+                # own history + AGENTS.md, so we send the user message and stream
+                # the mapped replies straight into record_reply (same sink).
+                # _run_acp_turn serializes turns per agent (shared session).
+                task = asyncio.create_task(
+                    self._run_acp_turn(
+                        agent_name,
+                        message.get("content", ""),
+                        message.get("id"),
+                        bridge.record_reply,
+                    )
+                )
+                self._acp_tasks.add(task)
+                task.add_done_callback(self._acp_tasks.discard)
+            else:
+                manual_text = build_manual(channel, agent_name, leads)
+                agent_context = [{"role": "system", "content": manual_text}, *context]
+                await bridge.enqueue_user_message(
+                    agent_name,
+                    {
+                        "id": message.get("id"),
+                        "trace_id": message.get("id"),
+                        "channel_id": message.get("channel_id"),
+                        "from": message.get("author_id", "user"),
+                        "text": message.get("content", ""),
+                        "created_at": message.get("created_at"),
+                        "hops_since_user": next_hops,
+                        "force_respond": forced,
+                        "context": agent_context,
+                        "thread_id": thread_id,
+                    },
+                )
             if forced and policy is not None:
                 policy.record_send(policy_key, agent_name)
 

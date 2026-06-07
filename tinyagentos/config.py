@@ -13,7 +13,7 @@ from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 VALID_ON_WORKER_FAILURE = {"pause", "fallback", "escalate-immediately"}
 
 DEFAULT_CONFIG = {
-    "server": {"host": "0.0.0.0", "port": 6969},
+    "server": {"host": "0.0.0.0", "port": 6969, "browser_proxy_port": 6970},
     "backends": [],
     "qmd": {"url": "http://localhost:7832"},
     "agents": [],
@@ -127,6 +127,25 @@ def slugify_agent_name(name: str) -> str:
     """
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug[:63]
+
+
+def unique_agent_slug(config: "AppConfig", display_name: str) -> str:
+    """Slugify display_name and append -2, -3, … until the slug is unique.
+
+    Checks for collisions against config.agents by matching the ``name``
+    field, mirroring the semantics of agent_db.find_agent.
+
+    Raises ValueError if no unique slug can be found within 100 attempts.
+    """
+    slug = slugify_agent_name(display_name)
+    unique_slug = slug
+    suffix = 2
+    while any(a.get("name") == unique_slug for a in config.agents):
+        unique_slug = f"{slug}-{suffix}"
+        suffix += 1
+        if suffix > 100:
+            raise ValueError("Could not generate a unique agent slug")
+    return unique_slug
 
 
 def _default_on_worker_failure(agent: dict) -> str:

@@ -1,18 +1,45 @@
 import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import { TabRenderer, DISCARD_TIMEOUT_MS, MAX_LIVE_TABS } from "./TabRenderer";
 import { useBrowserStore } from "@/stores/browser-store";
+import { __resetProxyConfigCache } from "@/lib/browser-proxy-config";
 
 const TEST_WINDOW_ID = "win-test";
 
+// Mock the proxy-config probe + ticket mint. Default: single-port (port 0 →
+// same-origin redeem) and a successful ticket. Individual tests override.
+function mockProxyFetch(opts?: { port?: number; ticket?: string | null }) {
+  const port = opts?.port ?? 0;
+  const ticket = opts && "ticket" in opts ? opts.ticket : "tok-abc";
+  return vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+    const urlStr = typeof input === "string" ? input : input.toString();
+    if (urlStr.includes("/api/desktop/browser/proxy-config")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ port }), { status: 200 }),
+      );
+    }
+    if (urlStr.includes("/api/desktop/browser/proxy-ticket")) {
+      if (ticket === null) {
+        return Promise.resolve(new Response("nope", { status: 500 }));
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ ticket, expires_in: 30 }), { status: 200 }),
+      );
+    }
+    return Promise.resolve(new Response("{}", { status: 200 }));
+  });
+}
+
 beforeEach(() => {
+  __resetProxyConfigCache();
   useBrowserStore.setState({ windows: {} });
   useBrowserStore.getState().createWindow(TEST_WINDOW_ID, "personal");
-  vi.useFakeTimers();
+  vi.stubGlobal("fetch", mockProxyFetch());
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("TabRenderer — iframe pool", () => {
@@ -49,7 +76,7 @@ describe("TabRenderer — iframe pool", () => {
     expect(noneCount).toBe(2);
   });
 
-  it("active iframe src is the proxied URL", () => {
+  it("active iframe src is the redeem URL on the proxy origin with a ticket + encoded next", async () => {
     const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
     useBrowserStore.getState().navigateTab(
       TEST_WINDOW_ID,
@@ -59,20 +86,101 @@ describe("TabRenderer — iframe pool", () => {
 
     const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
     const iframe = container.querySelector("iframe") as HTMLIFrameElement;
-    expect(iframe.src).toContain("/api/desktop/browser/proxy");
-    expect(iframe.src).toContain("profile_id=personal");
-    expect(iframe.src).toContain("example.com");
+
+    await waitFor(() => {
+      expect(iframe.src).toContain("/__taos/redeem");
+    });
+    // Ticket present
+    expect(iframe.src).toContain("ticket=tok-abc");
+    // next= is the URL-encoded proxied path (so the proxy params are encoded
+    // INSIDE next, not bare query params on the redeem URL).
+    const u = new URL(iframe.src);
+    const next = u.searchParams.get("next");
+    expect(next).toContain("/api/desktop/browser/proxy");
+    expect(next).toContain("profile_id=personal");
+    expect(next).toContain("example.com");
+    // Single-port mode (mocked port 0) → redeem is on the current origin.
+    expect(u.origin).toBe(window.location.origin);
   });
 
-  it("about:blank renders an iframe without proxy URL", () => {
+  it("builds the redeem URL on the cross-origin proxy host when a proxy port is set", async () => {
+    vi.stubGlobal("fetch", mockProxyFetch({ port: 6970, ticket: "tok-xyz" }));
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://example.com/",
+    );
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    await waitFor(() => {
+      expect(iframe.src).toContain("/__taos/redeem");
+    });
+    const u = new URL(iframe.src);
+    expect(u.hostname).toBe(window.location.hostname);
+    expect(u.port).toBe("6970");
+    expect(u.protocol).toBe(window.location.protocol);
+  });
+
+  it("about:blank renders an iframe without a redeem/proxy URL", () => {
     // Default new-tab is about:blank
     const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
     const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    expect(iframe.src).not.toContain("/__taos/redeem");
     expect(iframe.src).not.toContain("/api/desktop/browser/proxy");
+  });
+
+  it("iframe sandbox adds allow-same-origin when the proxy is cross-origin", async () => {
+    vi.stubGlobal("fetch", mockProxyFetch({ port: 6970, ticket: "tok-xyz" }));
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://example.com/");
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    await waitFor(() => {
+      expect(iframe.getAttribute("sandbox")).toContain("allow-same-origin");
+    });
+    expect(iframe.getAttribute("sandbox")).toContain("allow-scripts");
+  });
+
+  it("iframe sandbox withholds allow-same-origin in single-port mode", async () => {
+    // Default mock reports port 0 → same-origin proxy → no allow-same-origin.
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(TEST_WINDOW_ID, tabId, "https://example.com/");
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+
+    await waitFor(() => {
+      expect(iframe.src).toContain("/__taos/redeem");
+    });
+    expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(iframe.getAttribute("sandbox")).toContain("allow-scripts");
+  });
+
+  it("surfaces an error in the tab when the ticket mint fails", async () => {
+    vi.stubGlobal("fetch", mockProxyFetch({ ticket: null }));
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://example.com/",
+    );
+
+    render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Couldn’t load this page/i)).toBeInTheDocument();
+    });
   });
 });
 
 describe("TabRenderer — discarded tabs", () => {
+  beforeEach(() => vi.useFakeTimers());
+
   it("discarded tabs render a placeholder card, not an iframe", () => {
     const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
     const tabB = useBrowserStore.getState().addTab(
@@ -89,6 +197,8 @@ describe("TabRenderer — discarded tabs", () => {
 });
 
 describe("TabRenderer — discard scheduler", () => {
+  beforeEach(() => vi.useFakeTimers());
+
   it("discards a tab idle past DISCARD_TIMEOUT_MS (non-active, non-pinned)", () => {
     const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
     const tabB = useBrowserStore.getState().addTab(
@@ -198,6 +308,57 @@ describe("TabRenderer — graceful handling", () => {
   });
 });
 
+describe("TabRenderer — liveSession renders LiveBrowserView", () => {
+  it("renders a LiveBrowserView iframe (src contains nekoUrl) instead of the proxy iframe when liveSession is set", async () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://example.com/",
+    );
+    useBrowserStore.getState().setTabLiveSession(TEST_WINDOW_ID, tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-live",
+    });
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframes = container.querySelectorAll("iframe");
+    // Should be exactly one iframe — the LiveBrowserView one
+    expect(iframes.length).toBe(1);
+    const iframe = iframes[0] as HTMLIFrameElement;
+    expect(iframe.src).toContain("http://neko.local:8080/room");
+    expect(iframe.src).toContain("tok-live");
+    expect(iframe.title).toBe("Full browser");
+  });
+
+  it("returns to the proxy iframe after liveSession is cleared (navigateTab)", async () => {
+    const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://example.com/",
+    );
+    useBrowserStore.getState().setTabLiveSession(TEST_WINDOW_ID, tabId, {
+      nekoUrl: "http://neko.local:8080/room",
+      streamToken: "tok-live",
+    });
+    // Navigate away — clears liveSession
+    useBrowserStore.getState().navigateTab(
+      TEST_WINDOW_ID,
+      tabId,
+      "https://other.com/",
+    );
+
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    const iframes = container.querySelectorAll("iframe");
+    expect(iframes.length).toBe(1);
+    const iframe = iframes[0] as HTMLIFrameElement;
+    // Should NOT be the Neko URL
+    expect(iframe.src).not.toContain("neko.local");
+    expect(iframe.title).not.toBe("Full browser");
+  });
+});
+
 describe("TabRenderer — reader mode", () => {
   it("renders ReaderMode for active tab when readerActive is true", () => {
     const tabId = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.activeTabId;
@@ -276,6 +437,8 @@ describe("TabRenderer — reader mode", () => {
 });
 
 describe("TabRenderer — live exclusion exempts discard", () => {
+  beforeEach(() => vi.useFakeTimers());
+
   it("does NOT discard a tab whose iframe has a playing video", () => {
     const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
     const tabB = useBrowserStore.getState().addTab(
@@ -322,10 +485,12 @@ describe("TabRenderer — live exclusion exempts discard", () => {
 });
 
 describe("TabRenderer — tab-focus postMessage", () => {
-  it("postMessages taos-copilot:tab-focus to iframes when active tab changes", () => {
-    // Add a second tab and switch to it — the postMessage should fire for both
-    // iframes: focused:true for the new active tab, focused:false for the old.
-    const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+  it("postMessages taos-copilot:tab-focus to iframes when active tab changes", async () => {
+    // tabA starts as about:blank (default new tab). tabB has a real URL so its
+    // iframe gets a proxy-origin redeem src. The guard in TabRenderer skips
+    // iframes still on about:blank — so only tabB's iframe (the one that has
+    // navigated to the proxy origin) receives tab-focus messages.
+    useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
     const tabB = useBrowserStore.getState().addTab(
       TEST_WINDOW_ID,
       "https://b.test/",
@@ -333,10 +498,17 @@ describe("TabRenderer — tab-focus postMessage", () => {
     // tabB is now active. Render while capturing postMessages.
     const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
 
-    // Attach a spy to each iframe's contentWindow.postMessage.
+    // Wait until the async ticket/proxy-config fetch resolves and React sets
+    // the redeem src on tabB's iframe — only then will onProxyOrigin pass.
     const iframes = Array.from(
       container.querySelectorAll("iframe"),
     ) as HTMLIFrameElement[];
+    await waitFor(() => {
+      const tabBIframe = iframes.find((f) => f.getAttribute("data-tab-id") === tabB);
+      expect(tabBIframe?.src).toContain("/__taos/redeem");
+    });
+
+    // Attach a spy to each iframe's contentWindow.postMessage.
     const spies = iframes.map((iframe) => {
       const spy = vi.fn();
       // jsdom iframes don't have a real contentWindow; polyfill for this test.
@@ -351,27 +523,119 @@ describe("TabRenderer — tab-focus postMessage", () => {
       return spy;
     });
 
-    // Now switch to tabA — triggers the activeTabId change.
+    // Now switch back to tabB (already active, no-op for setActiveTab, but
+    // trigger the effect by switching away and back). Actually just re-trigger
+    // the effect by dispatching the same activeTabId. Instead, add a third tab
+    // and switch to verify postMessage fires for tabB's iframe.
+    const tabC = useBrowserStore.getState().addTab(TEST_WINDOW_ID, "https://c.test/");
     act(() => {
-      useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabA);
+      useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabC);
     });
+    // Flush the async getBrowserProxyOrigin() inside the effect.
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
 
-    // At least one iframe should have received a taos-copilot:tab-focus message.
+    // tabB's iframe (which has a proxy-origin src) should have received a
+    // taos-copilot:tab-focus message. tabA (about:blank) is skipped by the guard.
     const allCalls = spies.flatMap((spy) => spy.mock.calls);
     const focusCalls = allCalls.filter(
       (args) => args[0]?.type === "taos-copilot:tab-focus",
     );
     expect(focusCalls.length).toBeGreaterThan(0);
 
-    // The active tab's iframe should have received focused:true.
-    const activeFocusCalls = focusCalls.filter(
-      (args) => args[0]?.tab_id === tabA && args[0]?.focused === true,
-    );
-    expect(activeFocusCalls.length).toBeGreaterThan(0);
-
     // window_id must be present on every tab-focus message.
     for (const args of focusCalls) {
       expect(args[0].window_id).toBe(TEST_WINDOW_ID);
+    }
+  });
+});
+
+describe("TabRenderer — postMessage target origin (Fix 2)", () => {
+  it("tab-focus postMessage uses the proxy origin, not '*', in single-port mode", async () => {
+    // Single-port mode: proxy port is 0 → proxy origin equals window.location.origin.
+    const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    const tabB = useBrowserStore.getState().addTab(
+      TEST_WINDOW_ID,
+      "https://b.test/",
+    );
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    await act(async () => { await Promise.resolve(); });
+
+    const iframes = Array.from(container.querySelectorAll("iframe")) as HTMLIFrameElement[];
+    const spies = iframes.map((iframe) => {
+      const spy = vi.fn();
+      if (!iframe.contentWindow) {
+        Object.defineProperty(iframe, "contentWindow", {
+          value: { postMessage: spy },
+          configurable: true,
+        });
+      } else {
+        vi.spyOn(iframe.contentWindow, "postMessage").mockImplementation(spy);
+      }
+      return spy;
+    });
+
+    act(() => {
+      useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabA);
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const allCalls = spies.flatMap((spy) => spy.mock.calls);
+    const focusCalls = allCalls.filter(
+      (args) => args[0]?.type === "taos-copilot:tab-focus",
+    );
+    expect(focusCalls.length).toBeGreaterThan(0);
+
+    // Every tab-focus call must use the resolved proxy origin, never "*".
+    for (const args of focusCalls) {
+      expect(args[1]).not.toBe("*");
+      // In single-port mode (mocked port 0), the proxy origin is the current origin.
+      expect(args[1]).toBe(window.location.origin);
+    }
+  });
+
+  it("tab-focus postMessage uses the cross-origin proxy origin when a port is configured", async () => {
+    // Cross-origin mode: proxy port is 6970 → proxy origin is a separate host:port.
+    vi.stubGlobal("fetch", mockProxyFetch({ port: 6970, ticket: "tok-xyz" }));
+    __resetProxyConfigCache();
+
+    const tabA = useBrowserStore.getState().getWindow(TEST_WINDOW_ID)!.tabs[0].id;
+    const tabB = useBrowserStore.getState().addTab(
+      TEST_WINDOW_ID,
+      "https://b.test/",
+    );
+    const { container } = render(<TabRenderer windowId={TEST_WINDOW_ID} />);
+    await act(async () => { await Promise.resolve(); });
+
+    const iframes = Array.from(container.querySelectorAll("iframe")) as HTMLIFrameElement[];
+    const spies = iframes.map((iframe) => {
+      const spy = vi.fn();
+      if (!iframe.contentWindow) {
+        Object.defineProperty(iframe, "contentWindow", {
+          value: { postMessage: spy },
+          configurable: true,
+        });
+      } else {
+        vi.spyOn(iframe.contentWindow, "postMessage").mockImplementation(spy);
+      }
+      return spy;
+    });
+
+    act(() => {
+      useBrowserStore.getState().setActiveTab(TEST_WINDOW_ID, tabA);
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const allCalls = spies.flatMap((spy) => spy.mock.calls);
+    const focusCalls = allCalls.filter(
+      (args) => args[0]?.type === "taos-copilot:tab-focus",
+    );
+    expect(focusCalls.length).toBeGreaterThan(0);
+
+    for (const args of focusCalls) {
+      expect(args[1]).not.toBe("*");
+      // Cross-origin proxy: hostname unchanged, port 6970.
+      expect(args[1]).toContain(":6970");
     }
   });
 });

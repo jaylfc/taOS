@@ -35,3 +35,30 @@ export async function fetchLatestFrameworks(refresh = false): Promise<Record<str
   if (!r.ok) throw new Error(`latest frameworks ${r.status}`);
   return r.json();
 }
+
+export interface PermittedModelsState {
+  permitted: string[];
+  current: string;
+}
+
+export async function fetchPermittedModels(name: string): Promise<PermittedModelsState> {
+  const r = await fetch(`/api/agents/${encodeURIComponent(name)}/permitted-models`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error || `permitted-models fetch ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function setPermittedModels(name: string, models: string[]): Promise<PermittedModelsState> {
+  const r = await fetch(`/api/agents/${encodeURIComponent(name)}/permitted-models`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ models }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error || `permitted-models set ${r.status}`);
+  }
+  return r.json();
+}

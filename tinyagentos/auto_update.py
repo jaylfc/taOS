@@ -11,12 +11,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
 import tinyagentos.github_releases as github_releases
 
 logger = logging.getLogger(__name__)
+
+# Conservative git ref-name validation. The tracked branch flows into git
+# argv (fetch/pull/rev-parse), so a value like "--upload-pack=evil" would be a
+# flag-injection (argument injection) if it reached those calls. Reject any
+# value that isn't a plain ref name: no leading '-', no whitespace/control
+# chars, none of git's forbidden ref characters (~ ^ : ? * [ \), no "..",
+# no "@{", no leading/trailing '/', no "//", no trailing ".lock"/".".
+_FORBIDDEN_REF_CHARS = set(" \t\n\r~^:?*[\\\x7f")
+
+
+def is_valid_branch_name(name: str) -> bool:
+    """True if *name* is a safe git branch/ref name to pass in argv.
+
+    Mirrors the relevant subset of ``git check-ref-format --branch`` rules.
+    Used to keep user-influenced branch values out of git flag positions.
+    """
+    if not isinstance(name, str) or not name or len(name) > 255:
+        return False
+    if name[0] == "-" or name[0] == "/" or name[-1] == "/" or name[-1] == ".":
+        return False
+    if name.endswith(".lock") or "//" in name or ".." in name or "@{" in name:
+        return False
+    if any(c in _FORBIDDEN_REF_CHARS or ord(c) < 0x20 for c in name):
+        return False
+    return True
 
 # How often to check for updates (seconds). One hour by default.
 CHECK_INTERVAL = 60 * 60
@@ -57,6 +83,52 @@ async def _run(args: list[str], cwd: Path) -> tuple[int, str]:
     )
     stdout, _ = await proc.communicate()
     return proc.returncode or 0, (stdout.decode() if stdout else "")
+
+
+async def update_tracking_branch(project_dir: Path) -> str:
+    """The branch this install tracks for updates.
+
+    Returns the currently checked-out branch (e.g. ``master`` on a stable
+    install, ``dev`` on a dev/test box). Falls back to ``master`` when the
+    repo is in detached HEAD (tag/SHA-pinned deploys) or the branch can't be
+    determined, preserving the historical stable-channel behaviour.
+    """
+    rc, out = await _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], project_dir)
+    branch = out.strip() if rc == 0 else ""
+    return branch if branch and branch != "HEAD" else "master"
+
+
+async def resolve_tracked_branch(settings_store, project_dir: Path) -> str:
+    """The branch to track for updates: the user's saved ``tracked_branch``
+    preference (set via the branch selector) when present, else the
+    checked-out branch (``update_tracking_branch``)."""
+    try:
+        prefs = await settings_store.get_preference("user", PREF_NAMESPACE)
+        chosen = (prefs or {}).get("tracked_branch")
+        if chosen and isinstance(chosen, str) and chosen.strip():
+            candidate = chosen.strip()
+            # Never let a malformed stored value reach git argv (flag injection).
+            if is_valid_branch_name(candidate):
+                return candidate
+            logger.warning(
+                "resolve_tracked_branch: stored tracked_branch %r is not a valid "
+                "ref name; ignoring and using the checked-out branch", candidate,
+            )
+    except Exception:
+        logger.warning("resolve_tracked_branch: pref read failed; using checked-out branch")
+    return await update_tracking_branch(project_dir)
+
+
+async def remote_is_strictly_ahead(project_dir: Path, current: str, remote: str) -> bool:
+    """True only if ``current`` is a strict ancestor of ``remote`` — i.e. the
+    remote is genuinely newer. Prevents offering an older or divergent commit
+    (e.g. master's tip when running ahead on dev) as an "update"."""
+    if not current or not remote or current == remote:
+        return False
+    rc, _ = await _run(
+        ["git", "merge-base", "--is-ancestor", current, remote], project_dir
+    )
+    return rc == 0
 
 
 class AutoUpdateService:
@@ -126,7 +198,10 @@ class AutoUpdateService:
             pass
         else:
             current = await self._current_commit()
-            if new_commit != current:
+            # Only an update if the remote is strictly newer than us — never
+            # flag an older/divergent commit (e.g. master's tip while we run
+            # ahead on dev) as available.
+            if await remote_is_strictly_ahead(self._project_dir, current, new_commit):
                 # Skip re-notifying for a commit we've already flagged.
                 if prefs.get("last_notified_commit") != new_commit:
                     await self._notify_available(current, new_commit)
@@ -151,13 +226,19 @@ class AutoUpdateService:
             )
 
     async def _probe_remote(self) -> Optional[str]:
-        """Return the current HEAD commit of origin/master, or None on failure."""
+        """Return the tip of the tracked remote branch (the branch this install
+        is on), or None on failure."""
+        branch = await resolve_tracked_branch(self._settings, self._project_dir)
+        # `--` keeps `branch` in refspec position; resolve_tracked_branch also
+        # validates it (flag-injection defence in depth).
         rc, _ = await _run(
-            ["git", "fetch", "--quiet", "origin", "master"], self._project_dir
+            ["git", "fetch", "--quiet", "origin", "--", branch], self._project_dir
         )
         if rc != 0:
             return None
-        rc2, out = await _run(["git", "rev-parse", "origin/master"], self._project_dir)
+        rc2, out = await _run(
+            ["git", "rev-parse", f"origin/{branch}"], self._project_dir
+        )
         if rc2 != 0:
             return None
         return out.strip()

@@ -4,6 +4,14 @@ Inserts:
 - <script src="/__taos/copilot.js"></script>     — the in-page agent
 - <meta name="taos-copilot-ws" content="...">    — websocket URL the
                                                     script connects to
+- <meta name="taos-page-base" content="...">     — the page's real
+                                                    (un-proxied) base URL,
+                                                    used to prime the SW so
+                                                    it can rewrite relative
+                                                    SPA fetches through the
+                                                    proxy
+- <meta name="taos-profile-id" content="...">    — the active profile id,
+                                                    passed to the SW prime
 
 Idempotent: re-injecting on already-injected output is a no-op.
 """
@@ -14,13 +22,35 @@ from lxml import html as lxml_html
 
 _SCRIPT_SRC = "/__taos/copilot.js"
 _WS_META_NAME = "taos-copilot-ws"
+_PAGE_BASE_META_NAME = "taos-page-base"
+_PROFILE_ID_META_NAME = "taos-profile-id"
 
 
-def inject_into_head(html_bytes: bytes, *, ws_url: str) -> bytes:
-    """Insert the copilot.js script + WS meta into the document head.
+def _set_meta(head, name: str, content: str) -> None:
+    """Set (overwrite or create) a named meta tag in *head*."""
+    for meta in head.iter("meta"):
+        if meta.get("name") == name:
+            meta.set("content", content)
+            return
+    meta = lxml_html.Element("meta")
+    meta.set("name", name)
+    meta.set("content", content)
+    head.insert(0, meta)
 
-    Idempotent: existing copilot script tags are left in place rather
-    than duplicated.
+
+def inject_into_head(
+    html_bytes: bytes,
+    *,
+    ws_url: str,
+    page_base_url: str = "",
+    profile_id: str = "",
+) -> bytes:
+    """Insert the copilot.js script + meta tags into the document head.
+
+    ``page_base_url`` and ``profile_id`` prime the service worker (registered
+    by copilot.js from inside the iframe) so it can rewrite relative SPA
+    fetches back through the proxy. Idempotent: existing copilot script tags
+    are left in place rather than duplicated.
     """
     if not html_bytes:
         return b""
@@ -50,19 +80,11 @@ def inject_into_head(html_bytes: bytes, *, ws_url: str) -> bytes:
         script.set("src", _SCRIPT_SRC)
         head.insert(0, script)
 
-    # WS meta — overwrite existing rather than append
-    existing_meta = None
-    for meta in head.iter("meta"):
-        if meta.get("name") == _WS_META_NAME:
-            existing_meta = meta
-            break
-
-    if existing_meta is not None:
-        existing_meta.set("content", ws_url)
-    else:
-        meta = lxml_html.Element("meta")
-        meta.set("name", _WS_META_NAME)
-        meta.set("content", ws_url)
-        head.insert(0, meta)
+    # WS meta + SW prime context — overwrite existing rather than append
+    _set_meta(head, _WS_META_NAME, ws_url)
+    if page_base_url:
+        _set_meta(head, _PAGE_BASE_META_NAME, page_base_url)
+    if profile_id:
+        _set_meta(head, _PROFILE_ID_META_NAME, profile_id)
 
     return lxml_html.tostring(tree, encoding="utf-8")

@@ -43,6 +43,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   return (
     <div
       ref={menuRef}
+      role="menu"
       className="fixed z-[10001] min-w-[200px] py-1 rounded-lg border border-shell-border-strong overflow-hidden"
       style={{
         left: adjustedX,
@@ -64,6 +65,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         return (
           <button
             key={i}
+            role="menuitem"
             onClick={() => {
               if (!item.disabled && item.action) {
                 item.action();

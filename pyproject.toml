@@ -1,6 +1,6 @@
 [project]
 name = "tinyagentos"
-version = "0.1.0"
+version = "1.0.0-beta"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11"

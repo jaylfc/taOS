@@ -23,7 +23,15 @@ import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse, urlsplit
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 import httpx
 from fastapi import Depends, Request
@@ -56,6 +64,31 @@ _MAX_REDIRECTS = 5
 _FETCH_TIMEOUT = 15.0   # seconds — total deadline including all redirect hops
 _HOP_TIMEOUT = 5.0      # seconds — per-operation (connect + read) limit per hop
 _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
+_MAX_REQUEST_BYTES = 10 * 1024 * 1024   # 10 MB cap on forwarded request bodies (POST forms/uploads)
+# Request headers we forward to upstream for non-GET methods. Only the content
+# framing — never the client's cookies (we use the server-side jar), Host,
+# auth, or other ambient headers, which could leak or be abused.
+_FORWARD_REQUEST_HEADERS = frozenset({"content-type"})
+
+# Reserved query keys for GET-form routing (mirror rewriter._FORM_*). A GET
+# form submit replaces the action's query with its own fields, so the routing
+# params arrive under these names; anything else in the query is the site's
+# form data, merged into the target URL.
+_FORM_PID_FIELD = "__taos_pid"
+_FORM_URL_FIELD = "__taos_url"
+_FORM_TAB_FIELD = "__taos_tab"
+
+
+def _merge_query_params(url: str, extra: list[tuple[str, str]]) -> str:
+    """Append *extra* query params to *url*, preserving any it already has.
+
+    Used to fold a GET form's submitted fields into the target URL. Only the
+    query is touched — scheme/host/path are unchanged, so the SSRF re-check on
+    the merged URL sees the same host.
+    """
+    parts = urlsplit(url)
+    merged = parse_qsl(parts.query, keep_blank_values=True) + extra
+    return urlunsplit(parts._replace(query=urlencode(merged)))
 
 # Headers we strip from upstream responses before returning to the client.
 # `content-type` is stripped here and re-set from `media_type` on the
@@ -109,18 +142,129 @@ def _detect_charset(content_type: str, body: bytes) -> str:
     return label
 
 
-@router.get("/api/desktop/browser/proxy")
+def _shell_origin(request: Request) -> str | None:
+    """Origin of the taOS shell that frames this proxied page.
+
+    The shell runs on the main port; the proxy serves from a separate
+    origin (the proxy port). For the iframe to load, the proxied page's
+    ``frame-ancestors`` must name the shell origin (same host, main port).
+
+    Returns ``scheme://host:main_port`` derived from the request host, or
+    ``None`` in single-port mode (proxy served from the main origin, where
+    ``frame-ancestors 'self'`` already covers it).
+    """
+    state = request.app.state
+    main_port = getattr(state, "main_port", None)
+    proxy_port = getattr(state, "browser_proxy_port", 0)
+    if not main_port or main_port == proxy_port:
+        return None
+    host = _strip_port(request.headers.get("host") or "")
+    if not host:
+        return None
+    return f"{_request_scheme(request)}://{host}:{main_port}"
+
+
+def _request_scheme(request: Request) -> str:
+    """The effective scheme of the request, clamped to http/https.
+
+    Honours ``x-forwarded-proto`` (which may be a comma list behind chained
+    proxies — take the first) so a hostile/odd value can't deform the CSP.
+    A malformed forwarded scheme falls back to the request's own scheme
+    rather than hard-coding ``http`` — otherwise a genuinely HTTPS request
+    carrying a junk header would be downgraded to ``ws://`` and lose the
+    HTTPS CSP path.
+    """
+    forwarded = (
+        request.headers.get("x-forwarded-proto") or ""
+    ).split(",")[0].strip().lower()
+    if forwarded in ("http", "https"):
+        return forwarded
+    scheme = (request.url.scheme or "http").lower()
+    return scheme if scheme in ("http", "https") else "http"
+
+
+def _strip_port(host_header: str) -> str:
+    """Return the host without its port, handling IPv6 literals.
+
+    ``example.com:6969`` → ``example.com``; ``[::1]:6969`` → ``[::1]``;
+    bare ``[::1]`` (no port) stays intact (a naive rsplit(":") would mangle it).
+    """
+    host = host_header.strip()
+    if not host:
+        return ""
+    if host.startswith("["):
+        # IPv6 literal: keep through the closing bracket, drop any :port after.
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+@router.api_route("/api/desktop/browser/proxy", methods=["GET", "POST"])
 async def proxy_get(
-    profile_id: str,
-    url: str,
     request: Request,
+    profile_id: str | None = None,
+    url: str | None = None,
     tab_id: str | None = None,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
-    """Real proxy fetch — replaces PR 2's 501 stub."""
+    """Real proxy fetch. Handles GET and POST form submissions (cookie consent,
+    search, login).
+
+    GET forms replace the action's query string with their own fields on
+    submit, so the routing params arrive under reserved hidden-input names
+    (``__taos_pid`` / ``__taos_url``) instead, and the remaining fields are
+    merged into the target URL here. POST forms keep the query-encoded
+    ``profile_id``/``url`` and carry their fields in the body.
+    """
     user_id = str(current_user.get("id") or "")
     if not user_id:
         return JSONResponse({"error": "session has no user id"}, status_code=401)
+
+    # Resolve routing params. A GET form submit carries our routing in the
+    # reserved __taos_* hidden inputs (the rewriter injects them); when those
+    # are present, ANY plain profile_id/url/tab_id in the query is the SITE's
+    # own form field (a page is free to name a field "url"), so it must be
+    # merged into the target — never consumed as routing or stripped. Direct
+    # navigation has no __taos_* and uses the plain query params for routing.
+    qp = request.query_params
+    form_mode = _FORM_URL_FIELD in qp or _FORM_PID_FIELD in qp
+    if form_mode:
+        profile_id = qp.get(_FORM_PID_FIELD)
+        url = qp.get(_FORM_URL_FIELD)
+        tab_id = qp.get(_FORM_TAB_FIELD)
+        reserved = {_FORM_PID_FIELD, _FORM_URL_FIELD, _FORM_TAB_FIELD}
+    else:
+        # profile_id/url/tab_id are already bound from the query by FastAPI.
+        reserved = {"profile_id", "url", "tab_id"}
+    if not profile_id:
+        return JSONResponse({"error": "profile_id required"}, status_code=400)
+    if not url:
+        return JSONResponse({"error": "url required"}, status_code=400)
+
+    # Everything that isn't a reserved routing key is one of the site's own
+    # form fields (e.g. ?q=cats, or a field literally named "url"). Merge those
+    # into the target URL's query before fetching. Normal links carry their own
+    # query percent-encoded *inside* the url param, so they add no extras here.
+    extra_fields = [(k, v) for k, v in qp.multi_items() if k not in reserved]
+    if extra_fields:
+        url = _merge_query_params(url, extra_fields)
+
+    # Capture the request method + body so form POSTs reach upstream. GET/HEAD
+    # carry no body. The body is size-capped before we buffer the whole thing.
+    method = request.method.upper()
+    req_body: bytes = b""
+    fwd_headers: dict[str, str] = {}
+    if method not in ("GET", "HEAD"):
+        # Reject oversize via Content-Length when present (cheap, before read).
+        clen = request.headers.get("content-length")
+        if clen and clen.isdigit() and int(clen) > _MAX_REQUEST_BYTES:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        req_body = await request.body()
+        if len(req_body) > _MAX_REQUEST_BYTES:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        for hk, hv in request.headers.items():
+            if hk.lower() in _FORWARD_REQUEST_HEADERS:
+                fwd_headers[hk] = hv
 
     # Bootstrap default profiles (idempotent — safe per-request)
     browser_store = request.app.state.browser_store
@@ -158,6 +302,10 @@ async def proxy_get(
 
     async def _fetch_with_redirects() -> httpx.Response | None:
         nonlocal current_url
+        # Method + body for the current hop. Redirects may downgrade these
+        # (see the 3xx handling below). Start from the client's request.
+        hop_method = method
+        hop_body = req_body
         _resp: httpx.Response | None = None
         async with httpx.AsyncClient(
             follow_redirects=False, timeout=_HOP_TIMEOUT,
@@ -169,8 +317,14 @@ async def proxy_get(
                     cookie_store, user_id=user_id, profile_id=profile_id, host=host,
                 )
 
+                send_body = hop_body if hop_method not in ("GET", "HEAD") else None
                 try:
-                    _resp = await http.get(current_url, cookies=jar)
+                    _resp = await http.request(
+                        hop_method, current_url,
+                        cookies=jar,
+                        content=send_body,
+                        headers=fwd_headers if send_body is not None else None,
+                    )
                 except httpx.HTTPError as e:
                     _logger.info("browser proxy fetch error: err=%s", e)
                     return None
@@ -196,6 +350,12 @@ async def proxy_get(
                         )
                         _ssrf_blocked_url.append(next_url)
                         return None
+                    # Method semantics on redirect (mirrors browsers/RFC 7231):
+                    # 301/302/303 downgrade a non-GET to GET and drop the body;
+                    # 307/308 preserve the method and body.
+                    if _resp.status_code in (301, 302, 303) and hop_method != "GET":
+                        hop_method = "GET"
+                        hop_body = b""
                     current_url = next_url
                     continue
 
@@ -249,15 +409,23 @@ async def proxy_get(
         charset = _detect_charset(content_type, response.content)
         rewritten = rewrite_html(
             response.content, base_url=str(response.url), proxy=_proxy_url,
-            charset=charset,
+            charset=charset, profile_id=profile_id,
         )
 
-        ws_scheme = "wss" if request.url.scheme == "https" else "ws"
+        # Use the effective scheme (honours x-forwarded-proto behind a TLS
+        # terminator), matching the CSP below — otherwise a reverse-proxied
+        # HTTPS deploy injects ws:// and the copilot socket fails.
+        ws_scheme = "wss" if _request_scheme(request) == "https" else "ws"
         ws_url = (
             f"{ws_scheme}://{request.url.netloc}/api/desktop/browser/copilot"
             f"?profile_id={quote(profile_id, safe='')}"
         )
-        injected = inject_into_head(rewritten, ws_url=ws_url)
+        injected = inject_into_head(
+            rewritten,
+            ws_url=ws_url,
+            page_base_url=str(response.url),
+            profile_id=profile_id,
+        )
 
         # Page-change broadcast for any agents pinned to this tab.
         # Non-blocking — never delay the user's page load on agent fan-out.
@@ -297,7 +465,10 @@ async def proxy_get(
                 )
             )
 
-        out_headers["content-security-policy"] = proxied_response_csp()
+        out_headers["content-security-policy"] = proxied_response_csp(
+            _shell_origin(request),
+            upgrade_insecure=_request_scheme(request) == "https",
+        )
         return Response(
             content=injected,
             status_code=response.status_code,

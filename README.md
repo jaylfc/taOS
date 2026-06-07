@@ -4,11 +4,21 @@
 
 # taOS
 
-> **⚠️ Pre-beta — GUI not yet fully wired to core functions.** The install script works and the backend, API, memory system (taOSmd), and multi-framework group chat are functional. Six agent frameworks are verified in group chat end-to-end: OpenClaw, Hermes, SmolAgents, Langroid, PocketFlow, and OpenAI Agents SDK — agents running on different frameworks can talk to each other in a shared channel. The desktop GUI is still being wired up for the long tail of app interactions (some agent management flows, worker connections, model routing) — expect rough edges for another week. **First beta expected the week of Monday 20 April.** Star/watch the repo to be notified when it drops.
+> **Beta (2026-06-02).** This is beta software meant for testers running it on their own hardware, so expect rough edges. The install script, backend, API, memory system (taOSmd), and multi-framework group chat all work; the desktop GUI is wired up for everyday use but a few flows (some agent management, worker connections, model routing) are still being smoothed out. Star or watch the repo to follow progress and catch the next release.
+
+<p align="center">
+<a href="https://www.star-history.com/?repos=jaylfc%2Ftinyagentos&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jaylfc/tinyagentos&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jaylfc/tinyagentos&type=date&legend=top-left" />
+   <img alt="Star History Chart" width="600" src="https://api.star-history.com/chart?repos=jaylfc/tinyagentos&type=date&legend=top-left" />
+ </picture>
+</a>
+</p>
 
 Self-hosted AI agent platform that runs on whatever hardware you have. An old laptop, a Raspberry Pi, a gaming PC, an SBC gathering dust, or all of them at once. TinyAgentOS turns your spare hardware into a distributed AI compute cluster.
 
-A full web desktop environment with 34 bundled apps, 87 catalog apps, 43 MCP plugins, 15 agent frameworks, a curated local model catalog of 97 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
+A full web desktop environment with 36 bundled apps, 108 catalog apps, 47 MCP plugins, 16 agent frameworks, a curated local model catalog of 112 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
 
 **Framework-agnostic by design.** TinyAgentOS owns everything that matters: your agent's memory, files, communication channels, model access, and configuration. The agent framework is just a replaceable execution engine. Switch from SmolAgents to LangChain to OpenClaw and your agent keeps its entire history, all its Telegram/Discord/Slack connections, its trained LoRA adapters, its files, and its API keys. No migration, no data loss, no reconfiguration. This is possible because TinyAgentOS manages the full agent lifecycle outside the framework.
 
@@ -56,11 +66,11 @@ pip install -e .
 python -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port 6969
 ```
 
-Open `http://your-host:6969` (or `http://tinyagentos.local:6969` with mDNS). The root URL loads the desktop shell directly.
+Open `http://your-host:6969` (or `http://taos.local:6969` with mDNS). The root URL loads the desktop shell directly.
 
 ## Web Desktop Experience
 
-TinyAgentOS ships with a full browser-based desktop environment. Open it at `http://your-host:6969/` and you get a window manager, dock, launchpad, notifications, widgets, and 34 bundled apps, no native install required. On phones and tablets it automatically swaps to a widget-first home screen with swipeable pages, a persistent dock, and desktop-style app windows with close/minimise title bars, installable as a fullscreen PWA from the browser's "Add to Home Screen".
+TinyAgentOS ships with a full browser-based desktop environment. Open it at `http://your-host:6969/` and you get a window manager, dock, launchpad, notifications, widgets, and 36 bundled apps, no native install required. On phones and tablets it automatically swaps to a widget-first home screen with swipeable pages, a persistent dock, and desktop-style app windows with close/minimise title bars, installable as a fullscreen PWA from the browser's "Add to Home Screen".
 
 - **Window manager.** Float, snap zones, drag, resize, minimise, maximise, close
 - **Top bar.** Global search (Ctrl+Space), clock, notifications, widget toggle
@@ -77,18 +87,18 @@ TinyAgentOS ships with a full browser-based desktop environment. Open it at `htt
 - **Standalone Chat PWA**. Messages available as a dedicated installable app at `/chat-pwa`
 - **shadcn/ui primitives**. Button, Card, Input, Tabs, Switch, Toolbar
 
-### 34 Bundled Desktop Apps
+### 36 Bundled Desktop Apps
 
-**Platform apps (21):** Messages (WebSocket chat), Agents (deploy wizard + logs + skills), Store (43+ apps), Settings (multi-section with Memory capture toggles), Models, Memory (User + Agent sections), Channels, Secrets, Tasks, Import, Images, Dashboard, Files (real VFS with workspace + shared folders), Cluster (worker management + health), Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, and compatible APIs), Library (knowledge pipeline, document library with collections and search), Reddit (subreddit browser with saved threads and memory ingest), YouTube (video library with transcript extraction), GitHub (repository browser with code search), X (feed monitor with bookmarks and memory capture), Agent Browsers (manage agent browser sessions).
+**Platform apps (24):** Messages (WebSocket chat), Projects (Kanban + A2A), Agents (deploy wizard + logs + skills), Store (47+ apps), Settings (multi-section with Memory capture toggles), Models, Providers (cloud LLM provider management, add/test/remove OpenAI, Anthropic, and compatible APIs), Memory (User + Agent sections), MCP (plugin manager), Channels, Secrets, Tasks, Import, Images, Dashboard (Activity), Cluster (worker management + health), Library (knowledge pipeline, document library with collections and search), Reddit (subreddit browser with saved threads and memory ingest), YouTube (video library with transcript extraction), GitHub (repository browser with code search), X (feed monitor with bookmarks and memory capture), Agent Browsers (manage agent browser sessions), Files (real VFS with workspace + shared folders), Guides.
 
-**OS apps (8):** Calculator (math.js), Calendar (month view), Contacts (CRUD), Browser (URL-rewriting proxy, agent-ready), Media Player (Plyr), Text Editor (CodeMirror 6 with Obsidian-style theme), Image Viewer (zoom/rotate), Terminal (real PTY + SSH client).
+**OS apps (9):** Weather, Calculator (math.js), Calendar (month view), Contacts (CRUD), Browser (URL-rewriting proxy, agent-ready), Media Player (Plyr), Text Editor (CodeMirror 6 with Obsidian-style theme), Image Viewer (zoom/rotate), Terminal (real PTY + SSH client).
 
 **Games (3):** Chess (plays against real agents via LLM), Wordle, Crosswords.
 
 The Activity app includes a Cluster overview panel showing live worker status and resource stats alongside the process monitor. The Model Browser surfaces cloud models (from configured providers) alongside local catalog models, with a provider badge per entry. The deploy wizard accepts cloud models as inference targets.
 
 <p align="center">
-  <img src="docs/images/desktop-store.png" alt="App store — 87 catalog apps, 15 agent frameworks, hardware-filtered" width="100%">
+  <img src="docs/images/desktop-store.png" alt="App store — 108 catalog apps, 16 agent frameworks, hardware-filtered" width="100%">
 </p>
 
 <p align="center"><sub>The Store — agent frameworks, models, plugins, services. One-click install, hardware-filtered.</sub></p>
@@ -96,7 +106,7 @@ The Activity app includes a Cluster overview panel showing live worker status an
 ## Key Features
 
 ### Web Desktop Shell
-Full browser-based desktop OS with window manager (float + snap), dock, launchpad, right-click context menu, wallpaper picker, notifications, widgets, and persistent sessions that follow you across devices. 32 bundled apps, platform tools, OS utilities, and games, plus an optional password login gate. See [Web Desktop Experience](#web-desktop-experience) above.
+Full browser-based desktop OS with window manager (float + snap), dock, launchpad, right-click context menu, wallpaper picker, notifications, widgets, and persistent sessions that follow you across devices. 36 bundled apps, platform tools, OS utilities, and games, plus an optional password login gate. See [Web Desktop Experience](#web-desktop-experience) above.
 
 ### Mobile & Tablet Mode
 Auto-detects touch devices and swaps the desktop for a widget-first home screen with customisable multi-page layout (swipe or tap dots to navigate), a persistent dock with app launcher and app switcher, and desktop-style app windows with close/minimise title bars. The top bar features iOS 26-style frosted glass buttons for search and notifications, with a "taOS" home button. Installable as a fullscreen PWA on iOS and Android. A standalone Chat PWA is available at `/chat-pwa` and installs like a private Discord.
@@ -115,7 +125,7 @@ Auto-detects touch devices and swaps the desktop for a widget-first home screen 
 Personal memory powered by [taOSmd](https://github.com/jaylfc/taosmd), think Pieces App but self-hosted. Temporal knowledge graph + hybrid vector search + zero-loss archive auto-captures conversations from the Message Hub, notes from the Text Editor, file activity, and search queries. Per-category capture toggles live in Settings. Available in global search (Ctrl+Space) alongside apps, with a "Save to Memory" right-click option on the desktop. Agents can optionally read user memory with explicit permission via the `TAOS_USER_MEMORY_URL` environment variable. A "My Memory" section in the Memory app sits alongside agent memories.
 
 ### Skills & Plugins Registry
-Framework-agnostic skill system with 7 default skills, memory_search, file_read, file_write, web_search, code_exec, image_generation, http_request, categorised by search, files, code, media, browser, data, comms, system. Each skill declares compatibility per framework (native/adapter/unsupported) and works across all 15 supported frameworks via adapter translation. Assign or remove skills per agent from the Skills tab with compatibility badges.
+Framework-agnostic skill system with 8 default skills, memory_search, file_read, file_write, web_search, code_exec, image_generation, list_image_models, http_request, categorised by search, files, code, media, browser, data, comms, system. Each skill declares compatibility per framework (native/adapter/unsupported) and works across all 16 supported frameworks via adapter translation. Assign or remove skills per agent from the Skills tab with compatibility badges.
 
 ### Distributed Compute Cluster
 Combine ANY device into one AI compute mesh, desktops, laptops, SBCs, even phones and tablets. A gaming PC handles large models, a Mac runs MLX inference, a Pi handles embeddings, an old Android phone contributes from a drawer. Cross-platform worker apps connect from the system tray (Windows, macOS, Linux) or via Termux (Android).
@@ -165,12 +175,12 @@ lets the scheduler route work only to backends that are genuinely ready.
 See [docs/design/resource-scheduler.md](docs/design/resource-scheduler.md).
 
 ### Local Model Catalog + Live Model Browser
-A curated catalog of 97 vetted model manifests ships in-tree, every download URL is verified against HuggingFace, covering LLMs (Qwen3, Qwen2.5, Llama 3.1/3.3, Gemma 2/3, Phi-4, Mistral, Mixtral, DeepSeek, Granite, Command-R), vision models (Qwen2.5-VL, MiniCPM-V 2.6, Moondream2, Florence-2, LLaVA), embeddings (nomic, bge, mxbai, snowflake-arctic), rerankers (bge-reranker-v2, qwen3-reranker), speech (Whisper tiny→large-v3-turbo, Kokoro TTS, Piper, Parakeet), image generation (SD 1.5 LCM, Dreamshaper 8 LCM, SDXL Turbo/Lightning, Flux schnell/dev, SD3.5, PixArt-Σ, Playground v2.5, Kolors, AuraFlow), and image tools (RMBG-1.4, BiRefNet, Real-ESRGAN, 4x-UltraSharp, GFPGAN, CodeFormer, ControlNet canny/depth/pose). **RK3588 NPU variants** are included via c01zaut (Qwen2.5 1.5B→14B RKLLM) and happyme531 (LCM Dreamshaper SD as multi-file RKNN). The live Model Browser also searches 167k+ GGUF models from HuggingFace and the Ollama library. Hardware-filtered compatibility indicators show what runs on your device (green/yellow/red).
+A curated catalog of 112 vetted model manifests ships in-tree, every download URL is verified against HuggingFace, covering LLMs (Qwen3, Qwen2.5, Llama 3.1/3.3, Gemma 2/3, Phi-4, Mistral, Mixtral, DeepSeek, Granite, Command-R), vision models (Qwen2.5-VL, MiniCPM-V 2.6, Moondream2, Florence-2, LLaVA), embeddings (nomic, bge, mxbai, snowflake-arctic), rerankers (bge-reranker-v2, qwen3-reranker), speech (Whisper tiny→large-v3-turbo, Kokoro TTS, Piper, Parakeet), image generation (SD 1.5 LCM, Dreamshaper 8 LCM, SDXL Turbo/Lightning, Flux schnell/dev, SD3.5, PixArt-Σ, Playground v2.5, Kolors, AuraFlow), and image tools (RMBG-1.4, BiRefNet, Real-ESRGAN, 4x-UltraSharp, GFPGAN, CodeFormer, ControlNet canny/depth/pose). **RK3588 NPU variants** are included via c01zaut (Qwen2.5 1.5B→14B RKLLM) and happyme531 (LCM Dreamshaper SD as multi-file RKNN). The live Model Browser also searches 167k+ GGUF models from HuggingFace and the Ollama library. Hardware-filtered compatibility indicators show what runs on your device (green/yellow/red).
 
 ### Agent Templates (1,467 Templates)
-Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agents and 1,259 from the System Prompt Library, and deploy in one click. Browse by category (24 categories), filter by source, or search. Each template includes a system prompt, recommended framework, model, and resource limits. All templates vendored locally so nothing depends on external services.
+Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agents and 1,259 from the System Prompt Library, and deploy in one click. Browse by category (27 categories), filter by source, or search. Each template includes a system prompt, recommended framework, model, and resource limits. All templates vendored locally so nothing depends on external services.
 
-### App Store (87 Catalog Apps + 43 MCP Plugins, including 12 Streaming Apps)
+### App Store (108 Catalog Apps + 47 MCP Plugins, including 13 Streaming Apps)
 One-click install for agent frameworks, AI models, and services. Hardware-aware, only shows what works on your device.
 
 ### Agent Deployment
@@ -266,8 +276,8 @@ Real PTY backend exposed over WebSocket (`/ws/terminal`) in the Terminal app. Pi
 ### Browser App
 Built-in browser with a server-side proxy that rewrites HTML URLs and strips `X-Frame-Options` so arbitrary sites render inline. Includes a bookmarks bar, Open in Tab, and Agent Browse button for future browser-use integration. Auto-detects iOS PWAs and defaults to external mode. The Neko streaming browser is also available in the app catalog.
 
-### MCP Plugin Catalog (43 Plugins)
-`app-catalog/plugins/` ships 43 MCP servers including the official set (filesystem, git, fetch, memory, sequential-thinking, time), GitHub, Playwright, Docker, Kubernetes, databases (Postgres/MySQL/SQLite dbhub, MongoDB, Redis, Chroma, Supabase), documents (pandoc, office docs, spreadsheet, markdownify, excel), comms (Slack, WhatsApp, email, Notion, Obsidian, Atlassian, Google Workspace), infra (AWS, Cloudflare, Grafana, arXiv, YouTube transcript, Firecrawl), agent-specific (browser-use, Camoufox, context7, supergateway, engram, Exa), Home Assistant, Todoist, and more.
+### MCP Plugin Catalog (47 Plugins)
+`app-catalog/plugins/` ships 47 MCP servers including the official set (filesystem, git, fetch, memory, sequential-thinking, time), GitHub, Playwright, Docker, Kubernetes, databases (Postgres/MySQL/SQLite dbhub, MongoDB, Redis, Chroma, Supabase), documents (pandoc, office docs, spreadsheet, markdownify, excel), comms (Slack, WhatsApp, email, Notion, Obsidian, Atlassian, Google Workspace), infra (AWS, Cloudflare, Grafana, arXiv, YouTube transcript, Firecrawl), agent-specific (browser-use, Camoufox, context7, supergateway, engram, Exa), Home Assistant, Todoist, and more.
 
 ### Global Search
 Search across agents, apps, messages, and files from a single endpoint. Finds anything on the platform instantly.
@@ -292,13 +302,13 @@ Search across agents, apps, messages, and files from a single endpoint. Finds an
 - **System Updates.** Pull latest from GitHub via Settings page
 - **Provider Management.** Add/test/remove inference providers with live connectivity checks. The Providers desktop app manages cloud LLM credentials; the model browser reflects configured providers automatically.
 
-## App Catalog (87 Catalog Apps + 34 Desktop Apps + 43 MCP Plugins)
+## App Catalog (108 Catalog Apps + 36 Desktop Apps + 47 MCP Plugins)
 
 | Category | Apps |
 |----------|------|
 | **Agent Frameworks (15)** | SmolAgents, PocketFlow, OpenClaw, nanoclaw, PicoClaw, ZeroClaw, MicroClaw, IronClaw, NullClaw, Moltis, Hermes, Agent Zero, OpenAI Agents SDK, Langroid, ShibaClaw |
-| **Streaming Apps (12)** | Blender, LibreOffice, Code Server, GIMP, Krita, FreeCAD, Obsidian, Excalidraw, JupyterLab, Grafana, n8n, Terminal |
-| **LLM Models** | 97-manifest local catalog: Qwen3 0.6B-32B, Qwen2.5 0.5B-72B (+ RKLLM 1.5B-14B for RK3588), Llama 3.1/3.2/3.3, Gemma 2/3, Phi-3.5/4/4-mini, Mistral/Nemo/Mixtral, DeepSeek, Granite, Command-R, SmolLM2, TinyLlama, plus 167k+ searchable from HuggingFace |
+| **Streaming Apps (13)** | Blender, LibreOffice, Code Server, GIMP, Krita, FreeCAD, Obsidian, Excalidraw, JupyterLab, Grafana, n8n, Terminal, Neko Browser |
+| **LLM Models** | 112-manifest local catalog: Qwen3 0.6B-32B, Qwen2.5 0.5B-72B (+ RKLLM 1.5B-14B for RK3588), Llama 3.1/3.2/3.3, Gemma 2/3, Phi-3.5/4/4-mini, Mistral/Nemo/Mixtral, DeepSeek, Granite, Command-R, SmolLM2, TinyLlama, plus 167k+ searchable from HuggingFace |
 | **Vision Models** | Qwen2-VL, Qwen2.5-VL, MiniCPM-V 2.6, Moondream2, Florence-2, LLaVA 1.6 / LLaVA-Phi-3 |
 | **Embeddings / Rerankers** | nomic-embed-text-v1.5, bge-large/small/m3, mxbai-embed-large, snowflake-arctic-embed, qwen3-embedding/reranker, bge-reranker-v2-m3 |
 | **Audio Models** | Whisper tiny→large-v3-turbo, Kokoro TTS, Piper voices, Parakeet TDT |
@@ -315,7 +325,7 @@ Search across agents, apps, messages, and files from a single endpoint. Finds an
 
 | Category | Hardware | Notes |
 |----------|----------|-------|
-| **Apple Silicon** | Mac Mini, MacBook, Mac Studio, Mac Pro (M1-M5) | MLX-accelerated via Ollama (93% faster), 8-192GB unified memory |
+| **Apple Silicon** | Mac Mini, MacBook, Mac Studio, Mac Pro (M1-M5) | Ollama (Metal) or MLX backend, 8-192GB unified memory |
 | **ARM + Rockchip NPU** | Orange Pi 5/5 Plus, Rock 5B | 6 TOPS NPU, primary SBC target |
 | **Raspberry Pi** | Pi 4 (8GB), Pi 5 (8/16GB) | CPU-only or with accelerator HATs |
 | **Pi Accelerators** | Hailo-10H (40T), M5Stack LLM-8850 (24T) | LLM-capable accelerators |
@@ -330,22 +340,22 @@ Search across agents, apps, messages, and files from a single endpoint. Finds an
 
 ```
 TinyAgentOS Controller (FastAPI + htmx + React Desktop Shell)
-├── Web Desktop Shell (window manager, dock, launchpad, widgets, 32 bundled apps)
+├── Web Desktop Shell (window manager, dock, launchpad, widgets, 36 bundled apps)
 ├── Mobile/Tablet Shell (widget home, dock, app title bars, swipeable pages, iOS PWA)
-├── Skills & Plugins Registry (7 default skills, 15 framework adapters)
+├── Skills & Plugins Registry (8 default skills, 15 framework adapters)
 ├── User Memory (SQLite + FTS5, auto-capture, global search integration)
-├── Web Dashboard (27 route modules, 48 templates)
+├── Web Dashboard (77 route modules, React SPA frontend)
 ├── Channel Hub (6 connectors, 15 framework adapters)
 │   ├── Telegram, Discord, Slack, Email, Web Chat, Webhooks
 │   └── Universal message format → framework-specific translation
 ├── LLM Proxy (LiteLLM, per-agent virtual keys)
 ├── Cluster Manager (worker registration, task routing)
-├── App Streaming (12 apps, KasmVNC, split-view + agent chat sidebar)
+├── App Streaming (13 apps, KasmVNC, split-view + agent chat sidebar)
 ├── App Orchestrator (worker selection, container lifecycle)
 ├── User Workspace (NAS-like file browser, shared with apps + agents)
 ├── Computer Use (vision + keyboard/mouse, agent escalation)
 ├── Message Hub (chat, channels, threads, canvas, dual PWA)
-├── App Store + Registry (87 apps + 43 MCP plugins, manifest-based)
+├── App Store + Registry (108 apps + 47 MCP plugins, manifest-based)
 ├── Live Model Browser (HuggingFace + Ollama search)
 ├── Container Manager (LXC or Docker, auto-detected)
 ├── Agent Memory (taOSmd — temporal KG, hybrid vector search, zero-loss archive, session catalog, crystal store, librarian)
@@ -384,15 +394,15 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scri
 |---|---|
 | `/etc/systemd/system/tinyagentos.service` | Main controller systemd unit. Runs uvicorn on port 6969. |
 | `/etc/systemd/system/qmd.service` | Embedding backend (embed / rerank / query expansion) on port 7832. Used by taOSmd for vector operations. Backed by rkllama on RK3588 boards or local node-llama-cpp elsewhere. |
-| `/etc/systemd/system/tinyagentos-sdcpp.service` | (RK3588 only) CPU image generation backend. |
-| `/etc/systemd/system/tinyagentos-rknn-sd.service` | (RK3588 only) NPU image generation backend. |
+| `tinyagentos-sdcpp.service` (repo root) | (RK3588 only) CPU image generation backend. Manual setup only — not auto-installed by the installer. |
+| `tinyagentos-rknn-sd.service` (repo root) | (RK3588 only) NPU image generation backend. Manual setup only — not auto-installed by the installer. |
 | `/home/<user>/tinyagentos/` | The repo checkout. All code, all configs. |
 | `/home/<user>/tinyagentos/.venv/` | Python virtualenv. All Python deps live here, never `pip install` to system Python. |
 | `/home/<user>/tinyagentos/data/` | All persistent state. **One directory to back up.** Contains: agent state YAMLs, agent memory SQLite indexes, agent workspaces, secrets DB, scheduler history, channel credentials, downloaded models, torrent settings, telemetry opt-in flag. |
 | `/home/<user>/.cache/qmd/index.sqlite` | User memory index (taOSmd knowledge base for personal notes). Per-agent indexes live separately under `data/agent-memory/{name}/index.sqlite`. |
-| Ports listened on | **6969** (controller HTTP API + web UI), **7832** (qmd embedding service), **4000** (LiteLLM proxy, localhost only by default) |
-| OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (for the model torrent mesh), nginx (only if you ask the installer to set up a reverse proxy) |
-| User accounts created | None. Everything runs as the user who ran the installer. |
+| Ports listened on | **6969** (controller HTTP API + web UI), **6970** (browser-proxy second-origin, `TAOS_BROWSER_PROXY_PORT`), **7832** (qmd embedding service), **4000** (LiteLLM proxy, localhost only by default) |
+| OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection), postgresql (LiteLLM virtual keys) |
+| User accounts created | The distro `postgres` system user is created when PostgreSQL is installed. A `litellm` Postgres role and database are created for virtual-key management. Everything else runs as the user who ran the installer. |
 
 ### Worker install (`scripts/install-worker.sh`)
 
@@ -423,7 +433,9 @@ ls ~/.local/share/tinyagentos-worker/
 
 ```bash
 # Controller
-sudo systemctl disable --now tinyagentos qmd tinyagentos-sdcpp tinyagentos-rknn-sd
+sudo systemctl disable --now tinyagentos qmd
+# If you manually installed the RK3588 image-gen units:
+# sudo systemctl disable --now tinyagentos-sdcpp tinyagentos-rknn-sd
 sudo rm /etc/systemd/system/tinyagentos*.service /etc/systemd/system/qmd.service
 sudo systemctl daemon-reload
 # Repo + data are still at ~/tinyagentos, delete with: rm -rf ~/tinyagentos
@@ -485,7 +497,7 @@ sudo systemctl restart tinyagentos
 sudo systemctl status tinyagentos
 ```
 
-On RK3588 boards with NPU image generation enabled, the CPU and NPU image backends ship as additional units at `tinyagentos-sdcpp.service` and `tinyagentos-rknn-sd.service`. Both are started and enabled by the install script.
+On RK3588 boards with NPU image generation enabled, the CPU and NPU image backends ship as additional unit files at `tinyagentos-sdcpp.service` and `tinyagentos-rknn-sd.service` in the repo root. These require manual setup — they are not auto-installed by `install-server.sh`. Copy to `/etc/systemd/system/`, substitute the `TAOS_USER`/`TAOS_INSTALL_DIR`/`TAOS_PYTHON` placeholders, then enable with `sudo systemctl enable --now tinyagentos-sdcpp tinyagentos-rknn-sd`.
 
 ## RK3588 NPU Setup
 
@@ -613,10 +625,10 @@ uv run exo
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v          # 959 tests
+pytest tests/ -v          # ~3,590 tests
 ```
 
-CI runs automatically on every push (Python 3.10-3.13 + security audit).
+CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.11 on the nightly scheduled run).
 
 ## Roadmap
 
@@ -655,18 +667,18 @@ CI runs automatically on every push (Python 3.10-3.13 + security audit).
 - [x] Playwright E2E test scaffolding
 - [x] Message Hub, built-in chat with channels, threads, canvas, dual PWA
 - [x] Dual container runtime (LXC + Docker, auto-detected)
-- [x] Web desktop shell (window manager, dock, launchpad, widgets, 32 bundled apps)
+- [x] Web desktop shell (window manager, dock, launchpad, widgets, 36 bundled apps)
 - [x] Mobile/tablet responsive mode with iOS PWA support
 - [x] Persistent desktop sessions across devices (windows, dock, wallpaper)
 - [x] User memory system (taOSmd with temporal KG + FTS5 + auto-capture)
-- [x] Skills & plugins registry (7 default skills, per-framework compatibility)
+- [x] Skills & plugins registry (8 default skills, per-framework compatibility)
 - [x] Terminal app with real PTY + SSH client
 - [x] Standalone Chat PWA at /chat-pwa
 - [x] Browser app with URL-rewriting proxy
-- [x] 43 MCP server plugins in app catalog
+- [x] 47 MCP server plugins in app catalog
 - [x] Desktop notifications (toast stack + notification centre)
 - [x] Widget system (Clock, Agent Status, Notes, System Stats, Weather)
-- [x] Curated local model catalog, 97 manifests, all download URLs verified against HuggingFace
+- [x] Curated local model catalog, 112 manifests, all download URLs verified against HuggingFace
 - [x] Activity monitor app, rktop-inspired per-core CPU/NPU/thermal/GPU/process stats
 - [x] Loaded Models panel in Model Browser, shows running models, purpose, and VRAM/RAM usage
 - [x] iOS PWA pill bar, safe-area-aware bottom nav with back / home / card-switcher / notifications
@@ -681,7 +693,7 @@ CI runs automatically on every push (Python 3.10-3.13 + security audit).
 
 ### In Progress
 - [ ] Fresh install test on clean hardware (#2)
-- [ ] Containerised app streaming (#22), all 5 plans complete: session store, streaming pages, user workspace, agent-bridge, expert agents, 12 app manifests (Blender/LibreOffice/GIMP/Code Server + 8 Phase 2), app orchestrator, computer-use with escalation, companion launcher API
+- [ ] Containerised app streaming (#22), all 5 plans complete: session store, streaming pages, user workspace, agent-bridge, expert agents, 13 app manifests (Blender/LibreOffice/GIMP/Code Server/Neko Browser + 8 Phase 2), app orchestrator, computer-use with escalation, companion launcher API
 
 ### Planned
 - [ ] Local assistant LLM / Setup Agent (#4)

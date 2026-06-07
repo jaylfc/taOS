@@ -3,15 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import mimetypes
 import os
-import secrets
-import shutil
-import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
 
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 
@@ -442,22 +438,6 @@ async def list_channels(
     return {"channels": channels}
 
 
-@router.post("/api/chat/channels")
-async def create_channel(request: Request):
-    body = await request.json()
-    ch_store = request.app.state.chat_channels
-    channel = await ch_store.create_channel(
-        name=body["name"],
-        type=body.get("type", "topic"),
-        created_by=body.get("created_by", "user"),
-        members=body.get("members"),
-        description=body.get("description", ""),
-        topic=body.get("topic", ""),
-        project_id=body.get("project_id", ""),
-    )
-    return channel
-
-
 @router.get("/api/chat/channels/{channel_id}")
 async def get_channel(request: Request, channel_id: str):
     ch_store = request.app.state.chat_channels
@@ -465,31 +445,6 @@ async def get_channel(request: Request, channel_id: str):
     if not channel:
         return JSONResponse({"error": "Channel not found"}, status_code=404)
     return channel
-
-
-@router.put("/api/chat/channels/{channel_id}")
-async def update_channel(request: Request, channel_id: str):
-    body = await request.json()
-    ch_store = request.app.state.chat_channels
-    channel = await ch_store.get_channel(channel_id)
-    if not channel:
-        return JSONResponse({"error": "Channel not found"}, status_code=404)
-    await ch_store.update_channel(
-        channel_id,
-        name=body.get("name"),
-        description=body.get("description"),
-        topic=body.get("topic"),
-    )
-    return {"status": "updated"}
-
-
-@router.delete("/api/chat/channels/{channel_id}")
-async def delete_channel(request: Request, channel_id: str):
-    ch_store = request.app.state.chat_channels
-    deleted = await ch_store.delete_channel(channel_id)
-    if not deleted:
-        return JSONResponse({"error": "Channel not found"}, status_code=404)
-    return {"status": "deleted"}
 
 
 @router.get("/api/chat/channels/{channel_id}/messages")
@@ -545,7 +500,7 @@ async def pin_message_endpoint(message_id: str, request: Request):
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
         if token:
-            session_user = auth.get_user(token=token)
+            session_user = auth.session_user(token)
     pinned_by = f"user:{session_user['id']}" if session_user else "user:unknown"
     try:
         await msg_store.pin_message(msg["channel_id"], message_id, pinned_by=pinned_by)
@@ -599,7 +554,7 @@ async def edit_message_endpoint(message_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.get_user(token=token)
+        session_user = auth.session_user(token)
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
@@ -625,7 +580,7 @@ async def delete_message_endpoint(message_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.get_user(token=token)
+        session_user = auth.session_user(token)
     caller_id = session_user["id"] if session_user else None
     if msg["author_id"] != caller_id:
         return JSONResponse({"error": "not the author"}, status_code=403)
@@ -638,196 +593,6 @@ async def delete_message_endpoint(message_id: str, request: Request):
         "deleted_at": (deleted or {}).get("deleted_at"),
     })
     return Response(status_code=204)
-
-
-@router.delete("/api/chat/channels/{channel_id}/members/{member_id}")
-async def remove_channel_member(request: Request, channel_id: str, member_id: str):
-    ch_store = request.app.state.chat_channels
-    await ch_store.remove_member(channel_id, member_id)
-    return {"status": "removed"}
-
-
-# ── Admin endpoints (UI-driven channel control-plane) ─────────────────────────
-
-@router.patch("/api/chat/channels/{channel_id}")
-async def update_channel_settings(channel_id: str, body: dict, request: Request):
-    """Update channel settings. Body may include: response_mode, max_hops,
-    cooldown_seconds, topic, name. Each is optional; only provided keys are
-    applied. Returns 400 on validation failure."""
-    state = request.app.state
-    chs = state.chat_channels
-    ch = await chs.get_channel(channel_id)
-    if ch is None:
-        return JSONResponse({"error": "channel not found"}, status_code=404)
-    try:
-        if "response_mode" in body:
-            await chs.set_response_mode(channel_id, body["response_mode"])
-        if "max_hops" in body:
-            await chs.set_max_hops(channel_id, int(body["max_hops"]))
-        if "cooldown_seconds" in body:
-            await chs.set_cooldown_seconds(channel_id, int(body["cooldown_seconds"]))
-        if "ephemeral_ttl_seconds" in body:
-            raw = body["ephemeral_ttl_seconds"]
-            ttl: int | None = None if raw is None else int(raw)
-            await chs.set_ephemeral_ttl(channel_id, ttl)
-        if "topic" in body:
-            topic = str(body["topic"])
-            if len(topic) > 500:
-                return JSONResponse({"error": "topic must be <= 500 chars"}, status_code=400)
-            await chs.update_channel(channel_id, topic=topic)
-        if "name" in body:
-            name = str(body["name"]).strip()
-            if not name or len(name) > 100:
-                return JSONResponse({"error": "name must be 1..100 chars"}, status_code=400)
-            await chs.update_channel(channel_id, name=name)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    return JSONResponse({"ok": True}, status_code=200)
-
-
-@router.post("/api/chat/channels/{channel_id}/members")
-async def modify_channel_members(channel_id: str, body: dict, request: Request):
-    """Add or remove a member. Body: {"action": "add" | "remove", "slug": "..."}."""
-    action = (body.get("action") or "").lower()
-    slug = (body.get("slug") or "").lstrip("@")
-    if action not in ("add", "remove") or not slug:
-        return JSONResponse({"error": "action must be add|remove, slug required"}, status_code=400)
-    state = request.app.state
-    chs = state.chat_channels
-    ch = await chs.get_channel(channel_id)
-    if ch is None:
-        return JSONResponse({"error": "channel not found"}, status_code=404)
-    if action == "add":
-        known = {a.get("name") for a in getattr(state.config, "agents", []) or []}
-        if slug != "user" and slug not in known:
-            return JSONResponse({"error": f"unknown agent: {slug}"}, status_code=400)
-        await chs.add_member(channel_id, slug)
-    else:
-        await chs.remove_member(channel_id, slug)
-    return JSONResponse({"ok": True}, status_code=200)
-
-
-@router.post("/api/chat/channels/{channel_id}/muted")
-async def modify_channel_muted(channel_id: str, body: dict, request: Request):
-    """Add or remove an agent from the channel's muted list.
-    Body: {"action": "add" | "remove", "slug": "..."}."""
-    action = (body.get("action") or "").lower()
-    slug = (body.get("slug") or "").lstrip("@")
-    if action not in ("add", "remove") or not slug:
-        return JSONResponse({"error": "action must be add|remove, slug required"}, status_code=400)
-    state = request.app.state
-    chs = state.chat_channels
-    ch = await chs.get_channel(channel_id)
-    if ch is None:
-        return JSONResponse({"error": "channel not found"}, status_code=404)
-    if action == "add":
-        await chs.mute_agent(channel_id, slug)
-    else:
-        await chs.unmute_agent(channel_id, slug)
-    return JSONResponse({"ok": True}, status_code=200)
-
-
-# ── File upload / serve ───────────────────────────────────────────────────────
-
-_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024  # 100 MB
-
-
-def _resolve_workspace_path(data_dir: Path, source: str, slug: str | None, vfs_path: str) -> Path:
-    """Resolve a VFS path like '/workspaces/user/foo.md' to an on-disk
-    absolute path under data_dir/agent-workspaces/{slug-or-user}.
-    Raises ValueError on traversal or bad shape.
-    """
-    if not vfs_path.startswith("/workspaces/"):
-        raise ValueError("path must start with /workspaces/")
-    parts = vfs_path.split("/", 3)  # ['', 'workspaces', '<slug>', 'rest...']
-    if len(parts) < 3 or not parts[2]:
-        raise ValueError("path missing slug")
-    owner = parts[2]
-    if source == "agent-workspace":
-        if not slug or slug != owner:
-            raise ValueError("slug must match path owner for agent-workspace")
-    if source == "workspace":
-        if owner != "user":
-            raise ValueError("workspace source requires /workspaces/user/...")
-    rel = parts[3] if len(parts) > 3 else ""
-    root = (data_dir / "agent-workspaces" / owner).resolve()
-    target = (root / rel).resolve()
-    # Traversal check: target must be inside root.
-    if not str(target).startswith(str(root) + os.sep) and target != root:
-        raise ValueError("path traversal rejected")
-    if not target.exists() or target.is_dir():
-        raise ValueError("file not found")
-    return target
-
-
-@router.post("/api/chat/attachments/from-path")
-async def attachment_from_path(body: dict, request: Request):
-    """Server-side reference to a file in a workspace. Copies into
-    chat-files/ and returns the attachment record."""
-    vfs_path = (body or {}).get("path")
-    source = (body or {}).get("source")
-    slug = (body or {}).get("slug")
-    if not vfs_path or source not in ("workspace", "agent-workspace"):
-        return JSONResponse(
-            {"error": "path and source in {workspace,agent-workspace} required"},
-            status_code=400,
-        )
-    data_dir = request.app.state.config_path.parent
-    try:
-        src = _resolve_workspace_path(data_dir, source, slug, vfs_path)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    if src.stat().st_size > _MAX_ATTACHMENT_BYTES:
-        return JSONResponse({"error": "file too large (100 MB max)"}, status_code=413)
-    chat_files = data_dir / "chat-files"
-    chat_files.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{secrets.token_hex(8)}-{src.name}"
-    dest = chat_files / stored_name
-    shutil.copy2(src, dest)
-    mime, _ = mimetypes.guess_type(src.name)
-    return JSONResponse({
-        "filename": src.name,
-        "mime_type": mime or "application/octet-stream",
-        "size": src.stat().st_size,
-        "url": f"/api/chat/files/{stored_name}",
-        "source": source,
-    }, status_code=200)
-
-
-@router.post("/api/chat/upload")
-async def upload_file(request: Request, file: UploadFile = File(...), channel_id: str = ""):
-    """Upload a file attachment for use in chat messages."""
-    data_dir = request.app.state.config_path.parent
-    upload_dir = data_dir / "chat-files"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    file_id = uuid.uuid4().hex[:12]
-    ext = Path(file.filename).suffix if file.filename else ""
-    stored_name = f"{file_id}{ext}"
-    dest = upload_dir / stored_name
-    content = await file.read()
-    dest.write_bytes(content)
-
-    attachment = {
-        "id": file_id,
-        "filename": file.filename or "unnamed",
-        "content_type": file.content_type or "application/octet-stream",
-        "size": len(content),
-        "url": f"/api/chat/files/{stored_name}",
-    }
-    return attachment
-
-
-@router.get("/api/chat/files/{filename}")
-async def serve_file(request: Request, filename: str):
-    """Serve an uploaded chat file."""
-    data_dir = request.app.state.config_path.parent
-    file_path = data_dir / "chat-files" / filename
-    if not file_path.exists() or not file_path.resolve().is_relative_to(
-        (data_dir / "chat-files").resolve()
-    ):
-        return JSONResponse({"error": "File not found"}, status_code=404)
-    return FileResponse(file_path)
 
 
 # ── Search & unread ───────────────────────────────────────────────────────────
@@ -865,7 +630,7 @@ async def rewind_read_cursor_endpoint(channel_id: str, request: Request):
     session_user = None
     if auth is not None:
         token = request.cookies.get("taos_session") or ""
-        session_user = auth.get_user(token=token)
+        session_user = auth.session_user(token)
     if session_user is None:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     await ch_store.rewind_read_cursor(
@@ -1012,88 +777,4 @@ async def get_typing(channel_id: str, request: Request):
     if reg is None:
         return JSONResponse({"human": [], "agent": []})
     return JSONResponse(reg.list(channel_id))
-
-
-# ── Canvas ───────────────────────────────────────────────────────────────────
-
-@router.post("/api/canvas/generate")
-async def create_canvas(request: Request):
-    """Create a new canvas page."""
-    body = await request.json()
-    canvas_store = request.app.state.canvas_store
-    canvas = await canvas_store.create(
-        title=body.get("title", "Untitled"),
-        content=body.get("content", ""),
-        style=body.get("style", "auto"),
-        format=body.get("format", "markdown"),
-        created_by=body.get("agent_name", "system"),
-    )
-    return {
-        "canvas_id": canvas["id"],
-        "canvas_url": f"/canvas/{canvas['id']}",
-        "edit_token": canvas["edit_token"],
-    }
-
-
-@router.post("/api/canvas/{canvas_id}/update")
-async def update_canvas(request: Request, canvas_id: str):
-    """Update canvas content (requires edit_token)."""
-    body = await request.json()
-    canvas_store = request.app.state.canvas_store
-    updated = await canvas_store.update(
-        canvas_id,
-        edit_token=body.get("edit_token", ""),
-        content=body.get("content"),
-        title=body.get("title"),
-    )
-    if not updated:
-        return JSONResponse({"error": "Invalid edit token or canvas not found"}, status_code=403)
-    # Broadcast to canvas viewers
-    hub = request.app.state.chat_hub
-    canvas = await canvas_store.get(canvas_id)
-    await hub.broadcast(f"canvas:{canvas_id}", {"type": "canvas_update", "content": canvas["content"], "title": canvas["title"]})
-    return {"status": "updated"}
-
-
-@router.get("/api/canvas/{canvas_id}/data")
-async def canvas_data(request: Request, canvas_id: str):
-    """Get canvas data as JSON."""
-    canvas_store = request.app.state.canvas_store
-    canvas = await canvas_store.get(canvas_id)
-    if not canvas:
-        return JSONResponse({"error": "Canvas not found"}, status_code=404)
-    return canvas
-
-
-@router.delete("/api/canvas/{canvas_id}")
-async def delete_canvas(request: Request, canvas_id: str):
-    canvas_store = request.app.state.canvas_store
-    deleted = await canvas_store.delete(canvas_id)
-    if not deleted:
-        return JSONResponse({"error": "Canvas not found"}, status_code=404)
-    return {"status": "deleted"}
-
-
-@router.get("/api/canvas")
-async def list_canvases(request: Request, limit: int = 50):
-    canvas_store = request.app.state.canvas_store
-    canvases = await canvas_store.list_all(limit=limit)
-    return {"canvases": canvases}
-
-
-@router.websocket("/ws/canvas/{canvas_id}")
-async def canvas_ws(websocket: WebSocket, canvas_id: str):
-    """WebSocket for live canvas updates."""
-    await websocket.accept()
-    hub = websocket.app.state.chat_hub
-    canvas_channel = f"canvas:{canvas_id}"
-    hub.join(websocket, canvas_channel)
-    try:
-        while True:
-            await websocket.receive_text()  # Keep connection alive
-    except WebSocketDisconnect:
-        pass
-    finally:
-        hub.leave(websocket, canvas_channel)
-
 

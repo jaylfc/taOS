@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, model_validator
 
 from tinyagentos.mcp.proxy import call_tool
+from tinyagentos.themes.schema import ThemeError, theme_vocabulary, validate_theme_config
 
 router = APIRouter()
 
@@ -27,6 +28,16 @@ class AttachRequest(BaseModel):
 
 class ConfigBody(BaseModel):
     config: dict
+
+
+class CreateThemeBody(BaseModel):
+    config: dict
+    name: str
+    theme_id: str
+
+
+class PreviewThemeBody(BaseModel):
+    theme_id: str
 
 
 class EnvBody(BaseModel):
@@ -241,3 +252,48 @@ async def proxy_call(request: Request):
     )
     status_code = result.pop("status", 200) if "error" in result else 200
     return JSONResponse(result, status_code=status_code)
+
+
+# --- taOS agent theme tools ----------------------------------------------
+# These three endpoints are the agent-facing tools that let the taOS agent
+# discover the theme vocabulary, create a validated theme, and request a preview.
+
+
+@router.get("/api/mcp/tools/get_theme_schema")
+async def get_theme_schema(request: Request):
+    """Return the machine-readable theme vocabulary the agent generates against."""
+    return JSONResponse(theme_vocabulary())
+
+
+@router.post("/api/mcp/tools/create_theme")
+async def create_theme(body: CreateThemeBody, request: Request):
+    """Validate a generated theme config and install it.
+
+    On a validation failure return ``{"error": ...}`` (HTTP 200) so the agent
+    can repair the config and retry rather than treating it as a hard fault.
+    """
+    try:
+        validated = validate_theme_config(body.config)
+    except ThemeError as exc:
+        return JSONResponse({"error": str(exc)})
+    store = request.app.state.themes
+    await store.install(
+        theme_id=body.theme_id,
+        name=body.name,
+        version="1.0.0",
+        config=validated,
+    )
+    return JSONResponse({"theme_id": body.theme_id})
+
+
+@router.post("/api/mcp/tools/preview_theme")
+async def preview_theme(body: PreviewThemeBody, request: Request):
+    """Ask the desktop SPA to enter preview for ``theme_id``.
+
+    The only event bus on app.state is the persisted NotificationStore, which
+    is not a transient desktop signal carrying a payload the SPA can act on for
+    live preview. Per the Task 5 fallback, we return the preview intent and
+    leave the SPA-side wiring (an actual desktop event/channel) to a later
+    frontend task.
+    """
+    return JSONResponse({"theme_id": body.theme_id, "preview": True})

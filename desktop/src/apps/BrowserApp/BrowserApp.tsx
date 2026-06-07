@@ -57,15 +57,13 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
     createWindow(windowId, DEFAULT_PROFILE_ID);
   }, [windowId, createWindow]);
 
-  // Register the Service Worker from the parent shell. copilot.js runs in
-  // a sandboxed iframe (no allow-same-origin) where navigator.serviceWorker
-  // is unavailable. Registration must happen here so the SW is active before
-  // any proxied iframes load. Guarded so test/SSR environments don't throw.
+  // The proxy service worker (/__taos/sw.js) now lives on the proxy origin and
+  // is registered from INSIDE the iframe (copilot.js), not here — the SW must
+  // belong to the proxy origin to intercept the proxied page's SPA fetches.
+  // We still bootstrap the web-push subscription, which binds to whichever
+  // service worker controls this shell origin.
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register("/__taos/sw.js", { scope: "/" }).catch(() => {
-      // SW registration can fail in test/HTTP contexts — ignore
-    });
     bootstrapPushSubscription().catch(() => { /* swallow — non-fatal */ });
   }, []);
 
@@ -102,7 +100,12 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
           />
         )}
 
-        <div className="flex-1 relative overflow-hidden">
+        {/* `flex` is required: TabRenderer's root is `flex flex-1` and only
+            grows to fill height when its parent is itself a flex container.
+            Without it the renderer collapses to 0 height and the page area is
+            blank (the desktop layout mounts TabRenderer directly in the column
+            flex root, so it doesn't hit this). */}
+        <div className="flex flex-1 relative overflow-hidden">
           <TabRenderer windowId={windowId} />
           {tabOverviewOpen && (
             <TabOverview

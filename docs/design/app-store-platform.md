@@ -25,9 +25,8 @@ TinyAgentOS evolves from an agent monitoring dashboard into a full AI-focused ho
 
 ## Non-Goals (This Spec)
 
-- Cloud services (tinyagentos.com, email relay, subscriptions) — future spec
+- Cloud services (tinyagentos.com, email relay) — future spec
 - Built-in services (Gitea, mail, web IDE) — these are apps in the catalog, not platform features
-- Billing/payments — future spec
 - Custom domain management — future spec
 
 ## Architecture
@@ -674,7 +673,7 @@ rkllama currently loads model weights into system RAM (5.8GB RSS for 3 preloaded
 
 ## Future Work (Separate Specs)
 
-1. **Cloud services** — tinyagentos.com, email relay, hosted backup, subscriptions
+1. **Cloud services** — tinyagentos.com, email relay, hosted backup
 2. **Setup Agent** — chat-based configuration via local LLM
 3. **Authentication** — user accounts, API keys
 4. **Remote management** — manage multiple TinyAgentOS instances

@@ -3,125 +3,71 @@
 # Runs once inside a fresh Debian bookworm LXC container.
 # Idempotent: safe to re-run on an already-provisioned container.
 #
-# Installs openclaw from prebuilt tarballs published by jaylfc/openclaw taos-fork CI.
-# The fork's .github/workflows/release.yml builds per-arch tarballs on every push.
+# Installs UPSTREAM OpenClaw from npm (openclaw@latest) — no fork. taOS drives
+# the agent over ACP (tinyagentos/openclaw_acp_runtime), so the legacy
+# taos-bridge channel is no longer installed/needed.
 set -euo pipefail
 
-# When the deployer launched this container from the pre-built
-# taos-openclaw-base image, Node + openclaw + recycle-bin are already
-# installed. In that case skip everything up to the config/env writes
-# and the systemd unit — those still need per-deploy values.
+# The pre-built taos-openclaw-base image warms Node + system deps + a recent
+# openclaw. We still always install openclaw@latest from npm (the base image's
+# baked version may lag) and re-write per-deploy config/env + the systemd unit.
 # See tinyagentos/agent_image.py and .github/workflows/build-agent-images.yml.
 TAOS_BASE_IMAGE_PRESENT="${TAOS_BASE_IMAGE_PRESENT:-0}"
-if [ "$TAOS_BASE_IMAGE_PRESENT" = "1" ]; then
-  echo "[openclaw] base image present — skipping Node + openclaw install"
-else
-  echo "[openclaw] installing Node 22.x (NodeSource) + openclaw prebuilt from GitHub Releases"
-fi
+echo "[openclaw] installing upstream OpenClaw (openclaw@latest from npm)"
 
 # ---------------------------------------------------------------------------
-# 1. Node 22.14+ via NodeSource (Debian bookworm default is Node 18, too old).
-#    Also ensure:
-#    - 'file' is present — used to sanity-check the downloaded tarball.
-#    - 'git' is present — openclaw's transitive dep libsignal
-#      (@whiskeysockets/baileys -> libsignal@git+https://github.com/...)
-#      is a git-URL dependency and npm needs git to fetch it at install time.
+# 1. Node >= 22.19 via NodeSource (upstream OpenClaw's minimum; Debian default
+#    is too old). Also ensure 'git' — OpenClaw has a git-URL transitive dep
+#    (libsignal via @whiskeysockets/baileys) that npm fetches at install time.
 #
-#    All three are baked into the pre-built base image; skip when it's present.
+#    Checked the FULL version, not just major: Node 22.0–22.18 satisfies a
+#    major-only "== 22" guard but is too old for OpenClaw and only fails later.
+#    Run unconditionally — a base image with an older baked Node must be
+#    upgraded too (the check is a no-op when Node is already current).
 # ---------------------------------------------------------------------------
-if [ "$TAOS_BASE_IMAGE_PRESENT" != "1" ]; then
-  if ! command -v node >/dev/null 2>&1 || [ "$(node -v | sed 's/^v//; s/\..*//')" -lt 22 ]; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
-  fi
-  if ! command -v file >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends file
-  fi
-  if ! command -v git >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
-  fi
+_node_ok() {
+  command -v node >/dev/null 2>&1 || return 1
+  local v maj min
+  v=$(node -v | sed 's/^v//')      # e.g. 22.22.3
+  maj=${v%%.*}
+  min=${v#*.}; min=${min%%.*}
+  [ "$maj" -gt 22 ] && return 0
+  [ "$maj" -eq 22 ] && [ "$min" -ge 19 ] && return 0
+  return 1
+}
+if ! _node_ok; then
+  echo "[openclaw] installing Node >=22.19 via NodeSource"
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs
+fi
+if ! command -v git >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git
 fi
 
 # ----------------------------------------------------------------------
-# 2. Install openclaw from a prebuilt tarball published by the fork's CI.
-# This avoids any build-at-deploy time. The fork's GitHub Actions
-# workflow .github/workflows/release.yml builds a fresh tarball per
-# architecture on every push to taos-fork and publishes them as assets
-# on the "rolling" Release. We always grab the latest.
-#
-# If GitHub is unreachable we FAIL — there is no build fallback. Build
-# at deploy time was tried and is brittle (workspace deps, partial
-# artefacts, slow on arm64); the right fix is to make the prebuilt path
-# reliable, not to paper over its absence.
+# 2. Install upstream OpenClaw from npm (latest by default — NO fork).
+# The published `openclaw` package ships ready-to-run; we always pull
+# @latest so deploys and updates track upstream OpenClaw. We install even
+# when the pre-built base image is present (its baked openclaw may be an
+# older/forked build) — the npm install is the source of truth for the
+# binary version. Requires Node 22.19+ (installed above / in the base image).
+# taOS drives the agent over ACP (openclaw_acp_runtime), so no fork bridge
+# is needed.
 # ----------------------------------------------------------------------
 
-if [ "$TAOS_BASE_IMAGE_PRESENT" = "1" ]; then
-  # Base image already has openclaw installed globally. Just verify.
-  if [ ! -f /usr/lib/node_modules/openclaw/dist/entry.js ] && [ ! -f /usr/lib/node_modules/openclaw/dist/entry.mjs ]; then
-    echo "[openclaw] FATAL: base image claims openclaw installed but dist/entry.{js,mjs} missing"
-    ls -la /usr/lib/node_modules/openclaw/dist/ 2>/dev/null | head -10
-    exit 1
-  fi
-  echo "[openclaw] using baked-in openclaw from base image"
-else
-  # Architecture detection
-  ARCH=$(uname -m)
-  case "$ARCH" in
-    aarch64|arm64) NPM_ARCH=arm64 ;;
-    x86_64|amd64)  NPM_ARCH=x64 ;;
-    *)
-      echo "[openclaw] FATAL: unsupported architecture $ARCH"
-      echo "[openclaw] supported: aarch64, x86_64"
-      echo "[openclaw] open an issue at github.com/jaylfc/openclaw if you need another arch."
-      exit 1
-      ;;
-  esac
-
-  TARBALL_URL="https://github.com/jaylfc/openclaw/releases/latest/download/openclaw-taos-fork-linux-${NPM_ARCH}.tgz"
-  TARBALL_DEST="/tmp/openclaw-taos-fork-${NPM_ARCH}.tgz"
-
-  echo "[openclaw] downloading prebuilt tarball for ${NPM_ARCH} from GitHub Releases"
-  if ! curl -fsSL --max-time 120 -o "$TARBALL_DEST" "$TARBALL_URL"; then
-    echo "[openclaw] FATAL: cannot download $TARBALL_URL"
-    echo "[openclaw] check network connectivity to github.com from inside this container."
-    echo "[openclaw] cf. docs/runbooks/openclaw-install-troubleshooting.md"
-    exit 1
-  fi
-
-  # Sanity check the file we got
-  if ! [ -s "$TARBALL_DEST" ]; then
-    echo "[openclaw] FATAL: downloaded tarball is empty"
-    exit 1
-  fi
-  file "$TARBALL_DEST" | grep -qE "gzip|compressed" || {
-    echo "[openclaw] FATAL: downloaded file is not a gzipped tarball:"
-    file "$TARBALL_DEST"
-    head -c 500 "$TARBALL_DEST"
-    exit 1
-  }
-
-  # Install from the local file (no network re-fetch, no build).
-  # --ignore-scripts: the tarball already has dist/ built by CI; we must NOT
-  # run the prepare script because it tries to spawn git (for hook setup) and
-  # falls back to pnpm build:docker — both of which are wrong and unnecessary
-  # when installing a prebuilt tarball.
-  echo "[openclaw] installing $TARBALL_DEST"
-  npm install -g --unsafe-perm --ignore-scripts "$TARBALL_DEST"
-
-  # Cleanup the downloaded tarball — keeps container small
-  rm -f "$TARBALL_DEST"
-
-  # Verify entry exists
-  if [ ! -f /usr/lib/node_modules/openclaw/dist/entry.js ] && [ ! -f /usr/lib/node_modules/openclaw/dist/entry.mjs ]; then
-    echo "[openclaw] FATAL: install completed but dist/entry.{js,mjs} missing"
-    echo "[openclaw] this means the published tarball is broken. report at:"
-    echo "  github.com/jaylfc/openclaw/issues — include the URL above and the build SHA."
-    ls -la /usr/lib/node_modules/openclaw/dist/ | head -10
-    exit 1
-  fi
-
-  echo "[openclaw] install OK"
+echo "[openclaw] installing openclaw@latest from npm (upstream)"
+if ! npm install -g --unsafe-perm openclaw@latest; then
+  echo "[openclaw] FATAL: 'npm install -g openclaw@latest' failed"
+  echo "[openclaw] check network connectivity to the npm registry from inside this container."
+  exit 1
 fi
+
+if ! command -v openclaw >/dev/null 2>&1; then
+  echo "[openclaw] FATAL: openclaw CLI not on PATH after install"
+  exit 1
+fi
+
+echo "[openclaw] install OK: $(openclaw --version 2>/dev/null | head -1)"
 
 # ------------------------------------------------------------------
 # 2a. Bootstrap config + env for the openclaw bridge. Written from env
