@@ -8,6 +8,9 @@ one-way: ``llm_proxy`` imports from here, never the reverse.
 from __future__ import annotations
 
 import logging
+import os
+import secrets as _secrets
+from pathlib import Path
 
 import httpx
 
@@ -21,12 +24,53 @@ logger = logging.getLogger(__name__)
 # See docs/design/framework-agnostic-runtime.md.
 EMBEDDING_ALIAS = "taos-embedding-default"
 
-# Shared master key used for LiteLLM auth. When LiteLLM runs without a
-# Postgres DB it cannot issue per-agent virtual keys, so every client
-# (openclaw gateway, host-side key admin calls) authenticates with this
-# single value. Written into the config yaml AND exported into the
-# litellm subprocess env so whichever source LiteLLM reads first agrees.
-TAOS_LITELLM_MASTER_KEY = "sk-taos-master"
+# Per-install master key cache — keyed by resolved data_dir so multiple
+# data dirs in the same process (tests) don't collide.
+_master_key_cache: dict[str, str] = {}
+
+
+def get_litellm_master_key(data_dir: Path | None = None) -> str:
+    """Return the per-install LiteLLM master key, generating it on first use.
+
+    The key is stored at ``<data_dir>/.litellm_master_key`` with mode 0600.
+    On first call for a given data_dir the file is created with a random key;
+    subsequent calls (same process or new process) re-read it from disk.
+
+    When ``data_dir`` is None the call falls back to a process-lifetime
+    in-memory key so callers that don't know the data dir (e.g. tests) still
+    get a consistent value within a single process.
+
+    The master key is used only to authorise admin operations against the
+    LiteLLM proxy (key generation, key deletion, /v1/models).  Per-agent
+    virtual keys stored in Postgres are independent tokens and are NOT
+    invalidated when the master key changes.
+    """
+    cache_key = str(data_dir) if data_dir is not None else "__in_memory__"
+    if cache_key in _master_key_cache:
+        return _master_key_cache[cache_key]
+
+    if data_dir is not None:
+        key_path = Path(data_dir) / ".litellm_master_key"
+        if key_path.exists():
+            key = key_path.read_text().strip()
+            if key:
+                _master_key_cache[cache_key] = key
+                return key
+        # Generate and persist a new per-install key.
+        key = "sk-taos-" + _secrets.token_urlsafe(32)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a temp file then rename for atomicity.
+        tmp = key_path.with_suffix(".tmp")
+        tmp.write_text(key)
+        os.chmod(tmp, 0o600)
+        tmp.rename(key_path)
+        logger.info("Generated new per-install LiteLLM master key at %s", key_path)
+    else:
+        # No data dir — generate an in-memory key for this process lifetime.
+        key = "sk-taos-" + _secrets.token_urlsafe(32)
+
+    _master_key_cache[cache_key] = key
+    return key
 
 
 def _is_embedding_model(name: str) -> bool:
@@ -132,6 +176,7 @@ def generate_litellm_config(
     default_model: str = "default",
     *,
     registry=None,
+    master_key: str | None = None,
 ) -> dict:
     """Generate LiteLLM config from TinyAgentOS backend list.
 
@@ -303,6 +348,7 @@ def generate_litellm_config(
                     })
                     aliased_embedding_claimed = True
 
+    resolved_master_key = master_key if master_key is not None else get_litellm_master_key()
     return {
         "model_list": model_list,
         "router_settings": {
@@ -312,7 +358,7 @@ def generate_litellm_config(
             "enable_pre_call_checks": False,
         },
         "general_settings": {
-            "master_key": TAOS_LITELLM_MASTER_KEY,
+            "master_key": resolved_master_key,
             "background_health_checks": False,
             "disable_spend_logs": True,
         },

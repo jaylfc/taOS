@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import secrets
 
-from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.opencode_runtime import OpenCodeServer, OpenCodeServerConfig
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
                 except Exception:
                     logger.debug("taos_agent_runtime: persisting key failed", exc_info=True)
         if not litellm_key:
-            litellm_key = TAOS_LITELLM_MASTER_KEY
+            litellm_key = get_litellm_master_key(getattr(app_state, "data_dir", None))
         app_state.taos_opencode_key = litellm_key
 
         data_dir = getattr(app_state, "data_dir", None)
