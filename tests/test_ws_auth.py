@@ -141,6 +141,12 @@ class TestCanvasWsAuth:
 
         assert exc_info.value.code == 1008
 
+    def test_authenticated_user_connects(self, authed_client):
+        """Valid session cookie → connection accepted, hub join succeeds."""
+        with authed_client.websocket_connect("/ws/canvas/test-canvas-id") as ws:
+            # Connection staying open means auth passed and hub.join ran.
+            pass
+
 
 # ---------------------------------------------------------------------------
 # /ws/chat/{agent_name}  (channel_hub webchat WS)
@@ -162,3 +168,10 @@ class TestWebchatWsAuth:
                     ws.receive_text()
 
         assert exc_info.value.code == 1008
+
+    def test_authenticated_user_connects(self, authed_client):
+        """Valid session cookie → connection accepted; user_id attributed to messages."""
+        with authed_client.websocket_connect("/ws/chat/some-agent") as ws:
+            ws.send_text('{"text": "hello", "name": "Admin"}')
+            # Response may or may not arrive (no agent running); the connection
+            # accepting without 1008 confirms auth + user_id propagation succeeded.

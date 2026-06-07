@@ -66,7 +66,8 @@ def build_command(config: dict) -> list[str]:
 
 @router.websocket("/ws/terminal")
 async def terminal_ws(ws: WebSocket):
-    if _ws_session_user_id(ws) is None:
+    user_id = _ws_session_user_id(ws)
+    if user_id is None:
         await ws.close(code=1008)
         return
 
@@ -122,6 +123,7 @@ async def terminal_ws(ws: WebSocket):
         env = os.environ.copy()
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
+        env["TAOS_USER_ID"] = user_id  # authenticated user for this PTY session
         try:
             os.execvpe(cmd[0], cmd, env)
         except FileNotFoundError:

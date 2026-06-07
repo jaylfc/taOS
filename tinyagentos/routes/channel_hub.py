@@ -180,7 +180,8 @@ async def webchat_ws(websocket: WebSocket, agent_name: str):
     """WebSocket endpoint for web chat."""
     auth_mgr = websocket.app.state.auth
     token = websocket.cookies.get("taos_session", "")
-    if not token or auth_mgr.validate_session(token) is None:
+    user_id = auth_mgr.validate_session(token) if token else None
+    if user_id is None:
         await websocket.close(code=1008)
         return
 
@@ -196,7 +197,7 @@ async def webchat_ws(websocket: WebSocket, agent_name: str):
         connectors[connector_key] = connector
         websocket.app.state.channel_hub_connectors = connectors
 
-    await connector.handle_websocket(websocket)
+    await connector.handle_websocket(websocket, user_id=user_id)
 
 
 @router.post("/api/channel-hub/webhook/{agent_name}")
