@@ -855,3 +855,95 @@ class TestLoginRateLimit:
         )
         _login_limiter.reset(self._TEST_IP)
         assert resp.status_code == 401  # not 429
+
+
+class TestFailCounterBounds:
+    """Rate-limiter _FailCounter is bounded: expired entries prune, size caps."""
+
+    def test_expired_entries_are_pruned(self):
+        from tinyagentos.routes.auth import _FailCounter
+        fc = _FailCounter(max_attempts=5, window_seconds=1)
+        fc.record_failure("1.2.3.4")
+        assert "1.2.3.4" in fc._log
+        # Backdate the timestamp so it looks expired
+        fc._log["1.2.3.4"] = [0.0]
+        # Accessing via is_limited triggers _prune, which drops the stale entry
+        assert fc.is_limited("1.2.3.4") is False
+        assert "1.2.3.4" not in fc._log
+
+    def test_size_cap_evicts_oldest(self):
+        from tinyagentos.routes.auth import _FailCounter, _FAIL_COUNTER_MAX_KEYS
+        fc = _FailCounter(max_attempts=5, window_seconds=600)
+        # Fill to capacity
+        for i in range(_FAIL_COUNTER_MAX_KEYS):
+            fc.record_failure(f"10.0.{i // 256}.{i % 256}")
+        assert len(fc._log) == _FAIL_COUNTER_MAX_KEYS
+        # One more entry must not grow beyond the cap
+        fc.record_failure("99.99.99.99")
+        assert len(fc._log) == _FAIL_COUNTER_MAX_KEYS
+
+    def test_active_entries_survive_pruning(self):
+        from tinyagentos.routes.auth import _FailCounter
+        fc = _FailCounter(max_attempts=5, window_seconds=600)
+        for _ in range(3):
+            fc.record_failure("5.5.5.5")
+        # Entry should still be present and not counted as expired
+        assert fc.is_limited("5.5.5.5") is False
+        assert "5.5.5.5" in fc._log
+
+    def test_reset_removes_entry(self):
+        from tinyagentos.routes.auth import _FailCounter
+        fc = _FailCounter(max_attempts=5, window_seconds=600)
+        fc.record_failure("6.6.6.6")
+        fc.reset("6.6.6.6")
+        assert "6.6.6.6" not in fc._log
+
+
+class TestConcurrentHashUpgrade:
+    """Hash-upgrade write is protected by a lock — concurrent logins don't lose writes."""
+
+    def test_concurrent_upgrade_does_not_lose_write(self, tmp_path):
+        """Two threads racing on a legacy-hash login must both succeed and
+        the final stored hash must be valid argon2 (not clobbered back to SHA-256)."""
+        import threading
+        from tinyagentos.auth import AuthManager, _hash_password_sha256
+
+        mgr = AuthManager(tmp_path)
+        # Seed a user with an old SHA-256 hash directly (bypassing set_password)
+        import json, time as _time
+        legacy_hash = _hash_password_sha256("legacypass", "mysalt")
+        user_data = {
+            "users": [{
+                "id": "u1",
+                "username": "legacyuser",
+                "full_name": "Legacy",
+                "email": "",
+                "password_hash": legacy_hash,
+                "created_at": _time.time(),
+                "last_login_at": None,
+                "is_admin": True,
+            }],
+            "current_user_id": "u1",
+        }
+        mgr._user_file.parent.mkdir(parents=True, exist_ok=True)
+        mgr._user_file.write_text(json.dumps(user_data))
+
+        results = []
+
+        def login():
+            ok, _ = mgr.check_password("legacypass", username="legacyuser")
+            results.append(ok)
+
+        threads = [threading.Thread(target=login) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All logins must succeed
+        assert all(results), f"Some logins failed: {results}"
+
+        # The stored hash must now be argon2 (not corrupted back to SHA-256)
+        stored = json.loads(mgr._user_file.read_text())
+        final_hash = stored["users"][0]["password_hash"]
+        assert final_hash.startswith("$argon2"), f"Hash was not upgraded: {final_hash[:40]}"

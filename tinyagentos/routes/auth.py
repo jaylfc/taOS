@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
+from collections import OrderedDict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -13,26 +13,51 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Brute-force rate limiter (in-memory, per-IP, fixed window)
 # ---------------------------------------------------------------------------
 
+_FAIL_COUNTER_MAX_KEYS = 10_000  # cap total tracked IPs to prevent unbounded growth
+
+
 class _FailCounter:
-    """Count failed attempts per key in a rolling window."""
+    """Count failed attempts per key in a rolling window.
+
+    Bounded to avoid memory leaks:
+    - Expired entries (all timestamps outside the window) are dropped on access.
+    - Total key count is capped at ``_FAIL_COUNTER_MAX_KEYS``; oldest-accessed
+      entries are evicted first (LRU via OrderedDict).
+    """
 
     def __init__(self, max_attempts: int = 5, window_seconds: int = 600):
         self._max = max_attempts
         self._window = window_seconds
-        # key → list of failure timestamps
-        self._log: dict[str, list[float]] = defaultdict(list)
+        # key → list of failure timestamps; OrderedDict for LRU eviction
+        self._log: OrderedDict[str, list[float]] = OrderedDict()
 
     def _prune(self, key: str) -> None:
         cutoff = time.monotonic() - self._window
+        if key not in self._log:
+            return
         self._log[key] = [t for t in self._log[key] if t > cutoff]
+        if not self._log[key]:
+            # All timestamps expired — drop the entry entirely
+            del self._log[key]
+        else:
+            # Keep active entry fresh in LRU order
+            self._log.move_to_end(key)
+
+    def _ensure_capacity(self) -> None:
+        while len(self._log) >= _FAIL_COUNTER_MAX_KEYS:
+            self._log.popitem(last=False)  # evict oldest-accessed
 
     def is_limited(self, key: str) -> bool:
         self._prune(key)
-        return len(self._log[key]) >= self._max
+        return len(self._log.get(key, [])) >= self._max
 
     def record_failure(self, key: str) -> None:
         self._prune(key)
+        if key not in self._log:
+            self._ensure_capacity()
+            self._log[key] = []
         self._log[key].append(time.monotonic())
+        self._log.move_to_end(key)
 
     def reset(self, key: str) -> None:
         self._log.pop(key, None)

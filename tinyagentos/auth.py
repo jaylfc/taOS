@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +17,9 @@ from fastapi import HTTPException, Request
 from tinyagentos.shortcuts.capabilities import default_caps_for_admin, default_caps_for_new_user
 
 _ph = PasswordHasher()
+
+# Lock that makes the SHA-256→argon2 upgrade read-modify-write atomic across threads.
+_hash_upgrade_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -430,13 +434,16 @@ class AuthManager:
                     ok, new_hash = verify_and_maybe_rehash(password, u.get("password_hash", ""))
                     if ok:
                         if new_hash:
-                            # Upgrade the stored hash in-place
-                            data = self._read_users()
-                            for i, ru in enumerate(data.get("users", [])):
-                                if ru.get("id") == u.get("id"):
-                                    data["users"][i]["password_hash"] = new_hash
-                                    break
-                            self._write_users(data)
+                            # Upgrade the stored hash in-place.
+                            # Lock ensures the read-modify-write is atomic when
+                            # concurrent logins race on the same legacy hash.
+                            with _hash_upgrade_lock:
+                                data = self._read_users()
+                                for i, ru in enumerate(data.get("users", [])):
+                                    if ru.get("id") == u.get("id"):
+                                        data["users"][i]["password_hash"] = new_hash
+                                        break
+                                self._write_users(data)
                             u["password_hash"] = new_hash
                         return (True, u)
                 # Pending user — accept invite code as "password"
