@@ -378,4 +378,66 @@ class TestDockerInstallRecordsRuntimeLocation:
         assert item["url"] == "/apps/searxng/"
         assert item["status"] == "running"
 
+    @pytest.mark.asyncio
+    async def test_docker_compose_up_failure_returns_error_not_success(
+        self, docker_client
+    ):
+        """When docker pull succeeds but compose up fails, the install must
+        return a failure response — not silently mark the app as installed."""
+        from unittest.mock import AsyncMock, patch
+
+        client, app = docker_client
+
+        with patch(
+            "tinyagentos.installers.docker_installer.DockerInstaller"
+        ) as MockDocker:
+            instance = MockDocker.return_value
+            instance.install = AsyncMock(return_value={"success": True, "path": "/tmp/x"})
+            instance.start = AsyncMock(
+                return_value={"success": False, "output": "port 8080 already in use"}
+            )
+
+            resp = await client.post(
+                "/api/store/install-v2", json={"app_id": "searxng"}
+            )
+
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body.get("ok") is False
+        assert "container failed to start" in body.get("error", "").lower()
+        assert "port" in body.get("error", "").lower() or "conflict" in body.get("error", "").lower() or "check logs" in body.get("error", "").lower()
+
+        # Must NOT have been recorded as installed.
+        loc = await app.state.installed_apps.get_runtime_location("searxng")
+        assert loc is None
+
+    @pytest.mark.asyncio
+    async def test_docker_compose_up_raises_returns_error_not_success(
+        self, docker_client
+    ):
+        """When compose up raises an exception, the install must return a
+        failure — not silently mark the app as installed."""
+        from unittest.mock import AsyncMock, patch
+
+        client, app = docker_client
+
+        with patch(
+            "tinyagentos.installers.docker_installer.DockerInstaller"
+        ) as MockDocker:
+            instance = MockDocker.return_value
+            instance.install = AsyncMock(return_value={"success": True, "path": "/tmp/x"})
+            instance.start = AsyncMock(side_effect=RuntimeError("daemon not running"))
+
+            resp = await client.post(
+                "/api/store/install-v2", json={"app_id": "searxng"}
+            )
+
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body.get("ok") is False
+        assert "daemon not running" in body.get("error", "")
+
+        loc = await app.state.installed_apps.get_runtime_location("searxng")
+        assert loc is None
+
 
