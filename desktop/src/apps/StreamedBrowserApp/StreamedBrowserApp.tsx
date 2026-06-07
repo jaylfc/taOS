@@ -82,7 +82,7 @@ function SessionSwitcher({ sessions, selected, onSelect, isMobile }: SwitcherPro
   // Mobile: collapse the sidebar to a thin horizontal selector, and hide it
   // entirely when there's only the user's own browser so the stream is full-bleed.
   if (isMobile) {
-    if (agentSessions.length === 0) return null;
+    if (agentSessions.length === 0 && selected.kind === "mine") return null;
     return (
       <nav
         aria-label="Browser sessions"

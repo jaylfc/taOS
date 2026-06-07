@@ -144,6 +144,8 @@ async def get_my_session(
 
     mgr = request.app.state.browser_sessions
     session = await mgr.get_or_create_mine(user_id, mobile=mobile)
+    if session is None:
+        return JSONResponse({"error": "failed to create browser session"}, status_code=500)
 
     # A device-class switch re-presents the session: stop the old container
     # first so it releases its port + profile-volume lock before the new one.
@@ -162,6 +164,7 @@ async def get_my_session(
                         session["id"], worker_url=worker.url,
                         container_id=old["container_id"], http_port=old.get("http_port"),
                         auth_token=auth_token,
+                        set_status=None,
                     )
         except Exception as exc:
             logger.warning("re-present: failed to stop old container %s: %s", old.get("container_id"), exc)

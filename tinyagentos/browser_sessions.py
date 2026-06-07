@@ -88,8 +88,11 @@ class BrowserSessionManager:
         # Best-effort migration for databases created before is_mobile was added.
         try:
             await self._db.execute(BROWSER_SESSIONS_MIGRATION)
-        except Exception:
-            pass  # Column already exists
+        except aiosqlite.OperationalError as exc:
+            if "duplicate column" in str(exc).lower():
+                logger.debug("is_mobile column already exists; skipping migration")
+            else:
+                raise
         await self._db.commit()
 
     async def close(self) -> None:
@@ -427,7 +430,7 @@ class BrowserSessionManager:
 
     async def get_or_create_mine(self, owner_id: str, *, url: str = "about:blank",
                                  profile_name: str = "default",
-                                 mobile: bool = False) -> dict:
+                                 mobile: bool = False) -> dict | None:
         """Return the user's single live (pending/running/idle) session, creating
         one if none exists. Stopped/error sessions are not reused.
 
@@ -483,7 +486,7 @@ class BrowserSessionManager:
                     "node": old_node,
                     "http_port": old_port,
                 }
-            return new_session  # type: ignore[return-value]
+            return new_session
         return await self.create_session("user", owner_id, url, profile_name, mobile=mobile)
 
     async def start_on_host(self, session_id: str, *, profile_volume: str, runner,
