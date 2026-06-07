@@ -18,7 +18,7 @@ def _make_auth_client(app, tmp_data_dir):
     auth_mgr = app.state.auth
     if auth_mgr.find_user("user_b") is None:
         invite_code = auth_mgr.add_user_invite("user_b", "admin")
-        auth_mgr.complete_invite("user_b", invite_code, "user_b", "", "pass_b")
+        auth_mgr.complete_invite("user_b", invite_code, "user_b", "", "pass_b_ok")
     record = auth_mgr.find_user("user_b")
     token = auth_mgr.create_session(user_id=record["id"], long_lived=True)
     return AsyncClient(
