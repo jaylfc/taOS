@@ -23,7 +23,7 @@ describe("useAgentShortcuts", () => {
     const { result } = renderHook(() => useAgentShortcuts("abc123"));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(fetch).toHaveBeenCalledWith("/api/agents/abc123/shortcuts");
+    expect(fetch).toHaveBeenCalledWith("/api/agents/abc123/shortcuts", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(result.current.shortcuts).toEqual(mockShortcuts);
     expect(result.current.error).toBeNull();
   });
