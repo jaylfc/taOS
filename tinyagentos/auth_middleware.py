@@ -19,6 +19,11 @@ EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth
 # build token, so stale index.html entries are evicted automatically.
 # /shortcut/ routes use their own taos_shortcut session cookie for auth;
 # they are intentionally excluded from the main session gate here.
+# /ws/ routes validate the taos_session cookie inside each endpoint handler,
+# before websocket.accept() and before spawning any process. BaseHTTPMiddleware
+# wrapping a WS upgrade can cause connection-level issues in some Starlette
+# versions, so /ws/ remains exempt at the middleware layer; the per-endpoint
+# check is the authoritative guard for all WebSocket endpoints.
 EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/shortcut/")
 
 
