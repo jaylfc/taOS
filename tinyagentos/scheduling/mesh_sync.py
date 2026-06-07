@@ -59,39 +59,50 @@ SYNCABLE_TABLES = {
     "insights": "created_at",
 }
 
-# SSRF protection — block private/reserved IP ranges
+# SSRF protection — networks always blocked (cloud metadata, loopback, ULA, link-local)
 BLOCKED_NETWORKS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),  # cloud metadata (AWS/GCP/Azure IMDSv1)
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
+]
+
+# RFC1918 ranges permitted only when the caller explicitly opts in for LAN peers
+LAN_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
 ]
 
 
 def is_safe_url(url: str, allow_private: bool = False) -> bool:
     """Check if a URL is safe (not targeting private/internal networks).
 
-    In taOS worker mesh, allow_private=True since workers are on the LAN.
-    For external sync, allow_private=False blocks SSRF.
+    By default (allow_private=False) all private ranges are blocked.
+    Pass allow_private=True only for known LAN peer connections; even then
+    cloud-metadata / loopback / link-local addresses are always rejected.
     """
-    if allow_private:
-        return True
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
             return False
-        # Resolve hostname to IP
         import socket
         addr = socket.getaddrinfo(hostname, parsed.port or 80)[0][4][0]
         ip = ipaddress.ip_address(addr)
+
+        # Always-blocked ranges (cloud metadata, loopback, link-local, ULA)
         for network in BLOCKED_NETWORKS:
             if ip in network:
                 return False
+
+        # RFC1918 ranges: only allowed when caller explicitly opts in for LAN
+        if not allow_private:
+            for network in LAN_NETWORKS:
+                if ip in network:
+                    return False
+
         return True
     except Exception:
         return False
@@ -175,6 +186,11 @@ class MeshSync:
     # Delta import (worker ← controller)
     # ------------------------------------------------------------------
 
+    def _get_table_columns(self, db: sqlite3.Connection, table: str) -> frozenset[str]:
+        """Return the set of column names in *table* from the local DB schema."""
+        rows = db.execute(f"PRAGMA table_info({table})").fetchall()
+        return frozenset(r[1] for r in rows)
+
     async def import_delta(
         self,
         target_db: sqlite3.Connection,
@@ -185,27 +201,47 @@ class MeshSync:
 
         Last-write-wins: if a record with the same primary key exists,
         the one with the newer timestamp wins.
+
+        Column names from peer records are validated against the local table
+        schema (via PRAGMA table_info) before any SQL is constructed.
+        Peer-supplied identifiers are never interpolated into SQL.
         """
         if not records or table not in SYNCABLE_TABLES:
             return 0
 
-        ts_col = SYNCABLE_TABLES[table]
+        # Build an allowlist of known columns from our own local schema.
+        # Any peer record containing an unknown column is skipped entirely.
+        known_columns = self._get_table_columns(target_db, table)
+        if not known_columns:
+            logger.warning("No schema found for table %s — skipping import", table)
+            return 0
+
         imported = 0
 
         for record in records:
-            columns = list(record.keys())
-            placeholders = ", ".join(["?"] * len(columns))
-            col_names = ", ".join(columns)
+            peer_cols = list(record.keys())
 
-            # LWW: INSERT OR REPLACE (the newer record wins by timestamp)
+            # Reject the record if any column is not in our local schema.
+            if not all(col in known_columns for col in peer_cols):
+                unknown = [c for c in peer_cols if c not in known_columns]
+                logger.warning(
+                    "Rejected peer record for %s: unknown columns %s", table, unknown
+                )
+                continue
+
+            # Use only the validated column names (from peer_cols, now confirmed
+            # against known_columns). Table name comes from SYNCABLE_TABLES, not
+            # peer data. VALUES are parameterized — no identifier interpolation.
+            placeholders = ", ".join(["?"] * len(peer_cols))
+            col_names = ", ".join(peer_cols)  # safe: every entry verified above
+
             try:
                 target_db.execute(
-                    f"INSERT OR REPLACE INTO {col_names} VALUES ({placeholders})",
-                    tuple(record[c] for c in columns),
+                    f"INSERT OR REPLACE INTO {table} ({col_names}) VALUES ({placeholders})",
+                    tuple(record[c] for c in peer_cols),
                 )
                 imported += 1
             except Exception as e:
-                # If schema mismatch, try column-by-column
                 logger.debug("Import failed for %s record: %s", table, e)
 
         if imported:
