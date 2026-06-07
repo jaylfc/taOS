@@ -267,3 +267,66 @@ async def test_files_batch_no_shell_chaining(client):
     assert data["exit_code"] == 0
     # Same as /exec: single process, no newline-separated second command output.
     assert "\n" not in data["stdout"].strip()
+
+
+# -- Guard: empty / malformed commands (Kilo crit) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_empty_string(client):
+    """Empty string must return a clean error, not raise TypeError."""
+    resp = await client.post("/exec", json={"command": ""})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == -1
+    assert "empty command" in data["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_exec_whitespace_only(client):
+    """Whitespace-only string must return a clean error, not raise TypeError."""
+    resp = await client.post("/exec", json={"command": "   "})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == -1
+    assert "empty command" in data["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_exec_unmatched_quote(client):
+    """Unmatched quote must return a clean error, not raise ValueError."""
+    resp = await client.post("/exec", json={"command": "echo 'unterminated"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == -1
+    assert "invalid/malformed command" in data["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_files_batch_empty_string(client):
+    """/files/batch empty string must return a clean error, not raise TypeError."""
+    resp = await client.post("/files/batch", json={"command": ""})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == -1
+    assert "empty command" in data["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_files_batch_whitespace_only(client):
+    """/files/batch whitespace must return a clean error, not raise TypeError."""
+    resp = await client.post("/files/batch", json={"command": "   "})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == -1
+    assert "empty command" in data["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_files_batch_unmatched_quote(client):
+    """/files/batch unmatched quote must return a clean error, not raise ValueError."""
+    resp = await client.post("/files/batch", json={"command": "ls 'bad"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exit_code"] == -1
+    assert "invalid/malformed command" in data["stderr"]

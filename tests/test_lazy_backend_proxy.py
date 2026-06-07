@@ -311,3 +311,42 @@ class TestIdleTimeout:
             await p.stop()
             if p._proc and p._proc.poll() is None:
                 p._proc.kill()
+
+
+class TestEmptyMalformedStartCmd:
+    """Guard: empty/malformed start_cmd must fail cleanly, not raise unhandled."""
+
+    def test_empty_start_cmd_rejected_at_construction(self):
+        """Constructor must reject empty start_cmd with ValueError (existing guard)."""
+        with pytest.raises(ValueError, match="start_cmd is required"):
+            _make_proxy(1, start_cmd="")
+
+    @pytest.mark.asyncio
+    async def test_whitespace_start_cmd_raises_cleanly(self):
+        """Whitespace-only start_cmd bypasses constructor but must raise RuntimeError in _ensure_backend."""
+        p = _make_proxy(1, start_cmd="   ")
+        with pytest.raises(RuntimeError, match="empty"):
+            await p._ensure_backend()
+
+    @pytest.mark.asyncio
+    async def test_malformed_start_cmd_raises_cleanly(self):
+        """Unmatched-quote start_cmd must raise RuntimeError, not raw ValueError from shlex."""
+        p = _make_proxy(1, start_cmd="python3 'unterminated")
+        with pytest.raises(RuntimeError, match="invalid/malformed start_cmd"):
+            await p._ensure_backend()
+
+    @pytest.mark.asyncio
+    async def test_malformed_stop_cmd_skipped_cleanly(self):
+        """Malformed stop_cmd must log and skip, not crash _stop_subprocess."""
+        p = _make_proxy(1, stop_cmd="pkill 'bad")
+        # Fake a running backend so the stop path is exercised
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        p._proc = fake_proc
+
+        # Should complete without raising even though stop_cmd is malformed
+        with patch("asyncio.to_thread", new_callable=AsyncMock):
+            await p._stop_subprocess()
+
+        # Backend process should still have been terminated
+        fake_proc.terminate.assert_called_once()

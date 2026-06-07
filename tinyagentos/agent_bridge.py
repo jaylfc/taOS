@@ -142,8 +142,14 @@ def create_bridge_app(
         # NOTE: This endpoint must be auth-gated — it runs arbitrary commands inside
         # the container. Verify /exec requires authentication before exposing externally.
         try:
+            try:
+                argv = shlex.split(req.command)
+            except ValueError as exc:
+                return {"exit_code": -1, "stdout": "", "stderr": f"invalid/malformed command: {exc}"}
+            if not argv:
+                return {"exit_code": -1, "stdout": "", "stderr": "empty command"}
             proc = await asyncio.create_subprocess_exec(
-                *shlex.split(req.command),
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -217,8 +223,14 @@ def create_bridge_app(
         # NOTE: Must be auth-gated — runs arbitrary commands inside the container.
         """
         try:
+            try:
+                argv = shlex.split(req.command)
+            except ValueError as exc:
+                return {"exit_code": -1, "stdout": "", "stderr": f"invalid/malformed command: {exc}"}
+            if not argv:
+                return {"exit_code": -1, "stdout": "", "stderr": "empty command"}
             proc = await asyncio.create_subprocess_exec(
-                *shlex.split(req.command),
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
