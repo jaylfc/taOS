@@ -10,13 +10,53 @@ module can be used in unit tests without a Docker daemon.
 import asyncio
 import logging
 import secrets
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_NEKO_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 DEFAULT_NEKO_GPU_IMAGE = "ghcr.io/m1k1o/neko/nvidia-chromium:latest"
+# Temporarily the validated multi-arch base (runs healthy on the Pi, software
+# encode). The custom rkmpp HW-encode image (built FROM this + Rockchip GStreamer
+# from the Armbian/Rockchip repos) is tracked in #624; flip this back once it's
+# built + published. Device nodes are still passed (harmless on RK3588).
+DEFAULT_NEKO_RK3588_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 NEKO_SCREEN = "1280x720@30"
 NEKO_PROFILE_MOUNT = "/home/neko"
+
+
+@dataclass
+class NekoImageSpec:
+    image: str
+    encode: str                        # rkmpp | nvenc | vaapi | software
+    device_args: list[str] = field(default_factory=list)  # paths for --device
+    gpu: bool = False                  # add `--gpus all`
+
+
+def resolve_neko_image(hw_profile) -> NekoImageSpec:
+    """Pick the Neko image + encode path + container devices for a host.
+
+    Keyed off HardwareProfile. Software encode is the universal fallback, so an
+    unknown/None profile still yields a working (CPU-encoded) browser.
+    """
+    soc = (getattr(getattr(hw_profile, "cpu", None), "soc", "") or "").lower()
+    gpu = getattr(hw_profile, "gpu", None)
+    gpu_type = (getattr(gpu, "type", "") or "").lower()
+    cuda = bool(getattr(gpu, "cuda", False))
+    vulkan = bool(getattr(gpu, "vulkan", False))
+
+    if "rk3588" in soc or "rk3576" in soc:
+        return NekoImageSpec(
+            image=DEFAULT_NEKO_RK3588_IMAGE,
+            encode="rkmpp",
+            device_args=["/dev/mpp_service", "/dev/dri", "/dev/rga"],
+            gpu=False,
+        )
+    if cuda:
+        return NekoImageSpec(image=DEFAULT_NEKO_GPU_IMAGE, encode="nvenc", gpu=True)
+    if gpu_type in ("intel", "amd") or vulkan:
+        return NekoImageSpec(image=DEFAULT_NEKO_IMAGE, encode="vaapi", device_args=["/dev/dri"])
+    return NekoImageSpec(image=DEFAULT_NEKO_IMAGE, encode="software")
 
 
 class BrowserContainerError(Exception):
@@ -35,6 +75,7 @@ def build_neko_run_args(
     admin_pwd: str,
     gpu: bool = False,
     image: str | None = None,
+    device_args: list[str] | None = None,
 ) -> list[str]:
     """Return the full ``docker run`` argv (starting with 'docker') for a Neko
     Chromium session, per the validated spike recipe."""
@@ -54,10 +95,28 @@ def build_neko_run_args(
         "--shm-size=2g",
         "-v", f"{profile_volume}:{NEKO_PROFILE_MOUNT}",
     ]
+    for dev in device_args or []:
+        args += ["--device", dev]
     if gpu:
         args += ["--gpus", "all"]
     args.append(image)
     return args
+
+
+def build_volume_export_args(volume: str) -> list[str]:
+    """docker run that streams the volume's contents to stdout as a tar."""
+    return [
+        "docker", "run", "--rm", "-v", f"{volume}:/from", "alpine",
+        "tar", "-C", "/from", "-cf", "-", ".",
+    ]
+
+
+def build_volume_import_args(volume: str) -> list[str]:
+    """docker run that reads a tar from stdin into the (auto-created) volume."""
+    return [
+        "docker", "run", "--rm", "-i", "-v", f"{volume}:/to", "alpine",
+        "tar", "-C", "/to", "-xf", "-",
+    ]
 
 
 class PortAllocator:
@@ -115,10 +174,12 @@ class BrowserContainerRunner:
         mock: bool = False,
         gpu: bool = False,
         allocator: PortAllocator | None = None,
+        hw_profile=None,
     ) -> None:
         self.node_ip = node_ip
         self.mock = mock
         self.gpu = gpu
+        self.hw_profile = hw_profile
         self._allocator = allocator or PortAllocator()
 
     async def _ensure_image(self, image: str) -> None:
@@ -162,11 +223,12 @@ class BrowserContainerRunner:
         # need it absent.
         neko_url = f"http://{self.node_ip}:{http_port}/?usr=neko&pwd={user_pwd}"
         cdp_url = None  # CDP not exposed by this image in Phase 1 (deferred to Phase 2)
+        spec = resolve_neko_image(self.hw_profile)
 
         if self.mock:
             container_id = f"mock-neko-{session_id[:8]}"
         else:
-            image = DEFAULT_NEKO_GPU_IMAGE if self.gpu else DEFAULT_NEKO_IMAGE
+            image = spec.image
             await self._ensure_image(image)
             argv = build_neko_run_args(
                 container_name=container_name,
@@ -177,8 +239,9 @@ class BrowserContainerRunner:
                 epr_hi=epr_hi,
                 user_pwd=user_pwd,
                 admin_pwd=admin_pwd,
-                gpu=self.gpu,
+                gpu=spec.gpu,
                 image=image,
+                device_args=spec.device_args,
             )
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -212,6 +275,8 @@ class BrowserContainerRunner:
             "http_port": http_port,
             "epr_lo": epr_lo,
             "epr_hi": epr_hi,
+            "image": spec.image,
+            "encode": spec.encode,
         }
 
     async def stop(self, *, container_id: str, http_port: int | None = None) -> dict:

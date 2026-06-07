@@ -247,6 +247,7 @@ export function ModelPickerFlow({ models, modelsLoaded, onSelect, onBack, onCanc
           onChange={e => setSearch(e.target.value)}
           className="w-full pl-8 pr-8 h-8 rounded-lg border border-white/10 bg-shell-bg-deep text-sm text-shell-text placeholder:text-shell-text-tertiary focus:outline-none focus:border-accent/40"
           autoFocus
+          aria-label="Search models"
         />
         {search && (
           <button

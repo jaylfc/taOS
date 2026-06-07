@@ -394,6 +394,19 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.browser_sessions = browser_sessions
         import secrets as _secrets
         app.state.browser_session_signing_key = _secrets.token_bytes(32)
+        # Wire the unified browser runtime: populate browser_container_runner +
+        # host_hardware on app.state, and fold existing agent_browsers profiles
+        # into the unified session store (idempotent on each restart).
+        try:
+            from tinyagentos.services.mdns_publisher import _detect_primary_ipv4
+            from tinyagentos.browser_sessions import wire_browser_runtime
+            _host_ip = _detect_primary_ipv4() or "127.0.0.1"
+            await wire_browser_runtime(
+                app.state, hardware_profile, agent_browsers, browser_sessions,
+                host_ip=_host_ip,
+            )
+        except Exception:
+            logger.exception("browser runtime wiring failed — host browser sessions unavailable")
         await browsing_history.init()
         app.state.browsing_history = browsing_history
         await knowledge_graph.init()

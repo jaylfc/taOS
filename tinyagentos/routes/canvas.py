@@ -77,6 +77,14 @@ async def list_canvases(request: Request, limit: int = 50):
 @router.websocket("/ws/canvas/{canvas_id}")
 async def canvas_ws(websocket: WebSocket, canvas_id: str):
     """WebSocket for live canvas updates."""
+    auth_mgr = websocket.app.state.auth
+    token = websocket.cookies.get("taos_session", "")
+    user_id = auth_mgr.validate_session(token) if token else None
+    if user_id is None:
+        await websocket.close(code=1008)
+        return
+    # user_id is available here for future per-user canvas access control.
+
     await websocket.accept()
     hub = websocket.app.state.chat_hub
     canvas_channel = f"canvas:{canvas_id}"

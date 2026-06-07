@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import subprocess
 import time
 
@@ -176,9 +177,14 @@ class LazyBackendProxy:
 
             cold_start_started_at = time.monotonic()
             logger.info("lazy-proxy :%d → starting: %r", self._proxy_port, self._start_cmd)
+            if not self._start_cmd or not self._start_cmd.strip():
+                raise RuntimeError("start_cmd is empty; cannot start backend")
+            try:
+                start_argv = shlex.split(self._start_cmd)
+            except ValueError as exc:
+                raise RuntimeError(f"invalid/malformed start_cmd: {exc}") from exc
             self._proc = subprocess.Popen(
-                self._start_cmd,
-                shell=True,
+                start_argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -227,13 +233,26 @@ class LazyBackendProxy:
         if self._stop_cmd:
             stop_proc: subprocess.Popen | None = None
             try:
-                stop_proc = subprocess.Popen(
-                    self._stop_cmd,
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                await asyncio.to_thread(stop_proc.wait, timeout=_STOP_GRACE_PERIOD)
+                try:
+                    stop_argv = shlex.split(self._stop_cmd)
+                except ValueError as exc:
+                    logger.warning(
+                        "lazy-proxy :%d → invalid/malformed stop_cmd, skipping: %s",
+                        self._proxy_port, exc,
+                    )
+                    stop_argv = []
+                if not stop_argv:
+                    logger.warning(
+                        "lazy-proxy :%d → stop_cmd is empty, skipping graceful stop",
+                        self._proxy_port,
+                    )
+                else:
+                    stop_proc = subprocess.Popen(
+                        stop_argv,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    await asyncio.to_thread(stop_proc.wait, timeout=_STOP_GRACE_PERIOD)
             except subprocess.TimeoutExpired:
                 if stop_proc:
                     stop_proc.kill()

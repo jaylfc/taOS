@@ -109,8 +109,14 @@ async def get_chat_guide():
 
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket):
+    auth_mgr = websocket.app.state.auth
+    token = websocket.cookies.get("taos_session", "")
+    user_id = auth_mgr.validate_session(token) if token else None
+    if user_id is None:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
-    user_id = "user"  # For now, single user. Auth integration in future.
     hub = websocket.app.state.chat_hub
     hub.connect(websocket, user_id)
     try:

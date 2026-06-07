@@ -80,6 +80,9 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Launchpad"
       className="fixed top-0 left-0 right-0 z-[9000] flex flex-col backdrop-blur-md bg-black/40"
       onClick={onClose}
       style={{
@@ -107,6 +110,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
             placeholder="Search apps..."
             className="flex-1 bg-transparent text-sm text-shell-text outline-none placeholder:text-shell-text-tertiary"
             autoFocus={!isMobile}
+            aria-label="Search apps"
           />
           {query && (
             <button onClick={() => setQuery("")} aria-label="Clear search">
