@@ -300,8 +300,10 @@ class AuthManager:
         users = self._read_users()
         if users.get("users"):
             raise ValueError("a user is already configured")
-        if not username or not password:
+        if not username:
             raise ValueError("username and password are required")
+        if not password or len(password) < 8:
+            raise ValueError("password must be at least 8 characters")
         record = {
             "id": secrets.token_urlsafe(8),
             "username": username,

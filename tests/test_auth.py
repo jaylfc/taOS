@@ -729,12 +729,12 @@ class TestSessionUserNoFallback:
 
     def test_session_user_bad_token_is_none(self, tmp_path):
         mgr = AuthManager(tmp_path)
-        mgr.setup_user("alice", "Alice", "", "pw")
+        mgr.setup_user("alice", "Alice", "", "alicepwd1")
         assert mgr.session_user("not-a-real-token") is None
 
     def test_session_user_empty_token_is_none(self, tmp_path):
         mgr = AuthManager(tmp_path)
-        mgr.setup_user("alice", "Alice", "", "pw")
+        mgr.setup_user("alice", "Alice", "", "alicepwd1")
         assert mgr.session_user("") is None
 
     def test_get_user_bad_token_falls_back_to_first_user(self, tmp_path):
@@ -742,12 +742,12 @@ class TestSessionUserNoFallback:
         # but invalid token returns the first user, which is wrong for
         # identity/ownership decisions.
         mgr = AuthManager(tmp_path)
-        mgr.setup_user("alice", "Alice", "", "pw")
+        mgr.setup_user("alice", "Alice", "", "alicepwd1")
         assert mgr.get_user(token="not-a-real-token") is not None
 
     def test_session_user_valid_token_returns_owner(self, tmp_path):
         mgr = AuthManager(tmp_path)
-        mgr.setup_user("alice", "Alice", "", "pw")
+        mgr.setup_user("alice", "Alice", "", "alicepwd1")
         rec = mgr.find_user("alice")
         token = mgr.create_session(user_id=rec["id"])
         u = mgr.session_user(token)
@@ -775,6 +775,17 @@ class TestPasswordPolicy:
         mgr.setup_user("alice", "Alice", "", "alicepass")
         result = mgr.change_password("alice", "alicepass", "short")
         assert result is False
+
+    def test_setup_user_rejects_short_password(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        import pytest
+        with pytest.raises(ValueError, match="8"):
+            mgr.setup_user("admin", "Admin", "", "short")
+
+    def test_setup_user_accepts_8_char_password(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        user = mgr.setup_user("admin", "Admin", "", "exactly8")
+        assert user["username"] == "admin"
 
     def test_session_ttl_is_30_days(self, tmp_path):
         mgr = AuthManager(tmp_path)
@@ -818,12 +829,13 @@ class TestLoginRateLimit:
         from tinyagentos.routes.auth import _login_limiter
         _login_limiter.reset(self._TEST_IP)
         app.state.auth.setup_user("admin", "Admin", "", "adminpass")
-        # 5 failures using JSON path
-        for _ in range(5):
-            await auth_client.post(
+        # First 5 failures should each return 401 (not yet limited)
+        for i in range(5):
+            r = await auth_client.post(
                 "/auth/login",
                 json={"username": "admin", "password": "wrongpass"},
             )
+            assert r.status_code == 401, f"attempt {i+1} expected 401, got {r.status_code}"
         # 6th attempt should be 429
         resp = await auth_client.post(
             "/auth/login",
@@ -855,6 +867,28 @@ class TestLoginRateLimit:
         )
         _login_limiter.reset(self._TEST_IP)
         assert resp.status_code == 401  # not 429
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_form_login_redirects_not_json(self, app, auth_client):
+        """Form-submitted logins that hit the rate limit must get an HTML redirect,
+        not a raw JSON response (the no-JS form has no way to render JSON)."""
+        from tinyagentos.routes.auth import _login_limiter
+        _login_limiter.reset(self._TEST_IP)
+        app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+        # Exhaust the limit via form posts
+        for _ in range(5):
+            await auth_client.post(
+                "/auth/login",
+                data={"username": "admin", "password": "wrongpass"},
+            )
+        # 6th form post should redirect (303), not return JSON 429
+        resp = await auth_client.post(
+            "/auth/login",
+            data={"username": "admin", "password": "wrongpass"},
+        )
+        _login_limiter.reset(self._TEST_IP)
+        assert resp.status_code == 303
+        assert "/auth/login" in resp.headers.get("location", "")
 
 
 class TestFailCounterBounds:

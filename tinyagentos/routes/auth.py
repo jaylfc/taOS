@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 
@@ -23,6 +24,8 @@ class _FailCounter:
     - Expired entries (all timestamps outside the window) are dropped on access.
     - Total key count is capped at ``_FAIL_COUNTER_MAX_KEYS``; oldest-accessed
       entries are evicted first (LRU via OrderedDict).
+
+    Thread-safe: all mutating operations are protected by a Lock.
     """
 
     def __init__(self, max_attempts: int = 5, window_seconds: int = 600):
@@ -30,8 +33,10 @@ class _FailCounter:
         self._window = window_seconds
         # key → list of failure timestamps; OrderedDict for LRU eviction
         self._log: OrderedDict[str, list[float]] = OrderedDict()
+        self._lock = threading.Lock()
 
     def _prune(self, key: str) -> None:
+        """Must be called with self._lock held."""
         cutoff = time.monotonic() - self._window
         if key not in self._log:
             return
@@ -44,23 +49,27 @@ class _FailCounter:
             self._log.move_to_end(key)
 
     def _ensure_capacity(self) -> None:
+        """Must be called with self._lock held."""
         while len(self._log) >= _FAIL_COUNTER_MAX_KEYS:
             self._log.popitem(last=False)  # evict oldest-accessed
 
     def is_limited(self, key: str) -> bool:
-        self._prune(key)
-        return len(self._log.get(key, [])) >= self._max
+        with self._lock:
+            self._prune(key)
+            return len(self._log.get(key, [])) >= self._max
 
     def record_failure(self, key: str) -> None:
-        self._prune(key)
-        if key not in self._log:
-            self._ensure_capacity()
-            self._log[key] = []
-        self._log[key].append(time.monotonic())
-        self._log.move_to_end(key)
+        with self._lock:
+            self._prune(key)
+            if key not in self._log:
+                self._ensure_capacity()
+                self._log[key] = []
+            self._log[key].append(time.monotonic())
+            self._log.move_to_end(key)
 
     def reset(self, key: str) -> None:
-        self._log.pop(key, None)
+        with self._lock:
+            self._log.pop(key, None)
 
 
 _login_limiter = _FailCounter(max_attempts=5, window_seconds=600)
@@ -300,7 +309,12 @@ async def login_page(request: Request, error: str = "", next: str = ""):
     # showing a useless login form.
     if not auth_mgr.is_configured():
         return RedirectResponse("/auth/setup", status_code=303)
-    err_text = "Incorrect username or password." if error else ""
+    if error == "rate_limit":
+        err_text = "Too many failed attempts. Please try again later."
+    elif error:
+        err_text = "Incorrect username or password."
+    else:
+        err_text = ""
     # Only allow relative paths starting with / to prevent open redirect
     safe_next = next if (next.startswith("/") and not next.startswith("//")) else ""
     return HTMLResponse(_login_page(err_text, multi_user=auth_mgr.is_multi_user(), next_url=safe_next))
@@ -338,13 +352,15 @@ async def login(request: Request):
     auth_mgr = request.app.state.auth
     client_ip = request.client.host if request.client else "unknown"
 
-    if _login_limiter.is_limited(client_ip):
-        return JSONResponse(
-            {"error": "too many failed login attempts, try again later"},
-            status_code=429,
-        )
-
     content_type = request.headers.get("content-type", "")
+
+    if _login_limiter.is_limited(client_ip):
+        if "application/json" in content_type:
+            return JSONResponse(
+                {"error": "too many failed login attempts, try again later"},
+                status_code=429,
+            )
+        return RedirectResponse("/auth/login?error=rate_limit", status_code=303)
     if "application/json" in content_type:
         try:
             body = await request.json()
@@ -583,6 +599,7 @@ async def complete_invite(request: Request):
         _complete_limiter.record_failure(client_ip)
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    _complete_limiter.reset(client_ip)
     long_lived = bool(body.get("auto_login", False))
     record = auth_mgr.find_user(username)
     user_id = record["id"] if record else ""
