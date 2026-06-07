@@ -24,49 +24,58 @@ def _mock_getaddrinfo(ip: str):
     return _stub
 
 
+def _mock_getaddrinfo_multi(*ips: str):
+    """Return a getaddrinfo stub that resolves a hostname to multiple addresses."""
+
+    def _stub(host, port, *args, **kwargs):
+        return [(None, None, None, None, (ip, port or 80)) for ip in ips]
+
+    return _stub
+
+
 class TestIsSafeUrl:
     def test_cloud_metadata_rejected_by_default(self):
         """169.254.169.254 must be rejected when allow_private=False (default)."""
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254")):
             assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
 
     def test_cloud_metadata_rejected_even_with_allow_private(self):
         """169.254.169.254 is always blocked, even when allow_private=True."""
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254")):
             assert is_safe_url("http://169.254.169.254/", allow_private=True) is False
 
     def test_loopback_rejected_by_default(self):
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1")):
             assert is_safe_url("http://127.0.0.1/", allow_private=False) is False
 
     def test_loopback_rejected_even_with_allow_private(self):
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1")):
             assert is_safe_url("http://127.0.0.1/", allow_private=True) is False
 
     def test_public_ip_allowed_by_default(self):
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("93.184.216.34")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("93.184.216.34")):
             assert is_safe_url("https://example.com/", allow_private=False) is True
 
     def test_public_ip_rejected_with_allow_private_false(self):
         """Public IPs should still pass — they're not private ranges."""
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("8.8.8.8")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("8.8.8.8")):
             assert is_safe_url("https://dns.google/", allow_private=False) is True
 
     def test_rfc1918_10_rejected_by_default(self):
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("10.0.0.1")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("10.0.0.1")):
             assert is_safe_url("http://10.0.0.1:6969/", allow_private=False) is False
 
     def test_rfc1918_192168_rejected_by_default(self):
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("192.168.1.100")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("192.168.1.100")):
             assert is_safe_url("http://192.168.1.100/", allow_private=False) is False
 
     def test_rfc1918_172_rejected_by_default(self):
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("172.16.0.5")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("172.16.0.5")):
             assert is_safe_url("http://172.16.0.5/", allow_private=False) is False
 
     def test_rfc1918_allowed_with_allow_private(self):
         """LAN workers on RFC1918 are permitted when allow_private=True."""
-        with patch("socket.getaddrinfo", _mock_getaddrinfo("192.168.6.123")):
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("192.168.6.123")):
             assert is_safe_url("http://192.168.6.123:6969/", allow_private=True) is True
 
     def test_empty_url_rejected(self):
@@ -74,6 +83,52 @@ class TestIsSafeUrl:
 
     def test_no_hostname_rejected(self):
         assert is_safe_url("not-a-url") is False
+
+
+    def test_ipv4_mapped_ipv6_metadata_rejected(self):
+        """::ffff:169.254.169.254 must be rejected — IPv4-mapped IPv6 bypass."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("::ffff:169.254.169.254")):
+            assert is_safe_url("http://metadata.internal/", allow_private=False) is False
+
+    def test_ipv4_mapped_ipv6_metadata_rejected_allow_private(self):
+        """::ffff:169.254.169.254 is always blocked regardless of allow_private."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("::ffff:169.254.169.254")):
+            assert is_safe_url("http://metadata.internal/", allow_private=True) is False
+
+    def test_ipv4_mapped_ipv6_loopback_rejected(self):
+        """::ffff:127.0.0.1 must be rejected."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("::ffff:127.0.0.1")):
+            assert is_safe_url("http://internal.example.com/", allow_private=False) is False
+
+    def test_plain_ipv6_loopback_rejected(self):
+        """Pure IPv6 loopback ::1 must be rejected."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("::1")):
+            assert is_safe_url("http://[::1]/", allow_private=False) is False
+
+    def test_plain_ipv6_link_local_rejected(self):
+        """IPv6 link-local fe80:: must be rejected."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo("fe80::1")):
+            assert is_safe_url("http://[fe80::1]/", allow_private=False) is False
+
+    def test_multi_address_any_blocked_rejects_all(self):
+        """A hostname resolving to [public, 169.254.x] must be rejected entirely."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo_multi("93.184.216.34", "169.254.169.254")):
+            assert is_safe_url("http://evil-rebind.example.com/", allow_private=False) is False
+
+    def test_multi_address_any_rfc1918_rejects_when_private_not_allowed(self):
+        """[public, 10.x] is rejected when allow_private=False."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo_multi("93.184.216.34", "10.0.0.1")):
+            assert is_safe_url("http://dual.example.com/", allow_private=False) is False
+
+    def test_multi_address_all_public_passes(self):
+        """A hostname resolving to multiple public IPs is allowed."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo_multi("93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946")):
+            assert is_safe_url("http://dual-stack.example.com/", allow_private=False) is True
+
+    def test_multi_address_rfc1918_passes_with_allow_private(self):
+        """[public, 192.168.x] is allowed when allow_private=True (LAN worker)."""
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _mock_getaddrinfo_multi("93.184.216.34", "192.168.6.123")):
+            assert is_safe_url("http://lan-worker.local/", allow_private=True) is True
 
 
 # ---------------------------------------------------------------------------

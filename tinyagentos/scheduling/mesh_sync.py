@@ -19,6 +19,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import socket
 import sqlite3
 import time
 from pathlib import Path
@@ -76,32 +77,57 @@ LAN_NETWORKS = [
 ]
 
 
+def _effective_ip(addr: str) -> "ipaddress.IPv4Address | ipaddress.IPv6Address":
+    """Normalize a raw address string for SSRF range checks.
+
+    IPv4-mapped IPv6 addresses (e.g. ``::ffff:169.254.169.254``) are
+    unwrapped to their IPv4 form so that checks against IPv4 BLOCKED_NETWORKS
+    work correctly.
+    """
+    ip = ipaddress.ip_address(addr)
+    # ipv4_mapped is only present on IPv6Address; IPv4Address has no such attr
+    if isinstance(ip, ipaddress.IPv6Address):
+        mapped = ip.ipv4_mapped  # non-None only for ::ffff:x.x.x.x
+        if mapped is not None:
+            return mapped
+    return ip
+
+
 def is_safe_url(url: str, allow_private: bool = False) -> bool:
     """Check if a URL is safe (not targeting private/internal networks).
 
     By default (allow_private=False) all private ranges are blocked.
     Pass allow_private=True only for known LAN peer connections; even then
     cloud-metadata / loopback / link-local addresses are always rejected.
+
+    All resolved addresses are checked — not just the first — so that
+    multi-address hostnames and DNS-rebinding cannot present a safe address
+    first and an unsafe one later.  IPv4-mapped IPv6 addresses
+    (``::ffff:<ipv4>``) are normalised to their IPv4 form before range checks.
     """
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname
         if not hostname:
             return False
-        import socket
-        addr = socket.getaddrinfo(hostname, parsed.port or 80)[0][4][0]
-        ip = ipaddress.ip_address(addr)
 
-        # Always-blocked ranges (cloud metadata, loopback, link-local, ULA)
-        for network in BLOCKED_NETWORKS:
-            if ip in network:
-                return False
+        results = socket.getaddrinfo(hostname, parsed.port or 80)
+        if not results:
+            return False
 
-        # RFC1918 ranges: only allowed when caller explicitly opts in for LAN
-        if not allow_private:
-            for network in LAN_NETWORKS:
+        for res in results:
+            ip = _effective_ip(res[4][0])
+
+            # Always-blocked ranges (cloud metadata, loopback, link-local, ULA)
+            for network in BLOCKED_NETWORKS:
                 if ip in network:
                     return False
+
+            # RFC1918 ranges: only allowed when caller explicitly opts in for LAN
+            if not allow_private:
+                for network in LAN_NETWORKS:
+                    if ip in network:
+                        return False
 
         return True
     except Exception:
@@ -242,7 +268,7 @@ class MeshSync:
                 )
                 imported += 1
             except Exception as e:
-                logger.debug("Import failed for %s record: %s", table, e)
+                logger.warning("Import failed for %s record: %s", table, e)
 
         if imported:
             target_db.commit()
