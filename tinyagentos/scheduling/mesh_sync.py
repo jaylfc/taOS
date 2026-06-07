@@ -93,6 +93,12 @@ def _effective_ip(addr: str) -> "ipaddress.IPv4Address | ipaddress.IPv6Address":
     return ip
 
 
+# Maximum seconds allowed for a single DNS resolution.  A malicious or
+# misconfigured peer hostname must not be able to block the calling thread
+# indefinitely.
+_DNS_TIMEOUT_SECONDS = 5
+
+
 def is_safe_url(url: str, allow_private: bool = False) -> bool:
     """Check if a URL is safe (not targeting private/internal networks).
 
@@ -104,6 +110,9 @@ def is_safe_url(url: str, allow_private: bool = False) -> bool:
     multi-address hostnames and DNS-rebinding cannot present a safe address
     first and an unsafe one later.  IPv4-mapped IPv6 addresses
     (``::ffff:<ipv4>``) are normalised to their IPv4 form before range checks.
+
+    DNS resolution is bounded by ``_DNS_TIMEOUT_SECONDS`` to prevent an
+    attacker-controlled hostname from hanging the calling thread.
     """
     try:
         parsed = urlparse(url)
@@ -111,7 +120,15 @@ def is_safe_url(url: str, allow_private: bool = False) -> bool:
         if not hostname:
             return False
 
-        results = socket.getaddrinfo(hostname, parsed.port or 80)
+        # Scope the timeout to this resolution only; restore the previous
+        # value (None = no timeout) so other socket operations are unaffected.
+        _prev = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(_DNS_TIMEOUT_SECONDS)
+        try:
+            results = socket.getaddrinfo(hostname, parsed.port or 80)
+        finally:
+            socket.setdefaulttimeout(_prev)
+
         if not results:
             return False
 
@@ -213,7 +230,16 @@ class MeshSync:
     # ------------------------------------------------------------------
 
     def _get_table_columns(self, db: sqlite3.Connection, table: str) -> frozenset[str]:
-        """Return the set of column names in *table* from the local DB schema."""
+        """Return the set of column names in *table* from the local DB schema.
+
+        ``table`` must already be validated against SYNCABLE_TABLES by the
+        caller (import_delta does this).  The PRAGMA identifier is never
+        peer-supplied — it comes from our own allowlist.
+        """
+        # Defense-in-depth: assert the table is in our allowlist even though
+        # import_delta already checks.  This keeps _get_table_columns safe if
+        # ever called from a new code path.
+        assert table in SYNCABLE_TABLES, f"_get_table_columns called with unlisted table: {table!r}"
         rows = db.execute(f"PRAGMA table_info({table})").fetchall()
         return frozenset(r[1] for r in rows)
 
@@ -268,6 +294,8 @@ class MeshSync:
                 )
                 imported += 1
             except Exception as e:
+                # Logged at warning so constraint violations / type mismatches
+                # are visible; record is skipped but the batch continues.
                 logger.warning("Import failed for %s record: %s", table, e)
 
         if imported:

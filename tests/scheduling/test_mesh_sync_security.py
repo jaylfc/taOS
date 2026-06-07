@@ -131,6 +131,29 @@ class TestIsSafeUrl:
             assert is_safe_url("http://lan-worker.local/", allow_private=True) is True
 
 
+
+    def test_dns_timeout_causes_rejection(self):
+        """A socket.timeout during getaddrinfo must cause is_safe_url to return False."""
+        import socket as _socket
+        def _raise_timeout(host, port, *args, **kwargs):
+            raise _socket.timeout("timed out")
+
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _raise_timeout):
+            assert is_safe_url("http://slow-peer.example.com/") is False
+
+    def test_dns_timeout_restores_default(self):
+        """The global socket timeout is restored after is_safe_url, even on timeout."""
+        import socket as _socket
+        _socket.setdefaulttimeout(None)
+
+        def _raise_timeout(host, port, *args, **kwargs):
+            raise _socket.timeout("timed out")
+
+        with patch("tinyagentos.scheduling.mesh_sync.socket.getaddrinfo", _raise_timeout):
+            is_safe_url("http://slow-peer.example.com/")
+
+        assert _socket.getdefaulttimeout() is None
+
 # ---------------------------------------------------------------------------
 # SQL injection — import_delta column validation
 # ---------------------------------------------------------------------------
