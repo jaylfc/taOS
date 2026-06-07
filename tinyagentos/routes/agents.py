@@ -144,6 +144,20 @@ class IdempotencyCache:
         self._entries.move_to_end(key)
         return result
 
+    def release(self, key: str) -> None:
+        """Unblock any waiters on *key* without storing a useful result.
+
+        Call this in a ``finally`` block so that an unexpected exception
+        never leaves the event unset and waiters hanging indefinitely.
+        Waiters that resume will receive ``None`` from ``get()``.
+        No-op when the event is already set (i.e. ``set()`` already called).
+        """
+        entry = self._entries.get(key)
+        if entry is not None:
+            ev, _res, _ts = entry
+            if not ev.is_set():
+                ev.set()
+
 
 @router.get("/api/agents")
 async def list_agents(request: Request):
@@ -270,32 +284,38 @@ async def add_agent(request: Request, body: AgentCreate):
             await event.wait()
             return idempotency_cache.get(scoped_key)
 
-    config = request.app.state.config
-    display_name = body.name.strip()
-    name_error = validate_agent_name(display_name)
-    if name_error:
-        err = {"error": name_error}
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, err)
-        return JSONResponse(err, status_code=400)
-
+    # Wrap so any unexpected exception still unblocks idempotency waiters.
     try:
-        unique_slug = unique_agent_slug(config, display_name)
-    except ValueError as e:
-        err = {"error": str(e)}
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, err)
-        return JSONResponse(err, status_code=400)
+        config = request.app.state.config
+        display_name = body.name.strip()
+        name_error = validate_agent_name(display_name)
+        if name_error:
+            err = {"error": name_error}
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, err)
+            return JSONResponse(err, status_code=400)
 
-    agent = body.model_dump()
-    agent["name"] = unique_slug
-    agent["display_name"] = display_name
-    config.agents.append(agent)
-    await save_config_locked(config, config.config_path)
-    result = {"status": "created", "name": unique_slug, "display_name": display_name}
-    if scoped_key and idempotency_cache is not None:
-        idempotency_cache.set(scoped_key, result)
-    return result
+        try:
+            unique_slug = unique_agent_slug(config, display_name)
+        except ValueError as e:
+            err = {"error": str(e)}
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, err)
+            return JSONResponse(err, status_code=400)
+
+        agent = body.model_dump()
+        agent["name"] = unique_slug
+        agent["display_name"] = display_name
+        config.agents.append(agent)
+        await save_config_locked(config, config.config_path)
+        result = {"status": "created", "name": unique_slug, "display_name": display_name}
+        if scoped_key and idempotency_cache is not None:
+            idempotency_cache.set(scoped_key, result)
+        return result
+    finally:
+        # No-op when set() already fired; unblocks waiters on unexpected exceptions.
+        if scoped_key and idempotency_cache is not None:
+            idempotency_cache.release(scoped_key)
 
 
 @router.put("/api/agents/{name}")
@@ -427,185 +447,205 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             await event.wait()
             return idempotency_cache.get(scoped_key)
 
-    config = request.app.state.config
-    display_name = body.name.strip()
-    name_error = validate_agent_name(display_name)
-    if name_error:
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, {"error": name_error})
-        return JSONResponse({"error": name_error}, status_code=400)
-    # Derive a container-safe slug and ensure uniqueness
+    # Wrap so any unexpected exception still unblocks idempotency waiters.
     try:
-        unique_slug = unique_agent_slug(config, display_name)
-    except ValueError as e:
-        err = {"error": str(e)}
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, err)
-        return JSONResponse(err, status_code=400)
-    # Rewrite body.name to the unique slug; the original user-entered name
-    # is preserved as display_name for the UI.
-    body.name = unique_slug
-    # Validate framework against catalog and check RAM headroom.
-    fw_err = agent_deploy.validate_framework_and_ram(request, body)
-    if fw_err is not None:
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, json.loads(fw_err.body))
-        return fw_err
-
-    # ------------------------------------------------------------------
-    # Cross-worker deploy routing (task #176 stub)
-    # ------------------------------------------------------------------
-    routed = agent_deploy.resolve_deploy_routing(request, body)
-    if routed is not None:
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, json.loads(routed.body))
-        return routed
-
-    # Register the agent with taosmd BEFORE mutating config so a failure
-    # here aborts cleanly with no half-state.
-    try:
-        tm_agents.register_agent(unique_slug)
-    except tm_agents.AgentExistsError:
-        pass  # idempotent — agent already registered, proceed normally
-    except Exception as e:
-        logger.exception("register_agent(%s) failed", unique_slug)
-        err_body = {"error": f"Could not register agent with taosmd: {e}"}
-        if scoped_key and idempotency_cache is not None:
-            idempotency_cache.set(scoped_key, err_body)
-        return JSONResponse(err_body, status_code=500)
-
-    # Add agent entry immediately with deploying status. qmd_url has
-    # been removed from the agent schema — every agent reads and writes
-    # through the shared host qmd.service, addressed by agent name and
-    # the bind-mounted per-agent SQLite at /memory. See
-    # docs/design/framework-agnostic-runtime.md.
-    from tinyagentos.config import normalize_agent
-    emoji = (body.emoji or "").strip() or None
-    new_agent = normalize_agent({
-        "name": body.name,
-        "display_name": display_name,
-        "host": "",
-        "color": body.color,
-        "emoji": emoji,
-        "status": "deploying",
-        "can_read_user_memory": body.can_read_user_memory,
-        "on_worker_failure": body.on_worker_failure,
-        "fallback_models": [m for m in body.fallback_models if m],
-        "model": body.model,
-        "framework": body.framework,
-    })
-    # Apply persona fields to the agent record.
-    new_agent["soul_md"] = body.soul_md
-    new_agent["agent_md"] = body.agent_md
-    new_agent["memory_plugin"] = body.memory_plugin
-    new_agent["memory_config"] = body.memory_config
-    new_agent["source_persona_id"] = body.source_persona_id
-    new_agent["migrated_to_v2_personas"] = True
-    # Apply KV-cache quantisation choices from the deploy wizard.
-    new_agent["kv_cache_quant_k"] = body.kv_cache_quant_k
-    new_agent["kv_cache_quant_v"] = body.kv_cache_quant_v
-    new_agent["kv_cache_quant_boundary_layers"] = body.kv_cache_quant_boundary_layers
-
-    config.agents.append(new_agent)
-    await save_config_locked(config, config.config_path)
-
-    # Write to user persona library if requested.
-    if body.save_to_library:
-        store = getattr(request.app.state, "user_personas", None)
-        if store is not None:
-            store.create(
-                name=body.save_to_library.get("name") or body.name,
-                description=body.save_to_library.get("description"),
-                soul_md=body.soul_md,
-                agent_md=body.agent_md,
-            )
-
-    # Record deploy task
-    deploy_tasks = request.app.state.deploy_tasks
-    deploy_tasks[body.name] = {"status": "deploying", "name": body.name}
-
-    from tinyagentos.deployer import deploy_agent, DeployRequest
-    data_dir = request.app.state.data_dir
-    llm_proxy = getattr(request.app.state, "llm_proxy", None)
-
-    async def _background_deploy():
+        config = request.app.state.config
+        display_name = body.name.strip()
+        name_error = validate_agent_name(display_name)
+        if name_error:
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, {"error": name_error})
+            return JSONResponse({"error": name_error}, status_code=400)
+        # Derive a container-safe slug and ensure uniqueness
         try:
-            result = await deploy_agent(DeployRequest(
-                name=body.name,
-                framework=body.framework,
-                model=body.model,
-                data_dir=data_dir,
-                color=body.color,
-                emoji=emoji,
-                memory_limit=body.memory_limit,
-                cpu_limit=body.cpu_limit,
-                extra_config={
-                    "llm_proxy": llm_proxy,
-                    "registry": request.app.state.registry,
-                },
-                can_read_user_memory=body.can_read_user_memory,
-            ))
-            agent = find_agent(config, body.name)
-            if result.get("success"):
-                if agent is not None:
-                    agent["host"] = result.get("ip", "")
-                    agent["status"] = "running"
-                    agent["llm_key"] = result.get("llm_key")
-                    # Save config now so the bootstrap endpoint can return
-                    # the llm_key before we start the openclaw service.
-                    await save_config_locked(config, config.config_path)
-                    # Start the openclaw service now that llm_key is written.
-                    # install.sh enables the service but defers start so the
-                    # bootstrap endpoint (which requires llm_key) succeeds.
-                    if body.framework == "openclaw":
-                        try:
-                            from tinyagentos.containers import exec_in_container
-                            container_name = f"taos-agent-{body.name}"
-                            start_code, start_out = await exec_in_container(
-                                container_name,
-                                ["systemctl", "start", "openclaw.service"],
-                                timeout=30,
-                            )
-                            if start_code != 0:
-                                logger.warning(
-                                    "openclaw service start returned %d: %s",
-                                    start_code, start_out
+            unique_slug = unique_agent_slug(config, display_name)
+        except ValueError as e:
+            err = {"error": str(e)}
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, err)
+            return JSONResponse(err, status_code=400)
+        # Rewrite body.name to the unique slug; the original user-entered name
+        # is preserved as display_name for the UI.
+        body.name = unique_slug
+        # Validate framework against catalog and check RAM headroom.
+        fw_err = agent_deploy.validate_framework_and_ram(request, body)
+        if fw_err is not None:
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, json.loads(fw_err.body))
+            return fw_err
+
+        # ------------------------------------------------------------------
+        # Cross-worker deploy routing (task #176 stub)
+        # ------------------------------------------------------------------
+        routed = agent_deploy.resolve_deploy_routing(request, body)
+        if routed is not None:
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, json.loads(routed.body))
+            return routed
+
+        # Register the agent with taosmd BEFORE mutating config so a failure
+        # here aborts cleanly with no half-state.
+        try:
+            tm_agents.register_agent(unique_slug)
+        except tm_agents.AgentExistsError:
+            pass  # idempotent — agent already registered, proceed normally
+        except Exception as e:
+            logger.exception("register_agent(%s) failed", unique_slug)
+            err_body = {"error": f"Could not register agent with taosmd: {e}"}
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, err_body)
+            return JSONResponse(err_body, status_code=500)
+
+        # Add agent entry immediately with deploying status. qmd_url has
+        # been removed from the agent schema — every agent reads and writes
+        # through the shared host qmd.service, addressed by agent name and
+        # the bind-mounted per-agent SQLite at /memory. See
+        # docs/design/framework-agnostic-runtime.md.
+        from tinyagentos.config import normalize_agent
+        emoji = (body.emoji or "").strip() or None
+        new_agent = normalize_agent({
+            "name": body.name,
+            "display_name": display_name,
+            "host": "",
+            "color": body.color,
+            "emoji": emoji,
+            "status": "deploying",
+            "can_read_user_memory": body.can_read_user_memory,
+            "on_worker_failure": body.on_worker_failure,
+            "fallback_models": [m for m in body.fallback_models if m],
+            "model": body.model,
+            "framework": body.framework,
+        })
+        # Apply persona fields to the agent record.
+        new_agent["soul_md"] = body.soul_md
+        new_agent["agent_md"] = body.agent_md
+        new_agent["memory_plugin"] = body.memory_plugin
+        new_agent["memory_config"] = body.memory_config
+        new_agent["source_persona_id"] = body.source_persona_id
+        new_agent["migrated_to_v2_personas"] = True
+        # Apply KV-cache quantisation choices from the deploy wizard.
+        new_agent["kv_cache_quant_k"] = body.kv_cache_quant_k
+        new_agent["kv_cache_quant_v"] = body.kv_cache_quant_v
+        new_agent["kv_cache_quant_boundary_layers"] = body.kv_cache_quant_boundary_layers
+
+        config.agents.append(new_agent)
+        await save_config_locked(config, config.config_path)
+
+        # Write to user persona library if requested.
+        if body.save_to_library:
+            store = getattr(request.app.state, "user_personas", None)
+            if store is not None:
+                store.create(
+                    name=body.save_to_library.get("name") or body.name,
+                    description=body.save_to_library.get("description"),
+                    soul_md=body.soul_md,
+                    agent_md=body.agent_md,
+                )
+
+        # Record deploy task
+        deploy_tasks = request.app.state.deploy_tasks
+        deploy_tasks[body.name] = {"status": "deploying", "name": body.name}
+
+        from tinyagentos.deployer import deploy_agent, DeployRequest
+        data_dir = request.app.state.data_dir
+        llm_proxy = getattr(request.app.state, "llm_proxy", None)
+
+        async def _background_deploy():
+            try:
+                result = await deploy_agent(DeployRequest(
+                    name=body.name,
+                    framework=body.framework,
+                    model=body.model,
+                    data_dir=data_dir,
+                    color=body.color,
+                    emoji=emoji,
+                    memory_limit=body.memory_limit,
+                    cpu_limit=body.cpu_limit,
+                    extra_config={
+                        "llm_proxy": llm_proxy,
+                        "registry": request.app.state.registry,
+                    },
+                    can_read_user_memory=body.can_read_user_memory,
+                ))
+                agent = find_agent(config, body.name)
+                if result.get("success"):
+                    if agent is not None:
+                        agent["host"] = result.get("ip", "")
+                        agent["status"] = "running"
+                        agent["llm_key"] = result.get("llm_key")
+                        # Save config now so the bootstrap endpoint can return
+                        # the llm_key before we start the openclaw service.
+                        await save_config_locked(config, config.config_path)
+                        # Start the openclaw service now that llm_key is written.
+                        # install.sh enables the service but defers start so the
+                        # bootstrap endpoint (which requires llm_key) succeeds.
+                        if body.framework == "openclaw":
+                            try:
+                                from tinyagentos.containers import exec_in_container
+                                container_name = f"taos-agent-{body.name}"
+                                start_code, start_out = await exec_in_container(
+                                    container_name,
+                                    ["systemctl", "start", "openclaw.service"],
+                                    timeout=30,
                                 )
-                            else:
-                                logger.info("openclaw.service started in %s", container_name)
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning("Failed to start openclaw.service: %s", exc)
-                    # Auto-create a 1:1 DM channel so the Messages app
-                    # shows this agent immediately. Safe to call even if
-                    # the channel exists from a prior failed deploy — the
-                    # store doesn't enforce uniqueness on name, so at worst
-                    # you get duplicate entries. In practice this branch
-                    # only runs on first successful deploy for a given
-                    # agent record because the route creates the agent
-                    # with status='deploying'.
-                    if not agent.get("chat_channel_id"):
-                        try:
-                            ch_store = request.app.state.chat_channels
-                            channel = await ch_store.create_channel(
-                                name=display_name,
-                                type="dm",
-                                created_by="user",
-                                members=["user", body.name],
-                                description=f"Direct messages with {display_name}",
-                            )
-                            if channel and channel.get("id"):
-                                agent["chat_channel_id"] = channel["id"]
-                        except Exception as exc:  # noqa: BLE001
-                            # DM channel creation failing shouldn't fail
-                            # the whole deploy — the user can still see
-                            # the agent in the Agents app and retry from
-                            # there. Log and move on.
-                            logger.warning("DM channel create failed for %s: %s", body.name, exc)
-                deploy_tasks[body.name] = {"status": "success", "name": body.name, "result": result}
-            else:
+                                if start_code != 0:
+                                    logger.warning(
+                                        "openclaw service start returned %d: %s",
+                                        start_code, start_out
+                                    )
+                                else:
+                                    logger.info("openclaw.service started in %s", container_name)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("Failed to start openclaw.service: %s", exc)
+                        # Auto-create a 1:1 DM channel so the Messages app
+                        # shows this agent immediately. Safe to call even if
+                        # the channel exists from a prior failed deploy — the
+                        # store doesn't enforce uniqueness on name, so at worst
+                        # you get duplicate entries. In practice this branch
+                        # only runs on first successful deploy for a given
+                        # agent record because the route creates the agent
+                        # with status='deploying'.
+                        if not agent.get("chat_channel_id"):
+                            try:
+                                ch_store = request.app.state.chat_channels
+                                channel = await ch_store.create_channel(
+                                    name=display_name,
+                                    type="dm",
+                                    created_by="user",
+                                    members=["user", body.name],
+                                    description=f"Direct messages with {display_name}",
+                                )
+                                if channel and channel.get("id"):
+                                    agent["chat_channel_id"] = channel["id"]
+                            except Exception as exc:  # noqa: BLE001
+                                # DM channel creation failing shouldn't fail
+                                # the whole deploy — the user can still see
+                                # the agent in the Agents app and retry from
+                                # there. Log and move on.
+                                logger.warning("DM channel create failed for %s: %s", body.name, exc)
+                    deploy_tasks[body.name] = {"status": "success", "name": body.name, "result": result}
+                else:
+                    if agent is not None:
+                        agent["status"] = "failed"
+                    err_msg = result.get("error", "unknown error")
+                    deploy_tasks[body.name] = {
+                        "status": "failed",
+                        "name": body.name,
+                        "error": err_msg,
+                    }
+                    notif = getattr(request.app.state, "notifications", None)
+                    if notif:
+                        await notif.add(
+                            title=f"Deploy failed: {body.name}",
+                            message=f"Deploy failed for {body.name}: {err_msg}",
+                            level="error",
+                            source="agents.deploy",
+                        )
+            except Exception as exc:  # noqa: BLE001
+                agent = find_agent(config, body.name)
                 if agent is not None:
                     agent["status"] = "failed"
-                err_msg = result.get("error", "unknown error")
+                err_msg = str(exc)
                 deploy_tasks[body.name] = {
                     "status": "failed",
                     "name": body.name,
@@ -619,39 +659,25 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         level="error",
                         source="agents.deploy",
                     )
-        except Exception as exc:  # noqa: BLE001
-            agent = find_agent(config, body.name)
-            if agent is not None:
-                agent["status"] = "failed"
-            err_msg = str(exc)
-            deploy_tasks[body.name] = {
-                "status": "failed",
-                "name": body.name,
-                "error": err_msg,
-            }
-            notif = getattr(request.app.state, "notifications", None)
-            if notif:
-                await notif.add(
-                    title=f"Deploy failed: {body.name}",
-                    message=f"Deploy failed for {body.name}: {err_msg}",
-                    level="error",
-                    source="agents.deploy",
-                )
-        finally:
-            await save_config_locked(config, config.config_path)
+            finally:
+                await save_config_locked(config, config.config_path)
 
-    asyncio.create_task(_background_deploy())
+        asyncio.create_task(_background_deploy())
 
-    # Archive smoke-check: verify trace path end-to-end after provisioning.
-    # A failure here does NOT abort the deploy — it surfaces a warning flag.
-    smoke_ok = await agent_deploy.archive_smoke_check(request, unique_slug, body.framework)
+        # Archive smoke-check: verify trace path end-to-end after provisioning.
+        # A failure here does NOT abort the deploy — it surfaces a warning flag.
+        smoke_ok = await agent_deploy.archive_smoke_check(request, unique_slug, body.framework)
 
-    result = {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
+        result = {"status": "deploying", "name": body.name, "archive_smoke_ok": smoke_ok}
 
-    if scoped_key and idempotency_cache is not None:
-        idempotency_cache.set(scoped_key, result)
+        if scoped_key and idempotency_cache is not None:
+            idempotency_cache.set(scoped_key, result)
 
-    return result
+        return result
+    finally:
+        # No-op when set() already fired; unblocks waiters on unexpected exceptions.
+        if scoped_key and idempotency_cache is not None:
+            idempotency_cache.release(scoped_key)
 
 
 async def _bulk_container_op(config, op):
