@@ -163,7 +163,7 @@ log "  2. Backup NEW data dir → $BACKUP_PATH"
 log "     (only if NEW/data/ already has content)"
 log "  3. Copy OLD/data/ → NEW/data/  (cp -a, preserving timestamps)"
 log "  4. Ensure 'taos' system user exists + has incus/docker group membership"
-log "  5. chown -R taos:taos NEW/data/  +  chmod 0700 data/  +  chmod 0600 secrets"
+log "  5. chown -R taos:taos NEW/  (whole install dir)  +  chmod 0700 data/  +  chmod 0600 secrets"
 log "  6. Patch tinyagentos.service to User=taos if it still says User=root"
 log "  7. systemctl daemon-reload && systemctl start tinyagentos"
 log "  8. Verify service is active and running as 'taos'"
@@ -280,13 +280,19 @@ fi
 # step 5 — fix ownership + permissions
 # ---------------------------------------------------------------------------
 
-log "[5/8] setting ownership and permissions on $NEW_TAOS_DIR/data/ ..."
-chown -R taos:taos "$NEW_TAOS_DIR/data" 2>/dev/null \
-    || warn "  chown failed (taos user may not exist) — service will fail to start"
-chmod 0700 "$NEW_TAOS_DIR/data"
+log "[5/8] setting ownership and permissions on $NEW_TAOS_DIR ..."
 
-# Tighten known sensitive credential files (mirrors set_data_dir_ownership in
-# install-server.sh — keep this list in sync if new secret files are added).
+# Security trade-off: taos must OWN the entire install dir (repo, .git,
+# .venv, static/desktop/) so the in-app self-updater can write to those
+# paths while running non-root (git pull, pip install -e ., npm run build).
+# Full update-privilege-separation is a post-beta hardening task.
+chown -R taos:taos "$NEW_TAOS_DIR" 2>/dev/null \
+    || warn "  chown failed (taos user may not exist) — service will fail to start"
+
+# Tighten the data directory and known sensitive credential files on top of
+# the broad chown above — done AFTER so the restrictive perms win.
+# (Mirrors set_data_dir_ownership in install-server.sh — keep in sync.)
+chmod 0700 "$NEW_TAOS_DIR/data"
 for _f in \
     "$NEW_TAOS_DIR/data/.auth_password" \
     "$NEW_TAOS_DIR/data/.auth_user.json" \
@@ -296,12 +302,6 @@ for _f in \
     "$NEW_TAOS_DIR/data/browser_cookie_key.hex"; do
     [[ -f "$_f" ]] && chmod 0600 "$_f" && log "  chmod 0600 $_f"
 done
-
-# The venv and source tree must be readable by the taos user (group
-# execute+read) but owned by root is fine — taos does not need write access.
-if [[ -d "$NEW_TAOS_DIR/.venv" ]]; then
-    chmod -R o+rX "$NEW_TAOS_DIR/.venv" 2>/dev/null || true
-fi
 
 log "  ownership + permissions set"
 

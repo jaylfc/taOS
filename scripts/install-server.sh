@@ -1285,14 +1285,18 @@ set_data_dir_ownership() {
     [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS
     ! id -u taos >/dev/null 2>&1 && return 0  # no-op if user wasn't created
 
-    log "setting ownership of $INSTALL_DIR/data/ → taos:taos (mode 0700)"
-    # The venv + source files stay owned by root (readable by taos).
-    # Only the runtime data directory — where the controller writes secrets,
-    # sessions, and the agent trace files — needs to be owned by 'taos'.
-    chown -R taos:taos "$INSTALL_DIR/data" 2>/dev/null || true
-    chmod 0700 "$INSTALL_DIR/data"
+    # Security trade-off: taos must OWN the entire install dir (repo, .git,
+    # .venv, static/desktop/) so the in-app self-updater can write to those
+    # paths while running non-root (git pull, pip install -e ., npm run build).
+    # Full update-privilege-separation (a dedicated updater suid helper that
+    # verifies signatures before writing) is a post-beta hardening task.
+    log "setting ownership of $INSTALL_DIR → taos:taos (required for non-root in-app self-update)"
+    chown -R taos:taos "$INSTALL_DIR" 2>/dev/null || true
 
-    # Tighten sensitive credential files if they already exist.
+    # Tighten the data directory and sensitive credential files on top of the
+    # broad chown above — done AFTER so the restrictive perms win.
+    log "tightening $INSTALL_DIR/data/ → mode 0700 and secret files → 0600"
+    chmod 0700 "$INSTALL_DIR/data"
     for f in \
         "$INSTALL_DIR/data/.auth_password" \
         "$INSTALL_DIR/data/.auth_user.json" \

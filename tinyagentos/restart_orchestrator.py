@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Literal
@@ -11,30 +12,56 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-PENDING_RESTART_PATH = Path("~/.config/taos/pending-restart.json").expanduser()
-
 Reason = Literal["pause", "stop", "system-shutdown"]
 
 
+def _pending_restart_path() -> Path:
+    """Return the path for the pending-restart flag file.
+
+    Resolution order:
+    1. ``$TAOS_DATA_DIR/pending-restart.json`` — preferred when the process runs
+       as the non-root ``taos`` service user, which has no real home directory.
+       The systemd unit sets ``WorkingDirectory`` to the install dir; the data
+       dir is always ``<install_dir>/data``, which ``taos`` owns.
+    2. ``<install_dir>/data/pending-restart.json`` — derived from this module's
+       location (``tinyagentos/restart_orchestrator.py`` → ``../../data``).
+       Matches the ``PROJECT_DIR / "data"`` convention used throughout app.py.
+    3. ``~/.config/taos/pending-restart.json`` — backward-compatible fallback
+       for root-based or developer installs where ``TAOS_DATA_DIR`` is unset and
+       ``~`` resolves to a writable home directory.
+    """
+    env_data = os.environ.get("TAOS_DATA_DIR")
+    if env_data:
+        return Path(env_data) / "pending-restart.json"
+    # Derive from module location: tinyagentos/restart_orchestrator.py → ../../data
+    install_data = Path(__file__).parent.parent / "data"
+    if install_data.is_dir():
+        return install_data / "pending-restart.json"
+    # Fallback for root/dev installs (taos service user has no usable ~)
+    return Path("~/.config/taos/pending-restart.json").expanduser()
+
+
 def write_pending_restart(target_sha: str) -> None:
-    PENDING_RESTART_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PENDING_RESTART_PATH.write_text(
+    path = _pending_restart_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps({"target_sha": target_sha, "pulled_at": int(time.time())})
     )
 
 
 def read_pending_restart() -> dict | None:
-    if not PENDING_RESTART_PATH.exists():
+    path = _pending_restart_path()
+    if not path.exists():
         return None
     try:
-        return json.loads(PENDING_RESTART_PATH.read_text())
+        return json.loads(path.read_text())
     except Exception:
         return None
 
 
 def clear_pending_restart() -> None:
     try:
-        PENDING_RESTART_PATH.unlink(missing_ok=True)
+        _pending_restart_path().unlink(missing_ok=True)
     except Exception:
         pass
 

@@ -40,14 +40,18 @@ function post_customize_image__tinyagentos() {
         " || display_alert "TinyAgentOS" "could not add taos to '${grp}' group" "warn"
     done
 
-    # Set ownership of the install and data directories so the 'taos' user can
-    # write to them at runtime.  The source files stay owned by root (readable
-    # by taos).  The data directory gets 0700 so only taos can enter it.
+    # Set ownership of the entire install directory so the 'taos' user can
+    # write to .git/, .venv/, and static/desktop/ during non-root in-app
+    # self-updates (git pull, pip install -e ., npm run build).
+    # Security trade-off: taos owns its own code, which is required for
+    # self-update without a root helper.  Full update-privilege-separation
+    # (a signed updater suid helper) is a post-beta hardening task.
+    # The data directory is then tightened on top so secrets stay 0700/0600.
     if [[ -d "${SDCARD}/opt/tinyagentos" ]]; then
         chroot "${SDCARD}" /bin/bash -c "
-            chown -R taos:taos /opt/tinyagentos/data 2>/dev/null || true
+            chown -R taos:taos /opt/tinyagentos 2>/dev/null || true
             chmod 0700 /opt/tinyagentos/data 2>/dev/null || true
         "
-        display_alert "TinyAgentOS" "Set /opt/tinyagentos/data ownership to taos:taos (0700)" "info"
+        display_alert "TinyAgentOS" "Set /opt/tinyagentos ownership to taos:taos; data/ → 0700" "info"
     fi
 }
