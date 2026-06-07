@@ -1,9 +1,45 @@
 from __future__ import annotations
 
+import time
+from collections import defaultdict
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+# ---------------------------------------------------------------------------
+# Brute-force rate limiter (in-memory, per-IP, fixed window)
+# ---------------------------------------------------------------------------
+
+class _FailCounter:
+    """Count failed attempts per key in a rolling window."""
+
+    def __init__(self, max_attempts: int = 5, window_seconds: int = 600):
+        self._max = max_attempts
+        self._window = window_seconds
+        # key → list of failure timestamps
+        self._log: dict[str, list[float]] = defaultdict(list)
+
+    def _prune(self, key: str) -> None:
+        cutoff = time.monotonic() - self._window
+        self._log[key] = [t for t in self._log[key] if t > cutoff]
+
+    def is_limited(self, key: str) -> bool:
+        self._prune(key)
+        return len(self._log[key]) >= self._max
+
+    def record_failure(self, key: str) -> None:
+        self._prune(key)
+        self._log[key].append(time.monotonic())
+
+    def reset(self, key: str) -> None:
+        self._log.pop(key, None)
+
+
+_login_limiter = _FailCounter(max_attempts=5, window_seconds=600)
+_complete_limiter = _FailCounter(max_attempts=5, window_seconds=600)
 
 # Self-contained HTML pages for the auth flow.
 #
@@ -192,8 +228,8 @@ def _setup_page(error: str = "") -> str:
     </label>
     <label class="field">
       <span>Password</span>
-      <input type="password" name="password" autocomplete="new-password" minlength="4" required>
-      <span class="hint">At least 4 characters.</span>
+      <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+      <span class="hint">At least 8 characters.</span>
     </label>
     <label class="checkbox">
       <input type="checkbox" name="auto_login" value="1" checked>
@@ -256,7 +292,7 @@ async def setup_page(request: Request, error: str = ""):
     if error:
         err_text = {
             "username": "Username is required.",
-            "password": "Password must be at least 4 characters.",
+            "password": "Password must be at least 8 characters.",
         }.get(error, "Setup failed. Please try again.")
     return HTMLResponse(_setup_page(err_text))
 
@@ -275,6 +311,13 @@ async def login(request: Request):
     Form body: legacy password-only login (kept for backward compat).
     """
     auth_mgr = request.app.state.auth
+    client_ip = request.client.host if request.client else "unknown"
+
+    if _login_limiter.is_limited(client_ip):
+        return JSONResponse(
+            {"error": "too many failed login attempts, try again later"},
+            status_code=429,
+        )
 
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
@@ -287,7 +330,10 @@ async def login(request: Request):
 
         ok, user_record = auth_mgr.check_password(password, username=username)
         if not ok:
+            _login_limiter.record_failure(client_ip)
             return JSONResponse({"error": "invalid credentials"}, status_code=401)
+
+        _login_limiter.reset(client_ip)
 
         # Determine long_lived. In multi-user mode default to False when
         # auto_login is not explicitly set.
@@ -340,8 +386,11 @@ async def login(request: Request):
 
     ok, user_record = auth_mgr.check_password(password, username=username)
     if not ok:
+        _login_limiter.record_failure(client_ip)
         next_qs = f"&next={next_url}" if next_url else ""
         return RedirectResponse(f"/auth/login?error=1{next_qs}", status_code=303)
+
+    _login_limiter.reset(client_ip)
 
     if user_record and user_record.get("pending_invite"):
         # Pending user — create their session, then send to /desktop. The
@@ -416,8 +465,8 @@ async def auth_setup(request: Request):
         password = body.get("password") or ""
         if not username:
             return JSONResponse({"error": "username is required"}, status_code=400)
-        if not password or len(password) < 4:
-            return JSONResponse({"error": "password must be at least 4 characters"}, status_code=400)
+        if not password or len(password) < 8:
+            return JSONResponse({"error": "password must be at least 8 characters"}, status_code=400)
         try:
             user = auth_mgr.setup_user(username, full_name, email, password)
         except ValueError as exc:
@@ -450,7 +499,7 @@ async def auth_setup(request: Request):
 
     if not username:
         return RedirectResponse("/auth/setup?error=username", status_code=303)
-    if not password or len(password) < 4:
+    if not password or len(password) < 8:
         return RedirectResponse("/auth/setup?error=password", status_code=303)
     try:
         auth_mgr.setup_user(username, full_name, email, password)
@@ -479,6 +528,14 @@ async def complete_invite(request: Request):
     Body: ``{username, invite_code, full_name, email, password, auto_login?}``
     """
     auth_mgr = request.app.state.auth
+    client_ip = request.client.host if request.client else "unknown"
+
+    if _complete_limiter.is_limited(client_ip):
+        return JSONResponse(
+            {"error": "too many attempts, try again later"},
+            status_code=429,
+        )
+
     try:
         body = await request.json()
     except Exception:
@@ -492,12 +549,13 @@ async def complete_invite(request: Request):
 
     if not username or not invite_code:
         return JSONResponse({"error": "username and invite_code are required"}, status_code=400)
-    if not password or len(password) < 4:
-        return JSONResponse({"error": "password must be at least 4 characters"}, status_code=400)
+    if not password or len(password) < 8:
+        return JSONResponse({"error": "password must be at least 8 characters"}, status_code=400)
 
     try:
         user = auth_mgr.complete_invite(username, invite_code, full_name, email, password)
     except ValueError as exc:
+        _complete_limiter.record_failure(client_ip)
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     long_lived = bool(body.get("auto_login", False))
@@ -667,8 +725,8 @@ async def change_password(username: str, request: Request):
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
     current = body.get("current") or ""
     new_pw = body.get("new") or ""
-    if not new_pw or len(new_pw) < 4:
-        return JSONResponse({"error": "new password must be at least 4 characters"}, status_code=400)
+    if not new_pw or len(new_pw) < 8:
+        return JSONResponse({"error": "new password must be at least 8 characters"}, status_code=400)
     auth_mgr = request.app.state.auth
     changed = auth_mgr.change_password(username, current, new_pw)
     if not changed:

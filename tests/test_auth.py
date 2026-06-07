@@ -7,35 +7,65 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from tinyagentos.auth import AuthManager, hash_password, verify_password
+from tinyagentos.auth import (
+    AuthManager,
+    hash_password,
+    verify_password,
+    verify_and_maybe_rehash,
+    _hash_password_sha256,
+)
 
 
 # --- Unit tests for password hashing ---
 
 class TestPasswordHashing:
-    def test_hash_produces_salt_and_hash(self):
+    def test_hash_produces_argon2_hash(self):
         result = hash_password("secret")
-        parts = result.split(":")
-        assert len(parts) == 2
-        assert len(parts[0]) == 32  # 16 bytes hex
-        assert len(parts[1]) == 64  # sha256 hex
+        assert result.startswith("$argon2")
 
-    def test_hash_with_explicit_salt(self):
+    def test_hash_with_salt_param_ignored(self):
+        # salt param is accepted for backward-compat but ignored; result is still argon2
         result = hash_password("secret", "abcd1234")
-        assert result.startswith("abcd1234:")
+        assert result.startswith("$argon2")
 
     def test_verify_correct_password(self):
-        stored = hash_password("mypass")
-        assert verify_password("mypass", stored) is True
+        stored = hash_password("mypassword")
+        assert verify_password("mypassword", stored) is True
 
     def test_verify_wrong_password(self):
-        stored = hash_password("mypass")
+        stored = hash_password("mypassword")
         assert verify_password("wrong", stored) is False
 
     def test_different_passwords_different_hashes(self):
-        h1 = hash_password("alpha", "same_salt")
-        h2 = hash_password("beta", "same_salt")
+        h1 = hash_password("alpha")
+        h2 = hash_password("beta")
         assert h1 != h2
+
+    def test_verify_legacy_sha256_hash(self):
+        """Legacy SHA-256 hashes are still verified correctly."""
+        legacy = _hash_password_sha256("mypassword", "somesalt")
+        assert verify_password("mypassword", legacy) is True
+        assert verify_password("wrong", legacy) is False
+
+    def test_verify_and_maybe_rehash_upgrades_sha256(self):
+        """verify_and_maybe_rehash returns a new argon2 hash for old SHA-256 stored values."""
+        legacy = _hash_password_sha256("mypassword", "somesalt")
+        ok, new_hash = verify_and_maybe_rehash("mypassword", legacy)
+        assert ok is True
+        assert new_hash is not None
+        assert new_hash.startswith("$argon2")
+
+    def test_verify_and_maybe_rehash_no_upgrade_for_argon2(self):
+        stored = hash_password("mypassword")
+        ok, new_hash = verify_and_maybe_rehash("mypassword", stored)
+        assert ok is True
+        assert new_hash is None  # already argon2, no upgrade needed
+
+    def test_verify_and_maybe_rehash_wrong_password(self):
+        stored = hash_password("mypassword")
+        ok, new_hash = verify_and_maybe_rehash("wrong", stored)
+        assert ok is False
+        assert new_hash is None
 
 
 # --- Unit tests for AuthManager ---
@@ -161,7 +191,7 @@ class TestAuthRoutes:
 
     @pytest.mark.asyncio
     async def test_login_wrong_password(self, app, auth_client):
-        app.state.auth.set_password("correct")
+        app.state.auth.set_password("correctpass")
         resp = await auth_client.post(
             "/auth/login",
             data={"password": "wrong"},
@@ -172,10 +202,10 @@ class TestAuthRoutes:
 
     @pytest.mark.asyncio
     async def test_login_correct_password(self, app, auth_client):
-        app.state.auth.set_password("correct")
+        app.state.auth.set_password("correctpass")
         resp = await auth_client.post(
             "/auth/login",
-            data={"password": "correct"},
+            data={"password": "correctpass"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
@@ -184,11 +214,11 @@ class TestAuthRoutes:
 
     @pytest.mark.asyncio
     async def test_logout_clears_session(self, app, auth_client):
-        app.state.auth.set_password("pass")
+        app.state.auth.set_password("passw0rd")
         # Login first
         resp = await auth_client.post(
             "/auth/login",
-            data={"password": "pass"},
+            data={"password": "passw0rd"},
             follow_redirects=False,
         )
         cookies = resp.cookies
@@ -202,12 +232,12 @@ class TestAuthRoutes:
         assert app.state.auth.is_configured() is False
         resp = await auth_client.post(
             "/auth/setup",
-            data={"username": "admin", "full_name": "Admin", "email": "", "password": "newpass"},
+            data={"username": "admin", "full_name": "Admin", "email": "", "password": "newpassword"},
             follow_redirects=False,
         )
         assert resp.status_code == 303
         assert app.state.auth.is_configured() is True
-        ok, _ = app.state.auth.check_password("newpass", username="admin")
+        ok, _ = app.state.auth.check_password("newpassword", username="admin")
         assert ok is True
 
     @pytest.mark.asyncio
@@ -215,7 +245,7 @@ class TestAuthRoutes:
         app.state.auth.setup_user("admin", "Admin", "", "existing")
         resp = await auth_client.post(
             "/auth/setup",
-            json={"username": "other", "full_name": "", "email": "", "password": "newpass"},
+            json={"username": "other", "full_name": "", "email": "", "password": "newpassword"},
         )
         assert resp.status_code == 409
 
@@ -250,28 +280,28 @@ class TestAuthMiddleware:
     @pytest.mark.asyncio
     async def test_protected_route_returns_401(self, app, auth_client):
         """With auth configured, API routes should return 401 without session."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.get("/api/system")
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_health_exempt(self, app, auth_client):
         """Health endpoint should be accessible without auth."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.get("/api/health")
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_login_page_exempt(self, app, auth_client):
         """Login page should be accessible without auth."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.get("/auth/login")
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_static_exempt(self, app, auth_client):
         """Static files should be accessible without auth (404 is fine, not 401)."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.get("/static/app.css")
         # Should not be 401 — could be 200 or 404 depending on file existence
         assert resp.status_code != 401
@@ -279,11 +309,11 @@ class TestAuthMiddleware:
     @pytest.mark.asyncio
     async def test_authenticated_request_passes(self, app, auth_client):
         """With valid session cookie, protected routes should work."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         # Login to get session
         resp = await auth_client.post(
             "/auth/login",
-            data={"password": "secret"},
+            data={"password": "secretpass"},
             follow_redirects=False,
         )
         cookies = resp.cookies
@@ -294,7 +324,7 @@ class TestAuthMiddleware:
     @pytest.mark.asyncio
     async def test_html_request_redirects_to_login(self, app, auth_client):
         """Browser requests should redirect to login page."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.get(
             "/",
             headers={"accept": "text/html,application/xhtml+xml"},
@@ -306,7 +336,7 @@ class TestAuthMiddleware:
     @pytest.mark.asyncio
     async def test_cluster_worker_exempt(self, app, auth_client):
         """Worker registration should be exempt from auth."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.post(
             "/api/cluster/workers",
             json={"worker_id": "test", "capabilities": {}},
@@ -317,7 +347,7 @@ class TestAuthMiddleware:
     @pytest.mark.asyncio
     async def test_cluster_heartbeat_exempt(self, app, auth_client):
         """Worker heartbeat should be exempt from auth."""
-        app.state.auth.set_password("secret")
+        app.state.auth.set_password("secretpass")
         resp = await auth_client.post(
             "/api/cluster/heartbeat",
             json={"worker_id": "test"},
@@ -360,8 +390,8 @@ class TestMultiUser:
         data = resp.json()
         assert data["ok"] is True
         code = data["invite_code"]
-        assert len(code) == 8
-        assert code.isdigit()
+        # token_urlsafe(16) produces 22 base64url chars
+        assert len(code) >= 16
 
     @pytest.mark.asyncio
     async def test_pending_user_login_with_invite_code(self, app, auth_client):
@@ -488,7 +518,7 @@ class TestMultiUser:
         code = add.json()["invite_code"]
         await auth_client.post(
             "/auth/complete",
-            json={"username": "eve", "invite_code": code, "full_name": "Eve", "email": "", "password": "evepass", "auto_login": False},
+            json={"username": "eve", "invite_code": code, "full_name": "Eve", "email": "", "password": "evepasswd", "auto_login": False},
         )
         # Try to delete admin (the only admin)
         resp = await auth_client.delete("/auth/users/eve", cookies=login_admin.cookies)
@@ -516,8 +546,7 @@ class TestMultiUser:
         resp = await auth_client.post("/auth/users/frank/reset", cookies=login.cookies)
         assert resp.status_code == 200
         new_code = resp.json()["invite_code"]
-        assert len(new_code) == 8
-        assert new_code.isdigit()
+        assert len(new_code) >= 16
         # Frank can no longer log in with old password
         bad = await auth_client.post(
             "/auth/login",
@@ -723,3 +752,106 @@ class TestSessionUserNoFallback:
         token = mgr.create_session(user_id=rec["id"])
         u = mgr.session_user(token)
         assert u is not None and u["id"] == rec["id"]
+
+
+class TestPasswordPolicy:
+    def test_complete_invite_rejects_short_password(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("admin", "Admin", "", "adminpass")
+        code = mgr.add_user_invite("bob", "admin")
+        import pytest
+        with pytest.raises(ValueError, match="8"):
+            mgr.complete_invite("bob", code, "Bob", "", "short")
+
+    def test_complete_invite_accepts_8_char_password(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("admin", "Admin", "", "adminpass")
+        code = mgr.add_user_invite("bob", "admin")
+        user = mgr.complete_invite("bob", code, "Bob", "", "exactly8")
+        assert user["username"] == "bob"
+
+    def test_change_password_rejects_short(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("alice", "Alice", "", "alicepass")
+        result = mgr.change_password("alice", "alicepass", "short")
+        assert result is False
+
+    def test_session_ttl_is_30_days(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        assert mgr.long_session_ttl == 86400 * 30
+
+
+class TestInviteCodeEntropy:
+    def test_invite_code_is_urlsafe_token(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("admin", "Admin", "", "adminpass")
+        code = mgr.add_user_invite("bob", "admin")
+        # token_urlsafe(16) → 22 base64url chars; definitely not all digits
+        assert len(code) >= 16
+        assert not code.isdigit()
+
+    def test_invite_codes_are_unique(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("admin", "Admin", "", "adminpass")
+        codes = set()
+        for i in range(10):
+            code = mgr.add_user_invite(f"user{i}", "admin")
+            codes.add(code)
+        assert len(codes) == 10  # all unique
+
+    def test_admin_reset_gives_high_entropy_code(self, tmp_path):
+        mgr = AuthManager(tmp_path)
+        mgr.setup_user("admin", "Admin", "", "adminpass")
+        code = mgr.add_user_invite("bob", "admin")
+        mgr.complete_invite("bob", code, "Bob", "", "bobpasswd")
+        new_code = mgr.admin_reset_password("bob", "admin")
+        assert len(new_code) >= 16
+        assert not new_code.isdigit()
+
+
+class TestLoginRateLimit:
+    # ASGITransport sends requests from 127.0.0.1
+    _TEST_IP = "127.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_blocks_after_5_failures(self, app, auth_client):
+        from tinyagentos.routes.auth import _login_limiter
+        _login_limiter.reset(self._TEST_IP)
+        app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+        # 5 failures using JSON path
+        for _ in range(5):
+            await auth_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "wrongpass"},
+            )
+        # 6th attempt should be 429
+        resp = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrongpass"},
+        )
+        _login_limiter.reset(self._TEST_IP)  # clean up after test
+        assert resp.status_code == 429
+
+    @pytest.mark.asyncio
+    async def test_successful_login_resets_rate_limit(self, app, auth_client):
+        from tinyagentos.routes.auth import _login_limiter
+        _login_limiter.reset(self._TEST_IP)
+        app.state.auth.setup_user("admin", "Admin", "", "adminpass")
+        # 4 failures
+        for _ in range(4):
+            await auth_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "wrongpass"},
+            )
+        # Success resets counter
+        await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "adminpass"},
+        )
+        # Should not be blocked on next failure
+        resp = await auth_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrongpass"},
+        )
+        _login_limiter.reset(self._TEST_IP)
+        assert resp.status_code == 401  # not 429
