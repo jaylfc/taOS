@@ -4,6 +4,7 @@ POST /api/trace — any taOS-owned caller records an event. agent_name
 picks the per-agent, per-hour bucket in the home-folder mount.
 
 GET /api/agents/{name}/trace — librarian reads structured history.
+GET /api/agents/{name}/otel-spans — OTel span store (Phase 1 foundation).
 
 POST /api/lifecycle/notify — LiteLLM callback resets keep-alive timer.
 """
@@ -73,6 +74,37 @@ async def list_agent_trace(
         since=since, until=until, limit=limit,
     )
     return {"agent_name": name, "schema_version": SCHEMA_VERSION, "events": events}
+
+
+@router.get("/api/agents/{name}/otel-spans")
+async def list_agent_otel_spans(
+    request: Request,
+    name: str,
+    trace_id: str | None = None,
+    since: float | None = None,
+    until: float | None = None,
+    limit: int = 100,
+):
+    """Return OTel spans for an agent from its per-agent otel-spans.db.
+
+    Mirrors the shape of GET /api/agents/{name}/trace. The span_store
+    registry is mounted on app.state.span_store_registry (set by the Phase 2
+    receiver; falls back gracefully when absent). Returns an empty list when
+    no spans exist yet — never 503 on a missing registry (the store is
+    lazily created on first write).
+    """
+    registry = getattr(request.app.state, "span_store_registry", None)
+    if registry is None:
+        return {"agent_name": name, "spans": []}
+    store = await registry.get(name)
+    spans = await store.query_spans(
+        agent_name=name,
+        trace_id=trace_id,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    return {"agent_name": name, "spans": spans}
 
 
 class LifecycleNotifyIn(BaseModel):

@@ -68,6 +68,9 @@ CREATE INDEX IF NOT EXISTS idx_trace_created ON trace_events(created_at);
 VALID_KINDS = frozenset({
     "message_in", "message_out", "llm_call", "tool_call",
     "tool_result", "reasoning", "error", "lifecycle",
+    # Phase 1 observability: post-hoc reasoning judge result (§4.7 / §7).
+    # Never emitted as an OTel span — it is an internal eval artifact.
+    "reasoning_audit",
 })
 
 # Documented envelope schema — the librarian parses against this.
@@ -89,6 +92,9 @@ ENVELOPE_V1_SCHEMA = {
         "reasoning": {"text": "str", "block_type": "str?"},
         "error": {"stage": "str", "message": "str", "traceback": "str?"},
         "lifecycle": {"event": "str", "reason": "str?"},
+        # Phase 1 observability — judge result written by tinyagentos/otel/judge.py (Phase 4).
+        # Payload shape: {verdict: "pass"|"warn"|"fail", flags: list[str], model: str, latency_ms: int}
+        "reasoning_audit": {"verdict": "pass|warn|fail", "flags": "list[str]", "model": "str", "latency_ms": "int"},
     },
 }
 
@@ -121,9 +127,20 @@ def _new_id() -> str:
 
 
 def _build_envelope(agent_name: str, kind: str, fields: dict) -> dict:
-    """Produce a v1 envelope from loose input, filling ids + created_at."""
+    """Produce a v1 envelope from loose input, filling ids + created_at.
+
+    Timing convenience: callers may pass ``ts_start`` (float Unix epoch) instead
+    of a pre-computed ``duration_ms``. When ``ts_start`` is present and
+    ``duration_ms`` is absent, ``duration_ms`` is computed as
+    ``int((time.time() - ts_start) * 1000)``. Callers that already supply
+    ``duration_ms`` directly are unaffected. ``ts_start`` itself is NOT
+    persisted as a column or stored in the payload.
+    """
     if kind not in VALID_KINDS:
         raise ValueError(f"unknown kind: {kind!r}; valid: {sorted(VALID_KINDS)}")
+    duration_ms = fields.get("duration_ms")
+    if duration_ms is None and fields.get("ts_start") is not None:
+        duration_ms = int((time.time() - fields["ts_start"]) * 1000)
     return {
         "v": SCHEMA_VERSION,
         "id": fields.get("id") or _new_id(),
@@ -136,7 +153,7 @@ def _build_envelope(agent_name: str, kind: str, fields: dict) -> dict:
         "thread_id": fields.get("thread_id"),
         "backend_name": fields.get("backend_name"),
         "model": fields.get("model"),
-        "duration_ms": fields.get("duration_ms"),
+        "duration_ms": duration_ms,
         "tokens_in": fields.get("tokens_in"),
         "tokens_out": fields.get("tokens_out"),
         "cost_usd": fields.get("cost_usd"),
