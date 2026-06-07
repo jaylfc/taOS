@@ -13,6 +13,19 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 router = APIRouter()
 
 
+def _ws_session_user_id(websocket: WebSocket) -> str | None:
+    """Return the user_id from the session cookie, or None if invalid/missing.
+
+    Called before websocket.accept() so an unauthenticated connection is
+    rejected without spawning any process.
+    """
+    auth_mgr = websocket.app.state.auth
+    token = websocket.cookies.get("taos_session", "")
+    if not token:
+        return None
+    return auth_mgr.validate_session(token)
+
+
 def build_command(config: dict) -> list[str]:
     """Build the PTY command from a connection config dict.
 
@@ -53,6 +66,10 @@ def build_command(config: dict) -> list[str]:
 
 @router.websocket("/ws/terminal")
 async def terminal_ws(ws: WebSocket):
+    if _ws_session_user_id(ws) is None:
+        await ws.close(code=1008)
+        return
+
     await ws.accept()
 
     # Wait briefly for the client's first message. It may be either a

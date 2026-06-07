@@ -178,6 +178,12 @@ async def list_adapters(request: Request):
 @router.websocket("/ws/chat/{agent_name}")
 async def webchat_ws(websocket: WebSocket, agent_name: str):
     """WebSocket endpoint for web chat."""
+    auth_mgr = websocket.app.state.auth
+    token = websocket.cookies.get("taos_session", "")
+    if not token or auth_mgr.validate_session(token) is None:
+        await websocket.close(code=1008)
+        return
+
     connectors = getattr(websocket.app.state, "channel_hub_connectors", {})
     connector_key = f"webchat:{agent_name}"
 
