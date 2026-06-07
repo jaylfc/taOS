@@ -274,7 +274,7 @@ Discord-style messaging built into the platform. Chat with your agents, create t
 Real PTY backend exposed over WebSocket (`/ws/terminal`) in the Terminal app. Pick Local Shell or SSH Connection; the SSH form takes host/port/user/password (key-based auth supported) and recent hosts are saved to localStorage. Built on xterm.js with Nerd Font, 256 colours, FitAddon, and WebLinks.
 
 ### Browser App
-Built-in browser with a server-side proxy that rewrites HTML URLs and strips `X-Frame-Options` so arbitrary sites render inline. Includes a bookmarks bar, Open in Tab, and Agent Browse button for future browser-use integration. Auto-detects iOS PWAs and defaults to external mode. The Neko streaming browser is also available in the app catalog.
+Built-in browser with two engines. A lightweight server-side rewriting proxy renders arbitrary sites inline (bookmarks bar, Open in Tab, iOS PWA auto-detect). Alongside it, a full WebRTC-streamed Chromium (Neko) runs locally on the host, including the Pi, and renders any site with working video. The streamed browser is one persistent session you can reattach to from any device, presents a touch-friendly mobile layout on phones, and also surfaces agents' own browser sessions. It is becoming the default, with the proxy kept as a lightweight fallback.
 
 ### MCP Plugin Catalog (47 Plugins)
 `app-catalog/plugins/` ships 47 MCP servers including the official set (filesystem, git, fetch, memory, sequential-thinking, time), GitHub, Playwright, Docker, Kubernetes, databases (Postgres/MySQL/SQLite dbhub, MongoDB, Redis, Chroma, Supabase), documents (pandoc, office docs, spreadsheet, markdownify, excel), comms (Slack, WhatsApp, email, Notion, Obsidian, Atlassian, Google Workspace), infra (AWS, Cloudflare, Grafana, arXiv, YouTube transcript, Firecrawl), agent-specific (browser-use, Camoufox, context7, supergateway, engram, Exa), Home Assistant, Todoist, and more.
@@ -633,8 +633,8 @@ CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.
 ## Roadmap
 
 ### Done ✅
-- [x] Web GUI with 26 pages
-- [x] App Store (84 apps, 15 agent frameworks)
+- [x] Web desktop GUI with 36 bundled apps
+- [x] App Store (108 apps, 16 agent frameworks)
 - [x] Live model browser (HuggingFace + Ollama, 167k+ models)
 - [x] Agent deployment wizard (LXC containers)
 - [x] Image + video generation (multi-backend)
@@ -692,6 +692,7 @@ CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.
 - [x] install-rknpu.sh, opt-in Rockchip NPU setup; pins librknnrt 2.3.0, installs rkllama fork, preloads three chat models; all binaries from TAOS mirror with SHA256 verification
 
 ### In Progress
+- [ ] Unified streamed browser (#603), one WebRTC-streamed Chromium app that runs locally on the host including the Pi, replaces the URL-rewriting proxy, presents a native touch-friendly mobile layout on phones, surfaces agents' browser sessions, and migrates sessions between host and worker
 - [ ] Fresh install test on clean hardware (#2)
 - [ ] Containerised app streaming (#22), all 5 plans complete: session store, streaming pages, user workspace, agent-bridge, expert agents, 13 app manifests (Blender/LibreOffice/GIMP/Code Server/Neko Browser + 8 Phase 2), app orchestrator, computer-use with escalation, companion launcher API
 
@@ -707,6 +708,7 @@ CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.
 - [ ] Mobile worker native apps (iOS/Android)
 - [ ] Dynamic NPU core allocation (#13)
 - [ ] Ray as optional cluster backend for large-scale deployments (#23)
+- [ ] Mobile and Watch devices as cluster workers, plus agent-painted canvas surfaces where the agent composes bespoke screens and notifications per device
 
 ## Contributing
 
