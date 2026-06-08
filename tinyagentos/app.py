@@ -101,6 +101,8 @@ PROJECT_DIR = Path(__file__).parent.parent
 _STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version"})
 _STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup", "/shortcut/")
 
+from tinyagentos.task_utils import _create_supervised_task  # noqa: E402
+
 
 def _resolve_browser_cookie_key(data_dir: "Path") -> str:
     """Resolve the SQLCipher key for the browser cookie store.
@@ -499,7 +501,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             except Exception:
                 logger.exception("framework version probe failed")
 
-        asyncio.create_task(_probe_framework_versions())
+        _create_supervised_task(_probe_framework_versions(), app.state._background_tasks)
 
         async def _ephemeral_sweep_loop(app: FastAPI) -> None:
             import asyncio as _asyncio
@@ -521,7 +523,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     logger.warning("ephemeral sweep failed: %s", _e)
                 await _asyncio.sleep(300)
 
-        asyncio.create_task(_ephemeral_sweep_loop(app))
+        _create_supervised_task(_ephemeral_sweep_loop(app), app.state._background_tasks)
 
         async def _browser_reap_loop(app: FastAPI) -> None:
             import asyncio as _asyncio
@@ -547,7 +549,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     logger.warning("browser reap failed: %s", _e)
                 await _asyncio.sleep(300)
 
-        asyncio.create_task(_browser_reap_loop(app))
+        _create_supervised_task(_browser_reap_loop(app), app.state._background_tasks)
 
         # Per-agent state lives on the host and is mounted into containers.
         # See docs/design/framework-agnostic-runtime.md.
@@ -657,7 +659,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             # fall back to images:debian/bookworm.
             try:
                 if _is_prefetch_enabled():
-                    asyncio.create_task(_ensure_agent_image_present())
+                    _create_supervised_task(
+                        _ensure_agent_image_present(), app.state._background_tasks
+                    )
                 else:
                     logger.debug(
                         "agent_image: base image prefetch disabled "
@@ -960,6 +964,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # agents and LiteLLM keep running independently, so there's nothing to
         # gracefully drain here. Only true system halt (system-shutdown) and
         # explicit agent pause/stop go through the orchestrator.
+
+        # Cancel supervised background tasks (fire-and-forget loops etc.)
+        _bg = getattr(app.state, "_background_tasks", set())
+        for _t in list(_bg):
+            if not _t.done():
+                _t.cancel()
+        if _bg:
+            await asyncio.gather(*_bg, return_exceptions=True)
+
         # Unregister mDNS first so the goodbye packet goes out before other
         # services start tearing down (and potentially blocking the loop).
         _mdns = getattr(app.state, "mdns_publisher", None)
@@ -1103,7 +1116,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Startup state flags — lifespan sets _startup_complete = True once all
     # init is done.  The startup guard middleware returns 503 until then.
+    # _background_tasks collects all fire-and-forget asyncio.Task handles so
+    # they can be cancelled on shutdown and exceptions can be logged.
     app.state._startup_complete = False
+    app.state._background_tasks: set = set()
 
     # Set state eagerly so it's available even without lifespan (e.g. tests)
     app.state.config = config
