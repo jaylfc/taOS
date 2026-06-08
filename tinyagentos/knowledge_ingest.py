@@ -89,6 +89,8 @@ class IngestPipeline:
         self._category_engine = category_engine
         self._qmd_base_url = qmd_base_url
         self._llm_base_url = llm_base_url
+        if max_concurrent < 1:
+            raise ValueError(f"max_concurrent must be >= 1, got {max_concurrent}")
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def submit(

@@ -273,6 +273,22 @@ async def test_semaphore_custom_max_concurrent(store, mock_http):
 
 
 @pytest.mark.asyncio
+async def test_max_concurrent_zero_raises(store, mock_http):
+    """max_concurrent=0 must raise ValueError to prevent Semaphore(0) deadlock."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+    notif = AsyncMock()
+    cat_engine = AsyncMock()
+    with pytest.raises(ValueError, match="max_concurrent"):
+        IngestPipeline(
+            store=store,
+            http_client=mock_http,
+            notifications=notif,
+            category_engine=cat_engine,
+            max_concurrent=0,
+        )
+
+
+@pytest.mark.asyncio
 async def test_semaphore_limits_concurrent_tasks(store, mock_http):
     """At most max_concurrent tasks run the pipeline body simultaneously."""
     import asyncio
@@ -280,8 +296,6 @@ async def test_semaphore_limits_concurrent_tasks(store, mock_http):
 
     active: list[int] = []
     peak: list[int] = []
-
-    original_run = None
 
     async def counting_run(self, item_id: str) -> None:
         active.append(1)
