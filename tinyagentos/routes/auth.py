@@ -4,8 +4,9 @@ import threading
 import time
 from collections import OrderedDict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from tinyagentos.middleware.csrf import verify_csrf
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -456,7 +457,7 @@ async def login(request: Request):
     return response
 
 
-@router.post("/logout")
+@router.post("/logout", dependencies=[Depends(verify_csrf)])
 async def logout(request: Request):
     auth_mgr = request.app.state.auth
     token = request.cookies.get("taos_session")
@@ -467,7 +468,7 @@ async def logout(request: Request):
     return response
 
 
-@router.post("/lock")
+@router.post("/lock", dependencies=[Depends(verify_csrf)])
 async def lock(request: Request):
     """Revoke the current session and clear the cookie."""
     auth_mgr = request.app.state.auth
