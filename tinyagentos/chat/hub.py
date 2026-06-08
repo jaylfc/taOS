@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from fastapi import WebSocket
@@ -63,3 +64,15 @@ class ChatHub:
     def next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    async def seed_seq(self, store) -> None:
+        """Seed the sequence counter from the message store on startup.
+
+        Queries MAX(rowid) from chat_messages so the counter never resets to 1
+        after a restart, preventing client-side sequence number jumps.
+        """
+        async with store._db.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"
+        ) as cursor:
+            row = await cursor.fetchone()
+        self._seq = row[0] if row else 0
