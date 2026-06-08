@@ -95,6 +95,7 @@ def build_neko_run_args(
     device_args: list[str] | None = None,
     mobile: bool = False,
     shm_size: str = "4g",
+    cdp_host_port: int | None = None,
 ) -> list[str]:
     """Return the full ``docker run`` argv (starting with 'docker') for a Neko
     Chromium session, per the validated spike recipe.
@@ -106,6 +107,14 @@ def build_neko_run_args(
     ``shm_size`` controls ``--shm-size``. The default is ``"4g"`` — required
     by the CDP-enabled image (``DEFAULT_NEKO_CDP_IMAGE``) for stable page
     sessions; 4g is safe for all images and strictly better than the old 2g.
+
+    ``cdp_host_port`` — when provided, publishes the container's CDP port 9222
+    to **``127.0.0.1:{cdp_host_port}``** on the host.  The bind address is
+    always ``127.0.0.1`` (loopback-only).  The CDP controller co-locates with
+    the browser on the same host and drives it over this local binding; CDP is
+    never exposed over ``0.0.0.0`` or the Tailscale interface.  Only pass this
+    for the CDP-enabled image (``DEFAULT_NEKO_CDP_IMAGE``); stock/GPU images
+    do not bind CDP and the arg is ignored.
     """
     if image is None:
         image = DEFAULT_NEKO_GPU_IMAGE if gpu else DEFAULT_NEKO_IMAGE
@@ -125,6 +134,11 @@ def build_neko_run_args(
         f"--shm-size={shm_size}",
         "-v", f"{profile_volume}:{NEKO_PROFILE_MOUNT}",
     ]
+    if cdp_host_port is not None:
+        # Loopback-only publish: 127.0.0.1:{host_port} → container:9222.
+        # NEVER use 0.0.0.0 — the CDP endpoint must not be reachable from
+        # the network (Tailscale or otherwise).
+        args += ["-p", f"127.0.0.1:{cdp_host_port}:9222"]
     if mobile:
         args += ["-v", f"{MOBILE_CHROMIUM_CONF}:/etc/neko/supervisord/chromium.conf:ro"]
     for dev in device_args or []:
@@ -152,10 +166,14 @@ def build_volume_import_args(volume: str) -> list[str]:
 
 
 class PortAllocator:
-    """Hands out a unique HTTP port + a small UDP EPR range per session.
+    """Hands out a unique HTTP port + UDP EPR range + CDP host port per session.
 
     In-process, monotonic; good enough for one host running a handful of
     sessions.
+
+    The CDP host port (``cdp_base + slot``) is published to ``127.0.0.1``
+    only — never ``0.0.0.0`` — and maps to the container's port 9222 when
+    the CDP-enabled image is used.
     """
 
     def __init__(
@@ -164,18 +182,20 @@ class PortAllocator:
         http_base: int = 8800,
         epr_base: int = 59000,
         epr_span: int = 10,
+        cdp_base: int = 19200,
     ) -> None:
         self._http_base = http_base
         self._epr_base = epr_base
         self._epr_span = epr_span
+        self._cdp_base = cdp_base
         self._next_slot = 0
         # slot → http_port (for release)
         self._active: dict[int, int] = {}
         # freed slots available for re-use
         self._free: list[int] = []
 
-    def allocate(self) -> tuple[int, int, int]:
-        """Return ``(http_port, epr_lo, epr_hi)`` for a new session."""
+    def allocate(self) -> tuple[int, int, int, int]:
+        """Return ``(http_port, epr_lo, epr_hi, cdp_host_port)`` for a new session."""
         if self._free:
             slot = self._free.pop()
         else:
@@ -184,8 +204,9 @@ class PortAllocator:
         http_port = self._http_base + slot
         epr_lo = self._epr_base + slot * self._epr_span
         epr_hi = epr_lo + self._epr_span - 1
+        cdp_host_port = self._cdp_base + slot
         self._active[slot] = http_port
-        return http_port, epr_lo, epr_hi
+        return http_port, epr_lo, epr_hi, cdp_host_port
 
     def release(self, http_port: int) -> None:
         """Return the slot corresponding to ``http_port`` to the free pool."""
@@ -246,7 +267,7 @@ class BrowserContainerRunner:
         When ``mobile=True`` the container runs portrait (800x1600@30) with a
         mobile Chromium UA + touch events so sites serve mobile layouts.
         """
-        http_port, epr_lo, epr_hi = self._allocator.allocate()
+        http_port, epr_lo, epr_hi, cdp_host_port = self._allocator.allocate()
         # Full session_id (a uuid hex) — avoids name collisions from a
         # truncated prefix; Docker accepts the length.
         container_name = f"taos-neko-{session_id}"
@@ -258,13 +279,13 @@ class BrowserContainerRunner:
         # need it absent.
         neko_url = f"http://{self.node_ip}:{http_port}/?usr=neko&pwd={user_pwd}"
         spec = resolve_neko_image(self.hw_profile)
-        # CDP is available when the image is the CDP-enabled custom build.
-        # The port is bound to 127.0.0.1 inside the container; the launcher
-        # accesses it via `docker exec` / a loopback port binding on the host.
-        # None for images that don't expose CDP (stock Neko, GPU image).
+        is_cdp_image = spec.image == DEFAULT_NEKO_CDP_IMAGE
+        # CDP URL points to the HOST-side loopback port that maps to the
+        # container's 9222 — never the container-internal address.
+        # None for stock/GPU images which do not expose a CDP endpoint.
         cdp_url = (
-            "http://127.0.0.1:9222"
-            if spec.image == DEFAULT_NEKO_CDP_IMAGE
+            f"http://127.0.0.1:{cdp_host_port}"
+            if is_cdp_image
             else None
         )
 
@@ -286,6 +307,7 @@ class BrowserContainerRunner:
                 image=image,
                 device_args=spec.device_args,
                 mobile=mobile,
+                cdp_host_port=cdp_host_port if is_cdp_image else None,
             )
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -316,6 +338,7 @@ class BrowserContainerRunner:
             "container_id": container_id,
             "neko_url": neko_url,
             "cdp_url": cdp_url,
+            "cdp_host_port": cdp_host_port if is_cdp_image else None,
             "http_port": http_port,
             "epr_lo": epr_lo,
             "epr_hi": epr_hi,
