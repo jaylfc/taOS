@@ -142,7 +142,7 @@ def _build_envelope(agent_name: str, kind: str, fields: dict) -> dict:
         raise ValueError(f"unknown kind: {kind!r}; valid: {sorted(VALID_KINDS)}")
     duration_ms = fields.get("duration_ms")
     if duration_ms is None and fields.get("ts_start") is not None:
-        duration_ms = int((time.time() - fields["ts_start"]) * 1000)
+        duration_ms = max(0, int((time.time() - fields["ts_start"]) * 1000))
     return {
         "v": SCHEMA_VERSION,
         "id": fields.get("id") or _new_id(),

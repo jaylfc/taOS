@@ -493,12 +493,21 @@ async def test_record_emitter_receiver_round_trip(tmp_path):
     class _CapturingEmitter:
         """Thin stand-in that captures calls to emit() and runs ingest inline."""
 
+        def __init__(self) -> None:
+            self._tasks: set[asyncio.Task] = set()
+
         def emit(self, envelope: dict) -> None:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 return
-            loop.create_task(self._process(envelope))
+            t = loop.create_task(self._process(envelope))
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
+
+        async def drain(self) -> None:
+            if self._tasks:
+                await asyncio.gather(*self._tasks, return_exceptions=True)
 
         async def _process(self, envelope: dict) -> None:
             from tinyagentos.otel.emitter import _build_otlp_span, _build_otlp_request
@@ -510,7 +519,8 @@ async def test_record_emitter_receiver_round_trip(tmp_path):
             await _ingest_export_request(payload, span_registry)
 
     store = AgentTraceStore(tmp_path, "round-trip-agent")
-    store.set_emitter(_CapturingEmitter())
+    emitter = _CapturingEmitter()
+    store.set_emitter(emitter)
 
     await store.record(
         "llm_call",
@@ -527,8 +537,8 @@ async def test_record_emitter_receiver_round_trip(tmp_path):
             "metadata": {},
         },
     )
-    # Let the event loop drain fire-and-forget tasks
-    await asyncio.sleep(0.05)
+    # Deterministically drain all fire-and-forget tasks before asserting
+    await emitter.drain()
 
     assert len(captured) == 1
     rs = captured[0]["resourceSpans"][0]

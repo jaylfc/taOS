@@ -60,7 +60,14 @@ def _attr_value(value_dict: dict) -> Any:
     if "arrayValue" in value_dict:
         return [_attr_value(v) for v in value_dict["arrayValue"].get("values", [])]
     if "kvlistValue" in value_dict:
-        return {kv["key"]: _attr_value(kv["value"]) for kv in value_dict["kvlistValue"].get("values", [])}
+        out: dict[str, Any] = {}
+        for kv in value_dict["kvlistValue"].get("values", []):
+            if not isinstance(kv, dict):
+                continue
+            key = kv.get("key")
+            if isinstance(key, str) and "value" in kv:
+                out[key] = _attr_value(kv["value"])
+        return out
     return None
 
 
@@ -158,6 +165,11 @@ async def receive_traces(request: Request):
     Returns OTLP ``ExportTraceServiceResponse`` shape (empty ``partialSuccess``
     means all spans were accepted).
     """
+    client_host = getattr(request.client, "host", None)
+    # None means in-process ASGI transport (tests / same-process calls) — allow.
+    if client_host is not None and client_host not in {"127.0.0.1", "::1", "localhost"}:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
     registry: SpanStoreRegistry | None = getattr(request.app.state, "span_store_registry", None)
     if registry is None:
         return JSONResponse(
@@ -170,8 +182,14 @@ async def receive_traces(request: Request):
         logger.warning("otel receiver: JSON parse error: %s", exc)
         return JSONResponse({"error": f"invalid JSON: {exc}"}, status_code=400)
 
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid ExportTraceServiceRequest payload"}, status_code=400)
+
     try:
         written = await _ingest_export_request(body, registry)
+    except ValueError as exc:
+        logger.warning("otel receiver: bad request: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         logger.exception("otel receiver: ingest error: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)

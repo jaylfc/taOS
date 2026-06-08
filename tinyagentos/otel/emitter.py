@@ -32,6 +32,8 @@ from typing import Any
 
 import httpx
 
+from tinyagentos.otel.trace_utils import make_trace_id as _make_trace_id
+
 logger = logging.getLogger(__name__)
 
 # OTLP span kind constants (protobuf enum values used as integers in JSON)
@@ -42,20 +44,6 @@ _SPAN_KIND_CLIENT = 3
 _STATUS_OK = "STATUS_CODE_OK"
 _STATUS_ERROR = "STATUS_CODE_ERROR"
 _STATUS_UNSET = "STATUS_CODE_UNSET"
-
-
-def _make_trace_id(conversation_id: str | None) -> str:
-    """Mint a stable 128-bit OTel traceId from a conversation id.
-
-    OTel traceIds are 32-char hex strings (16 bytes).  We hash the
-    conversation id with SHA-256 and take the first 16 bytes, giving a
-    deterministic id for the whole conversation across all its spans.
-    When no conversation id is available we fall back to a random id.
-    """
-    if conversation_id:
-        digest = hashlib.sha256(conversation_id.encode()).digest()
-        return digest[:16].hex()
-    return secrets.token_bytes(16).hex()
 
 
 def _make_span_id() -> str:
@@ -333,6 +321,8 @@ class OTelEmitter:
     def __init__(self, receiver_url: str | None = "http://localhost:4318"):
         self._receiver_url = receiver_url
         self._client: httpx.AsyncClient | None = None
+        self._pending_tasks: set[asyncio.Task] = set()
+        self._max_pending_tasks = 512
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -358,7 +348,11 @@ class OTelEmitter:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._emit_async(envelope))
+        if len(self._pending_tasks) >= self._max_pending_tasks:
+            return
+        task = loop.create_task(self._emit_async(envelope))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
     async def _emit_async(self, envelope: dict) -> None:
         """Build the OTLP span and POST it.  All errors are swallowed."""

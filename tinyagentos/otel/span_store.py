@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,24 @@ from typing import Any
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_slug(slug: str) -> str:
+    """Sanitize agent slug before it is embedded in a filesystem path.
+
+    Rejects empty strings, dot-traversal components, and any characters
+    outside the safe set ``[A-Za-z0-9._-]``.  Falls back to ``_system``
+    for anything that does not pass validation.
+    """
+    if not slug or slug in {".", ".."}:
+        return "_system"
+    if "/" in slug or "\\" in slug:
+        return "_system"
+    if not _SLUG_RE.fullmatch(slug):
+        return "_system"
+    return slug
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -56,8 +75,17 @@ CREATE INDEX IF NOT EXISTS idx_otelspan_conversation_id
 
 
 def _span_db_path(data_dir: Path, slug: str) -> Path:
-    """Resolve the otel-spans.db path for a given agent slug."""
-    return data_dir / "trace" / slug / "otel-spans.db"
+    """Resolve the otel-spans.db path for a given agent slug.
+
+    The slug is sanitized before use; the resulting path is verified to
+    stay inside *data_dir*/trace/ to prevent path-traversal escapes.
+    """
+    safe = _safe_slug(slug)
+    db_path = (data_dir / "trace" / safe / "otel-spans.db").resolve()
+    expected_root = (data_dir / "trace").resolve()
+    if not str(db_path).startswith(str(expected_root)):
+        raise ValueError(f"slug {slug!r} resolves outside trace dir")
+    return db_path
 
 
 class SpanStore:
@@ -180,11 +208,12 @@ class SpanStoreRegistry:
         self._lock = asyncio.Lock()
 
     async def get(self, slug: str) -> SpanStore:
+        safe = _safe_slug(slug)
         async with self._lock:
-            store = self._stores.get(slug)
+            store = self._stores.get(safe)
             if store is None:
-                store = SpanStore(self._data_dir, slug)
-                self._stores[slug] = store
+                store = SpanStore(self._data_dir, safe)
+                self._stores[safe] = store
             return store
 
     async def close_all(self) -> None:

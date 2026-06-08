@@ -23,15 +23,9 @@ correlation that does not exist.
 """
 from __future__ import annotations
 
-import hashlib
 import secrets
 
-
-def _make_trace_id(conversation_id: str | None) -> str:
-    """32-char hex traceId.  Deterministic if conversation_id is set."""
-    if conversation_id:
-        return hashlib.sha256(conversation_id.encode()).digest()[:16].hex()
-    return secrets.token_bytes(16).hex()
+from tinyagentos.otel.trace_utils import make_trace_id as _make_trace_id
 
 
 def _make_span_id() -> str:
