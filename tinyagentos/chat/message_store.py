@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -72,6 +73,11 @@ def _parse(row: tuple, description) -> dict:
 
 class ChatMessageStore(BaseStore):
     SCHEMA = MESSAGES_SCHEMA
+
+    def __init__(self, db_path) -> None:
+        super().__init__(db_path)
+        # Serialises concurrent reaction read-modify-write operations
+        self._reaction_lock = asyncio.Lock()
 
     async def init(self) -> None:
         await super().init()
@@ -194,40 +200,42 @@ class ChatMessageStore(BaseStore):
         return await self.soft_delete_message(message_id)
 
     async def add_reaction(self, message_id: str, emoji: str, user_id: str) -> None:
-        async with self._db.execute(
-            "SELECT reactions FROM chat_messages WHERE id = ?", (message_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            return
-        reactions = json.loads(row[0])
-        if emoji not in reactions:
-            reactions[emoji] = []
-        if user_id not in reactions[emoji]:
-            reactions[emoji].append(user_id)
-        await self._db.execute(
-            "UPDATE chat_messages SET reactions = ? WHERE id = ?",
-            (json.dumps(reactions), message_id),
-        )
-        await self._db.commit()
+        async with self._reaction_lock:
+            async with self._db.execute(
+                "SELECT reactions FROM chat_messages WHERE id = ?", (message_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return
+            reactions = json.loads(row[0])
+            if emoji not in reactions:
+                reactions[emoji] = []
+            if user_id not in reactions[emoji]:
+                reactions[emoji].append(user_id)
+            await self._db.execute(
+                "UPDATE chat_messages SET reactions = ? WHERE id = ?",
+                (json.dumps(reactions), message_id),
+            )
+            await self._db.commit()
 
     async def remove_reaction(self, message_id: str, emoji: str, user_id: str) -> None:
-        async with self._db.execute(
-            "SELECT reactions FROM chat_messages WHERE id = ?", (message_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            return
-        reactions = json.loads(row[0])
-        if emoji in reactions:
-            reactions[emoji] = [u for u in reactions[emoji] if u != user_id]
-            if not reactions[emoji]:
-                del reactions[emoji]
-        await self._db.execute(
-            "UPDATE chat_messages SET reactions = ? WHERE id = ?",
-            (json.dumps(reactions), message_id),
-        )
-        await self._db.commit()
+        async with self._reaction_lock:
+            async with self._db.execute(
+                "SELECT reactions FROM chat_messages WHERE id = ?", (message_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return
+            reactions = json.loads(row[0])
+            if emoji in reactions:
+                reactions[emoji] = [u for u in reactions[emoji] if u != user_id]
+                if not reactions[emoji]:
+                    del reactions[emoji]
+            await self._db.execute(
+                "UPDATE chat_messages SET reactions = ? WHERE id = ?",
+                (json.dumps(reactions), message_id),
+            )
+            await self._db.commit()
 
     async def ensure_message(self, msg: dict) -> None:
         """Insert a message row only if its id is not already present (idempotent).
@@ -293,19 +301,32 @@ class ChatMessageStore(BaseStore):
         return [_parse(r, desc) for r in rows]
 
     async def sweep_expired(self) -> list[tuple[str, str]]:
-        """Soft-delete messages past their expires_at. Returns list of (message_id, channel_id)."""
-        import time as _time
-        now = _time.time()
+        """Soft-delete messages past their expires_at. Returns list of (message_id, channel_id).
+
+        Uses chunked batch UPDATEs to stay within SQLite's variable limit (999 / 32766).
+        """
+        _CHUNK = 500
+        now = time.time()
+        # Collect the rows we are about to expire (needed for the return value)
         async with self._db.execute(
             "SELECT id, channel_id FROM chat_messages "
             "WHERE expires_at IS NOT NULL AND expires_at < ? AND deleted_at IS NULL",
             (now,),
         ) as cursor:
             rows = await cursor.fetchall()
-        ids = []
-        for row in rows:
-            await self.soft_delete_message(row[0])
-            ids.append((row[0], row[1]))
+        if not rows:
+            return []
+        ids = [(row[0], row[1]) for row in rows]
+        # Chunk the id list to avoid exceeding SQLite's bound-variable limit
+        for offset in range(0, len(ids), _CHUNK):
+            chunk = ids[offset : offset + _CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            await self._db.execute(
+                f"UPDATE chat_messages SET deleted_at = ? "
+                f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+                (now, *[r[0] for r in chunk]),
+            )
+        await self._db.commit()
         return ids
 
     async def get_channel_threads(self, channel_id: str) -> list[dict]:
