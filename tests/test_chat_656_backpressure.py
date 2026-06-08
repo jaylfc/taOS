@@ -170,3 +170,105 @@ async def test_connect_returns_true_by_default():
     result = hub.connect(ws, "alice")
     # Must return True (allowed) or None — never False
     assert result is not False
+
+
+# ── no-client-attribute path ──────────────────────────────────────────────────
+
+class NoClientWebSocket:
+    """Simulates a WebSocket where ws.client is None (e.g. reverse-proxy / test env)."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+        self.closed: bool = False
+        self.client = None  # no IP available
+
+    async def send_text(self, data: str) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class NoClientAttrWebSocket:
+    """Simulates a WebSocket that has no 'client' attribute at all."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+        self.closed: bool = False
+        # deliberately no self.client
+
+    async def send_text(self, data: str) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_connect_no_client_attribute_allowed():
+    """connect() must succeed (return True) when the socket has no client attribute."""
+    hub = ChatHub(max_connections_per_ip=1)
+    ws = NoClientAttrWebSocket()
+    result = hub.connect(ws, "alice")
+    assert result is True
+    # _ip_counts must stay empty — no IP to track
+    assert hub._ip_counts == {}
+
+
+@pytest.mark.asyncio
+async def test_connect_client_none_allowed():
+    """connect() must succeed when ws.client is None (no IP available)."""
+    hub = ChatHub(max_connections_per_ip=1)
+    ws = NoClientWebSocket()
+    result = hub.connect(ws, "bob")
+    assert result is True
+    assert hub._ip_counts == {}
+
+
+@pytest.mark.asyncio
+async def test_connect_no_client_does_not_consume_ip_slot():
+    """Sockets without a client IP must not affect per-IP counting for real IPs."""
+    hub = ChatHub(max_connections_per_ip=1)
+    anon = NoClientWebSocket()
+    real = MockWebSocket("172.16.0.1")
+
+    hub.connect(anon, "anon")
+    result = hub.connect(real, "real")
+    assert result is True  # real IP slot is free
+
+
+# ── IP slot released on timeout eviction ─────────────────────────────────────
+
+class SlowWebSocketWithIP:
+    """Slow client with a known IP so we can verify the slot is released."""
+
+    def __init__(self, client_host: str = "10.1.2.3"):
+        self.sent: list[str] = []
+        self.closed: bool = False
+        self.client = type("_Client", (), {"host": client_host})()
+
+    async def send_text(self, data: str) -> None:
+        await asyncio.sleep(9999)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_ip_slot_released_after_timeout_eviction():
+    """When a slow socket times out and is evicted, its IP slot must be freed."""
+    ip = "10.1.2.3"
+    hub = ChatHub(send_timeout=0.05, max_connections_per_ip=1)
+    slow_ws = SlowWebSocketWithIP(ip)
+
+    hub.connect(slow_ws, "charlie")
+    assert hub._ip_counts.get(ip) == 1
+
+    # Trigger timeout eviction via send_to_user
+    await hub.send_to_user("charlie", {"type": "ping"})
+
+    # Slot must be released — a new connection from the same IP must be accepted
+    assert hub._ip_counts.get(ip, 0) == 0
+    new_ws = MockWebSocket(ip)
+    result = hub.connect(new_ws, "charlie2")
+    assert result is True

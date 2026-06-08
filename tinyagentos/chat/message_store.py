@@ -303,8 +303,9 @@ class ChatMessageStore(BaseStore):
     async def sweep_expired(self) -> list[tuple[str, str]]:
         """Soft-delete messages past their expires_at. Returns list of (message_id, channel_id).
 
-        Uses a single batch UPDATE rather than one commit per row.
+        Uses chunked batch UPDATEs to stay within SQLite's variable limit (999 / 32766).
         """
+        _CHUNK = 500
         now = time.time()
         # Collect the rows we are about to expire (needed for the return value)
         async with self._db.execute(
@@ -316,13 +317,15 @@ class ChatMessageStore(BaseStore):
         if not rows:
             return []
         ids = [(row[0], row[1]) for row in rows]
-        # Single UPDATE for all expired messages
-        placeholders = ",".join("?" * len(ids))
-        await self._db.execute(
-            f"UPDATE chat_messages SET deleted_at = ? "
-            f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
-            (now, *[r[0] for r in ids]),
-        )
+        # Chunk the id list to avoid exceeding SQLite's bound-variable limit
+        for offset in range(0, len(ids), _CHUNK):
+            chunk = ids[offset : offset + _CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            await self._db.execute(
+                f"UPDATE chat_messages SET deleted_at = ? "
+                f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+                (now, *[r[0] for r in chunk]),
+            )
         await self._db.commit()
         return ids
 

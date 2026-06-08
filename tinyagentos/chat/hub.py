@@ -68,6 +68,17 @@ class ChatHub:
         if channel_sockets:
             channel_sockets.discard(ws)
 
+    def _release_ip_slot(self, ws) -> None:
+        """Decrement the per-IP counter for *ws*, removing the key when it hits zero.
+
+        Must be called exactly once per evicted socket (mirrors disconnect()).
+        """
+        ip = self._ip_of(ws)
+        if ip is not None and ip in self._ip_counts:
+            self._ip_counts[ip] = max(0, self._ip_counts[ip] - 1)
+            if self._ip_counts[ip] == 0:
+                del self._ip_counts[ip]
+
     async def _send_with_timeout(self, ws, payload: str, collection: set | None = None) -> None:
         """Send ``payload`` to ``ws``, closing and removing it on timeout or error."""
         try:
@@ -78,11 +89,19 @@ class ChatHub:
                 await ws.close()
             except Exception:
                 pass
+            # Determine whether this socket had a registered IP slot before any eviction.
+            # collection may be the same object as one of the _user_sockets sets, so check
+            # both sources before modifying anything.
+            in_collection = collection is not None and ws in collection
+            in_user_sockets = any(ws in sockets for sockets in self._user_sockets.values())
+            was_registered = in_collection or in_user_sockets
             if collection is not None:
                 collection.discard(ws)
-            # Also evict from _user_sockets
             for sockets in self._user_sockets.values():
                 sockets.discard(ws)
+            # Release IP quota slot so the IP is not permanently locked out
+            if was_registered:
+                self._release_ip_slot(ws)
 
     async def broadcast(self, channel_id: str, event: dict) -> None:
         payload = json.dumps(event)
