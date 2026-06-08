@@ -3,11 +3,11 @@ from unittest.mock import patch
 import pytest
 from tinyagentos.llm_proxy import (
     EMBEDDING_ALIAS,
-    TAOS_LITELLM_MASTER_KEY,
     _is_embedding_model,
     generate_litellm_config,
     LLMProxy,
 )
+from tinyagentos.litellm_config import get_litellm_master_key
 
 
 class TestConfigGeneration:
@@ -26,13 +26,14 @@ class TestConfigGeneration:
         config = generate_litellm_config([])
         assert config["model_list"] == []
 
-    def test_config_emits_master_key(self):
-        """general_settings.master_key must carry the shared taOS master
-        key so LiteLLM rejects unauthenticated requests and accepts the
-        value the deployer injects into every agent container."""
-        config = generate_litellm_config([])
-        assert config["general_settings"]["master_key"] == "sk-taos-master"
-        assert config["general_settings"]["master_key"] == TAOS_LITELLM_MASTER_KEY
+    def test_config_emits_master_key(self, tmp_path):
+        """general_settings.master_key must carry the per-install taOS master
+        key (generated and persisted on first use) so LiteLLM rejects
+        unauthenticated requests and every internal admin call uses the same value."""
+        key = get_litellm_master_key(tmp_path)
+        config = generate_litellm_config([], master_key=key)
+        assert config["general_settings"]["master_key"] == key
+        assert config["general_settings"]["master_key"].startswith("sk-taos-")
 
     def test_ollama_backend_uses_ollama_prefix(self):
         backends = [{"name": "local", "type": "ollama", "url": "http://localhost:11434", "priority": 1}]
@@ -308,7 +309,7 @@ class TestDatabaseUrlPropagation:
         await p.start(backends=[])
 
         assert captured["env"]["DATABASE_URL"] == "postgresql://fake:pw@host/db"
-        assert captured["env"]["LITELLM_MASTER_KEY"] == "sk-taos-master"
+        assert captured["env"]["LITELLM_MASTER_KEY"].startswith("sk-taos-")
 
     @pytest.mark.asyncio
     async def test_start_omits_database_url_when_unset(self, monkeypatch):
