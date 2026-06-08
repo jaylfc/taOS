@@ -141,13 +141,72 @@ ensure_node22() {
     log "node ${node_major:-not found} is too old (need >=22) — upgrading to Node 22 LTS via NodeSource"
 
     if command -v apt-get >/dev/null 2>&1; then
-        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - \
-            || die "NodeSource setup script failed"
+        # Install Node 22 via NodeSource's GPG-signed apt repository.
+        # This mirrors how Zabbly/Caddy keys are handled in this file: download
+        # the key, verify its fingerprint against a known-good value, import to a
+        # named keyring, then add the signed-by sources entry.
+        #
+        # NodeSource repo GPG key fingerprint — verified 2026-06-08 against
+        # https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        # and confirmed against NodeSource's official documentation at
+        # https://github.com/nodesource/distributions
+        # Update if NodeSource rotates their signing key.
+        local _ns_expected_fp="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+        local _ns_key_tmp
+        _ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX.asc)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_key_tmp'" RETURN
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o "$_ns_key_tmp" \
+            || die "failed to download NodeSource repo GPG key"
+        local _ns_actual_fp
+        _ns_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_actual_fp="${_ns_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_actual_fp" != "$_ns_expected_fp" ]]; then
+            die "NodeSource repo key fingerprint mismatch: expected $_ns_expected_fp, got '$_ns_actual_fp' — refusing to import"
+        fi
+        log "NodeSource key fingerprint ok (${_ns_actual_fp:0:16}…)"
+        sudo mkdir -p /usr/share/keyrings
+        sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg < "$_ns_key_tmp" \
+            || die "gpg --dearmor for NodeSource key failed"
+        sudo chmod 644 /usr/share/keyrings/nodesource.gpg
+        printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+            | sudo tee /etc/apt/sources.list.d/nodesource.sources > /dev/null
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+            || die "apt-get update after NodeSource repo add failed"
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
             || die "apt-get install nodejs (22) failed"
     elif command -v dnf >/dev/null 2>&1; then
-        curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo -E bash - \
-            || die "NodeSource setup script failed"
+        # Install Node 22 via NodeSource's GPG-signed dnf repository.
+        # Key fingerprint verified 2026-06-08 against
+        # https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+        # Update if NodeSource rotates their RPM signing key.
+        local _ns_rpm_expected_fp="242B813831AF09562B6C46F76B88DA4E3AF28A14"
+        local _ns_rpm_key_tmp
+        _ns_rpm_key_tmp="$(mktemp /tmp/nodesource-rpm-key.XXXXXX.asc)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_rpm_key_tmp'" RETURN
+        curl -fsSL https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
+            -o "$_ns_rpm_key_tmp" \
+            || die "failed to download NodeSource RPM repo GPG key"
+        local _ns_rpm_actual_fp
+        _ns_rpm_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_rpm_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_rpm_actual_fp="${_ns_rpm_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_rpm_actual_fp" != "$_ns_rpm_expected_fp" ]]; then
+            die "NodeSource RPM key fingerprint mismatch: expected $_ns_rpm_expected_fp, got '$_ns_rpm_actual_fp' — refusing to import"
+        fi
+        log "NodeSource RPM key fingerprint ok (${_ns_rpm_actual_fp:0:16}…)"
+        local _ns_rpm_arch
+        _ns_rpm_arch="$(uname -m)"
+        sudo rpm --import "$_ns_rpm_key_tmp" \
+            || die "rpm --import for NodeSource key failed"
+        printf '[nodesource-nodejs]\nname=Node.js Packages for Linux RPM based distros - %s\nbaseurl=https://rpm.nodesource.com/pub_22.x/nodistro/nodejs/%s\npriority=9\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key\nmodule_hotfixes=1\n' \
+            "$_ns_rpm_arch" "$_ns_rpm_arch" \
+            | sudo tee /etc/yum.repos.d/nodesource-nodejs.repo > /dev/null
         sudo dnf install -y nodejs \
             || die "dnf install nodejs (22) failed"
     elif command -v pacman >/dev/null 2>&1; then
@@ -658,8 +717,35 @@ ensure_container_runtime() {
             else
                 log "incus not in default repos — using Zabbly for codename '$codename'"
                 sudo install -d -m 0755 /etc/apt/keyrings
-                sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc \
-                    || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
+
+                # Fetch and verify Zabbly GPG key before importing.
+                # Expected key fingerprint (verified 2026-06-08 from https://pkgs.zabbly.com/key.asc
+                # and confirmed on keyserver.ubuntu.com):
+                #   4EFC 5906 96CB 15B8 7C73  A3AD 82CC 8797 C838 DCFD
+                # RESIDUAL RISK: Zabbly does not publish a separate SHA256 for
+                # key.asc; we verify via gpg --fingerprint after dearmoring.
+                # Update the expected fingerprint if Zabbly rotates their signing key.
+                local _zabbly_key_tmp
+                _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX.asc)"
+                # shellcheck disable=SC2064
+                trap "rm -f '$_zabbly_key_tmp'" RETURN
+                if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp"; then
+                    warn "failed to fetch Zabbly key — skipping Incus install"
+                    return 0
+                fi
+                local _zabbly_expected_fp="4EFC590696CB15B87C73A3AD82CC8797C838DCFD"
+                local _zabbly_actual_fp
+                _zabbly_actual_fp="$(gpg --with-colons --import-options show-only \
+                    --import "$_zabbly_key_tmp" 2>/dev/null \
+                    | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+                _zabbly_actual_fp="${_zabbly_actual_fp//[[:space:]]/}"
+                if [[ "$_zabbly_actual_fp" != "$_zabbly_expected_fp" ]]; then
+                    warn "Zabbly key fingerprint mismatch: expected $_zabbly_expected_fp, got '$_zabbly_actual_fp'"
+                    warn "  Refusing to import — skipping Incus install via Zabbly"
+                    return 0
+                fi
+                log "Zabbly key fingerprint ok (${_zabbly_actual_fp:0:16}…)"
+                sudo cp "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
                 echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
                     | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
                 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
@@ -1127,11 +1213,15 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # pre-built (dist/ is not committed to the source repo),
             # so installing from a git SHA requires a TypeScript
             # build step — use the npm registry instead.
-            # Always install the latest published @jaylfc/qmd so fresh
-            # deployments match the maintainer's setup (intentionally unpinned).
+            # Pin to a specific published version rather than @latest.
+            # Update TAOS_QMD_NPM_VERSION when a new qmd release ships.
+            # npm packages are signed via the registry's package-lock integrity
+            # mechanism (sha512 in package-lock.json); pinning the version here
+            # is the supply-chain control available at install time.
+            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-0.5.2}"
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
-            log "npm install -g @jaylfc/qmd@latest (log: $qmd_install_log)"
-            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@latest" >"$qmd_install_log" 2>&1; then
+            log "npm install -g @jaylfc/qmd@${qmd_npm_version} (log: $qmd_install_log)"
+            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@${qmd_npm_version}" >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"
