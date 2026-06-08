@@ -15,10 +15,14 @@ fallback to local models.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import sqlite3
 import time
 from pathlib import Path
+
+from tinyagentos.db_migrations import apply_wal_pragmas, run_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -42,52 +46,43 @@ CREATE TABLE IF NOT EXISTS workers (
 CREATE INDEX IF NOT EXISTS idx_workers_heartbeat ON workers(last_heartbeat);
 """
 
+MIGRATIONS: list = [
+    (1, SCHEMA),
+]
+
 # Worker is offline if no heartbeat for this many seconds
 OFFLINE_THRESHOLD = 90  # 3 missed heartbeats at 30s interval
 
 
 class WorkerRegistry:
-    """Controller-side registry of cluster workers."""
+    """Controller-side registry of cluster workers.
+
+    All public methods are async.  Blocking sqlite3 calls are dispatched to a
+    thread via asyncio.to_thread so they never stall the event loop.
+    """
 
     def __init__(self, db_path: str | Path = "data/workers.db"):
         self._db_path = str(db_path)
         self._conn: sqlite3.Connection | None = None
 
+    def _sync_init(self) -> None:
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        apply_wal_pragmas(self._conn)
+        run_migrations(self._conn, MIGRATIONS)
+
     async def init(self) -> None:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(SCHEMA)
-        self._conn.commit()
+        await asyncio.to_thread(self._sync_init)
 
     async def close(self) -> None:
         if self._conn:
             self._conn.close()
             self._conn = None
 
-    async def receive_heartbeat(self, heartbeat: dict) -> dict:
-        """Process a heartbeat from a worker.
-
-        Args:
-            heartbeat: {
-                name: str,
-                url: str,
-                cpu_cores: int,
-                npu_cores: int,
-                gpu_name: str | None,
-                gpu_vram_mb: int,
-                gpu_utilisation: int (0-100),
-                ram_total_mb: int,
-                ram_available_mb: int,
-                models: list[str],
-                is_yielded: bool,
-                worker_type: str ("general" | "gaming" | "headless" | "mobile"),
-            }
-        """
-        import json
+    def _sync_receive_heartbeat(self, heartbeat: dict) -> dict:
         now = time.time()
         name = heartbeat["name"]
-
         self._conn.execute(
             """INSERT INTO workers (name, url, last_heartbeat, cpu_cores, npu_cores,
                gpu_name, gpu_vram_mb, gpu_utilisation, ram_total_mb, ram_available_mb,
@@ -118,9 +113,11 @@ class WorkerRegistry:
         self._conn.commit()
         return {"status": "ok", "worker": name}
 
-    async def online_workers(self) -> list[dict]:
-        """Get all workers with a recent heartbeat."""
-        import json
+    async def receive_heartbeat(self, heartbeat: dict) -> dict:
+        """Process a heartbeat from a worker."""
+        return await asyncio.to_thread(self._sync_receive_heartbeat, heartbeat)
+
+    def _sync_online_workers(self) -> list[dict]:
         cutoff = time.time() - OFFLINE_THRESHOLD
         rows = self._conn.execute(
             "SELECT * FROM workers WHERE last_heartbeat > ? ORDER BY name",
@@ -135,9 +132,11 @@ class WorkerRegistry:
             result.append(d)
         return result
 
-    async def all_workers(self) -> list[dict]:
-        """Get all known workers (online and offline)."""
-        import json
+    async def online_workers(self) -> list[dict]:
+        """Get all workers with a recent heartbeat."""
+        return await asyncio.to_thread(self._sync_online_workers)
+
+    def _sync_all_workers(self) -> list[dict]:
         cutoff = time.time() - OFFLINE_THRESHOLD
         rows = self._conn.execute(
             "SELECT * FROM workers ORDER BY last_heartbeat DESC"
@@ -151,9 +150,11 @@ class WorkerRegistry:
             result.append(d)
         return result
 
-    async def get_worker(self, name: str) -> dict | None:
-        """Get a specific worker's status."""
-        import json
+    async def all_workers(self) -> list[dict]:
+        """Get all known workers (online and offline)."""
+        return await asyncio.to_thread(self._sync_all_workers)
+
+    def _sync_get_worker(self, name: str) -> dict | None:
         row = self._conn.execute(
             "SELECT * FROM workers WHERE name = ?", (name,)
         ).fetchone()
@@ -165,11 +166,17 @@ class WorkerRegistry:
         d["online"] = d["last_heartbeat"] > (time.time() - OFFLINE_THRESHOLD)
         return d
 
+    async def get_worker(self, name: str) -> dict | None:
+        """Get a specific worker's status."""
+        return await asyncio.to_thread(self._sync_get_worker, name)
+
     async def remove_worker(self, name: str) -> bool:
         """Remove a worker from the registry."""
-        cursor = self._conn.execute("DELETE FROM workers WHERE name = ?", (name,))
-        self._conn.commit()
-        return cursor.rowcount > 0
+        def _do() -> bool:
+            cursor = self._conn.execute("DELETE FROM workers WHERE name = ?", (name,))
+            self._conn.commit()
+            return cursor.rowcount > 0
+        return await asyncio.to_thread(_do)
 
     async def for_resource_manager(self) -> list[dict]:
         """Get online workers formatted for the resource manager's snapshot.
@@ -189,17 +196,22 @@ class WorkerRegistry:
                 "worker_type": w.get("worker_type", "general"),
             }
             for w in workers
-            if not w.get("is_yielded")  # Exclude yielded workers from scheduling
+            if not w.get("is_yielded")
         ]
 
     async def stats(self) -> dict:
-        cutoff = time.time() - OFFLINE_THRESHOLD
-        total = self._conn.execute("SELECT COUNT(*) as n FROM workers").fetchone()["n"]
-        online = self._conn.execute(
-            "SELECT COUNT(*) as n FROM workers WHERE last_heartbeat > ?", (cutoff,)
-        ).fetchone()["n"]
-        gpu_workers = self._conn.execute(
-            "SELECT COUNT(*) as n FROM workers WHERE gpu_name IS NOT NULL AND last_heartbeat > ?",
-            (cutoff,),
-        ).fetchone()["n"]
-        return {"total_workers": total, "online": online, "gpu_workers": gpu_workers}
+        def _do() -> dict:
+            cutoff = time.time() - OFFLINE_THRESHOLD
+            total = self._conn.execute(
+                "SELECT COUNT(*) as n FROM workers"
+            ).fetchone()["n"]
+            online = self._conn.execute(
+                "SELECT COUNT(*) as n FROM workers WHERE last_heartbeat > ?", (cutoff,)
+            ).fetchone()["n"]
+            gpu_workers = self._conn.execute(
+                "SELECT COUNT(*) as n FROM workers "
+                "WHERE gpu_name IS NOT NULL AND last_heartbeat > ?",
+                (cutoff,),
+            ).fetchone()["n"]
+            return {"total_workers": total, "online": online, "gpu_workers": gpu_workers}
+        return await asyncio.to_thread(_do)

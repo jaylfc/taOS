@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from tinyagentos.db_migrations import apply_wal_pragmas, run_migrations
+
 logger = logging.getLogger(__name__)
 
 SCHEMA = """
@@ -49,6 +51,10 @@ CREATE TABLE IF NOT EXISTS sync_log (
 CREATE INDEX IF NOT EXISTS idx_sync_log_peer ON sync_log(peer_id);
 CREATE INDEX IF NOT EXISTS idx_sync_log_ts ON sync_log(timestamp DESC);
 """
+
+MIGRATIONS: list = [
+    (1, SCHEMA),
+]
 
 # Tables and their timestamp columns for delta sync
 SYNCABLE_TABLES = {
@@ -167,10 +173,10 @@ class MeshSync:
 
     async def init(self) -> None:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(SCHEMA)
-        self._conn.commit()
+        apply_wal_pragmas(self._conn)
+        run_migrations(self._conn, MIGRATIONS)
 
     async def close(self) -> None:
         if self._conn:

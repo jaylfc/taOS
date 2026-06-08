@@ -152,7 +152,7 @@ async def test_chat_happy_path_ndjson(client, app, monkeypatch):
         async def ensure_session(self):
             self.session_id = "ses_happy"
 
-        async def prompt(self, text, trace_id=None):
+        async def prompt(self, text, trace_id=None, attachments=None):
             self._sink({"kind": "delta", "content": "Hello"})
             self._sink({"kind": "delta", "content": " world"})
             self._sink({"kind": "final", "content": "Hello world"})
@@ -213,7 +213,7 @@ async def test_chat_error_path_ndjson(client, app, monkeypatch):
         async def ensure_session(self):
             self.session_id = "ses_err"
 
-        async def prompt(self, text, trace_id=None):
+        async def prompt(self, text, trace_id=None, attachments=None):
             self._sink({"kind": "error", "error": "boom"})
 
         async def close(self):
@@ -291,7 +291,8 @@ async def test_ensure_server_uses_agent_key_when_available(tmp_path, monkeypatch
 async def test_ensure_server_falls_back_to_master_key(tmp_path, monkeypatch):
     """When create_agent_key returns None, the server falls back to the master key."""
     import tinyagentos.taos_agent_runtime as rt
-    from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+    from tinyagentos.litellm_config import get_litellm_master_key
+    expected_master_key = get_litellm_master_key(tmp_path)
 
     spawned_cfgs: list = []
 
@@ -328,8 +329,8 @@ async def test_ensure_server_falls_back_to_master_key(tmp_path, monkeypatch):
     await rt.ensure_taos_opencode_server(state, "gpt-4o")
 
     assert len(spawned_cfgs) == 1
-    assert spawned_cfgs[0].litellm_key == TAOS_LITELLM_MASTER_KEY
-    assert state.taos_opencode_key == TAOS_LITELLM_MASTER_KEY
+    assert spawned_cfgs[0].litellm_key == expected_master_key
+    assert state.taos_opencode_key == expected_master_key
 
 
 @pytest.mark.asyncio

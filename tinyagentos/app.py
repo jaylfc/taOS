@@ -293,6 +293,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # agent picker can show a local model but chatting with it 400s
         # at the proxy because no alias exists for that model_name.
         registry=registry,
+        data_dir=data_dir,
     )
     channel_hub_router = MessageRouter()
     adapter_manager = AdapterManager(channel_hub_router)

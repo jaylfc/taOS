@@ -21,9 +21,9 @@ import httpx
 from tinyagentos.providers import CLOUD_TYPES as CLOUD_BACKEND_TYPES
 from tinyagentos.litellm_config import (
     EMBEDDING_ALIAS,
-    TAOS_LITELLM_MASTER_KEY,
     _is_embedding_model,
     generate_litellm_config,
+    get_litellm_master_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,7 @@ class LLMProxy:
         database_url: str | None = None,
         local_token: str | None = None,
         registry=None,
+        data_dir: Path | None = None,
     ):
         self.port = port
         self.config_dir = config_dir or Path("/tmp/taos-litellm")
@@ -99,6 +100,9 @@ class LLMProxy:
         # gemma-4-e2b-gguf" would 400 on the proxy because the alias was
         # never created.
         self._registry = registry
+        # data_dir drives the per-install master key file (.litellm_master_key).
+        # When None, an in-memory key is used (acceptable in tests / routing-only mode).
+        self._data_dir = data_dir
         self._process: subprocess.Popen | None = None
 
     @property
@@ -126,7 +130,11 @@ class LLMProxy:
         callback code in one place.
         """
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        config = generate_litellm_config(backends, registry=self._registry)
+        config = generate_litellm_config(
+            backends,
+            registry=self._registry,
+            master_key=get_litellm_master_key(self._data_dir),
+        )
         config_path = self.config_dir / "litellm_config.yaml"
 
         import yaml
@@ -224,7 +232,7 @@ class LLMProxy:
         # whichever path the subprocess reads first matches the value the
         # deployer uses when auth'ing /key/generate and agent requests.
         env = os.environ.copy()
-        env["LITELLM_MASTER_KEY"] = TAOS_LITELLM_MASTER_KEY
+        env["LITELLM_MASTER_KEY"] = get_litellm_master_key(self._data_dir)
         # Forward the local auth token so the TaosLiteLLMCallback inside
         # the subprocess can POST to taOS's /api/trace (otherwise 401).
         if self.local_token:
@@ -344,7 +352,7 @@ class LLMProxy:
                 if max_budget is not None:
                     body["max_budget"] = max_budget
                 resp = await client.post(f"{self.url}/key/generate", json=body,
-                                          headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"})
+                                          headers={"Authorization": f"Bearer {get_litellm_master_key(self._data_dir)}"})
                 if resp.status_code == 200:
                     data = resp.json()
                     return data.get("key", data.get("token"))
@@ -379,7 +387,7 @@ class LLMProxy:
                 resp = await client.post(
                     f"{self.url}/key/update",
                     json={"key": key, "models": models},
-                    headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"},
+                    headers={"Authorization": f"Bearer {get_litellm_master_key(self._data_dir)}"},
                 )
                 if resp.status_code == 200:
                     return True
@@ -398,7 +406,7 @@ class LLMProxy:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(f"{self.url}/key/delete", json={"keys": [key]},
-                                          headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"})
+                                          headers={"Authorization": f"Bearer {get_litellm_master_key(self._data_dir)}"})
                 if resp.status_code == 200:
                     return True
                 logger.warning(
@@ -416,7 +424,7 @@ class LLMProxy:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(f"{self.url}/key/info", params={"key": key},
-                                         headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"})
+                                         headers={"Authorization": f"Bearer {get_litellm_master_key(self._data_dir)}"})
                 if resp.status_code == 200:
                     return resp.json()
                 logger.warning(

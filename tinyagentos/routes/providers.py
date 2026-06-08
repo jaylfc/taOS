@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from tinyagentos.backend_adapters import get_adapter
 from tinyagentos.config import save_config_locked, VALID_BACKEND_TYPES
 from tinyagentos.lifecycle_manager import LifecycleManager
-from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+from tinyagentos.litellm_config import get_litellm_master_key
 from tinyagentos.providers import CLOUD_TYPES
 
 logger = logging.getLogger(__name__)
@@ -241,7 +241,7 @@ async def _fetch_litellm_models(proxy) -> list[dict]:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 f"{proxy.url}/v1/models",
-                headers={"Authorization": f"Bearer {TAOS_LITELLM_MASTER_KEY}"},
+                headers={"Authorization": f"Bearer {get_litellm_master_key(getattr(proxy, '_data_dir', None))}"},
             )
         if resp.status_code != 200:
             logger.warning(

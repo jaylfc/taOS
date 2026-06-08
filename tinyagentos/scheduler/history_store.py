@@ -18,6 +18,7 @@ from typing import Optional
 
 import aiosqlite
 
+from tinyagentos.db_migrations import apply_wal_pragmas_async
 from tinyagentos.scheduler.types import TaskRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class HistoryStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.path))
         self._db.row_factory = aiosqlite.Row
+        await apply_wal_pragmas_async(self._db)
         await self._db.executescript(CREATE_SQL)
         await self._db.commit()
 

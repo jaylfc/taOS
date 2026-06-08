@@ -19,6 +19,7 @@ class _FakeProxy:
         self.database_url = "postgres://x" if db else None
         self._running = running
         self._capture = capture  # list to append (models,) tuples
+        self._data_dir = None  # in-memory master key (no disk I/O in tests)
 
     def is_running(self):
         return self._running

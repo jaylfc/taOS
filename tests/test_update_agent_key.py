@@ -24,6 +24,7 @@ class _FakeProxy:
         self.url = "http://127.0.0.1:4000"
         self.database_url = "postgres://x" if db else None
         self._running = running
+        self._data_dir = None  # in-memory master key (no disk I/O in tests)
     def is_running(self): return self._running
 
 

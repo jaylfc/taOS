@@ -1,7 +1,15 @@
 import pytest
 import pytest_asyncio
 
-from tinyagentos.secrets import SecretsStore, _encrypt, _decrypt
+from tinyagentos.secrets import (
+    SecretsStore,
+    _FERNET_PREFIX,
+    _encrypt,
+    _decrypt,
+    _xor_decrypt,
+    _xor_key,
+)
+import base64
 
 
 @pytest_asyncio.fixture
@@ -13,22 +21,49 @@ async def store(tmp_path):
 
 
 class TestEncryption:
-    def test_encrypt_decrypt_roundtrip(self):
+    def test_encrypt_decrypt_roundtrip_xor(self):
+        """Legacy XOR path (no key_dir) must still round-trip for migration."""
         original = "sk-abc123-secret-key"
         encrypted = _encrypt(original)
         assert encrypted != original
         assert _decrypt(encrypted) == original
 
-    def test_encrypt_produces_base64(self):
+    def test_encrypt_produces_base64_xor(self):
+        """XOR path output is valid base64."""
         encrypted = _encrypt("hello")
-        # Should be valid base64
-        import base64
-        base64.b64decode(encrypted)  # Should not raise
+        base64.b64decode(encrypted)  # should not raise
 
     def test_encrypt_different_values_differ(self):
         a = _encrypt("value-a")
         b = _encrypt("value-b")
         assert a != b
+
+    def test_fernet_encrypt_decrypt_roundtrip(self, tmp_path):
+        """Fernet path round-trips correctly."""
+        original = "sk-fernet-test-value"
+        encrypted = _encrypt(original, key_dir=tmp_path)
+        assert encrypted.startswith(_FERNET_PREFIX)
+        assert _decrypt(encrypted, key_dir=tmp_path) == original
+
+    def test_fernet_ciphertext_differs_from_plaintext(self, tmp_path):
+        encrypted = _encrypt("hello", key_dir=tmp_path)
+        assert encrypted != "hello"
+
+    def test_fernet_key_persists_across_calls(self, tmp_path):
+        """Same key_dir produces consistent decryption across two calls."""
+        enc = _encrypt("persist-test", key_dir=tmp_path)
+        assert _decrypt(enc, key_dir=tmp_path) == "persist-test"
+
+    def test_xor_to_fernet_migration_decrypt(self, tmp_path):
+        """_decrypt transparently decodes an old XOR ciphertext when key_dir given."""
+        # Produce a raw XOR ciphertext (no prefix, no key_dir).
+        key = _xor_key()
+        data = b"legacy-secret"
+        xor_blob = base64.b64encode(
+            bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+        ).decode()
+        # Should decode without error even with key_dir supplied.
+        assert _decrypt(xor_blob, key_dir=tmp_path) == "legacy-secret"
 
 
 @pytest.mark.asyncio

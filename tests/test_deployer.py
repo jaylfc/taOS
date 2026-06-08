@@ -228,14 +228,16 @@ class TestDeployAgent:
 
     @pytest.mark.asyncio
     async def test_master_key_never_injected_into_container_env(self, tmp_path):
-        """The shared master key (sk-taos-master) must never appear in the
-        container env — not as OPENAI_API_KEY, LITELLM_API_KEY, or any other
-        variable. Only scoped per-agent virtual keys are permitted."""
-        from tinyagentos.llm_proxy import TAOS_LITELLM_MASTER_KEY
+        """The per-install master key must never appear in the container env —
+        not as OPENAI_API_KEY, LITELLM_API_KEY, or any other variable.
+        Only scoped per-agent virtual keys are permitted."""
+        from tinyagentos.litellm_config import get_litellm_master_key
+        master_key = get_litellm_master_key(tmp_path)
         mock_proxy = MagicMock()
         mock_proxy.is_running.return_value = True
         mock_proxy.url = "http://localhost:4000"
         mock_proxy.database_url = "postgresql://u:p@h/db"
+        mock_proxy._data_dir = tmp_path
         mock_proxy.create_agent_key = AsyncMock(return_value="sk-scoped-agent-key")
 
         req = _req(
@@ -262,7 +264,7 @@ class TestDeployAgent:
             assert env["LITELLM_API_KEY"] == "sk-scoped-agent-key"
             # The master key must never appear anywhere in the container env
             for var, val in env.items():
-                assert val != TAOS_LITELLM_MASTER_KEY, (
+                assert val != master_key, (
                     f"master key leaked into container env var {var!r}"
                 )
 
