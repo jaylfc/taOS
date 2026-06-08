@@ -29,8 +29,8 @@ def _make_app(tmp_path):
 async def test_health_endpoint_exempt_before_startup(tmp_path):
     """/api/health must respond 200 even before startup completes."""
     app = _make_app(tmp_path)
-    # _startup_complete is False (default), so guard is active.
-    assert app.state._startup_complete is False
+    # Arm the guard as the lifespan would at startup entry.
+    app.state._startup_complete = False
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/health")
@@ -41,7 +41,8 @@ async def test_health_endpoint_exempt_before_startup(tmp_path):
 async def test_api_route_returns_503_before_startup(tmp_path):
     """Non-exempt routes must return 503 before startup completes."""
     app = _make_app(tmp_path)
-    assert app.state._startup_complete is False
+    # Arm the guard as the lifespan would at startup entry.
+    app.state._startup_complete = False
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/agents")
@@ -65,7 +66,8 @@ async def test_api_route_passes_after_startup_flag_set(tmp_path):
 async def test_static_path_exempt_before_startup(tmp_path):
     """/static/* paths must not be blocked by the startup guard."""
     app = _make_app(tmp_path)
-    assert app.state._startup_complete is False
+    # Arm the guard as the lifespan would at startup entry.
+    app.state._startup_complete = False
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # /static/ will 404 (no files in tmp), but must not 503.

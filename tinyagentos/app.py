@@ -362,6 +362,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Arm the startup guard: block non-exempt requests until init completes.
+        app.state._startup_complete = False
         await metrics_store.init()
         await notif_store.init()
         await qmd_client.init()
@@ -1102,7 +1104,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     class _StartupGuardMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
-            if not getattr(request.app.state, "_startup_complete", False):
+            # Default True so that test clients that don't run the lifespan
+            # pass through uninhibited.  The lifespan explicitly sets this to
+            # False at startup entry and True once init is complete, so the
+            # guard is only active during a real server boot sequence.
+            if not getattr(request.app.state, "_startup_complete", True):
                 path = request.url.path
                 if path not in _STARTUP_EXEMPT_PATHS and not any(
                     path.startswith(p) for p in _STARTUP_EXEMPT_PREFIXES
@@ -1115,11 +1121,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     app.add_middleware(_StartupGuardMiddleware)
 
-    # Startup state flags — lifespan sets _startup_complete = True once all
-    # init is done.  The startup guard middleware returns 503 until then.
     # _background_tasks collects all fire-and-forget asyncio.Task handles so
     # they can be cancelled on shutdown and exceptions can be logged.
-    app.state._startup_complete = False
+    # _startup_complete is NOT set here — the lifespan arms the guard (False)
+    # at entry and clears it (True) once all init is done.  Tests that do not
+    # run the lifespan leave the attribute absent, so the middleware defaults
+    # to True (ready) and lets requests through.
     app.state._background_tasks: set = set()
 
     # Set state eagerly so it's available even without lifespan (e.g. tests)
