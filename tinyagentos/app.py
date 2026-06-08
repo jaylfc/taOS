@@ -95,6 +95,12 @@ from tinyagentos.frameworks import FRAMEWORKS, FrameworkManifestError, validate_
 
 PROJECT_DIR = Path(__file__).parent.parent
 
+# Paths that must remain accessible before startup completes (health checks,
+# static assets, auth endpoints).  Everything else gets 503 until the lifespan
+# finishes its init sequence.
+_STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version"})
+_STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup", "/shortcut/")
+
 
 def _resolve_browser_cookie_key(data_dir: "Path") -> str:
     """Resolve the SQLCipher key for the browser cookie store.
@@ -945,6 +951,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.system_events = _system_events
         app.state.event_bus = EventBus()
 
+        # All startup init complete — allow requests through.
+        app.state._startup_complete = True
+        logger.info("startup complete — accepting requests")
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers —
         # agents and LiteLLM keep running independently, so there's nothing to
@@ -1069,6 +1079,32 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # GZip compression for faster transfers on slow SD card / network
     app.add_middleware(GZipMiddleware, minimum_size=500)
 
+    # Startup guard — return 503 for non-exempt requests that arrive before
+    # the lifespan has finished initialising app state.  Added last so it is
+    # outermost (Starlette wraps in reverse add_middleware order) and runs
+    # before auth, preventing partially-constructed state from reaching routes.
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from fastapi.responses import JSONResponse as _JSONResponse
+
+    class _StartupGuardMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if not getattr(request.app.state, "_startup_complete", False):
+                path = request.url.path
+                if path not in _STARTUP_EXEMPT_PATHS and not any(
+                    path.startswith(p) for p in _STARTUP_EXEMPT_PREFIXES
+                ):
+                    return _JSONResponse(
+                        {"detail": "Service starting, please retry shortly"},
+                        status_code=503,
+                    )
+            return await call_next(request)
+
+    app.add_middleware(_StartupGuardMiddleware)
+
+    # Startup state flags — lifespan sets _startup_complete = True once all
+    # init is done.  The startup guard middleware returns 503 until then.
+    app.state._startup_complete = False
+
     # Set state eagerly so it's available even without lifespan (e.g. tests)
     app.state.config = config
     app.state.config_path = config_path
@@ -1120,10 +1156,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     projects_root.mkdir(parents=True, exist_ok=True)
     app.state.projects_root = projects_root
     app.state.chat_hub = chat_hub
-    from tinyagentos.chat.reactions import WantsReplyRegistry as _WantsReplyRegistry
-    app.state.wants_reply = _WantsReplyRegistry()
-    from tinyagentos.chat.typing_registry import TypingRegistry as _TypingRegistry
-    app.state.typing = _TypingRegistry()
+    # wants_reply and typing are initialised by the lifespan — do not create
+    # duplicate instances here that would shadow the lifespan-created ones.
+    app.state.wants_reply = None
+    app.state.typing = None
     app.state.canvas_store = canvas_store
     app.state.desktop_settings = desktop_settings
     app.state.user_memory = user_memory
@@ -1135,35 +1171,23 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.ingest_pipeline = knowledge_ingest
     app.state.knowledge_monitor = knowledge_monitor
     app.state.mcp_store = mcp_store
-    app.state.mcp_supervisor = MCPSupervisor(mcp_store, catalog=registry, notif_store=notif_store, secrets_store=secrets_store)
-    app.state.orchestrator = RestartOrchestrator(app.state)
+    # mcp_supervisor, orchestrator, trace_registry, bridge_sessions,
+    # copilot_ticket_store, copilot_hub, and vapid_keypair are all created by
+    # the lifespan.  Setting None here ensures attribute-existence checks in
+    # routes work correctly during any brief pre-startup window, and that the
+    # lifespan-created instances are never shadowed by stale eager objects.
+    app.state.mcp_supervisor = None
+    app.state.orchestrator = None
     app.state.latest_framework_versions = {}
     import platform as _platform
     app.state.host_arch = _platform.machine()
-
-    from tinyagentos.trace_store import TraceStoreRegistry as _TraceStoreRegistry
-    app.state.trace_registry = _TraceStoreRegistry(data_dir)
-    # Emitter is None at eager-init time; the lifespan sets it once the port
-    # is known.  Routes that call record() before the lifespan (rare / tests)
-    # will simply skip emission.
+    app.state.trace_registry = None
     app.state.otel_emitter = None
     app.state.span_store_registry = None
-
-    from tinyagentos.bridge_session import BridgeSessionRegistry as _BridgeSessionRegistry
-    app.state.bridge_sessions = _BridgeSessionRegistry(
-        trace_registry=app.state.trace_registry,
-        chat_messages=chat_messages,
-        chat_channels=chat_channels,
-        chat_hub=chat_hub,
-        archive=getattr(app.state, "archive", None),
-    )
-
-    from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore as _CopilotTicketStore, CopilotHub as _CopilotHub
-    app.state.copilot_ticket_store = _CopilotTicketStore()
-    app.state.copilot_hub = _CopilotHub()
-
-    from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair as _load_vapid
-    app.state.vapid_keypair = _load_vapid(data_dir)
+    app.state.bridge_sessions = None
+    app.state.copilot_ticket_store = None
+    app.state.copilot_hub = None
+    app.state.vapid_keypair = None
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
