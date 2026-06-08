@@ -762,6 +762,25 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.trace_store import TraceStoreRegistry
         app.state.trace_registry = TraceStoreRegistry(data_dir)
 
+        # OTel receiver + emitter — Phase 2 observability.
+        # SpanStoreRegistry is created here (lifespan) and stored on app.state
+        # so both the /v1/traces receiver route and the /otel-spans read route
+        # share the same registry instance.
+        from tinyagentos.otel.receiver import setup_receiver
+        from tinyagentos.otel.emitter import OTelEmitter
+        _span_registry = setup_receiver(app.state, data_dir)
+        # Wire the emitter into each AgentTraceStore so record() → emit() works.
+        # Emitter points at this process's own /v1/traces route (same port as the
+        # main app).  The port is read from config; default 6969.
+        _bind_port_for_emitter = config.server.get("port", 6969)
+        _otel_emitter = OTelEmitter(
+            receiver_url=f"http://localhost:{_bind_port_for_emitter}"
+        )
+        app.state.otel_emitter = _otel_emitter
+        # Inject the emitter into the trace registry so AgentTraceStore.record()
+        # can call it after each write.
+        app.state.trace_registry.set_emitter(_otel_emitter)
+
         # Bridge session registry — per-agent queue + accumulator for openclaw.
         from tinyagentos.bridge_session import BridgeSessionRegistry
         app.state.bridge_sessions = BridgeSessionRegistry(
@@ -975,6 +994,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             pass
         await app.state.mcp_supervisor.stop_all()
         await app.state.trace_registry.close_all()
+        _emitter = getattr(app.state, "otel_emitter", None)
+        if _emitter is not None:
+            try:
+                await _emitter.close()
+            except Exception:
+                pass
+        _span_reg = getattr(app.state, "span_store_registry", None)
+        if _span_reg is not None:
+            try:
+                await _span_reg.close_all()
+            except Exception:
+                pass
         await mcp_store.close()
         await scheduler_history_store.close()
         await benchmark_store.close()
@@ -1112,6 +1143,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.trace_store import TraceStoreRegistry as _TraceStoreRegistry
     app.state.trace_registry = _TraceStoreRegistry(data_dir)
+    # Emitter is None at eager-init time; the lifespan sets it once the port
+    # is known.  Routes that call record() before the lifespan (rare / tests)
+    # will simply skip emission.
+    app.state.otel_emitter = None
+    app.state.span_store_registry = None
 
     from tinyagentos.bridge_session import BridgeSessionRegistry as _BridgeSessionRegistry
     app.state.bridge_sessions = _BridgeSessionRegistry(

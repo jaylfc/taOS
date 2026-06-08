@@ -22,7 +22,7 @@ from tinyagentos.trace_store import (
     VALID_KINDS,
     AgentTraceStore,
 )
-from tinyagentos.otel.span_store import SpanStore, SpanStoreRegistry
+from tinyagentos.otel.span_store import SpanStore, SpanStoreRegistry, _safe_slug
 
 
 # ---------------------------------------------------------------------------
@@ -336,3 +336,32 @@ async def test_otel_spans_route_filter_by_trace_id(client, tmp_path):
             app.state.span_store_registry = original
         elif hasattr(app.state, "span_store_registry"):
             del app.state.span_store_registry
+
+
+# ---------------------------------------------------------------------------
+# 9. _safe_slug: non-string inputs fall back to _system without raising
+# ---------------------------------------------------------------------------
+
+def test_safe_slug_none_returns_system():
+    """None (a common OTLP attribute default) must not raise TypeError."""
+    assert _safe_slug(None) == "_system"
+
+
+def test_safe_slug_int_returns_system():
+    """Integer OTLP attribute values must not raise TypeError."""
+    assert _safe_slug(123) == "_system"
+
+
+def test_safe_slug_bytes_returns_system():
+    """Bytes values must not raise TypeError."""
+    assert _safe_slug(b"agent") == "_system"
+
+
+def test_safe_slug_valid_str_unchanged():
+    """Valid slug strings must still pass through correctly."""
+    assert _safe_slug("my-agent.1") == "my-agent.1"
+
+
+def test_safe_slug_empty_str_returns_system():
+    """Empty string must still return _system (pre-existing behaviour)."""
+    assert _safe_slug("") == "_system"

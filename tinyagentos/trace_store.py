@@ -142,7 +142,7 @@ def _build_envelope(agent_name: str, kind: str, fields: dict) -> dict:
         raise ValueError(f"unknown kind: {kind!r}; valid: {sorted(VALID_KINDS)}")
     duration_ms = fields.get("duration_ms")
     if duration_ms is None and fields.get("ts_start") is not None:
-        duration_ms = int((time.time() - fields["ts_start"]) * 1000)
+        duration_ms = max(0, int((time.time() - fields["ts_start"]) * 1000))
     return {
         "v": SCHEMA_VERSION,
         "id": fields.get("id") or _new_id(),
@@ -173,10 +173,17 @@ class AgentTraceStore:
         # bucket_key -> aiosqlite.Connection
         self._connections: dict[str, aiosqlite.Connection] = {}
         self._lock = asyncio.Lock()
+        # Optional OTel emitter injected by the app lifespan.
+        # None = no-op (tests, early startup, or no receiver configured).
+        self._emitter: object | None = None  # type: tinyagentos.otel.emitter.OTelEmitter
 
     @property
     def slug(self) -> str:
         return self._slug
+
+    def set_emitter(self, emitter: object | None) -> None:
+        """Inject the OTel emitter.  None disables emission."""
+        self._emitter = emitter
 
     async def _open_bucket(self, bucket: str) -> aiosqlite.Connection:
         conn = self._connections.get(bucket)
@@ -279,6 +286,13 @@ class AgentTraceStore:
             # Opportunistic eviction — cheap, runs under our lock.
             now_bucket = _bucket_key(time.time())
             await self._evict_old_buckets(now_bucket)
+        # OTel emission is a side-effect of record() — D5: NOT routed via bus.py.
+        # Fire-and-forget; any emission error is silently dropped.
+        if self._emitter is not None:
+            try:
+                self._emitter.emit(envelope)
+            except Exception:
+                pass
         return envelope
 
     def _seal_bucket(self, bucket: str) -> None:
@@ -489,12 +503,21 @@ class TraceStoreRegistry:
         self._data_dir = data_dir
         self._stores: dict[str, AgentTraceStore] = {}
         self._lock = asyncio.Lock()
+        self._emitter: object | None = None
+
+    def set_emitter(self, emitter: object | None) -> None:
+        """Inject the OTel emitter into all current and future stores."""
+        self._emitter = emitter
+        # Propagate to already-open stores.
+        for store in self._stores.values():
+            store.set_emitter(emitter)
 
     async def get(self, slug: str) -> AgentTraceStore:
         async with self._lock:
             store = self._stores.get(slug)
             if store is None:
                 store = AgentTraceStore(self._data_dir, slug)
+                store.set_emitter(self._emitter)
                 self._stores[slug] = store
             return store
 
