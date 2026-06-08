@@ -766,6 +766,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         # LifecycleManager — on-demand start/stop for auto-managed backends.
         lifecycle_manager = LifecycleManager(backend_catalog)
+        lifecycle_manager.shared_client = http_client  # reuse shared client (#660)
         app.state.lifecycle_manager = lifecycle_manager
 
         # Trace registry — per-agent hourly-bucketed SQLite for zero-loss capture.
