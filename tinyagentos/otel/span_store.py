@@ -38,10 +38,12 @@ _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 def _safe_slug(slug: str) -> str:
     """Sanitize agent slug before it is embedded in a filesystem path.
 
-    Rejects empty strings, dot-traversal components, and any characters
-    outside the safe set ``[A-Za-z0-9._-]``.  Falls back to ``_system``
-    for anything that does not pass validation.
+    Rejects non-string values, empty strings, dot-traversal components, and
+    any characters outside the safe set ``[A-Za-z0-9._-]``.  Falls back to
+    ``_system`` for anything that does not pass validation.
     """
+    if not isinstance(slug, str):
+        return "_system"
     if not slug or slug in {".", ".."}:
         return "_system"
     if "/" in slug or "\\" in slug:
