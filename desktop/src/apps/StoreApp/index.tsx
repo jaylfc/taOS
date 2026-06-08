@@ -10,6 +10,7 @@ import { filterCatalog, compatFromResolver, hasUnknownHardwareDevice } from "./f
 import { resolveModel, type ResolveResponse } from "./resolver-types";
 import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
+import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 
 /* ------------------------------------------------------------------ */
 /*  Categories                                                         */
@@ -952,6 +953,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const handleInstall = useCallback((id: string) => {
     setApps((prev) => prev.map((a) => (a.id === id ? { ...a, installed: true } : a)));
     refreshInstalled();
+    emitAppEvent(APP_INSTALLED, id);
   }, [refreshInstalled]);
 
   const handleUninstall = useCallback((id: string) => {

@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { onAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 
 export interface InstalledService {
   app_id: string;
@@ -12,12 +13,14 @@ export interface InstalledService {
 
 /**
  * Fetches the list of installed services from /api/apps/installed.
+ * Re-fetches automatically when an app.installed event fires on the
+ * shared EventBus (e.g. after a successful StoreApp install).
  * Returns the list (empty while loading or on error).
  */
 export function useInstalledServices(): InstalledService[] {
   const [services, setServices] = useState<InstalledService[]>([]);
 
-  useEffect(() => {
+  const fetchServices = useCallback(() => {
     let cancelled = false;
     fetch("/api/apps/installed")
       .then((r) => (r.ok ? r.json() : []))
@@ -29,6 +32,16 @@ export function useInstalledServices(): InstalledService[] {
       });
     return () => { cancelled = true; };
   }, []);
+
+  // Initial fetch
+  useEffect(() => {
+    return fetchServices();
+  }, [fetchServices]);
+
+  // Re-fetch when an app installs successfully
+  useEffect(() => {
+    return onAppEvent(APP_INSTALLED, () => { fetchServices(); });
+  }, [fetchServices]);
 
   return services;
 }
