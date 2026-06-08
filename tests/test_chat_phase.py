@@ -18,9 +18,12 @@ def _make_phase_app(tmp_path):
 
 
 async def _client_with_bearer(tmp_path):
+    from tinyagentos.chat.typing_registry import TypingRegistry
     app = _make_phase_app(tmp_path)
     await app.state.chat_channels.init()
     await app.state.chat_messages.init()
+    # typing is lifespan-owned; tests that don't run the lifespan must init it.
+    app.state.typing = TypingRegistry()
     token = app.state.auth.get_local_token()
     client = AsyncClient(
         transport=ASGITransport(app=app),

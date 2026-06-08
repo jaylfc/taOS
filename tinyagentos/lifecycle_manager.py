@@ -28,6 +28,10 @@ class LifecycleManager:
     def __init__(self, catalog: "BackendCatalog") -> None:
         self._catalog = catalog
         self._keepalive_tasks: dict[str, asyncio.Task] = {}
+        # Optional shared httpx.AsyncClient injected from app.state.http_client.
+        # When set, _probe_health reuses it instead of opening a new connection
+        # per poll (avoids TCP churn during startup health polling).
+        self.shared_client = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -147,14 +151,23 @@ class LifecycleManager:
     # ------------------------------------------------------------------
 
     async def _probe_health(self, url: str) -> bool:
-        """Return True if the service at url responds to /health with status ok."""
+        """Return True if the service at url responds to /health with status ok.
+
+        Uses ``self.shared_client`` when available to avoid per-probe TCP
+        connection churn.  Falls back to a one-shot client if no shared client
+        has been injected (e.g. during tests or early startup).
+        """
         import httpx
+        probe_url = f"{url.rstrip('/')}/health"
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
-                resp = await client.get(f"{url.rstrip('/')}/health", timeout=3)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data.get("status") in ("ok", "healthy", "running")
+            if self.shared_client is not None:
+                resp = await self.shared_client.get(probe_url, timeout=3)
+            else:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+                    resp = await client.get(probe_url, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("status") in ("ok", "healthy", "running")
         except Exception:
             pass
         return False

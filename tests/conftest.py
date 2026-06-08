@@ -238,6 +238,10 @@ async def client(app, tmp_data_dir):
     _record = app.state.auth.find_user("admin")
     _uid = _record["id"] if _record else ""
     _token = app.state.auth.create_session(user_id=_uid, long_lived=True)
+    # Mark startup complete so the guard middleware lets test requests through.
+    # The test client bypasses the lifespan, so we set this manually after all
+    # stores have been manually initialized above.
+    app.state._startup_complete = True
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,
@@ -402,6 +406,7 @@ async def client_with_qmd(app_with_qmd):
     _record = app_with_qmd.state.auth.find_user("admin")
     _uid = _record["id"] if _record else ""
     _token = app_with_qmd.state.auth.create_session(user_id=_uid, long_lived=True)
+    app_with_qmd.state._startup_complete = True
     transport = ASGITransport(app=app_with_qmd)
     async with AsyncClient(
         transport=transport,

@@ -5,6 +5,8 @@ import logging
 import os
 from typing import Any
 
+from tinyagentos.task_utils import _create_supervised_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,12 +64,16 @@ class AgentChatRouter:
             )
 
     def dispatch(self, message: dict, channel: dict) -> None:
-        """Fire-and-forget entry point. Runs routing in a background task."""
+        """Fire-and-forget entry point. Runs routing in a supervised background task."""
         if message.get("content_type") == "system":
             return
         if message.get("state") == "streaming":
             return
-        asyncio.create_task(self._route(message, channel))
+        task_set = getattr(self._state, "_background_tasks", None)
+        if task_set is None:
+            asyncio.create_task(self._route(message, channel))
+        else:
+            _create_supervised_task(self._route(message, channel), task_set)
 
     async def _route(self, message: dict, channel: dict) -> None:
         try:
