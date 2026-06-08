@@ -5,7 +5,8 @@ Wants=docker.service
 
 [Service]
 Type=simple
-User=root
+User=taos
+Group=taos
 WorkingDirectory=/opt/tinyagentos
 ExecStart=/opt/tinyagentos/venv/bin/python -m uvicorn tinyagentos.app:create_app --factory --host 0.0.0.0 --port 6969
 Restart=on-failure
