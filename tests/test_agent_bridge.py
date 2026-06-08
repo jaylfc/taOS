@@ -13,12 +13,50 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.agent_bridge import create_bridge_app
 
+_TOKEN = "test-bridge-secret"
+
 
 @pytest_asyncio.fixture
 async def client():
+    """Unauthenticated client — no token configured on bridge."""
     bridge = create_bridge_app(app_id="blender", mcp_server=None)
     transport = ASGITransport(app=bridge)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def authed_client():
+    """Client with correct X-Bridge-Token header against a token-protected bridge."""
+    bridge = create_bridge_app(app_id="blender", mcp_server=None, bridge_token=_TOKEN)
+    transport = ASGITransport(app=bridge)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Bridge-Token": _TOKEN},
+    ) as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def unauthed_token_client():
+    """Client hitting a token-protected bridge without a token."""
+    bridge = create_bridge_app(app_id="blender", mcp_server=None, bridge_token=_TOKEN)
+    transport = ASGITransport(app=bridge)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def wrong_token_client():
+    """Client hitting a token-protected bridge with the wrong token."""
+    bridge = create_bridge_app(app_id="blender", mcp_server=None, bridge_token=_TOKEN)
+    transport = ASGITransport(app=bridge)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Bridge-Token": "wrong-token"},
+    ) as c:
         yield c
 
 
@@ -330,3 +368,82 @@ async def test_files_batch_unmatched_quote(client):
     data = resp.json()
     assert data["exit_code"] == -1
     assert "invalid/malformed command" in data["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# Auth guard tests (issue #672)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_exec_requires_token_when_configured(unauthed_token_client):
+    """POST /exec must return 401 when bridge_token is set and no header provided."""
+    resp = await unauthed_token_client.post("/exec", json={"command": "echo hi"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_exec_rejects_wrong_token(wrong_token_client):
+    """POST /exec must return 401 when bridge_token is set and wrong token sent."""
+    resp = await wrong_token_client.post("/exec", json={"command": "echo hi"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_exec_accepts_correct_token(authed_client):
+    """POST /exec must succeed when the correct X-Bridge-Token header is provided."""
+    resp = await authed_client.post("/exec", json={"command": "echo hi"})
+    assert resp.status_code == 200
+    assert resp.json()["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_files_batch_requires_token(unauthed_token_client):
+    """POST /files/batch must return 401 without the token."""
+    resp = await unauthed_token_client.post("/files/batch", json={"command": "ls /tmp"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_files_batch_accepts_correct_token(authed_client):
+    """POST /files/batch must succeed with correct token."""
+    resp = await authed_client.post("/files/batch", json={"command": "ls /tmp"})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_health_always_accessible(unauthed_token_client):
+    """GET /health must be accessible without a token even when auth is configured."""
+    resp = await unauthed_token_client.get("/health")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_no_token_configured_allows_exec(client):
+    """When no bridge_token is set, /exec is accessible (backward compat)."""
+    resp = await client.post("/exec", json={"command": "echo hello"})
+    assert resp.status_code == 200
+    assert resp.json()["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exec_rejects_same_length_wrong_token():
+    """POST /exec must return 401 for a wrong token that is the same length as the real one.
+
+    Ensures secrets.compare_digest is used rather than a timing-leaky != comparison.
+    The same-length property is important: a length-leaky check would also fail early
+    on different-length strings, so testing equal-length isolates the constant-time guarantee.
+    """
+    real_token = "abcdefghijklmnop"        # 16 chars
+    wrong_token = "abcdefghijklmnoX"       # same length, last char differs
+    assert len(real_token) == len(wrong_token)
+
+    bridge = create_bridge_app(app_id="test", bridge_token=real_token)
+    transport = ASGITransport(app=bridge)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Bridge-Token": wrong_token},
+    ) as c:
+        resp = await c.post("/exec", json={"command": "echo hi"})
+
+    assert resp.status_code == 401

@@ -801,6 +801,32 @@ class TestDeployAgent:
             env = mock_create.call_args.kwargs["env"]
             assert env["TAOS_BRIDGE_URL"] == "http://127.0.0.1:6969"
 
+    @pytest.mark.asyncio
+    async def test_bridge_token_injected_per_deployment(self, tmp_path):
+        """TAOS_BRIDGE_TOKEN is a 64-char hex secret generated uniquely per deployment."""
+        req = _req(name="token-test", data_dir=tmp_path)
+
+        async def mock_exec_fn(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.5")
+            return (0, "ok")
+
+        tokens = []
+        for _ in range(2):
+            with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+                 patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+                 patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+                 patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+                mock_create.return_value = {"success": True, "name": "taos-agent-token-test"}
+                await deploy_agent(req)
+                env = mock_create.call_args.kwargs["env"]
+                token = env["TAOS_BRIDGE_TOKEN"]
+                assert len(token) == 64, f"expected 64 hex chars, got {len(token)}"
+                assert all(c in "0123456789abcdef" for c in token)
+                tokens.append(token)
+        # Two deployments must produce different tokens.
+        assert tokens[0] != tokens[1], "bridge tokens must be unique per deployment"
+
 
 class TestSpliceTaosmdBlock:
     """Unit tests for the _splice_taosmd_block helper — no I/O involved."""

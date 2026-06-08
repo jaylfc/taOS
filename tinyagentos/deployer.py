@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -241,6 +242,11 @@ async def deploy_agent(req: DeployRequest) -> dict:
     except Exception:
         pass
     env["TAOS_TRACE_URL"] = f"http://{req.taos_host}:{req.taos_port}/api/trace"
+
+    # Agent-bridge shared token (issue #672 — defense-in-depth auth guard).
+    # Generate a per-deployment secret so only the controller (which knows
+    # the token) can call the command-executing bridge endpoints.
+    env["TAOS_BRIDGE_TOKEN"] = secrets.token_hex(32)
 
     # openclaw bridge connection info — injected so install.sh can write
     # /root/.openclaw/openclaw.json and /root/.openclaw/env inside the container

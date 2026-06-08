@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import secrets
 import shlex
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 
@@ -80,13 +81,22 @@ class McpToolRequest(BaseModel):
 def create_bridge_app(
     app_id: str | None = None,
     mcp_server: str | None = None,
+    bridge_token: str | None = None,
 ) -> FastAPI:
-    """Return a configured FastAPI bridge app."""
+    """Return a configured FastAPI bridge app.
+
+    ``bridge_token`` sets the shared secret that callers must supply via the
+    ``X-Bridge-Token`` request header on all command-executing endpoints.
+    When *None* the value is read from the ``TAOS_BRIDGE_TOKEN`` environment
+    variable.  If neither is set the dangerous routes are still accessible
+    (backward-compatible default for containers that predate this guard).
+    """
 
     resolved_app_id = app_id or os.environ.get("TAOS_APP_ID", "unknown")
     resolved_mcp = mcp_server or os.environ.get("TAOS_MCP_SERVER", "")
     resolved_agent_name = os.environ.get("TAOS_AGENT_NAME", "default")
     resolved_agent_type = os.environ.get("TAOS_AGENT_TYPE", "general")
+    resolved_token: str = bridge_token or os.environ.get("TAOS_BRIDGE_TOKEN", "")
 
     state: dict[str, Any] = {
         "app_id": resolved_app_id,
@@ -97,6 +107,17 @@ def create_bridge_app(
     }
 
     bridge = FastAPI(title="TinyAgentOS Agent Bridge", version="1.0.0")
+
+    # Shared-token auth dependency (issue #672 — defense-in-depth).
+    # Applied to every endpoint that executes commands or mutates state.
+    def _require_token(x_bridge_token: str | None = Header(default=None)) -> None:
+        if not resolved_token:
+            # No token configured — allow through (backward compat).
+            return
+        if not x_bridge_token:
+            raise HTTPException(status_code=401, detail="Invalid or missing X-Bridge-Token")
+        if not secrets.compare_digest(x_bridge_token, resolved_token):
+            raise HTTPException(status_code=401, detail="Invalid or missing X-Bridge-Token")
 
     # -----------------------------------------------------------------------
     # Health
@@ -135,7 +156,7 @@ def create_bridge_app(
     # -----------------------------------------------------------------------
 
     @bridge.post("/exec")
-    async def exec_command(req: ExecRequest):
+    async def exec_command(req: ExecRequest, _: None = Depends(_require_token)):
         # SECURITY: shlex.split prevents shell-metachar injection (;, |, $()) by running
         # the command without a shell. Single commands with arguments work as before.
         # Shell features (pipes, redirects) are intentionally NOT supported.
@@ -206,7 +227,7 @@ def create_bridge_app(
             return {"content": "", "error": str(exc)}
 
     @bridge.post("/files/write")
-    async def files_write(req: FileWriteRequest):
+    async def files_write(req: FileWriteRequest, _: None = Depends(_require_token)):
         try:
             p = Path(req.path)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +237,7 @@ def create_bridge_app(
             return {"status": "error", "error": str(exc)}
 
     @bridge.post("/files/batch")
-    async def files_batch(req: FileBatchRequest):
+    async def files_batch(req: FileBatchRequest, _: None = Depends(_require_token)):
         """Batch file ops via exec — delegates single commands with arguments.
         Shell features (pipes, redirects) are NOT supported; use /exec for those.
         # SECURITY: shlex.split without shell=True prevents metachar injection.
@@ -259,7 +280,7 @@ def create_bridge_app(
     # -----------------------------------------------------------------------
 
     @bridge.get("/screenshot")
-    async def screenshot():
+    async def screenshot(_: None = Depends(_require_token)):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "scrot", "-o", "/tmp/screenshot.png",
@@ -286,7 +307,7 @@ def create_bridge_app(
             return {"status": "error", "error": str(exc)}
 
     @bridge.post("/keyboard")
-    async def keyboard(req: KeyboardRequest):
+    async def keyboard(req: KeyboardRequest, _: None = Depends(_require_token)):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "xdotool", "key", req.keys,
@@ -306,7 +327,7 @@ def create_bridge_app(
             return {"status": "error", "error": str(exc)}
 
     @bridge.post("/mouse")
-    async def mouse(req: MouseRequest):
+    async def mouse(req: MouseRequest, _: None = Depends(_require_token)):
         try:
             _ALLOWED_BUTTONS = {1, 2, 3, 4, 5}
             if req.button not in _ALLOWED_BUTTONS:
@@ -330,7 +351,7 @@ def create_bridge_app(
             return {"status": "error", "error": str(exc)}
 
     @bridge.post("/type")
-    async def type_text(req: TypeRequest):
+    async def type_text(req: TypeRequest, _: None = Depends(_require_token)):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "xdotool", "type", "--clearmodifiers", "--", req.text,
@@ -358,7 +379,7 @@ def create_bridge_app(
         return {"enabled": state["computer_use"]}
 
     @bridge.post("/computer-use")
-    async def computer_use_set(req: ComputerUseRequest):
+    async def computer_use_set(req: ComputerUseRequest, _: None = Depends(_require_token)):
         state["computer_use"] = req.enabled
         return {"enabled": state["computer_use"]}
 
@@ -370,7 +391,7 @@ def create_bridge_app(
         }
 
     @bridge.post("/agent/swap")
-    async def agent_swap(req: AgentSwapRequest):
+    async def agent_swap(req: AgentSwapRequest, _: None = Depends(_require_token)):
         state["agent_name"] = req.agent_name
         state["agent_type"] = req.agent_type
         return {
