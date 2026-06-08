@@ -61,23 +61,25 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 log "installing Caddy"
 if [[ ! -f /etc/apt/sources.list.d/caddy-stable.list ]]; then
     # Caddy GPG key — verify fingerprint before importing into apt keyring.
-    # Expected fingerprint (2026-06-07, from https://caddyserver.com/docs/install#debian-ubuntu-raspbian):
-    #   6560 5542 3952 3116 B7C6  3B34 2BDC 6AE1 3DCB 977C
+    # Expected fingerprint (verified 2026-06-08 from https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    # and confirmed on keys.openpgp.org; key created 2016-04-01, algo RSA):
+    #   6576 0C51 EDEA 2017 CEA2  CA15 155B 6D79 CA56 EA34
     # Update if Caddy rotates their signing key.
     _caddy_key_tmp="$(mktemp /tmp/caddy-key.XXXXXX.asc)"
-    trap 'rm -f "$_caddy_key_tmp"' RETURN
     curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o "$_caddy_key_tmp" \
         || die "failed to fetch Caddy GPG key"
-    _caddy_expected_fp="656005542395231167C63B342BDC6AE13DCB977C"
+    _caddy_expected_fp="65760C51EDEA2017CEA2CA15155B6D79CA56EA34"
     _caddy_actual_fp="$(gpg --with-colons --import-options show-only \
         --import "$_caddy_key_tmp" 2>/dev/null \
         | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
     _caddy_actual_fp="${_caddy_actual_fp//[[:space:]]/}"
     if [[ "$_caddy_actual_fp" != "$_caddy_expected_fp" ]]; then
+        rm -f "$_caddy_key_tmp"
         die "Caddy GPG key fingerprint mismatch: expected $_caddy_expected_fp, got '$_caddy_actual_fp'"
     fi
     log "Caddy key fingerprint ok (${_caddy_actual_fp:0:16}…)"
     gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg < "$_caddy_key_tmp"
+    rm -f "$_caddy_key_tmp"
     echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
 https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
         > /etc/apt/sources.list.d/caddy-stable.list
@@ -97,7 +99,6 @@ if [[ ! -f /etc/apt/sources.list.d/pgdg.list ]]; then
     #   B97B 0AFC AA1A 47F0 44F2  44A0 7FCC 7D46 ACCC 4CF8
     # Update if PGDG rotates their signing key.
     _pg_key_tmp="$(mktemp /tmp/pgdg-key.XXXXXX.asc)"
-    trap 'rm -f "$_pg_key_tmp"' RETURN
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$_pg_key_tmp" \
         || die "failed to fetch PostgreSQL PGDG signing key"
     _pg_expected_fp="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
@@ -106,10 +107,12 @@ if [[ ! -f /etc/apt/sources.list.d/pgdg.list ]]; then
         | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
     _pg_actual_fp="${_pg_actual_fp//[[:space:]]/}"
     if [[ "$_pg_actual_fp" != "$_pg_expected_fp" ]]; then
+        rm -f "$_pg_key_tmp"
         die "PostgreSQL PGDG key fingerprint mismatch: expected $_pg_expected_fp, got '$_pg_actual_fp'"
     fi
     log "PostgreSQL PGDG key fingerprint ok (${_pg_actual_fp:0:16}…)"
     gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg < "$_pg_key_tmp"
+    rm -f "$_pg_key_tmp"
     echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] \
 https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs 2>/dev/null || echo bookworm)-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list

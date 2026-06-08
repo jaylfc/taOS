@@ -369,8 +369,9 @@ install_and_enroll_incus() {
                     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl gpg
 
                     # Fetch and verify Zabbly GPG key fingerprint before importing.
-                    # Expected fingerprint (2026-06-07, from https://github.com/zabbly/incus):
-                    #   4EFC 5906 96CB 15B8 7C73  A3AD 5634 2C3A 6D70 5DE1
+                    # Expected fingerprint (verified 2026-06-08 from https://pkgs.zabbly.com/key.asc
+                    # and confirmed on keyserver.ubuntu.com):
+                    #   4EFC 5906 96CB 15B8 7C73  A3AD 82CC 8797 C838 DCFD
                     # Update if Zabbly rotates their signing key.
                     local _zabbly_key_tmp
                     _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX.asc)"
@@ -378,7 +379,7 @@ install_and_enroll_incus() {
                     trap "rm -f '$_zabbly_key_tmp'" RETURN
                     curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp" \
                         || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
-                    local _zabbly_expected_fp="4EFC590696CB15B87C73A3AD56342C3A6D70DE1"
+                    local _zabbly_expected_fp="4EFC590696CB15B87C73A3AD82CC8797C838DCFD"
                     local _zabbly_actual_fp
                     _zabbly_actual_fp="$(gpg --with-colons --import-options show-only \
                         --import "$_zabbly_key_tmp" 2>/dev/null \

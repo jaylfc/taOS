@@ -27,21 +27,21 @@ set -euo pipefail
 #   NodeSource releases a new setup_22.x revision.
 # ---------------------------------------------------------------------------
 
-TAOS_REPO="https://github.com/jaylfc/tinyagentos.git"
+TAOS_REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos.git}"
 # Pin to the commit that triggered this image build; update on each release.
 # To get the current HEAD: git -C <taos-repo> rev-parse HEAD
-TAOS_COMMIT="7c595306cacce5b0a13670544e66deb44e3c9c74"
+TAOS_COMMIT="${TAOS_COMMIT:-7c595306cacce5b0a13670544e66deb44e3c9c74}"
 
-APP_CATALOG_REPO="https://github.com/jaylfc/tinyagentos-app-catalog.git"
+APP_CATALOG_REPO="${APP_CATALOG_REPO:-https://github.com/jaylfc/tinyagentos-app-catalog.git}"
 # Pin to main branch HEAD at image-build time; update each release.
 # To get: git ls-remote https://github.com/jaylfc/tinyagentos-app-catalog.git HEAD
-APP_CATALOG_COMMIT="HEAD"  # Residual risk: pinned to branch; no release tags yet
+APP_CATALOG_COMMIT="${APP_CATALOG_COMMIT:-HEAD}"  # Residual risk: pinned to branch; no release tags yet
 
 # NodeSource setup_22.x — download-verify-execute
 # SHA256 of https://deb.nodesource.com/setup_22.x as of 2026-06-07
 # RESIDUAL RISK: NodeSource publishes no detached signature for this script.
 # Update this hash whenever NodeSource revises setup_22.x (e.g. new major Node release).
-NODESOURCE_SETUP_SHA256="b1a9fa90e72de9ac7b52cf03f6e16b0a4b1929b9c0e7b4e2c9e9e6b4e5a3c8d"
+NODESOURCE_SETUP_SHA256="${NODESOURCE_SETUP_SHA256:-b1a9fa90e72de9ac7b52cf03f6e16b0a4b1929b9c0e7b4e2c9e9e6b4e5a3c8d}"
 
 # ---------------------------------------------------------------------------
 # Helpers
