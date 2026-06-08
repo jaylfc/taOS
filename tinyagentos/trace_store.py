@@ -35,6 +35,8 @@ from typing import Any
 
 import aiosqlite
 
+from tinyagentos.db_migrations import apply_wal_pragmas_async
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
@@ -171,6 +173,7 @@ class AgentTraceStore:
             pass
         db_path = _bucket_db_path(self._data_dir, self._slug, bucket)
         conn = await aiosqlite.connect(str(db_path))
+        await apply_wal_pragmas_async(conn)
         await conn.executescript(TRACE_SCHEMA)
         await conn.commit()
         self._connections[bucket] = conn

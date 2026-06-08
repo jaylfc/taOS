@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tinyagentos.db_migrations import apply_wal_pragmas
+
 if TYPE_CHECKING:
     import httpx
 
@@ -241,6 +243,7 @@ class XWatchStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        apply_wal_pragmas(self._conn)
         self._conn.execute(WATCH_SCHEMA)
         self._conn.commit()
 
