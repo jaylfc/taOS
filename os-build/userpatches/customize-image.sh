@@ -18,13 +18,11 @@ set -euo pipefail
 #   version of the taOS server and scripts is embedded. Update to the commit
 #   you want to ship on every image rebuild.
 #
-# NODESOURCE_SETUP_SHA256: SHA-256 of the NodeSource setup_22.x script.
-#   Verify with: curl -fsSL https://deb.nodesource.com/setup_22.x | sha256sum
-#   Last verified: 2026-06-07 against setup_22.x at NodeSource GitHub
-#   (https://github.com/nodesource/distributions) for Debian/Ubuntu.
-#   RESIDUAL RISK: NodeSource does not publish a detached signature for
-#   setup_22.x; the SHA256 below is the only checksum guard. Update when
-#   NodeSource releases a new setup_22.x revision.
+# NODESOURCE_REPO_KEY_FP: GPG fingerprint of the NodeSource apt repo signing key.
+#   Verify with: curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
+#     gpg --with-colons --import-options show-only --import | awk -F: '/^fpr:/{print $10}' | head -1
+#   Last verified: 2026-06-08 against https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+#   Update if NodeSource rotates their signing key.
 # ---------------------------------------------------------------------------
 
 TAOS_REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos.git}"
@@ -37,25 +35,28 @@ APP_CATALOG_REPO="${APP_CATALOG_REPO:-https://github.com/jaylfc/tinyagentos-app-
 # To get: git ls-remote https://github.com/jaylfc/tinyagentos-app-catalog.git HEAD
 APP_CATALOG_COMMIT="${APP_CATALOG_COMMIT:-HEAD}"  # Residual risk: pinned to branch; no release tags yet
 
-# NodeSource setup_22.x — download-verify-execute
-# SHA256 of https://deb.nodesource.com/setup_22.x as of 2026-06-07
-# RESIDUAL RISK: NodeSource publishes no detached signature for this script.
-# Update this hash whenever NodeSource revises setup_22.x (e.g. new major Node release).
-NODESOURCE_SETUP_SHA256="${NODESOURCE_SETUP_SHA256:-b1a9fa90e72de9ac7b52cf03f6e16b0a4b1929b9c0e7b4e2c9e9e6b4e5a3c8d}"
+# NodeSource repo GPG key fingerprint — verified 2026-06-08 against
+# https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+# and confirmed against NodeSource's official documentation at
+# https://github.com/nodesource/distributions
+# Update if NodeSource rotates their signing key.
+NODESOURCE_REPO_KEY_FP="${NODESOURCE_REPO_KEY_FP:-6F71F525282841EEDAF851B42F59B5F99B1BE0B4}"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-verify_sha256() {
-    local file="$1" expected="$2" label="$3" actual
-    actual="$(sha256sum "$file" | awk '{print $1}')"
-    if [[ "$actual" != "$expected" ]]; then
-        echo "ERROR: sha256 mismatch for $label: expected $expected, got $actual" >&2
-        echo "  Corrupted download or upstream script changed. Refusing to execute." >&2
+verify_gpg_fingerprint() {
+    local keyfile="$1" expected_fp="$2" label="$3" actual_fp
+    actual_fp="$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null \
+        | awk -F: '/^fpr:/{print $10}' | head -1)"
+    actual_fp="${actual_fp//[[:space:]]/}"
+    if [[ "$actual_fp" != "$expected_fp" ]]; then
+        echo "ERROR: GPG fingerprint mismatch for $label: expected $expected_fp, got $actual_fp" >&2
+        echo "  Refusing to import — check the key source or update the pinned fingerprint." >&2
         exit 1
     fi
-    echo ">>> sha256 ok for $label (${actual:0:16}…)"
+    echo ">>> GPG fingerprint ok for $label (${actual_fp:0:16}…)"
 }
 
 echo ">>> TinyAgentOS: Installing system dependencies"
@@ -63,27 +64,32 @@ echo ">>> TinyAgentOS: Installing system dependencies"
 apt-get update -qq
 apt-get install -y -qq \
     python3 python3-pip python3-venv \
-    git curl wget \
+    git curl wget gnupg \
     incus-client \
     docker.io docker-compose \
     avahi-daemon
 
 # ---------------------------------------------------------------------------
-# Node.js 22 LTS via NodeSource — download, verify SHA256, then execute
+# Node.js 22 LTS via NodeSource GPG-signed apt repository
+# No curl-pipe-bash: we verify the key fingerprint then add the signed repo.
 # ---------------------------------------------------------------------------
 echo ">>> TinyAgentOS: Installing Node.js 22 LTS"
-_ns_tmp="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)"
-trap 'rm -f "$_ns_tmp"' EXIT
+_ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX.asc)"
+trap 'rm -f "$_ns_key_tmp"' EXIT
 
-curl -fsSL https://deb.nodesource.com/setup_22.x -o "$_ns_tmp"
-# NOTE: If this sha256 check fails, fetch the current hash with:
-#   curl -fsSL https://deb.nodesource.com/setup_22.x | sha256sum
-# and update NODESOURCE_SETUP_SHA256 above, then rebuild the image.
-verify_sha256 "$_ns_tmp" "$NODESOURCE_SETUP_SHA256" "nodesource-setup_22.x"
-bash "$_ns_tmp"
-rm -f "$_ns_tmp"
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o "$_ns_key_tmp"
+verify_gpg_fingerprint "$_ns_key_tmp" "$NODESOURCE_REPO_KEY_FP" "nodesource-repo.gpg.key"
+
+mkdir -p /usr/share/keyrings
+gpg --dearmor -o /usr/share/keyrings/nodesource.gpg < "$_ns_key_tmp"
+chmod 644 /usr/share/keyrings/nodesource.gpg
+rm -f "$_ns_key_tmp"
 trap - EXIT
 
+printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+    > /etc/apt/sources.list.d/nodesource.sources
+
+apt-get update -qq
 apt-get install -y -qq nodejs
 
 # ---------------------------------------------------------------------------

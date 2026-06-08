@@ -141,48 +141,72 @@ ensure_node22() {
     log "node ${node_major:-not found} is too old (need >=22) — upgrading to Node 22 LTS via NodeSource"
 
     if command -v apt-get >/dev/null 2>&1; then
-        # Download NodeSource setup script, verify SHA256, then execute.
-        # RESIDUAL RISK: NodeSource publishes no detached signature for setup_22.x;
-        # SHA256 is the only integrity guard.  Update TAOS_NODESOURCE_DEB_SHA256 in
-        # the environment (or hardcode below) when NodeSource revises this script.
-        # Verify with: curl -fsSL https://deb.nodesource.com/setup_22.x | sha256sum
-        # Pinned: 2026-06-07
-        local _ns_deb_sha256="${TAOS_NODESOURCE_DEB_SHA256:-b1a9fa90e72de9ac7b52cf03f6e16b0a4b1929b9c0e7b4e2c9e9e6b4e5a3c8d}"
-        local _ns_tmp
-        _ns_tmp="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)"
+        # Install Node 22 via NodeSource's GPG-signed apt repository.
+        # This mirrors how Zabbly/Caddy keys are handled in this file: download
+        # the key, verify its fingerprint against a known-good value, import to a
+        # named keyring, then add the signed-by sources entry.
+        #
+        # NodeSource repo GPG key fingerprint — verified 2026-06-08 against
+        # https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        # and confirmed against NodeSource's official documentation at
+        # https://github.com/nodesource/distributions
+        # Update if NodeSource rotates their signing key.
+        local _ns_expected_fp="6F71F525282841EEDAF851B42F59B5F99B1BE0B4"
+        local _ns_key_tmp
+        _ns_key_tmp="$(mktemp /tmp/nodesource-key.XXXXXX.asc)"
         # shellcheck disable=SC2064
-        trap "rm -f '$_ns_tmp'" RETURN
-        curl -fsSL https://deb.nodesource.com/setup_22.x -o "$_ns_tmp" \
-            || die "failed to download NodeSource setup_22.x"
-        local _ns_actual
-        _ns_actual="$(sha256sum "$_ns_tmp" | awk '{print $1}')"
-        if [[ "$_ns_actual" != "$_ns_deb_sha256" ]]; then
-            die "SHA256 mismatch for NodeSource setup_22.x: expected $_ns_deb_sha256, got $_ns_actual — refusing to execute"
+        trap "rm -f '$_ns_key_tmp'" RETURN
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o "$_ns_key_tmp" \
+            || die "failed to download NodeSource repo GPG key"
+        local _ns_actual_fp
+        _ns_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_actual_fp="${_ns_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_actual_fp" != "$_ns_expected_fp" ]]; then
+            die "NodeSource repo key fingerprint mismatch: expected $_ns_expected_fp, got '$_ns_actual_fp' — refusing to import"
         fi
-        log "NodeSource setup_22.x sha256 ok (${_ns_actual:0:16}…)"
-        sudo -E bash "$_ns_tmp" \
-            || die "NodeSource setup script failed"
+        log "NodeSource key fingerprint ok (${_ns_actual_fp:0:16}…)"
+        sudo mkdir -p /usr/share/keyrings
+        sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg < "$_ns_key_tmp" \
+            || die "gpg --dearmor for NodeSource key failed"
+        sudo chmod 644 /usr/share/keyrings/nodesource.gpg
+        printf 'Types: deb\nURIs: https://deb.nodesource.com/node_22.x\nSuites: nodistro\nComponents: main\nSigned-By: /usr/share/keyrings/nodesource.gpg\n' \
+            | sudo tee /etc/apt/sources.list.d/nodesource.sources > /dev/null
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+            || die "apt-get update after NodeSource repo add failed"
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
             || die "apt-get install nodejs (22) failed"
     elif command -v dnf >/dev/null 2>&1; then
-        # Same pattern for RPM-based distros.
-        # Verify with: curl -fsSL https://rpm.nodesource.com/setup_22.x | sha256sum
-        # Pinned: 2026-06-07
-        local _ns_rpm_sha256="${TAOS_NODESOURCE_RPM_SHA256:-e4d2f7a1c8b5e9f3a0d6c2e5b8f1d4a7c0e3f6a9d2b5e8c1f4a7d0e3b6c9f2a5}"
-        local _ns_tmp
-        _ns_tmp="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)"
+        # Install Node 22 via NodeSource's GPG-signed dnf repository.
+        # Key fingerprint verified 2026-06-08 against
+        # https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+        # Update if NodeSource rotates their RPM signing key.
+        local _ns_rpm_expected_fp="242B813831AF09562B6C46F76B88DA4E3AF28A14"
+        local _ns_rpm_key_tmp
+        _ns_rpm_key_tmp="$(mktemp /tmp/nodesource-rpm-key.XXXXXX.asc)"
         # shellcheck disable=SC2064
-        trap "rm -f '$_ns_tmp'" RETURN
-        curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$_ns_tmp" \
-            || die "failed to download NodeSource setup_22.x"
-        local _ns_actual
-        _ns_actual="$(sha256sum "$_ns_tmp" | awk '{print $1}')"
-        if [[ "$_ns_actual" != "$_ns_rpm_sha256" ]]; then
-            die "SHA256 mismatch for NodeSource setup_22.x (RPM): expected $_ns_rpm_sha256, got $_ns_actual — refusing to execute"
+        trap "rm -f '$_ns_rpm_key_tmp'" RETURN
+        curl -fsSL https://rpm.nodesource.com/gpgkey/ns-operations-public.key \
+            -o "$_ns_rpm_key_tmp" \
+            || die "failed to download NodeSource RPM repo GPG key"
+        local _ns_rpm_actual_fp
+        _ns_rpm_actual_fp="$(gpg --with-colons --import-options show-only \
+            --import "$_ns_rpm_key_tmp" 2>/dev/null \
+            | awk -F: '/^fpr:/{print $10}' | head -1)"
+        _ns_rpm_actual_fp="${_ns_rpm_actual_fp//[[:space:]]/}"
+        if [[ "$_ns_rpm_actual_fp" != "$_ns_rpm_expected_fp" ]]; then
+            die "NodeSource RPM key fingerprint mismatch: expected $_ns_rpm_expected_fp, got '$_ns_rpm_actual_fp' — refusing to import"
         fi
-        log "NodeSource setup_22.x (RPM) sha256 ok (${_ns_actual:0:16}…)"
-        sudo -E bash "$_ns_tmp" \
-            || die "NodeSource setup script failed"
+        log "NodeSource RPM key fingerprint ok (${_ns_rpm_actual_fp:0:16}…)"
+        local _ns_rpm_arch
+        _ns_rpm_arch="$(uname -m)"
+        sudo rpm --import "$_ns_rpm_key_tmp" \
+            || die "rpm --import for NodeSource key failed"
+        printf '[nodesource-nodejs]\nname=Node.js Packages for Linux RPM based distros - %s\nbaseurl=https://rpm.nodesource.com/pub_22.x/nodistro/nodejs/%s\npriority=9\nenabled=1\ngpgcheck=1\ngpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key\nmodule_hotfixes=1\n' \
+            "$_ns_rpm_arch" "$_ns_rpm_arch" \
+            | sudo tee /etc/yum.repos.d/nodesource-nodejs.repo > /dev/null
         sudo dnf install -y nodejs \
             || die "dnf install nodejs (22) failed"
     elif command -v pacman >/dev/null 2>&1; then
