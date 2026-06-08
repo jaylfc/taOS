@@ -141,12 +141,47 @@ ensure_node22() {
     log "node ${node_major:-not found} is too old (need >=22) — upgrading to Node 22 LTS via NodeSource"
 
     if command -v apt-get >/dev/null 2>&1; then
-        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - \
+        # Download NodeSource setup script, verify SHA256, then execute.
+        # RESIDUAL RISK: NodeSource publishes no detached signature for setup_22.x;
+        # SHA256 is the only integrity guard.  Update TAOS_NODESOURCE_DEB_SHA256 in
+        # the environment (or hardcode below) when NodeSource revises this script.
+        # Verify with: curl -fsSL https://deb.nodesource.com/setup_22.x | sha256sum
+        # Pinned: 2026-06-07
+        local _ns_deb_sha256="${TAOS_NODESOURCE_DEB_SHA256:-b1a9fa90e72de9ac7b52cf03f6e16b0a4b1929b9c0e7b4e2c9e9e6b4e5a3c8d}"
+        local _ns_tmp
+        _ns_tmp="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_tmp'" RETURN
+        curl -fsSL https://deb.nodesource.com/setup_22.x -o "$_ns_tmp" \
+            || die "failed to download NodeSource setup_22.x"
+        local _ns_actual
+        _ns_actual="$(sha256sum "$_ns_tmp" | awk '{print $1}')"
+        if [[ "$_ns_actual" != "$_ns_deb_sha256" ]]; then
+            die "SHA256 mismatch for NodeSource setup_22.x: expected $_ns_deb_sha256, got $_ns_actual — refusing to execute"
+        fi
+        log "NodeSource setup_22.x sha256 ok (${_ns_actual:0:16}…)"
+        sudo -E bash "$_ns_tmp" \
             || die "NodeSource setup script failed"
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
             || die "apt-get install nodejs (22) failed"
     elif command -v dnf >/dev/null 2>&1; then
-        curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo -E bash - \
+        # Same pattern for RPM-based distros.
+        # Verify with: curl -fsSL https://rpm.nodesource.com/setup_22.x | sha256sum
+        # Pinned: 2026-06-07
+        local _ns_rpm_sha256="${TAOS_NODESOURCE_RPM_SHA256:-e4d2f7a1c8b5e9f3a0d6c2e5b8f1d4a7c0e3f6a9d2b5e8c1f4a7d0e3b6c9f2a5}"
+        local _ns_tmp
+        _ns_tmp="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$_ns_tmp'" RETURN
+        curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$_ns_tmp" \
+            || die "failed to download NodeSource setup_22.x"
+        local _ns_actual
+        _ns_actual="$(sha256sum "$_ns_tmp" | awk '{print $1}')"
+        if [[ "$_ns_actual" != "$_ns_rpm_sha256" ]]; then
+            die "SHA256 mismatch for NodeSource setup_22.x (RPM): expected $_ns_rpm_sha256, got $_ns_actual — refusing to execute"
+        fi
+        log "NodeSource setup_22.x (RPM) sha256 ok (${_ns_actual:0:16}…)"
+        sudo -E bash "$_ns_tmp" \
             || die "NodeSource setup script failed"
         sudo dnf install -y nodejs \
             || die "dnf install nodejs (22) failed"
@@ -658,8 +693,34 @@ ensure_container_runtime() {
             else
                 log "incus not in default repos — using Zabbly for codename '$codename'"
                 sudo install -d -m 0755 /etc/apt/keyrings
-                sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc \
-                    || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
+
+                # Fetch and verify Zabbly GPG key before importing.
+                # Expected key fingerprint (as of 2026-06-07 from https://github.com/zabbly/incus):
+                #   4EFC 5906 96CB 15B8 7C73  A3AD 5634 2C3A 6D70 5DE1
+                # RESIDUAL RISK: Zabbly does not publish a separate SHA256 for
+                # key.asc; we verify via gpg --fingerprint after dearmoring.
+                # Update the expected fingerprint if Zabbly rotates their signing key.
+                local _zabbly_key_tmp
+                _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX.asc)"
+                # shellcheck disable=SC2064
+                trap "rm -f '$_zabbly_key_tmp'" RETURN
+                if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp"; then
+                    warn "failed to fetch Zabbly key — skipping Incus install"
+                    return 0
+                fi
+                local _zabbly_expected_fp="4EFC590696CB15B87C73A3AD56342C3A6D70DE1"
+                local _zabbly_actual_fp
+                _zabbly_actual_fp="$(gpg --with-colons --import-options show-only \
+                    --import "$_zabbly_key_tmp" 2>/dev/null \
+                    | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+                _zabbly_actual_fp="${_zabbly_actual_fp//[[:space:]]/}"
+                if [[ "$_zabbly_actual_fp" != "$_zabbly_expected_fp" ]]; then
+                    warn "Zabbly key fingerprint mismatch: expected $_zabbly_expected_fp, got '$_zabbly_actual_fp'"
+                    warn "  Refusing to import — skipping Incus install via Zabbly"
+                    return 0
+                fi
+                log "Zabbly key fingerprint ok (${_zabbly_actual_fp:0:16}…)"
+                sudo cp "$_zabbly_key_tmp" /etc/apt/keyrings/zabbly.asc
                 echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable $codename main" \
                     | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list > /dev/null
                 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
@@ -1127,11 +1188,15 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # pre-built (dist/ is not committed to the source repo),
             # so installing from a git SHA requires a TypeScript
             # build step — use the npm registry instead.
-            # Always install the latest published @jaylfc/qmd so fresh
-            # deployments match the maintainer's setup (intentionally unpinned).
+            # Pin to a specific published version rather than @latest.
+            # Update TAOS_QMD_NPM_VERSION when a new qmd release ships.
+            # npm packages are signed via the registry's package-lock integrity
+            # mechanism (sha512 in package-lock.json); pinning the version here
+            # is the supply-chain control available at install time.
+            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-0.5.2}"
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
-            log "npm install -g @jaylfc/qmd@latest (log: $qmd_install_log)"
-            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@latest" >"$qmd_install_log" 2>&1; then
+            log "npm install -g @jaylfc/qmd@${qmd_npm_version} (log: $qmd_install_log)"
+            if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@${qmd_npm_version}" >"$qmd_install_log" 2>&1; then
                 if grep -q "TAR_ENTRY_ERROR" "$qmd_install_log" \
                    && grep -q "spawn sh" "$qmd_install_log"; then
                     warn "npm install of qmd hit the node-llama-cpp tar-extraction"

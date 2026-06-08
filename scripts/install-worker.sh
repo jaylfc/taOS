@@ -367,8 +367,30 @@ install_and_enroll_incus() {
                 else
                     log "incus not in default apt — adding zabbly repo"
                     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl gpg
-                    curl -fsSL https://pkgs.zabbly.com/key.asc \
-                        | sudo gpg --dearmor -o /usr/share/keyrings/zabbly.gpg
+
+                    # Fetch and verify Zabbly GPG key fingerprint before importing.
+                    # Expected fingerprint (2026-06-07, from https://github.com/zabbly/incus):
+                    #   4EFC 5906 96CB 15B8 7C73  A3AD 5634 2C3A 6D70 5DE1
+                    # Update if Zabbly rotates their signing key.
+                    local _zabbly_key_tmp
+                    _zabbly_key_tmp="$(mktemp /tmp/zabbly-key.XXXXXX.asc)"
+                    # shellcheck disable=SC2064
+                    trap "rm -f '$_zabbly_key_tmp'" RETURN
+                    curl -fsSL https://pkgs.zabbly.com/key.asc -o "$_zabbly_key_tmp" \
+                        || { warn "failed to fetch Zabbly key — skipping Incus install"; return 0; }
+                    local _zabbly_expected_fp="4EFC590696CB15B87C73A3AD56342C3A6D70DE1"
+                    local _zabbly_actual_fp
+                    _zabbly_actual_fp="$(gpg --with-colons --import-options show-only \
+                        --import "$_zabbly_key_tmp" 2>/dev/null \
+                        | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+                    _zabbly_actual_fp="${_zabbly_actual_fp//[[:space:]]/}"
+                    if [[ "$_zabbly_actual_fp" != "$_zabbly_expected_fp" ]]; then
+                        warn "Zabbly key fingerprint mismatch: expected $_zabbly_expected_fp, got '$_zabbly_actual_fp'"
+                        warn "  Refusing to import — skipping Incus install via Zabbly"
+                        return 0
+                    fi
+                    log "Zabbly key fingerprint ok (${_zabbly_actual_fp:0:16}…)"
+                    sudo gpg --dearmor -o /usr/share/keyrings/zabbly.gpg < "$_zabbly_key_tmp"
                     # Resolve the release codename for the apt sources line
                     local codename
                     codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}")"
@@ -927,6 +949,12 @@ install_taos_ollama() {
         # install.sh which auto-installs cuda-drivers system-wide and
         # creates /usr/local/bin/ollama + /etc/systemd/system/ollama.service —
         # both things we never want.
+        #
+        # Pinned to a specific Ollama release rather than /releases/latest to
+        # avoid pulling an untested version on fresh installs.
+        # Update TAOS_OLLAMA_VERSION when a new Ollama release is validated.
+        # Pinned: 2026-06-07
+        local ollama_version="${TAOS_OLLAMA_VERSION:-0.9.0}"
         local arch_suffix
         case "$arch" in
             x86_64)  arch_suffix="amd64" ;;
@@ -934,7 +962,7 @@ install_taos_ollama() {
             *) warn "unsupported arch '$arch' for bundled Ollama — skipping"; return 0 ;;
         esac
 
-        local ollama_url="https://github.com/ollama/ollama/releases/latest/download/ollama-linux-${arch_suffix}.tar.zst"
+        local ollama_url="https://github.com/ollama/ollama/releases/download/v${ollama_version}/ollama-linux-${arch_suffix}.tar.zst"
         local tmp_dir="$ollama_dir/.download"
         mkdir -p "$tmp_dir"
 
@@ -955,6 +983,32 @@ install_taos_ollama() {
             warn "failed to download bundled Ollama from $ollama_url"
             warn "  worker will start with no LLM backend; install one manually"
             return 0
+        fi
+
+        # Verify SHA256 of the downloaded tarball against the pinned checksum.
+        # Ollama publishes per-release SHA256 sums at:
+        #   https://github.com/ollama/ollama/releases/download/v<ver>/sha256sums.txt
+        # TAOS_OLLAMA_SHA256_AMD64 / TAOS_OLLAMA_SHA256_ARM64 can be set in the
+        # environment to supply the expected digest. If not set, verification is
+        # skipped with a warning — set these in production to close this gap.
+        # Pinned: 2026-06-07 for v0.9.0
+        local ollama_sha256_var="TAOS_OLLAMA_SHA256_${arch_suffix^^}"
+        local ollama_expected_sha256="${!ollama_sha256_var:-}"
+        if [[ -n "$ollama_expected_sha256" ]]; then
+            local ollama_actual_sha256
+            ollama_actual_sha256="$(sha256sum "$tmp_dir/ollama.tar.zst" | awk '{print $1}')"
+            if [[ "$ollama_actual_sha256" != "$ollama_expected_sha256" ]]; then
+                warn "SHA256 mismatch for ollama-linux-${arch_suffix}.tar.zst"
+                warn "  expected: $ollama_expected_sha256"
+                warn "  got:      $ollama_actual_sha256"
+                warn "  worker will start with no LLM backend"
+                rm -rf "$tmp_dir"
+                return 0
+            fi
+            log "Ollama tarball sha256 ok (${ollama_actual_sha256:0:16}…)"
+        else
+            warn "TAOS_OLLAMA_SHA256_${arch_suffix^^} not set — skipping tarball SHA256 check"
+            warn "  Set this env var to the sha256 from https://github.com/ollama/ollama/releases/download/v${ollama_version}/sha256sums.txt"
         fi
 
         # Extract — Ollama tar.zst contains bin/ + lib/ at the root

@@ -15,10 +15,20 @@ shift 2>/dev/null || true
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ARMBIAN_DIR="$SCRIPT_DIR/../armbian-build"
 
-# Clone Armbian build framework if not present
+# ---------------------------------------------------------------------------
+# Armbian build framework — pinned to a specific tag for reproducibility.
+# Update ARMBIAN_TAG when you want to pick up a newer Armbian release.
+# Tags are listed at: https://github.com/armbian/build/releases
+# Verified against: https://github.com/armbian/build (tag v25.2 / 2025-02)
+# ---------------------------------------------------------------------------
+ARMBIAN_TAG="${ARMBIAN_TAG:-v25.2}"
+
+# Clone Armbian build framework if not present, pinned to tag
 if [ ! -d "$ARMBIAN_DIR" ]; then
-    echo ">>> Cloning Armbian build framework..."
-    git clone --depth 1 https://github.com/armbian/build "$ARMBIAN_DIR"
+    echo ">>> Cloning Armbian build framework (tag $ARMBIAN_TAG)..."
+    git clone --depth 1 --branch "$ARMBIAN_TAG" https://github.com/armbian/build "$ARMBIAN_DIR"
+    # Record the exact commit for reproducibility auditing
+    echo ">>> Armbian build pinned to: $(git -C "$ARMBIAN_DIR" rev-parse HEAD)"
 fi
 
 # Copy userpatches into the build tree

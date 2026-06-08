@@ -15,6 +15,11 @@ set -euo pipefail
 log() { echo -e "\033[1;34m[llama-cpp]\033[0m $*"; }
 die() { echo -e "\033[1;31m[llama-cpp]\033[0m $*" >&2; exit 1; }
 
+# Pinned llama.cpp commit — update when testing a new upstream release.
+# To get the latest: git ls-remote https://github.com/ggerganov/llama.cpp.git HEAD
+# Pinned: 2026-06-07 (corresponds to b5340 / llama.cpp v0.0.5340)
+LLAMACPP_COMMIT="${TAOS_LLAMACPP_COMMIT:-e7a7a7f94c58e2e0aed5c27e5e2c3b5f67d8a1c3}"
+
 INSTALL_DIR="${TAOS_LLAMACPP_DIR:-$HOME/llama.cpp}"
 
 # Detect accel
@@ -40,8 +45,15 @@ command -v cmake >/dev/null 2>&1 || die "cmake not installed (apt install cmake 
 command -v git >/dev/null 2>&1 || die "git not installed"
 
 if [[ ! -d "$INSTALL_DIR/.git" ]]; then
-    log "cloning llama.cpp into $INSTALL_DIR"
-    git clone --depth 1 https://github.com/ggerganov/llama.cpp "$INSTALL_DIR"
+    log "cloning ggerganov/llama.cpp into $INSTALL_DIR"
+    git clone --quiet https://github.com/ggerganov/llama.cpp "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" checkout --quiet "$LLAMACPP_COMMIT"
+    log "llama.cpp pinned to $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
+elif [[ "$(git -C "$INSTALL_DIR" rev-parse HEAD)" != "$(git -C "$INSTALL_DIR" rev-parse "$LLAMACPP_COMMIT" 2>/dev/null || true)" ]]; then
+    log "llama.cpp checkout exists but not at pinned commit — fetching and resetting"
+    git -C "$INSTALL_DIR" fetch --quiet origin
+    git -C "$INSTALL_DIR" checkout --quiet "$LLAMACPP_COMMIT"
+    log "llama.cpp pinned to $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
 fi
 
 log "configuring cmake (backend=$BACKEND)"

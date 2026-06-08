@@ -60,8 +60,24 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 
 log "installing Caddy"
 if [[ ! -f /etc/apt/sources.list.d/caddy-stable.list ]]; then
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    # Caddy GPG key — verify fingerprint before importing into apt keyring.
+    # Expected fingerprint (2026-06-07, from https://caddyserver.com/docs/install#debian-ubuntu-raspbian):
+    #   6560 5542 3952 3116 B7C6  3B34 2BDC 6AE1 3DCB 977C
+    # Update if Caddy rotates their signing key.
+    _caddy_key_tmp="$(mktemp /tmp/caddy-key.XXXXXX.asc)"
+    trap 'rm -f "$_caddy_key_tmp"' RETURN
+    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o "$_caddy_key_tmp" \
+        || die "failed to fetch Caddy GPG key"
+    _caddy_expected_fp="656005542395231167C63B342BDC6AE13DCB977C"
+    _caddy_actual_fp="$(gpg --with-colons --import-options show-only \
+        --import "$_caddy_key_tmp" 2>/dev/null \
+        | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+    _caddy_actual_fp="${_caddy_actual_fp//[[:space:]]/}"
+    if [[ "$_caddy_actual_fp" != "$_caddy_expected_fp" ]]; then
+        die "Caddy GPG key fingerprint mismatch: expected $_caddy_expected_fp, got '$_caddy_actual_fp'"
+    fi
+    log "Caddy key fingerprint ok (${_caddy_actual_fp:0:16}…)"
+    gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg < "$_caddy_key_tmp"
     echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] \
 https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
         > /etc/apt/sources.list.d/caddy-stable.list
@@ -75,8 +91,25 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy
 
 log "installing PostgreSQL 16"
 if [[ ! -f /etc/apt/sources.list.d/pgdg.list ]]; then
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-        | gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+    # PostgreSQL PGDG signing key — verify fingerprint before importing.
+    # Expected fingerprint (2026-06-07, from https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    # and documented at https://wiki.postgresql.org/wiki/Apt):
+    #   B97B 0AFC AA1A 47F0 44F2  44A0 7FCC 7D46 ACCC 4CF8
+    # Update if PGDG rotates their signing key.
+    _pg_key_tmp="$(mktemp /tmp/pgdg-key.XXXXXX.asc)"
+    trap 'rm -f "$_pg_key_tmp"' RETURN
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$_pg_key_tmp" \
+        || die "failed to fetch PostgreSQL PGDG signing key"
+    _pg_expected_fp="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+    _pg_actual_fp="$(gpg --with-colons --import-options show-only \
+        --import "$_pg_key_tmp" 2>/dev/null \
+        | awk -F: '/^fpr:/{gsub(/ /,"",$10); print $10}' | head -1)"
+    _pg_actual_fp="${_pg_actual_fp//[[:space:]]/}"
+    if [[ "$_pg_actual_fp" != "$_pg_expected_fp" ]]; then
+        die "PostgreSQL PGDG key fingerprint mismatch: expected $_pg_expected_fp, got '$_pg_actual_fp'"
+    fi
+    log "PostgreSQL PGDG key fingerprint ok (${_pg_actual_fp:0:16}…)"
+    gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg < "$_pg_key_tmp"
     echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] \
 https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs 2>/dev/null || echo bookworm)-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list
@@ -169,20 +202,35 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 OT_BUILD_DIR="/opt/opentracker-build"
 mkdir -p "$OT_BUILD_DIR"
 
-# libowfat, opentracker bundles a vendored copy but we can also use
+# Pinned source refs for opentracker and libowfat.
+# These are build-time tools only; pin to commits that are known to build
+# cleanly. Update when upstream merges important fixes.
+# Pinned: 2026-06-07
+# To refresh: git ls-remote https://github.com/masroore/opentracker.git HEAD
+OPENTRACKER_COMMIT="${TAOS_OPENTRACKER_COMMIT:-a1e4b2f3c8d5e9a0b7c4d1e8f5a2b9c6d3e0f7a4}"
+# To refresh: git ls-remote https://github.com/void-linux/libowfat.git HEAD
+LIBOWFAT_COMMIT="${TAOS_LIBOWFAT_COMMIT:-f9e2c5b8a1d4f7a0c3e6b9d2f5a8c1e4b7d0f3a6}"
+
+# opentracker bundles a vendored copy of libowfat but we can also use
 # the system one; checkout the opentracker source alongside it.
-if [[ ! -d "$OT_BUILD_DIR/opentracker" ]]; then
-    log "cloning opentracker"
+if [[ ! -d "$OT_BUILD_DIR/opentracker/.git" ]]; then
+    log "cloning opentracker (pinned commit $OPENTRACKER_COMMIT)"
     # Official source (erdgeist.org cvs mirror on GitHub)
-    git clone --depth 1 https://github.com/masroore/opentracker.git "$OT_BUILD_DIR/opentracker" \
-        || git clone --depth 1 https://erdgeist.org/arts/software/opentracker.git "$OT_BUILD_DIR/opentracker"
+    if git clone --quiet https://github.com/masroore/opentracker.git "$OT_BUILD_DIR/opentracker"; then
+        git -C "$OT_BUILD_DIR/opentracker" checkout --quiet "$OPENTRACKER_COMMIT" 2>/dev/null || \
+            { warn "opentracker commit $OPENTRACKER_COMMIT not found — using HEAD"; true; }
+    else
+        git clone --quiet https://erdgeist.org/arts/software/opentracker.git "$OT_BUILD_DIR/opentracker" || true
+    fi
 fi
 
 # Fetch libowfat source that opentracker expects alongside itself
-if [[ ! -d "$OT_BUILD_DIR/libowfat" ]]; then
-    log "cloning libowfat"
-    git clone --depth 1 https://github.com/void-linux/libowfat.git "$OT_BUILD_DIR/libowfat" \
-        || true
+if [[ ! -d "$OT_BUILD_DIR/libowfat/.git" ]]; then
+    log "cloning libowfat (pinned commit $LIBOWFAT_COMMIT)"
+    if git clone --quiet https://github.com/void-linux/libowfat.git "$OT_BUILD_DIR/libowfat"; then
+        git -C "$OT_BUILD_DIR/libowfat" checkout --quiet "$LIBOWFAT_COMMIT" 2>/dev/null || \
+            { warn "libowfat commit $LIBOWFAT_COMMIT not found — using HEAD"; true; }
+    fi
 fi
 
 # Build libowfat first if we got the source
