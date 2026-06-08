@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import secrets
 import shlex
 from pathlib import Path
 from typing import Any
@@ -109,11 +110,13 @@ def create_bridge_app(
 
     # Shared-token auth dependency (issue #672 — defense-in-depth).
     # Applied to every endpoint that executes commands or mutates state.
-    def _require_token(x_bridge_token: str = Header(default="")) -> None:
+    def _require_token(x_bridge_token: str | None = Header(default=None)) -> None:
         if not resolved_token:
             # No token configured — allow through (backward compat).
             return
-        if not x_bridge_token or x_bridge_token != resolved_token:
+        if not x_bridge_token:
+            raise HTTPException(status_code=401, detail="Invalid or missing X-Bridge-Token")
+        if not secrets.compare_digest(x_bridge_token, resolved_token):
             raise HTTPException(status_code=401, detail="Invalid or missing X-Bridge-Token")
 
     # -----------------------------------------------------------------------

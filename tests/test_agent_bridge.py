@@ -423,3 +423,27 @@ async def test_no_token_configured_allows_exec(client):
     resp = await client.post("/exec", json={"command": "echo hello"})
     assert resp.status_code == 200
     assert resp.json()["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exec_rejects_same_length_wrong_token():
+    """POST /exec must return 401 for a wrong token that is the same length as the real one.
+
+    Ensures secrets.compare_digest is used rather than a timing-leaky != comparison.
+    The same-length property is important: a length-leaky check would also fail early
+    on different-length strings, so testing equal-length isolates the constant-time guarantee.
+    """
+    real_token = "abcdefghijklmnop"        # 16 chars
+    wrong_token = "abcdefghijklmnoX"       # same length, last char differs
+    assert len(real_token) == len(wrong_token)
+
+    bridge = create_bridge_app(app_id="test", bridge_token=real_token)
+    transport = ASGITransport(app=bridge)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Bridge-Token": wrong_token},
+    ) as c:
+        resp = await c.post("/exec", json={"command": "echo hi"})
+
+    assert resp.status_code == 401
