@@ -220,8 +220,15 @@ class KnowledgeStore(BaseStore):
             sql += " AND status = ?"
             params.append(status)
         if category:
-            sql += " AND categories LIKE ?"
-            params.append(f'%"{category}"%')
+            # Use json_each() instead of a LIKE scan so this is an exact
+            # match on a JSON array element rather than a substring scan.
+            sql += (
+                " AND id IN ("
+                "SELECT ki2.id FROM knowledge_items ki2, "
+                "json_each(ki2.categories) WHERE json_each.value = ?"
+                ")"
+            )
+            params.append(category)
         sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         cursor = await self._db.execute(sql, params)
@@ -245,7 +252,9 @@ class KnowledgeStore(BaseStore):
     async def search_fts(self, query: str, limit: int = 20) -> list[dict]:
         """Keyword search across title, content, summary, author using FTS5."""
         assert self._db is not None
-        safe_query = query.replace('"', '""')
+        # Wrap as a quoted phrase so FTS5 operators in user input are not
+        # interpreted (AND, OR, NOT, *, NEAR, column:filter, etc.).
+        safe_query = '"' + query.replace('"', '""') + '"'
         sql = """
             SELECT i.id, i.source_type, i.source_url, i.source_id, i.title, i.author,
                    i.summary, i.content, i.media_path, i.thumbnail, i.categories,

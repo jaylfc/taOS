@@ -212,3 +212,132 @@ async def test_list_items_filter_by_category(store):
     results = await store.list_items(category="AI/ML")
     assert len(results) == 1
     assert results[0]["title"] == "AI Article"
+
+
+# ------------------------------------------------------------------
+# FTS5 injection fix (#659)
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_search_fts_bare_quote_does_not_raise(store):
+    """A lone double-quote must not cause an OperationalError."""
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/safe",
+        title="Safe",
+        author="dev",
+        content="safe content",
+        summary="",
+        categories=[],
+        tags=[],
+        metadata={},
+    )
+    results = await store.search_fts('"')
+    assert isinstance(results, list)
+
+
+@pytest.mark.asyncio
+async def test_search_fts_operators_are_literal(store):
+    """FTS5 boolean operators in query are not interpreted as operators."""
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/a",
+        title="Alpha",
+        author="dev",
+        content="alpha text here",
+        summary="",
+        categories=[],
+        tags=[],
+        metadata={},
+    )
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/b",
+        title="Beta",
+        author="dev",
+        content="beta text here",
+        summary="",
+        categories=[],
+        tags=[],
+        metadata={},
+    )
+    # As a phrase "alpha AND beta" should not match either row.
+    results = await store.search_fts("alpha AND beta")
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_fts_prefix_wildcard_is_literal(store):
+    """A trailing * must not be treated as a wildcard prefix operator."""
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/hello",
+        title="Hello World",
+        author="dev",
+        content="hello world",
+        summary="",
+        categories=[],
+        tags=[],
+        metadata={},
+    )
+    results = await store.search_fts("hell*")
+    assert len(results) == 0
+
+
+# ------------------------------------------------------------------
+# Category filter via json_each() (#659)
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_category_filter_no_false_positive_substring(store):
+    """'AI' must not match a row whose category is 'AI/ML' via substring."""
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/ai-ml",
+        title="AI/ML Article",
+        author="tester",
+        content="content",
+        summary="",
+        categories=["AI/ML"],
+        tags=[],
+        metadata={},
+    )
+    results = await store.list_items(category="AI")
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_category_filter_no_false_positive_suffix(store):
+    """'ML' must not match a row whose category is 'AI/ML' via substring."""
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/ai-ml-2",
+        title="AI/ML Article 2",
+        author="tester",
+        content="content",
+        summary="",
+        categories=["AI/ML"],
+        tags=[],
+        metadata={},
+    )
+    results = await store.list_items(category="ML")
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_category_filter_exact_match(store):
+    """json_each filter returns the row whose categories contain the exact value."""
+    await store.add_item(
+        source_type="article",
+        source_url="https://example.com/exact",
+        title="Exact Match",
+        author="tester",
+        content="content",
+        summary="",
+        categories=["Rockchip", "AI/ML"],
+        tags=[],
+        metadata={},
+    )
+    results = await store.list_items(category="Rockchip")
+    assert len(results) == 1
+    assert results[0]["title"] == "Exact Match"

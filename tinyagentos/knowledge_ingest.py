@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Quality threshold: minimum chars for readability extraction to count as success
 _MIN_CONTENT_CHARS = 100
 
+# Limit concurrent background ingest tasks to prevent resource exhaustion.
+_INGEST_SEMAPHORE_SLOTS = 5
+
 # Per-source default monitor config
 _DEFAULT_MONITOR: dict[str, dict] = {
     "reddit":  {"frequency": 3600,  "decay_rate": 1.5, "stop_after_days": 30,  "pinned": False, "last_poll": 0, "current_interval": 3600},
@@ -78,6 +81,7 @@ class IngestPipeline:
         category_engine: "CategoryEngine",
         qmd_base_url: str = "",
         llm_base_url: str = "",
+        max_concurrent: int = _INGEST_SEMAPHORE_SLOTS,
     ) -> None:
         self._store = store
         self._http_client = http_client
@@ -85,6 +89,7 @@ class IngestPipeline:
         self._category_engine = category_engine
         self._qmd_base_url = qmd_base_url
         self._llm_base_url = llm_base_url
+        self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def submit(
         self,
@@ -130,12 +135,13 @@ class IngestPipeline:
         return item_id
 
     async def _run_safe(self, item_id: str) -> None:
-        """Wrapper that catches all exceptions so background tasks never crash silently."""
-        try:
-            await self.run(item_id)
-        except Exception as exc:
-            logger.exception("IngestPipeline background task failed for %s: %s", item_id, exc)
-            await self._store.update_status(item_id, "error")
+        """Wrapper that enforces backpressure and catches all exceptions."""
+        async with self._semaphore:
+            try:
+                await self.run(item_id)
+            except Exception as exc:
+                logger.exception("IngestPipeline background task failed for %s: %s", item_id, exc)
+                await self._store.update_status(item_id, "error")
 
     async def run(self, item_id: str) -> None:
         """Execute all pipeline steps for an existing pending item."""

@@ -241,6 +241,89 @@ async def test_embed_called_when_qmd_url_set(store):
     assert any("ingest" in c for c in calls)
 
 
+# ------------------------------------------------------------------
+# Ingest backpressure semaphore (#659)
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_semaphore_is_created_with_default_slots(pipeline):
+    """Pipeline should have a Semaphore with the default slot count."""
+    import asyncio
+    assert isinstance(pipeline._semaphore, asyncio.Semaphore)
+    # Default is 5 as defined by _INGEST_SEMAPHORE_SLOTS.
+    assert pipeline._semaphore._value == 5
+
+
+@pytest.mark.asyncio
+async def test_semaphore_custom_max_concurrent(store, mock_http):
+    """max_concurrent kwarg controls the Semaphore slot count."""
+    from tinyagentos.knowledge_ingest import IngestPipeline
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+    p = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        max_concurrent=2,
+    )
+    assert p._semaphore._value == 2
+
+
+@pytest.mark.asyncio
+async def test_semaphore_limits_concurrent_tasks(store, mock_http):
+    """At most max_concurrent tasks run the pipeline body simultaneously."""
+    import asyncio
+    from tinyagentos.knowledge_ingest import IngestPipeline
+
+    active: list[int] = []
+    peak: list[int] = []
+
+    original_run = None
+
+    async def counting_run(self, item_id: str) -> None:
+        active.append(1)
+        peak.append(len(active))
+        await asyncio.sleep(0)  # yield to let other tasks start
+        active.pop()
+        # call real pipeline logic via store update only
+        await self._store.update_status(item_id, "ready")
+
+    notif = AsyncMock()
+    notif.emit_event = AsyncMock()
+    cat_engine = AsyncMock()
+    cat_engine.categorise = AsyncMock(return_value=[])
+
+    p = IngestPipeline(
+        store=store,
+        http_client=mock_http,
+        notifications=notif,
+        category_engine=cat_engine,
+        max_concurrent=2,
+    )
+
+    # Submit 6 items
+    ids = []
+    for i in range(6):
+        item_id = await p.submit(
+            url=f"https://example.com/batch-{i}",
+            title=f"Batch {i}",
+            text="Enough content to proceed.",
+            categories=["Test"],
+            source="test",
+        )
+        ids.append(item_id)
+
+    # Patch run so we can count concurrency
+    with patch.object(IngestPipeline, "run", counting_run):
+        tasks = [asyncio.create_task(p._run_safe(item_id)) for item_id in ids]
+        await asyncio.gather(*tasks)
+
+    assert max(peak) <= 2, f"Peak concurrency {max(peak)} exceeded semaphore limit 2"
+
+
 @pytest.mark.asyncio
 async def test_categories_from_caller_are_preserved(store):
     """When categories are provided at submit time, they bypass the engine."""

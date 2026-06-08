@@ -1,5 +1,6 @@
 import pytest
 import pytest_asyncio
+from unittest.mock import patch
 from tinyagentos.user_memory import UserMemoryStore
 
 
@@ -54,3 +55,49 @@ async def test_settings(store):
     await store.update_settings("user", {"capture_notes": False})
     settings = await store.get_settings("user")
     assert settings["capture_notes"] is False
+
+
+# ------------------------------------------------------------------
+# FTS5 injection fix (#659)
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fts5_double_quote_does_not_break_search(store):
+    """A bare double-quote in the query must not raise or return wrong rows."""
+    await store.save_chunk("user", "safe content here", "Safe Title", "snippets")
+    # Prior to the fix this raised an OperationalError (malformed FTS5 query).
+    results = await store.search("user", '"')
+    # No crash; may return 0 results but must not raise.
+    assert isinstance(results, list)
+
+
+@pytest.mark.asyncio
+async def test_fts5_operator_keywords_are_literal(store):
+    """FTS5 operators like AND/OR/NOT must not alter the query semantics."""
+    await store.save_chunk("user", "alpha content", "A", "snippets")
+    await store.save_chunk("user", "beta content", "B", "snippets")
+    # "alpha AND beta" as a phrase should match neither row (phrase not present).
+    results = await store.search("user", "alpha AND beta")
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_fts5_star_operator_is_literal(store):
+    """A trailing * must not be treated as a prefix wildcard."""
+    await store.save_chunk("user", "hello world", "Hello", "snippets")
+    # "hell*" as a phrase literal should not match "hello"; would match if
+    # the star were interpreted as a wildcard by FTS5.
+    results = await store.search("user", "hell*")
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_fts5_injection_does_not_escape_user_filter(store):
+    """Injected column filter syntax must not leak data from another user."""
+    await store.save_chunk("victim", "secret data", "Secret", "snippets")
+    await store.save_chunk("attacker", "normal data", "Normal", "snippets")
+    # Without the fix, a query like 'x" OR "secret' could be crafted so the
+    # FTS MATCH returns rows regardless of the user_id WHERE clause.  With the
+    # fix the whole string is treated as a single phrase and matches nothing.
+    results = await store.search("attacker", 'x" OR "secret')
+    assert all(r["content"] != "secret data" for r in results)
