@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { InstalledService } from "@/hooks/use-installed-services";
+import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 
 // Mockable list of installed services returned by the hook.
 let mockServices: InstalledService[] = [];
@@ -20,7 +21,7 @@ vi.mock("@/stores/process-store", () => ({
   useProcessStore: () => ({ openWindow }),
 }));
 
-// Registry: getAllApps returns no core apps so the test isolates the Apps
+// Registry: getAllApps returns no core apps so the test isolates the Services
 // section; getApp/getOrRegisterServiceApp echo a minimal manifest.
 vi.mock("@/registry/app-registry", () => ({
   getAllApps: () => [],
@@ -54,23 +55,23 @@ const gitea: InstalledService = {
   status: "running",
 };
 
-describe("Launchpad Apps section", () => {
+describe("Launchpad Services section", () => {
   beforeEach(() => {
     mockServices = [];
     openWindow.mockClear();
   });
 
-  it("does not render an Apps section when no apps are installed", () => {
+  it("does not render a Services section when no apps are installed", () => {
     mockServices = [];
     render(<Launchpad open onClose={() => {}} />);
-    expect(screen.queryByText("Apps")).toBeNull();
+    expect(screen.queryByText("Services")).toBeNull();
   });
 
-  it("renders an Apps section with a shortcut per installed app/service", () => {
+  it("renders a Services section with a shortcut per installed app/service", () => {
     mockServices = [searxng, gitea];
     render(<Launchpad open onClose={() => {}} />);
 
-    expect(screen.getByText("Apps")).toBeTruthy();
+    expect(screen.getByText("Services")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open SearXNG" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open Gitea" })).toBeTruthy();
   });
@@ -87,5 +88,16 @@ describe("Launchpad Apps section", () => {
       { w: 1100, h: 750 },
       { url: "/apps/searxng/", displayName: "SearXNG" },
     );
+  });
+
+  it("app-event-bus APP_INSTALLED event fires without error", () => {
+    // Verify the EventBus module works correctly in isolation:
+    // emitting an event should invoke any registered listener.
+    const listener = vi.fn();
+    const { onAppEvent } = require("@/lib/app-event-bus");
+    const unsub = onAppEvent(APP_INSTALLED, listener);
+    act(() => { emitAppEvent(APP_INSTALLED, "searxng"); });
+    expect(listener).toHaveBeenCalledWith("searxng");
+    unsub();
   });
 });

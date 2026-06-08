@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { X, Bell, CheckCheck, Trash2 } from "lucide-react";
 import { useNotificationStore } from "@/stores/notification-store";
+import { SetupChecklist } from "./SetupChecklist";
 
 function formatTime(ts: number): string {
   const delta = Date.now() - ts;
@@ -11,6 +13,7 @@ function formatTime(ts: number): string {
 
 export function NotificationCentre() {
   const { notifications, centreOpen, closeCentre, markRead, markAllRead, clearAll, dismiss } = useNotificationStore();
+  const [checklistDismissed, setChecklistDismissed] = useState(false);
 
   if (!centreOpen) return null;
 
@@ -69,6 +72,9 @@ export function NotificationCentre() {
 
         {/* List */}
         <div className="flex-1 overflow-y-auto">
+          {!checklistDismissed && (
+            <SetupChecklist onDismissed={() => setChecklistDismissed(true)} />
+          )}
           {notifications.length === 0 ? (
             <div className="px-4 py-12 text-center">
               <Bell size={24} className="mx-auto text-shell-text-tertiary mb-2" />
