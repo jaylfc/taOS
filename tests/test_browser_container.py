@@ -180,8 +180,20 @@ def test_rk3588_image_is_cdp_image():
 
 @pytest.mark.asyncio
 async def test_rk3588_runner_exposes_cdp_url():
-    """Running on RK3588 hardware must yield a cdp_url pointing to 127.0.0.1:9222."""
+    """Running on RK3588 hardware must yield a cdp_url on the host loopback.
+
+    Phase B change: cdp_url now uses the host-allocated port (not a hardcoded
+    9222) so it addresses the container's CDP via the published host mapping.
+    The URL must start with http://127.0.0.1: and the port must match
+    cdp_host_port in the returned dict.
+    """
+    import urllib.parse
     hw = _hw(soc="rk3588")
     runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=hw)
     out = await runner.start(session_id="cdp-session", profile_volume="v")
-    assert out["cdp_url"] == "http://127.0.0.1:9222"
+    assert out["cdp_url"] is not None
+    assert out["cdp_url"].startswith("http://127.0.0.1:")
+    cdp_host_port = out.get("cdp_host_port")
+    assert cdp_host_port is not None
+    parsed = urllib.parse.urlparse(out["cdp_url"])
+    assert parsed.port == cdp_host_port
