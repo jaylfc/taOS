@@ -192,7 +192,7 @@ def _login_page(error: str = "", multi_user: bool = False, next_url: str = "") -
     autologin_default = "" if multi_user else "checked"
     username_field = '''
         <label class="field">
-          <span>Username</span>
+          <span>Username or email</span>
           <input type="text" name="username" autocomplete="username" autofocus required>
         </label>
         ''' if multi_user else ""

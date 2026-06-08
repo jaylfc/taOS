@@ -165,7 +165,7 @@ export function LoginGate({ children }: Props) {
 
           {showUsername && (
             <>
-              <label htmlFor="login-username" className="sr-only">Username</label>
+              <label htmlFor="login-username" className="sr-only">Username or email</label>
               <input
                 id="login-username"
                 type="text"
@@ -173,7 +173,7 @@ export function LoginGate({ children }: Props) {
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
                 autoFocus
-                placeholder="Username"
+                placeholder="Username or email"
                 className="w-full px-4 py-2.5 mb-2 rounded-lg bg-shell-bg-deep border border-white/10 text-sm text-shell-text outline-none focus:border-accent/40 transition-colors"
               />
             </>
