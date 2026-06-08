@@ -17,11 +17,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NEKO_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
 DEFAULT_NEKO_GPU_IMAGE = "ghcr.io/m1k1o/neko/nvidia-chromium:latest"
-# Temporarily the validated multi-arch base (runs healthy on the Pi, software
-# encode). The custom rkmpp HW-encode image (built FROM this + Rockchip GStreamer
-# from the Armbian/Rockchip repos) is tracked in #624; flip this back once it's
-# built + published. Device nodes are still passed (harmless on RK3588).
-DEFAULT_NEKO_RK3588_IMAGE = "ghcr.io/m1k1o/neko/chromium:latest"
+# Custom CDP-enabled image (option C foundation, #<PR>).
+# Chromium >=148 from trixie-security + DeveloperToolsAvailability=0 +
+# --remote-debugging-port=9222 bound to 127.0.0.1 + --enable-dev-shm-usage.
+# Requires --shm-size=4g at container run time.
+# Built for arm64 (RK3588 primary) + amd64.
+DEFAULT_NEKO_CDP_IMAGE = "ghcr.io/jaylfc/taos-neko-cdp:latest"
+# RK3588 uses the CDP image so agent automation is available out of the box
+# on the Pi. The rkmpp HW-encode layer (#624) will extend this image once
+# the GStreamer Rockchip packages are validated; for now software encode is
+# the fallback (RK3588 hardware decode of page content still works via the
+# kernel driver even without GStreamer rkmpp).
+DEFAULT_NEKO_RK3588_IMAGE = DEFAULT_NEKO_CDP_IMAGE
 NEKO_SCREEN = "1280x720@30"
 NEKO_SCREEN_MOBILE = "800x1600@30"
 NEKO_PROFILE_MOUNT = "/home/neko"
@@ -87,6 +94,7 @@ def build_neko_run_args(
     image: str | None = None,
     device_args: list[str] | None = None,
     mobile: bool = False,
+    shm_size: str = "4g",
 ) -> list[str]:
     """Return the full ``docker run`` argv (starting with 'docker') for a Neko
     Chromium session, per the validated spike recipe.
@@ -94,6 +102,10 @@ def build_neko_run_args(
     When ``mobile=True`` the container runs portrait (800x1600@30) and mounts
     the mobile Chromium supervisord config so Chromium presents a mobile UA,
     touch events, and a 3x device scale factor.
+
+    ``shm_size`` controls ``--shm-size``. The default is ``"4g"`` — required
+    by the CDP-enabled image (``DEFAULT_NEKO_CDP_IMAGE``) for stable page
+    sessions; 4g is safe for all images and strictly better than the old 2g.
     """
     if image is None:
         image = DEFAULT_NEKO_GPU_IMAGE if gpu else DEFAULT_NEKO_IMAGE
@@ -110,7 +122,7 @@ def build_neko_run_args(
         "-e", f"NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD={admin_pwd}",
         "-e", f"NEKO_WEBRTC_EPR={epr_lo}-{epr_hi}",
         "-e", f"NEKO_WEBRTC_NAT1TO1={node_ip}",
-        "--shm-size=2g",
+        f"--shm-size={shm_size}",
         "-v", f"{profile_volume}:{NEKO_PROFILE_MOUNT}",
     ]
     if mobile:
@@ -245,8 +257,16 @@ class BrowserContainerRunner:
         # (full-bleed but no mouse/keyboard control).  Interactive sessions
         # need it absent.
         neko_url = f"http://{self.node_ip}:{http_port}/?usr=neko&pwd={user_pwd}"
-        cdp_url = None  # CDP not exposed by this image in Phase 1 (deferred to Phase 2)
         spec = resolve_neko_image(self.hw_profile)
+        # CDP is available when the image is the CDP-enabled custom build.
+        # The port is bound to 127.0.0.1 inside the container; the launcher
+        # accesses it via `docker exec` / a loopback port binding on the host.
+        # None for images that don't expose CDP (stock Neko, GPU image).
+        cdp_url = (
+            "http://127.0.0.1:9222"
+            if spec.image == DEFAULT_NEKO_CDP_IMAGE
+            else None
+        )
 
         if self.mock:
             container_id = f"mock-neko-{session_id[:8]}"

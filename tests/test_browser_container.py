@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 from tinyagentos.worker.browser_container import (
     resolve_neko_image, NekoImageSpec,
-    DEFAULT_NEKO_IMAGE, DEFAULT_NEKO_GPU_IMAGE, DEFAULT_NEKO_RK3588_IMAGE,
+    DEFAULT_NEKO_CDP_IMAGE, DEFAULT_NEKO_IMAGE, DEFAULT_NEKO_GPU_IMAGE,
+    DEFAULT_NEKO_RK3588_IMAGE,
     NEKO_SCREEN, NEKO_SCREEN_MOBILE, MOBILE_CHROMIUM_CONF,
 )
 
@@ -166,3 +167,21 @@ async def test_runner_start_desktop_mock_returns_details():
     out = await runner.start(session_id="desktop-session", profile_volume="v", mobile=False)
     assert "container_id" in out
     assert "neko_url" in out
+
+
+# ---------------------------------------------------------------------------
+# CDP image (option C foundation)
+# ---------------------------------------------------------------------------
+
+def test_rk3588_image_is_cdp_image():
+    """RK3588 must resolve to the CDP-enabled custom image."""
+    assert DEFAULT_NEKO_RK3588_IMAGE == DEFAULT_NEKO_CDP_IMAGE
+
+
+@pytest.mark.asyncio
+async def test_rk3588_runner_exposes_cdp_url():
+    """Running on RK3588 hardware must yield a cdp_url pointing to 127.0.0.1:9222."""
+    hw = _hw(soc="rk3588")
+    runner = BrowserContainerRunner(node_ip="10.0.0.2", mock=True, hw_profile=hw)
+    out = await runner.start(session_id="cdp-session", profile_volume="v")
+    assert out["cdp_url"] == "http://127.0.0.1:9222"

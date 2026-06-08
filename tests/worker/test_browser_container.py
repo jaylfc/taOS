@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tinyagentos.worker.browser_container import (
+    DEFAULT_NEKO_CDP_IMAGE,
     DEFAULT_NEKO_GPU_IMAGE,
     DEFAULT_NEKO_IMAGE,
     NEKO_PROFILE_MOUNT,
@@ -87,8 +88,14 @@ class TestBuildNekoRunArgs:
         env_pairs = {args[i + 1] for i, a in enumerate(args) if a == "-e"}
         assert "NEKO_WEBRTC_NAT1TO1=10.0.0.5" in env_pairs
 
-    def test_shm_size(self):
+    def test_shm_size_default_is_4g(self):
+        # Default raised to 4g — required by the CDP image for stable page
+        # sessions; safe (and better) for all other images too.
         args = build_neko_run_args(**self._base_kwargs())
+        assert "--shm-size=4g" in args
+
+    def test_shm_size_custom(self):
+        args = build_neko_run_args(**self._base_kwargs(), shm_size="2g")
         assert "--shm-size=2g" in args
 
     def test_volume_mount(self):
@@ -235,6 +242,23 @@ class TestBrowserContainerRunnerMock:
         r2 = await runner.start(session_id="sess-2", profile_volume="vol2")
         assert r1["http_port"] != r2["http_port"]
         assert r1["epr_lo"] != r2["epr_lo"]
+
+    async def test_cdp_image_yields_cdp_url(self):
+        """When resolve_neko_image selects the CDP image, cdp_url is set."""
+        from types import SimpleNamespace
+        hw = SimpleNamespace(cpu=SimpleNamespace(soc="rk3588"), gpu=None)
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=True, hw_profile=hw)
+        result = await runner.start(session_id="sess-cdp", profile_volume="vol1")
+        assert result["cdp_url"] == "http://127.0.0.1:9222"
+
+    async def test_non_cdp_image_cdp_url_is_none(self):
+        """Stock images (software/GPU) must not expose a cdp_url."""
+        from types import SimpleNamespace
+        # No SOC, no CUDA → software encode → DEFAULT_NEKO_IMAGE (not CDP)
+        hw = SimpleNamespace(cpu=SimpleNamespace(soc=""), gpu=SimpleNamespace(type="", cuda=False, vulkan=False))
+        runner = BrowserContainerRunner(node_ip="10.0.0.5", mock=True, hw_profile=hw)
+        result = await runner.start(session_id="sess-sw", profile_volume="vol1")
+        assert result["cdp_url"] is None
 
 
 # ---------------------------------------------------------------------------
