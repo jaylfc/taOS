@@ -6,6 +6,14 @@ Welcome — and thanks for your interest in contributing. TinyAgentOS is a self-
 
 ---
 
+## License & Contributor License Agreement
+
+taOS is currently licensed under **AGPL-3.0** (see [`LICENSE`](LICENSE)) and is moving to a **source-available license** — free to use, modify, and self-host for personal and internal business use, with a separate commercial license required to sell it, host it as a paid service, or build it into a product you monetise.
+
+To keep this sustainable, **all contributors must agree to the Contributor License Agreement ([`CLA.md`](CLA.md))** before their contributions are merged. The CLA grants JAN LABS LTD the right to include and **relicense** your contributions under the project's licenses; **you keep ownership of your work**. You sign once — on your first pull request, via the CLA check — and it covers all your future contributions. While the CLA bot is being set up, please sign off your commits with `git commit -s` (a Developer Certificate of Origin acknowledgement) — the automated check requires it.
+
+---
+
 ## Getting Started for Contributors
 
 ```bash
