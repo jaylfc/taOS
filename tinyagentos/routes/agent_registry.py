@@ -5,6 +5,7 @@ from __future__ import annotations
 POST /api/agents/registry/register  — register an agent, mint canonical_id, issue token
 GET  /api/agents/registry/pubkey    — public key for token verification (bus side)
 GET  /api/agents/registry           — list all registry entries
+GET  /api/agents/registry/revoked   — revocation feed (canonical_id + revoked_at) the bus polls
 GET  /api/agents/registry/{id}      — read a single entry
 DELETE /api/agents/registry/{id}    — revoke an entry
 
@@ -109,6 +110,20 @@ async def list_registry(request: Request):
     store = _get_store(request)
     records = await store.list_all()
     return records
+
+
+@router.get("/api/agents/registry/revoked")
+async def list_revoked(request: Request):
+    """Lightweight revocation feed for the A2A bus to poll.
+
+    Returns ``{"revoked": [{canonical_id, revoked_at}, ...]}``. The bus caches
+    this and rejects any token whose ``sub`` (canonical_id) is in the set.
+    Declared before the ``/{canonical_id}`` route so "revoked" is not matched
+    as a canonical_id.
+    """
+    store = _get_store(request)
+    revoked = await store.list_revoked()
+    return {"revoked": revoked}
 
 
 @router.get("/api/agents/registry/{canonical_id}")

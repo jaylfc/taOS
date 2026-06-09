@@ -343,3 +343,23 @@ class AgentRegistryStore(BaseStore):
         )
         await self._db.commit()
         return await self.get(canonical_id)
+
+    async def list_revoked(self) -> list[dict]:
+        """Return ``[{canonical_id, revoked_at}]`` for every revoked entry.
+
+        Lightweight revocation feed the A2A bus polls to reject tokens whose
+        canonical_id has been revoked (the bus checks ``sub == from`` and
+        ``canonical_id not in`` this set). Revocation is per canonical_id, so
+        no per-jti tracking is needed.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT canonical_id, revoked_at FROM agent_registry "
+            "WHERE revoked_at IS NOT NULL ORDER BY revoked_at"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"canonical_id": r["canonical_id"], "revoked_at": r["revoked_at"]}
+            for r in rows
+        ]

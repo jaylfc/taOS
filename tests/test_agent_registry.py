@@ -169,6 +169,32 @@ class TestAgentRegistryStore:
         finally:
             await store.close()
 
+    # -- Revocation feed -----------------------------------------------------
+
+    async def test_list_revoked_empty_by_default(self, tmp_path):
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            await store.register(framework="openclaw", display_name="Active")
+            assert await store.list_revoked() == []
+        finally:
+            await store.close()
+
+    async def test_list_revoked_returns_only_revoked(self, tmp_path):
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            active = await store.register(framework="openclaw", display_name="Active")
+            gone = await store.register(framework="hermes", display_name="Gone")
+            await store.revoke(gone["canonical_id"])
+
+            revoked = await store.list_revoked()
+            ids = [r["canonical_id"] for r in revoked]
+            assert gone["canonical_id"] in ids
+            assert active["canonical_id"] not in ids
+            assert all(r["revoked_at"] is not None for r in revoked)
+            assert set(revoked[0].keys()) == {"canonical_id", "revoked_at"}
+        finally:
+            await store.close()
+
 
 # ---------------------------------------------------------------------------
 # Keypair + token tests
@@ -457,3 +483,29 @@ class TestAgentRegistryRoutes:
         rec = resp.json()["record"]
         assert rec["role"] == "researcher"
         assert rec["capabilities"] == ["web-search", "summarise"]
+
+    async def test_revoked_feed_empty_by_default(self, registry_client):
+        resp = await registry_client.get("/api/agents/registry/revoked")
+        assert resp.status_code == 200
+        assert resp.json() == {"revoked": []}
+
+    async def test_revoked_feed_lists_revoked_after_delete(self, registry_client):
+        reg_resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Feed Me"},
+        )
+        cid = reg_resp.json()["canonical_id"]
+        await registry_client.delete(f"/api/agents/registry/{cid}")
+
+        resp = await registry_client.get("/api/agents/registry/revoked")
+        assert resp.status_code == 200
+        revoked = resp.json()["revoked"]
+        entry = next(r for r in revoked if r["canonical_id"] == cid)
+        assert entry["revoked_at"] is not None
+
+    async def test_revoked_path_not_matched_as_canonical_id(self, registry_client):
+        """`/revoked` must hit the feed route, not be read back as an agent id."""
+        resp = await registry_client.get("/api/agents/registry/revoked")
+        assert resp.status_code == 200
+        # The single-entry route would return a record dict or 404, never this.
+        assert "revoked" in resp.json()
