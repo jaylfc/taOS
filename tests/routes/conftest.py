@@ -22,7 +22,12 @@ def _make_app(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.dump(config))
     (tmp_path / ".setup_complete").touch()
-    return create_app(data_dir=tmp_path)
+    app = create_app(data_dir=tmp_path)
+    # Lifespan-owned objects set to None by create_app() — initialise them
+    # eagerly so sync TestClient tests work without running the lifespan.
+    from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+    app.state.vapid_keypair = load_or_create_vapid_keypair(tmp_path)
+    return app
 
 
 @pytest.fixture
