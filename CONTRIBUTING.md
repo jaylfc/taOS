@@ -10,7 +10,7 @@ Welcome — and thanks for your interest in contributing. TinyAgentOS is a self-
 
 taOS is licensed under the **taOS Sustainable Use License** (source-available, not open source; see [`LICENSE`](LICENSE)) — free to use, modify, and self-host for personal use and for your own organisation's internal business purposes, with a separate commercial license required to sell it, host it as a paid service, or build it into a product you monetise.
 
-To keep this sustainable, **all contributors must agree to the Contributor License Agreement ([`CLA.md`](CLA.md))** before their contributions are merged. The CLA grants JAN LABS LTD the right to include and **relicense** your contributions under the project's licenses; **you keep ownership of your work**. You sign once — on your first pull request, via the CLA check — and it covers all your future contributions. While the CLA bot is being set up, please sign off your commits with `git commit -s` (a Developer Certificate of Origin acknowledgement) — the automated check requires it.
+To keep this sustainable, **all contributors must agree to the Contributor License Agreement ([`CLA.md`](CLA.md))** before their contributions are merged. The CLA grants JAN LABS LTD the right to include and **relicense** your contributions under the project's licenses; **you keep ownership of your work**. You sign once — on your first pull request, comment **"I have read the CLA Document and I hereby sign the CLA"** and the CLA check turns green; it then covers all your future contributions.
 
 ---
 
