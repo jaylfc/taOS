@@ -53,19 +53,24 @@ def _qmd_base(request: Request) -> str:
     return request.app.state.qmd_client.base_url
 
 
-def _agent_db_path(request: Request, agent: str | None) -> str | None:
-    """Resolve the SQLite path for an agent's memory index.
+def _agent_db_path(request: Request, agent: str | None) -> str:
+    """Resolve the SQLite path for a memory index. ALWAYS taOS-owned.
 
-    Returns ``None`` for the user/default scope so the qmd request
-    omits ``dbPath`` and the qmd serve process falls back to its
-    default index. Per-agent paths are computed deterministically
-    from ``app.state.agent_memory_dir`` so they always match what the
-    deployer bind-mounts into the agent's container at ``/memory``.
+    - ``agent`` given → that agent's per-agent index
+      (``agent_memory_dir/<agent>/index.sqlite``), matching what the deployer
+      bind-mounts into the agent's container at ``/memory``.
+    - no ``agent`` (user/default scope) → a DEDICATED taOS user index, never
+      qmd's *shared default*. The qmd serve is shared across frameworks and its
+      default collection may belong to another one (e.g. openclaw's workspace),
+      so omitting ``dbPath`` would query/return that foreign data. We therefore
+      always pin an explicit taOS-owned ``dbPath`` (an empty index returns no
+      results, which is correct — never another framework's data).
     """
-    if not agent:
-        return None
     base: Path = request.app.state.agent_memory_dir
-    target = base / agent / "index.sqlite"
+    if not agent:
+        target = base.parent / "user-qmd-index" / "index.sqlite"
+    else:
+        target = base / agent / "index.sqlite"
     target.parent.mkdir(parents=True, exist_ok=True)
     return str(target)
 
