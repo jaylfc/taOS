@@ -347,6 +347,12 @@ class TestAuthRequestRoutes:
         grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
         assert any(g["scope"] == "memory:read" for g in grants)
 
+        # Approval must ACTIVATE the agent — external-selfjoin lands 'pending';
+        # consent-approve transitions it to 'active' so it's not in the bus
+        # inactive feed. (Regression guard.)
+        reg = await consent_client._transport.app.state.agent_registry.get(canonical_id)
+        assert reg is not None and reg["status"] == "active"
+
         # Token not returned by approve endpoint — only by the status poll.
         assert "token" not in data
 

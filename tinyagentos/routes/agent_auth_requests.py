@@ -204,6 +204,12 @@ async def approve_auth_request(
     )
     canonical_id = reg_record["canonical_id"]
 
+    # Consent approval IS the activation. external-selfjoin agents are born
+    # 'pending' (governance lifecycle); approving the auth-request transitions
+    # them to 'active' so they are NOT in the bus inactive/revocation feed and
+    # @taOSmd's identity-AND-grant gate accepts them.
+    await registry.set_status(canonical_id, "active", actor=user.user_id)
+
     # Issue the identity token.
     token = mint_registry_token(
         canonical_id,
