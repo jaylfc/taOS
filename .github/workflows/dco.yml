@@ -2,10 +2,12 @@ name: DCO
 
 # Interim contributor gate: require a Developer Certificate of Origin
 # sign-off on every PR commit until the CLA bot is enabled. See CONTRIBUTING.md / CLA.md.
+# Scoped to PRs targeting `dev` (incoming contributions); the internal dev->master
+# release promotion is not gated here.
 
 on:
   pull_request:
-    branches: [master, dev]
+    branches: [dev]
 
 jobs:
   dco:
