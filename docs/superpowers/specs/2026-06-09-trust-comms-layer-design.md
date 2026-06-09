@@ -84,6 +84,13 @@ Per Jay: **a configured option in taOSmd/memory settings, OFF by default, enable
 
 **taOS-side signal:** when taOS provisions/owns a taosmd instance, it **writes `managed_by=taos`** (+ `registry_url` + the auth-request endpoint base) into the taosmd config at deploy time. Optional runtime handshake to confirm.
 
+### 7a. Dashboard gating (managed_by-driven)
+The same flag decides whether taosmd serves its **own web dashboard**:
+- **standalone** → serve the dashboard (it's the only UI).
+- **taos** → dashboard OFF by default; taosmd serves only the HTTP/MCP **data APIs** and the taOS apps render everything. Override: a taosmd config key `serve_dashboard=true` + a toggle in the taOS Memory/taOSmd app.
+
+**View → app ownership** (so nothing is lost when the dash is off): memory browser → Memory/taOSmd app; projects/shelves → Projects app (+ Memory shelves view); recipes/config-profiles → Memory/taOSmd app (framework-manager surface); A2A channels → Messages/Comms app (post §5 migration); agent stats + observability → the Observability/Benchmarking app; permissions/relationships → the new Permissions + Relationships apps. taosmd side: add the config key + skip mounting `/ui` when off (data APIs stay up). taOS side: ensure the apps cover the full dash info-set before defaulting it off in managed mode.
+
 ## 8. Provisioning note
 
 Switch taOS's taosmd dependency from the git-clone/editable path to **`pip install taosmd==0.3.0`** (PyPI, Trusted Publishing) — `pyproject.toml` + `install-server.sh` lists. `@jaylfc/qmd` npm stays pinned 2.6.0 (separate — the embedding serve).
