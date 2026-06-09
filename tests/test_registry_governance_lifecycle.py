@@ -125,6 +125,18 @@ class TestSetStatus:
         finally:
             await store.close()
 
+    async def test_rejected_to_revoked(self, tmp_path):
+        """A rejected agent can still be revoked (any non-terminal → revoked)."""
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            rec = await store.register(framework="f", origin="external-selfjoin")
+            await store.set_status(rec["canonical_id"], "rejected")
+            updated = await store.set_status(rec["canonical_id"], "revoked")
+            assert updated["status"] == "revoked"
+            assert updated["revoked_at"] is not None
+        finally:
+            await store.close()
+
     # -- Revoke sets revoked_at ---------------------------------------------
 
     async def test_set_status_revoked_sets_revoked_at(self, tmp_path):
@@ -522,10 +534,11 @@ class TestInactiveRoute:
         """GET /inactive must not be routed to the /{canonical_id} handler."""
         client, _uid = gov_client
         resp = await client.get("/api/agents/registry/inactive")
-        # Correct admin response (may be empty list) — NOT a 404 for canonical_id
-        assert resp.status_code in (200, 403)
-        if resp.status_code == 200:
-            assert "inactive" in resp.json()
+        # gov_client is an admin session, so this MUST be 200 (proves /inactive
+        # beat the /{canonical_id} route). Accepting 403 would let an auth
+        # regression slip through without proving the routing.
+        assert resp.status_code == 200
+        assert "inactive" in resp.json()
 
 
 @pytest.mark.asyncio
