@@ -1218,7 +1218,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # npm packages are signed via the registry's package-lock integrity
             # mechanism (sha512 in package-lock.json); pinning the version here
             # is the supply-chain control available at install time.
-            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.5.3}"
+            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.6.0}"
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX.log)
             log "npm install -g @jaylfc/qmd@${qmd_npm_version} (log: $qmd_install_log)"
             if ! sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@${qmd_npm_version}" >"$qmd_install_log" 2>&1; then
