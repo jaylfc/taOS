@@ -43,9 +43,64 @@ CREATE TABLE IF NOT EXISTS agent_registry (
     role            TEXT,
     capabilities    TEXT    NOT NULL DEFAULT '[]',
     created_ts      TEXT    NOT NULL,
-    revoked_at      TEXT
+    revoked_at      TEXT,
+    status          TEXT    NOT NULL DEFAULT 'active'
 );
 """
+
+# ---------------------------------------------------------------------------
+# Lifecycle state machine
+# ---------------------------------------------------------------------------
+
+VALID_STATUSES = frozenset({"pending", "active", "suspended", "revoked", "rejected"})
+
+# Maps (from_status, to_status) → True for allowed transitions.
+_VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
+    ("pending",   "active"),      # approve
+    ("pending",   "rejected"),    # reject
+    ("active",    "suspended"),   # suspend
+    ("suspended", "active"),      # reactivate
+    ("active",    "revoked"),     # revoke (terminal)
+    ("suspended", "revoked"),     # revoke (terminal)
+    ("pending",   "revoked"),     # revoke (terminal)
+    ("rejected",  "pending"),     # undo denial → re-open
+    ("rejected",  "active"),      # undo denial → directly approve
+})
+
+
+def _assert_valid_transition(before: str, after: str) -> None:
+    """Raise ValueError if the transition is not allowed."""
+    if after not in VALID_STATUSES:
+        raise ValueError(f"unknown status {after!r}; valid: {sorted(VALID_STATUSES)}")
+    if (before, after) not in _VALID_TRANSITIONS:
+        raise ValueError(
+            f"invalid lifecycle transition: {before!r} → {after!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Migration: add status column + backfill
+# ---------------------------------------------------------------------------
+
+async def _migration_v1_add_status(conn) -> None:
+    """Add status column (idempotent) and backfill existing rows."""
+    # Check if the column already exists (SQLite has no IF NOT EXISTS for ADD COLUMN
+    # prior to 3.37 — use PRAGMA instead for broad compatibility).
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "status" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+        )
+    # Backfill: rows with revoked_at set → 'revoked'; others → 'active'.
+    await conn.execute(
+        "UPDATE agent_registry SET status = 'revoked' WHERE revoked_at IS NOT NULL AND status = 'active'"
+    )
+    await conn.commit()
 
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
@@ -238,6 +293,10 @@ class AgentRegistryStore(BaseStore):
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
 
+    async def _post_init(self) -> None:
+        """Idempotently ensure the status column exists and is backfilled."""
+        await _migration_v1_add_status(self._db)
+
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
@@ -283,15 +342,16 @@ class AgentRegistryStore(BaseStore):
             canonical_id = f"{base_id}-{suffix_n:02x}"
 
         caps_json = json.dumps(capabilities)
+        initial_status = "pending" if origin == "external-selfjoin" else "active"
         await self._db.execute(
             """
             INSERT INTO agent_registry
                 (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, capabilities, created_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 handle, role, capabilities, created_ts, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (canonical_id, display_name, framework, user_id, origin,
-             handle, role, caps_json, created_ts),
+             handle, role, caps_json, created_ts, initial_status),
         )
         await self._db.commit()
 
@@ -319,27 +379,39 @@ class AgentRegistryStore(BaseStore):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
-    async def list_all(self) -> list[dict]:
-        """Return all registry records (revoked and active)."""
+    async def list_all(self, *, status: Optional[str] = None) -> list[dict]:
+        """Return all registry records, optionally filtered by *status*."""
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        cursor = await self._db.execute("SELECT * FROM agent_registry ORDER BY id")
+        if status is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE status = ? ORDER BY id",
+                (status,),
+            )
+        else:
+            cursor = await self._db.execute("SELECT * FROM agent_registry ORDER BY id")
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
-    async def list_for_user(self, user_id: str) -> list[dict]:
-        """Return all registry records owned by *user_id*."""
+    async def list_for_user(self, user_id: str, *, status: Optional[str] = None) -> list[dict]:
+        """Return all registry records owned by *user_id*, optionally filtered by *status*."""
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        cursor = await self._db.execute(
-            "SELECT * FROM agent_registry WHERE user_id = ? ORDER BY id",
-            (user_id,),
-        )
+        if status is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE user_id = ? AND status = ? ORDER BY id",
+                (user_id, status),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE user_id = ? ORDER BY id",
+                (user_id,),
+            )
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
     async def list_revoked(self) -> list[dict]:
-        """Return [{canonical_id, revoked_at}] for all revoked entries."""
+        """Return [{canonical_id, revoked_at}] for all revoked entries (back-compat feed)."""
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
         cursor = await self._db.execute(
@@ -349,6 +421,60 @@ class AgentRegistryStore(BaseStore):
         rows = await cursor.fetchall()
         return [{"canonical_id": r["canonical_id"], "revoked_at": r["revoked_at"]} for r in rows]
 
+    async def list_inactive(self) -> list[dict]:
+        """Return [{canonical_id, status}] for all non-active entries."""
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT canonical_id, status FROM agent_registry "
+            "WHERE status != 'active' ORDER BY id",
+        )
+        rows = await cursor.fetchall()
+        return [{"canonical_id": r["canonical_id"], "status": r["status"]} for r in rows]
+
+    # ------------------------------------------------------------------
+    # Lifecycle state machine
+    # ------------------------------------------------------------------
+
+    async def set_status(
+        self,
+        canonical_id: str,
+        new_status: str,
+        *,
+        actor: str = "",
+    ) -> dict:
+        """Transition *canonical_id* to *new_status*, enforcing valid transitions.
+
+        Returns the updated record.
+        Raises ``ValueError`` on invalid/disallowed transition.
+        Raises ``KeyError`` if *canonical_id* does not exist.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+
+        record = await self.get(canonical_id)
+        if record is None:
+            raise KeyError(canonical_id)
+
+        before_status = record.get("status") or "active"
+        _assert_valid_transition(before_status, new_status)
+
+        now = datetime.now(timezone.utc).isoformat()
+        if new_status == "revoked":
+            # Terminal: also set revoked_at if not already set.
+            await self._db.execute(
+                "UPDATE agent_registry SET status = ?, revoked_at = COALESCE(revoked_at, ?) "
+                "WHERE canonical_id = ?",
+                (new_status, now, canonical_id),
+            )
+        else:
+            await self._db.execute(
+                "UPDATE agent_registry SET status = ? WHERE canonical_id = ?",
+                (new_status, canonical_id),
+            )
+        await self._db.commit()
+        return await self.get(canonical_id)  # type: ignore[return-value]
+
     # ------------------------------------------------------------------
     # Revoke
     # ------------------------------------------------------------------
@@ -357,10 +483,16 @@ class AgentRegistryStore(BaseStore):
         """Set revoked_at on *canonical_id*.  Returns updated record or None."""
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            return None
+        if record.get("revoked_at"):
+            # Already revoked — return the existing record unchanged.
+            return record
         now = datetime.now(timezone.utc).isoformat()
         await self._db.execute(
-            "UPDATE agent_registry SET revoked_at = ? "
-            "WHERE canonical_id = ? AND revoked_at IS NULL",
+            "UPDATE agent_registry SET revoked_at = ?, status = 'revoked' "
+            "WHERE canonical_id = ?",
             (now, canonical_id),
         )
         await self._db.commit()
