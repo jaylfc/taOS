@@ -43,6 +43,7 @@ proxy = ["litellm[proxy]>=1.50.0", "prisma>=0.11.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.3.0",
     "httpx",
     "respx>=0.21.0",
     "websockets>=12.0",
@@ -63,6 +64,13 @@ taos-gui = "tinyagentos.app:gui"
 taos-worker-ctl = "tinyagentos.cli.worker:main"
 
 [tool.pytest.ini_options]
+# Per-test timeout: a single hung test fails fast and named instead of
+# silently eating the entire 45-minute CI budget.  120 s covers the
+# slowest legitimate tests (async DB-heavy flows) with headroom to spare.
+# thread method works on all platforms including macOS; signal would be
+# faster but requires the main thread.
+timeout = 120
+timeout_method = "thread"
 markers = [
     "e2e: End-to-end browser tests (require running server)",
     "slow: Tests requiring a live stack (skipped in local CI; run with pytest -m slow)",
