@@ -245,6 +245,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     agent_registry_store = AgentRegistryStore(data_dir / "agent_registry.db")
     agent_registry_keypair = load_or_create_signing_keypair(data_dir)
 
+    from tinyagentos.auth_requests_store import AuthRequestsStore
+    auth_requests_store = AuthRequestsStore(data_dir / "auth_requests.db")
+    from tinyagentos.agent_grants_store import AgentGrantsStore
+    agent_grants_store = AgentGrantsStore(data_dir / "agent_grants.db")
+
     metrics_store = MetricsStore(data_dir / "metrics.db")
     notif_store = NotificationStore(data_dir / "notifications.db")
     mcp_store = MCPServerStore(data_dir / "mcp.db")
@@ -371,6 +376,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_registry_store.init()
         app.state.agent_registry = agent_registry_store
         app.state.agent_registry_keypair = agent_registry_keypair
+        await auth_requests_store.init()
+        app.state.auth_requests = auth_requests_store
+        await agent_grants_store.init()
+        app.state.agent_grants = agent_grants_store
         await metrics_store.init()
         await notif_store.init()
         await qmd_client.init()
@@ -1089,6 +1098,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await metrics_store.close()
         await qmd_client.close()
         await http_client.aclose()
+        await agent_grants_store.close()
+        await auth_requests_store.close()
         await agent_registry_store.close()
 
     app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=lifespan)
@@ -1230,6 +1241,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # ensures attribute-existence checks work during the pre-startup window.
     app.state.agent_registry = agent_registry_store
     app.state.agent_registry_keypair = agent_registry_keypair
+    app.state.auth_requests = auth_requests_store
+    app.state.agent_grants = agent_grants_store
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:

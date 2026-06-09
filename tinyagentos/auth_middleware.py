@@ -26,6 +26,37 @@ EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth
 # check is the authoritative guard for all WebSocket endpoints.
 EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/shortcut/")
 
+# Consent-loop status-poll paths are unauthenticated (the opaque request_id is
+# the capability), but the sub-action paths (/approve, /deny) require admin
+# auth.  We exempt GET requests to /api/agents/auth-requests/<id> specifically
+# so the external agent can poll without credentials, while ensuring that POST
+# requests to /approve and /deny still require a session cookie.
+_AUTH_REQUEST_BASE = "/api/agents/auth-requests"
+_AUTH_REQUEST_PREFIX = "/api/agents/auth-requests/"
+
+
+def _is_exempt(method: str, path: str) -> bool:
+    """Return True if this request should bypass the auth gate.
+
+    Consent-loop exemptions (method-sensitive):
+      POST /api/agents/auth-requests          — create request, no auth needed
+      GET  /api/agents/auth-requests/{id}     — status poll, no auth needed
+      POST /api/agents/auth-requests/{id}/approve|deny — admin only, NOT exempt
+      GET  /api/agents/auth-requests          — list (admin), NOT exempt
+    """
+    if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
+        return True
+    # POST /api/agents/auth-requests (exact) — external agent creates a request.
+    if method == "POST" and path == _AUTH_REQUEST_BASE:
+        return True
+    # GET /api/agents/auth-requests/<id> — status poll; only when there's a
+    # single path segment after the prefix (no further slashes → not a subaction).
+    if method == "GET" and path.startswith(_AUTH_REQUEST_PREFIX):
+        tail = path[len(_AUTH_REQUEST_PREFIX):]
+        if tail and "/" not in tail:
+            return True
+    return False
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -36,7 +67,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # endpoints, cluster heartbeat). Without this, a cached old client
         # could bypass onboarding by hitting an /api endpoint that the
         # not-configured branch used to allow through unconditionally.
-        if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
+        if _is_exempt(request.method, path):
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "exempt"
