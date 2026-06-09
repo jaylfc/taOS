@@ -88,3 +88,25 @@ class TestMemoryPage:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
+
+
+class TestAgentDbPath:
+    """Regression: user/default scope must pin an explicit taOS index, never
+    qmd's shared default (which on a shared serve can be another framework's
+    collection, e.g. openclaw's workspace)."""
+
+    def test_user_scope_uses_dedicated_taos_index(self, tmp_path):
+        from tinyagentos.routes.memory import _agent_db_path
+        req = MagicMock()
+        req.app.state.agent_memory_dir = tmp_path / "agent-memory"
+        p = _agent_db_path(req, None)
+        assert p is not None  # never None / never omits dbPath
+        assert p.endswith("user-qmd-index/index.sqlite")
+        assert "/agent-memory/" not in p  # sibling of agent dir, not a child
+
+    def test_agent_scope_uses_per_agent_index(self, tmp_path):
+        from tinyagentos.routes.memory import _agent_db_path
+        req = MagicMock()
+        req.app.state.agent_memory_dir = tmp_path / "agent-memory"
+        p = _agent_db_path(req, "foo")
+        assert p.endswith("agent-memory/foo/index.sqlite")

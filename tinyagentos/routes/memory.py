@@ -8,8 +8,8 @@ file to operate on. TinyAgentOS resolves the ``dbPath`` based on the
 calling scope:
 
 - ``agent=foo``  → ``data/agent-memory/foo/index.sqlite``
-- no agent       → the default user index (``~/.cache/qmd/index.sqlite``,
-  served when ``dbPath`` is omitted)
+- no agent       → a dedicated taOS user index
+  (``<data>/user-qmd-index/index.sqlite``), never qmd's shared default
 
 This is the load-bearing piece of per-agent memory isolation — each
 agent reads and writes its own index, so Agent A cannot see Agent B's
@@ -53,19 +53,24 @@ def _qmd_base(request: Request) -> str:
     return request.app.state.qmd_client.base_url
 
 
-def _agent_db_path(request: Request, agent: str | None) -> str | None:
-    """Resolve the SQLite path for an agent's memory index.
+def _agent_db_path(request: Request, agent: str | None) -> str:
+    """Resolve the SQLite path for a memory index. ALWAYS taOS-owned.
 
-    Returns ``None`` for the user/default scope so the qmd request
-    omits ``dbPath`` and the qmd serve process falls back to its
-    default index. Per-agent paths are computed deterministically
-    from ``app.state.agent_memory_dir`` so they always match what the
-    deployer bind-mounts into the agent's container at ``/memory``.
+    - ``agent`` given → that agent's per-agent index
+      (``agent_memory_dir/<agent>/index.sqlite``), matching what the deployer
+      bind-mounts into the agent's container at ``/memory``.
+    - no ``agent`` (user/default scope) → a DEDICATED taOS user index, never
+      qmd's *shared default*. The qmd serve is shared across frameworks and its
+      default collection may belong to another one (e.g. openclaw's workspace),
+      so omitting ``dbPath`` would query/return that foreign data. We therefore
+      always pin an explicit taOS-owned ``dbPath`` (an empty index returns no
+      results, which is correct — never another framework's data).
     """
-    if not agent:
-        return None
     base: Path = request.app.state.agent_memory_dir
-    target = base / agent / "index.sqlite"
+    if not agent:
+        target = base.parent / "user-qmd-index" / "index.sqlite"
+    else:
+        target = base / agent / "index.sqlite"
     target.parent.mkdir(parents=True, exist_ok=True)
     return str(target)
 
@@ -84,9 +89,7 @@ async def memory_browse(
     params: dict = {"limit": limit, "offset": offset}
     if collection:
         params["collection"] = collection
-    db_path = _agent_db_path(request, agent)
-    if db_path:
-        params["dbPath"] = db_path
+    params["dbPath"] = _agent_db_path(request, agent)
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
         resp = await http_client.get(f"{_qmd_base(request)}/browse", params=params, headers=headers, timeout=30)
@@ -177,10 +180,7 @@ async def memory_collections(
 ):
     """List memory collections for an agent via qmd serve GET /collections."""
     http_client = request.app.state.http_client
-    params: dict = {}
-    db_path = _agent_db_path(request, agent_name)
-    if db_path:
-        params["dbPath"] = db_path
+    params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
         resp = await http_client.get(f"{_qmd_base(request)}/collections", params=params, headers=headers, timeout=30)
@@ -202,10 +202,7 @@ async def memory_delete_chunk(
     the default user index.
     """
     http_client = request.app.state.http_client
-    payload: dict = {"hash": content_hash}
-    db_path = _agent_db_path(request, agent)
-    if db_path:
-        payload["dbPath"] = db_path
+    payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
         resp = await http_client.post(
