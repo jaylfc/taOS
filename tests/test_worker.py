@@ -63,10 +63,10 @@ class TestDetectCapabilities:
         assert "image-generation" in caps
         assert "llm-chat" not in caps
 
-    def test_rknn_sd_backend(self):
-        """An rknn-sd backend advertises image-generation only."""
+    def test_sd_cpp_backend(self):
+        """An sd-cpp backend advertises image-generation only."""
         agent = WorkerAgent("http://localhost:6969")
-        backends = [{"type": "rknn-sd", "url": "http://localhost:7863"}]
+        backends = [{"type": "sd-cpp", "url": "http://localhost:7864"}]
         with patch("shutil.which", return_value=None):
             caps = agent.detect_capabilities(backends)
         assert "image-generation" in caps

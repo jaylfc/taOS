@@ -250,23 +250,6 @@ class TestGetDownloadedModels:
 
 
 @pytest.fixture
-def app_with_rknn_sd_backend(tmp_path):
-    config = {
-        "server": {"host": "0.0.0.0", "port": 6969},
-        "backends": [
-            {"name": "rknn-sd-npu", "type": "rknn-sd", "url": "http://localhost:7863", "priority": 1}
-        ],
-        "qmd": {"url": "http://localhost:7832"},
-        "agents": [],
-        "metrics": {"poll_interval": 30, "retention_days": 30},
-    }
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.dump(config))
-    (tmp_path / ".setup_complete").touch()
-    return create_app(data_dir=tmp_path)
-
-
-@pytest.fixture
 def app_with_sd_cpp_backend(tmp_path):
     config = {
         "server": {"host": "0.0.0.0", "port": 6969},
@@ -298,77 +281,6 @@ async def _make_auth_client(app):
 
 @pytest.mark.asyncio
 class TestLoadedModelsImageBackends:
-    async def test_rknn_sd_loaded_when_pipeline_loaded(self, app_with_rknn_sd_backend):
-        """rknn-sd: /health with pipeline_loaded=true -> entry appears in loaded list."""
-        app = app_with_rknn_sd_backend
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "status": "ok",
-            "model": "lcm-dreamshaper-v7-rknn",
-            "pipeline_loaded": True,
-        }
-
-        async with await _make_auth_client(app) as c:
-            with patch.object(app.state, "http_client") as mock_http:
-                mock_http.get = AsyncMock(return_value=mock_response)
-                resp = await c.get("/api/models/loaded")
-        await app.state.metrics.close()
-        await app.state.qmd_client.close()
-        await app.state.http_client.aclose()
-
-        assert resp.status_code == 200
-        data = resp.json()
-        entries = [e for e in data["loaded"] if e["backend"] == "rknn-sd-npu"]
-        assert len(entries) == 1
-        entry = entries[0]
-        assert entry["name"] == "lcm-dreamshaper-v7-rknn"
-        assert entry["backend_type"] == "rknn-sd"
-        assert entry["purpose"] == "image-generation"
-        assert entry["size_mb"] is None
-        assert entry["vram_mb"] is None
-
-    async def test_rknn_sd_not_loaded_when_pipeline_not_loaded(self, app_with_rknn_sd_backend):
-        """rknn-sd: /health with pipeline_loaded=false -> no entry in loaded list."""
-        app = app_with_rknn_sd_backend
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "status": "ok",
-            "model": "lcm-dreamshaper-v7-rknn",
-            "pipeline_loaded": False,
-        }
-
-        async with await _make_auth_client(app) as c:
-            with patch.object(app.state, "http_client") as mock_http:
-                mock_http.get = AsyncMock(return_value=mock_response)
-                resp = await c.get("/api/models/loaded")
-        await app.state.metrics.close()
-        await app.state.qmd_client.close()
-        await app.state.http_client.aclose()
-
-        assert resp.status_code == 200
-        data = resp.json()
-        entries = [e for e in data["loaded"] if e["backend"] == "rknn-sd-npu"]
-        assert entries == []
-
-    async def test_rknn_sd_offline_skipped(self, app_with_rknn_sd_backend):
-        """rknn-sd backend: ConnectError is swallowed; loaded list is empty."""
-        app = app_with_rknn_sd_backend
-
-        async with await _make_auth_client(app) as c:
-            with patch.object(app.state, "http_client") as mock_http:
-                mock_http.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
-                resp = await c.get("/api/models/loaded")
-        await app.state.metrics.close()
-        await app.state.qmd_client.close()
-        await app.state.http_client.aclose()
-
-        assert resp.status_code == 200
-        assert resp.json()["loaded"] == []
-
     async def test_sd_cpp_never_appears_in_loaded(self, app_with_sd_cpp_backend):
         """sd-cpp: /sdapi/v1/options doesn't expose load state; backend is skipped entirely."""
         app = app_with_sd_cpp_backend

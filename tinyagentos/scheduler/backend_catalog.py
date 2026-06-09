@@ -40,7 +40,6 @@ BACKEND_CAPABILITIES: dict[str, set[str]] = {
     "openai": {"llm-chat", "embedding"},
     "anthropic": {"llm-chat"},
     "sd-cpp": {"image-generation"},
-    "rknn-sd": {"image-generation"},
 }
 
 

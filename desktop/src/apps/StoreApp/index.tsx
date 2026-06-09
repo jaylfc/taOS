@@ -300,7 +300,6 @@ const APP_ICONS: Record<string, string> = {
   "fastsdcpu": gh("rupeshs"),
   "rk-llama-cpp": gh("marty1885"),
   "rk3588-sd-gpu": gh("happyme531"),
-  "rknn-stable-diffusion": gh("happyme531"),
   "lcm-dreamshaper-rknn": gh("happyme531"),
   "ltx-video": gh("Lightricks"),
   "wan2gp": gh("alibaba"),

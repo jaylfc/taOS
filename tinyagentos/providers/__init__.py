@@ -33,7 +33,6 @@ ALL_TYPES: set[str] = {
     "openai-compatible",
     # -- local image-generation backends --
     "sd-cpp",
-    "rknn-sd",
 }
 
 CLOUD_TYPES: set[str] = {
@@ -49,7 +48,7 @@ LOCAL_TYPES: set[str] = ALL_TYPES - CLOUD_TYPES
 # Backends where LiteLLM must receive an explicit api_base (self-hosted or
 # user-supplied endpoints). Cloud providers discover their base URL from the
 # LiteLLM provider registry.
-IMAGE_GEN_TYPES: set[str] = {"sd-cpp", "rknn-sd"}
+IMAGE_GEN_TYPES: set[str] = {"sd-cpp"}
 NEEDS_API_BASE_TYPES: set[str] = (LOCAL_TYPES - IMAGE_GEN_TYPES) | {"openai-compatible"}
 
 # ---------------------------------------------------------------------------

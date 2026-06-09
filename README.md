@@ -395,7 +395,6 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scri
 | `/etc/systemd/system/tinyagentos.service` | Main controller systemd unit. Runs uvicorn on port 6969. |
 | `/etc/systemd/system/qmd.service` | Embedding backend (embed / rerank / query expansion) on port 7832. Used by taOSmd for vector operations. Backed by rkllama on RK3588 boards or local node-llama-cpp elsewhere. |
 | `tinyagentos-sdcpp.service` (repo root) | (RK3588 only) CPU image generation backend. Manual setup only — not auto-installed by the installer. |
-| `tinyagentos-rknn-sd.service` (repo root) | (RK3588 only) NPU image generation backend. Manual setup only — not auto-installed by the installer. |
 | `/home/<user>/tinyagentos/` | The repo checkout. All code, all configs. |
 | `/home/<user>/tinyagentos/.venv/` | Python virtualenv. All Python deps live here, never `pip install` to system Python. |
 | `/home/<user>/tinyagentos/data/` | All persistent state. **One directory to back up.** Contains: agent state YAMLs, agent memory SQLite indexes, agent workspaces, secrets DB, scheduler history, channel credentials, downloaded models, torrent settings, telemetry opt-in flag. |
@@ -434,8 +433,8 @@ ls ~/.local/share/tinyagentos-worker/
 ```bash
 # Controller
 sudo systemctl disable --now tinyagentos qmd
-# If you manually installed the RK3588 image-gen units:
-# sudo systemctl disable --now tinyagentos-sdcpp tinyagentos-rknn-sd
+# If you manually installed the RK3588 sd-cpp image-gen unit:
+# sudo systemctl disable --now tinyagentos-sdcpp
 sudo rm /etc/systemd/system/tinyagentos*.service /etc/systemd/system/qmd.service
 sudo systemctl daemon-reload
 # Repo + data are still at ~/tinyagentos, delete with: rm -rf ~/tinyagentos
@@ -497,7 +496,7 @@ sudo systemctl restart tinyagentos
 sudo systemctl status tinyagentos
 ```
 
-On RK3588 boards with NPU image generation enabled, the CPU and NPU image backends ship as additional unit files at `tinyagentos-sdcpp.service` and `tinyagentos-rknn-sd.service` in the repo root. These require manual setup — they are not auto-installed by `install-server.sh`. Copy to `/etc/systemd/system/`, substitute the `TAOS_USER`/`TAOS_INSTALL_DIR`/`TAOS_PYTHON` placeholders, then enable with `sudo systemctl enable --now tinyagentos-sdcpp tinyagentos-rknn-sd`.
+On RK3588 boards with CPU image generation enabled, the sd-cpp backend ships as an additional unit file at `tinyagentos-sdcpp.service` in the repo root. This requires manual setup — it is not auto-installed by `install-server.sh`. Copy to `/etc/systemd/system/`, substitute the `TAOS_USER`/`TAOS_INSTALL_DIR`/`TAOS_PYTHON` placeholders, then enable with `sudo systemctl enable --now tinyagentos-sdcpp`.
 
 ## RK3588 NPU Setup
 
@@ -508,38 +507,6 @@ curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/i
 ```
 
 See [docs/mirror-policy.md](docs/mirror-policy.md) for the mirror governance policy, what is mirrored, when it updates, how to verify integrity independently, and how to self-host the mirror for air-gapped deployments. The same policy will extend to RK3576, Raspberry Pi 4, Mac mini / Apple Silicon, and x86 classes as those verified install paths land.
-
-## RK3588 NPU Image Generation: Runtime Version Pin
-
-**If you're running image generation on the Rockchip NPU, `/usr/lib/librknnrt.so` must be version 2.3.0.** The LCM Dreamshaper UNet RKNN file was compiled with `rknn-toolkit2 2.3.0` (2024-11-07) and segfaults at the first UNet inference step under `librknnrt 2.3.2` (2025-04-09) due to tightened tensor-layout validation in the newer runtime. The data-format fix (NHWC on unet + vae_decoder) is necessary but not sufficient; the runtime also needs to match.
-
-`scripts/install-rknpu.sh` handles this automatically. For manual installs, all binaries including `librknnrt.so 2.3.0` are available from the TAOS mirror at `huggingface.co/jaysom/tinyagentos-rockchip-mirror`. Do not pull from community repos directly, use the mirror so the SHA256 is known.
-
-Verify:
-
-```bash
-strings /usr/lib/librknnrt.so | grep "librknnrt version"
-# librknnrt version: 2.3.0 (c949ad889d@2024-11-07T11:35:33)
-```
-
-**rkllama compatibility**: rkllama works fine on `librknnrt 2.3.0`, there's no regression vs. 2.3.2 for LLM / embedding / rerank workloads. The version pin is specifically about the pre-compiled LCM Dreamshaper UNet, not a general runtime downgrade.
-
-**Rollback**: if you ever need to restore the newer runtime (losing NPU SD), `sudo cp /home/$USER/rkllama/src/rkllama/lib/librknnrt.so /usr/lib/librknnrt.so && sudo ldconfig`.
-
-## RK3588 NPU SD runtime: ez_rknn_async
-
-TinyAgentOS runs the LCM Dreamshaper Stable Diffusion pipeline on RK3588 through `ez_rknn_async`, happyme531's drop-in replacement for Rockchip's `rknn-toolkit-lite2`. It supports `run_async` callbacks, multi-core tensor parallel inference (`tp_mode='all'`), and concurrent data-parallel sessions pinned to specific NPU cores, capabilities the stock runtime does not expose.
-
-Measured on an Orange Pi 5 Plus with the LCM Dreamshaper submodels:
-
-| Stage | Before (stock runtime) | After (ez_rknn_async, tp_mode=all) |
-|---|---|---|
-| UNet warm latency | ~5.66 s | **4.49 s** (20% faster) |
-| VAE decode | ~10.55 s | **8.05 s** (24% faster) |
-| Full 4-step LCM generation (warm) | ~33 s | **~26 s (21% faster)** |
-| Two concurrent sessions on cores 0 and 1 |  | **1.78× throughput** |
-
-The benchmark harness is at `scripts/spikes/ez-rknn-async/`. Set `RKNN_SD_LEGACY_WRAPPER=1` on the `tinyagentos-rknn-sd.service` unit to fall back to the stock runtime if you hit an issue; `/health` on the service reports which backend is in use via a `runtime` field. The package (`ztu_somemodelruntime_ez_rknn_async`) is pulled in as a standard pip dependency during worker install on RK3588 hosts.
 
 ## TurboQuant KV cache compression
 
@@ -726,8 +693,6 @@ TinyAgentOS makes AI agents accessible on affordable hardware.
 
 TinyAgentOS stands on a lot of excellent community work, particularly on Rockchip. Shout-outs where they are earned:
 
-- **[happyme531](https://github.com/happyme531).** Author of [ztu_somemodelruntime_ez_rknn_async](https://github.com/happyme531/ztu_somemodelruntime_ez_rknn_async), the ORT-style Python runtime that makes multi-core NPU inference on RK3588 actually work. Also the original author of the LCM Dreamshaper RKNN port. Without this library, the 21% SD speedup and the 1.78× concurrent-session throughput on the Orange Pi 5 Plus would not exist.
-- **[darkbit1001](https://huggingface.co/darkbit1001).** The NHWC `data_format` fix for UNet and VAE decoder under `librknnrt 2.3.2` that made SD on RK3588 run cleanly in the first place. Upstreamed to happyme531's repo as [discussion #6](https://huggingface.co/happyme531/Stable-Diffusion-1.5-LCM-ONNX-RKNN2/discussions/6).
 - **[c01zaut](https://huggingface.co/c01zaut)**. Qwen2.5 1.5B → 14B RKLLM model ports that let chat work on RK3588 at all.
 - **[NotPunchnox](https://github.com/NotPunchnox).** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
 - **[tobi](https://github.com/tobi)** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).

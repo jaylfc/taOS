@@ -36,7 +36,6 @@ export const BACKEND_META: Record<string, BackendMeta> = {
   comfyui: { label: "ComfyUI", icon: "🧩", color: "indigo", classes: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30" },
   "sd-webui": { label: "SD WebUI", icon: "🎨", color: "fuchsia", classes: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30" },
   "stable-diffusion-cpp": { label: "stable-diffusion.cpp", icon: "🖼️", color: "pink", classes: "bg-pink-500/15 text-pink-300 border-pink-500/30" },
-  "rknn-stable-diffusion": { label: "RKNN SD", icon: "🖼️", color: "purple", classes: "bg-purple-500/15 text-purple-300 border-purple-500/30" },
   fastsdcpu: { label: "FastSD CPU", icon: "🖌️", color: "teal", classes: "bg-teal-500/15 text-teal-300 border-teal-500/30" },
   "whisper-cpp": { label: "whisper.cpp", icon: "🎙️", color: "sky", classes: "bg-sky-500/15 text-sky-300 border-sky-500/30" },
   piper: { label: "Piper", icon: "🗣️", color: "emerald", classes: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },

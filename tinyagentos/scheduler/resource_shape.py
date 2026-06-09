@@ -165,7 +165,6 @@ def get_default_shape(backend_type: str) -> BackendResourceShape:
     """
     mapping = {
         "rkllama": make_rk3588_npu_shape,
-        "rknn-sd": make_rk3588_npu_shape,
         "vllm": make_vllm_shape,
         "llama-cpp": make_cpu_shape,     # conservative default; caller can override
         "ollama": make_ollama_shape,

@@ -33,7 +33,7 @@ changes to their model:
 - **AgentBrowsersApp** — Playwright headless browsers, host-side
 - **ChannelsApp** — channel config
 - **TerminalApp** — terminals into the host
-- **ImagesApp** — server-side image generation (rknn-sd, image-gen)
+- **ImagesApp** — server-side image generation (sd-cpp, image-gen)
 - **MessagesApp** — chat data is server-side
 
 ### ⚠️ Open — bidirectional file transfer is the question

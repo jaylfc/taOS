@@ -39,7 +39,7 @@ def _make_app_state(backends: list[dict], lifecycle_states: dict):
 
 def test_patch_provider_updates_lifecycle():
     config, catalog, lifecycle = _make_app_state(
-        [{"name": "b1", "type": "rknn-sd", "url": "http://b1", "priority": 99,
+        [{"name": "b1", "type": "sd-cpp", "url": "http://b1", "priority": 99,
           "auto_manage": False, "keep_alive_minutes": 10, "enabled": True}],
         {},
     )
@@ -66,7 +66,7 @@ def test_patch_provider_not_found():
 
 def test_start_provider_calls_lifecycle_manager():
     config, catalog, lifecycle = _make_app_state(
-        [{"name": "b1", "type": "rknn-sd", "url": "http://b1", "priority": 99,
+        [{"name": "b1", "type": "sd-cpp", "url": "http://b1", "priority": 99,
           "auto_manage": True, "keep_alive_minutes": 10, "enabled": True}],
         {"b1": "stopped"},
     )
@@ -81,7 +81,7 @@ def test_start_provider_calls_lifecycle_manager():
 
 def test_stop_provider_graceful():
     config, catalog, lifecycle = _make_app_state(
-        [{"name": "b1", "type": "rknn-sd", "url": "http://b1", "priority": 99,
+        [{"name": "b1", "type": "sd-cpp", "url": "http://b1", "priority": 99,
           "auto_manage": True, "keep_alive_minutes": 10, "enabled": True}],
         {"b1": "running"},
     )
@@ -96,7 +96,7 @@ def test_stop_provider_graceful():
 
 def test_stop_provider_force():
     config, catalog, lifecycle = _make_app_state(
-        [{"name": "b1", "type": "rknn-sd", "url": "http://b1", "priority": 99,
+        [{"name": "b1", "type": "sd-cpp", "url": "http://b1", "priority": 99,
           "auto_manage": True, "keep_alive_minutes": 10, "enabled": True}],
         {"b1": "running"},
     )

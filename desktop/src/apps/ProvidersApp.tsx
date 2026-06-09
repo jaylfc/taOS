@@ -19,7 +19,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 
 /** Fallback constants used before the API call completes. */
 const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
-const FALLBACK_LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp", "rknn-sd"] as const;
+const FALLBACK_LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp"] as const;
 
 /** Active cloud types — seeded with fallback, updated from /api/providers/types.
  *  Referenced by isCloud() and groupByCategory() directly so they don't
