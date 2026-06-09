@@ -327,6 +327,28 @@ class AgentRegistryStore(BaseStore):
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    async def list_for_user(self, user_id: str) -> list[dict]:
+        """Return all registry records owned by *user_id*."""
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_registry WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def list_revoked(self) -> list[dict]:
+        """Return [{canonical_id, revoked_at}] for all revoked entries."""
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT canonical_id, revoked_at FROM agent_registry "
+            "WHERE revoked_at IS NOT NULL ORDER BY revoked_at",
+        )
+        rows = await cursor.fetchall()
+        return [{"canonical_id": r["canonical_id"], "revoked_at": r["revoked_at"]} for r in rows]
+
     # ------------------------------------------------------------------
     # Revoke
     # ------------------------------------------------------------------

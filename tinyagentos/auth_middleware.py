@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
-EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa"}
+EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/api/agents/registry/pubkey"}
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -37,6 +37,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # could bypass onboarding by hitting an /api endpoint that the
         # not-configured branch used to allow through unconditionally.
         if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
+            request.state.user_id = None
+            request.state.is_admin = False
+            request.state.via = "exempt"
             return await call_next(request)
 
         # Local token (Authorization: Bearer <token>) is accepted as a
@@ -49,6 +52,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):
+                # A valid local token IS valid auth (same-host trust: the
+                # token file is 0600, possession = the host user). It maps to
+                # the primary/admin user when one exists. Before onboarding
+                # there is no primary user yet — the token still passes (it is
+                # how scripts/CLI operate pre-setup), but with no user_id, so
+                # current_user-gated routes still 401 while middleware-only
+                # routes proceed as before. (Not failing closed here: the
+                # local token already authenticates, so it is not a bypass.)
+                primary = auth_mgr.get_primary_user()
+                if primary:
+                    request.state.user_id = primary["id"]
+                    request.state.is_admin = True
+                    request.state.via = "local_token"
+                else:
+                    request.state.user_id = None
+                    request.state.is_admin = False
+                    request.state.via = "local_token"
                 return await call_next(request)
 
         # First boot: no user yet. Browsers go to the setup page; APIs
@@ -64,8 +84,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Check session cookie
         token = request.cookies.get("taos_session")
-        if token and auth_mgr.validate_session(token) is not None:
-            return await call_next(request)
+        if token:
+            user_id = auth_mgr.validate_session(token)
+            if user_id is not None:
+                user_record = auth_mgr.get_user_by_id(user_id)
+                request.state.user_id = user_id
+                request.state.is_admin = bool(
+                    user_record.get("is_admin") if user_record else False
+                )
+                request.state.via = "session"
+                return await call_next(request)
 
         # Redirect to login for browsers, 401 for API calls
         accept = request.headers.get("accept", "")
