@@ -63,6 +63,7 @@ _VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
     ("active",    "revoked"),     # revoke (terminal)
     ("suspended", "revoked"),     # revoke (terminal)
     ("pending",   "revoked"),     # revoke (terminal)
+    ("rejected",  "revoked"),     # revoke (terminal) — any non-terminal → revoked
     ("rejected",  "pending"),     # undo denial → re-open
     ("rejected",  "active"),      # undo denial → directly approve
 })
@@ -460,19 +461,29 @@ class AgentRegistryStore(BaseStore):
         _assert_valid_transition(before_status, new_status)
 
         now = datetime.now(timezone.utc).isoformat()
+        # Atomic: the UPDATE is conditional on the status still being
+        # ``before_status``, so two concurrent transitions cannot both win a
+        # read/validate/write race — the loser's WHERE matches 0 rows. This
+        # also guarantees the returned/audited before_status is accurate.
         if new_status == "revoked":
-            # Terminal: also set revoked_at if not already set.
-            await self._db.execute(
+            cur = await self._db.execute(
                 "UPDATE agent_registry SET status = ?, revoked_at = COALESCE(revoked_at, ?) "
-                "WHERE canonical_id = ?",
-                (new_status, now, canonical_id),
+                "WHERE canonical_id = ? AND status = ?",
+                (new_status, now, canonical_id, before_status),
             )
         else:
-            await self._db.execute(
-                "UPDATE agent_registry SET status = ? WHERE canonical_id = ?",
-                (new_status, canonical_id),
+            cur = await self._db.execute(
+                "UPDATE agent_registry SET status = ? "
+                "WHERE canonical_id = ? AND status = ?",
+                (new_status, canonical_id, before_status),
             )
         await self._db.commit()
+        if cur.rowcount == 0:
+            # Status changed under us between the read and the write.
+            raise ValueError(
+                f"lifecycle transition conflict: {canonical_id!r} is no longer "
+                f"in state {before_status!r}"
+            )
         return await self.get(canonical_id)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
@@ -490,9 +501,11 @@ class AgentRegistryStore(BaseStore):
             # Already revoked — return the existing record unchanged.
             return record
         now = datetime.now(timezone.utc).isoformat()
+        # Atomic: only the first concurrent revoke matches (revoked_at IS NULL);
+        # a second one no-ops and returns the already-revoked record.
         await self._db.execute(
             "UPDATE agent_registry SET revoked_at = ?, status = 'revoked' "
-            "WHERE canonical_id = ?",
+            "WHERE canonical_id = ? AND revoked_at IS NULL",
             (now, canonical_id),
         )
         await self._db.commit()
