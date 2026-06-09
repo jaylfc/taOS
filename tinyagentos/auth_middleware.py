@@ -52,17 +52,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):
+                # A valid local token IS valid auth (same-host trust: the
+                # token file is 0600, possession = the host user). It maps to
+                # the primary/admin user when one exists. Before onboarding
+                # there is no primary user yet — the token still passes (it is
+                # how scripts/CLI operate pre-setup), but with no user_id, so
+                # current_user-gated routes still 401 while middleware-only
+                # routes proceed as before. (Not failing closed here: the
+                # local token already authenticates, so it is not a bypass.)
                 primary = auth_mgr.get_primary_user()
-                # Fail closed: a valid local token with no resolvable primary
-                # user must not pass through (would bypass middleware-only
-                # gating for routes that don't use the current_user dependency).
-                if not primary:
-                    return JSONResponse(
-                        {"error": "Authentication required"}, status_code=401
-                    )
-                request.state.user_id = primary["id"]
-                request.state.is_admin = True
-                request.state.via = "local_token"
+                if primary:
+                    request.state.user_id = primary["id"]
+                    request.state.is_admin = True
+                    request.state.via = "local_token"
+                else:
+                    request.state.user_id = None
+                    request.state.is_admin = False
+                    request.state.via = "local_token"
                 return await call_next(request)
 
         # First boot: no user yet. Browsers go to the setup page; APIs
