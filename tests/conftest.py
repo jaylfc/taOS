@@ -233,6 +233,11 @@ async def client(app, tmp_data_dir):
     )
     await _browser_cookie_store.init()
     app.state.browser_cookie_store = _browser_cookie_store
+    # Lifespan-owned objects set to None by create_app() — tests that bypass
+    # the lifespan need these initialised so routes don't fail on NoneType.
+    from tinyagentos.routes.desktop_browser.copilot_ws import CopilotTicketStore, CopilotHub
+    app.state.copilot_ticket_store = CopilotTicketStore()
+    app.state.copilot_hub = CopilotHub()
     # Auth middleware requires a configured user — set up a test admin so all
     # routes respond normally instead of returning 401 needs_onboarding.
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")

@@ -203,9 +203,15 @@ class TestProxyFetchCookies:
 
         assert resp.status_code == 200
 
-        # Set-Cookie from upstream MUST NOT appear in our response (cookies
-        # live in the jar, not the user's browser)
-        assert "set-cookie" not in {k.lower() for k in resp.headers}
+        # Upstream Set-Cookie headers must NOT leak into our response — the
+        # cookies are stored in the server-side jar.  The CSRF middleware may
+        # legitimately add its own csrf_token cookie, so we check that no
+        # upstream cookie value (session=abc123) appears in any Set-Cookie
+        # header rather than asserting the header is absent entirely.
+        all_set_cookie = [v for k, v in resp.headers.items() if k.lower() == "set-cookie"]
+        assert not any("session=abc123" in c for c in all_set_cookie), (
+            "upstream Set-Cookie leaked to client response"
+        )
 
 
 @pytest.mark.asyncio
