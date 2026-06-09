@@ -111,7 +111,10 @@ class AuthRequestsStore(BaseStore):
             ),
         )
         await self._db.commit()
-        return await self.get(request_id)  # type: ignore[return-value]
+        record = await self.get(request_id)
+        if record is None:
+            raise RuntimeError(f"auth_request {request_id!r} missing immediately after insert")
+        return record
 
     async def set_decision(
         self,

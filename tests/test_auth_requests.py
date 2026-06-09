@@ -488,3 +488,35 @@ class TestAuthRequestRoutes:
         async with AsyncClient(transport=transport, base_url="http://test") as bare:
             resp = await bare.get("/api/agents/auth-requests/no-such-id")
         assert resp.status_code == 404
+
+    async def test_list_unsupported_status_returns_400(self, consent_client):
+        resp = await consent_client.get("/api/agents/auth-requests?status=all")
+        assert resp.status_code == 400
+
+    async def test_concurrent_approve_only_one_wins(self, consent_client):
+        """Two simultaneous approvals of the same request: one 200, one 409."""
+        import asyncio
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+        request_id = create_resp.json()["request_id"]
+
+        approve_body = {"granted_scopes": ["memory:read"]}
+        cookies = dict(consent_client.cookies)
+
+        async def do_approve():
+            async with AsyncClient(
+                transport=ASGITransport(app=consent_client._transport.app),
+                base_url="http://test",
+                cookies=cookies,
+            ) as c:
+                return await c.post(
+                    f"/api/agents/auth-requests/{request_id}/approve",
+                    json=approve_body,
+                )
+
+        r1, r2 = await asyncio.gather(do_approve(), do_approve())
+        codes = sorted([r1.status_code, r2.status_code])
+        assert codes == [200, 409], f"expected [200, 409], got {codes}"

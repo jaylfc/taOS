@@ -20,6 +20,7 @@ Security notes
   further submissions receive 429.
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -94,6 +95,17 @@ def _get_relationships(request: Request):
     if rel is None:
         raise RuntimeError("relationships manager not on app.state")
     return rel
+
+
+def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
+    """Per-request-id lock preventing concurrent approve races."""
+    locks = getattr(request.app.state, "_approve_locks", None)
+    if locks is None:
+        request.app.state._approve_locks = {}
+        locks = request.app.state._approve_locks
+    if request_id not in locks:
+        locks[request_id] = asyncio.Lock()
+    return locks[request_id]
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +191,14 @@ async def approve_auth_request(
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="forbidden")
 
+    # Serialise concurrent approvals for the same request to prevent orphaned
+    # registry entries and duplicate grants from a TOCTOU race.
+    async with _get_approve_lock(request, request_id):
+        return await _do_approve(request, request_id, body, user)
+
+
+async def _do_approve(request: Request, request_id: str, body: ApproveBody, user):
+    """Inner approve logic — called under a per-request lock."""
     auth_store = _get_auth_requests_store(request)
     record = await auth_store.get(request_id)
     if record is None:
@@ -291,11 +311,16 @@ async def list_auth_requests(
     """List pending auth requests (admin only).
 
     This is the feed the desktop notification / Permissions app reads.
-    The ?status= filter defaults to 'pending'; pass status=all for every record
-    (not yet implemented — Phase 1 only needs the pending feed).
+    Phase 1 only supports status=pending (the default).
     """
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="forbidden")
+
+    if status is not None and status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"status={status!r} is not supported in Phase 1; omit or pass status=pending",
+        )
 
     store = _get_auth_requests_store(request)
     pending = await store.list_pending()
