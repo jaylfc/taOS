@@ -215,15 +215,21 @@ class TestAuthRoutes:
     @pytest.mark.asyncio
     async def test_logout_clears_session(self, app, auth_client):
         app.state.auth.set_password("passw0rd")
-        # Login first
+        # Login first — the response carries both taos_session and csrf_token cookies.
         resp = await auth_client.post(
             "/auth/login",
             data={"password": "passw0rd"},
             follow_redirects=False,
         )
         cookies = resp.cookies
-        # Logout
-        resp = await auth_client.post("/auth/logout", cookies=cookies, follow_redirects=False)
+        # Double-submit: read the csrf_token cookie and echo it in the header.
+        csrf_token = cookies.get("csrf_token", "")
+        resp = await auth_client.post(
+            "/auth/logout",
+            cookies=cookies,
+            headers={"X-CSRF-Token": csrf_token},
+            follow_redirects=False,
+        )
         assert resp.status_code == 303
         assert "/auth/login" in resp.headers["location"]
 

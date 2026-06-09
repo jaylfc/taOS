@@ -1092,6 +1092,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.middleware.version_header import VersionHeaderMiddleware
     app.add_middleware(VersionHeaderMiddleware)
 
+    from tinyagentos.middleware.security_headers import SecurityHeadersMiddleware
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    from tinyagentos.middleware.csrf import CSRFMiddleware
+    app.add_middleware(CSRFMiddleware)
+
     # GZip compression for faster transfers on slow SD card / network
     app.add_middleware(GZipMiddleware, minimum_size=500)
 

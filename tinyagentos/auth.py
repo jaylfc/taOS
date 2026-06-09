@@ -256,6 +256,15 @@ class AuthManager:
                 return u
         return None
 
+    def find_user_by_email(self, email: str) -> dict | None:
+        """Return the user record whose email matches (case-insensitive), or None."""
+        email_lower = email.lower()
+        for u in self._read_users().get("users", []):
+            stored = (u.get("email") or "").lower()
+            if stored and stored == email_lower:
+                return u
+        return None
+
     def _find_user_by_id(self, user_id: str) -> dict | None:
         for u in self._read_users().get("users", []):
             if u.get("id") == user_id:
@@ -416,6 +425,11 @@ class AuthManager:
     def check_password(self, password: str, username: str | None = None) -> tuple[bool, dict | None]:
         """Verify credentials.
 
+        *username* may be a username or an email address — the lookup tries
+        username first, then email (case-insensitive).  The error response
+        is identical in both cases so callers cannot infer which field was
+        unrecognised.
+
         Returns ``(ok, user_record)``. When a pending user's invite code is
         supplied as the password, returns the pending record so the route
         layer can set ``needs_onboarding=True``.
@@ -429,7 +443,18 @@ class AuthManager:
         if users:
             candidates = users
             if username:
-                candidates = [u for u in users if u.get("username") == username]
+                # Try exact username match first, then fall back to email lookup.
+                by_username = [u for u in users if u.get("username") == username]
+                if by_username:
+                    candidates = by_username
+                else:
+                    # Treat the supplied value as an email address (case-insensitive).
+                    email_lower = username.lower()
+                    by_email = [
+                        u for u in users
+                        if (u.get("email") or "").lower() == email_lower and email_lower
+                    ]
+                    candidates = by_email if by_email else []
             for u in candidates:
                 # Full user — verify password (with transparent SHA-256→argon2 upgrade)
                 if "password_hash" in u:
