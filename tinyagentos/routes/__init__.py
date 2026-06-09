@@ -14,6 +14,11 @@ def register_all_routers(app):
     from tinyagentos.routes.dashboard import router as dashboard_router
     app.include_router(dashboard_router)
 
+    # Agent registry must be registered before the generic /api/agents/{name}
+    # route so that /api/agents/registry/* paths resolve correctly.
+    from tinyagentos.routes.agent_registry import router as agent_registry_router
+    app.include_router(agent_registry_router)
+
     from tinyagentos.routes.agents import router as agents_router
     app.include_router(agents_router)
 

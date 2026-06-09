@@ -241,6 +241,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     installed_path = data_dir / "installed.json"
     registry = AppRegistry(catalog_dir=catalog_dir, installed_path=installed_path)
 
+    from tinyagentos.agent_registry_store import AgentRegistryStore, load_or_create_signing_keypair
+    agent_registry_store = AgentRegistryStore(data_dir / "agent_registry.db")
+    agent_registry_keypair = load_or_create_signing_keypair(data_dir)
+
     metrics_store = MetricsStore(data_dir / "metrics.db")
     notif_store = NotificationStore(data_dir / "notifications.db")
     mcp_store = MCPServerStore(data_dir / "mcp.db")
@@ -364,6 +368,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     async def lifespan(app: FastAPI):
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
+        await agent_registry_store.init()
+        app.state.agent_registry = agent_registry_store
+        app.state.agent_registry_keypair = agent_registry_keypair
         await metrics_store.init()
         await notif_store.init()
         await qmd_client.init()
@@ -1082,6 +1089,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await metrics_store.close()
         await qmd_client.close()
         await http_client.aclose()
+        await agent_registry_store.close()
 
     app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=lifespan)
 
@@ -1218,6 +1226,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.copilot_ticket_store = None
     app.state.copilot_hub = None
     app.state.vapid_keypair = None
+    # agent_registry and its keypair are created by the lifespan; None here
+    # ensures attribute-existence checks work during the pre-startup window.
+    app.state.agent_registry = agent_registry_store
+    app.state.agent_registry_keypair = agent_registry_keypair
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
