@@ -196,11 +196,16 @@ class TestTokenRoundTrip:
 
     def test_mint_and_verify(self, tmp_path):
         priv, pub = self._make_keypair(tmp_path)
-        token = mint_registry_token("agent-20260609-120000", priv)
+        token = mint_registry_token(
+            "agent-20260609-120000", priv,
+            user_id="user-1", framework="openclaw",
+        )
         payload = verify_registry_token(token, pub)
         assert payload["sub"] == "agent-20260609-120000"
         assert payload["iss"] == "taos-registry"
         assert "iat" in payload
+        assert payload["user_id"] == "user-1"
+        assert payload["framework"] == "openclaw"
 
     def test_verify_wrong_key_fails(self, tmp_path):
         import tempfile
@@ -232,6 +237,83 @@ class TestTokenRoundTrip:
         _priv, pub = self._make_keypair(tmp_path)
         with pytest.raises(ValueError, match="three dot-separated"):
             verify_registry_token("notavalidtoken", pub)
+
+    def test_token_contains_user_id_and_framework_claims(self, tmp_path):
+        """Minted token must carry user_id and framework as JWT claims."""
+        import base64, json
+        priv, _pub = self._make_keypair(tmp_path)
+        token = mint_registry_token(
+            "cid-abc",
+            priv,
+            user_id="user-99",
+            framework="hermes",
+        )
+        _header, payload_b64, _sig = token.split(".")
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        assert claims["user_id"] == "user-99"
+        assert claims["framework"] == "hermes"
+        assert claims["sub"] == "cid-abc"
+        assert claims["iss"] == "taos-registry"
+
+    def test_generic_edsa_verify_without_our_helper(self, tmp_path):
+        """A generic Ed25519 verifier (cryptography lib only, no tinyagentos import)
+        must be able to verify the token — proving taOSmd can do so independently.
+        """
+        import base64, json
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+        from cryptography.exceptions import InvalidSignature
+
+        priv, pub_pem = self._make_keypair(tmp_path)
+        token = mint_registry_token(
+            "bus-agent-20260609-120000",
+            priv,
+            user_id="user-bus",
+            framework="taosmd",
+        )
+
+        # Split the compact JWT
+        header_b64, payload_b64, sig_b64 = token.split(".")
+
+        # Verify the header is standard EdDSA
+        h_padding = 4 - len(header_b64) % 4
+        if h_padding != 4:
+            header_b64_padded = header_b64 + "=" * h_padding
+        else:
+            header_b64_padded = header_b64
+        header = json.loads(base64.urlsafe_b64decode(header_b64_padded))
+        assert header == {"alg": "EdDSA", "typ": "JWT"}, (
+            f"JWT header must be exactly {{alg:EdDSA,typ:JWT}}, got {header!r}"
+        )
+
+        # Reconstruct and verify signing input using only the cryptography lib
+        signing_input = f"{header_b64}.{payload_b64}".encode()
+        sig_padding = 4 - len(sig_b64) % 4
+        if sig_padding != 4:
+            sig_b64_padded = sig_b64 + "=" * sig_padding
+        else:
+            sig_b64_padded = sig_b64
+        sig_bytes = base64.urlsafe_b64decode(sig_b64_padded)
+
+        public_key = load_pem_public_key(pub_pem)
+        try:
+            public_key.verify(sig_bytes, signing_input)
+        except InvalidSignature:
+            pytest.fail("Generic Ed25519 verify failed — taOSmd would not be able to verify this token")
+
+        # Decode and assert the claims are present
+        p_padding = 4 - len(payload_b64) % 4
+        if p_padding != 4:
+            payload_b64_padded = payload_b64 + "=" * p_padding
+        else:
+            payload_b64_padded = payload_b64
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64_padded))
+        assert claims["sub"] == "bus-agent-20260609-120000"
+        assert claims["iss"] == "taos-registry"
+        assert claims["user_id"] == "user-bus"
+        assert claims["framework"] == "taosmd"
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +385,8 @@ class TestAgentRegistryRoutes:
         payload = verify_registry_token(token, pub_pem)
         assert payload["sub"] == canonical_id
         assert payload["iss"] == "taos-registry"
+        assert payload["user_id"] == ""
+        assert payload["framework"] == "hermes"
 
     async def test_pubkey_endpoint_returns_pem(self, registry_client):
         resp = await registry_client.get("/api/agents/registry/pubkey")

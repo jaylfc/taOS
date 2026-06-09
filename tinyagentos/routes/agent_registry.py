@@ -75,7 +75,12 @@ async def register_agent(request: Request, body: RegisterRequest):
         capabilities=body.capabilities or [],
     )
 
-    token = mint_registry_token(record["canonical_id"], private_pem)
+    token = mint_registry_token(
+        record["canonical_id"],
+        private_pem,
+        user_id=record.get("user_id", ""),
+        framework=record.get("framework", ""),
+    )
     return {
         "canonical_id": record["canonical_id"],
         "token": token,

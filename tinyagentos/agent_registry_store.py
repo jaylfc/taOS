@@ -117,23 +117,46 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-def mint_registry_token(canonical_id: str, private_key_pem: bytes) -> str:
-    """Return a signed token: <header>.<payload>.<signature> (base64url).
+def mint_registry_token(
+    canonical_id: str,
+    private_key_pem: bytes,
+    *,
+    user_id: str = "",
+    framework: str = "",
+) -> str:
+    """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
 
-    Claims: sub (canonical_id), iss ('taos-registry'), iat (unix timestamp).
-    Signed with Ed25519 over ``<header>.<payload>`` bytes.
+    The JWT header is exactly ``{"alg":"EdDSA","typ":"JWT"}`` so any standard
+    Ed25519 JWT verifier (e.g. PyJWT, jose, or the cryptography lib directly)
+    can verify it without importing tinyagentos code.
+
+    Claims:
+      sub       — canonical_id (immutable agent identity)
+      iss       — "taos-registry"
+      iat       — unix timestamp of issuance
+      user_id   — owning user_id at registration time
+      framework — agent framework at registration time
+
+    Signed with Ed25519 over the UTF-8 bytes of ``<header_b64url>.<payload_b64url>``.
     """
     from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
     private_key = load_pem_private_key(private_key_pem, password=None)
 
-    header = _b64url_encode(json.dumps({"alg": "EdDSA", "typ": "JWT"}).encode())
+    header = _b64url_encode(
+        json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
+    )
     payload = _b64url_encode(
-        json.dumps({
-            "sub": canonical_id,
-            "iss": "taos-registry",
-            "iat": int(time.time()),
-        }).encode()
+        json.dumps(
+            {
+                "sub": canonical_id,
+                "iss": "taos-registry",
+                "iat": int(time.time()),
+                "user_id": user_id,
+                "framework": framework,
+            },
+            separators=(",", ":"),
+        ).encode()
     )
     signing_input = f"{header}.{payload}".encode()
     signature = _b64url_encode(private_key.sign(signing_input))
