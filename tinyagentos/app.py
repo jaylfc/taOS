@@ -809,6 +809,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # Inject the emitter into the trace registry so AgentTraceStore.record()
         # can call it after each write.
         app.state.trace_registry.set_emitter(_otel_emitter)
+        # Phase 4: reasoning judge — fire on lifecycle session_end.
+        from tinyagentos.otel.judge import ReasoningJudge
+        _judge = ReasoningJudge(litellm_base_url="http://localhost:4000/v1")
+        app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.
         from tinyagentos.bridge_session import BridgeSessionRegistry

@@ -187,6 +187,9 @@ class AgentTraceStore:
         # Optional OTel emitter injected by the app lifespan.
         # None = no-op (tests, early startup, or no receiver configured).
         self._emitter: object | None = None  # type: tinyagentos.otel.emitter.OTelEmitter
+        # Optional reasoning judge (Phase 4). Fired on lifecycle session_end.
+        # None = no-op (tests, or judge not configured).
+        self._judge: object | None = None  # type: tinyagentos.otel.judge.ReasoningJudge
 
     @property
     def slug(self) -> str:
@@ -195,6 +198,10 @@ class AgentTraceStore:
     def set_emitter(self, emitter: object | None) -> None:
         """Inject the OTel emitter.  None disables emission."""
         self._emitter = emitter
+
+    def set_judge(self, judge: object | None) -> None:
+        """Inject the reasoning judge.  None disables judging."""
+        self._judge = judge
 
     async def _open_bucket(self, bucket: str) -> aiosqlite.Connection:
         conn = self._connections.get(bucket)
@@ -302,6 +309,18 @@ class AgentTraceStore:
         if self._emitter is not None:
             try:
                 self._emitter.emit(envelope)
+            except Exception:
+                pass
+        # Phase 4: reasoning judge fires on session_end (non-trivial runs only).
+        if (
+            self._judge is not None
+            and kind == "lifecycle"
+            and envelope.get("trace_id")
+            and isinstance(envelope.get("payload"), dict)
+            and envelope["payload"].get("event") == "session_end"
+        ):
+            try:
+                self._judge.schedule(self, envelope["trace_id"])
             except Exception:
                 pass
         return envelope
@@ -515,13 +534,19 @@ class TraceStoreRegistry:
         self._stores: dict[str, AgentTraceStore] = {}
         self._lock = asyncio.Lock()
         self._emitter: object | None = None
+        self._judge: object | None = None
 
     def set_emitter(self, emitter: object | None) -> None:
         """Inject the OTel emitter into all current and future stores."""
         self._emitter = emitter
-        # Propagate to already-open stores.
         for store in self._stores.values():
             store.set_emitter(emitter)
+
+    def set_judge(self, judge: object | None) -> None:
+        """Inject the reasoning judge into all current and future stores."""
+        self._judge = judge
+        for store in self._stores.values():
+            store.set_judge(judge)
 
     async def get(self, slug: str) -> AgentTraceStore:
         async with self._lock:
@@ -529,6 +554,7 @@ class TraceStoreRegistry:
             if store is None:
                 store = AgentTraceStore(self._data_dir, slug)
                 store.set_emitter(self._emitter)
+                store.set_judge(self._judge)
                 self._stores[slug] = store
             return store
 
