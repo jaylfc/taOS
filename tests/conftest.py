@@ -21,30 +21,31 @@ if sys.platform == "darwin":
     os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
 
-def _patch_aiosqlite_py314():
-    """Patch aiosqlite's Connection for Python 3.14 / macOS compatibility.
+def _patch_aiosqlite_daemon_threads():
+    """Patch aiosqlite's Connection so its worker thread is a daemon thread.
 
-    Python 3.14 tightened thread-finalization and GC ordering.  When aiosqlite
-    connections are not explicitly closed before the asyncio event loop shuts
-    down, their background worker threads remain blocked on SimpleQueue.get().
-    At interpreter shutdown Python destroys the C-level semaphore that backs
-    SimpleQueue while the worker threads are still blocked on it, producing a
-    SIGSEGV in the main process (visible in faulthandler output as "Fatal Python
-    error: Segmentation fault" with all thread frames in _safe_worker/tx.get()).
+    When aiosqlite connections are not explicitly closed before the asyncio
+    event loop shuts down, their background worker threads remain blocked on
+    SimpleQueue.get().  Because the thread is NOT a daemon, Python's
+    interpreter shutdown joins it — waiting forever for a thread that will
+    never receive the stop sentinel.  This causes pytest to hang for tens of
+    minutes after printing the test summary.
 
-    Root cause: the background thread is not a daemon thread, so Python's
-    interpreter shutdown waits for it.  The thread is blocked on tx.get()
-    because the Connection's __del__ / stop() was not called before the event
-    loop closed (or called too late).  When the shutdown sequence eventually
-    forces cleanup, the semaphore is torn down under the blocked thread.
+    Observed on CI (Python 3.12 / 3.13, Ubuntu): after the suite finishes
+    pytest is killed by the 45-minute Actions timeout rather than exiting
+    normally.  The same underlying issue causes a SIGSEGV on Python 3.14
+    macOS when the semaphore is torn down under the blocked thread.
 
     Fix (two layers):
-    1. Mark the worker thread daemon=True so it is killed at interpreter exit
-       rather than being joined — avoids the blocking semaphore teardown.
-    2. Guard call_soon_threadsafe with an is_closed() pre-check so the worker
-       does not crash if it receives a future tied to a dead event loop.
+    1. Mark the worker thread daemon=True so interpreter shutdown kills it
+       instead of joining it — avoids the indefinite block.
+    2. Guard call_soon_threadsafe with an is_closed() pre-check so the
+       worker does not crash if it receives a future tied to a dead loop.
 
-    Applied only on Python >= 3.14 to leave CI (3.12/3.13) unchanged.
+    Applied to all supported Python versions (3.11+) because the hang
+    reproduces on 3.12 and 3.13 in CI.  The patch is safe: daemon=True
+    only affects abnormal exit (loop closed before Connection.close());
+    normal teardown still sends the stop sentinel via the queue.
     """
     import aiosqlite.core as _core
     from threading import Thread
@@ -110,11 +111,11 @@ def pytest_configure(config):
         if not f.exists():
             f.write_text(body)
 
-    # Python 3.14 changed thread-finalization ordering in a way that turns
-    # aiosqlite's unclosed-connection "Exception in thread" noise into a
-    # SIGSEGV on full-suite runs.  Apply the targeted patch only on 3.14+.
-    if sys.version_info >= (3, 14):
-        _patch_aiosqlite_py314()
+    # Apply the aiosqlite daemon-thread patch unconditionally: the hang
+    # (pytest blocked after test summary) reproduces on 3.12 and 3.13 in
+    # CI, not just on 3.14.  The SIGSEGV on 3.14 macOS has the same root
+    # cause.  daemon=True is safe for all supported versions.
+    _patch_aiosqlite_daemon_threads()
 
 
 @pytest.fixture
