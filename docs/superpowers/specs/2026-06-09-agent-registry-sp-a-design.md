@@ -197,3 +197,24 @@ IS configured, verification is mandatory and failures return 401.
 - Key rotation
 - Per-agent capability enforcement on the bus
 - Revocation propagation to the bus (bus must re-check or re-fetch)
+
+## Revocation (v1 limitation + hardening path)
+
+Because the bus verifies tokens **self-contained** (signature against the
+published `pubkey`, no per-request registry round-trip — this keeps taosmd
+standalone and fast), a token issued before an agent is removed from the
+registry **still verifies**. So v1 has **no real-time revocation**: deleting a
+registry record stops new tokens but does not invalidate already-issued ones.
+
+Each token carries a unique `jti` (token id) so a revocation list can target
+individual tokens later without changing the token shape.
+
+Hardening options (a **Jay decision**; @taOSmd leans **B**):
+
+- **A — short `exp` + refresh:** tokens carry a short expiry; the bus checks
+  `exp`; agents re-register to refresh. Revocation = stop refreshing.
+- **B — registry revocation list:** the registry exposes
+  `GET /api/agents/registry/revoked` (revoked `jti`/`sub`); the bus polls it
+  periodically (not per request) and rejects listed tokens.
+
+v1 ships long-lived tokens with revocation documented as the above limitation.

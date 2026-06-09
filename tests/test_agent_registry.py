@@ -257,6 +257,7 @@ class TestTokenRoundTrip:
         assert claims["framework"] == "hermes"
         assert claims["sub"] == "cid-abc"
         assert claims["iss"] == "taos-registry"
+        assert claims["jti"] and len(claims["jti"]) >= 16  # unique token id (revocation-ready)
 
     def test_generic_edsa_verify_without_our_helper(self, tmp_path):
         """A generic Ed25519 verifier (cryptography lib only, no tinyagentos import)

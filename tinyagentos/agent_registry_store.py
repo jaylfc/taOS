@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -152,6 +153,7 @@ def mint_registry_token(
                 "sub": canonical_id,
                 "iss": "taos-registry",
                 "iat": int(time.time()),
+                "jti": uuid.uuid4().hex,
                 "user_id": user_id,
                 "framework": framework,
             },
