@@ -73,6 +73,9 @@ VALID_KINDS = frozenset({
     # Phase 1 observability: post-hoc reasoning judge result (§4.7 / §7).
     # Never emitted as an OTel span — it is an internal eval artifact.
     "reasoning_audit",
+    # Registry governance audit events (PR1 — lifecycle state machine).
+    # Payload shape: {action, canonical_id, actor_user_id, before_status, after_status}
+    "governance",
 })
 
 # Documented envelope schema — the librarian parses against this.
@@ -97,6 +100,14 @@ ENVELOPE_V1_SCHEMA = {
         # Phase 1 observability — judge result written by tinyagentos/otel/judge.py (Phase 4).
         # Payload shape: {verdict: "pass"|"warn"|"fail", flags: list[str], model: str, latency_ms: int}
         "reasoning_audit": {"verdict": "pass|warn|fail", "flags": "list[str]", "model": "str", "latency_ms": "int"},
+        # Registry governance audit (PR1 — lifecycle state machine).
+        "governance": {
+            "action": "str",
+            "canonical_id": "str",
+            "actor_user_id": "str",
+            "before_status": "str",
+            "after_status": "str",
+        },
     },
 }
 

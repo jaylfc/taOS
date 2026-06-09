@@ -2,17 +2,23 @@ from __future__ import annotations
 
 """Routes for the Agent Registry (SP-A, taOS side).
 
-POST   /api/agents/registry/register    — register an agent, mint canonical_id, issue token
-GET    /api/agents/registry/pubkey      — public key for token verification (exempt, no auth)
-GET    /api/agents/registry/revoked     — global revocation feed (admin/local-token only)
-GET    /api/agents/registry             — list registry entries (admin: all; member: own)
-GET    /api/agents/registry/{id}        — read a single entry (owner or admin; else 404)
-DELETE /api/agents/registry/{id}        — revoke an entry (owner or admin)
+POST   /api/agents/registry/register         — register an agent, mint canonical_id, issue token
+GET    /api/agents/registry/pubkey           — public key for token verification (exempt, no auth)
+GET    /api/agents/registry/revoked          — global revocation feed (admin/local-token only)
+GET    /api/agents/registry/inactive         — all non-active entries for the bus (admin only)
+GET    /api/agents/registry                  — list registry entries (admin: all; member: own)
+GET    /api/agents/registry/{id}             — read a single entry (owner or admin; else 404)
+DELETE /api/agents/registry/{id}             — revoke an entry (owner or admin)
+POST   /api/agents/registry/{id}/approve     — lifecycle: pending → active (admin only)
+POST   /api/agents/registry/{id}/reject      — lifecycle: pending → rejected (admin only)
+POST   /api/agents/registry/{id}/suspend     — lifecycle: active → suspended (admin only)
+POST   /api/agents/registry/{id}/reactivate  — lifecycle: suspended → active (admin only)
 
-Route ordering matters: /pubkey and /revoked are declared before /{canonical_id} so
-the literal strings are not captured as a canonical_id path parameter.
+Route ordering matters: /pubkey, /revoked, and /inactive are declared before
+/{canonical_id} so the literal strings are not captured as a path parameter.
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,9 +28,14 @@ from pydantic import BaseModel, field_validator
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 _ALLOWED_ORIGINS = {"taos-deployed", "external-selfjoin"}
+
+# Dedicated trace slug for governance audit events.
+_GOVERNANCE_SLUG = "taos-governance"
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +75,35 @@ def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     if kp is None:
         raise RuntimeError("agent_registry_keypair not on app.state")
     return kp
+
+
+async def _audit_governance(
+    request: Request,
+    *,
+    action: str,
+    canonical_id: str,
+    actor_user_id: str,
+    before_status: str,
+    after_status: str,
+) -> None:
+    """Write a governance audit event to the trace store (best-effort, non-fatal)."""
+    try:
+        trace_registry = getattr(request.app.state, "trace_registry", None)
+        if trace_registry is None:
+            return
+        ts = await trace_registry.get(_GOVERNANCE_SLUG)
+        await ts.record(
+            "governance",
+            payload={
+                "action": action,
+                "canonical_id": canonical_id,
+                "actor_user_id": actor_user_id,
+                "before_status": before_status,
+                "after_status": after_status,
+            },
+        )
+    except Exception:
+        logger.exception("governance audit write failed (non-fatal)")
 
 
 # ---------------------------------------------------------------------------
@@ -139,16 +179,39 @@ async def list_revoked_entries(
     return {"revoked": await store.list_revoked()}
 
 
-@router.get("/api/agents/registry")
-async def list_registry(
+@router.get("/api/agents/registry/inactive")
+async def list_inactive_entries(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    """List registry entries. Admins see all; members see only their own."""
+    """Return all non-active registry entries for bus enforcement.
+
+    Response: {"inactive": [{canonical_id, status}, ...]}
+
+    Admin only — covers pending/suspended/rejected/revoked.
+    The bus polls this to reject any canonical_id present.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    store = _get_store(request)
+    return {"inactive": await store.list_inactive()}
+
+
+@router.get("/api/agents/registry")
+async def list_registry(
+    request: Request,
+    status: Optional[str] = None,
+    user: CurrentUser = Depends(current_user),
+):
+    """List registry entries.
+
+    Admins see all matching entries; members see only their own.
+    Optional ``?status=<value>`` filter.
+    """
     store = _get_store(request)
     if user.is_admin:
-        return await store.list_all()
-    return await store.list_for_user(user.user_id)
+        return await store.list_all(status=status)
+    return await store.list_for_user(user.user_id, status=status)
 
 
 @router.get("/api/agents/registry/{canonical_id}")
@@ -186,5 +249,91 @@ async def revoke_registry_entry(
     if record is None:
         return JSONResponse({"error": "not found or already revoked"}, status_code=404)
     require_owner_or_admin(user, record["user_id"])
+    before_status = record.get("status") or "active"
     revoked = await store.revoke(canonical_id)
+    await _audit_governance(
+        request,
+        action="revoke",
+        canonical_id=canonical_id,
+        actor_user_id=user.user_id,
+        before_status=before_status,
+        after_status="revoked",
+    )
     return {"status": "revoked", "canonical_id": canonical_id, "revoked_at": revoked.get("revoked_at")}
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle transition routes (admin only)
+# ---------------------------------------------------------------------------
+
+async def _transition(
+    request: Request,
+    canonical_id: str,
+    action: str,
+    new_status: str,
+    user: CurrentUser,
+):
+    """Shared handler for approve / reject / suspend / reactivate."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    store = _get_store(request)
+    record = await store.get(canonical_id)
+    if record is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    before_status = record.get("status") or "active"
+    try:
+        updated = await store.set_status(canonical_id, new_status, actor=user.user_id)
+    except (ValueError, KeyError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+
+    await _audit_governance(
+        request,
+        action=action,
+        canonical_id=canonical_id,
+        actor_user_id=user.user_id,
+        before_status=before_status,
+        after_status=new_status,
+    )
+    return updated
+
+
+@router.post("/api/agents/registry/{canonical_id}/approve")
+async def approve_agent(
+    request: Request,
+    canonical_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Approve a pending agent (pending → active). Admin only."""
+    return await _transition(request, canonical_id, "approve", "active", user)
+
+
+@router.post("/api/agents/registry/{canonical_id}/reject")
+async def reject_agent(
+    request: Request,
+    canonical_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Reject a pending agent (pending → rejected). Admin only."""
+    return await _transition(request, canonical_id, "reject", "rejected", user)
+
+
+@router.post("/api/agents/registry/{canonical_id}/suspend")
+async def suspend_agent(
+    request: Request,
+    canonical_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Suspend an active agent (active → suspended). Admin only."""
+    return await _transition(request, canonical_id, "suspend", "suspended", user)
+
+
+@router.post("/api/agents/registry/{canonical_id}/reactivate")
+async def reactivate_agent(
+    request: Request,
+    canonical_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Reactivate a suspended agent (suspended → active). Admin only."""
+    return await _transition(request, canonical_id, "reactivate", "active", user)
