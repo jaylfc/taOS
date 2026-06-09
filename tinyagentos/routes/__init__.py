@@ -19,6 +19,11 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_registry import router as agent_registry_router
     app.include_router(agent_registry_router)
 
+    # Consent loop — registered before /api/agents/{name} so that
+    # /api/agents/auth-requests/* paths are not captured as an agent name.
+    from tinyagentos.routes.agent_auth_requests import router as agent_auth_requests_router
+    app.include_router(agent_auth_requests_router)
+
     from tinyagentos.routes.agents import router as agents_router
     app.include_router(agents_router)
 

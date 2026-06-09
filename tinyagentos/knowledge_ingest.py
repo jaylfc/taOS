@@ -100,6 +100,7 @@ class IngestPipeline:
         text: str = "",
         categories: list[str] | None = None,
         source: str = "unknown",
+        user_id: str = "",
     ) -> str:
         """Create a pending KnowledgeItem and return its id.
 
@@ -120,6 +121,7 @@ class IngestPipeline:
             metadata={"ingest_source": source},
             status="pending",
             monitor=monitor_config,
+            user_id=user_id,
         )
         return item_id
 
@@ -130,9 +132,10 @@ class IngestPipeline:
         text: str = "",
         categories: list[str] | None = None,
         source: str = "unknown",
+        user_id: str = "",
     ) -> str:
         """Submit and immediately fire ``run()`` as a background asyncio task."""
-        item_id = await self.submit(url=url, title=title, text=text, categories=categories, source=source)
+        item_id = await self.submit(url=url, title=title, text=text, categories=categories, source=source, user_id=user_id)
         asyncio.create_task(self._run_safe(item_id))
         return item_id
 

@@ -7,10 +7,11 @@ import time as _time
 import asyncio as _asyncio
 import json as _json
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.projects.folders import ensure_project_layout, write_project_yaml
 
 logger = logging.getLogger(__name__)
@@ -37,13 +38,6 @@ class UpdateProjectIn(BaseModel):
     name: str | None = None
     description: str | None = None
     settings: dict | None = None
-
-
-def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None)
-    if user and isinstance(user, dict) and "id" in user:
-        return user["id"]
-    return "system"
 
 
 def _mirror(request: Request, project: dict) -> None:
@@ -74,7 +68,11 @@ def _beads_mark_dirty(request: Request, project_id: str) -> None:
 
 
 @router.post("/api/projects")
-async def create_project(payload: CreateProjectIn, request: Request):
+async def create_project(
+    payload: CreateProjectIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
     try:
         p = await store.create_project(
@@ -82,11 +80,12 @@ async def create_project(payload: CreateProjectIn, request: Request):
             slug=payload.slug,
             description=payload.description,
             settings=payload.settings,
-            created_by=_user_id(request),
+            created_by=user.user_id,
+            user_id=user.user_id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=409)
-    await store.log_activity(p["id"], _user_id(request), "project.created", {"slug": p["slug"]})
+    await store.log_activity(p["id"], user.user_id, "project.created", {"slug": p["slug"]})
     _mirror(request, p)
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
@@ -102,24 +101,46 @@ async def create_project(payload: CreateProjectIn, request: Request):
 
 
 @router.get("/api/projects")
-async def list_projects(request: Request, status: str | None = "active"):
+async def list_projects(
+    request: Request,
+    status: str | None = "active",
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
-    items = await store.list_projects(status=status)
+    if user.is_admin:
+        items = await store.list_projects(status=status)
+    else:
+        items = await store.list_for_user(user.user_id, status=status)
     return {"items": items}
 
 
 @router.get("/api/projects/{project_id}")
-async def get_project(project_id: str, request: Request):
+async def get_project(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
     p = await store.get_project(project_id)
     if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not user.is_admin and user.user_id != p["user_id"]:
         return JSONResponse({"error": "not found"}, status_code=404)
     return p
 
 
 @router.patch("/api/projects/{project_id}")
-async def update_project(project_id: str, payload: UpdateProjectIn, request: Request):
+async def update_project(
+    project_id: str,
+    payload: UpdateProjectIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, p["user_id"])
     await store.update_project(
         project_id,
         name=payload.name,
@@ -127,33 +148,42 @@ async def update_project(project_id: str, payload: UpdateProjectIn, request: Req
         settings=payload.settings,
     )
     p = await store.get_project(project_id)
-    if p is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    await store.log_activity(project_id, _user_id(request), "project.updated", payload.model_dump(exclude_none=True))
+    await store.log_activity(project_id, user.user_id, "project.updated", payload.model_dump(exclude_none=True))
     _mirror(request, p)
     return p
 
 
 @router.post("/api/projects/{project_id}/archive")
-async def archive_project(project_id: str, request: Request):
+async def archive_project(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
-    if await store.get_project(project_id) is None:
+    p = await store.get_project(project_id)
+    if p is None:
         return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, p["user_id"])
     await store.set_status(project_id, "archived")
     p = await store.get_project(project_id)
-    await store.log_activity(project_id, _user_id(request), "project.archived", {})
+    await store.log_activity(project_id, user.user_id, "project.archived", {})
     return p
 
 
 @router.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str, request: Request):
+async def delete_project(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
     project = await store.get_project(project_id)
     if project is None:
         return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, project["user_id"])
 
     await store.set_status(project_id, "deleted")
-    await store.log_activity(project_id, _user_id(request), "project.deleted", {})
+    await store.log_activity(project_id, user.user_id, "project.deleted", {})
 
     # Archive scoped chat channels
     channels = request.app.state.chat_channels
@@ -186,11 +216,17 @@ class AddMemberIn(BaseModel):
 
 
 @router.post("/api/projects/{project_id}/members")
-async def add_member(project_id: str, payload: AddMemberIn, request: Request):
+async def add_member(
+    project_id: str,
+    payload: AddMemberIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
     project = await store.get_project(project_id)
     if project is None:
         return JSONResponse({"error": "project not found"}, status_code=404)
+    require_owner_or_admin(user, project["user_id"])
 
     if payload.mode == "native":
         if not payload.agent_id:
@@ -218,7 +254,7 @@ async def add_member(project_id: str, payload: AddMemberIn, request: Request):
         memory_seed=memory_seed,
     )
     await store.log_activity(
-        project_id, _user_id(request), "member.added",
+        project_id, user.user_id, "member.added",
         {"member_id": member_id, "kind": member_kind, "memory_seed": memory_seed},
     )
     members = await store.list_members(project_id)
@@ -237,8 +273,17 @@ async def add_member(project_id: str, payload: AddMemberIn, request: Request):
 
 
 @router.get("/api/projects/{project_id}/members")
-async def list_members(project_id: str, request: Request):
+async def list_members(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not user.is_admin and user.user_id != p["user_id"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
     return {"items": await store.list_members(project_id)}
 
 
@@ -247,8 +292,18 @@ class LeadIn(BaseModel):
 
 
 @router.patch("/api/projects/{project_id}/members/{member_id}/lead")
-async def set_lead(project_id: str, member_id: str, body: LeadIn, request: Request):
+async def set_lead(
+    project_id: str,
+    member_id: str,
+    body: LeadIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, p["user_id"])
     try:
         await store.set_member_lead(project_id, member_id, body.is_lead)
     except KeyError as e:
@@ -267,14 +322,21 @@ async def set_lead(project_id: str, member_id: str, body: LeadIn, request: Reque
 
 
 @router.delete("/api/projects/{project_id}/members/{member_id}")
-async def remove_member(project_id: str, member_id: str, request: Request):
+async def remove_member(
+    project_id: str,
+    member_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
-    await store.remove_member(project_id, member_id)
-    await store.log_activity(project_id, _user_id(request), "member.removed", {"member_id": member_id})
     project = await store.get_project(project_id)
+    if project is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, project["user_id"])
+    await store.remove_member(project_id, member_id)
+    await store.log_activity(project_id, user.user_id, "member.removed", {"member_id": member_id})
     members = await store.list_members(project_id)
-    if project is not None:
-        _mirror(request, {**project, "members": members})
+    _mirror(request, {**project, "members": members})
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
         await ensure_a2a_channel(
@@ -329,15 +391,46 @@ class AddRelIn(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Task route helpers
+# ---------------------------------------------------------------------------
+
+async def _get_owned_project(
+    pstore, project_id: str, user: CurrentUser
+) -> "dict | JSONResponse":
+    """Fetch a project and apply existence-hiding 404 for non-owners."""
+    p = await pstore.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not user.is_admin and user.user_id != p["user_id"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return p
+
+
+async def _require_task_in_project(
+    store, project_id: str, task_id: str
+) -> "dict | JSONResponse":
+    task = await store.get_task(task_id)
+    if task is None or task["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return task
+
+
+# ---------------------------------------------------------------------------
 # Task routes — order matters: /tasks/ready before /tasks/{task_id}
 # ---------------------------------------------------------------------------
 
 @router.post("/api/projects/{project_id}/tasks")
-async def create_task(project_id: str, payload: CreateTaskIn, request: Request):
+async def create_task(
+    project_id: str,
+    payload: CreateTaskIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_task_store
     pstore = request.app.state.project_store
-    if await pstore.get_project(project_id) is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     if payload.parent_task_id is not None:
         parent = await store.get_task(payload.parent_task_id)
         if parent is None or parent["project_id"] != project_id:
@@ -350,27 +443,53 @@ async def create_task(project_id: str, payload: CreateTaskIn, request: Request):
         labels=payload.labels,
         assignee_id=payload.assignee_id,
         parent_task_id=payload.parent_task_id,
-        created_by=_user_id(request),
+        created_by=user.user_id,
     )
     _beads_mark_dirty(request, project_id)
-    await pstore.log_activity(project_id, _user_id(request), "task.created", {"task_id": t["id"], "title": t["title"]})
+    await pstore.log_activity(project_id, user.user_id, "task.created", {"task_id": t["id"], "title": t["title"]})
     return t
 
 
 @router.get("/api/projects/{project_id}/tasks")
-async def list_tasks(project_id: str, request: Request, status: str | None = None):
+async def list_tasks(
+    project_id: str,
+    request: Request,
+    status: str | None = None,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     return {"items": await store.list_tasks(project_id=project_id, status=status)}
 
 
 @router.get("/api/projects/{project_id}/tasks/ready")
-async def ready_tasks(project_id: str, request: Request):
+async def ready_tasks(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     return {"items": await store.list_ready_tasks(project_id=project_id)}
 
 
 @router.get("/api/projects/{project_id}/tasks/{task_id}")
-async def get_task(project_id: str, task_id: str, request: Request):
+async def get_task(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     t = await store.get_task(task_id)
     if t is None or t["project_id"] != project_id:
@@ -379,7 +498,17 @@ async def get_task(project_id: str, task_id: str, request: Request):
 
 
 @router.patch("/api/projects/{project_id}/tasks/{task_id}")
-async def update_task(project_id: str, task_id: str, payload: UpdateTaskIn, request: Request):
+async def update_task(
+    project_id: str,
+    task_id: str,
+    payload: UpdateTaskIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
@@ -406,7 +535,17 @@ async def update_task(project_id: str, task_id: str, payload: UpdateTaskIn, requ
 
 
 @router.post("/api/projects/{project_id}/tasks/{task_id}/claim")
-async def claim_task(project_id: str, task_id: str, payload: ClaimIn, request: Request):
+async def claim_task(
+    project_id: str,
+    task_id: str,
+    payload: ClaimIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
@@ -415,13 +554,22 @@ async def claim_task(project_id: str, task_id: str, payload: ClaimIn, request: R
     if not ok:
         return JSONResponse({"error": "already claimed"}, status_code=409)
     _beads_mark_dirty(request, project_id)
-    pstore = request.app.state.project_store
     await pstore.log_activity(project_id, payload.claimer_id, "task.claimed", {"task_id": task_id})
     return await store.get_task(task_id)
 
 
 @router.post("/api/projects/{project_id}/tasks/{task_id}/release")
-async def release_task(project_id: str, task_id: str, payload: ReleaseIn, request: Request):
+async def release_task(
+    project_id: str,
+    task_id: str,
+    payload: ReleaseIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
@@ -434,7 +582,17 @@ async def release_task(project_id: str, task_id: str, payload: ReleaseIn, reques
 
 
 @router.post("/api/projects/{project_id}/tasks/{task_id}/close")
-async def close_task(project_id: str, task_id: str, payload: CloseIn, request: Request):
+async def close_task(
+    project_id: str,
+    task_id: str,
+    payload: CloseIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
@@ -443,12 +601,11 @@ async def close_task(project_id: str, task_id: str, payload: CloseIn, request: R
     if not ok:
         return JSONResponse({"error": "cannot close"}, status_code=409)
     _beads_mark_dirty(request, project_id)
-    pstore = request.app.state.project_store
     await pstore.log_activity(project_id, payload.closed_by, "task.closed", {"task_id": task_id})
-    project = await pstore.get_project(project_id)
+    project = project_or_err
     task = await store.get_task(task_id)
     qmd = getattr(request.app.state, "qmd_client", None)
-    if qmd is not None and project is not None and task is not None:
+    if qmd is not None and task is not None:
         try:
             from tinyagentos.projects.lifecycle import index_closed_task
             await index_closed_task(qmd, project, task)
@@ -459,17 +616,18 @@ async def close_task(project_id: str, task_id: str, payload: CloseIn, request: R
     return task
 
 
-async def _require_task_in_project(
-    store, project_id: str, task_id: str
-) -> dict | JSONResponse:
-    task = await store.get_task(task_id)
-    if task is None or task["project_id"] != project_id:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return task
-
-
 @router.post("/api/projects/{project_id}/tasks/{task_id}/relationships")
-async def add_relationship(project_id: str, task_id: str, payload: AddRelIn, request: Request):
+async def add_relationship(
+    project_id: str,
+    task_id: str,
+    payload: AddRelIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
@@ -480,7 +638,7 @@ async def add_relationship(project_id: str, task_id: str, payload: AddRelIn, req
             from_task_id=task_id,
             to_task_id=payload.to_task_id,
             kind=payload.kind,
-            created_by=_user_id(request),
+            created_by=user.user_id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -495,7 +653,17 @@ class AddCommentIn(BaseModel):
 
 
 @router.post("/api/projects/{project_id}/tasks/{task_id}/comments")
-async def add_comment(project_id: str, task_id: str, payload: AddCommentIn, request: Request):
+async def add_comment(
+    project_id: str,
+    task_id: str,
+    payload: AddCommentIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
@@ -512,7 +680,16 @@ async def add_comment(project_id: str, task_id: str, payload: AddCommentIn, requ
 
 
 @router.get("/api/projects/{project_id}/tasks/{task_id}/comments")
-async def list_comments(project_id: str, task_id: str, request: Request):
+async def list_comments(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
@@ -521,7 +698,17 @@ async def list_comments(project_id: str, task_id: str, request: Request):
 
 
 @router.get("/api/projects/{project_id}/tasks/{task_id}/relationships")
-async def list_relationships(project_id: str, task_id: str, request: Request, direction: str = "from"):
+async def list_relationships(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    direction: str = "from",
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
@@ -530,17 +717,34 @@ async def list_relationships(project_id: str, task_id: str, request: Request, di
 
 
 @router.get("/api/projects/{project_id}/activity")
-async def activity_feed(project_id: str, request: Request, limit: int = 100):
+async def activity_feed(
+    project_id: str,
+    request: Request,
+    limit: int = 100,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
+    p = await store.get_project(project_id)
+    if p is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not user.is_admin and user.user_id != p["user_id"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
     return {"items": await store.list_activity(project_id, limit=limit)}
 
 
 @router.get("/api/projects/{project_id}/memory/search")
-async def memory_search(project_id: str, request: Request, q: str, limit: int = 10):
+async def memory_search(
+    project_id: str,
+    request: Request,
+    q: str,
+    limit: int = 10,
+    user: CurrentUser = Depends(current_user),
+):
     store = request.app.state.project_store
-    project = await store.get_project(project_id)
-    if project is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
+    project_or_err = await _get_owned_project(store, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    project = project_or_err
     qmd = getattr(request.app.state, "qmd_client", None)
     if qmd is None:
         return {"items": []}
@@ -554,7 +758,15 @@ async def memory_search(project_id: str, request: Request, q: str, limit: int = 
 
 
 @router.get("/api/projects/{project_id}/events")
-async def project_events(project_id: str, request: Request):
+async def project_events(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     broker = request.app.state.project_event_broker
     queue = await broker.subscribe(project_id)
 
@@ -580,15 +792,20 @@ async def project_events(project_id: str, request: Request):
 
 
 @router.post("/api/projects/{project_id}/beads/export")
-async def beads_export(project_id: str, request: Request):
+async def beads_export(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
     """Force a synchronous render of the project's .beads/tasks.jsonl
     snapshot. Returns 503 when the bridge isn't running."""
     bridge = getattr(request.app.state, "beads_bridge", None)
     if bridge is None:
         return JSONResponse({"error": "beads bridge not running"}, status_code=503)
     pstore = request.app.state.project_store
-    if await pstore.get_project(project_id) is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     path = await bridge.export_now(project_id)
     if path is None:
         return JSONResponse({"error": "export failed"}, status_code=500)
