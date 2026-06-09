@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     created_by TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     archived_at REAL,
@@ -67,6 +68,7 @@ class ProjectStore(BaseStore):
         for col_def in (
             "ALTER TABLE project_members ADD COLUMN can_edit_canvas INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE project_members ADD COLUMN is_lead INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE projects ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
         ):
             try:
                 await self._db.execute(col_def)
@@ -92,15 +94,16 @@ class ProjectStore(BaseStore):
         created_by: str,
         description: str = "",
         settings: dict | None = None,
+        user_id: str = "",
     ) -> dict:
         pid = new_id("prj")
         now = time.time()
         try:
             await self._db.execute(
                 """INSERT INTO projects
-                   (id, name, slug, description, status, created_by, created_at, updated_at, settings)
-                   VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
-                (pid, name, slug, description, created_by, now, now, json.dumps(settings or {})),
+                   (id, name, slug, description, status, created_by, user_id, created_at, updated_at, settings)
+                   VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+                (pid, name, slug, description, created_by, user_id, now, now, json.dumps(settings or {})),
             )
             await self._db.commit()
         except sqlite3.IntegrityError as exc:
@@ -129,12 +132,33 @@ class ProjectStore(BaseStore):
             return _row_to_project(row, cur.description)
 
     async def list_projects(self, status: str | None = "active") -> list[dict]:
+        """List all projects (admin view). No user_id filter."""
         if status is None:
             sql = "SELECT * FROM projects ORDER BY created_at DESC"
             params: tuple = ()
         else:
             sql = "SELECT * FROM projects WHERE status = ? ORDER BY created_at DESC"
             params = (status,)
+        async with self._db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_project(r, desc) for r in rows]
+
+    async def list_for_user(self, user_id: str, status: str | None = "active") -> list[dict]:
+        """List projects owned by a specific user (member view).
+
+        Returns an empty list for an empty user_id — legacy rows (user_id='')
+        are never owned by any real user and must only be visible to admins
+        via list_projects().
+        """
+        if not user_id:
+            return []
+        if status is None:
+            sql = "SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC"
+            params: tuple = (user_id,)
+        else:
+            sql = "SELECT * FROM projects WHERE user_id = ? AND status = ? ORDER BY created_at DESC"
+            params = (user_id, status)
         async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
