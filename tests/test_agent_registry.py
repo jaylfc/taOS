@@ -3,7 +3,9 @@
 Covers:
   - Store: canonical_id minting (format, immutability, collision suffix)
   - Store: token issue + verify-with-pubkey round-trip
+  - Store: list_for_user / list_revoked
   - Routes: register / read-back / list / revoke
+  - Routes: origin allowlist, revoked feed, route-ordering regression
 """
 from __future__ import annotations
 
@@ -169,6 +171,59 @@ class TestAgentRegistryStore:
         finally:
             await store.close()
 
+    # -- list_for_user -------------------------------------------------------
+
+    async def test_list_for_user_returns_only_own_records(self, tmp_path):
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            await store.register(framework="openclaw", user_id="alice")
+            await store.register(framework="hermes", user_id="alice")
+            await store.register(framework="openclaw", user_id="bob")
+
+            alice_records = await store.list_for_user("alice")
+            bob_records = await store.list_for_user("bob")
+            nobody_records = await store.list_for_user("nobody")
+
+            assert len(alice_records) == 2
+            assert all(r["user_id"] == "alice" for r in alice_records)
+            assert len(bob_records) == 1
+            assert bob_records[0]["user_id"] == "bob"
+            assert len(nobody_records) == 0
+        finally:
+            await store.close()
+
+    # -- list_revoked --------------------------------------------------------
+
+    async def test_list_revoked_returns_only_revoked(self, tmp_path):
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            rec_a = await store.register(framework="openclaw", display_name="A")
+            rec_b = await store.register(framework="hermes", display_name="B")
+            await store.register(framework="openclaw", display_name="C")  # not revoked
+
+            await store.revoke(rec_a["canonical_id"])
+            await store.revoke(rec_b["canonical_id"])
+
+            revoked = await store.list_revoked()
+            assert len(revoked) == 2
+            cids = {r["canonical_id"] for r in revoked}
+            assert rec_a["canonical_id"] in cids
+            assert rec_b["canonical_id"] in cids
+            # Each entry must have exactly canonical_id and revoked_at
+            for entry in revoked:
+                assert set(entry.keys()) == {"canonical_id", "revoked_at"}
+                assert entry["revoked_at"] is not None
+        finally:
+            await store.close()
+
+    async def test_list_revoked_empty_when_none_revoked(self, tmp_path):
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            await store.register(framework="openclaw")
+            assert await store.list_revoked() == []
+        finally:
+            await store.close()
+
 
 # ---------------------------------------------------------------------------
 # Keypair + token tests
@@ -323,7 +378,7 @@ class TestTokenRoundTrip:
 
 @pytest_asyncio.fixture
 async def registry_client(app, tmp_data_dir):
-    """Async client with agent_registry store initialised."""
+    """Async client with agent_registry store initialised, authenticated as admin."""
     # Init the agent_registry store (lifespan not running in tests)
     registry_store = app.state.agent_registry
     if registry_store._db is None:
@@ -347,6 +402,8 @@ async def registry_client(app, tmp_data_dir):
         base_url="http://test",
         cookies={"taos_session": token},
     ) as c:
+        # Expose the admin uid so tests can assert token claims
+        c._test_admin_uid = uid
         yield c
 
     await registry_store.close()
@@ -369,8 +426,8 @@ class TestAgentRegistryRoutes:
         assert data["record"]["framework"] == "openclaw"
         assert data["record"]["display_name"] == "Route Agent"
 
-    async def test_register_token_verifiable_with_pubkey(self, registry_client):
-        """Token issued via route verifies against the pubkey route."""
+    async def test_register_token_carries_authenticated_user_id(self, registry_client):
+        """Token user_id must equal the authenticated caller's id, not a body value."""
         resp = await registry_client.post(
             "/api/agents/registry/register",
             json={"framework": "hermes", "display_name": "Verified Agent"},
@@ -386,8 +443,25 @@ class TestAgentRegistryRoutes:
         payload = verify_registry_token(token, pub_pem)
         assert payload["sub"] == canonical_id
         assert payload["iss"] == "taos-registry"
-        assert payload["user_id"] == ""
+        # user_id in the token must be the authenticated admin's id
+        assert payload["user_id"] == registry_client._test_admin_uid
         assert payload["framework"] == "hermes"
+
+    async def test_register_origin_allowlist_rejects_bad_value(self, registry_client):
+        """origin values outside the allowlist must be rejected with 422."""
+        resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "origin": "evil-origin"},
+        )
+        assert resp.status_code == 422
+
+    async def test_register_origin_allowlist_accepts_valid_values(self, registry_client):
+        for origin in ("taos-deployed", "external-selfjoin"):
+            resp = await registry_client.post(
+                "/api/agents/registry/register",
+                json={"framework": "openclaw", "origin": origin},
+            )
+            assert resp.status_code == 200, f"origin={origin!r} should be accepted"
 
     async def test_pubkey_endpoint_returns_pem(self, registry_client):
         resp = await registry_client.get("/api/agents/registry/pubkey")
@@ -411,7 +485,7 @@ class TestAgentRegistryRoutes:
         resp = await registry_client.get("/api/agents/registry/no-such-agent")
         assert resp.status_code == 404
 
-    async def test_list_returns_all(self, registry_client):
+    async def test_list_returns_all_for_admin(self, registry_client):
         await registry_client.post(
             "/api/agents/registry/register",
             json={"framework": "openclaw", "display_name": "List A"},
@@ -457,3 +531,35 @@ class TestAgentRegistryRoutes:
         rec = resp.json()["record"]
         assert rec["role"] == "researcher"
         assert rec["capabilities"] == ["web-search", "summarise"]
+
+    # -- Revoked feed --------------------------------------------------------
+
+    async def test_revoked_feed_shape(self, registry_client):
+        """GET /api/agents/registry/revoked returns {revoked: [{canonical_id, revoked_at}]}."""
+        reg_resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "To Revoke"},
+        )
+        cid = reg_resp.json()["canonical_id"]
+        await registry_client.delete(f"/api/agents/registry/{cid}")
+
+        resp = await registry_client.get("/api/agents/registry/revoked")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "revoked" in data
+        assert isinstance(data["revoked"], list)
+        assert len(data["revoked"]) >= 1
+        entry = next(e for e in data["revoked"] if e["canonical_id"] == cid)
+        assert set(entry.keys()) == {"canonical_id", "revoked_at"}
+        assert entry["revoked_at"] is not None
+
+    async def test_revoked_route_not_captured_as_canonical_id(self, registry_client):
+        """Route ordering regression: /revoked must hit the feed, not the single-entry route."""
+        resp = await registry_client.get("/api/agents/registry/revoked")
+        # Must return the feed shape, not a 404 for canonical_id="revoked"
+        assert resp.status_code == 200
+        assert "revoked" in resp.json()
+
+    async def test_revoked_feed_admin_can_read(self, registry_client):
+        resp = await registry_client.get("/api/agents/registry/revoked")
+        assert resp.status_code == 200
