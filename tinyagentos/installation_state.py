@@ -42,8 +42,6 @@ from typing import Any, Iterable, Optional
 # that satisfy it. The pragmatic alternative to making every manifest
 # declare its backend_type field. Alias map wins over fuzzy match.
 _SERVICE_BACKEND_ALIASES: dict[str, set[str]] = {
-    "rknn-stable-diffusion": {"rknn-sd"},
-    "lcm-dreamshaper-rknn": {"rknn-sd"},
     "stable-diffusion-cpp": {"sd-cpp"},
     "fastsdcpp": {"sd-cpp"},
     "rk-llama-cpp": {"rkllama"},
@@ -157,8 +155,8 @@ class InstallationState:
         """A service is live if any healthy backend in the catalog matches
         it. Match strategy, in order:
 
-        1. Static alias map (``_SERVICE_BACKEND_ALIASES``) — the common
-           cases like rknn-stable-diffusion ↔ rknn-sd
+        1. Static alias map (``_SERVICE_BACKEND_ALIASES``) — common
+           alias cases (e.g. stable-diffusion-cpp ↔ sd-cpp)
         2. Exact or substring match between manifest id and backend name
            or type
         3. Shared token (length ≥ 4) — catches "*-rknn-*" style naming

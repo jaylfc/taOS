@@ -138,7 +138,6 @@ nav:
     - Container Upgrade: runbooks/container-upgrade.md
     - Framework Swap: runbooks/framework-swap.md
   - Upstream:
-    - happyme531 RKNN NHWC: upstream-patches/happyme531-rknn-sd-nhwc.md
     - Framework Integration Bridge: upstream-patches/2026-04-11-taos-framework-integration-bridge-design.md
   - Reference:
     - Agent QMD Serve Setup: agent-qmd-serve-setup.md

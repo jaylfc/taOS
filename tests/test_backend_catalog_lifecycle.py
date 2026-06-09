@@ -58,7 +58,7 @@ async def test_stopped_backend_in_backends_startable():
 
     backends = [
         {
-            "name": "b1", "type": "rknn-sd", "url": "http://b1", "priority": 1,
+            "name": "b1", "type": "sd-cpp", "url": "http://b1", "priority": 1,
             "enabled": True, "auto_manage": True, "keep_alive_minutes": 10,
         }
     ]
@@ -87,7 +87,7 @@ async def test_backends_startable_cold_start():
 
     backends = [
         {
-            "name": "cold-sd", "type": "rknn-sd", "url": "http://cold-sd",
+            "name": "cold-sd", "type": "sd-cpp", "url": "http://cold-sd",
             "priority": 1, "enabled": True, "auto_manage": True, "keep_alive_minutes": 5,
         }
     ]

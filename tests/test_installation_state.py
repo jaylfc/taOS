@@ -73,54 +73,54 @@ class FakeCatalog:
 
 def test_service_running_when_backend_catalog_has_matching_entry():
     reg = FakeRegistry(
-        manifests=[FakeManifest("rknn-stable-diffusion", "service")],
-        installed=[{"id": "rknn-stable-diffusion", "version": "1.0"}],
+        manifests=[FakeManifest("stable-diffusion-cpp", "service")],
+        installed=[{"id": "stable-diffusion-cpp", "version": "1.0"}],
     )
     catalog = FakeCatalog(
-        entries=[FakeBackendEntry("local-rknn-sd", "rknn-sd")],
+        entries=[FakeBackendEntry("local-sd-cpp", "sd-cpp")],
         models=[],
     )
     state = InstallationState(reg, catalog)
-    assert state.is_installed("rknn-stable-diffusion") is True
-    assert state.state("rknn-stable-diffusion") == "running"
+    assert state.is_installed("stable-diffusion-cpp") is True
+    assert state.state("stable-diffusion-cpp") == "running"
 
 
 def test_service_stale_when_cache_says_installed_but_catalog_empty():
     reg = FakeRegistry(
-        manifests=[FakeManifest("rknn-stable-diffusion", "service")],
-        installed=[{"id": "rknn-stable-diffusion", "version": "1.0"}],
+        manifests=[FakeManifest("stable-diffusion-cpp", "service")],
+        installed=[{"id": "stable-diffusion-cpp", "version": "1.0"}],
     )
     catalog = FakeCatalog(entries=[], models=[])
     state = InstallationState(reg, catalog)
-    assert state.is_installed("rknn-stable-diffusion") is True
-    assert state.state("rknn-stable-diffusion") == "stale"
+    assert state.is_installed("stable-diffusion-cpp") is True
+    assert state.state("stable-diffusion-cpp") == "stale"
 
 
 def test_service_not_installed_when_neither_cache_nor_live():
     reg = FakeRegistry(
-        manifests=[FakeManifest("rknn-stable-diffusion", "service")],
+        manifests=[FakeManifest("stable-diffusion-cpp", "service")],
         installed=[],
     )
     catalog = FakeCatalog(entries=[], models=[])
     state = InstallationState(reg, catalog)
-    assert state.is_installed("rknn-stable-diffusion") is False
-    assert state.state("rknn-stable-diffusion") == "not_installed"
+    assert state.is_installed("stable-diffusion-cpp") is False
+    assert state.state("stable-diffusion-cpp") == "not_installed"
 
 
 def test_service_live_without_cache_is_running():
     """User manually started a service — it shows up as running even
     without a corresponding installed.json row."""
     reg = FakeRegistry(
-        manifests=[FakeManifest("rknn-stable-diffusion", "service")],
+        manifests=[FakeManifest("stable-diffusion-cpp", "service")],
         installed=[],
     )
     catalog = FakeCatalog(
-        entries=[FakeBackendEntry("local-rknn-sd", "rknn-sd")],
+        entries=[FakeBackendEntry("local-sd-cpp", "sd-cpp")],
         models=[],
     )
     state = InstallationState(reg, catalog)
-    assert state.is_installed("rknn-stable-diffusion") is True
-    assert state.state("rknn-stable-diffusion") == "running"
+    assert state.is_installed("stable-diffusion-cpp") is True
+    assert state.state("stable-diffusion-cpp") == "running"
 
 
 def test_model_running_when_catalog_advertises_variant():
@@ -176,42 +176,42 @@ def test_agent_type_falls_back_to_cache_without_stale_flag():
 def test_list_installed_tags_cache_rows_with_state():
     reg = FakeRegistry(
         manifests=[
-            FakeManifest("rknn-stable-diffusion", "service"),
+            FakeManifest("stable-diffusion-cpp", "service"),
             FakeManifest("smolagents", "agent"),
         ],
         installed=[
-            {"id": "rknn-stable-diffusion", "version": "1.0"},
+            {"id": "stable-diffusion-cpp", "version": "1.0"},
             {"id": "smolagents", "version": "0.1"},
         ],
     )
     catalog = FakeCatalog(
-        entries=[FakeBackendEntry("local-rknn-sd", "rknn-sd")],
+        entries=[FakeBackendEntry("local-sd-cpp", "sd-cpp")],
         models=[],
     )
     state = InstallationState(reg, catalog)
     rows = state.list_installed()
     states = {r["id"]: r["state"] for r in rows}
-    assert states["rknn-stable-diffusion"] == "running"
+    assert states["stable-diffusion-cpp"] == "running"
     assert states["smolagents"] == "installed"
     sources = {r["id"]: r["source"] for r in rows}
-    assert sources["rknn-stable-diffusion"] == "cache"
+    assert sources["stable-diffusion-cpp"] == "cache"
 
 
 def test_list_installed_includes_live_only_services():
     """A manually-started service shows up in list_installed even
     without a cache row."""
     reg = FakeRegistry(
-        manifests=[FakeManifest("rknn-stable-diffusion", "service")],
+        manifests=[FakeManifest("stable-diffusion-cpp", "service")],
         installed=[],
     )
     catalog = FakeCatalog(
-        entries=[FakeBackendEntry("local-rknn-sd", "rknn-sd")],
+        entries=[FakeBackendEntry("local-sd-cpp", "sd-cpp")],
         models=[],
     )
     state = InstallationState(reg, catalog)
     rows = state.list_installed()
     assert len(rows) == 1
-    assert rows[0]["id"] == "rknn-stable-diffusion"
+    assert rows[0]["id"] == "stable-diffusion-cpp"
     assert rows[0]["state"] == "running"
     assert rows[0]["source"] == "live"
 

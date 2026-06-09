@@ -82,11 +82,9 @@ Why this matters, concretely:
   (multi-file service installs like RKNN SD live outside `data/models/` and
   were invisible). The fix is to ask each backend "what models do you have
   loaded or immediately available?" and union those answers with the
-  catalog manifest. If `local-rknn-sd` advertises
-  `lcm-dreamshaper-v7-rknn`, the catalog entry is available. Filename
-  conventions become irrelevant.
+  catalog manifest. Filename conventions become irrelevant.
 - **Image generation** — `_get_image_backend` currently hardcodes a
-  preference order by backend type (`rknn-sd → sd-cpp → generic`). The
+  preference order by backend type (`sd-cpp → generic`). The
   correct question is "which backends report capability `image-generation`
   as healthy and have a compatible model loaded?" Answering that lets us
   add CUDA / Vulkan / Metal backends tomorrow with zero route changes.
@@ -432,20 +430,18 @@ Resource implementation, not in the scheduler core or the caller API.
 
 ### What's RK3588-specific today and will need abstracting
 
-- `rknn-sd` backend type, `librknnrt.so` version matching, and the
-  `/usr/lib/librknnrt.so` install step. These become the Rockchip-branch of
-  a broader "accelerator runtime install" pipeline that includes CUDA
-  toolkit detection, ROCm version checks, Vulkan driver probing, and Metal
-  framework availability.
-- The current Images-route preference order (`rknn-sd → sd-cpp → generic`)
-  is hardcoded. Once the scheduler exists, this becomes `preferred_resources`
+- `librknnrt.so` version matching and the `/usr/lib/librknnrt.so` install
+  step. These become the Rockchip-branch of a broader "accelerator runtime
+  install" pipeline that includes CUDA toolkit detection, ROCm version checks,
+  Vulkan driver probing, and Metal framework availability.
+- The current Images-route preference order (`sd-cpp → generic`) is
+  hardcoded. Once the scheduler exists, this becomes `preferred_resources`
   on the task, and the selection order is generated from the host's hardware
-  profile at boot: Orange Pi gets `[npu-rk3588, cpu-inference]`, a gaming PC
-  gets `[gpu-cuda-0, cpu-inference]`, a Mac gets `[gpu-metal, cpu-inference]`.
-- Install scripts are per-platform: `install-rknn-sd.sh` for RK3588,
-  `install-comfyui-cuda.sh` / `install-sdcpp-vulkan.sh` for desktop/server,
-  etc. The app catalog service manifest points to the right installer based
-  on detected hardware.
+  profile at boot: a gaming PC gets `[gpu-cuda-0, cpu-inference]`, a Mac gets
+  `[gpu-metal, cpu-inference]`.
+- Install scripts are per-platform: `install-comfyui-cuda.sh` /
+  `install-sdcpp-vulkan.sh` for desktop/server, etc. The app catalog service
+  manifest points to the right installer based on detected hardware.
 
 ### What changes per-platform for the runtime-signature check
 

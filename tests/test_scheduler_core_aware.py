@@ -37,7 +37,7 @@ from tinyagentos.scheduler.resource_shape import (
 
 def npu_shape_lookup(backend_type: str) -> BackendResourceShape:
     """Shape lookup that returns RK3588 NPU shape for 'rkllama'."""
-    if backend_type in ("rkllama", "rknn-sd"):
+    if backend_type == "rkllama":
         return make_rk3588_npu_shape()
     return make_cpu_shape()
 

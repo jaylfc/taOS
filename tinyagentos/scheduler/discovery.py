@@ -38,10 +38,9 @@ CPU_POTENTIAL_CAPABILITIES: set[str] = {
 
 # Every capability the RK3588 NPU can run given a suitable RKNN-exported
 # model. Community ports exist for the full inference surface (LLMs and
-# embeddings via rkllama, image-gen via rknn-sd, plus whisper / TTS /
-# vision models on HuggingFace). The potential set matches the CPU's;
-# ``capabilities`` (the live view) is still filtered to what's actually
-# loaded on a backend right now.
+# embeddings via rkllama, plus whisper / TTS / vision models on HuggingFace).
+# The potential set matches the CPU's; ``capabilities`` (the live view) is
+# still filtered to what's actually loaded on a backend right now.
 NPU_RK3588_POTENTIAL_CAPABILITIES: set[str] = {
     "llm-chat",
     "embedding",
@@ -60,7 +59,7 @@ def _probe_librknnrt_version() -> str:
     candidates = [
         Path("/usr/lib/librknnrt.so"),
         Path("/usr/local/lib/librknnrt.so"),
-        Path.home() / ".local" / "share" / "tinyagentos" / "rknn-sd" / "librknnrt.so",
+        Path.home() / ".local" / "share" / "tinyagentos" / "rkllama" / "librknnrt.so",
     ]
     for path in candidates:
         if not path.exists():
@@ -121,12 +120,12 @@ def build_scheduler(
 
         return _lookup
 
-    # NPU (RK3588), only if a healthy rknn-sd or rkllama backend exists
+    # NPU (RK3588), only if a healthy rkllama backend exists
     npu_backends = (
         catalog.backends_with_capability("image-generation")
         + catalog.backends_with_capability("embedding")
     )
-    has_rk_backend = any(b.type in ("rknn-sd", "rkllama") for b in npu_backends)
+    has_rk_backend = any(b.type == "rkllama" for b in npu_backends)
     npu_info = getattr(hardware_profile, "npu", None)
     npu_type = getattr(npu_info, "type", None)
 
@@ -141,13 +140,13 @@ def build_scheduler(
         def _npu_capabilities() -> set[str]:
             caps: set[str] = set()
             for b in catalog.backends():
-                if b.status == "ok" and b.type in ("rknn-sd", "rkllama"):
+                if b.status == "ok" and b.type == "rkllama":
                     caps |= b.capabilities
             return caps
 
         def _npu_backend_for(capability: str) -> Optional[str]:
             for b in catalog.backends_with_capability(capability):
-                if b.type in ("rknn-sd", "rkllama"):
+                if b.type == "rkllama":
                     return b.url
             return None
 

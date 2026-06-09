@@ -106,7 +106,6 @@ class WorkerAgent:
             ("vllm", "http://localhost:8000"),
             ("vllm", "http://localhost:18000"),           # TAOS-bundled vLLM (future)
             ("sd-cpp", "http://localhost:7864"),
-            ("rknn-sd", "http://localhost:7863"),
             ("exo", "http://localhost:52415"),           # exo distributed inference (default port)
         ]
 
@@ -166,7 +165,7 @@ class WorkerAgent:
         probe. Track in #144.
         """
         try:
-            if backend_type in ("sd-cpp", "rknn-sd"):
+            if backend_type == "sd-cpp":
                 # Image-gen backends, KV quant is not applicable.
                 return {"k": [], "v": [], "boundary": False}
             # All current real backends return the default until one of them
@@ -235,13 +234,6 @@ class WorkerAgent:
                     {"name": m.get("title") or m.get("model_name") or "", "size_mb": 0}
                     for m in (resp.json() if isinstance(resp.json(), list) else [])
                 ]
-            if backend_type == "rknn-sd":
-                resp = await client.get(f"{base_url}/health")
-                if resp.status_code != 200:
-                    return None
-                data = resp.json()
-                name = data.get("model") or ""
-                return [{"name": name, "size_mb": 0}] if name else []
             # llama-cpp / vllm, OpenAI compat /v1/models
             resp = await client.get(f"{base_url}/v1/models")
             if resp.status_code != 200:

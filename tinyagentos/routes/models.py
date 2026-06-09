@@ -109,19 +109,11 @@ def _scan_all_roots(roots: list[Path]) -> list[dict]:
 
 
 def _is_service_installed(variant: dict) -> bool:
-    """Detect whether a multi-file service-backed variant (e.g. RKNN SD) is
-    installed on disk outside the ``data/models`` tree. Looks for an
-    ``install_script`` marker and a representative file at the install path.
+    """Detect whether a multi-file service-backed variant is installed on disk
+    outside the ``data/models`` tree.
     """
     if not variant.get("multi_file"):
         return False
-    # darkbit1001 / happyme531 layout — models live under
-    # ~/.local/share/tinyagentos/rknn-sd/model/{text_encoder,unet,vae_decoder}
-    # and the install marker is the unet rknn weights.
-    if variant.get("backend") and "rknn-stable-diffusion" in variant.get("backend", []):
-        install_root = Path.home() / ".local" / "share" / "tinyagentos" / "rknn-sd"
-        unet = install_root / "model" / "unet" / "model.rknn"
-        return unet.exists() and unet.stat().st_size > 1_000_000_000
     return False
 
 
@@ -664,27 +656,6 @@ async def loaded_models(request: Request):
                                 "backend_type": backend_type,
                                 "backend_url": backend_url,
                                 "purpose": _infer_purpose(model_id),
-                                "size_mb": None,
-                                "vram_mb": None,
-                                "ram_mb": None,
-                                "expires_at": None,
-                                "details": {},
-                            })
-                elif backend_type == "rknn-sd":
-                    # Use /health to determine actual pipeline load state.
-                    # /v1/models lists what the server *can* serve (always
-                    # populated) and does not reflect whether weights are
-                    # actually in NPU memory.
-                    resp = await client.get(f"{base}/health", timeout=5)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if data.get("pipeline_loaded") is True:
-                            loaded.append({
-                                "name": data.get("model", "rknn-sd"),
-                                "backend": backend_name,
-                                "backend_type": backend_type,
-                                "backend_url": backend_url,
-                                "purpose": "image-generation",
                                 "size_mb": None,
                                 "vram_mb": None,
                                 "ram_mb": None,

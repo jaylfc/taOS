@@ -85,7 +85,7 @@ keep-alive timer for image-gen backends.
 curl -s -X POST http://127.0.0.1:6969/api/lifecycle/notify \
   -H "Authorization: Bearer $(cat data/.auth_local_token)" \
   -H "Content-Type: application/json" \
-  -d '{"backend_name": "rknn-sd"}'
+  -d '{"backend_name": "sd-cpp"}'
 ```
 
 ---

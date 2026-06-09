@@ -46,8 +46,8 @@ async def test_list_image_models_filters_to_image_gen():
                 "id": "lcm-dreamshaper-v7",
                 "name": "LCM Dreamshaper v7",
                 "capabilities": ["image-generation"],
-                "variants": [{"id": "rknn", "backend": ["rknn-sd"]}],
-                "description": "LCM model for RKNN",
+                "variants": [{"id": "safetensors", "backend": ["sd-cpp"]}],
+                "description": "LCM model",
                 "has_downloaded_variant": True,
             },
             {
@@ -65,7 +65,7 @@ async def test_list_image_models_filters_to_image_gen():
             {
                 "name": "LCM Dreamshaper v7",
                 "purpose": "image-generation",
-                "backend_type": "rknn-sd",
+                "backend_type": "sd-cpp",
             }
         ]
     }
@@ -91,7 +91,7 @@ async def test_list_image_models_filters_to_image_gen():
 
 @pytest.mark.asyncio
 async def test_list_image_models_backend_type_filter():
-    """Models with no image-generation capability but an rknn-sd/sd-cpp variant are included."""
+    """Models with no image-generation capability but an sd-cpp variant are included."""
     from tinyagentos.tools.image_tool import execute_list_image_models
 
     installed_body = {

@@ -35,35 +35,6 @@ class OllamaCompatAdapter(BackendAdapter):
             return {"status": "error", "response_ms": elapsed_ms, "models": []}
 
 
-class RknnSdAdapter(BackendAdapter):
-    """Adapter for the taOS RKNN Stable Diffusion server (RK3588 NPU).
-
-    Exposes GET /health, GET /v1/models, POST /v1/images/generations.
-    """
-
-    async def health(self, client: httpx.AsyncClient, url: str) -> dict:
-        start = time.monotonic()
-        base = url.rstrip("/")
-        try:
-            resp = await client.get(f"{base}/health", timeout=10)
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            resp.raise_for_status()
-            models = []
-            try:
-                mr = await client.get(f"{base}/v1/models", timeout=10)
-                if mr.status_code == 200:
-                    models = [
-                        {"name": m.get("id", m.get("name", "")), "size_mb": 0}
-                        for m in mr.json().get("data", mr.json() if isinstance(mr.json(), list) else [])
-                    ]
-            except Exception:
-                pass
-            return {"status": "ok", "response_ms": elapsed_ms, "models": models}
-        except Exception:
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
-
-
 class StableDiffusionCppAdapter(BackendAdapter):
     """Adapter for leejet/stable-diffusion.cpp sd-server.
 
@@ -185,7 +156,6 @@ _ADAPTERS: dict[str, BackendAdapter] = {
     "kilocode": CloudAPIAdapter(),
     "openai-compatible": CloudAPIAdapter(),
     "sd-cpp": StableDiffusionCppAdapter(),
-    "rknn-sd": RknnSdAdapter(),
 }
 
 

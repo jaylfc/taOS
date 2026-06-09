@@ -20,7 +20,7 @@ async def test_start_sets_state_to_running():
     states = {"b1": "stopped"}
     backends = [
         {
-            "name": "b1", "type": "rknn-sd", "url": "http://b1",
+            "name": "b1", "type": "sd-cpp", "url": "http://b1",
             "start_cmd": "true",   # shell no-op that exits 0
             "startup_timeout_seconds": 5,
         }
@@ -39,7 +39,7 @@ async def test_start_sets_error_on_timeout():
     states = {"b1": "stopped"}
     backends = [
         {
-            "name": "b1", "type": "rknn-sd", "url": "http://b1",
+            "name": "b1", "type": "sd-cpp", "url": "http://b1",
             "start_cmd": "true",
             "startup_timeout_seconds": 1,
         }
@@ -59,7 +59,7 @@ async def test_drain_and_stop_graceful():
     states = {"b1": "running"}
     backends = [
         {
-            "name": "b1", "type": "rknn-sd", "url": "http://b1",
+            "name": "b1", "type": "sd-cpp", "url": "http://b1",
             "stop_cmd": "true",
         }
     ]
@@ -77,7 +77,7 @@ async def test_kill_stops_immediately():
     states = {"b1": "running"}
     backends = [
         {
-            "name": "b1", "type": "rknn-sd", "url": "http://b1",
+            "name": "b1", "type": "sd-cpp", "url": "http://b1",
             "stop_cmd": "true",
         }
     ]

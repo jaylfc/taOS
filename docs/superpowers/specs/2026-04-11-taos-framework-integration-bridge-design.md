@@ -1396,19 +1396,13 @@ The framework adapter design is **done** when:
   for the RK3588 NPU, which has three physical compute cores that
   can host different models in parallel.
 
-  The 2026-04-11 `ez_rknn_async` spike on an Orange Pi 5 Plus
-  (`scripts/spikes/ez-rknn-async/`) measured two independent wins
-  the single-dimension model cannot express:
+  Benchmark data for rkllama (LLM/embedding) on an Orange Pi 5 Plus showed
+  that the RK3588 can host multiple concurrent models across its three NPU
+  cores. Two independent wins the single-dimension model cannot express:
 
-  1. A solo model pinned with `tp_mode='all'` uses all three NPU
-     cores tensor-parallel and runs ~20% faster than the default
-     single-core path. On the LCM Dreamshaper unet, warm latency
-     drops from 5.66 s to 4.49 s per call. For a full four-step
-     LCM generation this cuts ~4.7 s off a ~33 s wall time.
-  2. Two sessions pinned to different cores (`tp_mode='0'` and
-     `tp_mode='1'`) run in parallel threads with 1.78x speedup
-     (89% of linear scaling). Two concurrent image generations
-     cost roughly the same as one.
+  1. A solo model using all three cores tensor-parallel runs ~20% faster.
+  2. Two sessions on separate cores run with ~1.78x throughput (89% linear
+     scaling).
 
   Neither is expressible if the scheduler only tracks "MB free /
   MB used" on the NPU. Both become trivial if it tracks cores too.
@@ -1507,19 +1501,6 @@ The framework adapter design is **done** when:
     wants cores.
   - `background` — ingest, indexing, batch jobs. Shrunk and evicted
     first.
-
-  ### Fallback if ez_rknn_async breaks
-
-  If the `ez_rknn_async` backend ever fails on a user's install (RKNN
-  driver mismatch, memory layout bug, whatever), the scheduler falls
-  back to the legacy rknn-toolkit-lite2 path automatically, with the
-  core-aware policy collapsed to a single-core allocator. The user
-  loses the 20% / 1.78x wins but keeps a working SD server. A
-  `runtime` field on the backend status (exposed at
-  `/health` → `runtime: "ez_rknn_async" | "rknn-toolkit-lite2"`)
-  lets the Cluster widget show which path each worker is on, so the
-  user can spot the regression rather than just experiencing "SD got
-  slower today".
 
   This extension is RK3588-specific for now. The scheduler interface
   is backend-agnostic, so any future backend that exposes similar

@@ -638,11 +638,6 @@ apps:
     version: 1.0.0
     name: FastSD CPU
     description: "Fast Stable Diffusion on CPU — optimized for ARM and devices without GPU"
-  - id: rknn-stable-diffusion
-    type: image-gen
-    version: 0.1.0
-    name: RKNN Stable Diffusion
-    description: "Image generation on Rockchip NPU — 512x512 in seconds on RK3588"
   - id: lcm-dreamshaper-rknn
     type: image-gen
     version: 0.1.0

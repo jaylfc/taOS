@@ -375,7 +375,6 @@ async def _cli_main(args: argparse.Namespace) -> int:
     candidates = [
         ("rkllama", "http://localhost:8080"),
         ("sd-cpp", "http://localhost:7864"),
-        ("rknn-sd", "http://localhost:7863"),
         ("ollama", "http://localhost:11434"),
         ("llama-cpp", "http://localhost:8000"),
     ]
@@ -394,12 +393,6 @@ async def _cli_main(args: argparse.Namespace) -> int:
                     if r.status_code == 200:
                         for m in r.json():
                             backend_models[(m.get("model_name") or m.get("title") or "", backend_type)] = url
-                elif backend_type == "rknn-sd":
-                    r = await client.get(f"{url}/health")
-                    if r.status_code == 200:
-                        model = r.json().get("model", "")
-                        if model:
-                            backend_models[(model, backend_type)] = url
                 elif backend_type == "llama-cpp":
                     r = await client.get(f"{url}/v1/models")
                     if r.status_code == 200:

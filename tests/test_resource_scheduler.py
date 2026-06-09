@@ -383,7 +383,7 @@ def test_resource_potential_capabilities():
 async def test_backend_catalog_capability_routing():
     """Catalog correctly surfaces capabilities from live probe results."""
     backends = [
-        {"name": "a", "type": "rknn-sd", "url": "http://a", "priority": 4},
+        {"name": "a", "type": "sd-cpp", "url": "http://a", "priority": 4},
         {"name": "b", "type": "sd-cpp", "url": "http://b", "priority": 5},
     ]
 
@@ -392,7 +392,7 @@ async def test_backend_catalog_capability_routing():
             "status": "ok",
             "response_ms": 1,
             "models": [
-                {"name": "lcm-dreamshaper-v7-rknn" if backend["name"] == "a"
+                {"name": "dreamshaper-8-lcm-q4" if backend["name"] == "a"
                     else "dreamshaper-8-lcm-iq4_nl-gguf"}
             ],
         }
@@ -404,9 +404,9 @@ async def test_backend_catalog_capability_routing():
         assert [e.name for e in entries] == ["a", "b"]  # priority order
 
         # Fuzzy model lookup
-        npu = catalog.find_backend_for_model("image-generation", "lcm-dreamshaper-v7")
+        npu = catalog.find_backend_for_model("image-generation", "dreamshaper-8-lcm-q4")
         assert npu is not None
-        assert npu.type == "rknn-sd"
+        assert npu.type == "sd-cpp"
 
         cpu = catalog.find_backend_for_model("image-generation", "dreamshaper-8-lcm")
         assert cpu is not None

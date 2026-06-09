@@ -77,11 +77,10 @@ def _get_image_backend(
     requested model loaded or no model was specified.
 
     Backend types:
-      ``openai``    — TinyAgentOS's own rknn_sd_server / any OpenAI-compatible image server
+      ``openai``    — any OpenAI-compatible image server
       ``rkllama``   — rkllama-style /v1/images/generations
       ``ollama``    — ollama-style /v1/images/generations
       ``sd-cpp``    — leejet/stable-diffusion.cpp sd-server (A1111-compatible /sdapi/v1/txt2img)
-      ``rknn-sd``   — darkbit1001 RKNN LCM server — POST /generate returns raw PNG
     """
     config = request.app.state.config
 
@@ -91,7 +90,7 @@ def _get_image_backend(
         return image_url, config.server.get("image_backend_type", "openai"), None
 
     catalog = getattr(request.app.state, "backend_catalog", None)
-    image_types = ("rknn-sd", "sd-cpp", "rkllama", "ollama")
+    image_types = ("sd-cpp", "rkllama", "ollama")
 
     # 1. Backend-driven: find a backend actually serving the requested model.
     if model and catalog is not None:
@@ -103,7 +102,7 @@ def _get_image_backend(
 
     # 2. Capability-only fallback: highest-priority healthy image-gen backend,
     #    respecting the NPU > CPU > generic preference within ties.
-    preference = {"rknn-sd": 0, "sd-cpp": 1, "rkllama": 2, "ollama": 3}
+    preference = {"sd-cpp": 0, "rkllama": 1, "ollama": 2}
     if catalog is not None:
         healthy = [
             b for b in catalog.backends_with_capability("image-generation")
@@ -114,12 +113,10 @@ def _get_image_backend(
             return healthy[0].url, healthy[0].type, healthy[0].name
 
     # 3. No live catalog (scheduler not started yet): use static config.
-    npu = [b for b in config.backends if b.get("type") == "rknn-sd"]
     sdcpp = [b for b in config.backends if b.get("type") == "sd-cpp"]
     generic = [b for b in config.backends if b.get("type") in ("rkllama", "ollama")]
     for backend in (
-        sorted(npu, key=lambda b: b.get("priority", 99))
-        + sorted(sdcpp, key=lambda b: b.get("priority", 99))
+        sorted(sdcpp, key=lambda b: b.get("priority", 99))
         + sorted(generic, key=lambda b: b.get("priority", 99))
     ):
         return backend["url"], backend["type"], backend.get("name")
@@ -177,7 +174,7 @@ async def _call_image_backend(
     width, height = int(width_s), int(height_s)
 
     # Detect backend kind from the URL — the resource knows its own wiring.
-    # sd-cpp listens on 7864, rknn-sd on 7863. We could introspect via /health
+    # sd-cpp listens on 7864. We could introspect via /health
     # but at phase 1 the URL is enough.
     is_sdcpp = ":7864" in backend_url
 
@@ -235,7 +232,7 @@ async def generate_image(request: Request, body: GenerateRequest):
     preferred: list[ResourceRef] = []
     if catalog:
         match = catalog.find_backend_for_model("image-generation", body.model)
-        if match and match.type in ("rknn-sd", "rkllama"):
+        if match and match.type == "rkllama":
             preferred.append(ResourceRef("npu-rk3588"))
         if match and match.type == "sd-cpp":
             preferred.append(ResourceRef("cpu-inference"))

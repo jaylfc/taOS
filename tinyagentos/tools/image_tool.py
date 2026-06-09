@@ -53,7 +53,7 @@ IMAGE_GENERATION_TOOL = {
 # MCP tool schema — agents call this to discover installed image-gen models
 LIST_IMAGE_MODELS_TOOL = {
     "name": "list_image_models",
-    "description": "List installed image-generation models the agent can pick from. Returns each model's name, backend type (rknn-sd / sd-cpp / etc.), whether it's currently loaded, and any model metadata that can help with model choice.",
+    "description": "List installed image-generation models the agent can pick from. Returns each model's name, backend type (sd-cpp / etc.), whether it's currently loaded, and any model metadata that can help with model choice.",
     "input_schema": {"type": "object", "properties": {}},
 }
 
@@ -70,7 +70,7 @@ async def execute_list_image_models(
       {"models": [{"id", "name", "capabilities": [...], "variants": [{"backend": [...], ...}], ...}], ...}
 
     An entry is image-gen if "image-generation" is in its capabilities list,
-    or if any variant declares a backend in ("rknn-sd", "sd-cpp").
+    or if any variant declares a backend in ("sd-cpp",).
     """
     import httpx
 
@@ -110,7 +110,7 @@ async def execute_list_image_models(
 
             # Also check if any variant declares an image-gen backend type
             if not is_image:
-                image_backends = {"rknn-sd", "sd-cpp"}
+                image_backends = {"sd-cpp"}
                 for v in variants:
                     backends = v.get("backend") or []
                     if isinstance(backends, str):

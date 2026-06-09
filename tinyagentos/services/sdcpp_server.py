@@ -5,7 +5,6 @@ Wraps stable-diffusion-cpp-python to serve GGUF Stable Diffusion models
 endpoint that the TinyAgentOS Images app can call directly.
 
 CPU-only today — works on RK3588, x86 servers, anything with enough RAM.
-NPU acceleration is handled by a separate server (rknn_sd_server.py).
 
 Environment:
   SDCPP_MODEL_PATH   path to the .gguf model (required)
