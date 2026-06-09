@@ -7,6 +7,7 @@ import socket
 from contextlib import closing
 
 from tinyagentos.installers.base import AppInstaller
+from tinyagentos.installers.port_allocator import RESERVED_PORTS
 import tinyagentos.containers as containers
 
 logger = logging.getLogger(__name__)
@@ -70,16 +71,18 @@ def _render_app_ini(app_id: str = "gitea-lxc") -> str:
     )
 
 
-def _find_free_port(start: int = 13000, end: int = 14000) -> int:
-    """Return the first available TCP port in [start, end)."""
+def _find_free_port(start: int = 30_000, end: int = 40_000) -> int:
+    """Return the first available TCP port in [start, end) that is not reserved."""
     for port in range(start, end):
+        if port in RESERVED_PORTS:
+            continue
         with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
             try:
                 s.bind(("0.0.0.0", port))
                 return port
             except OSError:
                 continue
-    raise RuntimeError(f"No free port found in range {start}-{end}")
+    raise RuntimeError(f"No free non-reserved port found in range {start}-{end}")
 
 
 class LXCInstaller(AppInstaller):

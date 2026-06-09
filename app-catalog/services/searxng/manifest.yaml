@@ -10,13 +10,14 @@ license: AGPL-3.0
 requires:
   ram_mb: 128
   disk_mb: 200
-  ports: [8080]
 
 install:
   method: docker
   image: searxng/searxng:latest
   volumes:
     - config:/etc/searxng
+  # 8080 is the container-internal port; the host port is allocated from the
+  # managed pool (30000-40000) by the installer — never bound to 8080 on the host.
   ports: [8080]
 
 hardware_tiers:
