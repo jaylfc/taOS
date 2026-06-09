@@ -1233,8 +1233,21 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
                     warn "hit the same failure mode against npm's own tarball and leave"
                     warn "your npm in a broken state requiring a full nodejs reinstall."
                 fi
-                tail -20 "$qmd_install_log" >&2
-                die "npm install of qmd failed — see $qmd_install_log"
+                # Pinned version missing from npm (ETARGET) — fall back to @latest
+                # so a stale/wrong pin can't hard-fail the whole install (see #706).
+                if grep -qiE "ETARGET|No matching version found" "$qmd_install_log" \
+                   && [[ "$qmd_npm_version" != "latest" ]]; then
+                    warn "qmd ${qmd_npm_version} not found on npm (ETARGET); retrying @latest"
+                    if sudo HOME=/root npm install -g --unsafe-perm "@jaylfc/qmd@latest" >>"$qmd_install_log" 2>&1; then
+                        log "qmd installed via @latest fallback"
+                    else
+                        tail -20 "$qmd_install_log" >&2
+                        die "npm install of qmd failed (pinned ${qmd_npm_version} and @latest) — see $qmd_install_log"
+                    fi
+                else
+                    tail -20 "$qmd_install_log" >&2
+                    die "npm install of qmd failed — see $qmd_install_log"
+                fi
             fi
             rm -f "$qmd_install_log"
             # Confirm the binary is reachable before we proceed.

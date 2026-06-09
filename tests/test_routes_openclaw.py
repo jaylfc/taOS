@@ -71,6 +71,14 @@ async def bearer_client(openclaw_app):
             await store.close()
         await store.init()
     await app.state.qmd_client.init()
+    # bridge_sessions is lifespan-owned (set to None by create_app); init it
+    # so /api/openclaw/sessions/* routes can function without the lifespan.
+    from tinyagentos.bridge_session import BridgeSessionRegistry
+    app.state.bridge_sessions = BridgeSessionRegistry(
+        chat_messages=app.state.chat_messages,
+        chat_channels=app.state.chat_channels,
+        chat_hub=app.state.chat_hub,
+    )
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     token = app.state.auth.get_local_token()
     transport = ASGITransport(app=app)
