@@ -520,3 +520,46 @@ class TestAuthRequestRoutes:
         r1, r2 = await asyncio.gather(do_approve(), do_approve())
         codes = sorted([r1.status_code, r2.status_code])
         assert codes == [200, 409], f"expected [200, 409], got {codes}"
+
+    async def test_grants_feed_populated_after_approve(self, consent_client):
+        """After approval the grants feed returns the approved scopes."""
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+        request_id = create_resp.json()["request_id"]
+
+        await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory:read", "memory:write"]},
+        )
+
+        resp = await consent_client.get("/api/agents/registry/grants")
+        assert resp.status_code == 200
+        grants = resp.json()["grants"]
+        scopes = {g["scope"] for g in grants}
+        assert "memory:read" in scopes
+        assert "memory:write" in scopes
+
+    async def test_grants_feed_nonadmin_returns_403(self, consent_client_nonadmin):
+        resp = await consent_client_nonadmin.get("/api/agents/registry/grants")
+        assert resp.status_code == 403
+
+    async def test_grants_feed_filtered_by_canonical_id(self, consent_client):
+        """?canonical_id= filter returns only that agent's grants."""
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            r = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+        request_id = r.json()["request_id"]
+
+        approve_resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory:read"]},
+        )
+        canonical_id = approve_resp.json()["canonical_id"]
+
+        resp = await consent_client.get(
+            f"/api/agents/registry/grants?canonical_id={canonical_id}"
+        )
+        assert resp.status_code == 200
+        grants = resp.json()["grants"]
+        assert all(g["canonical_id"] == canonical_id for g in grants)

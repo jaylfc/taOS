@@ -6,6 +6,7 @@ POST   /api/agents/registry/register         — register an agent, mint canonic
 GET    /api/agents/registry/pubkey           — public key for token verification (exempt, no auth)
 GET    /api/agents/registry/revoked          — global revocation feed (admin/local-token only)
 GET    /api/agents/registry/inactive         — all non-active entries for the bus (admin only)
+GET    /api/agents/registry/grants           — active grant feed for @taOSmd enforcement (admin only)
 GET    /api/agents/registry                  — list registry entries (admin: all; member: own)
 GET    /api/agents/registry/{id}             — read a single entry (owner or admin; else 404)
 DELETE /api/agents/registry/{id}             — revoke an entry (owner or admin)
@@ -67,6 +68,13 @@ def _get_store(request: Request):
     store = getattr(request.app.state, "agent_registry", None)
     if store is None:
         raise RuntimeError("agent_registry store not on app.state")
+    return store
+
+
+def _get_grants_store(request: Request):
+    store = getattr(request.app.state, "agent_grants", None)
+    if store is None:
+        raise RuntimeError("agent_grants store not on app.state")
     return store
 
 
@@ -195,6 +203,32 @@ async def list_inactive_entries(
         raise HTTPException(status_code=403, detail="forbidden")
     store = _get_store(request)
     return {"inactive": await store.list_inactive()}
+
+
+@router.get("/api/agents/registry/grants")
+async def list_active_grants(
+    request: Request,
+    canonical_id: Optional[str] = None,
+    user: CurrentUser = Depends(current_user),
+):
+    """Return the active grant feed for A2A bus enforcement.
+
+    Response: {"grants": [{canonical_id, scope, tier, project_id, granted_at, expires_at}, ...]}
+
+    Admin only — @taOSmd polls this on interval to keep its local cache current.
+    Grants are active if expires_at IS NULL or expires_at > now (Phase 1: all
+    grants are non-expiring, so the full list is always returned).
+
+    Optional ``?canonical_id=`` filter narrows to a single agent.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    grants_store = _get_grants_store(request)
+    if canonical_id:
+        grants = await grants_store.list_grants(canonical_id)
+    else:
+        grants = await grants_store.list_active_grants()
+    return {"grants": grants}
 
 
 @router.get("/api/agents/registry")
