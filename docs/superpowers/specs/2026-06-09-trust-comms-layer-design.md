@@ -49,7 +49,7 @@ The consent loop is the **writer** that touches all three (identity + relationsh
 **Target (Jay): A2A is taOS's *entire* comms backend** — chat, `channel_hub`, and the Messages app all migrate onto it. One substrate ⇒ every message carries an authenticated identity, governed by the trust layer, audited once.
 
 ### Content model (the enabling change)
-Messages become structured **parts**: `{parts: [{type: text|image|file|audio|video, text? | blob_ref?, mime, name, size}]}`. Media is **never inline** — parts carry a `blob_ref` into a content-addressed **blob/bucket store**; the bus carries refs + metadata, the blob store streams bytes. (Also serves `project_tinyagentos_chat_canvas`.)
+Messages become structured **parts**: `{parts: [{type: text|image|file|audio|video, text? | blob_ref?, mime, name, size}]}`. Media is **never inline** — parts carry a `blob_ref`; the bus carries refs + metadata, not bytes. The `blob_ref` resolves to a file in the recipient agent's **workspace attachment folder** (see §6 — workspace-canonical, symlinked into the taOSmd store for indexing). (Also serves `project_tinyagentos_chat_canvas`.)
 
 ### channel_hub → edge connectors
 External channels (WhatsApp/Telegram/Discord) stop being a parallel backend and become **edge connectors** that bridge in/out of the canonical A2A bus, translating attachments to/from blob refs.
@@ -61,16 +61,20 @@ Canonical bus + content model first; migrate agent-comms + new attachments, then
 
 Per Jay: **a configured option in taOSmd/memory settings, OFF by default, enabled only if capable hardware/model is present; model-selectable; on-demand or scheduled-bulk.** Two composable layers:
 
-- **Base — describe-then-index (universal):** a media item lands in a **folder bucket** (the same content-addressed blob store as §5). A **separate analyzer model** (cloud or local — vision for images, ASR for audio→transcript) writes a **text description/transcript alongside** in the bucket. That text is ingested into the existing text/vector memory (qmd `/embed` + `/vsearch`) and **points back** to the original item. Works with any text embedder; local-friendly; lossy but re-analyzable.
-- **Upgrade — native multimodal embedding (optional, pluggable):** when enabled + hardware present, embed the item directly into a shared vector space. Cloud: Cohere Embed v4 / Voyage Multimodal 3.5 / Gemini / Jina Embeddings v4. Local (GPU worker, via qmd): SigLIP 2 / Nomic Embed Vision (shares space with `nomic-embed-text`) / Jina-CLIP-v2. Compose with the base (store blob + description + multimodal vector).
+- **Base — describe-then-index (universal):** a media item lives in the agent's **workspace attachment folder** (§6); a **separate analyzer model** (cloud or local — vision for images, ASR for audio→transcript) writes a **text description/transcript alongside** it. That text is ingested into the existing text/vector memory (qmd `/embed` + `/vsearch`) and **points back** to the original file (resolved via the workspace→store symlink). Works with any text embedder; local-friendly; lossy but re-analyzable. **Small vision models run on the Pi**, so this works on-device, not only on GPU workers.
+- **Upgrade — native multimodal embedding (optional, pluggable):** when enabled + hardware present, embed the item directly into a shared vector space. Cloud: Cohere Embed v4 / Voyage Multimodal 3.5 / Gemini / Jina Embeddings v4. Local: small vision models on the Pi, or SigLIP 2 / Nomic Embed Vision (shares space with `nomic-embed-text`) / Jina-CLIP-v2 on a GPU worker via qmd. Selected per recipe/hardware. Composes with the base (file + description + multimodal vector).
 
 ### Context logging + agent access (Jay, required)
 - Every media item **logs its relationship/context**: which chat/DM/message it came from, when, from whom — so an agent can look back, retrieve the original, and use **its own multimodal capability** to view it.
 - **Agents need a pathway to the storage bucket** to fetch raw bytes (not just the description).
 
-### Storage location — memory bucket vs agent workspace (recommendation; confirm with Jay)
-The memory folder/bucket lives **outside** an agent's container; the workspace is inside it.
-**Recommendation:** the **canonical store is the memory bucket** (shared, content-addressed, dedup), accessed via the **virtual NAS** pathway, **permission-gated** (file-access governed by the Permissions layer + file-access notifications). For an item sent to an agent (e.g. an image in a DM), it is stored canonically in the bucket and a **permissioned symlink/view** is surfaced into that agent's **workspace** so its own multimodal can read the file directly. One canonical store; per-agent permissioned views; access governed by the same consent/permission/notification system. (Open: exact NAS mount semantics + whether symlink or virtual-FS view — flag for Jay.)
+### Storage location — workspace-canonical, symlinked into the store (Jay, decided)
+**The agent's workspace is canonical** (it's inside the agent's container, where **storage quotas** are enforced). If files lived only in the taOSmd store the agent's quota wouldn't account for them — so we go the other way: **symlink the agent's workspace folder (from its container) *into* the taOSmd store**, so taOSmd can read/index/describe/embed the files without owning the bytes. The agent reads its files directly + locally (its own multimodal just opens them); the store references them through the symlink.
+
+- **Chat attachments land in a dedicated folder inside the agent's workspace** (e.g. `workspace/attachments/…`, optionally per-chat subfolders), then symlinked into the store with the rest.
+- Implementation: agents run in containers, so the workspace is a host-accessible bind-mount/volume; taOSmd (on the host) symlinks into that volume — no byte-copying.
+- **A2A attachment delivery (§5 reconciled):** an attachment sent to an agent is delivered into the recipient's `workspace/attachments/` (counted against *its* quota); the message's `blob_ref` resolves to that workspace attachment; the store indexes it via the symlink. Shared/project files use the existing git-keyed project-shelf mechanism, not per-workspace.
+- Access stays **permission-gated** (the Permissions layer + file-access notifications govern who/what may read a given path).
 
 ## 7. Standalone vs taOS-managed flag
 
@@ -90,14 +94,19 @@ Foundation (done): registry #710, RelationshipManager, auth-context, governance 
 
 1. **Consent loop + desktop notification** (the spine): request/status endpoints, the non-dismissable per-scope-toggle notification, accept→mint→relationship→grant, identity-only token issuance, `managed_by` flag. *Makes registry-auth enforceable + onboards external agents — highest leverage.* Collaborative with @taOSmd (token + feed).
 2. **The three apps + tiered permissions**: Permissions app (grants/tiers + enforcement hooks on memory/bus), Relationships app (graph UI on the existing backend), Users app/Settings (multi-user). Per-app permissions (#622) folds in here.
-3. **A2A unified comms + blob store**: the parts+blob-ref content model + the content-addressed **blob/bucket store** (shared infra for §5 *and* §6), migrate chat → A2A, bridge channel_hub as edge connectors, then Messages.
-4. **Multimodal memory**: describe-then-index analyzer pipeline on the bucket + the optional native-multimodal-embedding config (hardware-gated, model-selectable, on-demand/scheduled-bulk) + context logging + the workspace/NAS access model.
+3. **A2A unified comms + attachment storage**: the parts+blob-ref content model + the **workspace attachment folders symlinked into the taOSmd store** (shared infra for §5 *and* §6), migrate chat → A2A, bridge channel_hub as edge connectors, then Messages.
+4. **Multimodal memory**: describe-then-index analyzer pipeline over the workspace attachments + the optional native-multimodal-embedding config (hardware-gated, model-selectable, on-demand/scheduled-bulk) + context logging.
 
-Rationale: the **blob/bucket store is shared** by comms-attachments (3) and multimodal-memory (4), so it's built once in phase 3 and phase 4 rides it. Consent loop (1) gates real enforcement; the apps (2) manage what it creates.
+Rationale: the **workspace-attachment storage (symlinked into the store) is shared** by comms-attachments (3) and multimodal-memory (4), so it's built once in phase 3 and phase 4 rides it. Consent loop (1) gates real enforcement; the apps (2) manage what it creates.
 
-## 10. Open questions (for Jay / @taOSmd)
+## 10. Decisions + open questions
 
-- **Token model** (§2): identity-only + permission-store tiering (recommended) vs scope/exp in the token — @taOSmd's call since they enforce.
-- **Media storage location** (§6): canonical-bucket + permissioned workspace symlink/view via virtual NAS (recommended) vs workspace-primary — confirm the NAS/FS semantics with Jay.
+**Resolved (Jay, 2026-06-09):**
+- **Token model** (§2): identity-only token + all tiering in the permission store/feed. ✅ (Confirm final enforcement detail with @taOSmd.)
+- **Media storage location** (§6): workspace-canonical (quota-enforced) + symlink workspace → taOSmd store; chat attachments in a dedicated workspace folder. ✅
+- **Pi vision**: small vision models DO run on the Pi, so describe-then-index (and light native vision) can run on-device — the Pi tier is *not* limited to text-only. Heavier native multimodal embedding still prefers a GPU worker/cloud, selected per recipe/hardware. ✅
+
+**Still open:**
 - **Agent↔agent consent**: does cross-agent collaboration always need user consent, or auto-allow within the same group/project? (Lean: consent across user/project boundaries; auto within a shared group.)
-- **Native multimodal on the Pi**: low-power NPU likely can't host SigLIP2/Nomic Vision well → native multimodal runs on a GPU worker or cloud; the Pi-only tier uses describe-then-index. Confirm acceptable.
+- **Final token-enforcement detail** with @taOSmd (how the bus joins identity-token + permission-feed per request).
+- **Quota mechanics**: how workspace quotas are measured/enforced across the symlink (the store must not double-count; quota is the workspace's).
