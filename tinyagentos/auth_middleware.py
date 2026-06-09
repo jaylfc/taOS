@@ -39,6 +39,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
             request.state.user_id = None
             request.state.is_admin = False
+            request.state.via = "exempt"
             return await call_next(request)
 
         # Local token (Authorization: Bearer <token>) is accepted as a
@@ -52,13 +53,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):
                 primary = auth_mgr.get_primary_user()
-                if primary:
-                    request.state.user_id = primary["id"]
-                    request.state.is_admin = True
-                    request.state.via = "local_token"
-                else:
-                    request.state.user_id = None
-                    request.state.is_admin = False
+                # Fail closed: a valid local token with no resolvable primary
+                # user must not pass through (would bypass middleware-only
+                # gating for routes that don't use the current_user dependency).
+                if not primary:
+                    return JSONResponse(
+                        {"error": "Authentication required"}, status_code=401
+                    )
+                request.state.user_id = primary["id"]
+                request.state.is_admin = True
+                request.state.via = "local_token"
                 return await call_next(request)
 
         # First boot: no user yet. Browsers go to the setup page; APIs
