@@ -1,13 +1,14 @@
 """Memory Management Routes — taOSmd backend integration.
 
-Exposes stats, settings, backend capabilities/schema, and per-agent
-memory config. All routes instantiate TaOSmdBackend with auto-init
-so the settings DB is created on first access without a separate
-startup step.
+Exposes stats, settings, backend capabilities/schema, per-agent
+memory config, and recipe (config-profile) endpoints.  All routes
+instantiate TaOSmdBackend with auto-init so the settings DB is created
+on first access without a separate startup step.
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -35,6 +36,65 @@ def _backend(request: Request):
         archive=archive,
         settings_db_path=settings_db_path,
     )
+
+
+def _build_device_info(request: Request) -> dict:
+    """Build the ``{host, cluster}`` device-info dict expected by recommend().
+
+    ``host`` mirrors the HardwareProfile dict returned by GET /api/hardware.
+    ``cluster`` aggregates all online workers: counts, per-worker summaries,
+    and a computed ``aggregate`` block (max/total GPU VRAM, NPU presence, total
+    cores and RAM across the mesh).
+    """
+    hp = getattr(request.app.state, "hardware_profile", None)
+    host: dict = {}
+    if hp is not None:
+        host = asdict(hp)
+        host["profile_id"] = hp.profile_id
+
+    cluster_manager = getattr(request.app.state, "cluster_manager", None)
+    workers_summary: list[dict] = []
+    aggregate = {
+        "max_gpu_vram_mb": 0,
+        "total_gpu_vram_mb": 0,
+        "has_npu": False,
+        "total_cores": 0,
+        "total_ram_mb": 0,
+    }
+
+    if cluster_manager is not None:
+        online = [w for w in cluster_manager.get_workers() if w.status == "online"]
+        for w in online:
+            hw = w.hardware or {}
+            gpu = hw.get("gpu") or {}
+            npu = hw.get("npu") or {}
+            cpu = hw.get("cpu") or {}
+            ram_mb: int = hw.get("ram_mb", 0) or 0
+            vram_mb: int = gpu.get("vram_mb", 0) or 0
+            cores: int = cpu.get("cores", 0) or 0
+            has_npu: bool = (npu.get("type", "none") or "none") != "none"
+
+            aggregate["total_gpu_vram_mb"] += vram_mb
+            if vram_mb > aggregate["max_gpu_vram_mb"]:
+                aggregate["max_gpu_vram_mb"] = vram_mb
+            if has_npu:
+                aggregate["has_npu"] = True
+            aggregate["total_cores"] += cores
+            aggregate["total_ram_mb"] += ram_mb
+
+            workers_summary.append({
+                "hardware": hw,
+                "capabilities": list(w.capabilities),
+                "tier_id": getattr(w, "tier_id", ""),
+                "status": w.status,
+            })
+
+    cluster = {
+        "online_workers": len(workers_summary),
+        "workers": workers_summary,
+        "aggregate": aggregate,
+    }
+    return {"host": host, "cluster": cluster}
 
 
 # --- Memory Management Routes ---
@@ -131,4 +191,108 @@ async def agent_memory_config_put(request: Request, name: str):
         return updated
     except Exception as exc:
         logger.warning("agent memory config update failed for %s: %s", name, exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# --- Recipe Routes (SP4) ---
+
+@router.get("/api/memory/recipes/schema")
+async def memory_recipes_schema(request: Request):
+    """Return JSON Schema for a recipe config bundle."""
+    try:
+        b = _backend(request)
+        schema = await b.get_recipe_schema()
+        return schema
+    except Exception as exc:
+        logger.warning("memory recipes schema failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/memory/recipes")
+async def memory_recipes_list(request: Request):
+    """Return all available recipes."""
+    try:
+        b = _backend(request)
+        recipes = await b.list_recipes()
+        return recipes
+    except Exception as exc:
+        logger.warning("memory recipes list failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/memory/recipes/{recipe_id}")
+async def memory_recipes_get(request: Request, recipe_id: str):
+    """Return a single recipe by id; 404 if unknown."""
+    try:
+        b = _backend(request)
+        recipe = await b.get_recipe(recipe_id)
+        if recipe is None:
+            return JSONResponse({"error": f"Recipe '{recipe_id}' not found"}, status_code=404)
+        return recipe
+    except Exception as exc:
+        logger.warning("memory recipe get failed for %s: %s", recipe_id, exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/memory/recipes/{recipe_id}/apply")
+async def memory_recipes_apply(request: Request, recipe_id: str):
+    """Apply a recipe as the global default or to a specific agent.
+
+    Body (all optional): ``{"agent": "<name>"}``
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    agent: str | None = body.get("agent") or None
+    try:
+        b = _backend(request)
+        result = await b.apply_recipe(recipe_id, agent=agent)
+        return result
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        logger.warning("memory recipe apply failed for %s: %s", recipe_id, exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/memory/recipes/recommend")
+async def memory_recipes_recommend(request: Request):
+    """Rank recipes best-first for this device (or provided device_info).
+
+    Body (all optional): ``{"device_info": {...}}``
+    When ``device_info`` is absent the controller's own hardware + cluster
+    state is used.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    device_info = body.get("device_info") or None
+    if device_info is None:
+        device_info = _build_device_info(request)
+    try:
+        b = _backend(request)
+        ranked = await b.recommend(device_info=device_info)
+        return ranked
+    except Exception as exc:
+        logger.warning("memory recipes recommend failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/memory/recipes")
+async def memory_recipes_create(request: Request):
+    """Create a custom recipe from a spec (SP3 — not yet implemented)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    try:
+        b = _backend(request)
+        recipe = await b.create_recipe(body)
+        return recipe
+    except NotImplementedError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=501)
+    except Exception as exc:
+        logger.warning("memory recipe create failed: %s", exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
