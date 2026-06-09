@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from tinyagentos.installers.base import AppInstaller, run_cmd
+from tinyagentos.installers.port_allocator import allocate_host_port
 
 
 class DockerInstaller(AppInstaller):
@@ -24,8 +25,20 @@ class DockerInstaller(AppInstaller):
         """
         return bool(source) and not source.startswith(("/", "./", "../", "~"))
 
-    def _generate_compose(self, app_id: str, install_config: dict) -> dict:
-        """Generate a docker-compose.yaml from the manifest install config."""
+    def _generate_compose(
+        self, app_id: str, install_config: dict
+    ) -> tuple[dict, int | None]:
+        """Generate a docker-compose.yaml from the manifest install config.
+
+        The host port for each container port is always allocated from the
+        managed high pool (30000-40000) via ``allocate_host_port``.  Apps must
+        not bind core/well-known ports on the host regardless of what the
+        manifest declares.  The container-side port is preserved as-is so the
+        app's internal wiring is unaffected.
+
+        Returns a ``(compose_dict, host_port)`` tuple.  ``host_port`` is
+        ``None`` when the manifest declares no ports.
+        """
         service = {
             "image": install_config["image"],
             "restart": "unless-stopped",
@@ -42,23 +55,37 @@ class DockerInstaller(AppInstaller):
                     named_volumes[source] = None
         if "env" in install_config:
             service["environment"] = install_config["env"]
+
+        # Collect the container-internal ports from the manifest.
+        container_ports: list[int] = []
         if "ports" in install_config.get("requires", {}):
-            service["ports"] = [f"{p}:{p}" for p in install_config["requires"]["ports"]]
+            container_ports = [int(p) for p in install_config["requires"]["ports"]]
         elif "ports" in install_config:
-            service["ports"] = [f"{p}:{p}" for p in install_config["ports"]]
+            container_ports = [int(p) for p in install_config["ports"]]
+
+        allocated_host_port: int | None = None
+        if container_ports:
+            # Allocate a host port from the managed pool for each container
+            # port.  The mapping is host_port:container_port so the app's
+            # internal wiring (container port) is unchanged.
+            allocated_host_port = allocate_host_port(app_id)
+            service["ports"] = [
+                f"{allocated_host_port + idx}:{cport}"
+                for idx, cport in enumerate(container_ports)
+            ]
 
         # No top-level `version:` — it's obsolete in Compose v2 and emits a
         # warning on every command.
         compose: dict = {"services": {app_id: service}}
         if named_volumes:
             compose["volumes"] = named_volumes
-        return compose
+        return compose, allocated_host_port
 
     async def install(self, app_id: str, install_config: dict, **kwargs) -> dict:
         app_dir = self.apps_dir / app_id
         app_dir.mkdir(parents=True, exist_ok=True)
 
-        compose = self._generate_compose(app_id, install_config)
+        compose, host_port = self._generate_compose(app_id, install_config)
         compose_path = self._compose_path(app_id)
         compose_path.write_text(yaml.dump(compose, default_flow_style=False))
 
@@ -70,7 +97,10 @@ class DockerInstaller(AppInstaller):
         if code != 0:
             return {"success": False, "error": f"docker pull failed: {output}"}
 
-        return {"success": True, "path": str(app_dir)}
+        result: dict = {"success": True, "path": str(app_dir)}
+        if host_port is not None:
+            result["host_port"] = host_port
+        return result
 
     async def uninstall(self, app_id: str) -> dict:
         compose_path = self._compose_path(app_id)
