@@ -313,7 +313,7 @@ The mobile shell uses a bottom **pill bar** for navigation: tap the pill to go h
 
 ## 5b. User Memory
 
-TinyAgentOS includes a personal memory system just for you — think of it as your own private notebook that the platform helps fill in automatically. It's separate from agent memories and lives in a local SQLite database with full-text search.
+TinyAgentOS includes a personal memory system just for you, think of it as your own private notebook that the platform helps fill in automatically. It's separate from agent memories. Under the hood it is powered by taosmd (`pip install taosmd`, the same library that backs agent memories): writes go to taosmd's `POST /ingest/batch` endpoint and keyword reads go to `GET /search?mode=bm25`. A local SQLite FTS5 store acts as an automatic fallback if taosmd is unreachable. You configure the taosmd address via the `TAOS_USER_MEMORY_URL` environment variable.
 
 ### What gets captured
 

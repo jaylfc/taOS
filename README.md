@@ -124,6 +124,8 @@ Auto-detects touch devices and swaps the desktop for a widget-first home screen 
 ### User Memory System
 Personal memory powered by [taOSmd](https://github.com/jaylfc/taosmd), think Pieces App but self-hosted. Temporal knowledge graph + hybrid vector search + zero-loss archive auto-captures conversations from the Message Hub, notes from the Text Editor, file activity, and search queries. Per-category capture toggles live in Settings. Available in global search (Ctrl+Space) alongside apps, with a "Save to Memory" right-click option on the desktop. Agents can optionally read user memory with explicit permission via the `TAOS_USER_MEMORY_URL` environment variable. A "My Memory" section in the Memory app sits alongside agent memories.
 
+User memory is unified through taosmd (issue #25): `tinyagentos/routes/user_memory.py` proxies writes to taosmd `POST /ingest/batch` and reads to `GET /search?mode=bm25` (sub-300ms keyword search), with idempotent migration via `POST /api/user-memory/migrate`. A local SQLite FTS5 store is kept as a fallback for when taosmd is unreachable. taOS reaches taosmd at the URL configured in the `TAOS_USER_MEMORY_URL` environment variable.
+
 ### Skills & Plugins Registry
 Framework-agnostic skill system with 8 default skills, memory_search, file_read, file_write, web_search, code_exec, image_generation, list_image_models, http_request, categorised by search, files, code, media, browser, data, comms, system. Each skill declares compatibility per framework (native/adapter/unsupported) and works across all 16 supported frameworks via adapter translation. Assign or remove skills per agent from the Skills tab with compatibility badges.
 
@@ -221,11 +223,13 @@ Features unlock automatically based on your hardware and cluster. Solo Pi sees c
 - **Deployment.** Auto-converts and deploys to all backends in the cluster
 
 ### Agent Memory System ([taOSmd](https://github.com/jaylfc/taosmd))
-taOSmd is a standalone memory library installed as a dependency — **97.0% end-to-end Judge accuracy** on LongMemEval-S (retrieve → generate → LLM-grade against the reference answer). The most-cited open comparators (MemPalace 96.6%, agentmemory 95.2%) publish **Recall@5** retrieval scores on the same dataset — only "did the right session land in the top-5", no generation, no judge — so the numbers aren't apples-to-apples until one of us re-runs end-to-end; ours is the stricter measurement. The Librarian layer's LLM-assisted query expansion adds a measured **+15.4% on the vocabulary-gap axis** (45% recall@lag25 with full pipeline + Librarian, vs 30% without) on long-horizon sessions where the cross-encoder alone isn't enough.
+taOSmd is installed as a Python dependency from PyPI (`pip install taosmd`, pinned to 0.3.0 in `pyproject.toml`, published via Trusted Publishing): **97.0% end-to-end Judge accuracy** on LongMemEval-S (retrieve, generate, LLM-grade against the reference answer). The most-cited open comparators (MemPalace 96.6%, agentmemory 95.2%) publish **Recall@5** retrieval scores on the same dataset, which measures only "did the right session land in the top-5" with no generation and no judge, so the numbers are not apples-to-apples until one of us re-runs end-to-end; ours is the stricter measurement. The Librarian layer's LLM-assisted query expansion adds a measured **+15.4% on the vocabulary-gap axis** (45% recall@lag25 with full pipeline + Librarian, vs 30% without) on long-horizon sessions where the cross-encoder alone isn't enough.
 
 Memory layers: temporal knowledge graph with validity windows + contradiction detection, hybrid semantic+keyword vector search (ONNX MiniLM or Nomic), zero-loss append-only archive with FTS5, session catalog over the archive, and a crystal store of compressed session digests with extracted lessons. Processing: regex + LLM fact extraction (qwen3:4b), 30-min-gap session splitter, tiered enricher (heuristic / 4B / 9B+), session crystallizer, **secret filtering with 17 regex patterns auto-redacting on every ingest**, and Ebbinghaus retention scoring with hot/warm/cold tiers. Retrieval: parallel fan-out across all layers, query expansion, intent classifier that weights an RRF merge, ms-marco-MiniLM cross-encoder reranking, BFS graph expansion, and a token-budgeted L0–L3 context assembler.
 
 taOS wraps taOSmd with platform-specific scheduling (job queue, resource manager, worker heartbeat, gaming detection) for multi-agent coordination on resource-constrained devices. QMD (`qmd.service`, port 7832) remains as the NPU-accelerated embedding / rerank / query-expansion backend. Per-tenant isolation is handled by `dbPath` routing: each agent's index lives at `data/agent-memory/{name}/index.sqlite`.
+
+**A2A bus.** taosmd ships an agent-to-agent messaging bus with realtime wake support (`a2a-watch` / bridge). Agents register on the bus and exchange messages directly, with a bundled skill that agent frameworks can load. taOS uses this for inter-agent coordination without routing through the channel hub.
 
 - **Document ingestion.** Drag-and-drop files into agent memory via the web UI or API. Supports text, markdown, PDFs, code.
 - **Automatic embedding.** Documents are chunked and embedded using your local inference backend (NPU, GPU, or CPU). No external API calls.
@@ -343,7 +347,7 @@ TinyAgentOS Controller (FastAPI + htmx + React Desktop Shell)
 ├── Web Desktop Shell (window manager, dock, launchpad, widgets, 36 bundled apps)
 ├── Mobile/Tablet Shell (widget home, dock, app title bars, swipeable pages, iOS PWA)
 ├── Skills & Plugins Registry (8 default skills, 15 framework adapters)
-├── User Memory (SQLite + FTS5, auto-capture, global search integration)
+├── User Memory (taosmd proxy: /ingest/batch + /search?mode=bm25, SQLite FTS5 fallback, auto-capture, global search)
 ├── Web Dashboard (77 route modules, React SPA frontend)
 ├── Channel Hub (6 connectors, 15 framework adapters)
 │   ├── Telegram, Discord, Slack, Email, Web Chat, Webhooks
