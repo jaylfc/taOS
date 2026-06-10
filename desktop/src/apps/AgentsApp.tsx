@@ -14,6 +14,7 @@ import { AgentDetailPanel, type DetailTab } from "./agents/AgentDetailPanel";
 import { TaosAgentDetailPanel } from "./agents/TaosAgentDetailPanel";
 import { DeployWizard } from "./agents/DeployWizard";
 import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
+import { RegistryPanel } from "./agents/RegistryPanel";
 import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
 
 /* ------------------------------------------------------------------ */
@@ -526,6 +527,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onRestore={handleRestore}
               onPurge={handlePurge}
             />
+            <RegistryPanel />
           </div>
         ) : (
           <div className="p-4">
@@ -612,6 +614,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onRestore={handleRestore}
               onPurge={handlePurge}
             />
+            <RegistryPanel />
           </div>
         )}
       </div>
