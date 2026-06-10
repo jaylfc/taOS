@@ -1,30 +1,30 @@
 <!--
   SINGLE SOURCE OF TRUTH for cross-agent handoff. Committed to the repo so it is
-  visible to ANY agent on ANY platform (Claude Code, Cursor, Codex, web, etc.) —
+  visible to ANY agent on ANY platform (Claude Code, Cursor, Codex, web, etc.) -
   not just sessions that share the Pi memory store.
 
   CONTRACT: update this file whenever you (a) merge work, (b) start a sizeable task,
   (c) get rate-limited mid-task, or (d) hand off. The hourly freshness cron also
-  refreshes the "Branch state" + "Recently merged" blocks. Keep it SHORT — link to
+  refreshes the "Branch state" + "Recently merged" blocks. Keep it SHORT: link to
   GitHub issues for detail; this is the dashboard, not the archive.
 
   See docs/AGENT_HANDOFF.md for the on-arrival checklist and the hop protocol.
 -->
 
-# taOS — Live Status
+# taOS: Live Status
 
-**Last updated:** 2026-06-10 ~14:30 BST · by @taOS (Mac session, claude-fable-5)
+**Last updated:** 2026-06-10 ~17:05 BST · by @taOS (Mac session, claude-fable-5)
 **Repo:** github.com/jaylfc/taOS · **Branches:** `master` (stable, installs track) ← `dev` (integration)
 
 ## Branch state
-- `master` tip: `a2b2f6b3` — promotion #734 (registry UI, consent UI + scope validation, user-memory proxy, PyPI pin). **dev and master are level.**
+- `master` tip: `a2b2f6b3`: promotion #734 (registry UI, consent UI + scope validation, user-memory proxy, PyPI pin). **dev and master are level.**
 - `dev` tip: level with master + STATUS/HANDOFF doc commits.
-- No open promotion PR. (Note: protected-`master` admin-merge needs a `ghp_` PAT or the GitHub UI button — the gh OAuth token 401s on that specific endpoint.)
+- No open promotion PR. (Note: protected-`master` admin-merge needs a `ghp_` PAT or the GitHub UI button: the gh OAuth token 401s on that specific endpoint.)
 
 ## In flight
-- **Repo audit** (principal-level, 4-phase): Phases 1–2 done (8 dimensions; testing got lighter review after a rate limit). NEW findings folded into issues #737 #738 #739 #740 #743; many findings corroborate existing issues (#672 #648 #646 #653 #642 #639 #660 #657 #655). Synthesized report doc → `docs/audit/2026-06-10-repo-audit.md` still **pending** (exec summary + themes + milestone plan).
-- **Multi-agent resilience workflow** — DONE (this file + `AGENT_HANDOFF.md`, commit 29172153) + tracked in #741.
-- **Bug/feedback tracker feature** — filed as #735 (+ websites #736).
+- **Repo audit** (principal-level, 4-phase): Phases 1-2 done (8 dimensions; testing got lighter review after a rate limit). NEW findings folded into issues #737 #738 #739 #740 #743; many findings corroborate existing issues (#672 #648 #646 #653 #642 #639 #660 #657 #655). Synthesized report doc → `docs/audit/2026-06-10-repo-audit.md` still **pending** (exec summary + themes + milestone plan).
+- **Multi-agent resilience workflow**: DONE (this file + `AGENT_HANDOFF.md`, commit 29172153) + tracked in #741.
+- **Bug/feedback tracker feature**: filed as #735 (+ websites #736).
 
 ## Open feature / improvement issues (filed 2026-06-10)
 - `#735` feedback & bug tracker (in-taOS form → curated DB → issue triage)
@@ -42,17 +42,16 @@
 
 ## Cross-project (taosmd / A2A)
 - **#25 memory unification: DONE both sides.** taosmd `feat/user-memory-unification` merged to taosmd master (PR #149, `71e913a`); `/ingest/batch` + `?mode=bm25` live on the Pi serve (:7900), verified end-to-end. taOS proxy (`routes/user_memory.py`) points at it. **Next:** run `POST /api/user-memory/migrate` cutover when there's real user data (none yet).
-- **Trust & Comms enforcement: live** on taosmd (GrantsVerifier), dormant until `TAOSMD_REGISTRY_URL` is configured — held behind the consent flow by design.
+- **Trust & Comms enforcement: live** on taosmd (GrantsVerifier), dormant until `TAOSMD_REGISTRY_URL` is configured: held behind the consent flow by design.
 - A2A bus: `http://<pi>:7900`, channels general/observability/integration. @taOSmd (memory/bench), @hermes (framework agent), @taOS (this/controller).
 
 ## Blocked / waiting on human (Jay)
-- `#734` manual merge (token write-endpoint hiccup — see Branch state).
-- `#15` exo fork deletion — needs `gh auth refresh -s delete_repo` run by Jay.
-- `TAOSMD_REGISTRY_URL` cutover — deliberate, gated on consent UI shipping.
+- `#15` exo fork deletion: needs `gh auth refresh -s delete_repo` run by Jay.
+- `TAOSMD_REGISTRY_URL` cutover: deliberate, gated on consent UI shipping.
 
 ## Where to look (durable stores, in priority order)
 1. **GitHub issues** = the task list. `gh issue list --state open`. Cross-platform, the canonical backlog.
 2. **This file** = current snapshot.
 3. **`docs/AGENT_HANDOFF.md`** = how to get oriented + the rules + the hop protocol.
 4. **A2A bus** (`:7900`) = live inter-agent coordination (transient).
-5. **@taOS memory** on the Pi (`~/.claude/projects/-home-jay-Development-tinyagentos/memory/`) = durable context for Claude Code sessions (NOT visible to other platforms — that's why this file exists).
+5. **@taOS memory** on the Pi (`~/.claude/projects/-home-jay-Development-tinyagentos/memory/`) = durable context for Claude Code sessions (NOT visible to other platforms: that's why this file exists).
