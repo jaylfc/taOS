@@ -13,7 +13,7 @@
 
 # taOS: Live Status
 
-**Last updated:** 2026-06-10 ~17:05 BST · by @taOS (Mac session, claude-fable-5)
+**Last updated:** 2026-06-10 ~17:40 BST · by @taOS (Mac session, claude-fable-5)
 **Repo:** github.com/jaylfc/taOS · **Branches:** `master` (stable, installs track) ← `dev` (integration)
 
 ## Branch state
@@ -22,7 +22,8 @@
 - No open promotion PR. (Note: protected-`master` admin-merge needs a `ghp_` PAT or the GitHub UI button: the gh OAuth token 401s on that specific endpoint.)
 
 ## In flight
-- **Repo audit** (principal-level, 4-phase): Phases 1-2 done (8 dimensions; testing got lighter review after a rate limit). NEW findings folded into issues #737 #738 #739 #740 #743; many findings corroborate existing issues (#672 #648 #646 #653 #642 #639 #660 #657 #655). Synthesized report doc → `docs/audit/2026-06-10-repo-audit.md` still **pending** (exec summary + themes + milestone plan).
+- **Repo audit**: DONE. Full report at `docs/audit/2026-06-10-repo-audit.md` (LOCAL-ONLY, gitignored: it details unpatched security gaps). Grade B-. Findings in issues #737-740 #743; corroborates #672 #648 #646 #653 #642 #639 #660 #657 #655. DECISION PENDING (Jay): publish the audit + how to handle the public security issues #737/#738.
+- **#744 external-agent onboarding**: spec committed (`docs/design/external-agent-onboarding.md`), contract v1 locked with taOSmd. 7 taOS tasks ready to implement.
 - **Multi-agent resilience workflow**: DONE (this file + `AGENT_HANDOFF.md`, commit 29172153) + tracked in #741.
 - **Bug/feedback tracker feature**: filed as #735 (+ websites #736).
 
