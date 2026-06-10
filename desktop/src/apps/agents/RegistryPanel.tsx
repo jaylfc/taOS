@@ -8,6 +8,8 @@ import {
   PlayCircle,
   ShieldOff,
   RefreshCw,
+  ScrollText,
+  ArrowRight,
 } from "lucide-react";
 import { Button, Card } from "@/components/ui";
 
@@ -223,6 +225,136 @@ function RegistryEntryRow({
 }
 
 /* ------------------------------------------------------------------ */
+/*  GovernanceAuditPanel                                                */
+/* ------------------------------------------------------------------ */
+
+interface GovernanceEvent {
+  id: string;
+  ts: number;
+  payload: {
+    action: string;
+    canonical_id: string;
+    actor_user_id: string;
+    before_status: string;
+    after_status: string;
+  };
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  approve: "approved",
+  reject: "rejected",
+  suspend: "suspended",
+  reactivate: "reactivated",
+  revoke: "revoked",
+};
+
+function GovernanceAuditPanel({ isAdmin }: { isAdmin: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [events, setEvents] = useState<GovernanceEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const resp = await fetch(
+        "/api/agents/taos-governance/trace?kind=governance&limit=50",
+        { credentials: "include" },
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        setEvents((data.events ?? []) as GovernanceEvent[]);
+      } else if (resp.status !== 404) {
+        setErr(`Failed to load audit log (${resp.status})`);
+      }
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (expanded) load();
+  }, [expanded, load]);
+
+  if (!isAdmin) return null;
+
+  return (
+    <section className="mt-3" aria-label="Governance audit log">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-2 text-xs text-shell-text-tertiary hover:text-shell-text-secondary transition-colors mb-2 w-full"
+        aria-expanded={expanded}
+        aria-controls="governance-audit-panel"
+      >
+        <ChevronRight
+          size={13}
+          className={`transition-transform shrink-0 ${expanded ? "rotate-90" : ""}`}
+          aria-hidden
+        />
+        <ScrollText size={12} aria-hidden />
+        <span>Governance audit log</span>
+        {events.length > 0 && (
+          <span className="text-shell-text-tertiary">({events.length})</span>
+        )}
+      </button>
+
+      <div
+        id="governance-audit-panel"
+        className={`space-y-1.5 ${expanded ? "" : "hidden"}`}
+      >
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-shell-text-tertiary py-1">
+            <RefreshCw size={11} className="animate-spin" aria-hidden />
+            Loading…
+          </div>
+        ) : err ? (
+          <p className="text-xs text-red-400" role="alert">{err}</p>
+        ) : events.length === 0 ? (
+          <p className="text-xs text-shell-text-tertiary py-1">
+            No governance events recorded yet.
+          </p>
+        ) : (
+          events.map((ev) => {
+            const p = ev.payload;
+            const when = new Date(ev.ts * 1000).toLocaleString();
+            const label = ACTION_LABELS[p.action] ?? p.action;
+            return (
+              <div
+                key={ev.id}
+                className="flex items-start gap-2 px-3 py-2 rounded bg-white/3 border border-white/5 text-[11px]"
+                role="listitem"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-medium">{p.actor_user_id}</span>
+                    <span className="text-shell-text-tertiary">{label}</span>
+                    <code
+                      className="font-mono text-shell-text-secondary truncate max-w-[180px]"
+                      title={p.canonical_id}
+                    >
+                      {p.canonical_id}
+                    </code>
+                  </div>
+                  <div className="flex items-center gap-1 mt-0.5 text-shell-text-tertiary">
+                    <span>{p.before_status}</span>
+                    <ArrowRight size={10} aria-label="to" />
+                    <span>{p.after_status}</span>
+                    <span className="ml-2">{when}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  RegistryPanel                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -328,6 +460,7 @@ export function RegistryPanel() {
             />
           ))
         )}
+        <GovernanceAuditPanel isAdmin={isAdmin} />
       </div>
     </section>
   );
