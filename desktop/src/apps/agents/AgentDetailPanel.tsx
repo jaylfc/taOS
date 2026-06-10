@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Bot, Box, ScrollText, X, Wrench, MessageSquare, Archive, Terminal, ExternalLink, Stethoscope, Play } from "lucide-react";
+import { Bot, Box, ScrollText, X, Wrench, MessageSquare, Archive, Terminal, ExternalLink, Stethoscope, Play, Zap } from "lucide-react";
 import { AgentSkillsPanel } from "../AgentSkillsPanel";
 import { AgentMessagesPanel } from "../AgentMessagesPanel";
+import { AgentTracesPanel } from "./AgentTracesPanel";
 import { PersonaTab } from "@/components/agent-settings/PersonaTab";
 import { MemoryTab } from "@/components/agent-settings/MemoryTab";
 import { FrameworkTab } from "@/components/agent-settings/FrameworkTab";
@@ -28,7 +29,7 @@ const SHORTCUT_ICON: Record<ShortcutIcon, React.ComponentType<{ size?: number }>
 /*  AgentDetailPanel (Logs + Skills tabs)                              */
 /* ------------------------------------------------------------------ */
 
-export type DetailTab = "logs" | "persona" | "memory" | "framework" | "skills" | "messages" | "shortcuts";
+export type DetailTab = "logs" | "traces" | "persona" | "memory" | "framework" | "skills" | "messages" | "shortcuts";
 
 export function AgentDetailPanel({
   agent,
@@ -129,6 +130,10 @@ export function AgentDetailPanel({
               <ScrollText size={13} className="mr-1.5" />
               Logs
             </TabsTrigger>
+            <TabsTrigger value="traces">
+              <Zap size={13} className="mr-1.5" />
+              Traces
+            </TabsTrigger>
             <TabsTrigger value="persona">
               <Bot size={13} className="mr-1.5" />
               Persona
@@ -166,6 +171,9 @@ export function AgentDetailPanel({
         </Button>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
+        <TabsContent value="traces" className="h-full mt-0">
+          <AgentTracesPanel agentName={agentName} />
+        </TabsContent>
         <TabsContent value="logs" className="h-full mt-0">
           <pre
             ref={scrollRef}

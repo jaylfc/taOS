@@ -1160,6 +1160,30 @@ else
     warn "  see: https://nodejs.org/en/download"
 fi
 
+# --- migrate: remove stale user-level qmd-serve.service (April 2026 rkllama unit) ---
+# An earlier development iteration shipped a user-level qmd-serve.service that
+# started qmd with --backend rkllama. That unit is superseded by the system-level
+# qmd.service below. If both units run together they race for port 7832 and the
+# system unit loses, causing taOS memory search to fail on start.
+_stale_qmd_user="${SUDO_USER:-$USER}"
+if [[ -n "$_stale_qmd_user" && "$_stale_qmd_user" != "root" ]]; then
+    _stale_qmd_home=$(getent passwd "$_stale_qmd_user" 2>/dev/null | cut -d: -f6 || echo "/home/$_stale_qmd_user")
+    for _stale_path in \
+        "$_stale_qmd_home/.config/systemd/user/qmd-serve.service" \
+        "$_stale_qmd_home/.local/share/systemd/user/qmd-serve.service"
+    do
+        if [[ -f "$_stale_path" ]]; then
+            warn "found stale user-level qmd-serve.service at $_stale_path — removing"
+            sudo -u "$_stale_qmd_user" XDG_RUNTIME_DIR="/run/user/$(id -u "$_stale_qmd_user")" \
+                systemctl --user stop qmd-serve 2>/dev/null || true
+            sudo -u "$_stale_qmd_user" XDG_RUNTIME_DIR="/run/user/$(id -u "$_stale_qmd_user")" \
+                systemctl --user disable qmd-serve 2>/dev/null || true
+            rm -f "$_stale_path"
+            warn "removed stale qmd-serve.service (the system-level qmd.service is the correct one)"
+        fi
+    done
+fi
+
 # --- qmd.service install -------------------------------------------------
 
 have_root_or_sudo() {
