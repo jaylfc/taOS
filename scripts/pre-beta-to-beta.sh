@@ -222,7 +222,28 @@ fi
 log "[3/8] copying $OLD_TAOS_DIR/data/ → $NEW_TAOS_DIR/data/ ..."
 # cp -a: archive mode (preserves perms, timestamps, symlinks, ownership).
 # Trailing /. copies the CONTENTS of data/, not the directory itself.
+#
+# Preserve NEW install's per-install credentials before the bulk copy so the
+# OLD install's DB password / master key does not clobber them.  LiteLLM
+# cannot start if .litellm_db_url carries the wrong postgres password.
+_saved_litellm_db_url=""
+_saved_litellm_master_key=""
+[[ -f "$NEW_TAOS_DIR/data/.litellm_db_url" ]] \
+    && _saved_litellm_db_url="$(cat "$NEW_TAOS_DIR/data/.litellm_db_url")"
+[[ -f "$NEW_TAOS_DIR/data/.litellm_master_key" ]] \
+    && _saved_litellm_master_key="$(cat "$NEW_TAOS_DIR/data/.litellm_master_key")"
+
 cp -a "$OLD_TAOS_DIR/data/." "$NEW_TAOS_DIR/data/"
+
+# Restore the NEW install's credentials, overriding whatever was copied.
+if [[ -n "$_saved_litellm_db_url" ]]; then
+    printf '%s' "$_saved_litellm_db_url" > "$NEW_TAOS_DIR/data/.litellm_db_url"
+    log "  restored NEW install's .litellm_db_url (postgres password)"
+fi
+if [[ -n "$_saved_litellm_master_key" ]]; then
+    printf '%s' "$_saved_litellm_master_key" > "$NEW_TAOS_DIR/data/.litellm_master_key"
+    log "  restored NEW install's .litellm_master_key"
+fi
 
 # Also carry the top-level trace/ directory if it lives separately from data/
 # (pre-beta versions sometimes placed it at the install root).
@@ -343,6 +364,14 @@ fi
 # ---------------------------------------------------------------------------
 
 log "[7/8] starting tinyagentos.service..."
+# Clear any stale root-owned LiteLLM config dir from the previous install.
+# The controller writes its LiteLLM config to /tmp/taos-litellm at startup;
+# if that directory was created by the old root process the non-root taos user
+# cannot write to it, causing LiteLLM to fail on first boot after migration.
+if [[ -d /tmp/taos-litellm ]]; then
+    rm -rf /tmp/taos-litellm
+    log "  cleared stale /tmp/taos-litellm (will be recreated by taos user on startup)"
+fi
 if command -v systemctl >/dev/null 2>&1 && [[ "$_os_name" == "Linux" ]]; then
     systemctl start tinyagentos \
         || { warn "  systemctl start failed — check: journalctl -u tinyagentos --no-pager -n 30"; }
