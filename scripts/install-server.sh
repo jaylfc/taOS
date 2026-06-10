@@ -1366,14 +1366,17 @@ fi
 ensure_taos_user() {
     [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS (launchd agent)
 
+    local sudo_cmd=""
+    [[ "$(id -u)" != "0" ]] && sudo_cmd="sudo"
+
     # Create the system user if absent. useradd -r = system account (no home
     # dir by default, no expiry). -M = do not create /home/taos. -d sets the
     # "home" field in /etc/passwd to INSTALL_DIR (used by some tools for ~
     # expansion, not an actual home directory on disk).
     if ! id -u taos >/dev/null 2>&1; then
         log "creating system user 'taos' for the controller service"
-        useradd -r -M -s /usr/sbin/nologin -d "$INSTALL_DIR" taos \
-            || useradd -r -M -s /sbin/nologin -d "$INSTALL_DIR" taos \
+        $sudo_cmd useradd -r -M -s /usr/sbin/nologin -d "$INSTALL_DIR" taos \
+            || $sudo_cmd useradd -r -M -s /sbin/nologin -d "$INSTALL_DIR" taos \
             || { warn "useradd failed — the service will not run as 'taos'"; return 1; }
         log "system user 'taos' created"
     else
@@ -1384,7 +1387,7 @@ ensure_taos_user() {
     # root. Warn (don't fail) if the group doesn't exist — the socket is still
     # usable if incus is not installed on this host.
     if getent group incus >/dev/null 2>&1; then
-        usermod -aG incus taos >/dev/null 2>&1 \
+        $sudo_cmd usermod -aG incus taos >/dev/null 2>&1 \
             && log "added 'taos' to the 'incus' group" \
             || warn "could not add 'taos' to the 'incus' group — agent container deploys may fail"
     else
@@ -1394,7 +1397,7 @@ ensure_taos_user() {
     # Mirror the existing docker-group handling: add 'taos' to docker so the
     # controller can manage Store Docker apps. Warn if docker isn't present.
     if getent group docker >/dev/null 2>&1; then
-        usermod -aG docker taos >/dev/null 2>&1 \
+        $sudo_cmd usermod -aG docker taos >/dev/null 2>&1 \
             && log "added 'taos' to the 'docker' group" \
             || warn "could not add 'taos' to the 'docker' group — Store Docker apps may fail"
     else
@@ -1412,13 +1415,18 @@ set_data_dir_ownership() {
     [[ "$os_name" == "Linux" ]] || return 0  # no-op on macOS
     ! id -u taos >/dev/null 2>&1 && return 0  # no-op if user wasn't created
 
+    local sudo_cmd=""
+    [[ "$(id -u)" != "0" ]] && sudo_cmd="sudo"
+
     # Security trade-off: taos must OWN the entire install dir (repo, .git,
     # .venv, static/desktop/) so the in-app self-updater can write to those
     # paths while running non-root (git pull, pip install -e ., npm run build).
     # Full update-privilege-separation (a dedicated updater suid helper that
     # verifies signatures before writing) is a post-beta hardening task.
     log "setting ownership of $INSTALL_DIR → taos:taos (required for non-root in-app self-update)"
-    chown -R taos:taos "$INSTALL_DIR" 2>/dev/null || true
+    if ! $sudo_cmd chown -R taos:taos "$INSTALL_DIR" 2>/dev/null; then
+        warn "chown -R taos:taos $INSTALL_DIR failed — the service will not start; re-run the installer with sudo"
+    fi
 
     # Ensure every parent directory of INSTALL_DIR is traversable by the taos
     # service user — without this, systemd CHDIR fails (exit 200) when the
@@ -1427,7 +1435,8 @@ set_data_dir_ownership() {
     _parent="$(dirname "$INSTALL_DIR")"
     while [[ "$_parent" != "/" && "$_parent" != "." ]]; do
         if [[ -d "$_parent" ]]; then
-            chmod o+x "$_parent" 2>/dev/null || true
+            $sudo_cmd chmod o+x "$_parent" 2>/dev/null \
+                || warn "chmod o+x $_parent failed — the service may not start; re-run the installer with sudo"
         fi
         _parent="$(dirname "$_parent")"
     done
@@ -1435,7 +1444,7 @@ set_data_dir_ownership() {
     # Tighten the data directory and sensitive credential files on top of the
     # broad chown above — done AFTER so the restrictive perms win.
     log "tightening $INSTALL_DIR/data/ → mode 0700 and secret files → 0600"
-    chmod 0700 "$INSTALL_DIR/data"
+    $sudo_cmd chmod 0700 "$INSTALL_DIR/data"
     for f in \
         "$INSTALL_DIR/data/.auth_password" \
         "$INSTALL_DIR/data/.auth_user.json" \
@@ -1443,7 +1452,7 @@ set_data_dir_ownership() {
         "$INSTALL_DIR/data/.auth_local_token" \
         "$INSTALL_DIR/data/.litellm_db_url" \
         "$INSTALL_DIR/data/browser_cookie_key.hex"; do
-        [[ -f "$f" ]] && chmod 0600 "$f" || true
+        [[ -f "$f" ]] && $sudo_cmd chmod 0600 "$f" || true
     done
 }
 
