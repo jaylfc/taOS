@@ -155,8 +155,16 @@ async def test_search_uses_taosmd_when_available(mem_client, tmp_data_dir):
     client, store = mem_client
     mock_resp = MagicMock()
     mock_resp.status_code = 200
+    # Real live hit shape from taosmd /search?mode=bm25: content is in
+    # "text", the chunk id only in metadata.source_id (verified live 2026-06-10).
     mock_resp.json.return_value = {
-        "hits": [{"content": "taosmd result", "metadata": {"collection": "snippets"}}]
+        "hits": [{
+            "text": "taosmd result",
+            "source": "vector",
+            "timestamp": 1781092259.28,
+            "confidence": 0.0476,
+            "metadata": {"collection": "snippets", "title": "T", "source_id": "abc123def4567890"},
+        }]
     }
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -169,6 +177,8 @@ async def test_search_uses_taosmd_when_available(mem_client, tmp_data_dir):
     data = resp.json()
     assert data["backend"] == "taosmd"
     assert data["results"][0]["content"] == "taosmd result"
+    assert data["results"][0]["hash"] == "abc123def4567890"
+    assert data["results"][0]["title"] == "T"
 
 
 @pytest.mark.asyncio

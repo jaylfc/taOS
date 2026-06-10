@@ -34,12 +34,15 @@ def _taosmd_base(request: Request) -> str:
 # ---------------------------------------------------------------------------
 
 def _hit_to_chunk(hit: dict) -> dict:
+    # Live taosmd hit shape (verified against /search?mode=bm25 on the #25
+    # unification deploy): content arrives in "text" and the chunk id
+    # round-trips as metadata.source_id — neither appears top-level.
     meta = hit.get("metadata") or {}
     return {
-        "hash": hit.get("id") or hit.get("source_id") or "",
+        "hash": hit.get("id") or meta.get("source_id") or hit.get("source_id") or "",
         "collection": meta.get("collection", "snippets"),
         "title": meta.get("title", ""),
-        "content": hit.get("content", ""),
+        "content": hit.get("content") or hit.get("text", ""),
         "metadata": meta,
         "created_at": hit.get("timestamp") or hit.get("created_at"),
     }
