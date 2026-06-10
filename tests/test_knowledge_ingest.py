@@ -44,12 +44,29 @@ async def store(tmp_path):
     await s.close()
 
 
+# Capture the real SSRF validator before any test patches it, so the
+# loopback-block test can exercise the genuine guard.
+from tinyagentos.routes.desktop_browser import ssrf as _ssrf_mod
+_REAL_VALIDATE_URL = _ssrf_mod.validate_url_or_raise
+
+
+@pytest.fixture(autouse=True)
+def _ssrf_noop():
+    """Happy-path ingest tests fetch example.com; stub the SSRF guard so they
+    stay hermetic (no real DNS). The dedicated SSRF test re-patches the real
+    validator for its scope."""
+    with patch.object(_ssrf_mod, "validate_url_or_raise", lambda url: None):
+        yield
+
+
 @pytest.fixture
 def mock_http():
     client = AsyncMock()
     # Default: return minimal HTML for article fetch
     response = MagicMock()
     response.status_code = 200
+    response.is_redirect = False
+    response.headers = {}
     response.text = "<html><body><article><p>This is the main article content with enough text to pass the quality threshold.</p></article></body></html>"
     response.raise_for_status = MagicMock()
     client.get = AsyncMock(return_value=response)
@@ -165,6 +182,8 @@ async def test_summarise_called_when_llm_url_set(store):
 
     article_response = AsyncMock()
     article_response.status_code = 200
+    article_response.is_redirect = False
+    article_response.headers = {}
     article_response.text = "<html><body><p>Long enough article body text content here for testing purposes.</p></body></html>"
     article_response.raise_for_status = MagicMock()
 
@@ -373,3 +392,24 @@ async def test_categories_from_caller_are_preserved(store):
     item = await store.get_item(item_id)
     assert "AI/ML" in item["categories"]
     assert "Rockchip" in item["categories"]
+
+
+@pytest.mark.asyncio
+async def test_download_article_blocks_internal_url(pipeline, store):
+    """SSRF guard: an article URL pointing at loopback is rejected, the item
+    lands in error, and the host never fetches the internal address."""
+    # Re-patch the real validator for this test (overrides the autouse no-op).
+    with patch.object(_ssrf_mod, "validate_url_or_raise", _REAL_VALIDATE_URL):
+        item_id = await pipeline.submit(
+            url="http://127.0.0.1/admin",
+            title="",
+            text="",
+            categories=[],
+            source="test",
+        )
+        await pipeline.run(item_id)
+    item = await store.get_item(item_id)
+    assert item["status"] == "error"
+    # The guard raises before any HTTP call to the internal address.
+    for call in pipeline._http_client.get.await_args_list:
+        assert "127.0.0.1" not in str(call)

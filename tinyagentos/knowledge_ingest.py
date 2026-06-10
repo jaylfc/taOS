@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 # Quality threshold: minimum chars for readability extraction to count as success
 _MIN_CONTENT_CHARS = 100
 
+# Article fetches must not reach loopback / link-local / private hosts (SSRF).
+# We reuse the browser proxy's validated guard and walk redirects manually so a
+# 3xx to an internal address cannot smuggle past the front-door check.
+_MAX_ARTICLE_REDIRECTS = 5
+
 # Limit concurrent background ingest tasks to prevent resource exhaustion.
 _INGEST_SEMAPHORE_SLOTS = 5
 
@@ -275,8 +280,34 @@ class IngestPipeline:
     async def _download_article(
         self, url: str, title: str, metadata: dict
     ) -> tuple[str, str, str, dict]:
-        """Fetch an article URL and extract readable text."""
-        resp = await self._http_client.get(url, timeout=30, follow_redirects=True)
+        """Fetch an article URL and extract readable text.
+
+        SSRF-guarded: the initial URL and every redirect hop are validated
+        against the loopback / link-local / private-range blocklist before the
+        request is issued, so an attacker-supplied URL (or a public URL that
+        302-redirects inward) cannot make the host fetch internal services.
+        """
+        from urllib.parse import urljoin
+
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            SsrfBlockedError,
+            validate_url_or_raise,
+        )
+
+        current_url = url
+        resp = None
+        for _hop in range(_MAX_ARTICLE_REDIRECTS + 1):
+            validate_url_or_raise(current_url)  # raises SsrfBlockedError
+            resp = await self._http_client.get(
+                current_url, timeout=30, follow_redirects=False
+            )
+            if resp.is_redirect and resp.headers.get("location"):
+                current_url = urljoin(current_url, resp.headers["location"])
+                continue
+            break
+        else:
+            raise SsrfBlockedError(f"too many redirects fetching {url!r}")
+
         resp.raise_for_status()
         html = resp.text
         content = _extract_text_readability(html)
