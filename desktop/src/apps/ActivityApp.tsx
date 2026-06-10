@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, Button } from "@/components/ui";
 import type { ClusterWorker } from "@/lib/cluster";
-import { workerStatus, workerHardwareSummary, workerShortIp, STATUS_PILL_CLASS, STATUS_LABEL } from "@/lib/cluster";
+import { workerStatus, workerHardwareSummary, workerShortIp, normalizeBackendName, STATUS_PILL_CLASS, STATUS_LABEL } from "@/lib/cluster";
 
 interface ActivityData {
   timestamp: number;
@@ -270,7 +270,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
     ...clusterWorkers.flatMap((w) => {
       const out: LoadedModel[] = [];
       for (const b of w.backends ?? []) {
-        const backendName = b.name ?? b.type ?? "backend";
+        const backendName = normalizeBackendName(b.name ?? b.type ?? "backend");
         const activeList = (b as { loaded_models?: unknown }).loaded_models;
         const models = Array.isArray(activeList) ? activeList : [];
         for (const model of models) {
@@ -624,7 +624,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                               className="text-[9px] px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-200 font-medium"
                               title={b.type ?? b.name ?? ""}
                             >
-                              {b.name ?? b.type ?? "backend"}
+                              {normalizeBackendName(b.name ?? b.type ?? "backend")}
                             </span>
                           ))
                         )}

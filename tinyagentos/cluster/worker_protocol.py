@@ -12,7 +12,9 @@ class WorkerInfo:
     name: str
     url: str                          # Worker's base URL
     hardware: dict = field(default_factory=dict)  # From hardware detection
-    backends: list[dict] = field(default_factory=list)  # Available inference backends
+    # Each entry's `url` is the worker-local probe address (e.g. http://localhost:11434).
+    # Cross-host callers must route through the worker agent (worker.url) -- never dial backend url directly.
+    backends: list[dict] = field(default_factory=list)  # Available inference backends; name is "type:port"
     models: list[str] = field(default_factory=list)     # Currently loaded models
     capabilities: list[str] = field(default_factory=list)  # embed, chat, rerank, image-gen, tts, etc
     status: str = "online"            # online | offline | busy
