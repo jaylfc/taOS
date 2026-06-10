@@ -1420,6 +1420,18 @@ set_data_dir_ownership() {
     log "setting ownership of $INSTALL_DIR → taos:taos (required for non-root in-app self-update)"
     chown -R taos:taos "$INSTALL_DIR" 2>/dev/null || true
 
+    # Ensure every parent directory of INSTALL_DIR is traversable by the taos
+    # service user — without this, systemd CHDIR fails (exit 200) when the
+    # install lives under a restricted root like /root (mode 700).
+    # o+x = traverse only, not list: minimal security impact.
+    _parent="$(dirname "$INSTALL_DIR")"
+    while [[ "$_parent" != "/" && "$_parent" != "." ]]; do
+        if [[ -d "$_parent" ]]; then
+            chmod o+x "$_parent" 2>/dev/null || true
+        fi
+        _parent="$(dirname "$_parent")"
+    done
+
     # Tighten the data directory and sensitive credential files on top of the
     # broad chown above — done AFTER so the restrictive perms win.
     log "tightening $INSTALL_DIR/data/ → mode 0700 and secret files → 0600"
