@@ -13,9 +13,106 @@ logger = logging.getLogger(__name__)
 
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
+from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Pairing models
+# ---------------------------------------------------------------------------
+
+class PairingAnnounce(BaseModel):
+    name: str
+    url: str
+    platform: str = ""
+    code_hash: str
+
+
+class PairingConfirm(BaseModel):
+    name: str
+    code: str
+
+
+class PairingClaim(BaseModel):
+    name: str
+    code: str
+
+
+# ---------------------------------------------------------------------------
+# Pairing endpoints
+# ---------------------------------------------------------------------------
+
+_CODE_HASH_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
+
+
+@router.post("/api/cluster/pairing/announce")
+async def pairing_announce(request: Request, body: PairingAnnounce):
+    """Unauthenticated — worker announces itself with a code hash."""
+    if not body.name or not body.url:
+        return JSONResponse({"error": "name and url are required"}, status_code=400)
+    if not _CODE_HASH_RE.match(body.code_hash):
+        return JSONResponse(
+            {"error": "code_hash must be 64 lowercase hex characters"},
+            status_code=400,
+        )
+    store = request.app.state.cluster_pairing
+    await store.announce(body.name, body.url, body.platform, body.code_hash)
+    return {"status": "pending"}
+
+
+@router.get("/api/cluster/pairing/pending")
+async def pairing_pending(request: Request):
+    """Admin session required — list pending pairing announcements."""
+    store = request.app.state.cluster_pairing
+    items = await store.list_pending()
+    return items
+
+
+@router.post("/api/cluster/pairing/confirm")
+async def pairing_confirm(request: Request, body: PairingConfirm):
+    """Admin session required — confirm a pending pairing."""
+    import tinyagentos.cluster.pairing_store as _ps
+    store = request.app.state.cluster_pairing
+    # Check if entry exists at all (including expired/maxed-out)
+    row = await store._fetch_row(body.name)  # noqa: SLF001
+    if row is None or row["pending_code_hash"] is None:
+        return JSONResponse({"error": "No pending pairing for this worker"}, status_code=404)
+    # Attempt cap check (invalidated entries are 404, not 410)
+    if row["claim_attempts"] >= _ps._MAX_ATTEMPTS:  # noqa: SLF001
+        return JSONResponse({"error": "No pending pairing for this worker"}, status_code=404)
+    # Expiry check — use store's _now so monkeypatching in tests works correctly
+    ts = row["pending_ts"]
+    if ts is None or (_ps._now() - ts) > _ps._EXPIRY_SECS:  # noqa: SLF001
+        return JSONResponse({"error": "Pairing request has expired"}, status_code=410)
+    ok = await store.confirm(body.name, body.code)
+    if not ok:
+        return JSONResponse({"error": "Incorrect pairing code"}, status_code=403)
+    return {"status": "confirmed"}
+
+
+@router.post("/api/cluster/pairing/claim")
+async def pairing_claim(request: Request, body: PairingClaim):
+    """Unauthenticated — worker claims its signing key after admin confirmation."""
+    store = request.app.state.cluster_pairing
+    row = await store._fetch_row(body.name)  # noqa: SLF001
+    if row is None:
+        return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
+    # No pending entry at all (never announced or already fully claimed)
+    if row["pending_code_hash"] is None:
+        return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
+    # Not yet confirmed by admin
+    if not row["confirmed"]:
+        return JSONResponse({"status": "awaiting_confirm"}, status_code=202)
+    key = await store.claim(body.name, body.code)
+    if key is None:
+        # claim() returns None on wrong code or expiry after confirm
+        row2 = await store._fetch_row(body.name)  # noqa: SLF001
+        if row2 is None or row2["pending_code_hash"] is None:
+            return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
+        return JSONResponse({"error": "Incorrect pairing code"}, status_code=403)
+    return {"signing_key": key.hex()}
 
 
 class WorkerRegister(BaseModel):
@@ -110,6 +207,19 @@ async def list_workers(request: Request):
 
 @router.post("/api/cluster/workers")
 async def register_worker(request: Request, body: WorkerRegister):
+    # HMAC gate — workers must be paired before registering.
+    # The 'local' worker registers in-process (manager.register_worker),
+    # never over HTTP, so it is unaffected by this check.
+    try:
+        await require_worker_hmac(request)
+    except _HMACError as exc:
+        return exc.response
+    # The authenticated worker name must match the body name.
+    if getattr(request.state, "hmac_worker_name", None) != body.name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match body"},
+            status_code=403,
+        )
     cluster = request.app.state.cluster_manager
     if not body.name or not body.url:
         return JSONResponse({"error": "name and url are required"}, status_code=400)
@@ -120,6 +230,13 @@ async def register_worker(request: Request, body: WorkerRegister):
                 {"error": f"Worker '{existing.name}' already registered for host {body.host_lan_ip}; only one worker LXC per host is supported"},
                 status_code=409,
             )
+    # Populate signing_key from pairing store so ticket-signing consumers work.
+    pairing_store = getattr(request.app.state, "cluster_pairing", None)
+    signing_key = b""
+    if pairing_store is not None:
+        key = await pairing_store.get_signing_key(body.name)
+        if key is not None:
+            signing_key = key
     info = WorkerInfo(
         name=body.name,
         url=body.url,
@@ -137,6 +254,7 @@ async def register_worker(request: Request, body: WorkerRegister):
         storage_used_bytes=body.storage_used_bytes,
         bytes_deduped_total=body.bytes_deduped_total,
         worker_lxc_image_version=body.worker_lxc_image_version,
+        signing_key=signing_key,
     )
     await cluster.register_worker(info)
     if body.pending_storage_backup:
@@ -221,6 +339,17 @@ async def _surface_storage_backup(app, worker_name: str, marker: dict) -> None:
 
 @router.post("/api/cluster/heartbeat")
 async def worker_heartbeat(request: Request, body: HeartbeatBody):
+    # HMAC gate — only paired, registered workers may heartbeat.
+    try:
+        await require_worker_hmac(request)
+    except _HMACError as exc:
+        return exc.response
+    # The authenticated worker name must match the body name.
+    if getattr(request.state, "hmac_worker_name", None) != body.name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match body"},
+            status_code=403,
+        )
     cluster = request.app.state.cluster_manager
     ok = cluster.heartbeat(
         body.name,
