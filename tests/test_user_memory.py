@@ -1,6 +1,5 @@
 import pytest
 import pytest_asyncio
-from unittest.mock import patch
 from tinyagentos.user_memory import UserMemoryStore
 
 
@@ -108,7 +107,7 @@ async def test_fts5_injection_does_not_escape_user_filter(store):
 # ---------------------------------------------------------------------------
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from httpx import ASGITransport, AsyncClient as HttpxAsyncClient
 import pytest_asyncio
 
@@ -171,8 +170,9 @@ async def test_search_uses_taosmd_when_available(mem_client, tmp_data_dir):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.get("/api/user-memory/search", params={"q": "test"})
+    app = client._transport.app
+    app.state.http_client = mock_client
+    resp = await client.get("/api/user-memory/search", params={"q": "test"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["backend"] == "taosmd"
@@ -189,11 +189,12 @@ async def test_save_writes_to_sqlite_and_ingest_to_taosmd(mem_client, tmp_data_d
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
 
-    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.post(
-            "/api/user-memory/save",
-            json={"content": "dual write", "title": "T", "collection": "snippets"},
-        )
+    app = client._transport.app
+    app.state.http_client = mock_client
+    resp = await client.post(
+        "/api/user-memory/save",
+        json={"content": "dual write", "title": "T", "collection": "snippets"},
+    )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     # SQLite should have the chunk too
@@ -249,15 +250,16 @@ async def test_save_metadata_cannot_override_source_id(mem_client, tmp_data_dir)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
 
-    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.post(
-            "/api/user-memory/save",
-            json={
-                "content": "override attempt",
-                "collection": "snippets",
-                "metadata": {"source_id": "evil", "collection": "other", "custom": "kept"},
-            },
-        )
+    app = client._transport.app
+    app.state.http_client = mock_client
+    resp = await client.post(
+        "/api/user-memory/save",
+        json={
+            "content": "override attempt",
+            "collection": "snippets",
+            "metadata": {"source_id": "evil", "collection": "other", "custom": "kept"},
+        },
+    )
     assert resp.status_code == 200
     saved_hash = resp.json()["hash"]
     sent_meta = mock_client.post.call_args.kwargs["json"]["metadata"]
@@ -277,8 +279,9 @@ async def test_migrate_error_response_does_not_leak_exception_text(mem_client, t
     mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))  # health OK
     mock_client.post = AsyncMock(side_effect=RuntimeError("http://internal-taosmd:7900 boom"))
 
-    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
-        resp = await client.post("/api/user-memory/migrate")
+    app = client._transport.app
+    app.state.http_client = mock_client
+    resp = await client.post("/api/user-memory/migrate")
     assert resp.status_code == 500
     assert "internal-taosmd" not in resp.text
     assert resp.json()["error"] == "taosmd ingest failed"

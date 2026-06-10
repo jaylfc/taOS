@@ -215,8 +215,18 @@ async def approve_auth_request(
 
     # Serialise concurrent approvals for the same request to prevent orphaned
     # registry entries and duplicate grants from a TOCTOU race.
-    async with _get_approve_lock(request, request_id):
-        return await _do_approve(request, request_id, body, user)
+    lock = _get_approve_lock(request, request_id)
+    async with lock:
+        try:
+            return await _do_approve(request, request_id, body, user)
+        finally:
+            # The request is now terminally decided (or errored); drop its lock so
+            # request.app.state._approve_locks does not grow unbounded over the
+            # process lifetime. A concurrent waiter already holds a reference to the
+            # lock object, so popping the dict entry is safe.
+            locks = getattr(request.app.state, "_approve_locks", None)
+            if locks is not None:
+                locks.pop(request_id, None)
 
 
 async def _do_approve(request: Request, request_id: str, body: ApproveBody, user):
