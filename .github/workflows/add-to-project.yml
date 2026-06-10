@@ -37,6 +37,7 @@ jobs:
           fi
       - name: Add to Project
         if: steps.cfg.outputs.skip != 'true'
+        continue-on-error: true
         uses: actions/add-to-project@v2
         with:
           project-url: ${{ vars.PROJECT_URL }}
