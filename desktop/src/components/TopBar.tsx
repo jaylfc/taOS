@@ -5,6 +5,7 @@ import { useWidgetStore } from "@/stores/widget-store";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useProcessStore } from "@/stores/process-store";
 import { StatusIndicators } from "./StatusIndicators";
+import { withCsrf } from "@/lib/csrf";
 
 interface Props {
   onSearchOpen: () => void;
@@ -15,7 +16,7 @@ function PowerMenu() {
   const openWindow = useProcessStore((s) => s.openWindow);
 
   const lock = async () => {
-    await fetch("/auth/lock", { method: "POST", credentials: "include" }).catch(() => {});
+    await fetch("/auth/lock", { method: "POST", credentials: "include", headers: withCsrf({ method: "POST" })?.headers }).catch(() => {});
     window.location.reload();
   };
 

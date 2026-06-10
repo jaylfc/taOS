@@ -12,6 +12,7 @@
  * new code uses this from day one.
  */
 import type { BackendStatusController } from "./backendStatus";
+import { withCsrf } from "./csrf";
 
 export class BackendUnavailableError extends Error {
   constructor(message = "Backend is unavailable") {
@@ -29,7 +30,7 @@ export function createTaosFetch(opts: Options): typeof fetch {
   const inner = opts.fetchImpl ?? fetch;
   const wrapped: typeof fetch = async (input, init) => {
     try {
-      const r = await inner(input as RequestInfo, init);
+      const r = await inner(input as RequestInfo, withCsrf(init));
       const v = r.headers.get("X-Taos-Version");
       if (v) opts.status.reportVersion(v);
       return r;

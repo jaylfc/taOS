@@ -394,11 +394,11 @@ async def login(request: Request):
             })
             if long_lived:
                 resp.set_cookie(
-                    "taos_session", token, httponly=True, samesite="lax",
+                    "taos_session", token, httponly=True, samesite="strict",
                     max_age=auth_mgr.session_ttl_for(True),
                 )
             else:
-                resp.set_cookie("taos_session", token, httponly=True, samesite="lax")
+                resp.set_cookie("taos_session", token, httponly=True, samesite="strict")
             return resp
 
         user_id = user_record["id"] if user_record else ""
@@ -409,11 +409,11 @@ async def login(request: Request):
         resp = JSONResponse({"ok": True, "user": pub})
         if long_lived:
             resp.set_cookie(
-                "taos_session", token, httponly=True, samesite="lax",
+                "taos_session", token, httponly=True, samesite="strict",
                 max_age=auth_mgr.session_ttl_for(True),
             )
         else:
-            resp.set_cookie("taos_session", token, httponly=True, samesite="lax")
+            resp.set_cookie("taos_session", token, httponly=True, samesite="strict")
         return resp
 
     # Form-encoded path — used by the no-JS HTML login page.
@@ -449,11 +449,11 @@ async def login(request: Request):
     response = RedirectResponse(destination, status_code=303)
     if long_lived:
         response.set_cookie(
-            "taos_session", token, httponly=True, samesite="lax",
+            "taos_session", token, httponly=True, samesite="strict",
             max_age=auth_mgr.session_ttl_for(True),
         )
     else:
-        response.set_cookie("taos_session", token, httponly=True, samesite="lax")
+        response.set_cookie("taos_session", token, httponly=True, samesite="strict")
     return response
 
 
@@ -522,11 +522,11 @@ async def auth_setup(request: Request):
         resp = JSONResponse({"ok": True, "user": user})
         if long_lived:
             resp.set_cookie(
-                "taos_session", token, httponly=True, samesite="lax",
+                "taos_session", token, httponly=True, samesite="strict",
                 max_age=auth_mgr.session_ttl_for(True),
             )
         else:
-            resp.set_cookie("taos_session", token, httponly=True, samesite="lax")
+            resp.set_cookie("taos_session", token, httponly=True, samesite="strict")
         return resp
 
     # Form-encoded path — used by the no-JS HTML setup page.
@@ -555,11 +555,11 @@ async def auth_setup(request: Request):
     response = RedirectResponse("/desktop", status_code=303)
     if long_lived:
         response.set_cookie(
-            "taos_session", token, httponly=True, samesite="lax",
+            "taos_session", token, httponly=True, samesite="strict",
             max_age=auth_mgr.session_ttl_for(True),
         )
     else:
-        response.set_cookie("taos_session", token, httponly=True, samesite="lax")
+        response.set_cookie("taos_session", token, httponly=True, samesite="strict")
     return response
 
 
@@ -611,11 +611,11 @@ async def complete_invite(request: Request):
     resp = JSONResponse({"ok": True, "user": user})
     if long_lived:
         resp.set_cookie(
-            "taos_session", token, httponly=True, samesite="lax",
+            "taos_session", token, httponly=True, samesite="strict",
             max_age=auth_mgr.session_ttl_for(True),
         )
     else:
-        resp.set_cookie("taos_session", token, httponly=True, samesite="lax")
+        resp.set_cookie("taos_session", token, httponly=True, samesite="strict")
     return resp
 
 
