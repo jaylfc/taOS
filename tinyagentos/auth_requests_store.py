@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS auth_requests (
     decided_ts      TEXT,
     decided_by      TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_auth_requests_status ON auth_requests(status);
+CREATE INDEX IF NOT EXISTS idx_auth_requests_identity ON auth_requests(identity_claim, framework, status);
 """
 
 _VALID_DECISION_STATUSES = frozenset({"accepted", "refused"})
