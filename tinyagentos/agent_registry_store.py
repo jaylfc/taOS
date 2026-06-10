@@ -490,6 +490,51 @@ class AgentRegistryStore(BaseStore):
     # Revoke
     # ------------------------------------------------------------------
 
+    async def update(
+        self,
+        canonical_id: str,
+        *,
+        display_name: Optional[str] = None,
+        handle: Optional[str] = None,
+        role: Optional[str] = None,
+        capabilities: Optional[list[str]] = None,
+    ) -> Optional[dict]:
+        """Update mutable metadata fields on *canonical_id*.
+
+        Only the provided (non-None) fields are changed.
+        Status, user_id, framework, canonical_id, and timestamps are immutable.
+        Returns the updated record, or None if *canonical_id* does not exist.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            return None
+
+        cols: list[str] = []
+        vals: list = []
+        if display_name is not None:
+            cols.append("display_name = ?")
+            vals.append(display_name)
+        if handle is not None:
+            cols.append("handle = ?")
+            vals.append(handle)
+        if role is not None:
+            cols.append("role = ?")
+            vals.append(role)
+        if capabilities is not None:
+            cols.append("capabilities = ?")
+            vals.append(json.dumps(capabilities))
+        if not cols:
+            return record
+        vals.append(canonical_id)
+        await self._db.execute(
+            f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
+            vals,
+        )
+        await self._db.commit()
+        return await self.get(canonical_id)
+
     async def revoke(self, canonical_id: str) -> Optional[dict]:
         """Set revoked_at on *canonical_id*.  Returns updated record or None."""
         if self._db is None:

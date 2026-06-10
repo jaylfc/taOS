@@ -637,3 +637,165 @@ class TestAuditEvent:
         assert ev is not None
         assert ev["payload"]["action"] == "suspend"
         await ts.close()
+
+
+# ---------------------------------------------------------------------------
+# Store-level tests for update()
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestRegistryUpdate:
+
+    async def _store(self, tmp_path):
+        store = AgentRegistryStore(tmp_path / "reg.db")
+        await store.init()
+        return store
+
+    async def test_update_display_name(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            rec = await store.register(framework="f", display_name="Original")
+            cid = rec["canonical_id"]
+            updated = await store.update(cid, display_name="Updated Name")
+            assert updated["display_name"] == "Updated Name"
+        finally:
+            await store.close()
+
+    async def test_update_capabilities(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            rec = await store.register(framework="f", capabilities=["read"])
+            cid = rec["canonical_id"]
+            updated = await store.update(cid, capabilities=["read", "write", "execute"])
+            assert updated["capabilities"] == ["read", "write", "execute"]
+        finally:
+            await store.close()
+
+    async def test_update_handle_and_role(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            rec = await store.register(framework="f")
+            cid = rec["canonical_id"]
+            updated = await store.update(cid, handle="agent-x", role="assistant")
+            assert updated["handle"] == "agent-x"
+            assert updated["role"] == "assistant"
+        finally:
+            await store.close()
+
+    async def test_update_partial_only_changes_provided_fields(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            rec = await store.register(framework="f", display_name="Keep Me", handle="keep")
+            cid = rec["canonical_id"]
+            updated = await store.update(cid, role="new-role")
+            assert updated["display_name"] == "Keep Me"
+            assert updated["handle"] == "keep"
+            assert updated["role"] == "new-role"
+        finally:
+            await store.close()
+
+    async def test_update_no_fields_is_noop(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            rec = await store.register(framework="f", display_name="Stable")
+            cid = rec["canonical_id"]
+            updated = await store.update(cid)  # nothing provided
+            assert updated["display_name"] == "Stable"
+        finally:
+            await store.close()
+
+    async def test_update_unknown_id_returns_none(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            result = await store.update("no-such-id", display_name="X")
+            assert result is None
+        finally:
+            await store.close()
+
+    async def test_update_does_not_touch_status_or_user_id(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            rec = await store.register(framework="f", user_id="uid-1")
+            cid = rec["canonical_id"]
+            await store.update(cid, display_name="Changed")
+            fresh = await store.get(cid)
+            assert fresh["status"] == "active"
+            assert fresh["user_id"] == "uid-1"
+        finally:
+            await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Route-level tests for PATCH /api/agents/registry/{canonical_id}
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestPatchRegistryRoute:
+
+    async def _register(self, client, **kwargs):
+        resp = await client.post(
+            "/api/agents/registry/register",
+            json={"framework": "test", **kwargs},
+        )
+        assert resp.status_code == 200
+        return resp.json()
+
+    async def test_patch_display_name_as_owner(self, gov_client, tmp_data_dir):
+        client, uid = gov_client
+        rec = await self._register(client, display_name="Before")
+        cid = rec["canonical_id"]
+        resp = await client.patch(
+            f"/api/agents/registry/{cid}",
+            json={"display_name": "After"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["display_name"] == "After"
+
+    async def test_patch_capabilities_replaces_list(self, gov_client, tmp_data_dir):
+        client, uid = gov_client
+        rec = await self._register(client, capabilities=["read"])
+        cid = rec["canonical_id"]
+        resp = await client.patch(
+            f"/api/agents/registry/{cid}",
+            json={"capabilities": ["read", "write"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["capabilities"] == ["read", "write"]
+
+    async def test_patch_unknown_id_returns_404(self, gov_client, tmp_data_dir):
+        client, _ = gov_client
+        resp = await client.patch(
+            "/api/agents/registry/does-not-exist",
+            json={"display_name": "X"},
+        )
+        assert resp.status_code == 404
+
+    async def test_patch_by_non_owner_member_returns_403(
+        self, gov_member_client, app, tmp_data_dir
+    ):
+        # Insert an entry owned by a different user directly via the store so
+        # we avoid the "admin already configured" conflict that arises when
+        # both gov_client and gov_member_client share the same app fixture.
+        registry_store = app.state.agent_registry
+        if registry_store._db is None:
+            await registry_store.init()
+        rec = await registry_store.register(
+            framework="test",
+            display_name="Other User Entry",
+            user_id="other-user-uid",
+        )
+        cid = rec["canonical_id"]
+        # member tries to patch another user's entry → 403
+        resp = await gov_member_client.patch(
+            f"/api/agents/registry/{cid}",
+            json={"display_name": "Hijacked"},
+        )
+        assert resp.status_code == 403
+
+    async def test_patch_empty_body_is_noop(self, gov_client, tmp_data_dir):
+        client, _ = gov_client
+        rec = await self._register(client, display_name="Unchanged")
+        cid = rec["canonical_id"]
+        resp = await client.patch(f"/api/agents/registry/{cid}", json={})
+        assert resp.status_code == 200
+        assert resp.json()["display_name"] == "Unchanged"

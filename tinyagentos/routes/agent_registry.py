@@ -9,6 +9,7 @@ GET    /api/agents/registry/inactive         — all non-active entries for the 
 GET    /api/agents/registry/grants           — active grant feed for @taOSmd enforcement (admin only)
 GET    /api/agents/registry                  — list registry entries (admin: all; member: own)
 GET    /api/agents/registry/{id}             — read a single entry (owner or admin; else 404)
+PATCH  /api/agents/registry/{id}             — update mutable fields (owner or admin)
 DELETE /api/agents/registry/{id}             — revoke an entry (owner or admin)
 POST   /api/agents/registry/{id}/approve     — lifecycle: pending → active (admin only)
 POST   /api/agents/registry/{id}/reject      — lifecycle: pending → rejected (admin only)
@@ -58,6 +59,13 @@ class RegisterRequest(BaseModel):
         if val not in _ALLOWED_ORIGINS:
             raise ValueError(f"origin must be one of {sorted(_ALLOWED_ORIGINS)}")
         return val
+
+
+class PatchRegistryRequest(BaseModel):
+    display_name: Optional[str] = None
+    handle: Optional[str] = None
+    role: Optional[str] = None
+    capabilities: Optional[list[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +274,34 @@ async def get_registry_entry(
     if not user.is_admin and user.user_id != record["user_id"]:
         return JSONResponse({"error": "not found"}, status_code=404)
     return record
+
+
+@router.patch("/api/agents/registry/{canonical_id}")
+async def patch_registry_entry(
+    request: Request,
+    canonical_id: str,
+    body: PatchRegistryRequest,
+    user: CurrentUser = Depends(current_user),
+):
+    """Update mutable metadata fields on a registry entry.
+
+    Allowed fields: display_name, handle, role, capabilities.
+    Status, framework, user_id, and timestamps are immutable.
+    Only the owning user or an admin may update an entry.
+    """
+    store = _get_store(request)
+    record = await store.get(canonical_id)
+    if record is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, record["user_id"])
+    updated = await store.update(
+        canonical_id,
+        display_name=body.display_name,
+        handle=body.handle,
+        role=body.role,
+        capabilities=body.capabilities,
+    )
+    return updated
 
 
 @router.delete("/api/agents/registry/{canonical_id}")
