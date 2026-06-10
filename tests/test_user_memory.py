@@ -101,3 +101,118 @@ async def test_fts5_injection_does_not_escape_user_filter(store):
     # fix the whole string is treated as a single phrase and matches nothing.
     results = await store.search("attacker", 'x" OR "secret')
     assert all(r["content"] != "secret data" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# Route-level proxy tests
+# ---------------------------------------------------------------------------
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+from httpx import ASGITransport, AsyncClient as HttpxAsyncClient
+import pytest_asyncio
+
+
+@pytest_asyncio.fixture
+async def mem_client(app, tmp_data_dir):
+    """Admin HTTP client with user_memory store initialised."""
+    store = app.state.user_memory
+    if store._db is None:
+        await store.init()
+    metrics = app.state.metrics
+    if metrics._db is None:
+        await metrics.init()
+    app.state.auth.setup_user("admin", "Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    token = app.state.auth.create_session(user_id=record["id"], long_lived=True)
+    app.state._startup_complete = True
+    transport = ASGITransport(app=app)
+    async with HttpxAsyncClient(
+        transport=transport, base_url="http://test", cookies={"taos_session": token}
+    ) as c:
+        yield c, store
+    await store.close()
+    await metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_search_falls_back_to_sqlite_when_taosmd_unreachable(app, mem_client, tmp_data_dir):
+    client, store = mem_client
+    await store.save_chunk("user", "fallback content", "T", "snippets")
+    app.state.taosmd_url = "http://localhost:19999"
+    try:
+        resp = await client.get("/api/user-memory/search", params={"q": "fallback"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backend"] == "sqlite"
+        assert any("fallback" in r["content"] for r in data["results"])
+    finally:
+        app.state.taosmd_url = None
+
+
+@pytest.mark.asyncio
+async def test_search_uses_taosmd_when_available(mem_client, tmp_data_dir):
+    client, store = mem_client
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "hits": [{"content": "taosmd result", "metadata": {"collection": "snippets"}}]
+    }
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.get("/api/user-memory/search", params={"q": "test"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["backend"] == "taosmd"
+    assert data["results"][0]["content"] == "taosmd result"
+
+
+@pytest.mark.asyncio
+async def test_save_writes_to_sqlite_and_ingest_to_taosmd(mem_client, tmp_data_dir):
+    client, store = mem_client
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post(
+            "/api/user-memory/save",
+            json={"content": "dual write", "title": "T", "collection": "snippets"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    # SQLite should have the chunk too
+    chunks = await store.browse("user")
+    assert any(c["content"] == "dual write" for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_save_succeeds_even_when_taosmd_unreachable(app, mem_client, tmp_data_dir):
+    client, store = mem_client
+    app.state.taosmd_url = "http://localhost:19999"
+    try:
+        resp = await client.post(
+            "/api/user-memory/save",
+            json={"content": "resilient", "collection": "notes"},
+        )
+        assert resp.status_code == 200
+        chunks = await store.browse("user")
+        assert any(c["content"] == "resilient" for c in chunks)
+    finally:
+        app.state.taosmd_url = None
+
+
+@pytest.mark.asyncio
+async def test_migrate_returns_503_when_taosmd_unreachable(app, mem_client, tmp_data_dir):
+    client, _ = mem_client
+    app.state.taosmd_url = "http://localhost:19999"
+    try:
+        resp = await client.post("/api/user-memory/migrate")
+        assert resp.status_code == 503
+    finally:
+        app.state.taosmd_url = None
