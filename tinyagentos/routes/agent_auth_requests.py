@@ -39,6 +39,18 @@ router = APIRouter()
 # identity_claim + framework before new submissions are rate-limited.
 _PENDING_CAP = 5
 
+# Closed vocabulary of grantable scopes — must stay in sync with the
+# SCOPE_DESCRIPTIONS map in desktop/src/components/ConsentNotification.tsx.
+VALID_SCOPES = frozenset({
+    "memory_read",
+    "memory_write",
+    "a2a_send",
+    "a2a_receive",
+    "files_read",
+    "files_write",
+    "tools_execute",
+})
+
 
 # ---------------------------------------------------------------------------
 # Request bodies
@@ -120,6 +132,16 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
     Returns {request_id, status: 'pending'}.
     """
     store = _get_auth_requests_store(request)
+
+    # Only known scopes may be requested — reject unknown ones up front so
+    # the admin is never shown (and can never approve) a scope the system
+    # does not actually enforce.
+    unknown = sorted(set(body.requested_scopes) - VALID_SCOPES)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}",
+        )
 
     # Abuse cap: reject if too many pending requests from the same identity.
     pending_count = await store.count_pending_for(
@@ -207,6 +229,21 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         raise HTTPException(
             status_code=409,
             detail=f"request is already {record['status']!r}; cannot approve",
+        )
+
+    # The admin can narrow the requested scopes but never widen them, and
+    # every granted scope must be in the closed vocabulary (defence in depth
+    # for pending records created before scope validation existed).
+    requested = set(record["requested_scopes"] or [])
+    granted = set(body.granted_scopes)
+    invalid = sorted((granted - requested) | (granted - VALID_SCOPES))
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"granted scopes must be a subset of the requested scopes; "
+                f"not grantable: {invalid}"
+            ),
         )
 
     registry = _get_registry_store(request)

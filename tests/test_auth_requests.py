@@ -51,13 +51,13 @@ class TestAuthRequestsStore:
             record = await store.create(
                 identity_claim="my-agent",
                 framework="hermes",
-                requested_scopes=["memory:read", "memory:write"],
+                requested_scopes=["memory_read", "memory_write"],
                 reason="need access to memory",
             )
             assert record["status"] == "pending"
             assert record["identity_claim"] == "my-agent"
             assert record["framework"] == "hermes"
-            assert record["requested_scopes"] == ["memory:read", "memory:write"]
+            assert record["requested_scopes"] == ["memory_read", "memory_write"]
             assert record["reason"] == "need access to memory"
             assert record["canonical_id"] is None
             assert record["token"] is None
@@ -73,21 +73,21 @@ class TestAuthRequestsStore:
             record = await store.create(
                 identity_claim="agent-a",
                 framework="openclaw",
-                requested_scopes=["memory:read"],
+                requested_scopes=["memory_read"],
             )
             updated = await store.set_decision(
                 record["id"],
                 "accepted",
                 canonical_id="agent-a-20260609-120000",
                 token="fake.token.value",
-                granted_scopes=["memory:read"],
+                granted_scopes=["memory_read"],
                 decided_by="admin-user",
             )
             assert updated is not None
             assert updated["status"] == "accepted"
             assert updated["canonical_id"] == "agent-a-20260609-120000"
             assert updated["token"] == "fake.token.value"
-            assert updated["granted_scopes"] == ["memory:read"]
+            assert updated["granted_scopes"] == ["memory_read"]
             assert updated["decided_by"] == "admin-user"
             assert updated["decided_ts"] is not None
         finally:
@@ -99,7 +99,7 @@ class TestAuthRequestsStore:
             record = await store.create(
                 identity_claim="agent-b",
                 framework="hermes",
-                requested_scopes=["memory:read"],
+                requested_scopes=["memory_read"],
             )
             updated = await store.set_decision(
                 record["id"],
@@ -120,7 +120,7 @@ class TestAuthRequestsStore:
             record = await store.create(
                 identity_claim="agent-c",
                 framework="hermes",
-                requested_scopes=["memory:read"],
+                requested_scopes=["memory_read"],
             )
             # First decision succeeds.
             first = await store.set_decision(
@@ -292,7 +292,7 @@ async def consent_client_nonadmin(app, tmp_data_dir):
 _CREATE_BODY = {
     "identity_claim": "my-external-agent",
     "framework": "hermes",
-    "requested_scopes": ["memory:read", "memory:write"],
+    "requested_scopes": ["memory_read", "memory_write"],
     "reason": "I need access to memory for context",
 }
 
@@ -335,7 +335,7 @@ class TestAuthRequestRoutes:
 
         resp = await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read"]},
+            json={"granted_scopes": ["memory_read"]},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -345,7 +345,7 @@ class TestAuthRequestRoutes:
 
         # Check grants were written.
         grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
-        assert any(g["scope"] == "memory:read" for g in grants)
+        assert any(g["scope"] == "memory_read" for g in grants)
 
         # Approval must ACTIVATE the agent — external-selfjoin lands 'pending';
         # consent-approve transitions it to 'active' so it's not in the bus
@@ -365,7 +365,7 @@ class TestAuthRequestRoutes:
 
         await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read"]},
+            json={"granted_scopes": ["memory_read"]},
         )
 
         # Poll status as the external agent would (no auth).
@@ -389,9 +389,39 @@ class TestAuthRequestRoutes:
 
         resp = await consent_client_nonadmin.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read"]},
+            json={"granted_scopes": ["memory_read"]},
         )
         assert resp.status_code == 403
+
+    async def test_create_with_unknown_scope_returns_400(self, consent_client):
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "requested_scopes": ["memory_read", "root_shell"]},
+            )
+        assert resp.status_code == 400
+        assert "root_shell" in resp.json()["detail"]
+
+    async def test_approve_scope_not_requested_returns_400(self, consent_client):
+        """The admin can narrow the requested scopes but never widen them."""
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+            request_id = create_resp.json()["request_id"]
+
+        # _CREATE_BODY requests memory_read + memory_write only.
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory_read", "tools_execute"]},
+        )
+        assert resp.status_code == 400
+        assert "tools_execute" in resp.json()["detail"]
+
+        # The request must still be pending (no side effects from the rejection).
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(f"/api/agents/auth-requests/{request_id}")
+        assert status_resp.json()["status"] == "pending"
 
     async def test_approve_unknown_request_returns_404(self, consent_client):
         resp = await consent_client.post(
@@ -409,12 +439,12 @@ class TestAuthRequestRoutes:
         # First approve succeeds.
         await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read"]},
+            json={"granted_scopes": ["memory_read"]},
         )
         # Second approve → 409 (already decided).
         resp2 = await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read"]},
+            json={"granted_scopes": ["memory_read"]},
         )
         assert resp2.status_code == 409
 
@@ -503,7 +533,7 @@ class TestAuthRequestRoutes:
             create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
         request_id = create_resp.json()["request_id"]
 
-        approve_body = {"granted_scopes": ["memory:read"]}
+        approve_body = {"granted_scopes": ["memory_read"]}
         cookies = dict(consent_client.cookies)
 
         async def do_approve():
@@ -530,15 +560,15 @@ class TestAuthRequestRoutes:
 
         await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read", "memory:write"]},
+            json={"granted_scopes": ["memory_read", "memory_write"]},
         )
 
         resp = await consent_client.get("/api/agents/registry/grants")
         assert resp.status_code == 200
         grants = resp.json()["grants"]
         scopes = {g["scope"] for g in grants}
-        assert "memory:read" in scopes
-        assert "memory:write" in scopes
+        assert "memory_read" in scopes
+        assert "memory_write" in scopes
 
     async def test_grants_feed_nonadmin_returns_403(self, consent_client_nonadmin):
         resp = await consent_client_nonadmin.get("/api/agents/registry/grants")
@@ -553,7 +583,7 @@ class TestAuthRequestRoutes:
 
         approve_resp = await consent_client.post(
             f"/api/agents/auth-requests/{request_id}/approve",
-            json={"granted_scopes": ["memory:read"]},
+            json={"granted_scopes": ["memory_read"]},
         )
         canonical_id = approve_resp.json()["canonical_id"]
 
