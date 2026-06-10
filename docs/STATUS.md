@@ -17,9 +17,9 @@
 **Repo:** github.com/jaylfc/taOS · **Branches:** `master` (stable, installs track) ← `dev` (integration)
 
 ## Branch state
-- `master` tip: `a13692de` — promotion #727 (install fixes + registry governance PR2)
-- `dev` tip: `dfee2b0f` — consent scope validation (#733), ahead of master by 7 commits
-- **Open PR `#734`** (dev→master promotion): CI GREEN + mergeable. The CLI admin-merge over API persistently 401s against the protected `master` branch (a token/branch-protection limitation, not a CI failure). **ACTION (Jay): click "Merge" on PR #734 in the GitHub UI** — one click, the browser session bypasses the CLI-token limitation. Squash. Do NOT `--delete-branch` (deleting `dev` auto-closes every PR that targets it — burned once on 2026-06-10).
+- `master` tip: `a2b2f6b3` — promotion #734 (registry UI, consent UI + scope validation, user-memory proxy, PyPI pin). **dev and master are level.**
+- `dev` tip: level with master + STATUS/HANDOFF doc commits.
+- No open promotion PR. (Note: protected-`master` admin-merge needs a `ghp_` PAT or the GitHub UI button — the gh OAuth token 401s on that specific endpoint.)
 
 ## In flight
 - **Repo audit** (principal-level, 4-phase): Phases 1–2 done (8 dimensions; testing got lighter review after a rate limit). NEW findings folded into issues #737 #738 #739 #740 #743; many findings corroborate existing issues (#672 #648 #646 #653 #642 #639 #660 #657 #655). Synthesized report doc → `docs/audit/2026-06-10-repo-audit.md` still **pending** (exec summary + themes + milestone plan).
