@@ -135,14 +135,22 @@ async def save(request: Request):
     base = _taosmd_base(request)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(
+            resp = await client.post(
                 f"{base}/ingest",
                 json={
                     "text": content,
                     "agent": _TAOSMD_AGENT,
-                    "metadata": {"collection": collection, "title": title, "source_id": h, **metadata},
+                    # Caller metadata first so the server-owned keys win —
+                    # source_id is taosmd's dedup key and must not be
+                    # overridable from the request body.
+                    "metadata": {**metadata, "collection": collection, "title": title, "source_id": h},
                 },
             )
+            if resp.status_code >= 400:
+                logger.debug(
+                    "taosmd ingest returned %s — chunk saved to SQLite only",
+                    resp.status_code,
+                )
     except Exception:
         logger.debug("taosmd ingest unavailable — chunk saved to SQLite only")
 
@@ -180,7 +188,16 @@ async def migrate_to_taosmd(request: Request):
     except Exception:
         return JSONResponse({"error": "taosmd unreachable"}, status_code=503)
 
-    chunks = await _store(request).browse(USER_ID, limit=10_000)
+    # Page through the store so installs with >page_size chunks migrate fully.
+    chunks: list[dict] = []
+    page_size = 1000
+    offset = 0
+    while True:
+        page = await _store(request).browse(USER_ID, limit=page_size, offset=offset)
+        chunks.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
     if not chunks:
         return JSONResponse({"ingested": 0, "skipped": 0, "total": 0})
 
@@ -188,11 +205,13 @@ async def migrate_to_taosmd(request: Request):
         {
             "text": c["content"],
             "id": c["hash"],
+            # Stored metadata first so the server-owned keys win — source_id
+            # is taosmd's dedup key and must not be overridable.
             "metadata": {
+                **(c.get("metadata") or {}),
                 "collection": c["collection"],
                 "title": c["title"],
                 "source_id": c["hash"],
-                **(c.get("metadata") or {}),
             },
         }
         for c in chunks
@@ -213,16 +232,20 @@ async def migrate_to_taosmd(request: Request):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for item in items:
                     try:
-                        await client.post(
+                        one = await client.post(
                             f"{base}/ingest",
                             json={"text": item["text"], "agent": _TAOSMD_AGENT,
                                   "metadata": item["metadata"]},
                         )
-                        ingested += 1
+                        if one.status_code < 400:
+                            ingested += 1
                     except Exception:
                         pass
             result = {"ingested": ingested, "skipped": len(items) - ingested}
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+    except Exception:
+        # Don't reflect raw exception text (it can carry the internal taosmd
+        # host/URL) back to the caller; details go to the server log only.
+        logger.warning("taosmd bulk ingest failed", exc_info=True)
+        return JSONResponse({"error": "taosmd ingest failed"}, status_code=500)
 
     return JSONResponse({**result, "total": len(items)})

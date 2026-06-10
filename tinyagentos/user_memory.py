@@ -124,6 +124,7 @@ class UserMemoryStore(BaseStore):
         user_id: str,
         collection: str | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[dict]:
         assert self._db is not None
         sql = "SELECT hash, collection, title, content, metadata, created_at FROM user_memory_chunks WHERE user_id = ?"
@@ -131,8 +132,8 @@ class UserMemoryStore(BaseStore):
         if collection:
             sql += " AND collection = ?"
             params.append(collection)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
         return [

@@ -216,3 +216,59 @@ async def test_migrate_returns_503_when_taosmd_unreachable(app, mem_client, tmp_
         assert resp.status_code == 503
     finally:
         app.state.taosmd_url = None
+
+
+@pytest.mark.asyncio
+async def test_browse_offset_pages_through_rows(store):
+    for i in range(5):
+        await store.save_chunk("user", f"chunk number {i}", f"T{i}", "snippets")
+    first = await store.browse("user", limit=2, offset=0)
+    second = await store.browse("user", limit=2, offset=2)
+    third = await store.browse("user", limit=2, offset=4)
+    assert len(first) == 2 and len(second) == 2 and len(third) == 1
+    hashes = {c["hash"] for c in first + second + third}
+    assert len(hashes) == 5  # no overlap between pages
+
+
+@pytest.mark.asyncio
+async def test_save_metadata_cannot_override_source_id(mem_client, tmp_data_dir):
+    """Caller-supplied metadata must not clobber the server-owned dedup key."""
+    client, _ = mem_client
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post(
+            "/api/user-memory/save",
+            json={
+                "content": "override attempt",
+                "collection": "snippets",
+                "metadata": {"source_id": "evil", "collection": "other", "custom": "kept"},
+            },
+        )
+    assert resp.status_code == 200
+    saved_hash = resp.json()["hash"]
+    sent_meta = mock_client.post.call_args.kwargs["json"]["metadata"]
+    assert sent_meta["source_id"] == saved_hash
+    assert sent_meta["collection"] == "snippets"
+    assert sent_meta["custom"] == "kept"
+
+
+@pytest.mark.asyncio
+async def test_migrate_error_response_does_not_leak_exception_text(mem_client, tmp_data_dir):
+    """The /migrate 500 path must not reflect raw exception text to callers."""
+    client, store = mem_client
+    await store.save_chunk("user", "to migrate", "T", "snippets")
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))  # health OK
+    mock_client.post = AsyncMock(side_effect=RuntimeError("http://internal-taosmd:7900 boom"))
+
+    with patch("tinyagentos.routes.user_memory.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/user-memory/migrate")
+    assert resp.status_code == 500
+    assert "internal-taosmd" not in resp.text
+    assert resp.json()["error"] == "taosmd ingest failed"
