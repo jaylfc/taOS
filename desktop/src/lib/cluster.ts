@@ -317,7 +317,7 @@ export function availableKvQuantOptions(workers: ClusterWorker[]): KvQuantOption
  * Any other shape (already-new format, custom names) is returned unchanged.
  */
 export function normalizeBackendName(name: string): string {
-  const m = name.match(/^([^@]+)@https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)$/);
+  const m = name.match(/^([^@]+)@https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0):(\d+)$/);
   if (m) return `${m[1]}:${m[2]}`;
   return name;
 }
