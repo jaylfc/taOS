@@ -7,7 +7,7 @@
 
 # taOS: Live Status
 
-**Last updated:** 2026-06-11 ~13:40 BST, by @taOS (Mac session). PR #781 (agent-chat pop-out + screenshot guard, fixes #780) in CI; merge when green.
+**Last updated:** 2026-06-11 ~14:40 BST, by @taOS (Mac session). #781 MERGED to dev (agent-chat pop-out + screenshot guard, closes #780); next promotion carries it. Session in usage wind-down at ~87% of the 5h window (resets 18:19 BST); resume pair armed (primary 18:23, retry 18:43) to promote + start #737 Phase 4. taOSmd #774 answers folded into the spec, plan unblocked. Shared usage snapshot publishing to the Pi at /home/jay/.taos-usage.json.
 **Local-only in flight (not in git):** an Understand-Anything `/understand` run on `tinyagentos/cluster/` is paused mid-Phase-2. Intermediate files live in `tinyagentos/cluster/.understand-anything/` (gitignored): scan + batches done, batch-1 graph written (51 nodes, 100 edges), phases 3-7 (assemble/architecture/tour/review/save) pending. Resume by re-running `/understand tinyagentos/cluster` (incremental) or merging batch-1 and continuing. Note: scoping to a subdir gave 0 deterministic import edges (absolute package imports do not resolve in the narrow root); a `tinyagentos/`-root run would be richer. #778 gained a Coolify deployment plan: host the version-check endpoint on the tinyagentos.com site (Coolify from a GitHub repo) so it serves the latest version for seamless self-update AND counts installs anonymously in one call.
 **Repo:** github.com/jaylfc/taOS, branches `master` (stable) <- `dev` (integration). master tip 66688348; dev = master + a STATUS commit only.
 
