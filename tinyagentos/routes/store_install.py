@@ -429,14 +429,18 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     raw_remote = body.get("target_remote") or ""
     _target_remote = raw_remote if raw_remote and raw_remote != "local" else None
 
-    # Docker services publish their port on the host (compose maps {p}:{p}),
-    # so they are reachable via the service proxy at /apps/{app_id}/. Record a
-    # runtime location so the app appears in /api/apps/installed and gets a
-    # Launchpad shortcut. Without this, a local docker install (e.g. SearxNG)
-    # succeeds but never surfaces a shortcut. Remote docker installs resolve
-    # the host from the registered incus remote; local installs use 127.0.0.1.
+    # Docker services publish on an ALLOCATED host port (the DockerInstaller
+    # maps {allocated_pool_port}:{container_port} so apps never bind a core port
+    # like 8080). Record that allocated host port as the runtime location so the
+    # app appears in /api/apps/installed and gets a Launchpad shortcut pointing
+    # at the right place. The installer returns it as inst_result["host_port"];
+    # use that, never the container port. (Falling back to the manifest's
+    # container port only for the no-ports / legacy case.) Without a recorded
+    # location a local docker install (e.g. SearxNG) succeeds but never surfaces
+    # a shortcut. Remote docker installs resolve the host from the registered
+    # incus remote; local installs use 127.0.0.1.
     if backend == "docker":
-        docker_port = _docker_published_port(install_config)
+        docker_port = inst_result.get("host_port") or _docker_published_port(install_config)
         if docker_port:
             runtime_host = (
                 await _resolve_host(_target_remote) if _target_remote else "127.0.0.1"
