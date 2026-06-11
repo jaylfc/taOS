@@ -73,6 +73,7 @@ class WorkerAgent:
         worker_port: int = 0,
         extra_capabilities: list[str] | None = None,
         advertise_url: str | None = None,
+        state_dir: "Path | None" = None,
     ):
         self.controller_url = controller_url.rstrip("/")
         self.name = name or socket.gethostname()
@@ -81,6 +82,10 @@ class WorkerAgent:
         self.advertise_url = advertise_url
         self._running = False
         self._registered = False
+
+        from tinyagentos.worker.pairing import default_state_dir, load_signing_key
+        self._state_dir = state_dir or default_state_dir()
+        self._signing_key: bytes | None = load_signing_key(self._state_dir)
 
     async def detect_backends(self) -> list[dict]:
         """Discover locally running inference backends via live probing.
@@ -336,9 +341,20 @@ class WorkerAgent:
         return f"http://{ip}:{self.worker_port}" if self.worker_port else f"http://{ip}"
 
     async def register(self) -> bool:
-        """Register with the controller."""
+        """Register with the controller (signed with HMAC key if paired)."""
         from tinyagentos.hardware import detect_hardware
         from dataclasses import asdict
+        import json as _json
+
+        if self._signing_key is None:
+            logger.error(
+                "worker not paired: no signing key at %s; "
+                "run `python -m tinyagentos.worker.pair %s --name %s` to pair this worker",
+                self._state_dir,
+                self.controller_url,
+                self.name,
+            )
+            return False
 
         hw = detect_hardware()
         backends = await self.detect_backends()
@@ -370,8 +386,17 @@ class WorkerAgent:
             payload["pending_storage_backup"] = backup
 
         try:
+            from tinyagentos.worker.pairing import sign_request_headers
+            path = "/api/cluster/workers"
+            body = _json.dumps(payload).encode()
+            auth_headers = sign_request_headers(self._signing_key, self.name, "POST", path, body)
+            auth_headers["content-type"] = "application/json"
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(f"{self.controller_url}/api/cluster/workers", json=payload)
+                resp = await client.post(
+                    f"{self.controller_url}{path}",
+                    content=body,
+                    headers=auth_headers,
+                )
                 resp.raise_for_status()
                 self._registered = True
                 logger.info(f"Registered with controller as '{self.name}'")
@@ -396,29 +421,47 @@ class WorkerAgent:
         trigger a re-registration.
         """
         from tinyagentos.cluster.worker_capacity import capacity_snapshot
+        import json as _json
+
+        if self._signing_key is None:
+            logger.error(
+                "worker not paired: no signing key at %s; "
+                "run `python -m tinyagentos.worker.pair %s --name %s` to pair this worker",
+                self._state_dir,
+                self.controller_url,
+                self.name,
+            )
+            return 0
 
         try:
+            from tinyagentos.worker.pairing import sign_request_headers
             load = psutil.cpu_percent() / 100.0
             backends = await self.detect_backends()
             caps = sorted(set(self.detect_capabilities(backends)) | set(self.extra_capabilities))
             kv_quant = self.detect_kv_quant_support(backends)
             snap = capacity_snapshot()
+            path = "/api/cluster/heartbeat"
+            payload = {
+                "name": self.name,
+                "load": load,
+                "backends": backends,
+                "capabilities": caps,
+                "kv_cache_quant_support": kv_quant.get("legacy", ["fp16"]),
+                "kv_cache_quant_k_support": kv_quant.get("k", ["fp16"]),
+                "kv_cache_quant_v_support": kv_quant.get("v", ["fp16"]),
+                "kv_cache_quant_boundary_layer_protect": bool(kv_quant.get("boundary", False)),
+                "storage_cap_bytes": snap["storage_cap_bytes"],
+                "storage_used_bytes": snap["storage_used_bytes"],
+                "bytes_deduped_total": snap["bytes_deduped_total"],
+            }
+            body = _json.dumps(payload).encode()
+            auth_headers = sign_request_headers(self._signing_key, self.name, "POST", path, body)
+            auth_headers["content-type"] = "application/json"
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post(
-                    f"{self.controller_url}/api/cluster/heartbeat",
-                    json={
-                        "name": self.name,
-                        "load": load,
-                        "backends": backends,
-                        "capabilities": caps,
-                        "kv_cache_quant_support": kv_quant.get("legacy", ["fp16"]),
-                        "kv_cache_quant_k_support": kv_quant.get("k", ["fp16"]),
-                        "kv_cache_quant_v_support": kv_quant.get("v", ["fp16"]),
-                        "kv_cache_quant_boundary_layer_protect": bool(kv_quant.get("boundary", False)),
-                        "storage_cap_bytes": snap["storage_cap_bytes"],
-                        "storage_used_bytes": snap["storage_used_bytes"],
-                        "bytes_deduped_total": snap["bytes_deduped_total"],
-                    },
+                    f"{self.controller_url}{path}",
+                    content=body,
+                    headers=auth_headers,
                 )
                 return resp.status_code
         except Exception:

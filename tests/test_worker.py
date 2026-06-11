@@ -138,8 +138,11 @@ class TestWorkerAgent:
 class TestRegistration:
     """Test worker registration with mocked HTTP."""
 
-    async def test_register_success(self):
-        agent = WorkerAgent("http://controller:6969", name="test-worker")
+    async def test_register_success(self, tmp_path):
+        import secrets
+        from tinyagentos.worker.pairing import save_signing_key
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
@@ -180,8 +183,11 @@ class TestRegistration:
 class TestHeartbeat:
     """Test heartbeat sending with mocked HTTP."""
 
-    async def test_heartbeat_success(self):
-        agent = WorkerAgent("http://controller:6969", name="test-worker")
+    async def test_heartbeat_success(self, tmp_path):
+        import secrets
+        from tinyagentos.worker.pairing import save_signing_key
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
         mock_response = MagicMock()
         mock_response.status_code = 200
 
@@ -193,7 +199,8 @@ class TestHeartbeat:
             mock_client_cls.return_value = mock_client
 
             with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=42.0):
-                result = await agent.heartbeat()
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
 
         # heartbeat() returns the int HTTP status code (or 0 on failure), see #166
         assert result == 200

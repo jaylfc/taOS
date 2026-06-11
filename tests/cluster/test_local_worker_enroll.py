@@ -226,15 +226,20 @@ class TestWorkerRegistryBridge:
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_includes_capacity_snapshot(monkeypatch):
+async def test_heartbeat_includes_capacity_snapshot(monkeypatch, tmp_path):
     """WorkerAgent.heartbeat() should call capacity_snapshot() and
     include the three byte counters in the POST body.
     """
+    import json as _json
+    import secrets
     from tinyagentos.worker.agent import WorkerAgent
+    from tinyagentos.worker.pairing import save_signing_key
+
+    save_signing_key(tmp_path, secrets.token_bytes(32))
 
     posted_bodies = []
 
-    # Fake httpx.AsyncClient that captures the POST body
+    # Fake httpx.AsyncClient that captures the POST body (sent as content=bytes)
     mock_response = MagicMock()
     mock_response.status_code = 200
 
@@ -242,8 +247,9 @@ async def test_heartbeat_includes_capacity_snapshot(monkeypatch):
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    async def fake_post(url, json=None, **kwargs):
-        posted_bodies.append(json or {})
+    async def fake_post(url, content=None, headers=None, **kwargs):
+        if content is not None:
+            posted_bodies.append(_json.loads(content))
         return mock_response
 
     mock_client.post = fake_post
@@ -265,8 +271,8 @@ async def test_heartbeat_includes_capacity_snapshot(monkeypatch):
         },
     )
 
-    agent = WorkerAgent("http://controller:6969", name="test-worker")
-    # detect_backends makes outgoing network calls — short-circuit it
+    agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+    # detect_backends makes outgoing network calls -- short-circuit it
     monkeypatch.setattr(agent, "detect_backends", AsyncMock(return_value=[]))
 
     await agent.heartbeat()

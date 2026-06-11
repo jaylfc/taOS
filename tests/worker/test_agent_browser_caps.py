@@ -1,11 +1,14 @@
 """Tests for WorkerAgent extra_capabilities + advertise_url (browser-worker additions)."""
 from __future__ import annotations
 
+import json as _json
+import secrets
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tinyagentos.worker.agent import WorkerAgent
+from tinyagentos.worker.pairing import save_signing_key
 
 
 class TestWorkerAgentBrowserCaps:
@@ -42,12 +45,14 @@ class TestWorkerAgentBrowserCaps:
 class TestRegisterWithBrowserCaps:
     """Verify register() forwards browser capability + pinned URL to controller."""
 
-    async def test_register_includes_browser_capability(self):
+    async def test_register_includes_browser_capability(self, tmp_path):
+        save_signing_key(tmp_path, secrets.token_bytes(32))
         agent = WorkerAgent(
             "http://controller:6969",
             name="browser-node",
             extra_capabilities=["browser"],
             advertise_url="http://10.0.0.5:7080",
+            state_dir=tmp_path,
         )
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -55,9 +60,9 @@ class TestRegisterWithBrowserCaps:
 
         captured: list[dict] = []
 
-        async def _mock_post(url, json=None, **kwargs):
-            if json is not None:
-                captured.append(json)
+        async def _mock_post(url, content=None, headers=None, **kwargs):
+            if content is not None:
+                captured.append(_json.loads(content))
             return mock_response
 
         with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
@@ -76,12 +81,14 @@ class TestRegisterWithBrowserCaps:
         payload = captured[0]
         assert "browser" in payload["capabilities"]
 
-    async def test_register_uses_advertise_url(self):
+    async def test_register_uses_advertise_url(self, tmp_path):
+        save_signing_key(tmp_path, secrets.token_bytes(32))
         agent = WorkerAgent(
             "http://controller:6969",
             name="browser-node",
             extra_capabilities=["browser"],
             advertise_url="http://10.0.0.5:7080",
+            state_dir=tmp_path,
         )
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -89,9 +96,9 @@ class TestRegisterWithBrowserCaps:
 
         captured: list[dict] = []
 
-        async def _mock_post(url, json=None, **kwargs):
-            if json is not None:
-                captured.append(json)
+        async def _mock_post(url, content=None, headers=None, **kwargs):
+            if content is not None:
+                captured.append(_json.loads(content))
             return mock_response
 
         with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
@@ -107,12 +114,14 @@ class TestRegisterWithBrowserCaps:
 
         assert captured[0]["url"] == "http://10.0.0.5:7080"
 
-    async def test_register_without_advertise_url_falls_back(self):
+    async def test_register_without_advertise_url_falls_back(self, tmp_path):
         """Without advertise_url, register() falls back to get_worker_url()."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
         agent = WorkerAgent(
             "http://controller:6969",
             name="plain-node",
             worker_port=9999,
+            state_dir=tmp_path,
         )
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -120,9 +129,9 @@ class TestRegisterWithBrowserCaps:
 
         captured: list[dict] = []
 
-        async def _mock_post(url, json=None, **kwargs):
-            if json is not None:
-                captured.append(json)
+        async def _mock_post(url, content=None, headers=None, **kwargs):
+            if content is not None:
+                captured.append(_json.loads(content))
             return mock_response
 
         with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
@@ -139,12 +148,14 @@ class TestRegisterWithBrowserCaps:
         # Should contain :9999 in the URL, not "http://10.0.0.5:7080"
         assert ":9999" in captured[0]["url"]
 
-    async def test_extra_caps_merged_with_backend_caps(self):
+    async def test_extra_caps_merged_with_backend_caps(self, tmp_path):
         """extra_capabilities are unioned with detected backend caps."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
         agent = WorkerAgent(
             "http://controller:6969",
             extra_capabilities=["browser"],
             advertise_url="http://10.0.0.5:7080",
+            state_dir=tmp_path,
         )
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -152,9 +163,9 @@ class TestRegisterWithBrowserCaps:
 
         captured: list[dict] = []
 
-        async def _mock_post(url, json=None, **kwargs):
-            if json is not None:
-                captured.append(json)
+        async def _mock_post(url, content=None, headers=None, **kwargs):
+            if content is not None:
+                captured.append(_json.loads(content))
             return mock_response
 
         fake_backend = {
@@ -184,22 +195,24 @@ class TestRegisterWithBrowserCaps:
         assert "llm-chat" in caps
         assert "embedding" in caps
 
-    async def test_heartbeat_includes_browser_capability(self):
+    async def test_heartbeat_includes_browser_capability(self, tmp_path):
         """heartbeat() unions extra_capabilities into the posted caps too."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
         agent = WorkerAgent(
             "http://controller:6969",
             name="browser-node",
             extra_capabilities=["browser"],
             advertise_url="http://10.0.0.5:7080",
+            state_dir=tmp_path,
         )
         mock_response = MagicMock()
         mock_response.status_code = 200
 
         captured: list[dict] = []
 
-        async def _mock_post(url, json=None, **kwargs):
-            if json is not None:
-                captured.append(json)
+        async def _mock_post(url, content=None, headers=None, **kwargs):
+            if content is not None:
+                captured.append(_json.loads(content))
             return mock_response
 
         snap = {
