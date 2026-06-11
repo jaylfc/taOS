@@ -80,14 +80,16 @@ class TestSignRequestHeaders:
         from tinyagentos.worker.pairing import sign_request_headers
         key = b"\x05" * 32
         body = b"x"
-        h_lower = sign_request_headers(key, "w", "post", "/p", body)
-        h_upper = sign_request_headers(key, "w", "POST", "/p", body)
-        # same timestamp would differ but we just check the sig matches manual recompute
-        ts = h_lower["X-TAOS-Timestamp"]
         body_hash = hashlib.sha256(body).hexdigest()
-        message = f"{ts}.POST./p.{body_hash}".encode()
-        expected = hmac.new(key, message, hashlib.sha256).hexdigest()
-        assert h_lower["X-TAOS-Signature"] == expected
+        # Both a lowercase and an already-uppercase method must sign over the
+        # normalised "POST" message, so the controller (which sees the real
+        # request method) and the worker agree regardless of caller casing.
+        for method in ("post", "POST"):
+            h = sign_request_headers(key, "w", method, "/p", body)
+            ts = h["X-TAOS-Timestamp"]
+            message = f"{ts}.POST./p.{body_hash}".encode()
+            expected = hmac.new(key, message, hashlib.sha256).hexdigest()
+            assert h["X-TAOS-Signature"] == expected
 
 
 # ---------------------------------------------------------------------------
