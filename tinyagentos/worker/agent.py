@@ -13,6 +13,17 @@ import psutil
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by register() when the controller rejects the signing key
+# with a known pairing error (worker_not_paired or bad_signature).
+# Distinct from False (generic failure) and True (success).
+_NEEDS_REPAIR = 401
+
+# How long to wait between re-pair attempts (seconds).
+_REPAIR_INTERVAL = 60
+
+# How often to re-log the re-pair instruction while in the needs-re-pair state.
+_REPAIR_LOG_INTERVAL = 300  # 5 minutes
+
 
 # Marker dropped by install-worker.sh when it backs up an existing
 # taos-worker-pool. The worker forwards it to the controller once on
@@ -24,7 +35,7 @@ _STORAGE_BACKUP_MARKER = Path("/var/lib/tinyagentos-worker/storage-backup.json")
 
 def _read_storage_backup_marker() -> dict | None:
     """Return the parsed storage-backup marker if present, else None.
-    Errors swallowed — the marker is best-effort plumbing and must not
+    Errors swallowed -- the marker is best-effort plumbing and must not
     break worker registration."""
     try:
         if not _STORAGE_BACKUP_MARKER.exists():
@@ -43,14 +54,14 @@ def _delete_storage_backup_marker() -> None:
 
 def _detect_lan_ip(controller_url: str) -> str | None:
     """Return the local IPv4 address the worker would use to reach the
-    controller — same address the controller sees the registration POST
+    controller -- same address the controller sees the registration POST
     coming from. Used to populate `host_lan_ip` on registration so the
     install-targets matcher can link an incus remote to its worker even
     when the worker's `url` field points at an unrelated backend (e.g.
     the local Ollama on 127.0.0.1).
 
     Connectionless UDP: opening a socket and calling ``connect`` makes
-    the kernel pick the outbound interface, but no packet is sent — we
+    the kernel pick the outbound interface, but no packet is sent -- we
     just read ``getsockname()`` and close. Falls back to ``None`` if
     the controller URL can't be parsed.
     """
@@ -63,6 +74,17 @@ def _detect_lan_ip(controller_url: str) -> str | None:
             return s.getsockname()[0]
     except Exception:  # noqa: BLE001
         return None
+
+
+def _is_repair_rejection(resp) -> bool:
+    """Return True if the response is a 401 with a pairing-rejection code."""
+    if resp.status_code != 401:
+        return False
+    try:
+        code = resp.json().get("code", "")
+        return code in {"worker_not_paired", "bad_signature"}
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class WorkerAgent:
@@ -189,7 +211,7 @@ class WorkerAgent:
         Models' widget in the Activity app so it reflects real NPU/GPU
         residency, not the full catalog of pulled-but-idle models.
 
-        Returns empty list on any failure — loaded-state is a best-effort
+        Returns empty list on any failure -- loaded-state is a best-effort
         signal and should never break heartbeat.
         """
         try:
@@ -205,7 +227,7 @@ class WorkerAgent:
                     }
                     for m in data.get("models", [])
                 ]
-            # Other backend types don't expose an "in memory" state yet —
+            # Other backend types don't expose an "in memory" state yet --
             # llama-cpp serves one model per process, vLLM similar, etc.
             # For those, "available" == "loaded" so the normal /v1/models
             # list is correct. Return [] here and let the caller fall back
@@ -340,11 +362,25 @@ class WorkerAgent:
             ip = "127.0.0.1"
         return f"http://{ip}:{self.worker_port}" if self.worker_port else f"http://{ip}"
 
-    async def register(self) -> bool:
-        """Register with the controller (signed with HMAC key if paired)."""
+    async def register(self) -> "bool | int":
+        """Register with the controller (signed with HMAC key if paired).
+
+        Returns:
+            True    -- registered successfully
+            False   -- generic failure (network error, non-401, etc.)
+            401     -- controller rejected the signing key with a pairing
+                       error (worker_not_paired or bad_signature); the
+                       caller should enter the needs-re-pair state instead
+                       of retrying register every 5s.
+        """
         from tinyagentos.hardware import detect_hardware
         from dataclasses import asdict
         import json as _json
+
+        # Re-read the key from disk on every attempt so that running the pair
+        # CLI (which persists a new key) recovers the agent without a restart.
+        from tinyagentos.worker.pairing import load_signing_key
+        self._signing_key = load_signing_key(self._state_dir)
 
         if self._signing_key is None:
             logger.error(
@@ -397,6 +433,8 @@ class WorkerAgent:
                     content=body,
                     headers=auth_headers,
                 )
+                if _is_repair_rejection(resp):
+                    return _NEEDS_REPAIR
                 resp.raise_for_status()
                 self._registered = True
                 logger.info(f"Registered with controller as '{self.name}'")
@@ -418,10 +456,18 @@ class WorkerAgent:
         Returns the HTTP status code from the controller, or 0 on
         connection failure / timeout. The caller uses this to detect
         the 404 case (controller restarted and forgot about us) and
-        trigger a re-registration.
+        trigger a re-registration. A 401 with code worker_not_paired or
+        bad_signature indicates the key the controller holds no longer
+        matches (migration case); the run loop enters the needs-re-pair
+        state on this code.
         """
         from tinyagentos.cluster.worker_capacity import capacity_snapshot
         import json as _json
+
+        # Re-read the key from disk on every attempt so that running the pair
+        # CLI (which persists a new key) recovers the agent without a restart.
+        from tinyagentos.worker.pairing import load_signing_key
+        self._signing_key = load_signing_key(self._state_dir)
 
         if self._signing_key is None:
             logger.error(
@@ -467,6 +513,16 @@ class WorkerAgent:
         except Exception:
             return 0
 
+    def _log_repair_instruction(self) -> None:
+        logger.error(
+            "worker '%s' needs re-pairing: the controller rejected the signing key "
+            "(controller upgraded or pairing store reset). "
+            "Run: python -m tinyagentos.worker.pair %s --name %s",
+            self.name,
+            self.controller_url,
+            self.name,
+        )
+
     async def run(self):
         """Main worker loop, register, heartbeat, re-register on loss.
 
@@ -476,16 +532,40 @@ class WorkerAgent:
         signal to re-register and resume, without it, every controller
         restart leaves the cluster view empty until the worker is
         manually restarted.
+
+        When the controller rejects the signing key with a pairing error
+        (401 worker_not_paired / bad_signature), the worker enters a
+        needs-re-pair state: logs a clear re-pair instruction once on
+        entry (re-logged every ~5 min), backs off to a longer interval,
+        and stops hammering register. It recovers automatically if the
+        pair CLI is run and a new key is persisted -- no agent restart
+        needed.
         """
         self._running = True
+        _in_repair = False
+        _last_repair_log: float = 0.0
+
         while self._running:
             # Register if we aren't (yet, or any more).
             if not self._registered:
-                if await self.register():
+                result = await self.register()
+                if result is True:
                     logger.info(f"worker '{self.name}' registered with {self.controller_url}")
-                else:
-                    await asyncio.sleep(5)
+                    _in_repair = False
                     continue
+                if result == _NEEDS_REPAIR:
+                    # Controller rejected our key -- enter needs-re-pair state.
+                    now = time.monotonic()
+                    if not _in_repair or (now - _last_repair_log) >= _REPAIR_LOG_INTERVAL:
+                        self._log_repair_instruction()
+                        _last_repair_log = now
+                    _in_repair = True
+                    await asyncio.sleep(_REPAIR_INTERVAL)
+                    continue
+                # Generic registration failure -- short retry.
+                _in_repair = False
+                await asyncio.sleep(5)
+                continue
 
             status = await self.heartbeat()
             if status == 404:
@@ -496,6 +576,16 @@ class WorkerAgent:
                     f"controller returned 404 on heartbeat, re-registering '{self.name}'"
                 )
                 self._registered = False
+            elif status == 401:
+                # Controller rejected our signing key -- enter needs-re-pair state.
+                self._registered = False
+                now = time.monotonic()
+                if not _in_repair or (now - _last_repair_log) >= _REPAIR_LOG_INTERVAL:
+                    self._log_repair_instruction()
+                    _last_repair_log = now
+                _in_repair = True
+                await asyncio.sleep(_REPAIR_INTERVAL)
+                continue
             elif status == 0:
                 # Network / DNS / controller-down. Don't drop the
                 # registered flag yet; the controller may still know
