@@ -75,6 +75,11 @@ export async function uploadChatAttachment(form: FormData): Promise<AttachmentRe
  * Returns a PNG blob.  Throws if the user denies or cancels the permission prompt.
  */
 export async function takeChatScreenshot(): Promise<{ blob: Blob; mime_type: string }> {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    throw new Error(
+      "Screen capture is not available in this view. Use the attach button to add an image file instead.",
+    );
+  }
   const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
   try {
     const video = document.createElement("video");
