@@ -6,6 +6,7 @@ import pytest
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.optimiser import ClusterOptimiser, PlacementSuggestion, _hw_summary
 from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tests.conftest import pair_and_register_worker
 
 
 def _w(name, hardware=None, capabilities=None, status="online", load=0.0, platform="linux"):
@@ -188,13 +189,13 @@ async def test_optimise_api_endpoint(client):
 
 
 @pytest.mark.asyncio
-async def test_optimise_api_with_workers(client):
-    await client.post("/api/cluster/workers", json={
+async def test_optimise_api_with_workers(client, app):
+    await pair_and_register_worker(client, app, {
         "name": "gpu-box", "url": "http://10.0.0.1:9000",
         "capabilities": ["chat"], "platform": "linux",
         "hardware": {"ram_mb": 32768, "gpu": {"cuda": True, "vram_mb": 24576}},
     })
-    await client.post("/api/cluster/workers", json={
+    await pair_and_register_worker(client, app, {
         "name": "pi-node", "url": "http://10.0.0.2:9000",
         "capabilities": ["embed"], "platform": "linux",
         "hardware": {"ram_mb": 4096},
@@ -208,12 +209,12 @@ async def test_optimise_api_with_workers(client):
 
 
 @pytest.mark.asyncio
-async def test_move_api_endpoint(client):
-    await client.post("/api/cluster/workers", json={
+async def test_move_api_endpoint(client, app):
+    await pair_and_register_worker(client, app, {
         "name": "w1", "url": "http://10.0.0.1:9000",
         "capabilities": ["chat"], "models": ["llama3"],
     })
-    await client.post("/api/cluster/workers", json={
+    await pair_and_register_worker(client, app, {
         "name": "w2", "url": "http://10.0.0.2:9000",
         "capabilities": ["chat"],
     })
@@ -243,8 +244,8 @@ async def test_move_api_unknown_worker(client):
 
 
 @pytest.mark.asyncio
-async def test_move_api_offline_worker(client):
-    await client.post("/api/cluster/workers", json={
+async def test_move_api_offline_worker(client, app):
+    await pair_and_register_worker(client, app, {
         "name": "offline-w", "url": "http://10.0.0.1:9000",
     })
     # Manually set offline by letting heartbeat expire (hack: directly via app state)

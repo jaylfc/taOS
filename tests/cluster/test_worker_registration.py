@@ -8,6 +8,7 @@ import pytest
 
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 from tinyagentos.cluster.manager import ClusterManager
+from tests.conftest import pair_and_register_worker
 
 
 class TestWorkerInfoNewFields:
@@ -89,7 +90,7 @@ class TestClusterManagerGetWorker:
 
 
 @pytest.mark.asyncio
-async def test_worker_register_accepts_lxc_capacity_fields(client):
+async def test_worker_register_accepts_lxc_capacity_fields(client, app):
     payload = {
         "name": "test-worker-lxc-fields",
         "url": "http://192.168.1.50:6970",
@@ -99,7 +100,7 @@ async def test_worker_register_accepts_lxc_capacity_fields(client):
         "bytes_deduped_total": 0,
         "worker_lxc_image_version": "ubuntu/24.04/amd64",
     }
-    resp = await client.post("/api/cluster/workers", json=payload)
+    resp = await pair_and_register_worker(client, app, payload)
     assert resp.status_code == 200
     workers = (await client.get("/api/cluster/workers")).json()
     me = next(w for w in workers if w["name"] == "test-worker-lxc-fields")
