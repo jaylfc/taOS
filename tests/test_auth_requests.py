@@ -593,3 +593,20 @@ class TestAuthRequestRoutes:
         assert resp.status_code == 200
         grants = resp.json()["grants"]
         assert all(g["canonical_id"] == canonical_id for g in grants)
+
+    async def test_approve_lock_is_evicted_after_decision(self, consent_client):
+        """After approval the per-request lock entry is removed from the dict."""
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+            request_id = create_resp.json()["request_id"]
+
+        await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory_read"]},
+        )
+
+        # After a terminal decision the lock entry must be absent so the dict
+        # does not grow unbounded over the process lifetime.
+        app = consent_client._transport.app
+        assert getattr(app.state, "_approve_locks", {}).get(request_id) is None

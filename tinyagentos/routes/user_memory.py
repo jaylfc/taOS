@@ -80,16 +80,16 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
     """
     base = _taosmd_base(request)
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            params: dict = {"q": q, "agent": _TAOSMD_AGENT, "limit": limit, "mode": "bm25"}
-            if collection:
-                params["collection"] = collection
-            resp = await client.get(f"{base}/search", params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                hits = data.get("hits", [])
-                results = [_hit_to_chunk(h) for h in hits]
-                return JSONResponse({"results": results, "query": q, "backend": "taosmd"})
+        client = request.app.state.http_client
+        params: dict = {"q": q, "agent": _TAOSMD_AGENT, "limit": limit, "mode": "bm25"}
+        if collection:
+            params["collection"] = collection
+        resp = await client.get(f"{base}/search", params=params, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            hits = data.get("hits", [])
+            results = [_hit_to_chunk(h) for h in hits]
+            return JSONResponse({"results": results, "query": q, "backend": "taosmd"})
     except Exception:
         logger.debug("taosmd search unavailable, falling back to SQLite")
 
@@ -137,23 +137,24 @@ async def save(request: Request):
     # Also ingest to taosmd when available (best-effort, non-fatal).
     base = _taosmd_base(request)
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                f"{base}/ingest",
-                json={
-                    "text": content,
-                    "agent": _TAOSMD_AGENT,
-                    # Caller metadata first so the server-owned keys win —
-                    # source_id is taosmd's dedup key and must not be
-                    # overridable from the request body.
-                    "metadata": {**metadata, "collection": collection, "title": title, "source_id": h},
-                },
+        client = request.app.state.http_client
+        resp = await client.post(
+            f"{base}/ingest",
+            json={
+                "text": content,
+                "agent": _TAOSMD_AGENT,
+                # Caller metadata first so the server-owned keys win —
+                # source_id is taosmd's dedup key and must not be
+                # overridable from the request body.
+                "metadata": {**metadata, "collection": collection, "title": title, "source_id": h},
+            },
+            timeout=5.0,
+        )
+        if resp.status_code >= 400:
+            logger.debug(
+                "taosmd ingest returned %s — chunk saved to SQLite only",
+                resp.status_code,
             )
-            if resp.status_code >= 400:
-                logger.debug(
-                    "taosmd ingest returned %s — chunk saved to SQLite only",
-                    resp.status_code,
-                )
     except Exception:
         logger.debug("taosmd ingest unavailable — chunk saved to SQLite only")
 
@@ -184,10 +185,10 @@ async def migrate_to_taosmd(request: Request):
 
     # Probe availability first.
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            health = await client.get(f"{base}/health")
-            if health.status_code != 200:
-                return JSONResponse({"error": "taosmd not healthy"}, status_code=503)
+        client = request.app.state.http_client
+        health = await client.get(f"{base}/health", timeout=5.0)
+        if health.status_code != 200:
+            return JSONResponse({"error": "taosmd not healthy"}, status_code=503)
     except Exception:
         return JSONResponse({"error": "taosmd unreachable"}, status_code=503)
 
@@ -221,29 +222,31 @@ async def migrate_to_taosmd(request: Request):
     ]
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{base}/ingest/batch",
-                json={"agent": _TAOSMD_AGENT, "items": items},
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        client = request.app.state.http_client
+        resp = await client.post(
+            f"{base}/ingest/batch",
+            json={"agent": _TAOSMD_AGENT, "items": items},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        result = resp.json()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             # /ingest/batch not yet deployed — fall back to one-at-a-time
             ingested = 0
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                for item in items:
-                    try:
-                        one = await client.post(
-                            f"{base}/ingest",
-                            json={"text": item["text"], "agent": _TAOSMD_AGENT,
-                                  "metadata": item["metadata"]},
-                        )
-                        if one.status_code < 400:
-                            ingested += 1
-                    except Exception:
-                        pass
+            client = request.app.state.http_client
+            for item in items:
+                try:
+                    one = await client.post(
+                        f"{base}/ingest",
+                        json={"text": item["text"], "agent": _TAOSMD_AGENT,
+                              "metadata": item["metadata"]},
+                        timeout=30.0,
+                    )
+                    if one.status_code < 400:
+                        ingested += 1
+                except Exception:
+                    pass
             result = {"ingested": ingested, "skipped": len(items) - ingested}
     except Exception:
         # Don't reflect raw exception text (it can carry the internal taosmd

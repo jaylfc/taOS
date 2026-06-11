@@ -76,19 +76,26 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int) -> None:
     """Run the main app and the browser-proxy origin concurrently.
 
     ``uvicorn.run`` is blocking and we need two servers, so we drive two
-    ``uvicorn.Server`` instances under one event loop via ``asyncio.gather``.
+    ``uvicorn.Server`` instances under one event loop.
 
     The proxy-origin app shares the main app's ``app.state`` object (see
     ``create_browser_proxy_app``), which the main app's lifespan populates
     on startup. Both servers start together; the proxy origin only receives
     traffic after the shell has loaded and redeemed a ticket (post-startup),
     so the shared state is always ready by the time it is read.
+
+    If the main server's serve() returns without having reached the
+    'started' state (lifespan raised during startup), we exit non-zero so
+    systemd's Restart= fires instead of leaving a half-alive process.
     """
     import asyncio
+    import logging
 
     import uvicorn
 
     from tinyagentos.browser_proxy_origin import create_browser_proxy_app
+
+    _log = logging.getLogger(__name__)
 
     proxy_app = create_browser_proxy_app(app.state)
 
@@ -97,10 +104,44 @@ def _serve_dual_port(app, *, host: str, port: int, proxy_port: int) -> None:
     main_server = uvicorn.Server(main_config)
     proxy_server = uvicorn.Server(proxy_config)
 
-    async def _run() -> None:
-        await asyncio.gather(main_server.serve(), proxy_server.serve())
+    started = asyncio.run(_serve_until_first_exit(main_server, proxy_server))
+    if not started:
+        _log.error(
+            "Main server failed to start on %s:%d -- check lifespan errors above",
+            host,
+            port,
+        )
+        raise SystemExit(3)
 
-    asyncio.run(_run())
+
+async def _serve_until_first_exit(main_server, proxy_server) -> bool:
+    """Drive both servers; cancel the survivor when one exits.
+
+    Returns True when the main server reached the started state before
+    either serve() returned, False otherwise (startup failure).
+    """
+    import asyncio
+
+    main_task = asyncio.create_task(main_server.serve())
+    proxy_task = asyncio.create_task(proxy_server.serve())
+
+    done, pending = await asyncio.wait(
+        {main_task, proxy_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    for task in done:
+        if task.exception() is not None:
+            raise task.exception()
+
+    return bool(getattr(main_server, "started", False))
 
 
 def _seed_data_dir(target: Path) -> None:

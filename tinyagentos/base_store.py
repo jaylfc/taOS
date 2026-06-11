@@ -11,6 +11,16 @@ class BaseStore:
     Subclasses set ``SCHEMA`` (applied once on first open) and may set
     ``MIGRATIONS`` to a list of ``(version, sql_or_callable)`` pairs that
     will be tracked and applied in order by the migration runner.
+
+    WARNING: init order is SCHEMA -> MIGRATIONS -> _post_init.  Never
+    reference a column inside SCHEMA that is introduced by a migration --
+    the SCHEMA executescript runs first and will crash on any existing
+    database that lacks the column.  The migration runner also uses
+    baseline-at-latest semantics: pre-existing databases are stamped at the
+    latest version without executing any SQL, so retrofit migrations are
+    silently skipped.  Use a guarded _post_init coroutine (PRAGMA
+    table_info check + ALTER TABLE only when absent) for columns added
+    after initial release.  See db_migrations.py module docstring.
     """
     SCHEMA: str = ""
     # List of (version: int, sql_or_callable) pairs. See db_migrations.py.

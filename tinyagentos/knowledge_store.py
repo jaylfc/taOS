@@ -34,7 +34,6 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 CREATE INDEX IF NOT EXISTS idx_ki_source_type ON knowledge_items(source_type);
 CREATE INDEX IF NOT EXISTS idx_ki_status ON knowledge_items(status);
 CREATE INDEX IF NOT EXISTS idx_ki_created ON knowledge_items(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ki_user_id ON knowledge_items(user_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
     id UNINDEXED,
@@ -95,19 +94,41 @@ def _row_to_item(row: tuple) -> dict:
     }
 
 
+
+async def _migration_v1_add_user_id(conn) -> None:
+    """Add user_id column and index to knowledge_items (idempotent).
+
+    Runs at the top of _post_init so it self-heals databases created before
+    the multi-user keying was introduced.  SQLite lacks IF NOT EXISTS for
+    ADD COLUMN prior to 3.37, so we use PRAGMA table_info for broad
+    compatibility.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(knowledge_items)")
+        ).fetchall()
+    }
+    if "user_id" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE knowledge_items ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+        )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ki_user_id ON knowledge_items(user_id)"
+    )
+    await conn.commit()
+
+
 class KnowledgeStore(BaseStore):
     """SQLite + FTS5 store for the Knowledge Base Service."""
 
     SCHEMA = KNOWLEDGE_SCHEMA
-    MIGRATIONS = [
-        (1, "ALTER TABLE knowledge_items ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"),
-    ]
-
     def __init__(self, db_path: Path, media_dir: Path | None = None) -> None:
         super().__init__(db_path)
         self.media_dir = media_dir or db_path.parent / "knowledge-media"
 
     async def _post_init(self) -> None:
+        await _migration_v1_add_user_id(self._db)
         self.media_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
