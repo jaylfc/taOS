@@ -610,3 +610,105 @@ class TestAuthRequestRoutes:
         # does not grow unbounded over the process lifetime.
         app = consent_client._transport.app
         assert getattr(app.state, "_approve_locks", {}).get(request_id) is None
+
+    async def test_project_id_carried_into_jwt_and_grants(self, consent_client):
+        """Request with project_id: JWT carries the claim; grant rows carry it too."""
+        import base64
+
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "project_id": "proj-abc"},
+            )
+        request_id = create_resp.json()["request_id"]
+
+        approve_resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory_read"]},
+        )
+        assert approve_resp.status_code == 200
+        canonical_id = approve_resp.json()["canonical_id"]
+
+        # Retrieve the minted token via the status poll.
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(f"/api/agents/auth-requests/{request_id}")
+        token = status_resp.json()["token"]
+
+        # Decode the JWT payload (middle part, base64url without padding).
+        raw = token.split(".")[1]
+        padding = 4 - len(raw) % 4
+        if padding != 4:
+            raw += "=" * padding
+        import json as _json
+        jwt_payload = _json.loads(base64.urlsafe_b64decode(raw))
+        assert jwt_payload.get("project_id") == "proj-abc"
+
+        # Grant rows must also carry the project binding.
+        grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
+        assert all(g["project_id"] == "proj-abc" for g in grants)
+
+    async def test_approve_body_project_id_overrides_request(self, consent_client):
+        """ApproveBody.project_id overrides the project_id from the original request."""
+        import base64
+        import json as _json
+
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "project_id": "proj-original"},
+            )
+        request_id = create_resp.json()["request_id"]
+
+        approve_resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory_read"], "project_id": "proj-override"},
+        )
+        assert approve_resp.status_code == 200
+        canonical_id = approve_resp.json()["canonical_id"]
+
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(f"/api/agents/auth-requests/{request_id}")
+        token = status_resp.json()["token"]
+
+        raw = token.split(".")[1]
+        padding = 4 - len(raw) % 4
+        if padding != 4:
+            raw += "=" * padding
+        jwt_payload = _json.loads(base64.urlsafe_b64decode(raw))
+        assert jwt_payload.get("project_id") == "proj-override"
+
+        grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
+        assert all(g["project_id"] == "proj-override" for g in grants)
+
+    async def test_no_project_id_omits_claim_and_grant_is_null(self, consent_client):
+        """When no project_id is set anywhere, JWT has no project_id key and grants have None."""
+        import base64
+        import json as _json
+
+        transport = ASGITransport(app=consent_client._transport.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create_resp = await bare.post("/api/agents/auth-requests", json=_CREATE_BODY)
+        request_id = create_resp.json()["request_id"]
+
+        approve_resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["memory_read"]},
+        )
+        assert approve_resp.status_code == 200
+        canonical_id = approve_resp.json()["canonical_id"]
+
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            status_resp = await bare.get(f"/api/agents/auth-requests/{request_id}")
+        token = status_resp.json()["token"]
+
+        raw = token.split(".")[1]
+        padding = 4 - len(raw) % 4
+        if padding != 4:
+            raw += "=" * padding
+        jwt_payload = _json.loads(base64.urlsafe_b64decode(raw))
+        assert "project_id" not in jwt_payload
+
+        grants = await consent_client._transport.app.state.agent_grants.list_grants(canonical_id)
+        assert all(g.get("project_id") is None for g in grants)
