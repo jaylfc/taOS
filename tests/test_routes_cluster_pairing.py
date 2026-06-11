@@ -547,3 +547,137 @@ async def test_list_workers_still_public(app, tmp_data_dir):
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
     await app.state.cluster_pairing.close()
+
+
+# ---------------------------------------------------------------------------
+# Admin gate: non-admin session is rejected on pending + confirm
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pending_non_admin_gets_403(client, app, monkeypatch):
+    """Authenticated but non-admin session: GET /api/cluster/pairing/pending -> 403."""
+    await app.state.cluster_pairing.init()
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token: {"is_admin": False})
+    resp = await client.get("/api/cluster/pairing/pending")
+    assert resp.status_code == 403
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_non_admin_gets_403(client, app, monkeypatch):
+    """Authenticated but non-admin session: POST /api/cluster/pairing/confirm -> 403."""
+    await app.state.cluster_pairing.init()
+    monkeypatch.setattr(app.state.auth, "session_user", lambda token: {"is_admin": False})
+    resp = await client.post("/api/cluster/pairing/confirm", json={"name": "w", "code": "c"})
+    assert resp.status_code == 403
+    await app.state.cluster_pairing.close()
+
+
+# ---------------------------------------------------------------------------
+# Atomic claim: concurrent double-claim delivers key exactly once
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_delivers_key_exactly_once(client, app):
+    """Two simultaneous claims: exactly one receives the key, the other gets None/404."""
+    import asyncio
+    await app.state.cluster_pairing.init()
+    code = "concurrent-code"
+    await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": "w-concurrent", "url": "http://10.3.0.1:9000", "code_hash": _code_hash(code)},
+    )
+    await client.post("/api/cluster/pairing/confirm", json={"name": "w-concurrent", "code": code})
+
+    async def do_claim():
+        return await client.post(
+            "/api/cluster/pairing/claim", json={"name": "w-concurrent", "code": code}
+        )
+
+    r1, r2 = await asyncio.gather(do_claim(), do_claim())
+    statuses = sorted([r1.status_code, r2.status_code])
+    # One must succeed (200); the other must fail (403 or 404).
+    # sorted ascending: [200, 4xx] -> statuses[0]==200, statuses[1] in (403,404).
+    assert statuses[0] == 200, f"No successful claim: {r1.status_code}, {r2.status_code}"
+    assert statuses[1] in (403, 404), f"Both claims succeeded: {r1.status_code}, {r2.status_code}"
+    await app.state.cluster_pairing.close()
+
+
+# ---------------------------------------------------------------------------
+# list_pending excludes confirmed and capped rows
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_pending_excludes_confirmed_and_capped(client, app):
+    """list_pending must not include rows with confirmed=1 or exhausted attempts."""
+    await app.state.cluster_pairing.init()
+
+    # Row 1: clean pending (should appear)
+    await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": "w-visible", "url": "http://10.4.0.1:9000", "code_hash": _code_hash("c1")},
+    )
+
+    # Row 2: confirmed (should NOT appear)
+    await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": "w-confirmed", "url": "http://10.4.0.2:9000", "code_hash": _code_hash("c2")},
+    )
+    await client.post("/api/cluster/pairing/confirm", json={"name": "w-confirmed", "code": "c2"})
+
+    # Row 3: attempts capped (should NOT appear)
+    await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": "w-capped", "url": "http://10.4.0.3:9000", "code_hash": _code_hash("c3")},
+    )
+    for _ in range(5):
+        await client.post("/api/cluster/pairing/confirm", json={"name": "w-capped", "code": "wrong"})
+
+    resp = await client.get("/api/cluster/pairing/pending")
+    assert resp.status_code == 200
+    names = [item["name"] for item in resp.json()]
+    assert "w-visible" in names, "visible pending row missing"
+    assert "w-confirmed" not in names, "confirmed row should be excluded"
+    assert "w-capped" not in names, "attempts-capped row should be excluded"
+    await app.state.cluster_pairing.close()
+
+
+# ---------------------------------------------------------------------------
+# Claim differentiation: expired -> 410, capped -> 404
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_claim_expired_pending_returns_410(client, app, monkeypatch):
+    """claim on expired pending entry -> 410 with re-announce message."""
+    await app.state.cluster_pairing.init()
+    code = "expire-claim-code"
+    await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": "w-exp-claim", "url": "http://10.5.0.1:9000", "code_hash": _code_hash(code)},
+    )
+    import tinyagentos.cluster.pairing_store as _ps
+    monkeypatch.setattr(_ps, "_now", lambda: time.time() + 1000)
+    resp = await client.post(
+        "/api/cluster/pairing/claim", json={"name": "w-exp-claim", "code": code}
+    )
+    assert resp.status_code == 410
+    assert "re-announce" in resp.json().get("error", "").lower()
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_capped_pending_returns_404(client, app):
+    """claim on attempts-capped entry -> 404."""
+    await app.state.cluster_pairing.init()
+    await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": "w-cap-claim", "url": "http://10.5.0.2:9000", "code_hash": _code_hash("real")},
+    )
+    # Exhaust attempts via confirm
+    for _ in range(5):
+        await client.post("/api/cluster/pairing/confirm", json={"name": "w-cap-claim", "code": "wrong"})
+    resp = await client.post(
+        "/api/cluster/pairing/claim", json={"name": "w-cap-claim", "code": "real"}
+    )
+    assert resp.status_code == 404
+    await app.state.cluster_pairing.close()

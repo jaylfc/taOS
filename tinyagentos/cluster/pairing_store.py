@@ -132,9 +132,9 @@ class ClusterPairingStore(BaseStore):
         Wrong code: increments attempts, returns None.
         Unknown/invalidated name: returns None.
 
-        Callers must distinguish "not confirmed yet" from "confirmed but wrong
-        code" by checking list_pending or by the attempt count. The route
-        layer handles the HTTP status differentiation.
+        The clear is gated on confirmed=1 so two concurrent callers cannot
+        both receive the key: only the caller whose UPDATE flips confirmed
+        1->0 (rowcount==1) wins; the other gets None.
         """
         if self._db is None:
             raise RuntimeError("ClusterPairingStore not initialised")
@@ -142,18 +142,19 @@ class ClusterPairingStore(BaseStore):
         if row is None:
             return None
         if not row["confirmed"]:
-            # Not confirmed yet — not an error, just not ready.
+            # Not confirmed yet -- not an error, just not ready.
             return None
         if not self._pending_valid(row):
-            # Expired even though confirmed — worker must re-announce.
+            # Expired even though confirmed -- worker must re-announce.
             return None
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         if not hmac.compare_digest(code_hash, row["pending_code_hash"] or ""):
             await self._increment_attempts(name)
             return None
         key = bytes(row["signing_key"])
-        # Clear pending fields and confirmed flag (key delivered once).
-        await self._db.execute(
+        # Conditional clear: WHERE confirmed = 1 ensures only one concurrent
+        # caller can win.  The winner gets rowcount == 1; the loser gets 0.
+        cursor = await self._db.execute(
             """
             UPDATE cluster_pairings
                SET pending_code_hash = NULL,
@@ -163,10 +164,13 @@ class ClusterPairingStore(BaseStore):
                    claim_attempts    = 0,
                    confirmed         = 0
              WHERE name = ?
+               AND confirmed = 1
             """,
             (name,),
         )
         await self._db.commit()
+        if cursor.rowcount != 1:
+            return None
         return key
 
     async def get_signing_key(self, name: str) -> bytes | None:
@@ -191,6 +195,30 @@ class ClusterPairingStore(BaseStore):
     # Read
     # ------------------------------------------------------------------
 
+    async def pairing_state(self, name: str) -> dict | None:
+        """Return a summary dict for the route layer; None when the row is absent.
+
+        Keys: has_pending, confirmed, expired, attempts_capped.
+        """
+        if self._db is None:
+            raise RuntimeError("ClusterPairingStore not initialised")
+        row = await self._fetch_row(name)
+        if row is None:
+            return None
+        has_pending = row["pending_code_hash"] is not None
+        confirmed = bool(row["confirmed"])
+        ts = row["pending_ts"]
+        expired = has_pending and (ts is None or (_now() - ts) > _EXPIRY_SECS)
+        attempts_capped = row["claim_attempts"] >= _MAX_ATTEMPTS
+        return {
+            "has_pending": has_pending,
+            "confirmed": confirmed,
+            "expired": expired,
+            "attempts_capped": attempts_capped,
+        }
+
+
+
     async def list_pending(self) -> list[dict]:
         """Return all rows that have a non-expired pending announcement."""
         if self._db is None:
@@ -201,10 +229,12 @@ class ClusterPairingStore(BaseStore):
             SELECT name, pending_url, pending_platform, pending_ts
               FROM cluster_pairings
              WHERE pending_code_hash IS NOT NULL
+               AND confirmed = 0
+               AND claim_attempts < ?
                AND pending_ts > ?
              ORDER BY pending_ts
             """,
-            (min_ts,),
+            (_MAX_ATTEMPTS, min_ts),
         )
         rows = await cursor.fetchall()
         return [

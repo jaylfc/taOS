@@ -11,10 +11,13 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+import re
+
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
 from tinyagentos.cluster.worker_protocol import WorkerInfo
+from tinyagentos.routes.auth import _require_admin
 
 router = APIRouter()
 
@@ -44,7 +47,7 @@ class PairingClaim(BaseModel):
 # Pairing endpoints
 # ---------------------------------------------------------------------------
 
-_CODE_HASH_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
+_CODE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @router.post("/api/cluster/pairing/announce")
@@ -64,7 +67,10 @@ async def pairing_announce(request: Request, body: PairingAnnounce):
 
 @router.get("/api/cluster/pairing/pending")
 async def pairing_pending(request: Request):
-    """Admin session required — list pending pairing announcements."""
+    """Admin session required -- list pending pairing announcements."""
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     store = request.app.state.cluster_pairing
     items = await store.list_pending()
     return items
@@ -72,44 +78,48 @@ async def pairing_pending(request: Request):
 
 @router.post("/api/cluster/pairing/confirm")
 async def pairing_confirm(request: Request, body: PairingConfirm):
-    """Admin session required — confirm a pending pairing."""
-    import tinyagentos.cluster.pairing_store as _ps
-    store = request.app.state.cluster_pairing
-    # Check if entry exists at all (including expired/maxed-out)
-    row = await store._fetch_row(body.name)  # noqa: SLF001
-    if row is None or row["pending_code_hash"] is None:
-        return JSONResponse({"error": "No pending pairing for this worker"}, status_code=404)
-    # Attempt cap check (invalidated entries are 404, not 410)
-    if row["claim_attempts"] >= _ps._MAX_ATTEMPTS:  # noqa: SLF001
-        return JSONResponse({"error": "No pending pairing for this worker"}, status_code=404)
-    # Expiry check — use store's _now so monkeypatching in tests works correctly
-    ts = row["pending_ts"]
-    if ts is None or (_ps._now() - ts) > _ps._EXPIRY_SECS:  # noqa: SLF001
-        return JSONResponse({"error": "Pairing request has expired"}, status_code=410)
-    ok = await store.confirm(body.name, body.code)
+    """Admin session required -- confirm a pending pairing."""
+    ok, err = _require_admin(request)
     if not ok:
+        return err
+    store = request.app.state.cluster_pairing
+    state = await store.pairing_state(body.name)
+    if state is None or not state["has_pending"]:
+        return JSONResponse({"error": "No pending pairing for this worker"}, status_code=404)
+    if state["attempts_capped"]:
+        return JSONResponse({"error": "No pending pairing for this worker"}, status_code=404)
+    if state["expired"]:
+        return JSONResponse({"error": "Pairing request has expired"}, status_code=410)
+    confirmed = await store.confirm(body.name, body.code)
+    if not confirmed:
         return JSONResponse({"error": "Incorrect pairing code"}, status_code=403)
     return {"status": "confirmed"}
 
 
 @router.post("/api/cluster/pairing/claim")
 async def pairing_claim(request: Request, body: PairingClaim):
-    """Unauthenticated — worker claims its signing key after admin confirmation."""
+    """Unauthenticated -- worker claims its signing key after admin confirmation."""
     store = request.app.state.cluster_pairing
-    row = await store._fetch_row(body.name)  # noqa: SLF001
-    if row is None:
+    state = await store.pairing_state(body.name)
+    if state is None or not state["has_pending"]:
         return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
-    # No pending entry at all (never announced or already fully claimed)
-    if row["pending_code_hash"] is None:
+    # Check invalidation before the confirmed check so workers get actionable
+    # errors instead of polling 202 indefinitely on a dead entry.
+    if state["attempts_capped"]:
         return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
-    # Not yet confirmed by admin
-    if not row["confirmed"]:
+    if state["expired"]:
+        return JSONResponse(
+            {"error": "Pairing request expired; please re-announce"},
+            status_code=410,
+        )
+    if not state["confirmed"]:
         return JSONResponse({"status": "awaiting_confirm"}, status_code=202)
     key = await store.claim(body.name, body.code)
     if key is None:
-        # claim() returns None on wrong code or expiry after confirm
-        row2 = await store._fetch_row(body.name)  # noqa: SLF001
-        if row2 is None or row2["pending_code_hash"] is None:
+        # Re-check state: if the entry was cleared by a concurrent winner or
+        # became invalidated, return 404; otherwise it is a wrong code.
+        state2 = await store.pairing_state(body.name)
+        if state2 is None or not state2["has_pending"]:
             return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
         return JSONResponse({"error": "Incorrect pairing code"}, status_code=403)
     return {"signing_key": key.hex()}
