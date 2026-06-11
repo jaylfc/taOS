@@ -21,14 +21,14 @@
 ## Recently landed
 - **#737 cluster-worker pairing auth:** Phase 1 backend (#762) + Phase 2 worker scripts/agent signing (#770) DONE and on master (#767, #775). E2E VALIDATED in production (#772 closed: real Pi controller + Fedora worker, full announce->confirm->claim->signed register/heartbeat, unsigned->401). Phases 3 (UI pending-workers + enter-code dialog) and 4 (fleet migration UX) remain.
 - **Beta incident fixes on master:** #763 (knowledge user_id migration self-heals bricked installs + exit-on-startup-failure), #754 (installer sudo gap), #768 (installer re-run ownership / priv-esc), #752 (perf), #758 (controller-rescue runbook), #757 (prefetch placeholder).
-- Pi controller was repaired during the incident; it is on an OLD master (93f395e2) and LACKS the pairing backend. Update it before using it as the #772 test controller.
+- Pi controller is UPDATED to master 66688348 (done for the #772 test) and has the pairing backend live.
 
 ## Immediate next actions
 1. **#737 Phase 3** (UI pending-workers list + enter-code dialog): frontend-design pass, HELD for a design session with Jay (Apple-grade bar), ties into #760/#761 badges.
 2. **#737 Phase 4** (fleet migration UX): existing workers re-pair once with a clear prompt, not silent 401s.
 3. **#774 project/shelf registry:** design DONE + spec at docs/superpowers/specs/2026-06-11-project-shelf-registry-design.md (local, gitignored). taOSmd integration thread OPEN (integration channel msg 322): 3 contract questions (shelf create/archive shape; empty-shelf archive reversibility for link; carve-out re-key vs re-ingest). Implementation plan gated on their answers.
 4. **#776 add-machine over SSH (#737 Phase 3.5):** design DONE + spec at docs/superpowers/specs/2026-06-11-add-machine-ssh-design.md (local). One-click Cluster "Add machine": paramiko SSH (not sshpass), controller auto-installs + auto-pairs (injects TAOS_PAIRING_CODE, confirms itself), key-exchange for durable mgmt, key-based auth v1 (Linux/macOS only; Windows = separate native app). Ready for an implementation plan; sequence the build behind Phase 3 UI (both Cluster-app frontend).
-4. **#744** external coding-agent onboarding: taosmd side merged (their PR #151); our 7 build tasks queued.
+5. **#744** external coding-agent onboarding: taosmd side merged (their PR #151); our 7 build tasks queued.
 
 ## Open issues filed this stretch
 #757 (fixed #771), #759 (fixed #764), #760 host badges everywhere (UI), #761 per-device emoji identity (brainstorm first), #772 fresh-install/pairing smoke (Pi+Fedora, PASSED+closed), #774 project/shelf registry (design done), #776 add-machine over SSH (design done), #777 install identity + version registration (per-bug context now, opt-in central reg later), #778 anonymous active-install count via the update check (aggregate only, no PII), #779 Projects-app code knowledge-graph plugin view for coding projects.
