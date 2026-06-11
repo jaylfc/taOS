@@ -233,14 +233,35 @@ Log "installing worker python deps into .venv"
 & $venvPython -m pip install --quiet --upgrade pip
 & $venvPython -m pip install --quiet httpx pydantic psutil fastapi uvicorn pyyaml pillow libtorrent
 
+# --- pair + register with controller ------------------------------------
+# Pairing acquires the HMAC signing key; --register-after does the first
+# signed POST /api/cluster/workers. Crypto lives in Python, not PowerShell.
+
+$stateDir = Join-Path $InstallDir '.taos-worker-state'
+Log "pairing worker '$WorkerName' with controller at $ControllerUrl"
+Log "  (the pairing code will be printed below -- enter it in taOS > Cluster)"
+$pairArgs = @(
+    '-m', 'tinyagentos.worker.pair',
+    $ControllerUrl,
+    '--name', $WorkerName,
+    '--state-dir', $stateDir,
+    '--register-after'
+)
+& $venvPython @pairArgs
+if ($LASTEXITCODE -ne 0) {
+    Warn "pairing requires admin approval in taOS > Cluster."
+    Warn "  The code was printed above. Once approved, re-run this installer to resume."
+    exit 1
+}
+
 # --- first-boot benchmark -----------------------------------------------
 
 if (-not $SkipBenchmark) {
-    Log "running initial worker benchmark (first-join only — subsequent runs are manual)"
+    Log "running initial worker benchmark (first-join only -- subsequent runs are manual)"
     try {
         & $venvPython -m tinyagentos.benchmark.runner --report-to $ControllerUrl --worker-name $WorkerName --first-join
     } catch {
-        Warn "benchmark runner not available yet — skipping (worker will run without baseline scores)"
+        Warn "benchmark runner not available yet -- skipping (worker will run without baseline scores)"
     }
 }
 
@@ -261,15 +282,29 @@ function Install-ScheduledTask {
         -RestartCount 999
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
 
+    $envVars = @(
+        "TAOS_WORKER_STATE_DIR=$stateDir"
+    )
+
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
-    Register-ScheduledTask `
+    $task = Register-ScheduledTask `
         -TaskName $taskName `
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
         -Principal $principal `
-        -Description 'TinyAgentOS worker daemon — connects to the controller and serves inference work' | Out-Null
+        -Description 'TinyAgentOS worker daemon -- connects to the controller and serves inference work' | Out-Null
+
+    # Inject environment variables into the task XML (ScheduledTaskAction has no native env support)
+    try {
+        $xml = (Get-ScheduledTask -TaskName $taskName | Export-ScheduledTask)
+        $envXml = ($envVars | ForEach-Object { "<Variable><Name>$($_.Split('=')[0])</Name><Value>$($_.Split('=',2)[1])</Value></Variable>" }) -join ''
+        $xml = $xml -replace '(<Exec>)', "<EnvironmentVariables>$envXml</EnvironmentVariables>`$1"
+        Register-ScheduledTask -TaskName $taskName -Xml $xml -Force | Out-Null
+    } catch {
+        Warn "could not inject env vars into scheduled task -- worker will use default state dir"
+    }
 
     Start-ScheduledTask -TaskName $taskName
     Log "worker registered as Scheduled Task '$taskName' (starts at logon, auto-restarts)"
@@ -278,7 +313,7 @@ function Install-ScheduledTask {
 }
 
 if ($ServiceMode -eq 'skip') {
-    Log "TAOS_SERVICE=skip — not installing a service"
+    Log "TAOS_SERVICE=skip -- not installing a service"
     Log "run manually: cd $InstallDir; .\.venv\Scripts\python.exe -m tinyagentos.worker $ControllerUrl --name $WorkerName"
 } else {
     Install-ScheduledTask

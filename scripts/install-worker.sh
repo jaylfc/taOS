@@ -500,36 +500,22 @@ install_and_enroll_incus() {
 
     log "LAN IP: $LAN_IP"
 
-    # ── 7. Register worker with controller ─────────────────────────────
-    # POST /api/cluster/workers so the controller knows this worker exists
-    # before we try to /incus-enroll (that endpoint 404s for unknown workers).
-    # Includes the new LXC-mode fields: host_lan_ip and worker_lxc_image_version.
-    log "registering worker '${WORKER_NAME}' with controller at $CONTROLLER_URL"
-    local reg_code
-    reg_code="$(curl -sS -o /tmp/taos-worker-register.out -w "%{http_code}" \
-        -X POST "$CONTROLLER_URL/api/cluster/workers" \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"name\": \"${WORKER_NAME}\",
-            \"url\": \"https://${LAN_IP}:8443\",
-            \"hardware\": {},
-            \"backends\": [],
-            \"capabilities\": [],
-            \"platform\": \"linux\",
-            \"models\": [],
-            \"host_lan_ip\": \"${TAOS_HOST_LAN_IP:-${LAN_IP}}\",
-            \"worker_lxc_image_version\": \"ubuntu/24.04/amd64\"
-        }" \
-        2>/tmp/taos-worker-register.err || true)"
-
-    if [[ "$reg_code" == 2* ]]; then
-        log "worker registered successfully (HTTP $reg_code)"
-    elif [[ "$reg_code" == "409" ]]; then
-        log "worker already registered (HTTP 409) — continuing to incus-enroll"
-    else
-        warn "worker registration returned HTTP $reg_code"
-        warn "  response: $(cat /tmp/taos-worker-register.out 2>/dev/null)"
-        warn "  continuing to incus-enroll anyway"
+    # ── 7. Pair + register worker with controller ───────────────────────
+    # Pairing acquires the HMAC signing key; --register-after does the
+    # first signed POST /api/cluster/workers so the controller knows this
+    # worker before the incus-enroll step below (that endpoint 404s for
+    # unknown workers). Crypto lives in Python, not shell.
+    log "pairing worker '${WORKER_NAME}' with controller at $CONTROLLER_URL"
+    log "  (the pairing code will be printed below — enter it in taOS > Cluster)"
+    if ! "$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.pair \
+            "$CONTROLLER_URL" \
+            --name "$WORKER_NAME" \
+            --url "https://${LAN_IP}:8443" \
+            --register-after; then
+        warn "pairing requires admin approval in taOS > Cluster."
+        warn "  The code was printed above. Once approved, re-run this installer to resume."
+        warn "  To resume later: run this installer again (it will skip already-done steps)."
+        return 1
     fi
 
     # ── 8. POST to controller ───────────────────────────────────────────
@@ -1225,6 +1211,7 @@ ExecStart=$INSTALL_DIR/.venv/bin/python -m tinyagentos.worker $CONTROLLER_URL --
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=TAOS_WORKER_STATE_DIR=$INSTALL_DIR/.taos-worker-state
 
 [Install]
 WantedBy=multi-user.target
@@ -1253,6 +1240,7 @@ ExecStart=$INSTALL_DIR/.venv/bin/python -m tinyagentos.worker $CONTROLLER_URL --
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=TAOS_WORKER_STATE_DIR=$INSTALL_DIR/.taos-worker-state
 
 [Install]
 WantedBy=default.target
