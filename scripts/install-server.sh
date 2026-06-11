@@ -980,7 +980,14 @@ if [[ ! -d "$INSTALL_DIR/.git" ]]; then
     git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
 else
     log "updating existing checkout"
-    (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+    # The repo is chowned to the 'taos' service user at the end of every
+    # install, so a re-run (running as root) trips git's dubious-ownership
+    # check.  Scope a safe.directory exception to these two commands rather
+    # than polluting global git config; the post-install chown re-fixes the
+    # ownership of anything these create.
+    (cd "$INSTALL_DIR" \
+        && git -c safe.directory="$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
+        && git -c safe.directory="$INSTALL_DIR" reset --hard "origin/$BRANCH")
 fi
 
 cd "$INSTALL_DIR"
