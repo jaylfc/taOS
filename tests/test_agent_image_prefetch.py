@@ -79,9 +79,14 @@ class TestServiceTemplate:
             "..", "scripts", "systemd", "tinyagentos.service",
         )
         content = open(service_path).read()
-        assert "TAOS_PREFETCH_BASE_IMAGE=TAOS_PREFETCH" in content, (
-            "service template must have the TAOS_PREFETCH placeholder "
+        assert "TAOS_PREFETCH_BASE_IMAGE=__TAOS_PREFETCH_VALUE__" in content, (
+            "service template must have the __TAOS_PREFETCH_VALUE__ placeholder "
             "so install-server.sh can substitute it"
+        )
+        # Regression for #757: the old bare placeholder collided with the var
+        # name, so the sed mangled TAOS_PREFETCH_BASE_IMAGE into 0_BASE_IMAGE.
+        assert "=TAOS_PREFETCH\n" not in content, (
+            "placeholder must not be a substring of TAOS_PREFETCH_BASE_IMAGE"
         )
 
     def test_install_script_has_taos_prefetch_doc(self):
@@ -95,13 +100,14 @@ class TestServiceTemplate:
         )
 
     def test_install_script_substitutes_taos_prefetch(self):
-        """sed must have a substitution for TAOS_PREFETCH."""
+        """sed must substitute the prefetch value placeholder."""
         script_path = os.path.join(
             os.path.dirname(__file__),
             "..", "scripts", "install-server.sh",
         )
         content = open(script_path).read()
-        # The sed line that substitutes TAOS_PREFETCH into the service template
-        assert 's|TAOS_PREFETCH|$' in content, (
-            "install script must have sed substitution for TAOS_PREFETCH placeholder"
+        # The sed line that substitutes the value into the service template.
+        assert 's|__TAOS_PREFETCH_VALUE__|$' in content, (
+            "install script must have sed substitution for the "
+            "__TAOS_PREFETCH_VALUE__ placeholder"
         )

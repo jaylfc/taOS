@@ -1499,7 +1499,7 @@ install_linux_systemd_system() {
         -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
         -e "s|TAOS_PORT|$TAOS_PORT|g" \
         -e "s|TAOS_STOP_SCRIPT|/usr/local/bin/taos-graceful-stop|g" \
-        -e "s|TAOS_PREFETCH|$taos_prefetch|g" \
+        -e "s|__TAOS_PREFETCH_VALUE__|$taos_prefetch|g" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos.service" \
         | $sudo_cmd tee "$unit" > /dev/null
     # Inject bind host/port + proxy port into the unit's Environment block.
@@ -1546,7 +1546,7 @@ install_linux_systemd_user() {
         -e "s|TAOS_PYTHON|$INSTALL_DIR/.venv/bin/python|g" \
         -e "s|TAOS_PORT|$TAOS_PORT|g" \
         -e "s|TAOS_STOP_SCRIPT|$HOME/.local/bin/taos-graceful-stop|g" \
-        -e "s|TAOS_PREFETCH|$taos_prefetch|g" \
+        -e "s|__TAOS_PREFETCH_VALUE__|$taos_prefetch|g" \
         -e "/^User=/d" \
         -e "/^Group=/d" \
         -e "s|WantedBy=multi-user.target|WantedBy=default.target|g" \
