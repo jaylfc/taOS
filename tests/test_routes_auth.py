@@ -19,7 +19,11 @@ class TestAuthRoutes:
         assert resp.json()["status"] == "ok"
 
     @pytest.mark.asyncio
-    async def test_cluster_register_exempt_from_auth(self, client):
+    async def test_cluster_register_exempt_from_session_auth(self, client):
+        # POST /api/cluster/workers is session-exempt (no session cookie required),
+        # but the route-level HMAC gate rejects unpaired workers with 401.
+        # This verifies that the session middleware lets the request through
+        # (i.e. the route itself is reached and returns its own 401 code).
         resp = await client.post("/api/cluster/workers", json={
             "name": "test-worker",
             "url": "http://localhost:9090",
@@ -27,4 +31,5 @@ class TestAuthRoutes:
             "capabilities": [],
             "hardware": {},
         })
-        assert resp.status_code == 200
+        assert resp.status_code == 401
+        assert resp.json().get("code") == "worker_not_paired"

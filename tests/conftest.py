@@ -1,6 +1,10 @@
+import hashlib
+import hmac
+import json as _json
 import os
 import sqlite3
 import sys
+import time
 
 import pytest
 import pytest_asyncio
@@ -9,6 +13,94 @@ from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.app import create_app
 from tinyagentos.routes.desktop import SPA_DIR
+
+
+# ---------------------------------------------------------------------------
+# Cluster HMAC pairing helpers (used by cluster tests across multiple files)
+# ---------------------------------------------------------------------------
+
+def _cluster_code_hash(code: str) -> str:
+    return hashlib.sha256(code.encode()).hexdigest()
+
+
+def sign_worker_request(
+    key: bytes,
+    name: str,
+    method: str,
+    path: str,
+    body: bytes,
+) -> dict:
+    """Return the three HMAC auth headers for a worker request."""
+    ts = str(int(time.time()))
+    body_hash = hashlib.sha256(body).hexdigest()
+    message = f"{ts}.{method.upper()}.{path}.{body_hash}".encode()
+    sig = hmac.new(key, message, hashlib.sha256).hexdigest()
+    return {
+        "X-TAOS-Worker-Name": name,
+        "X-TAOS-Timestamp": ts,
+        "X-TAOS-Signature": sig,
+    }
+
+
+async def _pair_and_register_worker(
+    client,
+    app,
+    payload: dict,
+    code_prefix: str = "test-pairing-code",
+) -> object:
+    """Pair a worker and POST to /api/cluster/workers with HMAC auth.
+
+    Drives the full announce -> confirm -> claim flow to obtain a signing
+    key, then sends the registration request with the correct headers.
+    Returns the httpx Response from the final POST.
+    """
+    name = payload["name"]
+    url = payload.get("url", "http://localhost:9000")
+    platform = payload.get("platform", "linux")
+    code = code_prefix + name
+
+    # init() opens a fresh aiosqlite connection every call, so only run it
+    # when the store has not been initialised yet (avoids leaking connections
+    # in tests that pair multiple workers).
+    if app.state.cluster_pairing._db is None:  # noqa: SLF001
+        await app.state.cluster_pairing.init()
+    ch = _cluster_code_hash(code)
+
+    resp = await client.post(
+        "/api/cluster/pairing/announce",
+        json={"name": name, "url": url, "platform": platform, "code_hash": ch},
+    )
+    assert resp.status_code == 200, f"announce failed for {name!r}: {resp.text}"
+
+    resp = await client.post(
+        "/api/cluster/pairing/confirm",
+        json={"name": name, "code": code},
+    )
+    assert resp.status_code == 200, f"confirm failed for {name!r}: {resp.text}"
+
+    resp = await client.post(
+        "/api/cluster/pairing/claim",
+        json={"name": name, "code": code},
+    )
+    assert resp.status_code == 200, f"claim failed for {name!r}: {resp.text}"
+    key = bytes.fromhex(resp.json()["signing_key"])
+
+    body = _json.dumps(payload).encode()
+    headers = sign_worker_request(key, name, "POST", "/api/cluster/workers", body)
+    return await client.post(
+        "/api/cluster/workers",
+        content=body,
+        headers={**headers, "content-type": "application/json"},
+    )
+
+
+@pytest.fixture
+def pair_and_register_worker():
+    """Function fixture so test files in any directory can use the pairing
+    helper without importing from conftest (tests/ is not a package, so
+    ``from tests.conftest import ...`` breaks under CI's import mode)."""
+    return _pair_and_register_worker
+
 
 # macOS + Python 3.14: after the interpreter loads ObjC-backed extension
 # modules (psutil, zeroconf, Pillow, lxml …), forking a child process with

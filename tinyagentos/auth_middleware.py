@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
-EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/api/cluster/workers", "/api/cluster/heartbeat", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/api/agents/registry/pubkey"}
+EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/api/agents/registry/pubkey"}
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -34,6 +34,15 @@ EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/shortcut/")
 _AUTH_REQUEST_BASE = "/api/agents/auth-requests"
 _AUTH_REQUEST_PREFIX = "/api/agents/auth-requests/"
 
+# Cluster pairing: announce and claim are unauthenticated (the pairing code is
+# the proof of possession).  Pending and confirm require an admin session and
+# are NOT exempt.  Worker register and heartbeat are session-exempt because the
+# route-level HMAC dependency is the gate; GET workers is public.
+_CLUSTER_PAIRING_ANNOUNCE = "/api/cluster/pairing/announce"
+_CLUSTER_PAIRING_CLAIM = "/api/cluster/pairing/claim"
+_CLUSTER_WORKERS = "/api/cluster/workers"
+_CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
+
 
 def _is_exempt(method: str, path: str) -> bool:
     """Return True if this request should bypass the auth gate.
@@ -43,6 +52,13 @@ def _is_exempt(method: str, path: str) -> bool:
       GET  /api/agents/auth-requests/{id}     — status poll, no auth needed
       POST /api/agents/auth-requests/{id}/approve|deny — admin only, NOT exempt
       GET  /api/agents/auth-requests          — list (admin), NOT exempt
+
+    Cluster pairing exemptions (method-sensitive):
+      POST /api/cluster/pairing/announce      — unauthenticated, code hash is proof
+      POST /api/cluster/pairing/claim         — unauthenticated, code is proof
+      GET  /api/cluster/workers               — public worker list
+      POST /api/cluster/workers               — session-exempt, HMAC gate at route level
+      POST /api/cluster/heartbeat             — session-exempt, HMAC gate at route level
     """
     if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
         return True
@@ -55,6 +71,18 @@ def _is_exempt(method: str, path: str) -> bool:
         tail = path[len(_AUTH_REQUEST_PREFIX):]
         if tail and "/" not in tail:
             return True
+    # Cluster pairing — announce and claim are unauthenticated.
+    if method == "POST" and path == _CLUSTER_PAIRING_ANNOUNCE:
+        return True
+    if method == "POST" and path == _CLUSTER_PAIRING_CLAIM:
+        return True
+    # Cluster workers — GET is a public list; POST is session-exempt (HMAC gate).
+    if method == "GET" and path == _CLUSTER_WORKERS:
+        return True
+    if method == "POST" and path == _CLUSTER_WORKERS:
+        return True
+    if method == "POST" and path == _CLUSTER_HEARTBEAT:
+        return True
     return False
 
 
