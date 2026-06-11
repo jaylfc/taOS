@@ -299,22 +299,31 @@ pin_librknnrt() {
     LIBRKNNRT_REPLACED=1
     sudo ldconfig
 
-    # Verify version string against the temp source file before deleting
-    # it — the filesystem-cache / symlink-resolution race after
-    # `sudo install` + `sudo ldconfig` was making librknnrt_current_version
-    # return empty on first run even though the file content was correct
-    # (#406). SHA256 matched up front so $tmp is provably the right file.
-    local verified
-    verified="$(strings "$tmp" | awk '/librknnrt version: / { print $3; exit }')"
+    # Verify the version string as a belt-and-braces check. The SHA256 above
+    # already proved $tmp is byte-for-byte the pinned runtime, so this is
+    # secondary. It depends on `strings` (binutils), which minimal Pi images
+    # often lack and which install_rkllama only installs LATER (step 4). A
+    # missing `strings` here must therefore NOT fail the install (#783): on a
+    # box without binutils the re-check returned empty and the script died
+    # with "version after install is ''" even though librknnrt installed
+    # correctly, which stopped rkllama from ever installing. Skip gracefully
+    # when the tool is unavailable; only die on a genuine version mismatch.
+    local verified=""
+    if command -v strings >/dev/null 2>&1; then
+        verified="$(strings "$tmp" | awk '/librknnrt version: / { print $3; exit }')"
+        if [[ -z "$verified" ]]; then
+            # Fall back to re-reading the installed path (legacy behaviour).
+            verified="$(librknnrt_current_version || true)"
+        fi
+    fi
     rm -f "$tmp"
     if [[ -z "$verified" ]]; then
-        # Fall back to re-reading the installed path (legacy behaviour).
-        verified="$(librknnrt_current_version || true)"
-    fi
-    if [[ "$verified" != "$LIBRKNNRT_EXPECTED_VERSION" ]]; then
+        log "librknnrt installed and SHA256-verified; skipping version-string re-check ('strings' not available yet)"
+    elif [[ "$verified" != "$LIBRKNNRT_EXPECTED_VERSION" ]]; then
         die "librknnrt version after install is '$verified', expected $LIBRKNNRT_EXPECTED_VERSION"
+    else
+        log "librknnrt pinned to $verified (backup: ${LIBRKNNRT_BACKUP:-none})"
     fi
-    log "librknnrt pinned to $verified (backup: ${LIBRKNNRT_BACKUP:-none})"
 }
 
 # -------- (4) rkllama clone + venv ---------------------------------------
@@ -340,6 +349,9 @@ install_rkllama() {
         command -v gcc >/dev/null 2>&1 || _need+=("build-essential")
         dpkg-query -W python3-dev >/dev/null 2>&1 || _need+=("python3-dev")
         dpkg-query -W libffi-dev  >/dev/null 2>&1 || _need+=("libffi-dev")
+        # `strings` (binutils) is used by the librknnrt version checks; minimal
+        # Pi images can lack it (#783). Ensure it is present.
+        command -v strings >/dev/null 2>&1 || _need+=("binutils")
         if (( ${#_need[@]} )); then
             log "installing build deps for rkllama wheel compilation: ${_need[*]}"
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${_need[@]}" \
