@@ -39,6 +39,22 @@ Both set:
 WAL gives better read concurrency and avoids most "database is locked" errors.
 NORMAL synchronous is safe for nearly all crash scenarios while being
 significantly faster than the default FULL.
+
+FOOTGUNS -- READ BEFORE ADDING MIGRATIONS
+------------------------------------------
+1. SCHEMA runs before MIGRATIONS (see BaseStore.init).  Never put a
+   reference to a column that is introduced by a migration inside SCHEMA
+   (e.g. an index on a column added by ALTER TABLE).  The SCHEMA
+   executescript will crash on existing databases that lack the column
+   before the migration that adds it has had a chance to run.
+
+2. Baseline-at-latest semantics (step 2 above) stamp pre-existing databases
+   at the newest migration version WITHOUT executing any SQL.  This means
+   retrofit migrations -- ones written for databases that predate them -- are
+   silently skipped on exactly the databases that need them.  Use a guarded
+   _post_init coroutine instead (PRAGMA table_info check + ALTER TABLE only
+   when the column is absent).  See knowledge_store._migration_v1_add_user_id
+   and agent_registry_store._migration_v1_add_status for the pattern.
 """
 from __future__ import annotations
 
