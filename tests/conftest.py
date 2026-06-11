@@ -59,7 +59,11 @@ async def _pair_and_register_worker(
     platform = payload.get("platform", "linux")
     code = code_prefix + name
 
-    await app.state.cluster_pairing.init()
+    # init() opens a fresh aiosqlite connection every call, so only run it
+    # when the store has not been initialised yet (avoids leaking connections
+    # in tests that pair multiple workers).
+    if app.state.cluster_pairing._db is None:  # noqa: SLF001
+        await app.state.cluster_pairing.init()
     ch = _cluster_code_hash(code)
 
     resp = await client.post(
