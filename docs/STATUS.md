@@ -30,7 +30,7 @@
 4. **#744** external coding-agent onboarding: taosmd side merged (their PR #151); our 7 build tasks queued.
 
 ## Open issues filed this stretch
-#757 (fixed #771), #759 (fixed #764), #760 host badges everywhere (UI), #761 per-device emoji identity (brainstorm first), #772 fresh-install/pairing smoke (Pi+Fedora, PASSED+closed), #774 project/shelf registry (design done), #776 add-machine over SSH (design done), #777 install identity + version registration (per-bug context now, opt-in central reg later), #778 anonymous active-install count via the update check (aggregate only, no PII).
+#757 (fixed #771), #759 (fixed #764), #760 host badges everywhere (UI), #761 per-device emoji identity (brainstorm first), #772 fresh-install/pairing smoke (Pi+Fedora, PASSED+closed), #774 project/shelf registry (design done), #776 add-machine over SSH (design done), #777 install identity + version registration (per-bug context now, opt-in central reg later), #778 anonymous active-install count via the update check (aggregate only, no PII), #779 Projects-app code knowledge-graph plugin view for coding projects.
 
 ## Cross-project (taosmd / A2A)
 - #744 taosmd side MERGED (their PR #151): grant matching on (canonical_id, project_id) + verified-claim project binding; the `agent` field on data endpoints is a TARGET SHELF, not the caller. Our 7 #744 build tasks queued.
