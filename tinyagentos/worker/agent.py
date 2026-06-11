@@ -117,8 +117,9 @@ class WorkerAgent:
                     continue  # backend not running here
                 loaded_models = await self._probe_loaded_models(client, backend_type, base_url)
                 kv_quant = await self._probe_kv_quant(client, backend_type, base_url)
+                _port = urlparse(base_url).port
                 backends.append({
-                    "name": f"{backend_type}@{base_url}",
+                    "name": f"{backend_type}:{_port}" if _port is not None else backend_type,
                     "type": backend_type,
                     "url": base_url,
                     "capabilities": sorted(BACKEND_CAPABILITIES.get(backend_type, set())),

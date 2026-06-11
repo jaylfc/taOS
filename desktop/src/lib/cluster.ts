@@ -307,6 +307,21 @@ export function availableKvQuantOptions(workers: ClusterWorker[]): KvQuantOption
   return { k, v, boundary, flat };
 }
 
+/**
+ * Normalise a backend name for display.
+ *
+ * Workers updated before this fix emitted names in the shape
+ * `type@http://localhost:PORT` or `type@http://127.0.0.1:PORT`.
+ * Updated workers emit `type:PORT`.  This helper rewrites legacy names
+ * so older workers display consistently in the Activity and Cluster views.
+ * Any other shape (already-new format, custom names) is returned unchanged.
+ */
+export function normalizeBackendName(name: string): string {
+  const m = name.match(/^([^@]+)@https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0):(\d+)$/);
+  if (m) return `${m[1]}:${m[2]}`;
+  return name;
+}
+
 /** Format a unix-seconds timestamp as a short relative string like "3s ago" / "2m ago". */
 export function formatRelativeSeconds(hb: number | undefined, nowSec = Date.now() / 1000): string {
   if (!hb || typeof hb !== "number") return "never";

@@ -12,6 +12,7 @@ import {
   workerHardwareSummary,
   workerShortIp,
   formatRelativeSeconds,
+  normalizeBackendName,
   STATUS_PILL_CLASS,
   STATUS_LABEL,
 } from "@/lib/cluster";
@@ -87,7 +88,7 @@ function WorkerListCard({
               key={`${worker.name}-lb-${i}`}
               className="text-[9px] px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-200 font-medium"
             >
-              {b.name ?? b.type ?? "backend"}
+              {normalizeBackendName(b.name ?? b.type ?? "backend")}
             </span>
           ))
         )}
@@ -329,7 +330,7 @@ function WorkerDetail({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[12px] font-medium text-shell-text truncate">
-                      {b.name ?? b.type ?? "backend"}
+                      {normalizeBackendName(b.name ?? b.type ?? "backend")}
                     </span>
                     {b.type && (
                       <span className="text-[10px] text-shell-text-tertiary">{b.type}</span>

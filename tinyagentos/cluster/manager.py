@@ -281,7 +281,9 @@ class ClusterManager:
             - ``workers``: per-worker summary (name, status, capabilities,
               backend count, model count)
             - ``backends``: flat list of every remote backend entry with
-              its owning worker tagged
+              its owning worker tagged. Note: each entry's ``url`` is the
+              worker-local probe address -- cross-host calls must go via
+              ``worker_url`` (the worker agent), never the backend ``url``.
             - ``capabilities``: set of capabilities present somewhere in
               the mesh (union across workers)
             - ``models``: flat list of every model loaded on any online
