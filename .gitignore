@@ -96,3 +96,4 @@ desktop/tsconfig.tsbuildinfo
 # Local-only operational playbook (contains LAN IP + ops detail; agents read it from the working tree)
 docs/AGENT_HANDOFF.md
 docs/audit/
+.understand-anything/

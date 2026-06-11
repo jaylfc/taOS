@@ -26,7 +26,7 @@ export interface PendingAttachment {
   error?: string;
 }
 
-export function TaosAssistantPanelInner() {
+export function TaosAssistantPanelInner({ embedded = false }: { embedded?: boolean } = {}) {
   const {
     isOpen,
     messages,
@@ -48,16 +48,16 @@ export function TaosAssistantPanelInner() {
   const noModel = !model;
   const showEmptyState = messages.length === 0;
 
-  // Sync model from backend when panel opens
+  // Sync model from backend when panel opens (or when shown in the pop-out window)
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen && !embedded) return;
     fetch("/api/taos-agent/settings")
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (data?.model !== undefined) setModel(data.model);
       })
       .catch(() => {});
-  }, [isOpen, setModel]);
+  }, [isOpen, embedded, setModel]);
 
   // Auto-scroll on new content
   useEffect(() => {
@@ -242,7 +242,9 @@ export function TaosAssistantPanelInner() {
   /*  Render                                                          */
   /* ---------------------------------------------------------------- */
 
-  if (!isOpen) return null;
+  // When embedded in the pop-out window the docked panel is closed (isOpen=false),
+  // so only gate on isOpen for the docked panel, never for the pop-out.
+  if (!isOpen && !embedded) return null;
 
   return (
     <>
@@ -314,7 +316,7 @@ export function TaosAssistantPanelInner() {
       {/* Input area */}
       <div
         className="px-4 py-3 border-t border-white/5 shrink-0"
-        style={{ paddingBottom: "calc(0.75rem + var(--spacing-dock-h, 52px))" }}
+        style={{ paddingBottom: embedded ? "0.75rem" : "calc(0.75rem + var(--spacing-dock-h, 52px))" }}
       >
         {noModel && (
           <p className="text-xs text-shell-text-tertiary mb-2">

@@ -35,7 +35,7 @@ export function TaosAssistantWindow({ windowId }: { windowId: string }) {
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
-        <TaosAssistantPanelInner />
+        <TaosAssistantPanelInner embedded />
       </div>
     </div>
   );
