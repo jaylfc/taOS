@@ -24,11 +24,13 @@
 - **#762 review hardening:** admin gate on pairing pending/confirm, atomic claim (rowcount-gated), actionable 410/404 claim errors, store internals encapsulated (pairing_state()). One CodeRabbit suggestion rejected for cause: counting HMAC failures toward the pairing cap would create a re-pair DoS vector.
 
 ## Immediate next actions
-1. Merge **#767** if still open (see GOTCHA).
+1. **POST the #765 reply** (drafted, awaiting Jay go-ahead per draft-first rule): installer re-run ownership bug fixed on master, re-run with sudo now works. Draft in the session transcript.
 2. **#737 Phase 2:** worker scripts (bash + powershell) generate + print the pairing code, announce, poll claim, persist signing_key, sign register/heartbeat. Spec pattern in the #737 issue comment; backend endpoints + HMAC header format are live on dev (see tinyagentos/cluster/worker_auth.py docstring). Sonnet with a full spec.
 3. **#737 Phase 3:** taOS UI pending-workers list + enter-code dialog (frontend-design pass; ties into #760/#761 badge work).
 4. **#737 Phase 4:** migration story for existing fleet workers (clear re-pair prompt, not silent 401s).
 5. **#751** beads-inspired native task-graph: AWAITING Jay greenlight.
+
+Master is fully current: #766 + #767 + #769 all promoted. Whole overnight queue cleared.
 
 ## Open issues filed this stretch
 #753 (fixed, #754), #755/#756 (fixed, #763), #757 unit template env mangling (open, small), #759 (fixed, #764), #760 host badges everywhere (UI principle, design pass), #761 per-device emoji/badge identity (brainstorm first; hangs off #737 pairing store + #760).
