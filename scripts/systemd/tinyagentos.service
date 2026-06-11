@@ -47,7 +47,7 @@ TimeoutStartSec=180
 # --max-time in taos-graceful-stop.sh.
 TimeoutStopSec=45
 Environment=PYTHONUNBUFFERED=1
-Environment=TAOS_PREFETCH_BASE_IMAGE=TAOS_PREFETCH
+Environment=TAOS_PREFETCH_BASE_IMAGE=__TAOS_PREFETCH_VALUE__
 
 [Install]
 WantedBy=multi-user.target
