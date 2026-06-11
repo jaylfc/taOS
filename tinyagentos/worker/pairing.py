@@ -98,6 +98,18 @@ def sign_request_headers(
     }
 
 
+def _describe_error(resp) -> str:
+    """Best-effort error detail that tolerates non-JSON bodies.
+
+    A reverse proxy or gateway in front of the controller can return plain
+    text or HTML, so resp.json() would raise and mask the real status.
+    """
+    try:
+        return str(resp.json())
+    except Exception:  # noqa: BLE001
+        return resp.text
+
+
 async def run_pairing(
     client,
     controller_url: str,
@@ -153,7 +165,7 @@ async def run_pairing(
             return key
         # 404 or any other error
         raise RuntimeError(
-            f"pairing claim failed with HTTP {resp.status_code}: {resp.json()}"
+            f"pairing claim failed with HTTP {resp.status_code}: {_describe_error(resp)}"
         )
 
 
@@ -177,7 +189,7 @@ async def _announce(
     )
     if resp.status_code != 200:
         raise RuntimeError(
-            f"announce failed with HTTP {resp.status_code}: {resp.json()}"
+            f"announce failed with HTTP {resp.status_code}: {_describe_error(resp)}"
         )
     # Print the code prominently so the user can enter it in the taOS UI.
     # Show the literal code with no separator: the controller hashes the
