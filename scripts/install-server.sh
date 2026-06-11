@@ -980,7 +980,20 @@ if [[ ! -d "$INSTALL_DIR/.git" ]]; then
     git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
 else
     log "updating existing checkout"
-    (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+    # The repo is chowned to the 'taos' service user at the end of a system
+    # install, so a re-run (as root) trips git's dubious-ownership check.
+    # That check is guarding a real privilege-escalation path: running git as
+    # root inside a tree the unprivileged 'taos' user can write to would let a
+    # planted .git/config or hook execute as root.  So drop to the owning user
+    # for the update instead of overriding the check.  When the tree is already
+    # root-owned, or we are not root (user-mode / macOS install), run directly.
+    _repo_owner="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
+    if [[ "$(id -u)" == "0" && -n "$_repo_owner" && "$_repo_owner" != "root" ]]; then
+        sudo -u "$_repo_owner" git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
+            && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+    else
+        (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+    fi
 fi
 
 cd "$INSTALL_DIR"
