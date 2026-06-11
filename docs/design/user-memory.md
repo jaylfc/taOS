@@ -1,11 +1,11 @@
-# User Memory — Personal QMD Instance
+# User Memory — taosmd-backed Personal Memory
 
 **Date:** 2026-04-10
 **Status:** Draft
 
 ## Overview
 
-Every user gets their own QMD instance — the same memory system agents use, but for the user's personal context. It captures conversation history, notes, file activity, search history, and clipboard snippets. Searchable via keyword (FTS5), semantic (sqlite-vec), and hybrid search. Agents can query user memory (with permission) to understand what the user has been working on.
+User memory gives every user their own personal context store — separate from agent memories. It captures conversation history, notes, file activity, search history, and clipboard snippets. Searchable via keyword (BM25) with a local SQLite FTS5 fallback. Agents can query user memory (with permission) to understand what the user has been working on.
 
 Like Pieces App but self-hosted, offline-first, and agent-aware.
 
@@ -14,15 +14,16 @@ Like Pieces App but self-hosted, offline-first, and agent-aware.
 ```
 Host
 ├── TinyAgentOS (port 6969)
-├── User QMD (port 7833) → user's personal memory
-│   └── ~/.cache/qmd/user-index.sqlite
+│   └── user_memory routes → taosmd proxy (:7900), namespace "user-memory"
+│       └── SQLite FTS5 store (local fallback when taosmd is unreachable)
+├── taosmd (port 7900) → shared memory backend
 ├── LXC: agent-alpha
-│   └── QMD (port 7832) → agent's memory
+│   └── QMD (port 7832) → agent's per-agent memory
 └── LXC: agent-beta
-    └── QMD (port 7832) → agent's memory
+    └── QMD (port 7832) → agent's per-agent memory
 ```
 
-The user QMD runs on the host alongside TinyAgentOS (not in a container). It uses the same QMD binary and the same rkllama/ollama backend for embeddings.
+User memory rides the taosmd proxy on port 7900 under the agent namespace `user-memory`. Writes go to taosmd `POST /ingest` (and `POST /ingest/batch` for bulk migration); keyword reads go to `GET /search?mode=bm25`. A local SQLite FTS5 store acts as an automatic fallback if taosmd is unreachable. The taosmd base URL is read from `app.state.taosmd_url` at runtime; set the `TAOS_USER_MEMORY_URL` environment variable to override the default `http://localhost:7900`.
 
 ## What Gets Captured
 
@@ -53,8 +54,8 @@ User memory is organised into collections (same as agent QMD):
 - **User → User Memory**: always allowed (it's your data)
 - **Agent → User Memory**: configurable per agent in Agent Settings
   - "Can read user memory" toggle (default: off)
-  - When enabled, the agent's QMD_USER_MEMORY_URL env var points to user QMD
-  - Agents can search user memory via the same QMD API: GET /search?q=...
+  - When enabled, the agent is permitted to call `GET /api/user-memory/agent-search`
+  - Agents search user memory through the TinyAgentOS API; they do not talk to taosmd directly
   - Agents CANNOT write to user memory (read-only access)
 
 ## Integration Points
@@ -87,7 +88,6 @@ Right-click anywhere → "Save to Memory" option. Saves selected text, current U
 ```sql
 CREATE TABLE IF NOT EXISTS user_memory_settings (
     user_id TEXT PRIMARY KEY,
-    qmd_url TEXT DEFAULT 'http://localhost:7833',
     capture_conversations INTEGER DEFAULT 1,
     capture_files INTEGER DEFAULT 1,
     capture_searches INTEGER DEFAULT 0,
@@ -132,11 +132,12 @@ User Action (send message, save file, search, save note)
   → Available for search immediately
 ```
 
-The pipeline is async — never blocks the user action. Uses the same QMD embed API as agent memory:
+The pipeline is async — never blocks the user action. Writes reach taosmd via:
 ```
-POST http://localhost:7833/embed
-Body: {content, title, collection, metadata}
+POST http://localhost:7900/ingest
+Body: {text, agent: "user-memory", metadata: {collection, title, source_id}}
 ```
+The local SQLite FTS5 store is always written first; taosmd ingest is best-effort and non-fatal.
 
 ## Privacy
 
