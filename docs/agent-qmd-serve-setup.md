@@ -111,6 +111,20 @@ TinyAgentOS then queries each agent's endpoints:
 - `GET /browse?limit=20` — paginated browsing
 - `GET /health` — backend status
 
+## Firewall (shared A2A bus hosts)
+
+When a host runs `taosmd serve` as the shared A2A bus (default port 7900),
+remote agents and workers need inbound TCP access to that port. If ufw is
+active the port is blocked by default; the install script opens it
+automatically, but you can also do it by hand:
+
+```bash
+sudo ufw allow 7900/tcp comment 'taOS A2A bus'
+sudo ufw status | grep 7900
+```
+
+If the bus port was changed via `TAOS_BUS_PORT`, substitute that value.
+
 ## Verify
 
 From the host, test each agent's QMD serve:
