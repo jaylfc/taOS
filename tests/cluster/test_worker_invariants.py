@@ -9,11 +9,10 @@ This file covers (1).
 """
 import pytest
 
-from tests.conftest import pair_and_register_worker
 
 
 @pytest.mark.asyncio
-async def test_second_worker_with_same_host_lan_ip_returns_409(client, app):
+async def test_second_worker_with_same_host_lan_ip_returns_409(client, app, pair_and_register_worker):
     payload1 = {
         "name": "worker-a",
         "url": "http://192.168.1.50:6970",
@@ -34,7 +33,7 @@ async def test_second_worker_with_same_host_lan_ip_returns_409(client, app):
 
 
 @pytest.mark.asyncio
-async def test_two_workers_with_different_host_lan_ips_both_succeed(client, app):
+async def test_two_workers_with_different_host_lan_ips_both_succeed(client, app, pair_and_register_worker):
     r1 = await pair_and_register_worker(client, app, {
         "name": "worker-a",
         "url": "http://192.168.1.50:6970",
@@ -50,7 +49,7 @@ async def test_two_workers_with_different_host_lan_ips_both_succeed(client, app)
 
 
 @pytest.mark.asyncio
-async def test_worker_without_host_lan_ip_does_not_collide(client, app):
+async def test_worker_without_host_lan_ip_does_not_collide(client, app, pair_and_register_worker):
     """Legacy flat-mode workers (no host_lan_ip) shouldn't trigger the
     one-per-host check -- they go through the normal name-uniqueness path
     only.

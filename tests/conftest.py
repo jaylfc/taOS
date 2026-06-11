@@ -42,7 +42,7 @@ def sign_worker_request(
     }
 
 
-async def pair_and_register_worker(
+async def _pair_and_register_worker(
     client,
     app,
     payload: dict,
@@ -88,6 +88,15 @@ async def pair_and_register_worker(
         content=body,
         headers={**headers, "content-type": "application/json"},
     )
+
+
+@pytest.fixture
+def pair_and_register_worker():
+    """Function fixture so test files in any directory can use the pairing
+    helper without importing from conftest (tests/ is not a package, so
+    ``from tests.conftest import ...`` breaks under CI's import mode)."""
+    return _pair_and_register_worker
+
 
 # macOS + Python 3.14: after the interpreter loads ObjC-backed extension
 # modules (psutil, zeroconf, Pillow, lxml …), forking a child process with

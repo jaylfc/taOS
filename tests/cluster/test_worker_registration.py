@@ -8,7 +8,6 @@ import pytest
 
 from tinyagentos.cluster.worker_protocol import WorkerInfo
 from tinyagentos.cluster.manager import ClusterManager
-from tests.conftest import pair_and_register_worker
 
 
 class TestWorkerInfoNewFields:
@@ -90,7 +89,7 @@ class TestClusterManagerGetWorker:
 
 
 @pytest.mark.asyncio
-async def test_worker_register_accepts_lxc_capacity_fields(client, app):
+async def test_worker_register_accepts_lxc_capacity_fields(client, app, pair_and_register_worker):
     payload = {
         "name": "test-worker-lxc-fields",
         "url": "http://192.168.1.50:6970",

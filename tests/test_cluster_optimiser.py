@@ -6,7 +6,6 @@ import pytest
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.optimiser import ClusterOptimiser, PlacementSuggestion, _hw_summary
 from tinyagentos.cluster.worker_protocol import WorkerInfo
-from tests.conftest import pair_and_register_worker
 
 
 def _w(name, hardware=None, capabilities=None, status="online", load=0.0, platform="linux"):
@@ -189,7 +188,7 @@ async def test_optimise_api_endpoint(client):
 
 
 @pytest.mark.asyncio
-async def test_optimise_api_with_workers(client, app):
+async def test_optimise_api_with_workers(client, app, pair_and_register_worker):
     await pair_and_register_worker(client, app, {
         "name": "gpu-box", "url": "http://10.0.0.1:9000",
         "capabilities": ["chat"], "platform": "linux",
@@ -209,7 +208,7 @@ async def test_optimise_api_with_workers(client, app):
 
 
 @pytest.mark.asyncio
-async def test_move_api_endpoint(client, app):
+async def test_move_api_endpoint(client, app, pair_and_register_worker):
     await pair_and_register_worker(client, app, {
         "name": "w1", "url": "http://10.0.0.1:9000",
         "capabilities": ["chat"], "models": ["llama3"],
@@ -244,7 +243,7 @@ async def test_move_api_unknown_worker(client):
 
 
 @pytest.mark.asyncio
-async def test_move_api_offline_worker(client, app):
+async def test_move_api_offline_worker(client, app, pair_and_register_worker):
     await pair_and_register_worker(client, app, {
         "name": "offline-w", "url": "http://10.0.0.1:9000",
     })
