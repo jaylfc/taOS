@@ -180,9 +180,12 @@ async def _announce(
             f"announce failed with HTTP {resp.status_code}: {resp.json()}"
         )
     # Print the code prominently so the user can enter it in the taOS UI.
+    # Show the literal code with no separator: the controller hashes the
+    # exact string the admin types, so a cosmetic dash would make the
+    # entered code mismatch the announced hash and the confirm would fail.
     print_fn("")
     print_fn("=" * 56)
-    print_fn(f"  Pairing code: {code[:4]}-{code[4:]}")
+    print_fn(f"  Pairing code: {code}")
     print_fn("  Enter this in taOS > Cluster to approve this worker")
     print_fn("=" * 56)
     print_fn("")
