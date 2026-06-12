@@ -72,6 +72,8 @@ Keep pull requests focused. One feature or fix per PR is easier to review.
 
 Documentation improvements are always welcome — typo fixes, clarifications, better examples. Open a PR directly.
 
+The taOS agent manual is compiled: edit `docs/agent-manual/` and run `python3 scripts/build-agent-manual.py` to regenerate `docs/taos-agent-manual.md`.
+
 ---
 
 ## Adding an App to the Catalog

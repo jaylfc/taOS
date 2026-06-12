@@ -7,7 +7,14 @@
 
 # taOS: Live Status
 
-**Last updated:** 2026-06-12 ~14:30 BST, freshness sweep by @taOS (Orange Pi session). docs/AGENT_HANDOFF.md committed (was local-only). STATUS.md footer tips fixed. 5h window ~8%, resets 13:20 UTC; resume pair armed (14:23/14:42 BST).
+**Last updated:** 2026-06-12 ~16:30 BST, by @taOS (Mac session). PR TRAIN IN FLIGHT (sequencing matters):
+- #817 (persistent install id in the update ping) MUST land on dev BEFORE #813 promotes, else the taos.my counter counts nothing. #813 head=dev so merging #817 folds in automatically; then #813 promotes the install counter to master.
+- #816 (taos agent self-heal: opencode-born-before-LiteLLM race + silent-empty-stream guard; found live on the Pi today) -> dev.
+- #812 (copy/select agent text everywhere, review-fixed) -> dev.
+- Agent manual is being restructured into a compiled category library (docs/agent-manual/ + scripts/build-agent-manual.py + CI guard); separate PR. Strong taOS identity, facts table, weak-model answer templates. Rule (memory): any agent-affecting work needs a manual update/audit.
+- taos.my site + forever-id install counter (one row per random install uuid, /api/v1/stats public) pushed to private repo jaylfc/taos-website; Jay deploys via Coolify (compose, /data volume).
+- #815 filed: My Apps (private persistent user-app area + manager). Hard rules added: user apps NEVER touch GitHub/external until the user shares to the store; share pipeline gets a secrets+PII safety gate before listing.
+- #744 CLOSED (3/3 grants+revocation e2e + earlier 4/4; caught a real taOSmd auth bypass). GitHub Discussions enabled + welcome post (discussions/814) + site Community links.
 
 **MORNING WRAP, all on master (tip 25f10402):**
 - **#795 CLOSED, port hygiene fully shipped:** rkllama 8080->7833 (#802/#803, promoted via #804) AND LiteLLM host port 4000->7834 (#805, promoted via #806). Container side stays 4000 via the proxy device so deployed agents never change; existing installs AUTO-PIN to their old ports on first boot (config litellm_port pin, verified the hole on the live Pi before it shipped); 783x block (7832 qmd, 7833 rkllama, 7834 LiteLLM) + 4000 + 8080 all in RESERVED_PORTS; breakage-log entries for both moves.
