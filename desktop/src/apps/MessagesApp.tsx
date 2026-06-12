@@ -218,34 +218,35 @@ function renderContent(text: string) {
   const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
   let lastFence = 0;
   let fenceMatch: RegExpExecArray | null;
-  let blockKey = 0;
+  let seg = 0;
 
+  // Each segment gets a distinct key prefix so keys can never collide no
+  // matter how many inline elements one segment produces.
   while ((fenceMatch = fenceRegex.exec(text)) !== null) {
     if (fenceMatch.index > lastFence) {
-      result.push(...renderInline(text.slice(lastFence, fenceMatch.index), blockKey));
-      blockKey += 100;
+      result.push(...renderInline(text.slice(lastFence, fenceMatch.index), `s${seg++}`));
     }
-    result.push(<CodeBlock key={`cb-${blockKey++}`} code={fenceMatch[1] ?? ""} />);
+    result.push(<CodeBlock key={`cb-${seg++}`} code={fenceMatch[1] ?? ""} />);
     lastFence = fenceMatch.index + fenceMatch[0].length;
   }
   if (lastFence < text.length) {
-    result.push(...renderInline(text.slice(lastFence), blockKey));
+    result.push(...renderInline(text.slice(lastFence), `s${seg}`));
   }
   return result;
 }
 
-function renderInline(text: string, keyOffset: number) {
+function renderInline(text: string, keyPrefix: string) {
   // basic markdown: bold, italic, inline code
   const parts: (string | React.ReactElement)[] = [];
   const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
   let last = 0;
   let match: RegExpExecArray | null;
-  let key = keyOffset;
+  let key = 0;
   while ((match = regex.exec(text)) !== null) {
     if (match.index > last) parts.push(text.slice(last, match.index));
-    if (match[2]) parts.push(<strong key={key++} className="font-semibold">{match[2]}</strong>);
-    else if (match[3]) parts.push(<em key={key++} className="italic">{match[3]}</em>);
-    else if (match[4]) parts.push(<code key={key++} className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono">{match[4]}</code>);
+    if (match[2]) parts.push(<strong key={`${keyPrefix}-${key++}`} className="font-semibold">{match[2]}</strong>);
+    else if (match[3]) parts.push(<em key={`${keyPrefix}-${key++}`} className="italic">{match[3]}</em>);
+    else if (match[4]) parts.push(<code key={`${keyPrefix}-${key++}`} className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono">{match[4]}</code>);
     last = match.index + match[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
