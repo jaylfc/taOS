@@ -16,6 +16,7 @@ import {
   Archive,
   Trash2,
   RotateCcw,
+  Search,
 } from "lucide-react";
 import {
   Button,
@@ -68,6 +69,7 @@ import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
+import { SearchPanel } from "./chat/SearchPanel";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -334,6 +336,7 @@ export function MessagesApp({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [pinnedPopoverOpen, setPinnedPopoverOpen] = useState(false);
   const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
+  const [showSearch, setShowSearch] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -1629,6 +1632,24 @@ export function MessagesApp({
                     />
                   )}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showSearch) {
+                      setShowSearch(false);
+                    } else {
+                      closeThread();
+                      setShowSearch(true);
+                    }
+                  }}
+                  className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
+                  aria-label={showSearch ? "Hide search" : "Search messages"}
+                  aria-expanded={showSearch}
+                  aria-controls="search-panel"
+                  title="Search"
+                >
+                  <Search size={14} aria-hidden="true" />
+                </button>
               </div>
               {currentChannel?.description && (
                 <div className="text-[11px] text-white/35 truncate">{currentChannel.description}</div>
@@ -2181,6 +2202,33 @@ export function MessagesApp({
               throw new Error((body as { error?: string }).error || `HTTP ${r.status}`);
             }
           }}
+        />
+      )}
+
+      {/* ---- Search Panel ---- */}
+      {showSearch && !openThread && (
+        <SearchPanel
+          onJump={(channelId, messageId) => {
+            setShowSearch(false);
+            if (channelId !== selectedChannel) {
+              // Switching channel triggers fetchMessages; the scroll happens
+              // after the new messages render. If the target is not in the
+              // first 50 loaded messages, the scroll silently no-ops (the
+              // backend search hits are not paginated here).
+              setSelectedChannel(channelId);
+            }
+            setTimeout(() => {
+              const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+              if (el) {
+                el.scrollIntoView({ behavior: "smooth", block: "center" });
+                el.classList.add("data-highlight");
+                setTimeout(() => el.classList.remove("data-highlight"), 2000);
+              }
+            }, channelId !== selectedChannel ? 200 : 0);
+          }}
+          onClose={() => setShowSearch(false)}
+          channels={allChannels.map((c) => ({ id: c.id, name: c.name }))}
+          authorCtx={{ currentUserId, currentUserDisplayName }}
         />
       )}
 
