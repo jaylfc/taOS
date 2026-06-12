@@ -1697,9 +1697,9 @@ export function MessagesApp({
               const isAgent = msg.author_type === "agent";
               const prev = i > 0 ? messages[i - 1] : undefined;
               const showAuthor = !prev || prev.author_id !== msg.author_id;
-              const prevDay = prev ? new Date(prev.created_at).toDateString() : null;
-              const currDay = new Date(msg.created_at).toDateString();
-              const showDaySeparator = prevDay !== currDay;
+              const prevDay = prev ? new Date(toMs(prev.created_at)).toDateString() : null;
+              const currDay = new Date(toMs(msg.created_at)).toDateString();
+              const showDaySeparator = prev ? prevDay !== currDay : false;
               const authorState = resolveAuthorDisplayState(
                 msg.author_id,
                 msg.author_type,
