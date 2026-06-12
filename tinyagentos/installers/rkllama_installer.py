@@ -109,7 +109,7 @@ class RkllamaInstaller(AppInstaller):
     def __init__(self, rkllama_url: str | None = None, timeout: int = 1800):
         # rkllama install can take many minutes for multi-GB weights -- give it
         # half an hour by default. Caller may override.
-        self.rkllama_url = (rkllama_url or f"http://localhost:{_DEFAULT_RKLLAMA_PORT}").rstrip("/")
+        self.rkllama_url = (rkllama_url or default_rkllama_url()).rstrip("/")
         self.timeout = timeout
 
     async def install(
