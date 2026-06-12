@@ -312,6 +312,8 @@ export function MessagesApp({
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
+  const pendingNewCountRef = useRef(0);
+  const [newDividerAtId, setNewDividerAtId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("disconnected");
   const [showCreate, setShowCreate] = useState(false);
@@ -420,8 +422,18 @@ export function MessagesApp({
       const res = await fetch(`/api/chat/channels/${channelId}/messages?limit=50`);
       if (res.ok) {
         const data = await res.json();
-        setMessages(data.messages ?? []);
+        const list: Message[] = data.messages ?? [];
+        setMessages(list);
         autoScrollRef.current = true;
+        const pending = pendingNewCountRef.current;
+        pendingNewCountRef.current = 0;
+        if (pending > 0 && list.length > 0) {
+          const idx = list.length - pending;
+          const atIdx = idx < 0 ? 0 : idx;
+          setNewDividerAtId(list[atIdx]?.id ?? null);
+        } else {
+          setNewDividerAtId(null);
+        }
       }
     } catch {
       /* offline */
@@ -699,15 +711,18 @@ export function MessagesApp({
       wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
     }
     prevChannelRef.current = selectedChannel;
+    setNewDividerAtId(null);
     // join new
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "join", channel_id: selectedChannel }));
     }
+    // capture unread count before markRead clears it
+    pendingNewCountRef.current = unread[selectedChannel] ?? 0;
     fetchMessages(selectedChannel);
     markRead(selectedChannel);
     setTypingHumans([]);
     setTypingAgents([]);
-  }, [selectedChannel, fetchMessages, markRead]);
+  }, [selectedChannel, fetchMessages, markRead, unread]);
 
   /* ---- deep-link scroll on ?msg=<id> — latch so it fires once per URL ---- */
   const deepLinkSeenRef = useRef<string | null>(null);
@@ -880,6 +895,7 @@ export function MessagesApp({
       }
     }
     setInput("");
+    setNewDividerAtId(null);
     autoScrollRef.current = true;
     if (inputRef.current) inputRef.current.style.height = "auto";
   };
@@ -1700,8 +1716,15 @@ export function MessagesApp({
                     ? "Agent removed"
                     : undefined;
               return (
+                <React.Fragment key={msg.id}>
+                {newDividerAtId === msg.id && (
+                  <div className="flex items-center gap-3 my-3 select-none">
+                    <div className="flex-1 h-px bg-red-400/40" />
+                    <span className="text-[11px] text-red-400 font-semibold">New</span>
+                    <div className="flex-1 h-px bg-red-400/40" />
+                  </div>
+                )}
                 <div
-                  key={msg.id}
                   data-message-id={msg.id}
                   className={`group relative px-3 py-1 rounded-md transition-colors hover:bg-white/[0.03] ${
                     isAgent && !isDeadAgent ? "bg-blue-500/[0.04]" : ""
@@ -1891,6 +1914,7 @@ export function MessagesApp({
                     </div>
                   )}
                 </div>
+                </React.Fragment>
               );
             })}
             <div ref={messagesEndRef} />
