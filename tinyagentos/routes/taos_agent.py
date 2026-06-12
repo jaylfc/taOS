@@ -455,15 +455,19 @@ async def chat(request: Request, body: ChatRequest):
     drive_task = asyncio.create_task(_drive())
 
     async def _generate():
+        content_frame_yielded = False
         try:
             while True:
                 item = await queue.get()
                 if item is _DONE:
                     break
+                if "error" not in item:
+                    content_frame_yielded = True
                 yield json.dumps(item) + "\n"
         except Exception as exc:
             logger.exception("taos-agent: generator error")
             yield json.dumps({"error": str(exc)}) + "\n"
+            content_frame_yielded = True
         finally:
             if not drive_task.done():
                 drive_task.cancel()
@@ -475,6 +479,13 @@ async def chat(request: Request, body: ChatRequest):
                 exc = drive_task.exception()
                 if exc is not None:
                     logger.error("taos-agent: drive task raised %r", exc)
+        if not content_frame_yielded:
+            yield json.dumps({
+                "error": (
+                    "the agent backend returned no output; if taOS just restarted "
+                    "the model proxy may still be warming, try again shortly"
+                )
+            }) + "\n"
         yield json.dumps({"done": True}) + "\n"
 
     return StreamingResponse(

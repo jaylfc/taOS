@@ -28,6 +28,10 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
     The key is scoped to the full ``permitted_models`` set read from the
     ``taos_agent`` desktop_settings namespace (falls back to ``[model]``).
 
+    If the server was created while LiteLLM was not yet ready (born degraded),
+    it is torn down and rebuilt transparently on the next call once the proxy
+    is running so callers never need to know about the race.
+
     Returns the running :class:`~tinyagentos.opencode_runtime.OpenCodeServer`.
     """
     # Generate a stable per-process password once.
@@ -37,10 +41,29 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
     existing: OpenCodeServer | None = getattr(app_state, "taos_opencode_server", None)
     existing_model: str | None = getattr(app_state, "taos_opencode_model", None)
 
+    # Self-heal: if the cached server was born before LiteLLM was ready and
+    # LiteLLM is now running, tear down the degraded server and fall through
+    # to a fresh build so the key re-scope and model_ids are applied properly.
+    if existing is not None and getattr(app_state, "taos_opencode_born_degraded", False):
+        llm_proxy_check = getattr(app_state, "llm_proxy", None)
+        if llm_proxy_check is not None and llm_proxy_check.is_running():
+            logger.info(
+                "taos_agent_runtime: LiteLLM now ready; rebuilding taOS opencode server "
+                "that was born degraded"
+            )
+            try:
+                await existing.stop()
+            except Exception:
+                logger.debug("taos_agent_runtime: error stopping degraded server", exc_info=True)
+            app_state.taos_opencode_server = None
+            app_state.taos_opencode_session_id = None
+            app_state.taos_opencode_born_degraded = False
+            existing = None
+
     if existing is not None and existing_model != model:
         # Model changed — stop old server so it picks up the new config.
         logger.info(
-            "taos_agent_runtime: model changed (%s → %s); restarting opencode server",
+            "taos_agent_runtime: model changed (%s -> %s); restarting opencode server",
             existing_model, model,
         )
         try:
@@ -77,6 +100,9 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
         # alias collision — persisting the value avoids that and keeps it stable.
         llm_proxy = getattr(app_state, "llm_proxy", None)
         litellm_key: str | None = None
+        born_degraded = False
+        if llm_proxy is None or not llm_proxy.is_running():
+            born_degraded = True
         if stored_key:
             litellm_key = stored_key
             if llm_proxy is not None:
@@ -87,6 +113,7 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
                             "taos_agent_runtime: re-scoping the taOS agent key returned False "
                             "(key scope may be stale)"
                         )
+                        born_degraded = True
                 except Exception:
                     logger.debug("taos_agent_runtime: re-scoping stored key failed", exc_info=True)
         elif llm_proxy is not None:
@@ -118,6 +145,7 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
         server = OpenCodeServer(cfg)
         app_state.taos_opencode_server = server
         app_state.taos_opencode_model = model
+        app_state.taos_opencode_born_degraded = born_degraded
         if not hasattr(app_state, "taos_opencode_session_id"):
             app_state.taos_opencode_session_id = None
 
