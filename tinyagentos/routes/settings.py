@@ -217,7 +217,7 @@ async def llm_proxy_status(request: Request):
     proxy = request.app.state.llm_proxy
     return {
         "running": proxy.is_running() if hasattr(proxy, "is_running") else False,
-        "port": proxy.port if hasattr(proxy, "port") else 4000,
+        "port": proxy.port if hasattr(proxy, "port") else 7834,
         "backends": len(request.app.state.config.backends),
     }
 

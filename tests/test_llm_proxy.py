@@ -259,6 +259,14 @@ class TestCallbackWiring:
 
 
 class TestLLMProxy:
+    def test_default_port_is_7834(self):
+        proxy = LLMProxy()
+        assert proxy.port == 7834
+
+    def test_config_provided_port_overrides_default(self):
+        proxy = LLMProxy(port=4000)
+        assert proxy.port == 4000
+
     def test_proxy_not_running_initially(self):
         proxy = LLMProxy(port=14000)
         assert not proxy.is_running()

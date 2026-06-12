@@ -300,21 +300,31 @@ async def deploy_agent(req: DeployRequest) -> dict:
     try:
         # Incus proxy devices: let the container reach host services via
         # its own 127.0.0.1.
-        proxy_ports = [
-            ("taos-proxy-litellm", 4000),
-            ("taos-proxy-taos", req.taos_port),
+        #
+        # Each tuple: (device_name, container_listen_port, host_connect_port).
+        # LiteLLM: the container-side URL is always tcp:127.0.0.1:4000 (baked
+        # into OPENAI_BASE_URL and openclaw.json via the proxy device above),
+        # but the host may run LiteLLM on any configured port (default 7834).
+        # The connect side tracks the live proxy port so the tunnel reaches the
+        # right host process regardless of whether the operator kept the legacy
+        # 4000 or migrated to 7834.
+        llm_proxy_ref = (req.extra_config or {}).get("llm_proxy")
+        litellm_host_port = llm_proxy_ref.port if llm_proxy_ref is not None else 7834
+        proxy_devices = [
+            ("taos-proxy-litellm", 4000, litellm_host_port),
+            ("taos-proxy-taos", req.taos_port, req.taos_port),
         ]
-        for dev_name, port in proxy_ports:
+        for dev_name, listen_port, connect_port in proxy_devices:
             res = await add_proxy_device(
                 container_name,
                 dev_name,
-                listen=f"tcp:127.0.0.1:{port}",
-                connect=f"tcp:127.0.0.1:{port}",
+                listen=f"tcp:127.0.0.1:{listen_port}",
+                connect=f"tcp:127.0.0.1:{connect_port}",
                 bind_mode="instance",
             )
             if not res.get("success"):
                 raise RuntimeError(
-                    f"failed to attach proxy device {dev_name}:{port}: {res.get('output', '')}"
+                    f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
                 )
         steps.append("proxy_devices_attached")
 

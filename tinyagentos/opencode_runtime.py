@@ -44,7 +44,7 @@ class OpenCodeServerConfig:
     """If set, ``OPENCODE_SERVER_PASSWORD`` env var is passed and Basic auth is used."""
 
     litellm_base_url: str
-    """Base URL of the taOS LiteLLM proxy, e.g. ``http://127.0.0.1:4000/v1``."""
+    """Base URL of the taOS LiteLLM proxy, e.g. ``http://127.0.0.1:7834/v1``."""
 
     litellm_key: str
     """API key for the LiteLLM proxy (the agent's own virtual key)."""

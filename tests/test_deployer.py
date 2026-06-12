@@ -582,6 +582,70 @@ class TestDeployAgent:
             assert "tcp:127.0.0.1:6969" in listens
 
     @pytest.mark.asyncio
+    async def test_litellm_proxy_device_container_listen_stays_4000(self, tmp_path):
+        """Container-side listen for LiteLLM is always 4000 (baked into agent
+        configs); the host-side connect follows the live proxy port.  With no
+        proxy supplied the deployer falls back to 7834."""
+        req = _req(name="port-check", data_dir=tmp_path)
+
+        async def mock_exec_fn(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.92")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock) as mock_proxy:
+            mock_create.return_value = {"success": True, "name": "taos-agent-port-check"}
+            mock_proxy.return_value = {"success": True, "output": ""}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+
+            litellm_call = next(
+                c for c in mock_proxy.call_args_list if c.args[1] == "taos-proxy-litellm"
+            )
+            assert litellm_call.kwargs["listen"] == "tcp:127.0.0.1:4000"
+            assert litellm_call.kwargs["connect"] == "tcp:127.0.0.1:7834"
+
+    @pytest.mark.asyncio
+    async def test_litellm_proxy_device_connect_follows_live_proxy_port(self, tmp_path):
+        """When extra_config supplies an llm_proxy object with a custom port,
+        the host-side connect address of the incus proxy device uses that port."""
+        mock_proxy = MagicMock()
+        mock_proxy.is_running.return_value = False
+        mock_proxy.port = 4000  # legacy install kept old port
+        mock_proxy.database_url = None
+
+        req = _req(
+            name="legacy-port",
+            data_dir=tmp_path,
+            extra_config={"llm_proxy": mock_proxy},
+        )
+
+        async def mock_exec_fn(name, cmd, **kwargs):
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.0.0.93")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock) as mock_proxy_dev:
+            mock_create.return_value = {"success": True, "name": "taos-agent-legacy-port"}
+            mock_proxy_dev.return_value = {"success": True, "output": ""}
+            result = await deploy_agent(req)
+            assert result["success"] is True
+
+            litellm_call = next(
+                c for c in mock_proxy_dev.call_args_list if c.args[1] == "taos-proxy-litellm"
+            )
+            # Container listen stays 4000 regardless of host port
+            assert litellm_call.kwargs["listen"] == "tcp:127.0.0.1:4000"
+            # Host connect follows the live proxy's recorded port
+            assert litellm_call.kwargs["connect"] == "tcp:127.0.0.1:4000"
+
+    @pytest.mark.asyncio
     async def test_proxy_device_failure_rolls_back(self, tmp_path):
         req = _req(name="noproxy", data_dir=tmp_path)
 

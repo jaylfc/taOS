@@ -114,7 +114,7 @@ class ReasoningJudge:
     def __init__(
         self,
         *,
-        litellm_base_url: str = "http://127.0.0.1:4000/v1",
+        litellm_base_url: str = "http://127.0.0.1:7834/v1",
         litellm_api_key: str = "taos-internal",
         judge_model: str | None = None,
         timeout: float = 60.0,

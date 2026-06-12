@@ -15,6 +15,26 @@ Format per entry: date, change (PR), affected installs, symptom, check, fix.
 
 ---
 
+## 2026-06-12 — LiteLLM host port default moved 4000 -> 7834 (#795)
+
+- **Affected:** existing installs only if they recreate their LiteLLM service or
+  config without an explicitly recorded `litellm_port` in taos-config.yaml.
+  Fresh installs and installs whose config already records a port are unaffected.
+- **Symptom:** agents cannot reach models; connection refused on 4000 after a
+  controller restart on an install that had no `litellm_port` recorded and now
+  picks up the 7834 default.
+- **Check:** look at the port shown under Settings > LLM Proxy; compare with
+  `ss -tlnp | grep litellm`. If one says 4000 and the other says 7834, that is
+  the mismatch.
+- **Fix:** config-recorded ports always win over the default, so set
+  `litellm_port: 4000` under the `server:` key in taos-config.yaml to keep the
+  old port, or let the controller start once on 7834 and it will record that
+  value. Container-internal port stays 4000 permanently (the incus proxy device
+  bridges container 4000 to whatever the host listens on), so agent configs and
+  openclaw.json never need to change.
+- **New installs:** unaffected -- the installer and all taOS defaults already
+  use 7834.
+
 ## 2026-06-12 — rkllama default port moved 8080 -> 7833 (#795)
 
 - **Affected:** installs that re-run `install-rknpu.sh` after this change while

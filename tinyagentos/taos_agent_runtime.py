@@ -111,7 +111,7 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
             home=home,
             port=TAOS_OPENCODE_PORT,
             server_password=app_state.taos_opencode_password,
-            litellm_base_url="http://127.0.0.1:4000/v1",
+            litellm_base_url=f"http://127.0.0.1:{llm_proxy.port if llm_proxy is not None else 7834}/v1",
             litellm_key=litellm_key,
             model_ids=permitted_models,
         )

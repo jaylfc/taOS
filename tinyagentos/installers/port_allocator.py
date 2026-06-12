@@ -34,11 +34,14 @@ RESERVED_PORTS: frozenset[int] = frozenset({
     1080,  # SOCKS
     3000,  # Node / React dev / Grafana
     3306,  # MySQL
-    4000,  # LiteLLM (taOS internal)
+    4000,  # LiteLLM legacy host port (kept reserved: existing installs may still use it)
     5000,  # Flask / generic dev
     5173,  # Vite dev
     5432,  # PostgreSQL
     6379,  # Redis
+    7832,  # taOS qmd memory service
+    7833,  # taOS rkllama NPU backend
+    7834,  # taOS LiteLLM proxy (new default host port)
     7900,  # taosmd A2A bus
     8000,  # Django / generic dev
     8080,  # Tomcat / common web app default

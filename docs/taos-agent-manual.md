@@ -85,7 +85,7 @@ Useful commands in any channel:
 ## Architecture
 
 - **Containers**: each agent runs in an isolated LXC or Docker container. taOS auto-detects which runtime is available; you can override in Settings → Container Runtime.
-- **Model routing**: LiteLLM proxy (port 4000) sits between agents and model backends. Agents use a standard OpenAI-compatible API — they never talk to a provider directly.
+- **Model routing**: LiteLLM proxy (port 7834) sits between agents and model backends. Agents use a standard OpenAI-compatible API -- they never talk to a provider directly.
 - **Backends**: local inference (rkllama for RKLLM NPU, Ollama for CPU/GPU), cloud APIs (OpenAI, Anthropic, OpenRouter, Kilocode), and remote workers.
 - **Memory**: taOS uses taosmd for long-term memory. Agents can read and write memory chunks; a Librarian agent can curate and categorise them.
 - **Frameworks**: OpenClaw (default), Hermes, SmolAgents, Langroid, PocketFlow, OpenAI Agents SDK. Each framework is validated at startup and gets its own lifecycle managed by taOS.

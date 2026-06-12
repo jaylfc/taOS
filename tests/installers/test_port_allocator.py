@@ -10,6 +10,20 @@ from tinyagentos.installers.port_allocator import (
 )
 
 
+class TestReservedPorts:
+    def test_legacy_litellm_port_reserved(self):
+        assert 4000 in RESERVED_PORTS
+
+    def test_qmd_port_reserved(self):
+        assert 7832 in RESERVED_PORTS
+
+    def test_rkllama_port_reserved(self):
+        assert 7833 in RESERVED_PORTS
+
+    def test_litellm_new_host_port_reserved(self):
+        assert 7834 in RESERVED_PORTS
+
+
 class TestAllocateHostPort:
     def test_deterministic_for_same_app_id(self):
         assert allocate_host_port("searxng") == allocate_host_port("searxng")

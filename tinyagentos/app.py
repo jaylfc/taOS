@@ -303,7 +303,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     local_token_path = data_dir / ".auth_local_token"
     local_token = local_token_path.read_text().strip() if local_token_path.exists() else None
     llm_proxy = LLMProxy(
-        port=4000,
+        port=config.server.get("litellm_port", 7834),
         database_url=db_url,
         local_token=local_token,
         # registry lets generate_litellm_config register installed local
@@ -822,7 +822,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.trace_registry.set_emitter(_otel_emitter)
         # Phase 4: reasoning judge — fire on lifecycle session_end.
         from tinyagentos.otel.judge import ReasoningJudge
-        _judge = ReasoningJudge(litellm_base_url="http://localhost:4000/v1")
+        _judge = ReasoningJudge(litellm_base_url=f"http://localhost:{app.state.llm_proxy.port}/v1")
         app.state.trace_registry.set_judge(_judge)
 
         # Bridge session registry — per-agent queue + accumulator for openclaw.

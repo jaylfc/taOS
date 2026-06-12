@@ -78,7 +78,7 @@ class LLMProxy:
 
     def __init__(
         self,
-        port: int = 4000,
+        port: int = 7834,
         config_dir: Path | None = None,
         database_url: str | None = None,
         local_token: str | None = None,
