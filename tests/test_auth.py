@@ -292,14 +292,17 @@ class TestAuthMiddleware:
             "/auth/setup",
             json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
         )
-        if app.state.agent_grants._db is None:
-            await app.state.agent_grants.init()
+        for attr in ("agent_grants", "agent_registry"):
+            store = getattr(app.state, attr)
+            if store._db is None:
+                await store.init()
         tok = app.state.auth.get_local_token()
-        resp = await auth_client.get(
-            "/api/agents/registry/grants",
-            headers={"Authorization": f"Bearer {tok}"},
-        )
-        assert resp.status_code == 200
+        for path in ("/api/agents/registry/grants", "/api/agents/registry/revoked"):
+            resp = await auth_client.get(
+                path,
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+            assert resp.status_code == 200, path
 
     @pytest.mark.asyncio
     async def test_protected_route_returns_401(self, app, auth_client):

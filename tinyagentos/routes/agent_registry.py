@@ -303,13 +303,23 @@ async def list_active_grants(request: Request, canonical_id: Optional[str] = Non
     # Admin (session or local token) wins before any JWT verification, so an
     # admin-equivalent Bearer local token is never mis-verified as a registry
     # JWT and rejected.
-    if not getattr(request.state, "is_admin", False):
+    is_admin = getattr(request.state, "is_admin", False)
+    if not is_admin:
         feed_caller = await _check_feed_token(request)
         if feed_caller is None:
             raise HTTPException(status_code=403, detail="forbidden")
     grants_store = _get_grants_store(request)
     if canonical_id:
         grants = await grants_store.list_grants(canonical_id)
+        if not is_admin:
+            # Feed-scoped callers see the same view as the unfiltered feed:
+            # active grants only, no expired history.
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            grants = [
+                g for g in grants
+                if not g.get("expires_at") or g["expires_at"] > now
+            ]
     else:
         grants = await grants_store.list_active_grants()
     return {"grants": grants}
