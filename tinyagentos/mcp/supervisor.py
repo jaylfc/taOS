@@ -140,7 +140,7 @@ class MCPSupervisor:
         )
         for sid, result in zip(sids, results):
             if isinstance(result, Exception):
-                logger.exception("mcp stop_all: error stopping %s", sid, exc_info=result)
+                logger.error("mcp stop failed for %s: %s", sid, result)
 
     def logs(self, server_id: str, since_idx: int = 0, limit: int = 200) -> list[dict]:
         sp = self._processes.get(server_id)

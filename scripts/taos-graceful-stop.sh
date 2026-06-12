@@ -28,5 +28,9 @@ if [ -f "$STAMP_FILE" ]; then
     fi
 fi
 
-curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown" || true
-touch "$STAMP_FILE" 2>/dev/null || true
+if curl -fsS -X POST --max-time 25 "http://localhost:${TAOS_PORT:-6969}/api/system/prepare-shutdown"; then
+    # Only a successful prepare earns the dedupe stamp; a failed attempt must
+    # not let the next invocation skip draining.
+    touch "$STAMP_FILE" 2>/dev/null || true
+fi
+exit 0

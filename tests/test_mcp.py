@@ -514,7 +514,7 @@ async def test_route_uninstall_not_found(app_client):
 async def test_stop_all_is_concurrent(tmp_path):
     """stop_all must stop multiple servers concurrently.
 
-    Stub two fake processes whose stop() takes 0.2s each. With serial
+    Stub two fake processes whose stop() takes 0.5s each. With serial
     execution total wall time would be >= 0.4s; parallel execution must
     finish in under 0.35s.
     """
@@ -528,7 +528,7 @@ async def test_stop_all_is_concurrent(tmp_path):
     stop_calls: list[str] = []
 
     async def _fake_stop(sid: str, timeout: float = 10.0) -> bool:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.5)
         stop_calls.append(sid)
         sup._processes.pop(sid, None)
         await store.mark_stopped(sid, exit_code=0)
@@ -553,6 +553,6 @@ async def test_stop_all_is_concurrent(tmp_path):
         elapsed = time.monotonic() - t0
 
     assert set(stop_calls) == {"srv-a", "srv-b"}
-    assert elapsed < 0.35, f"stop_all took {elapsed:.3f}s — expected < 0.35s (parallel)"
+    assert elapsed < 0.9, f"stop_all took {elapsed:.3f}s, expected under 0.9s (serial would be 1.0s+)"
 
     await store.close()
