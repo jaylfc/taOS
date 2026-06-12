@@ -256,11 +256,13 @@ function renderInline(text: string, keyPrefix: string) {
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
 
 function dayLabel(ts: string | number): string {
-  const d = new Date(ts);
+  const d = new Date(toMs(ts));
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diffDays = Math.round((today.getTime() - that.getTime()) / 86400000);
+  // Use UTC day arithmetic so a one-day gap is always 86400000ms, even
+  // across DST transitions where a local-day can be 23 or 25 hours.
+  const todayMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const thatMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const diffDays = Math.round((todayMs - thatMs) / 86400000);
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
   return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
