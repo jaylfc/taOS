@@ -439,7 +439,7 @@ detect_and_advise_accelerators() {
             log "  fork: https://github.com/jaylfc/rkllama"
             # Chained auto-install on by default for RK3588 hosts: if the
             # NPU is present and rkllama isn't installed yet, set up our
-            # fork now so rkllama is already serving on :8080 before the
+            # fork now so rkllama is already serving (port 7833) before the
             # controller systemd unit lands. Opt-out via TAOS_NO_RKNPU=1.
             if [[ "${TAOS_NO_RKNPU:-}" == "1" || "${TAOS_NO_RKNPU:-}" == "true" ]]; then
                 warn "TAOS_NO_RKNPU=1 — skipping rkllama install; controller will run CPU-only on this NPU box"
@@ -1803,8 +1803,10 @@ verify_hardware_capabilities() {
         if [[ -r /dev/rknpu ]] || [[ -r /sys/kernel/debug/rknpu/load ]]; then
             rknpu_ok=1
         fi
-        # Also check if rkllama is responding on :8080
-        if curl -sf --max-time 3 "http://localhost:8080/health" >/dev/null 2>&1; then
+        # Also check if rkllama is responding (7833 default, 8080 legacy)
+        local _rk_port="${TAOS_RKLLAMA_PORT:-7833}"
+        if curl -sf --max-time 3 "http://localhost:${_rk_port}/health" >/dev/null 2>&1 \
+           || curl -sf --max-time 3 "http://localhost:8080/health" >/dev/null 2>&1; then
             rknpu_ok=1
         fi
         if (( rknpu_ok )); then
@@ -1812,7 +1814,7 @@ verify_hardware_capabilities() {
             verified_ok=$((verified_ok + 1))
         else
             warn "  ✗ rknpu: claimed by controller but device node not readable and rkllama not responding"
-            warn "     check: ls -l /dev/rknpu && curl http://localhost:8080/health"
+            warn "     check: ls -l /dev/rknpu && curl http://localhost:${TAOS_RKLLAMA_PORT:-7833}/health"
             warn "     ensure rkllama.service is running: sudo systemctl status rkllama"
             verified_warn=$((verified_warn + 1))
         fi
