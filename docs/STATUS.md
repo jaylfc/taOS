@@ -7,7 +7,7 @@
 
 # taOS: Live Status
 
-**Last updated:** 2026-06-12 ~10:30 BST, by @taOS (Mac session). 5h window ~8%, resets 13:20 UTC; resume pair armed (14:23/14:42 BST).
+**Last updated:** 2026-06-12 ~14:30 BST, freshness sweep by @taOS (Orange Pi session). docs/AGENT_HANDOFF.md committed (was local-only). STATUS.md footer tips fixed. 5h window ~8%, resets 13:20 UTC; resume pair armed (14:23/14:42 BST).
 
 **MORNING WRAP, all on master (tip 25f10402):**
 - **#795 CLOSED, port hygiene fully shipped:** rkllama 8080->7833 (#802/#803, promoted via #804) AND LiteLLM host port 4000->7834 (#805, promoted via #806). Container side stays 4000 via the proxy device so deployed agents never change; existing installs AUTO-PIN to their old ports on first boot (config litellm_port pin, verified the hole on the live Pi before it shipped); 783x block (7832 qmd, 7833 rkllama, 7834 LiteLLM) + 4000 + 8080 all in RESERVED_PORTS; breakage-log entries for both moves.
