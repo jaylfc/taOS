@@ -242,6 +242,7 @@ function renderInline(text: string, keyPrefix: string) {
     <div key={keyPrefix}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        disallowedElements={["img"]}
         components={{
           p: ({ node, ...props }) => <p className="mb-1 last:mb-0" {...props} />,
           a: ({ node, ...props }) => (
@@ -263,10 +264,23 @@ function renderInline(text: string, keyPrefix: string) {
           blockquote: ({ node, ...props }) => (
             <blockquote className="border-l-2 border-white/20 pl-3 text-white/70" {...props} />
           ),
+          table: ({ node, ...props }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="min-w-full text-left text-[13px]" {...props} />
+            </div>
+          ),
+          th: ({ node, ...props }) => (
+            <th className="border-b border-white/10 px-2 py-1 font-semibold" {...props} />
+          ),
+          td: ({ node, ...props }) => (
+            <td className="border-b border-white/5 px-2 py-1 align-top" {...props} />
+          ),
           h1: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
           h2: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
           h3: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
           h4: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h5: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h6: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
         }}
       >
         {text}
