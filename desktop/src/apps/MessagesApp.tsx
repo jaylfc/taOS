@@ -255,6 +255,17 @@ function renderInline(text: string, keyPrefix: string) {
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
 
+const draftKey = (channelId: string) => `taos-chat-draft:${channelId}`;
+function loadDraft(channelId: string): string {
+  try { return localStorage.getItem(draftKey(channelId)) || ""; } catch { return ""; }
+}
+function saveDraft(channelId: string, text: string) {
+  try {
+    if (text) localStorage.setItem(draftKey(channelId), text);
+    else localStorage.removeItem(draftKey(channelId));
+  } catch { /* storage full or unavailable: drafts are best-effort */ }
+}
+
 /* ------------------------------------------------------------------ */
 /*  MessagesApp                                                        */
 /* ------------------------------------------------------------------ */
@@ -697,6 +708,13 @@ export function MessagesApp({
     // leave previous channel
     if (prevChannelRef.current && prevChannelRef.current !== selectedChannel && wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
+      // persist draft for the channel we are leaving
+      saveDraft(prevChannelRef.current, input);
+    }
+    // load draft for the new channel
+    if (prevChannelRef.current !== selectedChannel) {
+      setInput(loadDraft(selectedChannel));
+      if (inputRef.current) inputRef.current.style.height = "auto";
     }
     prevChannelRef.current = selectedChannel;
     // join new
@@ -707,7 +725,7 @@ export function MessagesApp({
     markRead(selectedChannel);
     setTypingHumans([]);
     setTypingAgents([]);
-  }, [selectedChannel, fetchMessages, markRead]);
+  }, [selectedChannel, fetchMessages, markRead]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---- deep-link scroll on ?msg=<id> — latch so it fires once per URL ---- */
   const deepLinkSeenRef = useRef<string | null>(null);
@@ -813,6 +831,7 @@ export function MessagesApp({
           return;
         }
         setInput("");
+        if (selectedChannel) saveDraft(selectedChannel, "");
         setPendingAttachments([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
@@ -844,6 +863,7 @@ export function MessagesApp({
           if ((body as { handled?: string }).handled) {
             setSendError(null);
             setInput("");
+            if (selectedChannel) saveDraft(selectedChannel, "");
             autoScrollRef.current = true;
             if (inputRef.current) inputRef.current.style.height = "auto";
             return;
@@ -880,6 +900,7 @@ export function MessagesApp({
       }
     }
     setInput("");
+    if (selectedChannel) saveDraft(selectedChannel, "");
     autoScrollRef.current = true;
     if (inputRef.current) inputRef.current.style.height = "auto";
   };
@@ -887,6 +908,7 @@ export function MessagesApp({
   /* ---- typing indicator ---- */
   const handleInputChange = (val: string) => {
     setInput(val);
+    if (selectedChannel) saveDraft(selectedChannel, val);
     // auto-resize textarea
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
