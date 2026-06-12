@@ -1728,7 +1728,11 @@ export function MessagesApp({
               return (
                 <React.Fragment key={msg.id}>
                 {newDividerAtId === msg.id && (
-                  <div className="flex items-center gap-3 my-3 select-none">
+                  <div
+                    role="separator"
+                    aria-label="New messages"
+                    className="flex items-center gap-3 my-3 select-none"
+                  >
                     <div className="flex-1 h-px bg-red-400/40" />
                     <span className="text-[11px] text-red-400 font-semibold">New</span>
                     <div className="flex-1 h-px bg-red-400/40" />
