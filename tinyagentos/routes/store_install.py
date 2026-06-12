@@ -280,7 +280,7 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
             await store.update_runtime_location(
                 app_id,
                 host=urlparse(rkllama_url).hostname or "localhost",
-                port=urlparse(rkllama_url).port or 8080,
+                port=urlparse(rkllama_url).port or 7833,
                 backend="rkllama",
                 ui_path="/",
             )

@@ -6,7 +6,7 @@ Each agent runs its own `qmd serve` instance inside its LXC container. This keep
 
 ```
 Host (Orange Pi / x86)
-├── rkllama (port 8080) — shared NPU/GPU inference
+├── rkllama (port 7833) — shared NPU/GPU inference
 ├── TinyAgentOS (port 6969) — web GUI, talks to each agent's qmd serve
 │
 ├── LXC: agent-alpha
@@ -54,7 +54,7 @@ Each agent runs its own `qmd serve` that:
 2. Routes inference requests (embed, rerank, expand) to the shared rkllama backend on the host
 
 ```bash
-qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://<host-ip>:8080
+qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://<host-ip>:7833
 ```
 
 Replace `<host-ip>` with the host's IP address. If using Tailscale, the Tailscale IP avoids macvlan routing issues where LXC containers can't reach the host's LAN IP.
@@ -70,7 +70,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://<host-ip>:8080
+ExecStart=/usr/local/bin/qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://<host-ip>:7833
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production

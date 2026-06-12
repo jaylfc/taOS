@@ -309,7 +309,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     deploy_tasks[body.name] = {"status": "deploying", "step": "starting", "error": None, "result": None}
 
     # Find rkllama URL
-    rkllama_url = "http://localhost:8080"
+    rkllama_url = "http://localhost:7833"
     for b in config.backends:
         if b.get("type") == "rkllama":
             rkllama_url = b["url"]

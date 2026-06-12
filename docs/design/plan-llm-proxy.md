@@ -53,7 +53,7 @@ class TestConfigGeneration:
     def test_generates_config_from_backends(self):
         backends = [
             {"name": "fedora-gpu", "type": "ollama", "url": "http://fedora:11434", "priority": 1},
-            {"name": "local-npu", "type": "rkllama", "url": "http://localhost:8080", "priority": 3},
+            {"name": "local-npu", "type": "rkllama", "url": "http://localhost:7833", "priority": 3},
         ]
         config = generate_litellm_config(backends)
         assert "model_list" in config
@@ -77,7 +77,7 @@ class TestConfigGeneration:
         assert "api_base" not in config["model_list"][0]["litellm_params"] or config["model_list"][0]["litellm_params"]["api_base"] == "https://api.openai.com"
 
     def test_rkllama_treated_as_ollama_compat(self):
-        backends = [{"name": "npu", "type": "rkllama", "url": "http://localhost:8080", "priority": 1}]
+        backends = [{"name": "npu", "type": "rkllama", "url": "http://localhost:7833", "priority": 1}]
         config = generate_litellm_config(backends)
         # rkllama is ollama-compatible
         model_param = config["model_list"][0]["litellm_params"]["model"]
