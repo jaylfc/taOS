@@ -1,6 +1,8 @@
 server:
   host: 0.0.0.0
   port: 6969
+  # LiteLLM proxy host port (agent containers always see 4000 internally)
+  litellm_port: 7834
   # Second origin for the sandboxed browser proxy so the proxied iframe can
   # take allow-same-origin and register a service worker without exposing
   # any taOS API. Env override: TAOS_BROWSER_PROXY_PORT. Set to 0 to disable

@@ -309,7 +309,7 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # right host process regardless of whether the operator kept the legacy
         # 4000 or migrated to 7834.
         llm_proxy_ref = (req.extra_config or {}).get("llm_proxy")
-        litellm_host_port = llm_proxy_ref.port if llm_proxy_ref is not None else 7834
+        litellm_host_port = getattr(llm_proxy_ref, "port", None) or 7834
         proxy_devices = [
             ("taos-proxy-litellm", 4000, litellm_host_port),
             ("taos-proxy-taos", req.taos_port, req.taos_port),
