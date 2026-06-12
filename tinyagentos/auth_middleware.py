@@ -6,6 +6,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
 EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/api/agents/registry/pubkey"}
+
+# Registry feed endpoints accept EITHER an admin session OR a registry JWT.
+# When a Bearer token is present for these paths the request bypasses the
+# session gate; the route handler verifies the JWT and grant itself.
+_REGISTRY_FEED_PATHS = frozenset({
+    "/api/agents/registry/revoked",
+    "/api/agents/registry/grants",
+})
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -101,13 +109,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.via = "exempt"
             return await call_next(request)
 
+        # Registry feed endpoints (revoked + grants) accept a registry JWT as an
+        # alternative to the admin session.  When a Bearer token is present for
+        # these paths, pass the request through to the route handler, which calls
+        # _check_feed_token() to verify the JWT and the registry_feeds_read grant.
+        # The route also falls back to request.state.is_admin for admin sessions,
+        # so normal cookie-authenticated admin access continues to work.
+        auth_header = request.headers.get("authorization", "")
+        if path in _REGISTRY_FEED_PATHS and auth_header.lower().startswith("bearer "):
+            request.state.user_id = None
+            request.state.is_admin = False
+            request.state.via = "registry_jwt_candidate"
+            return await call_next(request)
+
         # Local token (Authorization: Bearer <token>) is accepted as a
         # substitute for the session cookie. The token lives at
         # {data_dir}/.auth_local_token, readable only by the user
         # running taOS, so possession = same-user-on-the-host trust.
         # Used by scripts and the upcoming CLI; the browser SPA keeps
         # using cookies.
-        auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):
