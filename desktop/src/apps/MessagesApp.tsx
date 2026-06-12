@@ -258,11 +258,14 @@ const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", 
 function dayLabel(ts: string | number): string {
   const d = new Date(toMs(ts));
   const now = new Date();
-  // Use UTC day arithmetic so a one-day gap is always 86400000ms, even
-  // across DST transitions where a local-day can be 23 or 25 hours.
-  const todayMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  const thatMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  const diffDays = Math.round((todayMs - thatMs) / 86400000);
+  // Compare local calendar days, not UTC. Build local-midnight Dates for
+  // both, then divide by 86400000ms. A local day is 23-25 hours across
+  // DST, so the division can still produce fractional values; use
+  // Math.round so a one-calendar-day difference is reported as exactly
+  // 1 day. (A diff of 0.96 days is still a single calendar-day gap
+  // before noon, and a diff of 1.04 days is one calendar day after.)
+  const localMidnight = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const diffDays = Math.round((localMidnight(now).getTime() - localMidnight(d).getTime()) / 86400000);
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
   return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
