@@ -1916,8 +1916,11 @@ export function MessagesApp({
                       const vw = window.innerWidth;
                       const vh = window.innerHeight;
                       const r = showEmoji.rect;
-                      const top = Math.max(8, Math.min(r.top, vh - POPOVER_H - 8));
-                      const left = Math.max(8, Math.min(r.right - POPOVER_W, vw - POPOVER_W - 8));
+                      // Upper bounds are clamped to >=8 so a viewport smaller
+                      // than the popover (with margins) cannot produce a
+                      // negative limit and let Math.min return a value < 8.
+                      const top = Math.max(8, Math.min(r.top, Math.max(8, vh - POPOVER_H - 8)));
+                      const left = Math.max(8, Math.min(r.right - POPOVER_W, Math.max(8, vw - POPOVER_W - 8)));
                       return (
                     <div
                       data-emoji-popover="1"
