@@ -255,6 +255,17 @@ function renderInline(text: string, keyPrefix: string) {
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
 
+function dayLabel(ts: string | number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today.getTime() - that.getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
+
 /* ------------------------------------------------------------------ */
 /*  MessagesApp                                                        */
 /* ------------------------------------------------------------------ */
@@ -1686,6 +1697,9 @@ export function MessagesApp({
               const isAgent = msg.author_type === "agent";
               const prev = i > 0 ? messages[i - 1] : undefined;
               const showAuthor = !prev || prev.author_id !== msg.author_id;
+              const prevDay = prev ? new Date(prev.created_at).toDateString() : null;
+              const currDay = new Date(msg.created_at).toDateString();
+              const showDaySeparator = prevDay !== currDay;
               const authorState = resolveAuthorDisplayState(
                 msg.author_id,
                 msg.author_type,
@@ -1700,8 +1714,15 @@ export function MessagesApp({
                     ? "Agent removed"
                     : undefined;
               return (
+                <React.Fragment key={msg.id}>
+                {showDaySeparator && (
+                  <div className="flex items-center gap-3 my-4 select-none">
+                    <div className="flex-1 h-px bg-white/10" />
+                    <span className="text-[11px] text-white/40 font-medium">{dayLabel(msg.created_at)}</span>
+                    <div className="flex-1 h-px bg-white/10" />
+                  </div>
+                )}
                 <div
-                  key={msg.id}
                   data-message-id={msg.id}
                   className={`group relative px-3 py-1 rounded-md transition-colors hover:bg-white/[0.03] ${
                     isAgent && !isDeadAgent ? "bg-blue-500/[0.04]" : ""
@@ -1891,6 +1912,7 @@ export function MessagesApp({
                     </div>
                   )}
                 </div>
+                </React.Fragment>
               );
             })}
             <div ref={messagesEndRef} />
