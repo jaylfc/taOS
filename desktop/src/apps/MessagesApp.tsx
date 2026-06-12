@@ -1910,12 +1910,21 @@ export function MessagesApp({
 
                   {/* emoji picker — rendered in a portal to avoid clipping by the scrollable list */}
                   {showEmoji && showEmoji.messageId === msg.id && createPortal(
+                    (() => {
+                      const POPOVER_W = 300;
+                      const POPOVER_H = 360;
+                      const vw = window.innerWidth;
+                      const vh = window.innerHeight;
+                      const r = showEmoji.rect;
+                      const top = Math.max(8, Math.min(r.top, vh - POPOVER_H - 8));
+                      const left = Math.max(8, Math.min(r.right - POPOVER_W, vw - POPOVER_W - 8));
+                      return (
                     <div
                       data-emoji-popover="1"
                       role="dialog"
                       aria-label="Emoji reactions"
                       className="fixed z-50 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 w-[300px] h-[360px] flex flex-col gap-2"
-                      style={{ top: showEmoji.rect.top, left: showEmoji.rect.right - 300 }}
+                      style={{ top, left }}
                     >
                       <div className="flex gap-1 shrink-0">
                         {EMOJI_PICKER.map((em) => (
@@ -1938,7 +1947,9 @@ export function MessagesApp({
                           }}
                         />
                       </div>
-                    </div>,
+                    </div>
+                      );
+                    })(),
                     document.body,
                   )}
                 </div>
