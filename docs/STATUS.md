@@ -7,7 +7,12 @@
 
 # taOS: Live Status
 
-**Last updated:** 2026-06-12 ~06:00 BST, by @taOS (Mac session). 5h window ~13%, resets 08:20 UTC; resume pair armed (09:23/09:42 BST).
+**Last updated:** 2026-06-12 ~10:30 BST, by @taOS (Mac session). 5h window ~8%, resets 13:20 UTC; resume pair armed (14:23/14:42 BST).
+
+**MORNING WRAP, all on master (tip 25f10402):**
+- **#795 CLOSED, port hygiene fully shipped:** rkllama 8080->7833 (#802/#803, promoted via #804) AND LiteLLM host port 4000->7834 (#805, promoted via #806). Container side stays 4000 via the proxy device so deployed agents never change; existing installs AUTO-PIN to their old ports on first boot (config litellm_port pin, verified the hole on the live Pi before it shipped); 783x block (7832 qmd, 7833 rkllama, 7834 LiteLLM) + 4000 + 8080 all in RESERVED_PORTS; breakage-log entries for both moves.
+- **#744 e2e VERIFIED 4/4 by taOSmd** (msg 383, recorded on the issue): verified-claim project binding + body anti-spoof + signature rejection + global behavior, real tokens, isolated serve. OPEN DECISION FOR JAY: taOSmd wants an admin/revoked-feed token to e2e the grants+revocation layer; options on the bus (msg 387): short-lived scoped read-only feed token (small build) vs supervised joint session. Core contract is verified regardless.
+- dev == master. Open PRs: only draft #476. Still waiting: @hermes search keys (task #8, msg 379, no reply yet).
 
 **POST-RESET BATCH (04:20-06:00 BST), all landed on dev:**
 - **#795 first half DONE: rkllama default port 8080 -> 7833** (#802 + verification follow-up #803, both merged to dev): installer default, ~10 controller fallbacks, docs, breakage-log entry, `default_rkllama_url()` legacy probe (7833 first, 8080 fallback with update hint, VERIFIED LIVE on the Pi where rkllama still runs on 8080), and the rknpu install verification now probes 7833-then-8080 so fresh installs do not fail their own check (bot-review catch). Second half (LiteLLM off 4000) still open on #795. NOT yet promoted to master: promote #802+#803 together when convenient.
