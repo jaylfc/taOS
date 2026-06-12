@@ -600,6 +600,12 @@ export function MessagesApp({
     };
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
+  /* ---- keep unreadRef in sync with the unread state without re-running
+   * the channel-selection effect (which would re-capture the pending count). ---- */
+  useEffect(() => {
+    unreadRef.current = unread;
+  }, [unread]);
+
   /* ---- default-select A2A channel on first project visit ----
    * Also runs when the project switches: if the previously selected channel
    * is not in the new project's channel list, it's stale — fall back to
