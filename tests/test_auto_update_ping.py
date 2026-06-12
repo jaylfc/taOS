@@ -68,6 +68,40 @@ async def test_ping_sends_version_and_platform(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ping_includes_persistent_install_id(monkeypatch, tmp_path):
+    """With a data_dir, the ping carries a stable random install id that
+    persists across calls (the historical-count key)."""
+    from tinyagentos.auto_update import send_version_ping
+    import tinyagentos
+
+    monkeypatch.setenv("TAOS_UPDATE_CHECK_URL", "http://test.local/version-check")
+    monkeypatch.setattr(tinyagentos, "__version__", "1.2.3-test")
+
+    c1 = _make_http_client(status=200, json_body={})
+    await send_version_ping(c1, tmp_path)
+    id1 = c1.get.call_args[1]["params"].get("id")
+    assert id1 and len(id1) >= 16
+    assert (tmp_path / ".install_id").exists()
+
+    c2 = _make_http_client(status=200, json_body={})
+    await send_version_ping(c2, tmp_path)
+    id2 = c2.get.call_args[1]["params"].get("id")
+    assert id2 == id1  # stable across calls
+
+
+@pytest.mark.asyncio
+async def test_ping_without_data_dir_sends_no_id(monkeypatch):
+    """No data_dir means no id param (and the call still succeeds)."""
+    from tinyagentos.auto_update import send_version_ping
+    import tinyagentos
+    monkeypatch.setenv("TAOS_UPDATE_CHECK_URL", "http://test.local/version-check")
+    monkeypatch.setattr(tinyagentos, "__version__", "1.2.3-test")
+    c = _make_http_client(status=200, json_body={})
+    await send_version_ping(c, None)
+    assert "id" not in c.get.call_args[1]["params"]
+
+
+@pytest.mark.asyncio
 async def test_ping_tolerates_connection_error():
     """A network error must not propagate -- silently dropped."""
     import httpx
@@ -115,7 +149,7 @@ async def test_env_opt_out_skips_ping(monkeypatch):
 
     ping_called = []
 
-    async def _fake_ping(client):
+    async def _fake_ping(client, data_dir=None):
         ping_called.append(True)
 
     with patch("tinyagentos.auto_update.send_version_ping", side_effect=_fake_ping):
@@ -150,7 +184,7 @@ async def test_pref_opt_out_skips_ping(monkeypatch):
 
     ping_called = []
 
-    async def _fake_ping(client):
+    async def _fake_ping(client, data_dir=None):
         ping_called.append(True)
 
     with patch("tinyagentos.auto_update.send_version_ping", side_effect=_fake_ping):
@@ -184,7 +218,7 @@ async def test_ping_fires_when_both_opts_enabled(monkeypatch):
 
     ping_called = []
 
-    async def _fake_ping(client):
+    async def _fake_ping(client, data_dir=None):
         ping_called.append(True)
 
     with patch("tinyagentos.auto_update.send_version_ping", side_effect=_fake_ping):

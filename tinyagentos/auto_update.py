@@ -6,9 +6,10 @@ the user gets one notification per new release, not one per poll cycle.
 
 Also fires a single anonymous install-count ping per cycle to
 ``TAOS_UPDATE_CHECK_URL`` (default ``https://taos.my/api/v1/version-check``).
-The server counts a daily-salted sketch of the caller; no per-caller data is
-stored. Disable with ``TAOS_NO_UPDATE_PING=1`` or the ``update_ping_enabled``
-preference in Settings. All failures degrade silently to debug logging.
+The ping carries a random per-install id (no PII, stored in the data dir) so
+the server keeps an exact historical install count. Disable with
+``TAOS_NO_UPDATE_PING=1`` or the ``update_ping_enabled`` preference in
+Settings. All failures degrade silently to debug logging.
 
 Uses ``asyncio.create_subprocess_exec`` (list-of-args, never shell) so
 untrusted paths cannot cause command injection.
@@ -76,21 +77,50 @@ def _ping_enabled_by_env() -> bool:
     return os.environ.get("TAOS_NO_UPDATE_PING", "").strip() not in ("1", "true", "yes")
 
 
-async def send_version_ping(http_client) -> None:
+def _install_id(data_dir: Optional[Path]) -> str:
+    """Return this install's stable random id, creating it once if needed.
+
+    A random UUID with no PII and no hardware fingerprint, stored at
+    ``<data_dir>/.install_id``. The data dir is preserved across upgrades and
+    in-place reinstalls, so the id (and the install's place in the historical
+    count) is stable. A full wipe yields a new id, which is correct: that is a
+    genuinely new install.
+    """
+    if data_dir is None:
+        return ""
+    path = Path(data_dir) / ".install_id"
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        import uuid
+        new_id = uuid.uuid4().hex
+        path.write_text(new_id, encoding="utf-8")
+        return new_id
+    except Exception:
+        return ""
+
+
+async def send_version_ping(http_client, data_dir: Optional[Path] = None) -> None:
     """Fire the anonymous version-check/install-count ping.
 
-    Sends ``GET <url>?v=<version>&platform=<sys.platform>-<machine>``.
-    The server increments a daily-salted HyperLogLog sketch; nothing is
-    stored per caller. Any error (network, DNS, timeout, bad status) is
-    logged at DEBUG and silently dropped.
+    Sends ``GET <url>?v=<version>&platform=<sys.platform>-<machine>&id=<uuid>``.
+    The id is a random per-install UUID (no PII) so the server keeps an exact
+    historical count. Any error (network, DNS, timeout, bad status) is logged
+    at DEBUG and silently dropped.
     """
     url = os.environ.get("TAOS_UPDATE_CHECK_URL", "").strip() or _DEFAULT_UPDATE_CHECK_URL
     version = getattr(tinyagentos, "__version__", "unknown")
     plat = f"{sys.platform}-{platform.machine()}"
+    params = {"v": version, "platform": plat}
+    iid = _install_id(data_dir)
+    if iid:
+        params["id"] = iid
     try:
         resp = await http_client.get(
             url,
-            params={"v": version, "platform": plat},
+            params=params,
             timeout=5.0,
             follow_redirects=True,
         )
@@ -249,14 +279,15 @@ class AutoUpdateService:
         if _ping_enabled_by_env() and prefs.get("update_ping_enabled", True):
             _app = self._app_state
             _http = getattr(_app, "http_client", None)
+            _data_dir = getattr(_app, "data_dir", None)
             if _http is not None:
-                await send_version_ping(_http)
+                await send_version_ping(_http, _data_dir)
             else:
                 # No shared client available yet -- create a one-shot client.
                 try:
                     import httpx
                     async with httpx.AsyncClient() as tmp_client:
-                        await send_version_ping(tmp_client)
+                        await send_version_ping(tmp_client, _data_dir)
                 except Exception as exc:
                     logger.debug("version-check ping (standalone client) failed: %s", exc)
 
