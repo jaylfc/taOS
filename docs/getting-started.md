@@ -53,12 +53,12 @@ The platform itself uses roughly 345 MB of RAM when idle, so it runs comfortably
 On your device, open a terminal and run:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-server.sh | sudo bash
 ```
 
 This script will:
 1. Install system dependencies (`python3`, `git`, `nodejs`, `avahi-daemon` for mDNS, and others)
-2. Clone TinyAgentOS to `/opt/tinyagentos`
+2. Clone TinyAgentOS to `~/tinyagentos` (override with `TAOS_INSTALL_DIR`)
 3. Create a Python virtual environment and install all Python packages
 4. Register and start a `systemd` service so TinyAgentOS runs automatically on boot
 
@@ -412,7 +412,7 @@ The `-f` flag follows the log in real time.
 
 ## 8. Backup
 
-TinyAgentOS stores your configuration, agent data, secrets, and memories in `/opt/tinyagentos/data/` (or wherever you set your data directory during install).
+TinyAgentOS stores your configuration, agent data, secrets, and memories in `~/tinyagentos/data/` (or `$TAOS_INSTALL_DIR/data/` if you set a custom install path).
 
 ### Backup via Settings
 
@@ -431,7 +431,7 @@ On a fresh TinyAgentOS install, go to **Settings > Backup > Restore**, upload yo
 If you prefer to do it yourself:
 
 ```bash
-sudo cp -r /opt/tinyagentos/data /your/backup/location/tinyagentos-data-$(date +%Y%m%d)
+cp -r ~/tinyagentos/data /your/backup/location/tinyagentos-data-$(date +%Y%m%d)
 ```
 
 ---
