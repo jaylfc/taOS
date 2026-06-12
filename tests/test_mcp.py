@@ -504,3 +504,55 @@ async def test_route_uninstall_not_found(app_client):
     client, app = app_client
     resp = await client.delete("/api/mcp/servers/nonexistent")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# stop_all concurrency — two servers stop in parallel, not serially
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_all_is_concurrent(tmp_path):
+    """stop_all must stop multiple servers concurrently.
+
+    Stub two fake processes whose stop() takes 0.2s each. With serial
+    execution total wall time would be >= 0.4s; parallel execution must
+    finish in under 0.35s.
+    """
+    import time
+
+    store = MCPServerStore(tmp_path / "mcp.db")
+    await store.init()
+
+    sup = MCPSupervisor(store=store, catalog=None, notif_store=None)
+
+    stop_calls: list[str] = []
+
+    async def _fake_stop(sid: str, timeout: float = 10.0) -> bool:
+        await asyncio.sleep(0.2)
+        stop_calls.append(sid)
+        sup._processes.pop(sid, None)
+        await store.mark_stopped(sid, exit_code=0)
+        return True
+
+    await store.register_server("srv-a", "1.0", "stdio")
+    await store.register_server("srv-b", "1.0", "stdio")
+
+    # Inject placeholder entries so stop_all sees two servers.
+    from unittest.mock import MagicMock
+    proc_mock = MagicMock()
+    proc_mock.poll.return_value = None
+    from tinyagentos.mcp.supervisor import ServerProcess
+    sup._processes["srv-a"] = ServerProcess(process=proc_mock, transport="stdio")
+    sup._processes["srv-b"] = ServerProcess(process=proc_mock, transport="stdio")
+
+    # Patch stop with our slow fake.
+    from unittest.mock import patch
+    with patch.object(sup, "stop", side_effect=_fake_stop):
+        t0 = time.monotonic()
+        await sup.stop_all()
+        elapsed = time.monotonic() - t0
+
+    assert set(stop_calls) == {"srv-a", "srv-b"}
+    assert elapsed < 0.35, f"stop_all took {elapsed:.3f}s — expected < 0.35s (parallel)"
+
+    await store.close()

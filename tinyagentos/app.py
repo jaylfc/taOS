@@ -662,50 +662,51 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await resume_agents_from_notes(app.state)
         except Exception:
             logger.exception("boot-time agent resume failed")
-        # Optionally start LiteLLM proxy (non-fatal if not installed).
-        # Resolve every backend's api_key_secret so LiteLLM's
-        # os.environ/<name> markers land in the subprocess env and
-        # cloud providers can actually authenticate.
+        # Kick off the one-time agent base image import in the background.
+        # Only runs when the user has explicitly opted in via
+        # TAOS_PREFETCH_BASE_IMAGE=1. Non-fatal — if GitHub is
+        # unreachable or the tarball isn't published yet, deploys
+        # fall back to images:debian/bookworm.
         try:
-            # Apply LiteLLM's Prisma schema before spawning the proxy so
-            # /key/generate works on fresh installs. No-ops when no DB is
-            # configured or the schema is already present.
-            try:
-                _litellm_migrate(data_dir)
-            except Exception:
-                logger.exception("litellm prisma migration failed — virtual keys will not work")
-            # Kick off the one-time agent base image import in the background.
-            # Only runs when the user has explicitly opted in via
-            # TAOS_PREFETCH_BASE_IMAGE=1. Non-fatal — if GitHub is
-            # unreachable or the tarball isn't published yet, deploys
-            # fall back to images:debian/bookworm.
-            try:
-                if _is_prefetch_enabled():
-                    _create_supervised_task(
-                        _ensure_agent_image_present(), app.state._background_tasks
-                    )
-                else:
-                    logger.debug(
-                        "agent_image: base image prefetch disabled "
-                        "(set TAOS_PREFETCH_BASE_IMAGE=1 to enable)"
-                    )
-            except Exception:
-                logger.exception("agent base image bootstrap scheduling failed")
-            resolved_secrets: dict[str, str] = {}
-            for backend in config.backends:
-                name = backend.get("api_key_secret")
-                if not name or name in resolved_secrets:
-                    continue
-                try:
-                    rec = await secrets_store.get(name)
-                except Exception as exc:
-                    logger.warning("llm_proxy: secret lookup for %s failed: %s", name, exc)
-                    continue
-                if rec and rec.get("value"):
-                    resolved_secrets[name] = rec["value"]
-            await llm_proxy.start(config.backends, secrets=resolved_secrets)
+            if _is_prefetch_enabled():
+                _create_supervised_task(
+                    _ensure_agent_image_present(), app.state._background_tasks
+                )
+            else:
+                logger.debug(
+                    "agent_image: base image prefetch disabled "
+                    "(set TAOS_PREFETCH_BASE_IMAGE=1 to enable)"
+                )
         except Exception:
-            pass  # LiteLLM is optional
+            logger.exception("agent base image bootstrap scheduling failed")
+
+        # LiteLLM bring-up runs in the background so the startup guard clears
+        # immediately. migrate must finish before start (it generates the prisma
+        # client the LiteLLM subprocess imports). All consumers null-check
+        # llm_proxy.is_running() so they degrade gracefully while the proxy warms.
+        async def _litellm_bringup() -> None:
+            try:
+                try:
+                    await _litellm_migrate(data_dir)
+                except Exception:
+                    logger.exception("litellm prisma migration failed — virtual keys will not work")
+                resolved_secrets: dict[str, str] = {}
+                for backend in config.backends:
+                    name = backend.get("api_key_secret")
+                    if not name or name in resolved_secrets:
+                        continue
+                    try:
+                        rec = await secrets_store.get(name)
+                    except Exception as exc:
+                        logger.warning("llm_proxy: secret lookup for %s failed: %s", name, exc)
+                        continue
+                    if rec and rec.get("value"):
+                        resolved_secrets[name] = rec["value"]
+                await llm_proxy.start(config.backends, secrets=resolved_secrets)
+            except Exception:
+                pass  # LiteLLM is optional
+
+        _create_supervised_task(_litellm_bringup(), app.state._background_tasks)
         # Start background health monitor
         from tinyagentos.health import HealthMonitor
         monitor = HealthMonitor(config, metrics_store, qmd_client, http_client, notif_store)

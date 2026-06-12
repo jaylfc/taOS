@@ -242,13 +242,14 @@ class TestCallbackWiring:
         )
         assert "custom_callbacks" not in result["general_settings"]
 
-    def test_write_config_creates_callback_shim(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_write_config_creates_callback_shim(self, tmp_path):
         """``write_config`` writes a sibling ``taos_callback.py`` next to
         the generated yaml, re-exporting the installed callback instance as
         ``proxy_handler_instance`` — so LiteLLM's config-dir-relative import
         succeeds without duplicating the callback source."""
         proxy = LLMProxy(port=14000, config_dir=tmp_path)
-        proxy.write_config([])
+        await proxy.write_config([])
         shim = tmp_path / "taos_callback.py"
         assert shim.exists()
         contents = shim.read_text()

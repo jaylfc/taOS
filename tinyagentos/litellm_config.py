@@ -117,10 +117,7 @@ def _discover_ollama_models(url: str, timeout: float = 2.0) -> list[str]:
 
     Returns ``[]`` on any failure (backend down, network error, schema
     drift) — the caller treats an empty list as "no models to auto-wire"
-    and falls back to the ``default`` alias. Kept sync because
-    ``generate_litellm_config`` is called from both sync and async
-    contexts and adding a timeout-bounded probe here is simpler than
-    plumbing async all the way through the subscriber chain.
+    and falls back to the ``default`` alias.
     """
     try:
         resp = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=timeout)
@@ -131,6 +128,34 @@ def _discover_ollama_models(url: str, timeout: float = 2.0) -> list[str]:
     except Exception as exc:
         logger.debug("ollama model probe at %s failed: %s", url, exc)
         return []
+
+
+async def _discover_ollama_backends_concurrent(
+    backends: list[dict], timeout: float = 2.0
+) -> dict[str, list[str]]:
+    """Probe all ollama/rkllama backends concurrently.
+
+    Returns a mapping of URL -> model name list. Each probe runs in a
+    thread via ``asyncio.to_thread`` so blocking httpx calls do not
+    stall the event loop.
+    """
+    import asyncio
+
+    ollama_urls = [
+        b.get("url", "").rstrip("/")
+        for b in backends
+        if b.get("type", "ollama") in ("ollama", "rkllama") and b.get("url")
+    ]
+    if not ollama_urls:
+        return {}
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_discover_ollama_models, url, timeout) for url in ollama_urls),
+        return_exceptions=True,
+    )
+    return {
+        url: (res if isinstance(res, list) else [])
+        for url, res in zip(ollama_urls, results)
+    }
 
 
 def _local_backend_models_from_registry(
@@ -189,6 +214,7 @@ def generate_litellm_config(
     *,
     registry=None,
     master_key: str | None = None,
+    discovered: dict[str, list[str]] | None = None,
 ) -> dict:
     """Generate LiteLLM config from TinyAgentOS backend list.
 
@@ -330,8 +356,10 @@ def generate_litellm_config(
         # ``taos-embedding-default`` alias so containers have one name to
         # inject regardless of which rkllama box holds the model.
         if backend_type in ("ollama", "rkllama"):
-            discovered = _discover_ollama_models(url)
-            for discovered_name in discovered:
+            _probed = (discovered or {}).get(url)
+            if _probed is None:
+                _probed = _discover_ollama_models(url)
+            for discovered_name in _probed:
                 if not _is_embedding_model(discovered_name):
                     continue
                 embed_params = {

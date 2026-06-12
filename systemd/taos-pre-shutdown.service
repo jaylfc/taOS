@@ -7,7 +7,7 @@ Before=shutdown.target reboot.target halt.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/taos-graceful-stop
-TimeoutStopSec=360
+TimeoutStopSec=60
 
 [Install]
 WantedBy=shutdown.target reboot.target halt.target

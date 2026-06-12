@@ -131,11 +131,16 @@ class MCPSupervisor:
         return {"agents_affected": agents_affected, "env_secrets_dropped": secrets_dropped}
 
     async def stop_all(self) -> None:
-        for sid in list(self._processes.keys()):
-            try:
-                await self.stop(sid)
-            except Exception:
-                logger.exception("mcp stop_all: error stopping %s", sid)
+        sids = list(self._processes.keys())
+        if not sids:
+            return
+        results = await asyncio.gather(
+            *(self.stop(sid) for sid in sids),
+            return_exceptions=True,
+        )
+        for sid, result in zip(sids, results):
+            if isinstance(result, Exception):
+                logger.exception("mcp stop_all: error stopping %s", sid, exc_info=result)
 
     def logs(self, server_id: str, since_idx: int = 0, limit: int = 200) -> list[dict]:
         sp = self._processes.get(server_id)

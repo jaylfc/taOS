@@ -10,7 +10,7 @@ ExecStart=%h/tinyagentos/.venv/bin/python -m uvicorn tinyagentos.app:create_app 
 ExecStop=/usr/local/bin/taos-graceful-stop
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=360
+TimeoutStopSec=45
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

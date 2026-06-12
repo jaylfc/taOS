@@ -20,6 +20,7 @@ by the time LiteLLM's proxy boots.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -75,7 +76,7 @@ def _prisma_client_importable() -> bool:
         return False
 
 
-def migrate(data_dir: Path) -> str:
+async def migrate(data_dir: Path) -> str:
     """Ensure LiteLLM's prisma Python client is importable.
 
     LiteLLM handles its own DB migrations on startup via
@@ -84,9 +85,9 @@ def migrate(data_dir: Path) -> str:
     LiteLLM's native migrator to loop on duplicate-type errors.
 
     Returns a short status string for logging/tests:
-        - "no-db-configured"   → no ``.litellm_db_url`` file, nothing to do
-        - "already-generated"  → ``prisma.client`` already importable
-        - "generated"          → ran ``prisma generate`` successfully
+        - "no-db-configured"   -> no ``.litellm_db_url`` file, nothing to do
+        - "already-generated"  -> ``prisma.client`` already importable
+        - "generated"          -> ran ``prisma generate`` successfully
 
     Raises on failure of ``prisma generate`` or if the client is still
     not importable afterwards, so boot fails loudly instead of LiteLLM
@@ -132,14 +133,22 @@ def migrate(data_dir: Path) -> str:
 
     cmd = [cli, "generate", f"--schema={schema}"]
     logger.info("litellm_migrate: running %s", " ".join(cmd))
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
-    if result.stdout.strip():
-        logger.info("litellm_migrate stdout: %s", result.stdout.strip())
-    if result.stderr.strip():
-        logger.info("litellm_migrate stderr: %s", result.stderr.strip())
-    if result.returncode != 0:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_b, stderr_b = await proc.communicate()
+    stdout = stdout_b.decode(errors="replace").strip()
+    stderr = stderr_b.decode(errors="replace").strip()
+    if stdout:
+        logger.info("litellm_migrate stdout: %s", stdout)
+    if stderr:
+        logger.info("litellm_migrate stderr: %s", stderr)
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"litellm_migrate: prisma generate exited {result.returncode}"
+            f"litellm_migrate: prisma generate exited {proc.returncode}"
         )
 
     if not _prisma_client_importable():

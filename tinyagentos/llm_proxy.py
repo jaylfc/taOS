@@ -22,6 +22,7 @@ from tinyagentos.providers import CLOUD_TYPES as CLOUD_BACKEND_TYPES
 from tinyagentos.litellm_config import (
     EMBEDDING_ALIAS,
     _is_embedding_model,
+    _discover_ollama_backends_concurrent,
     generate_litellm_config,
     get_litellm_master_key,
 )
@@ -120,8 +121,11 @@ class LLMProxy:
             return False
         return self._process.poll() is None
 
-    def write_config(self, backends: list[dict]) -> Path:
+    async def write_config(self, backends: list[dict]) -> Path:
         """Generate and write LiteLLM config file.
+
+        Probes all ollama/rkllama backends concurrently so the
+        per-backend 2s timeout does not compound serially.
 
         Also writes a sibling ``taos_callback.py`` shim so LiteLLM's
         ``get_instance_fn`` can load the CustomLogger instance via its
@@ -130,10 +134,12 @@ class LLMProxy:
         callback code in one place.
         """
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        discovered = await _discover_ollama_backends_concurrent(backends)
         config = generate_litellm_config(
             backends,
             registry=self._registry,
             master_key=get_litellm_master_key(self._data_dir),
+            discovered=discovered,
         )
         config_path = self.config_dir / "litellm_config.yaml"
 
@@ -212,7 +218,7 @@ class LLMProxy:
                     self.port,
                 )
 
-        config_path = self.write_config(backends)
+        config_path = await self.write_config(backends)
 
         # Resolve litellm binary from the same venv that's running
         # TinyAgentOS. systemd doesn't inherit the venv's bin/ on PATH, so
@@ -324,7 +330,7 @@ class LLMProxy:
         so the default action fires: the process terminates. A full
         stop+start is the only reliable way to pick up config changes.
         """
-        new_path = self.write_config(backends)
+        new_path = await self.write_config(backends)
         if not self.is_running():
             return False
         logger.info("LiteLLM proxy restarting for config reload (%s)", new_path)
