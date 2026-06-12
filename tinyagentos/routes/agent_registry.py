@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_registry_store import mint_registry_token, verify_registry_token
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 
 logger = logging.getLogger(__name__)
@@ -91,6 +91,70 @@ def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     if kp is None:
         raise RuntimeError("agent_registry_keypair not on app.state")
     return kp
+
+
+_FEED_SCOPE = "registry_feeds_read"
+
+
+async def _check_feed_token(request: Request) -> Optional[str]:
+    """Return the canonical_id from a valid Bearer token that holds an active
+    ``registry_feeds_read`` grant, or raise an HTTPException.
+
+    Returns None when no Authorization header is present (caller falls through
+    to the standard admin session check).
+
+    Raises:
+      401 -- Authorization header present but token is malformed or signature invalid.
+      403 -- Token is valid but the agent lacks the scope, is not active in the
+             registry, or the grant has expired.
+
+    Note: registry JWTs themselves carry no expiry claim -- revocation is
+    achieved by suspending the agent (sets status != 'active') or by setting
+    expires_at on the grant row.  The grant expiry checked here is the only
+    time-based gate.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+
+    raw_token = auth_header[7:].strip()
+
+    # Verify the EdDSA signature using the registry public key.
+    _private_pem, public_pem = _get_keypair(request)
+    try:
+        payload = verify_registry_token(raw_token, public_pem)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
+
+    canonical_id: str = payload.get("sub", "")
+    if not canonical_id:
+        raise HTTPException(status_code=401, detail="token missing sub claim")
+
+    # Agent must be active in the registry.
+    registry = _get_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    # Must hold an active registry_feeds_read grant.
+    grants_store = _get_grants_store(request)
+    grants = await grants_store.list_grants(canonical_id)
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    has_scope = any(
+        g["scope"] == _FEED_SCOPE
+        and (g.get("expires_at") is None or g["expires_at"] > now)
+        for g in grants
+    )
+    if not has_scope:
+        raise HTTPException(
+            status_code=403,
+            detail=f"token does not hold an active {_FEED_SCOPE!r} grant",
+        )
+
+    return canonical_id
 
 
 async def _audit_governance(
@@ -180,17 +244,22 @@ async def get_pubkey(request: Request):
 
 
 @router.get("/api/agents/registry/revoked")
-async def list_revoked_entries(
-    request: Request,
-    user: CurrentUser = Depends(current_user),
-):
+async def list_revoked_entries(request: Request):
     """Return the global revocation feed: [{canonical_id, revoked_at}, ...].
 
-    Admin or local-token only — this is the set the A2A bus needs to check
-    whether a token has been revoked.  Members do not have access.
+    Accessible to admin sessions/local-token OR a registry JWT whose
+    canonical_id holds an active ``registry_feeds_read`` grant.  The grant is
+    issued through the normal consent-flow path; no separate minting machinery
+    exists.  JWT revocation is handled by suspending the agent or expiring the
+    grant -- the token itself carries no exp claim.
     """
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="forbidden")
+    # Admin (session or local token) wins before any JWT verification, so an
+    # admin-equivalent Bearer local token is never mis-verified as a registry
+    # JWT and rejected.
+    if not getattr(request.state, "is_admin", False):
+        feed_caller = await _check_feed_token(request)
+        if feed_caller is None:
+            raise HTTPException(status_code=403, detail="forbidden")
     store = _get_store(request)
     return {"revoked": await store.list_revoked()}
 
@@ -214,26 +283,43 @@ async def list_inactive_entries(
 
 
 @router.get("/api/agents/registry/grants")
-async def list_active_grants(
-    request: Request,
-    canonical_id: Optional[str] = None,
-    user: CurrentUser = Depends(current_user),
-):
+async def list_active_grants(request: Request, canonical_id: Optional[str] = None):
     """Return the active grant feed for A2A bus enforcement.
 
     Response: {"grants": [{canonical_id, scope, tier, project_id, granted_at, expires_at}, ...]}
 
-    Admin only — @taOSmd polls this on interval to keep its local cache current.
+    Accessible to admin sessions/local-token OR a registry JWT whose
+    canonical_id holds an active ``registry_feeds_read`` grant.  The grant is
+    issued through the normal consent-flow path; no separate minting machinery
+    exists.  JWT revocation is handled by suspending the agent or expiring the
+    grant -- the token itself carries no exp claim.
+
+    @taOSmd polls this on interval to keep its local cache current.
     Grants are active if expires_at IS NULL or expires_at > now (Phase 1: all
     grants are non-expiring, so the full list is always returned).
 
     Optional ``?canonical_id=`` filter narrows to a single agent.
     """
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="forbidden")
+    # Admin (session or local token) wins before any JWT verification, so an
+    # admin-equivalent Bearer local token is never mis-verified as a registry
+    # JWT and rejected.
+    is_admin = getattr(request.state, "is_admin", False)
+    if not is_admin:
+        feed_caller = await _check_feed_token(request)
+        if feed_caller is None:
+            raise HTTPException(status_code=403, detail="forbidden")
     grants_store = _get_grants_store(request)
     if canonical_id:
         grants = await grants_store.list_grants(canonical_id)
+        if not is_admin:
+            # Feed-scoped callers see the same view as the unfiltered feed:
+            # active grants only, no expired history.
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            grants = [
+                g for g in grants
+                if not g.get("expires_at") or g["expires_at"] > now
+            ]
     else:
         grants = await grants_store.list_active_grants()
     return {"grants": grants}

@@ -6,6 +6,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
 EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/api/agents/registry/pubkey"}
+
+# Registry feed endpoints accept EITHER an admin session OR a registry JWT.
+# When a Bearer token is present for these paths the request bypasses the
+# session gate; the route handler verifies the JWT and grant itself.
+_REGISTRY_FEED_PATHS = frozenset({
+    "/api/agents/registry/revoked",
+    "/api/agents/registry/grants",
+})
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -129,6 +137,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.is_admin = False
                     request.state.via = "local_token"
                 return await call_next(request)
+
+        # Registry feed endpoints (revoked + grants) accept a registry JWT as an
+        # alternative to the admin session.  This branch sits AFTER the
+        # local-token check on purpose: a local token is admin-equivalent and
+        # must keep its admin semantics on these paths (taOSmd polls the feeds
+        # with it today).  Only a Bearer that is NOT the local token falls
+        # through to here and is verified as a registry JWT by the route.
+        if path in _REGISTRY_FEED_PATHS and auth_header.lower().startswith("bearer "):
+            request.state.user_id = None
+            request.state.is_admin = False
+            request.state.via = "registry_jwt_candidate"
+            return await call_next(request)
 
         # First boot: no user yet. Browsers go to the setup page; APIs
         # hard-fail so a stale cached client knows to refresh.

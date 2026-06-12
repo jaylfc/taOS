@@ -49,6 +49,7 @@ VALID_SCOPES = frozenset({
     "files_read",
     "files_write",
     "tools_execute",
+    "registry_feeds_read",
 })
 
 

@@ -563,3 +563,234 @@ class TestAgentRegistryRoutes:
     async def test_revoked_feed_admin_can_read(self, registry_client):
         resp = await registry_client.get("/api/agents/registry/revoked")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# registry_feeds_read scope -- feed token auth
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture
+async def feeds_client(app, tmp_data_dir):
+    """Admin client with all stores needed for the feed-token tests.
+
+    Mirrors registry_client but also initialises agent_grants, auth_requests,
+    and relationships so the consent-flow helpers used inside tests work.
+    """
+    for attr in ("agent_registry", "agent_grants", "auth_requests", "relationships", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is None:
+            await store.init()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+    app.state._startup_complete = True
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        c._test_admin_uid = uid
+        c._app = app
+        yield c
+
+    for attr in ("agent_registry", "agent_grants", "auth_requests", "relationships", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is not None:
+            await store.close()
+
+
+async def _make_feed_token(client) -> str:
+    """Register an agent and grant it registry_feeds_read via the consent flow.
+
+    Returns the signed registry JWT for that agent.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    app = client._app
+    transport = ASGITransport(app=app)
+
+    # Submit the auth-request as an unauthenticated external agent.
+    async with AsyncClient(transport=transport, base_url="http://test") as bare:
+        cr = await bare.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "taosmd-feed-reader",
+                "framework": "taosmd",
+                "requested_scopes": ["registry_feeds_read"],
+                "reason": "poll grant and revocation feeds",
+            },
+        )
+    assert cr.status_code == 200, cr.text
+    request_id = cr.json()["request_id"]
+
+    # Admin approves.
+    approve = await client.post(
+        f"/api/agents/auth-requests/{request_id}/approve",
+        json={"granted_scopes": ["registry_feeds_read"]},
+    )
+    assert approve.status_code == 200, approve.text
+
+    # Poll to get the token.
+    async with AsyncClient(transport=transport, base_url="http://test") as bare:
+        status = await bare.get(f"/api/agents/auth-requests/{request_id}")
+    assert status.status_code == 200
+    return status.json()["token"]
+
+
+@pytest.mark.asyncio
+class TestFeedReadScope:
+
+    async def test_no_auth_revoked_returns_401_or_403(self, feeds_client):
+        """Unauthenticated request (no session, no Bearer) is rejected."""
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.get("/api/agents/registry/revoked")
+        assert resp.status_code in (401, 403)
+
+    async def test_no_auth_grants_returns_401_or_403(self, feeds_client):
+        """Unauthenticated request (no session, no Bearer) is rejected."""
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.get("/api/agents/registry/grants")
+        assert resp.status_code in (401, 403)
+
+    async def test_token_with_scope_reads_revoked_feed(self, feeds_client):
+        """A JWT with an active registry_feeds_read grant can read the revoked feed."""
+        feed_token = await _make_feed_token(feeds_client)
+
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.get(
+                "/api/agents/registry/revoked",
+                headers={"Authorization": f"Bearer {feed_token}"},
+            )
+        assert resp.status_code == 200
+        assert "revoked" in resp.json()
+
+    async def test_token_with_scope_reads_grants_feed(self, feeds_client):
+        """A JWT with an active registry_feeds_read grant can read the grants feed."""
+        feed_token = await _make_feed_token(feeds_client)
+
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.get(
+                "/api/agents/registry/grants",
+                headers={"Authorization": f"Bearer {feed_token}"},
+            )
+        assert resp.status_code == 200
+        assert "grants" in resp.json()
+
+    async def test_token_without_scope_gets_403(self, feeds_client):
+        """A valid JWT for an agent that has no registry_feeds_read grant gets 403."""
+        # Register an agent directly (no grants written).
+        reg = await feeds_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "No Scope Agent"},
+        )
+        assert reg.status_code == 200
+        no_scope_token = reg.json()["token"]
+
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            r1 = await bare.get(
+                "/api/agents/registry/revoked",
+                headers={"Authorization": f"Bearer {no_scope_token}"},
+            )
+            r2 = await bare.get(
+                "/api/agents/registry/grants",
+                headers={"Authorization": f"Bearer {no_scope_token}"},
+            )
+        assert r1.status_code == 403
+        assert r2.status_code == 403
+
+    async def test_expired_grant_gets_403(self, feeds_client):
+        """A token whose registry_feeds_read grant has expired gets 403."""
+        from datetime import datetime, timezone, timedelta
+
+        feed_token = await _make_feed_token(feeds_client)
+
+        # Decode the canonical_id from the token payload.
+        import base64, json as _json
+        raw = feed_token.split(".")[1]
+        padding = 4 - len(raw) % 4
+        if padding != 4:
+            raw += "=" * padding
+        canonical_id = _json.loads(base64.urlsafe_b64decode(raw))["sub"]
+
+        # Overwrite the grant with an already-expired expires_at.
+        past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        grants_store = feeds_client._app.state.agent_grants
+        await grants_store.add_grant(
+            canonical_id,
+            "registry_feeds_read",
+            tier="once",
+            expires_at=past,
+        )
+
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            r1 = await bare.get(
+                "/api/agents/registry/revoked",
+                headers={"Authorization": f"Bearer {feed_token}"},
+            )
+            r2 = await bare.get(
+                "/api/agents/registry/grants",
+                headers={"Authorization": f"Bearer {feed_token}"},
+            )
+        assert r1.status_code == 403
+        assert r2.status_code == 403
+
+    async def test_suspended_agent_gets_403(self, feeds_client):
+        """A token for a suspended agent gets 403 even with the correct scope."""
+        feed_token = await _make_feed_token(feeds_client)
+
+        import base64, json as _json
+        raw = feed_token.split(".")[1]
+        padding = 4 - len(raw) % 4
+        if padding != 4:
+            raw += "=" * padding
+        canonical_id = _json.loads(base64.urlsafe_b64decode(raw))["sub"]
+
+        # Suspend the agent via the admin endpoint.
+        suspend = await feeds_client.post(f"/api/agents/registry/{canonical_id}/suspend")
+        assert suspend.status_code == 200
+
+        from httpx import ASGITransport, AsyncClient
+
+        transport = ASGITransport(app=feeds_client._app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            r1 = await bare.get(
+                "/api/agents/registry/revoked",
+                headers={"Authorization": f"Bearer {feed_token}"},
+            )
+            r2 = await bare.get(
+                "/api/agents/registry/grants",
+                headers={"Authorization": f"Bearer {feed_token}"},
+            )
+        assert r1.status_code == 403
+        assert r2.status_code == 403
+
+    async def test_admin_session_still_works(self, feeds_client):
+        """Admin cookie session continues to work alongside Bearer token auth."""
+        r1 = await feeds_client.get("/api/agents/registry/revoked")
+        r2 = await feeds_client.get("/api/agents/registry/grants")
+        assert r1.status_code == 200
+        assert "revoked" in r1.json()
+        assert r2.status_code == 200
+        assert "grants" in r2.json()
