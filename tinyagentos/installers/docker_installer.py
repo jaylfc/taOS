@@ -66,12 +66,22 @@ class DockerInstaller(AppInstaller):
         allocated_host_port: int | None = None
         if container_ports:
             # Allocate a host port from the managed pool for each container
-            # port.  The mapping is host_port:container_port so the app's
-            # internal wiring (container port) is unchanged.
-            allocated_host_port = allocate_host_port(app_id)
+            # port.  Every port is individually probed free on the host; a
+            # bare `allocated + idx` for the extra ports could hand out a
+            # port something else is bound to and crash compose up.  The
+            # first port keeps app_id as its hash seed so existing
+            # single-port installs keep their stable assignment.
+            taken: set[int] = set()
+            host_ports: list[int] = []
+            for idx in range(len(container_ports)):
+                seed = app_id if idx == 0 else f"{app_id}#{idx}"
+                hp = allocate_host_port(seed, exclude=taken)
+                taken.add(hp)
+                host_ports.append(hp)
+            allocated_host_port = host_ports[0]
             service["ports"] = [
-                f"{allocated_host_port + idx}:{cport}"
-                for idx, cport in enumerate(container_ports)
+                f"{hp}:{cport}"
+                for hp, cport in zip(host_ports, container_ports)
             ]
 
         # No top-level `version:` — it's obsolete in Compose v2 and emits a
