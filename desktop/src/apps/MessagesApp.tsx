@@ -776,6 +776,7 @@ export function MessagesApp({
   };
   const handleOpenThreadFor = (channelId: string, parentId: string) => {
     setShowSettings(false);
+    setShowAllThreads(false);
     openThreadFor(channelId, parentId);
   };
 
@@ -1643,8 +1644,9 @@ export function MessagesApp({
                     }
                   }}
                   className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
-                  aria-label="Show all threads"
-                  aria-pressed={showAllThreads}
+                  aria-label={showAllThreads ? "Hide all threads" : "Show all threads"}
+                  aria-expanded={showAllThreads}
+                  aria-controls="all-threads-panel"
                   title="All threads"
                 >
                   <MessagesSquare size={14} aria-hidden="true" />
@@ -2205,7 +2207,7 @@ export function MessagesApp({
       )}
 
       {/* ---- All Threads Panel ---- */}
-      {showAllThreads && selectedChannel && !openThread && (
+      {showAllThreads && selectedChannel && !openThread && !showSettings && (
         <AllThreadsList
           channelId={selectedChannel}
           onClose={() => setShowAllThreads(false)}
