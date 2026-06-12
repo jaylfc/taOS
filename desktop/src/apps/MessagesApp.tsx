@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   MessageCircle,
   Hash,
@@ -316,7 +317,7 @@ export function MessagesApp({
   const [input, setInput] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("disconnected");
   const [showCreate, setShowCreate] = useState(false);
-  const [showEmoji, setShowEmoji] = useState<string | null>(null); // message id
+  const [showEmoji, setShowEmoji] = useState<{ messageId: string; rect: DOMRect } | null>(null); // message id + anchor
   const [viewingCanvas, setViewingCanvas] = useState<{ url: string; title?: string } | null>(null);
   const [newChannel, setNewChannel] = useState({ name: "", type: "topic" as "topic" | "group", description: "" });
   const [prefillBanner, setPrefillBanner] = useState<{ promptName: string; agentName?: string } | null>(null);
@@ -573,6 +574,27 @@ export function MessagesApp({
 
     wsRef.current = ws;
   }, []);
+
+  /* ---- emoji popover: escape and outside click ---- */
+  useEffect(() => {
+    if (!showEmoji) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowEmoji(null);
+    }
+    function onPointer(e: MouseEvent) {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest("[data-emoji-popover='1']")) return;
+      if (t.closest(`[data-message-id="${showEmoji!.messageId}"]`)) return;
+      setShowEmoji(null);
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointer);
+    };
+  }, [showEmoji]);
 
   /* ---- init ---- */
   useEffect(() => {
@@ -1834,7 +1856,16 @@ export function MessagesApp({
                     return (
                       <div className="absolute top-0 right-2 -translate-y-1/2 z-10">
                         <MessageHoverActions
-                          onReact={() => setShowEmoji(showEmoji === msg.id ? null : msg.id)}
+                          onReact={() => {
+                            if (showEmoji && showEmoji.messageId === msg.id) {
+                              setShowEmoji(null);
+                              return;
+                            }
+                            const row = document.querySelector(`[data-message-id="${msg.id}"]`) as HTMLElement | null;
+                            const rect = row?.getBoundingClientRect();
+                            if (!rect) return;
+                            setShowEmoji({ messageId: msg.id, rect });
+                          }}
                           onReplyInThread={() => handleOpenThreadFor(msg.channel_id ?? selectedChannel ?? "", msg.id)}
                           onOverflow={(e) => {
                             e.preventDefault();
@@ -1877,9 +1908,15 @@ export function MessagesApp({
                     />
                   )}
 
-                  {/* emoji picker */}
-                  {showEmoji === msg.id && (
-                    <div className="absolute right-2 top-5 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 z-10 w-[300px] h-[360px] flex flex-col gap-2">
+                  {/* emoji picker — rendered in a portal to avoid clipping by the scrollable list */}
+                  {showEmoji && showEmoji.messageId === msg.id && createPortal(
+                    <div
+                      data-emoji-popover="1"
+                      role="dialog"
+                      aria-label="Emoji reactions"
+                      className="fixed z-50 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 w-[300px] h-[360px] flex flex-col gap-2"
+                      style={{ top: showEmoji.rect.top, left: showEmoji.rect.right - 300 }}
+                    >
                       <div className="flex gap-1 shrink-0">
                         {EMOJI_PICKER.map((em) => (
                           <button
@@ -1891,15 +1928,18 @@ export function MessagesApp({
                           </button>
                         ))}
                       </div>
-                      <div className="flex-1 min-h-0 [&_.EmojiPickerReact]:h-full [&_.EmojiPickerReact]:w-full">
+                      <div className="flex-1 min-h-0">
                         <Picker
                           theme={Theme.DARK}
+                          width="100%"
+                          height="100%"
                           onEmojiClick={(d) => {
                             toggleReaction(msg.id, d.emoji);
                           }}
                         />
                       </div>
-                    </div>
+                    </div>,
+                    document.body,
                   )}
                 </div>
               );
