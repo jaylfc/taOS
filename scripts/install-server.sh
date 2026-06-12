@@ -1383,14 +1383,16 @@ fi
 if [[ "$os_name" == "Linux" ]] && command -v ufw >/dev/null 2>&1; then
     if ufw status 2>/dev/null | grep -q '^Status: active'; then
         if ufw status 2>/dev/null | grep -qE "^${TAOS_BUS_PORT}[[:space:]]|^${TAOS_BUS_PORT}/tcp[[:space:]]"; then
-            log "ufw: port $TAOS_BUS_PORT/tcp already allowed — skipping"
+            log "ufw: port $TAOS_BUS_PORT/tcp already allowed, skipping"
         else
-            ufw allow "${TAOS_BUS_PORT}/tcp" comment 'taOS A2A bus' \
-                || warn "ufw allow ${TAOS_BUS_PORT}/tcp failed — open the port manually if needed"
-            log "ufw: allowed port $TAOS_BUS_PORT/tcp (taOS A2A bus)"
+            if ufw allow "${TAOS_BUS_PORT}/tcp" comment 'taOS A2A bus' >/dev/null 2>&1; then
+                log "ufw: allowed port $TAOS_BUS_PORT/tcp (taOS A2A bus)"
+            else
+                warn "ufw allow ${TAOS_BUS_PORT}/tcp failed, open the port manually if needed"
+            fi
         fi
     else
-        log "ufw is installed but not active — skipping bus port rule"
+        log "ufw is installed but not active, skipping bus port rule"
     fi
 fi
 
