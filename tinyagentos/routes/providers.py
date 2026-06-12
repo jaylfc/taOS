@@ -257,6 +257,71 @@ async def _fetch_litellm_models(proxy) -> list[dict]:
         return []
 
 
+def seed_cache_from_config(app_state) -> None:
+    """Pre-populate the models cache from model IDs already stored in
+    ``config.backends`` without any network call.
+
+    Called at startup so the first picker open returns the last-known catalog
+    (from the previous session's probes) rather than an empty list or a slow
+    blocking fetch.  The background ``CloudProviderRefresher`` will replace
+    this with a live result once LiteLLM is running.
+
+    Only seeds when the cache is empty -- does not overwrite a warm cache.
+    """
+    import time as _time
+
+    if getattr(app_state, "litellm_models_cache", None) is not None:
+        return
+    config = getattr(app_state, "config", None)
+    if config is None:
+        return
+    ids: list[str] = []
+    for backend in config.backends:
+        for m in backend.get("models") or []:
+            mid = (m.get("id") or m.get("name") or "") if isinstance(m, dict) else str(m)
+            if mid:
+                ids.append(mid)
+    if not ids:
+        return
+    payload: dict = {
+        "data": [{"id": mid} for mid in ids],
+        "object": "list",
+    }
+    app_state.litellm_models_cache = payload
+    app_state.litellm_models_cache_at = 0.0  # force re-probe on next background tick
+    app_state.litellm_models_cache_wallclock = _time.time()
+    logger.info("providers: seeded models cache from config (%d model ids)", len(ids))
+
+
+async def _do_background_refresh(app_state) -> None:
+    """Re-probe cloud backends and update the models cache in the background.
+
+    Fired as a fire-and-forget task from ``get_litellm_models`` when the
+    caller requested a refresh but a cache already exists (so the response
+    is not blocked on the live fetch).  Errors are swallowed so they never
+    propagate to the caller.
+    """
+    try:
+        config = getattr(app_state, "config", None)
+        if config is None:
+            return
+        proxy = getattr(app_state, "llm_proxy", None)
+        await _refresh_all_cloud_backends(app_state, config, proxy)
+        data = await _fetch_litellm_models(proxy)
+        if data:
+            import time as _time
+            import asyncio as _asyncio
+            payload: dict = {"data": data, "object": "list"}
+            app_state.litellm_models_cache = payload
+            app_state.litellm_models_cache_at = _asyncio.get_event_loop().time()
+            app_state.litellm_models_cache_wallclock = _time.time()
+            logger.debug(
+                "background refresh: models cache updated (%d models)", len(data)
+            )
+    except Exception:
+        logger.exception("background refresh: failed")
+
+
 def _categorise(provider: dict) -> str:
     """Return the UI category for a provider entry.
 
@@ -572,15 +637,20 @@ async def patch_provider(request: Request, name: str, body: ProviderPatch):
 
 @router.get("/api/providers/models")
 async def get_litellm_models(request: Request, refresh: bool = False):
-    """Return LiteLLM's ``/v1/models`` passthrough — the single source of
-    truth for "what models can an agent use".
+    """Return the cloud model catalog, served from cache for fast picker opens.
 
-    - ``refresh=true``: re-probe every cloud provider in parallel, reload
-      LiteLLM, then fetch ``/v1/models``. Use this when the agent-creation
-      dialog opens so the list reflects the current state of every
-      provider's catalogue.
-    - Default: serve the cached payload if fresh (``MODELS_CACHE_TTL_SECONDS``),
-      otherwise behave like ``refresh=true``.
+    Behavior:
+
+    - **Cache warm + refresh=true**: return the cache immediately (fast open,
+      never empty) and fire a background refresh so the next open is even
+      fresher.  The UI will see ``refreshed=false`` to indicate it received
+      a cached result, and can optionally poll or re-open to pick up updates.
+    - **Cache cold (no data yet)**: do a blocking refresh once so the first
+      ever open gets real data.  The background ``CloudProviderRefresher``
+      (started at app boot) warms the cache before most first opens.
+    - **Cache warm + refresh=false + TTL not expired**: return cache, no fetch.
+    - **Cache warm + refresh=false + TTL expired**: background refresh, return
+      existing cache immediately.
 
     Response shape::
 
@@ -596,38 +666,38 @@ async def get_litellm_models(request: Request, refresh: bool = False):
     cached_at = getattr(app_state, "litellm_models_cache_at", 0.0)
     cached_payload = getattr(app_state, "litellm_models_cache", None)
     stale = (now - cached_at) >= MODELS_CACHE_TTL_SECONDS
-    do_refresh = bool(refresh) or stale or cached_payload is None
 
-    proxy = getattr(app_state, "llm_proxy", None)
-    config = app_state.config
-    if do_refresh:
+    # When a cache exists, never block the caller on a live fetch.  Fire the
+    # refresh in the background and return the cached data immediately so the
+    # picker opens fast even when providers are slow or LiteLLM is warming up.
+    if cached_payload is not None and (bool(refresh) or stale):
+        asyncio.create_task(
+            _do_background_refresh(app_state),
+            name="models-cache-bg-refresh",
+        )
+        return {
+            **cached_payload,
+            "cached_at": getattr(app_state, "litellm_models_cache_wallclock", 0.0),
+            "refreshed": False,
+        }
+
+    # Cache is empty (first boot or after a config-change invalidation) -- do a
+    # blocking fetch so the caller gets real data on this first request.
+    if cached_payload is None:
+        proxy = getattr(app_state, "llm_proxy", None)
+        config = app_state.config
         await _refresh_all_cloud_backends(app_state, config, proxy)
         data = await _fetch_litellm_models(proxy)
-        # Empty result from a live fetch — serve the last-good cache rather
-        # than returning an empty list.  Only replace the cache when we
-        # actually got models back so a transient LiteLLM restart or network
-        # hiccup never wipes a good catalog.
+        import time as _time
         if data:
-            import time as _time
             payload: dict = {"data": data, "object": "list"}
             app_state.litellm_models_cache = payload
             app_state.litellm_models_cache_at = now
             app_state.litellm_models_cache_wallclock = _time.time()
-        elif cached_payload is not None:
-            # Fall back to the last-good cache; keep its existing timestamps.
-            logger.info(
-                "providers/models: live fetch returned empty — serving cached catalog "
-                "(%d models)", len(cached_payload.get("data") or []),
-            )
-            return {
-                **cached_payload,
-                "cached_at": getattr(app_state, "litellm_models_cache_wallclock", 0.0),
-                "refreshed": False,
-            }
         else:
-            # No cache at all and live fetch failed → return empty so the UI
-            # can show "no providers configured" rather than spinning forever.
-            import time as _time
+            # Live fetch failed on an empty cache -- return empty with a
+            # timestamp so the UI shows "no providers configured" and the
+            # caller can retry.
             payload = {"data": [], "object": "list"}
             app_state.litellm_models_cache = payload
             app_state.litellm_models_cache_at = now
@@ -638,6 +708,7 @@ async def get_litellm_models(request: Request, refresh: bool = False):
             "refreshed": True,
         }
 
+    # Cache is fresh and no refresh requested -- serve it as-is.
     return {
         **cached_payload,
         "cached_at": getattr(app_state, "litellm_models_cache_wallclock", 0.0),
