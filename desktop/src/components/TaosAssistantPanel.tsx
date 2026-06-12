@@ -7,7 +7,10 @@ import {
   Paperclip,
   Camera,
   ExternalLink,
+  Copy,
+  Check,
 } from "lucide-react";
+import { CodeBlock } from "@/components/CodeBlock";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
 import { TaosAssistantSettings } from "./TaosAssistantSettings";
 import {
@@ -497,6 +500,21 @@ function ToolbarButton({
 /*  Message bubble                                                     */
 /* ------------------------------------------------------------------ */
 
+function renderBubbleContent(text: string): (string | React.ReactElement)[] {
+  const result: (string | React.ReactElement)[] = [];
+  const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = fenceRegex.exec(text)) !== null) {
+    if (match.index > last) result.push(text.slice(last, match.index));
+    result.push(<CodeBlock key={`cb-${key++}`} code={match[1] ?? ""} />);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) result.push(text.slice(last));
+  return result;
+}
+
 function MessageBubble({
   role,
   content,
@@ -506,22 +524,46 @@ function MessageBubble({
   content: string;
   streaming?: boolean;
 }) {
+  const [copied, setCopied] = useState(false);
+
   if (role === "system") return null;
 
   const isUser = role === "user";
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  };
+
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} group`}>
       <div
-        className={`max-w-[85%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+        className={`relative max-w-[85%] rounded-xl px-3 py-2 text-sm break-words select-text ${
           isUser ? "bg-accent text-white" : "bg-shell-surface-hover text-shell-text"
         }`}
       >
-        {content}
+        <div className="whitespace-pre-wrap">
+          {renderBubbleContent(content)}
+        </div>
         {streaming && !content && (
           <span className="inline-block w-2 h-3 bg-current opacity-60 animate-pulse ml-0.5 rounded-sm" />
         )}
         {streaming && content && (
           <span className="inline-block w-1.5 h-3 bg-current opacity-60 animate-pulse ml-0.5 rounded-sm" />
+        )}
+        {!streaming && content && (
+          <button
+            onClick={handleCopy}
+            aria-label={copied ? "Copied" : "Copy message"}
+            className="absolute -top-2 -right-2 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-white/10 text-shell-text-secondary hover:text-shell-text transition-opacity select-none"
+          >
+            {copied ? <Check size={10} /> : <Copy size={10} />}
+          </button>
         )}
       </div>
     </div>

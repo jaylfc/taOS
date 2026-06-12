@@ -7,6 +7,7 @@ export interface MessageOverflowMenuProps {
   onEdit: () => void;
   onDelete: () => void;
   onCopyLink: () => void;
+  onCopyText: () => void;
   onPin: () => void;
   onMarkUnread: () => void;
   onClose?: () => void;
@@ -14,7 +15,7 @@ export interface MessageOverflowMenuProps {
 
 export function MessageOverflowMenu({
   isOwn, isHuman, isPinned = false,
-  onEdit, onDelete, onCopyLink, onPin, onMarkUnread, onClose,
+  onEdit, onDelete, onCopyLink, onCopyText, onPin, onMarkUnread, onClose,
 }: MessageOverflowMenuProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -66,6 +67,8 @@ export function MessageOverflowMenu({
       )}
       <button role="menuitem" onClick={onCopyLink}
         className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">Copy link</button>
+      <button role="menuitem" onClick={onCopyText}
+        className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">Copy text</button>
       {isHuman && (
         <button role="menuitem" onClick={onPin}
           className="block w-full text-left px-3 py-1.5 hover:bg-white/5 focus:bg-white/5 focus:outline-none">

@@ -386,9 +386,9 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     const agent = agents.find((a) => a.name === detail.name);
     if (agent) {
       return (
-        <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
+        <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text">
           {/* Back header */}
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0 select-none">
             <button
               type="button"
               aria-label="Back to agents"
@@ -401,7 +401,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               {agent.display_name || agent.name}
             </span>
           </div>
-          <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden select-text">
             <AgentDetailPanel
               agent={agent}
               initialTab={detail.tab}
@@ -422,9 +422,9 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   // Full-window detail view for the taOS system agent
   if (taosDetailOpen) {
     return (
-      <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none">
+      <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text">
         {/* Back header */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0 select-none">
           <button
             type="button"
             aria-label="Back to agents"
@@ -435,7 +435,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </button>
           <span className="text-sm font-medium text-shell-text truncate">taOS agent</span>
         </div>
-        <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+        <div className="flex flex-1 min-h-0 flex-col overflow-hidden select-text">
           <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} fullHeight />
         </div>
         <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
@@ -444,9 +444,9 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text select-none relative">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden bg-shell-bg text-shell-text relative">
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-white/5">
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-white/5 select-none">
         <div className="flex items-center gap-2 min-w-0">
           <Bot size={18} className="text-accent shrink-0" />
           <h1 className="text-sm font-semibold shrink-0">Agents</h1>

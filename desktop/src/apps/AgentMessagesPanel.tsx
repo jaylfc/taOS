@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Send, Loader2, ArrowRightLeft } from "lucide-react";
+import { Send, Loader2, ArrowRightLeft, Copy, Check } from "lucide-react";
 import { Button, Card, Input, Textarea, Label } from "@/components/ui";
 
 interface AgentMessageRaw {
@@ -53,6 +53,39 @@ function formatTime(ts: number): string {
   if (delta < 3600_000) return `${Math.floor(delta / 60_000)}m ago`;
   if (delta < 86400_000) return `${Math.floor(delta / 3600_000)}h ago`;
   return new Date(ts * 1000).toLocaleDateString();
+}
+
+function PreBlock({ content, label }: { content: unknown; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const text = JSON.stringify(content, null, 2);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center justify-between mb-0.5">
+        <p className="text-[10px] text-shell-text-tertiary uppercase tracking-wide">{label}</p>
+        <button
+          onClick={(e) => { e.stopPropagation(); handleCopy(); }}
+          aria-label={copied ? "Copied" : `Copy ${label.toLowerCase()}`}
+          className="p-0.5 rounded text-shell-text-tertiary hover:text-shell-text focus:outline-none focus:ring-1 focus:ring-accent/50 transition-colors"
+        >
+          {copied ? <Check size={10} /> : <Copy size={10} />}
+        </button>
+      </div>
+      <pre className="text-[10px] text-shell-text-secondary p-2 rounded bg-shell-bg-deep border border-white/5 overflow-x-auto select-text whitespace-pre-wrap break-all">
+        {text}
+      </pre>
+    </div>
+  );
 }
 
 export function AgentMessagesPanel({ agentName }: Props) {
@@ -158,7 +191,7 @@ export function AgentMessagesPanel({ agentName }: Props) {
                   </div>
                 </div>
                 <p
-                  className={`text-sm text-shell-text whitespace-pre-wrap ${
+                  className={`text-sm text-shell-text whitespace-pre-wrap select-text ${
                     isOpen ? "" : "line-clamp-3"
                   }`}
                 >
@@ -169,32 +202,18 @@ export function AgentMessagesPanel({ agentName }: Props) {
                     <p className="text-[10px] text-shell-text-tertiary uppercase tracking-wide mb-0.5">
                       Reasoning
                     </p>
-                    <p className="text-xs text-shell-text-secondary pl-2 border-l border-white/10 whitespace-pre-wrap">
+                    <p className="text-xs text-shell-text-secondary pl-2 border-l border-white/10 whitespace-pre-wrap select-text">
                       {msg.reasoning}
                     </p>
                   </div>
                 )}
                 {isOpen && msg.tool_calls && msg.tool_calls.length > 0 && (
-                  <div className="mt-2">
-                    <p className="text-[10px] text-shell-text-tertiary uppercase tracking-wide mb-0.5">
-                      Tool Calls
-                    </p>
-                    <pre className="text-[10px] text-shell-text-secondary p-2 rounded bg-shell-bg-deep border border-white/5 overflow-x-auto">
-                      {JSON.stringify(msg.tool_calls, null, 2)}
-                    </pre>
-                  </div>
+                  <PreBlock content={msg.tool_calls} label="Tool Calls" />
                 )}
                 {isOpen &&
                   msg.tool_results &&
                   msg.tool_results.length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-[10px] text-shell-text-tertiary uppercase tracking-wide mb-0.5">
-                        Tool Results
-                      </p>
-                      <pre className="text-[10px] text-shell-text-secondary p-2 rounded bg-shell-bg-deep border border-white/5 overflow-x-auto">
-                        {JSON.stringify(msg.tool_results, null, 2)}
-                      </pre>
-                    </div>
+                    <PreBlock content={msg.tool_results} label="Tool Results" />
                   )}
               </Card>
             );

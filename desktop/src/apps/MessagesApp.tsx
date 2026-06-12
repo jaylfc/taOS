@@ -67,6 +67,7 @@ import {
 import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { CodeBlock } from "@/components/CodeBlock";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -212,12 +213,34 @@ function relativeTime(ts: number | string): string {
 }
 
 function renderContent(text: string) {
+  // Split on fenced code blocks first, then apply inline markdown to non-code segments.
+  const result: (string | React.ReactElement)[] = [];
+  const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
+  let lastFence = 0;
+  let fenceMatch: RegExpExecArray | null;
+  let blockKey = 0;
+
+  while ((fenceMatch = fenceRegex.exec(text)) !== null) {
+    if (fenceMatch.index > lastFence) {
+      result.push(...renderInline(text.slice(lastFence, fenceMatch.index), blockKey));
+      blockKey += 100;
+    }
+    result.push(<CodeBlock key={`cb-${blockKey++}`} code={fenceMatch[1] ?? ""} />);
+    lastFence = fenceMatch.index + fenceMatch[0].length;
+  }
+  if (lastFence < text.length) {
+    result.push(...renderInline(text.slice(lastFence), blockKey));
+  }
+  return result;
+}
+
+function renderInline(text: string, keyOffset: number) {
   // basic markdown: bold, italic, inline code
   const parts: (string | React.ReactElement)[] = [];
   const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
   let last = 0;
   let match: RegExpExecArray | null;
-  let key = 0;
+  let key = keyOffset;
   while ((match = regex.exec(text)) !== null) {
     if (match.index > last) parts.push(text.slice(last, match.index));
     if (match[2]) parts.push(<strong key={key++} className="font-semibold">{match[2]}</strong>);
@@ -1029,6 +1052,15 @@ export function MessagesApp({
     const url = `${window.location.origin}/chat/${selectedChannel}?msg=${msgId}`;
     try {
       await navigator.clipboard.writeText(url);
+    } catch { /* ignore */ }
+  };
+
+  const handleCopyText = async (msgId: string) => {
+    setOverflowMenu(null);
+    const msg = messages.find((m) => m.id === msgId);
+    if (!msg) return;
+    try {
+      await navigator.clipboard.writeText(msg.content);
     } catch { /* ignore */ }
   };
 
@@ -2081,6 +2113,7 @@ export function MessagesApp({
             onEdit={() => handleEdit(msg.id)}
             onDelete={() => handleDelete(msg.id)}
             onCopyLink={() => handleCopyLink(msg.id)}
+            onCopyText={() => handleCopyText(msg.id)}
             onPin={() => handlePin(msg)}
             onMarkUnread={() => handleMarkUnread(msg.id)}
             onClose={() => setOverflowMenu(null)}
