@@ -52,7 +52,8 @@ TinyAgentOS evolves from an agent monitoring dashboard into a full AI-focused ho
 │  Existing services:                                         │
 │  ├── Metrics Store (SQLite)                                 │
 │  ├── Backend Adapters (rkllama, ollama, llama.cpp, vllm)    │
-│  ├── QMD Client (per-agent HTTP)                            │
+│  ├── QMD Client (per-agent memory, HTTP :7832)              │
+│  ├── taosmd Client (user memory + librarian, HTTP :7900)    │
 │  └── Health Monitor (background poller)                     │
 └─────────────────────────────────────────────────────────────┘
 ```

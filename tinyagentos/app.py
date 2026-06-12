@@ -728,6 +728,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await auto_updater.start()
         except Exception:
             logger.exception("auto-update service failed to start")
+        # Seed the models cache from persisted config model lists so the first
+        # picker open returns the last-known catalog without a live fetch.
+        try:
+            from tinyagentos.routes.providers import seed_cache_from_config
+            seed_cache_from_config(app.state)
+        except Exception:
+            logger.exception("models cache seed failed")
         # Keep LiteLLM's model_list fresh as cloud provider catalogs change
         # upstream (e.g. a newly published model), without a restart.
         from tinyagentos.provider_refresh import CloudProviderRefresher

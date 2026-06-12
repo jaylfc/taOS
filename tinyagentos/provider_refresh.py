@@ -19,8 +19,11 @@ logger = logging.getLogger(__name__)
 
 # How often to re-probe cloud provider catalogs (seconds).
 REFRESH_INTERVAL = 15 * 60
-# Delay before the first probe so we don't add load during boot.
-INITIAL_DELAY = 120
+# No initial delay: fire the first probe immediately at startup so the
+# models cache (seeded from config at boot) is replaced with a live
+# LiteLLM result as soon as the proxy is up.  Earlier versions used a
+# 120 s delay which left the picker empty for the first two minutes.
+INITIAL_DELAY = 0
 
 
 class CloudProviderRefresher:

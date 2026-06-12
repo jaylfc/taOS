@@ -92,6 +92,17 @@ Useful commands in any channel:
 
 ---
 
+## Troubleshooting after updates
+
+When a user reports something that worked before and broke after an update, check the **update breakage log** first. It lists every change that can affect existing installs (ports, paths, auth, migrations, service names), with the symptom, how to confirm it, and the fix:
+
+- In the repo: `docs/UPDATE_BREAKAGE_LOG.md`
+- Latest version: `https://raw.githubusercontent.com/jaylfc/tinyagentos/master/docs/UPDATE_BREAKAGE_LOG.md`
+
+Match the user's symptom against the log before reasoning from scratch. When you can fetch the URL, prefer the latest version over what you remember; the log gains an entry with every release that changes behavior for existing installs.
+
+---
+
 ## Common questions
 
 **How do I add a new agent?**

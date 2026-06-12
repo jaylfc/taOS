@@ -68,6 +68,7 @@ class CreateAuthRequest(BaseModel):
 
 class ApproveBody(BaseModel):
     granted_scopes: list[str]
+    project_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -277,17 +278,24 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
     # @taOSmd's identity-AND-grant gate accepts them.
     await registry.set_status(canonical_id, "active", actor=user.user_id)
 
+    # Resolve effective project binding: admin override wins; fall back to the
+    # project_id the agent requested (may be None for a global token).
+    effective_project = (
+        body.project_id if body.project_id is not None else record.get("project_id")
+    )
+
     # Issue the identity token.
     token = mint_registry_token(
         canonical_id,
         private_pem,
         user_id=user.user_id,
         framework=record["framework"],
+        project_id=effective_project,
     )
 
     # Record grants for each approved scope.
     for scope in body.granted_scopes:
-        await grants_store.add_grant(canonical_id, scope, tier="once")
+        await grants_store.add_grant(canonical_id, scope, tier="once", project_id=effective_project)
         # Also write a RelationshipManager permission edge so the existing
         # permission-check path (can_communicate etc.) is aware of the agent.
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)

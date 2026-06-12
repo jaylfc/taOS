@@ -66,13 +66,17 @@ def _is_port_free(port: int) -> bool:
             return False
 
 
-def allocate_host_port(app_id: str) -> int:
+def allocate_host_port(app_id: str, *, exclude: set[int] | frozenset[int] = frozenset()) -> int:
     """Return a stable, non-reserved, free host port for *app_id*.
 
     The starting point is derived from a hash of *app_id* so the same
     app always gets the same port on a fresh install (assuming the slot
     is available).  If the preferred slot is occupied or reserved we walk
     forward (wrapping within the pool) until we find a usable port.
+
+    ``exclude`` holds ports already claimed by the caller in this
+    allocation round but not yet bound (e.g. earlier ports of a
+    multi-port app), so consecutive calls cannot hand out the same port.
 
     Raises ``RuntimeError`` if the entire pool is exhausted.
     """
@@ -83,7 +87,7 @@ def allocate_host_port(app_id: str) -> int:
 
     for i in range(pool_size):
         candidate = _POOL_START + (start_offset + i) % pool_size
-        if candidate in RESERVED_PORTS:
+        if candidate in RESERVED_PORTS or candidate in exclude:
             continue
         if _is_port_free(candidate):
             return candidate

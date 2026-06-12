@@ -205,8 +205,16 @@ class TestModelsPassthrough:
         assert "cached_at" in body
         assert "refreshed" in body
 
-    async def test_get_models_refresh_triggers_discovery(self, client, app):
-        """``?refresh=true`` always re-probes cloud backends before fetching."""
+    async def test_get_models_no_cache_refresh_blocks_and_returns_data(self, client, app):
+        """``?refresh=true`` with no cache does a blocking fetch and returns
+        ``refreshed=true`` with the live data.  This is the first-boot path
+        where seed_cache_from_config found nothing and LiteLLM is now up.
+        """
+        # Ensure no cache is set (simulates first-ever open after an
+        # invalidation or on a fresh install with no stored model lists).
+        app.state.litellm_models_cache = None
+        app.state.litellm_models_cache_at = 0.0
+
         refresh_mock = AsyncMock(return_value=1)
         with patch(
             "tinyagentos.routes.providers._refresh_all_cloud_backends",
@@ -218,7 +226,9 @@ class TestModelsPassthrough:
             resp = await client.get("/api/providers/models?refresh=true")
         assert resp.status_code == 200
         assert refresh_mock.await_count == 1
-        assert resp.json()["refreshed"] is True
+        body = resp.json()
+        assert body["data"] == [{"id": "x"}]
+        assert body["refreshed"] is True
 
     async def test_get_models_cache_hit_skips_refresh(self, client, app):
         """A recent cache entry skips the refresh probe and returns
@@ -385,9 +395,10 @@ class TestModelsPassthrough:
         assert body["data"] == [{"id": "preserved/model"}]
         assert body["refreshed"] is False
 
-    async def test_stale_cache_triggers_refresh(self, client, app):
-        """A cache entry older than MODELS_CACHE_TTL_SECONDS triggers a
-        live refresh on GET /api/providers/models.
+    async def test_stale_cache_returns_cached_and_queues_bg_refresh(self, client, app):
+        """A stale cache entry serves the existing data immediately (never
+        blocks the caller) and schedules a background refresh.  The response
+        has ``refreshed=false`` to signal the data is from cache.
         """
         from tinyagentos.routes.providers import MODELS_CACHE_TTL_SECONDS
         app.state.litellm_models_cache = {
@@ -398,20 +409,24 @@ class TestModelsPassthrough:
         app.state.litellm_models_cache_at = _time.monotonic() - MODELS_CACHE_TTL_SECONDS - 1
         app.state.litellm_models_cache_wallclock = _time.time() - MODELS_CACHE_TTL_SECONDS - 1
 
-        refresh_mock = AsyncMock(return_value=1)
+        # The background refresh will call these via _do_background_refresh but
+        # the HTTP response is returned before they complete.  Patch them to
+        # avoid real network calls if the background task runs before the test
+        # finishes.
         with patch(
             "tinyagentos.routes.providers._refresh_all_cloud_backends",
-            new=refresh_mock,
+            new=AsyncMock(return_value=0),
         ), patch(
             "tinyagentos.routes.providers._fetch_litellm_models",
-            new=AsyncMock(return_value=[{"id": "fresh/model"}]),
+            new=AsyncMock(return_value=[]),
         ):
             resp = await client.get("/api/providers/models")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["data"] == [{"id": "fresh/model"}]
-        assert body["refreshed"] is True
-        assert refresh_mock.await_count == 1
+        # Stale cache is served immediately -- caller gets existing data.
+        assert body["data"] == [{"id": "stale/model"}]
+        # refreshed=false: the response is from cache; background update is in flight.
+        assert body["refreshed"] is False
 
     async def test_add_provider_invalidates_cache(self, client, app):
         """Adding a provider must invalidate the models cache so the next
@@ -502,3 +517,187 @@ class TestModelsPassthrough:
         # Must be empty — the stale payload was not served.
         assert body["data"] == []
         assert body["refreshed"] is True
+
+
+@pytest.mark.asyncio
+class TestModelCatalogCache:
+    """Focused tests for the cached cloud model catalog (issue #606)."""
+
+    async def test_warm_cache_served_without_live_fetch(self, client, app):
+        """(a) Picker route serves cached data without calling the live fetcher.
+
+        When the cache is warm, neither _refresh_all_cloud_backends nor
+        _fetch_litellm_models is called in the request path -- the response
+        is returned immediately from the in-memory store.
+        """
+        app.state.litellm_models_cache = {
+            "data": [{"id": "openai/gpt-4o"}],
+            "object": "list",
+        }
+        app.state.litellm_models_cache_at = _time.monotonic()
+        app.state.litellm_models_cache_wallclock = _time.time()
+
+        refresh_mock = AsyncMock(return_value=0)
+        fetch_mock = AsyncMock(return_value=[])
+        with patch(
+            "tinyagentos.routes.providers._refresh_all_cloud_backends",
+            new=refresh_mock,
+        ), patch(
+            "tinyagentos.routes.providers._fetch_litellm_models",
+            new=fetch_mock,
+        ):
+            resp = await client.get("/api/providers/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == [{"id": "openai/gpt-4o"}]
+        assert body["refreshed"] is False
+        assert "cached_at" in body
+        # No live fetch should have happened in the request path.
+        assert refresh_mock.await_count == 0
+        assert fetch_mock.await_count == 0
+
+    async def test_refresh_with_warm_cache_returns_immediately(self, client, app):
+        """(a) refresh=true with an existing cache returns the cached data
+        immediately (non-blocking) and schedules a background update.
+
+        The response is returned before any live fetch completes so the picker
+        opens fast even when providers are slow or LiteLLM is still warming up.
+        """
+        app.state.litellm_models_cache = {
+            "data": [{"id": "anthropic/claude-3-5-sonnet"}],
+            "object": "list",
+        }
+        app.state.litellm_models_cache_at = _time.monotonic()
+        app.state.litellm_models_cache_wallclock = _time.time()
+
+        refresh_mock = AsyncMock(return_value=0)
+        fetch_mock = AsyncMock(return_value=[])
+        with patch(
+            "tinyagentos.routes.providers._refresh_all_cloud_backends",
+            new=refresh_mock,
+        ), patch(
+            "tinyagentos.routes.providers._fetch_litellm_models",
+            new=fetch_mock,
+        ):
+            resp = await client.get("/api/providers/models?refresh=true")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Cached data is returned immediately.
+        assert body["data"] == [{"id": "anthropic/claude-3-5-sonnet"}]
+        # refreshed=false: response came from cache; background refresh is in flight.
+        assert body["refreshed"] is False
+
+    async def test_provider_change_invalidates_and_next_fetch_rebuilds(self, client, app):
+        """(b) Provider-settings change (add/patch/delete) invalidates the cache.
+        The next GET with no live data returns an empty list, not the stale catalog.
+        """
+        # Pre-warm the cache.
+        app.state.litellm_models_cache = {
+            "data": [{"id": "old/model"}],
+            "object": "list",
+        }
+        app.state.litellm_models_cache_at = _time.monotonic()
+        app.state.litellm_models_cache_wallclock = _time.time()
+
+        # Add a provider -- this should invalidate the cache.
+        with patch(
+            "tinyagentos.routes.providers._discover_provider_models",
+            new=AsyncMock(return_value=[]),
+        ):
+            add_resp = await client.post("/api/providers", json={
+                "name": "new-cloud",
+                "type": "openai",
+                "url": "https://api.openai.com/v1",
+                "api_key_secret": "provider-new-cloud-key",
+            })
+        assert add_resp.status_code == 200
+        # Cache must be cleared after the provider mutation.
+        assert app.state.litellm_models_cache is None
+        assert app.state.litellm_models_cache_at == 0.0
+
+        # Next GET with no LiteLLM running returns empty (not the old catalog).
+        with patch(
+            "tinyagentos.routes.providers._refresh_all_cloud_backends",
+            new=AsyncMock(return_value=0),
+        ), patch(
+            "tinyagentos.routes.providers._fetch_litellm_models",
+            new=AsyncMock(return_value=[]),
+        ):
+            resp = await client.get("/api/providers/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+
+    async def test_live_fetch_failure_returns_last_good_catalog(self, client, app):
+        """(c) When the live fetch fails, the last-good cache is served so the
+        cloud list never renders empty while providers are temporarily unreachable.
+        """
+        good_catalog = [{"id": "openrouter/mistral-7b"}, {"id": "kilocode/llama-3"}]
+        app.state.litellm_models_cache = {
+            "data": good_catalog,
+            "object": "list",
+        }
+        app.state.litellm_models_cache_at = _time.monotonic()
+        app.state.litellm_models_cache_wallclock = _time.time()
+
+        # POST refresh simulates the refresh button -- always bypasses cache.
+        with patch(
+            "tinyagentos.routes.providers._refresh_all_cloud_backends",
+            new=AsyncMock(return_value=0),
+        ), patch(
+            "tinyagentos.routes.providers._fetch_litellm_models",
+            new=AsyncMock(return_value=[]),  # provider fetch failed
+        ):
+            resp = await client.post("/api/providers/models/refresh")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Last-good catalog must be returned -- cloud list must not go empty.
+        assert body["data"] == good_catalog
+        assert body["refreshed"] is False
+
+    async def test_seed_cache_from_config_populates_from_stored_models(self, app):
+        """seed_cache_from_config reads model ids already stored in config.backends
+        and pre-fills the cache so the first picker open has data without a fetch.
+        """
+        from tinyagentos.routes.providers import seed_cache_from_config
+
+        # Clear any existing cache.
+        app.state.litellm_models_cache = None
+        app.state.litellm_models_cache_at = 0.0
+        app.state.litellm_models_cache_wallclock = 0.0
+
+        # Plant model lists in config.backends (as stored after a previous probe).
+        app.state.config.backends.append({
+            "name": "openai-test",
+            "type": "openai",
+            "url": "https://api.openai.com/v1",
+            "models": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}],
+        })
+
+        seed_cache_from_config(app.state)
+
+        assert app.state.litellm_models_cache is not None
+        ids = [m["id"] for m in app.state.litellm_models_cache["data"]]
+        assert "gpt-4o" in ids
+        assert "gpt-4o-mini" in ids
+        # Timestamp is 0 to force a real probe on the next background tick.
+        assert app.state.litellm_models_cache_at == 0.0
+
+    async def test_seed_cache_from_config_noop_when_cache_warm(self, app):
+        """seed_cache_from_config must not overwrite a warm cache."""
+        from tinyagentos.routes.providers import seed_cache_from_config
+
+        existing = {"data": [{"id": "existing/model"}], "object": "list"}
+        app.state.litellm_models_cache = existing
+        app.state.litellm_models_cache_at = _time.monotonic()
+        app.state.config.backends.append({
+            "name": "new-backend",
+            "type": "openai",
+            "url": "https://api.openai.com/v1",
+            "models": [{"id": "should-not-appear"}],
+        })
+
+        seed_cache_from_config(app.state)
+
+        # Unchanged -- seed does not overwrite.
+        assert app.state.litellm_models_cache is existing

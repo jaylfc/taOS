@@ -180,6 +180,7 @@ def mint_registry_token(
     *,
     user_id: str = "",
     framework: str = "",
+    project_id: Optional[str] = None,
 ) -> str:
     """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
 
@@ -188,11 +189,13 @@ def mint_registry_token(
     can verify it without importing tinyagentos code.
 
     Claims:
-      sub       — canonical_id (immutable agent identity)
-      iss       — "taos-registry"
-      iat       — unix timestamp of issuance
-      user_id   — owning user_id at registration time
-      framework — agent framework at registration time
+      sub        — canonical_id (immutable agent identity)
+      iss        — "taos-registry"
+      iat        — unix timestamp of issuance
+      user_id    — owning user_id at registration time
+      framework  — agent framework at registration time
+      project_id — project binding, present only when non-empty; absent means
+                   the token is global (not bound to any project)
 
     Signed with Ed25519 over the UTF-8 bytes of ``<header_b64url>.<payload_b64url>``.
     """
@@ -203,18 +206,18 @@ def mint_registry_token(
     header = _b64url_encode(
         json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
     )
+    claims: dict = {
+        "sub": canonical_id,
+        "iss": "taos-registry",
+        "iat": int(time.time()),
+        "jti": uuid.uuid4().hex,
+        "user_id": user_id,
+        "framework": framework,
+    }
+    if project_id:
+        claims["project_id"] = project_id
     payload = _b64url_encode(
-        json.dumps(
-            {
-                "sub": canonical_id,
-                "iss": "taos-registry",
-                "iat": int(time.time()),
-                "jti": uuid.uuid4().hex,
-                "user_id": user_id,
-                "framework": framework,
-            },
-            separators=(",", ":"),
-        ).encode()
+        json.dumps(claims, separators=(",", ":")).encode()
     )
     signing_input = f"{header}.{payload}".encode()
     signature = _b64url_encode(private_key.sign(signing_input))

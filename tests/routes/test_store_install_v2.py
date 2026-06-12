@@ -259,6 +259,70 @@ class TestResolveErrorReturns422:
 # Tests for get_device_capability disk-free logic (#368)
 # ---------------------------------------------------------------------------
 
+class TestDockerServiceAllocatedPort:
+    """Regression guard: docker install records the ALLOCATED host port, not the container port.
+
+    Before the fix in store_install.py, _legacy_install called _docker_published_port()
+    which returned the container port from the manifest (e.g. 8080). The DockerInstaller
+    now allocates from the 30000-40000 pool and returns the allocated port as
+    inst_result["host_port"]. The route must use that value when calling
+    store.update_runtime_location, not the stale container port.
+    """
+
+    @pytest.mark.asyncio
+    async def test_records_allocated_host_port_not_container_port(self, client):
+        """update_runtime_location is called with port=31234 (allocated), not 8080 (container)."""
+        docker_manifest = MagicMock()
+        docker_manifest.id = "searxng"
+        docker_manifest.type = "service"
+        docker_manifest.install = {
+            "method": "docker",
+            "ports": [8080],
+        }
+        docker_manifest.requires = {}
+        docker_manifest.hardware_tiers = {}
+        docker_manifest.version = "1.0.0"
+
+        registry = MagicMock()
+        registry.get_app = MagicMock(return_value=docker_manifest)
+        registry.get = MagicMock(return_value=docker_manifest)
+        registry.mark_installed = MagicMock()
+        registry.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = registry
+
+        mock_installed_apps = MagicMock()
+        mock_installed_apps.install = AsyncMock(return_value=None)
+        mock_installed_apps.update_runtime_location = AsyncMock(return_value=None)
+        client._transport.app.state.installed_apps = mock_installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": True, "host_port": 31234, "path": "/opt/apps/searxng"}
+        )
+        mock_installer.start = AsyncMock(return_value={"success": True})
+
+        mock_docker_class = MagicMock(return_value=mock_installer)
+
+        with patch("tinyagentos.installers.docker_installer.DockerInstaller", mock_docker_class):
+            r = await client.post("/api/store/install-v2", json={"manifest_id": "searxng"})
+
+        assert r.status_code == 200
+
+        mock_installed_apps.update_runtime_location.assert_awaited_once()
+        call_kwargs = mock_installed_apps.update_runtime_location.call_args
+        recorded_port = call_kwargs.kwargs.get("port") or call_kwargs.args[2]
+        assert recorded_port == 31234, (
+            f"expected allocated port 31234 but got {recorded_port}"
+        )
+
+        all_calls = mock_installed_apps.update_runtime_location.call_args_list
+        for call in all_calls:
+            port_arg = call.kwargs.get("port") or (call.args[2] if len(call.args) > 2 else None)
+            assert port_arg != 8080, (
+                "update_runtime_location must NOT be called with the container port 8080"
+            )
+
+
 class TestGetDeviceCapabilityDisk:
     """Unit tests for the free-disk probe in get_device_capability."""
 

@@ -157,12 +157,13 @@ Submit a pull request. The CI will run the catalog tests automatically. Include 
 - One concern per module; avoid cross-importing between route files
 - Use `async def` for route handlers; use `await` for all I/O
 
-### Templates
+### Frontend
 
-- Use Pico CSS utility classes — do not introduce other CSS frameworks
-- Use htmx attributes (`hx-get`, `hx-target`, `hx-swap`) for dynamic updates
-- Write semantic HTML — use the right element for the job (`<nav>`, `<main>`, `<section>`, etc.)
+The UI is a React SPA (`desktop/`) built with Vite. Static assets are served from `static/desktop/` after `npm run build`. If you are adding a new UI surface:
+
+- Follow existing React patterns in `desktop/src/` — no server-rendered templates for new features
 - ARIA labels are required on interactive elements without visible text labels
+- One concern per component; keep API calls in dedicated hooks or service files
 
 ### Tests
 
@@ -213,7 +214,7 @@ When adding a feature, add tests that cover the new behaviour. When fixing a bug
 tinyagentos/
   app.py               # FastAPI application factory, lifespan, route registration
   config.py            # Platform config, hardware detection
-  routes/              # One module per feature area (77 route modules)
+  routes/              # One module per feature area (86 route modules)
   templates/           # Minimal: only agent_debugger.html remains (frontend is a React SPA)
   channel_hub/         # Framework-agnostic messaging (6 connectors + message router)
   adapters/            # Framework adapters (15 adapters, ~25 lines each)
@@ -224,7 +225,7 @@ app-catalog/           # YAML manifests for installable apps (108 apps)
 tests/                 # pytest test suite (~3,590 tests)
 ```
 
-Routes are registered in `app.py`. Each route module imports its own store. Templates use htmx for partial page updates — full-page navigations are rare.
+Routes are registered in `app.py`. Route modules access stores via `request.app.state` (dependency injection set up in the app lifespan) — they do not import stores directly. The frontend is a React SPA; `templates/` is minimal and only used for the agent debugger page.
 
 ---
 
