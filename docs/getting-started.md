@@ -262,7 +262,7 @@ Here's a quick map of the apps available from the desktop dock and launchpad.
 | **Tasks** | Schedule recurring jobs for your agents — daily summaries, memory cleanup, data imports. Built-in presets for common patterns. |
 | **Import** | Drag and drop files to embed into an agent's memory. Supported formats: `.txt`, `.md`, `.pdf`, `.html`, `.json`, `.csv`. |
 | **Files** | Real virtual filesystem with your personal workspace and shared folders that agents can read and write to. |
-| **Settings** | System info, storage usage, backup/restore, update TinyAgentOS, test backend connections, toggle dark/light theme, and per-category toggles for User Memory auto-capture. |
+| **Settings** | System info, storage usage, backup/restore, update TinyAgentOS, test backend connections, toggle dark/light theme, and per-category toggles for User Memory auto-capture. taOS periodically checks for updates and reports an anonymous install count (a daily aggregate estimate, no identifiers); disable with `TAOS_NO_UPDATE_PING=1` or in Settings. |
 
 ### OS apps
 
