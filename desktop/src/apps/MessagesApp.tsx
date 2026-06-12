@@ -772,6 +772,7 @@ export function MessagesApp({
   /* ---- mutex: settings vs thread panel ---- */
   const handleOpenSettings = () => {
     closeThread();
+    setShowAllThreads(false);
     setShowSettings(true);
   };
   const handleOpenThreadFor = (channelId: string, parentId: string) => {
