@@ -385,3 +385,212 @@ async def test_ensure_server_reuses_persisted_key(tmp_path, monkeypatch):
     assert state.taos_opencode_key == "sk-persisted-9"
     mock_proxy.create_agent_key.assert_not_called()
     mock_proxy.update_agent_key.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Degraded-birth detection and self-heal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ensure_server_born_degraded_when_proxy_not_running(tmp_path, monkeypatch):
+    """Server built while proxy not running sets the born_degraded flag."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            self._cfg = cfg
+
+        async def ensure_running(self, **kwargs):
+            pass
+
+        async def stop(self):
+            pass
+
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+
+        def is_running(self):
+            return False
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    mock_proxy = MagicMock()
+    mock_proxy.is_running.return_value = False
+    mock_proxy.create_agent_key = AsyncMock(return_value=None)
+
+    state = SimpleNamespace(
+        data_dir=tmp_path,
+        llm_proxy=mock_proxy,
+        taos_opencode_password=None,
+        taos_opencode_server=None,
+        taos_opencode_model=None,
+        taos_opencode_session_id=None,
+    )
+
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+
+    assert state.taos_opencode_born_degraded is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_self_heals_when_proxy_becomes_ready(tmp_path, monkeypatch):
+    """Second ensure call with proxy now running rebuilds: old server stopped, new one created, flag cleared."""
+    import tinyagentos.taos_agent_runtime as rt
+
+    stop_calls: list[str] = []
+    spawned_cfgs: list = []
+
+    class _FakeServer:
+        def __init__(self, cfg):
+            spawned_cfgs.append(cfg)
+            self._cfg = cfg
+
+        async def ensure_running(self, **kwargs):
+            pass
+
+        async def stop(self):
+            stop_calls.append("stopped")
+
+        @property
+        def base_url(self):
+            return f"http://127.0.0.1:{self._cfg.port}"
+
+        def is_running(self):
+            return True
+
+    monkeypatch.setattr(rt, "OpenCodeServer", _FakeServer)
+
+    mock_proxy = MagicMock()
+    mock_proxy.is_running.return_value = False
+    mock_proxy.create_agent_key = AsyncMock(return_value="sk-key-1")
+
+    state = SimpleNamespace(
+        data_dir=tmp_path,
+        llm_proxy=mock_proxy,
+        taos_opencode_password=None,
+        taos_opencode_server=None,
+        taos_opencode_model=None,
+        taos_opencode_session_id=None,
+    )
+
+    # First call: proxy not ready, server born degraded.
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+    assert state.taos_opencode_born_degraded is True
+    assert len(spawned_cfgs) == 1
+
+    # Proxy comes up.
+    mock_proxy.is_running.return_value = True
+
+    # Second call: proxy is ready now, so should tear down and rebuild.
+    await rt.ensure_taos_opencode_server(state, "gpt-4o")
+
+    assert len(stop_calls) == 1, "old server must have been stopped"
+    assert len(spawned_cfgs) == 2, "a new server must have been created"
+    assert state.taos_opencode_born_degraded is False
+
+
+# ---------------------------------------------------------------------------
+# Silent-stream guard
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chat_empty_stream_yields_error_frame(client, app, monkeypatch):
+    """When the runtime stream is empty (only done), an error frame is emitted."""
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+    app.state.llm_proxy = _make_mock_proxy(running=True)
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    server = _fake_server()
+
+    async def fake_ensure_server(state, model):
+        return server
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_server,
+    )
+
+    class _EmptyAdapter:
+        def __init__(self, cfg, sink):
+            self._sink = sink
+            self.session_id = None
+
+        async def ensure_session(self):
+            self.session_id = "ses_empty"
+
+        async def prompt(self, text, trace_id=None, attachments=None):
+            # Emit only final with no deltas — simulates degraded opencode.
+            self._sink({"kind": "final", "content": ""})
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.OpenCodeAdapter",
+        _EmptyAdapter,
+    )
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hi"}]},
+    )
+    assert resp.status_code == 200
+    items = _parse_ndjson(resp.text)
+    error_items = [i for i in items if "error" in i]
+    assert len(error_items) >= 1
+    assert "warming" in error_items[0]["error"] or "proxy" in error_items[0]["error"]
+    assert items[-1] == {"done": True}
+
+
+@pytest.mark.asyncio
+async def test_chat_normal_stream_no_spurious_error(client, app, monkeypatch):
+    """A normal stream with deltas must NOT emit the empty-stream error frame."""
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+    app.state.llm_proxy = _make_mock_proxy(running=True)
+    app.state.taos_opencode_password = "testpw"
+    app.state.taos_opencode_session_id = None
+
+    server = _fake_server()
+
+    async def fake_ensure_server(state, model):
+        return server
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_server,
+    )
+
+    class _NormalAdapter:
+        def __init__(self, cfg, sink):
+            self._sink = sink
+            self.session_id = None
+
+        async def ensure_session(self):
+            self.session_id = "ses_normal"
+
+        async def prompt(self, text, trace_id=None, attachments=None):
+            self._sink({"kind": "delta", "content": "pong"})
+            self._sink({"kind": "final", "content": "pong"})
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.OpenCodeAdapter",
+        _NormalAdapter,
+    )
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hi"}]},
+    )
+    assert resp.status_code == 200
+    items = _parse_ndjson(resp.text)
+    error_items = [i for i in items if "error" in i]
+    assert len(error_items) == 0
+    delta_items = [i for i in items if "delta" in i]
+    assert len(delta_items) == 1
+    assert delta_items[0]["delta"] == "pong"
+    assert items[-1] == {"done": True}
