@@ -264,6 +264,9 @@ function renderInline(text: string, keyPrefix: string) {
           blockquote: ({ node, ...props }) => (
             <blockquote className="border-l-2 border-white/20 pl-3 text-white/70" {...props} />
           ),
+          pre: ({ node, ...props }) => (
+            <pre className="my-2 overflow-x-auto max-w-full bg-black/30 border border-white/10 rounded p-2 text-[13px]" {...props} />
+          ),
           table: ({ node, ...props }) => (
             <div className="my-2 overflow-x-auto">
               <table className="min-w-full text-left text-[13px]" {...props} />
