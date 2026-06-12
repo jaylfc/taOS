@@ -307,7 +307,7 @@ Search across agents, apps, messages, and files from a single endpoint. Finds an
 - **Notifications.** Health alerts, backend up/down, worker join/leave, webhook forwarding (Slack/Discord/Telegram). Toast notifications appear top-right. The welcome notification is gated on a `localStorage` flag so it fires once per install, not on every page load.
 - **Agent Logs.** Real-time log viewer with auto-refresh
 - **Backup & Restore.** Downloadable config backup, one-click restore, scheduled auto-backup (daily/weekly)
-- **System Updates.** Pull latest from GitHub via Settings page
+- **System Updates.** Pull latest from GitHub via Settings page. taOS periodically checks for updates and reports an anonymous install count (a daily aggregate estimate, no identifiers); disable with `TAOS_NO_UPDATE_PING=1` or in Settings.
 - **Provider Management.** Add/test/remove inference providers with live connectivity checks. The Providers desktop app manages cloud LLM credentials; the model browser reflects configured providers automatically.
 
 ## App Catalog (108 Catalog Apps + 36 Desktop Apps + 47 MCP Plugins)
