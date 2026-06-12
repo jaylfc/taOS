@@ -16,6 +16,7 @@ import {
   Archive,
   Trash2,
   RotateCcw,
+  MessagesSquare,
 } from "lucide-react";
 import {
   Button,
@@ -52,6 +53,7 @@ import { MessageEditor } from "./chat/MessageEditor";
 import { MessageTombstone } from "./chat/MessageTombstone";
 import { PinBadge } from "./chat/PinBadge";
 import { PinnedMessagesPopover, type PinnedMessage } from "./chat/PinnedMessagesPopover";
+import { AllThreadsList } from "./chat/AllThreadsList";
 import { PinRequestAffordance } from "./chat/PinRequestAffordance";
 import {
   pinMessage, unpinMessage, listPins,
@@ -334,6 +336,7 @@ export function MessagesApp({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [pinnedPopoverOpen, setPinnedPopoverOpen] = useState(false);
   const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
+  const [showAllThreads, setShowAllThreads] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -1629,6 +1632,23 @@ export function MessagesApp({
                     />
                   )}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showAllThreads) {
+                      setShowAllThreads(false);
+                    } else {
+                      closeThread();
+                      setShowAllThreads(true);
+                    }
+                  }}
+                  className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
+                  aria-label="Show all threads"
+                  aria-pressed={showAllThreads}
+                  title="All threads"
+                >
+                  <MessagesSquare size={14} aria-hidden="true" />
+                </button>
               </div>
               {currentChannel?.description && (
                 <div className="text-[11px] text-white/35 truncate">{currentChannel.description}</div>
@@ -2181,6 +2201,19 @@ export function MessagesApp({
               throw new Error((body as { error?: string }).error || `HTTP ${r.status}`);
             }
           }}
+        />
+      )}
+
+      {/* ---- All Threads Panel ---- */}
+      {showAllThreads && selectedChannel && !openThread && (
+        <AllThreadsList
+          channelId={selectedChannel}
+          onClose={() => setShowAllThreads(false)}
+          onJumpToThread={(parentId) => {
+            setShowAllThreads(false);
+            openThreadFor(selectedChannel, parentId);
+          }}
+          authorCtx={{ currentUserId, currentUserDisplayName }}
         />
       )}
 
