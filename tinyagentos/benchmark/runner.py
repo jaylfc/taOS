@@ -373,7 +373,8 @@ async def _cli_main(args: argparse.Namespace) -> int:
     # WorkerAgent.detect_backends so this works before the worker process
     # is fully up.
     candidates = [
-        ("rkllama", "http://localhost:8080"),
+        ("rkllama", "http://localhost:7833"),
+        ("rkllama", "http://localhost:8080"),        # legacy port; existing installs
         ("sd-cpp", "http://localhost:7864"),
         ("ollama", "http://localhost:11434"),
         ("llama-cpp", "http://localhost:8000"),

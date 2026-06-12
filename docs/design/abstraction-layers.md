@@ -165,14 +165,14 @@ TinyAgentOS generates LiteLLM config from its own backend config on startup:
 # TinyAgentOS reads its config:
 backends = [
     {"name": "fedora-gpu", "type": "ollama", "url": "http://fedora:11434", "priority": 1},
-    {"name": "local-npu", "type": "rkllama", "url": "http://localhost:8080", "priority": 3},
+    {"name": "local-npu", "type": "rkllama", "url": "http://localhost:7833", "priority": 3},
 ]
 
 # Generates LiteLLM config:
 litellm_config = {
     "model_list": [
         {"model_name": "default", "litellm_params": {"model": "ollama/qwen3-8b", "api_base": "http://fedora:11434"}, "metadata": {"priority": 1}},
-        {"model_name": "default", "litellm_params": {"model": "ollama/qwen3-8b", "api_base": "http://localhost:8080"}, "metadata": {"priority": 3}},
+        {"model_name": "default", "litellm_params": {"model": "ollama/qwen3-8b", "api_base": "http://localhost:7833"}, "metadata": {"priority": 3}},
     ],
     "router_settings": {"routing_strategy": "simple-shuffle", "num_retries": 2, "fallbacks": [...]},
 }

@@ -15,6 +15,25 @@ Format per entry: date, change (PR), affected installs, symptom, check, fix.
 
 ---
 
+## 2026-06-12 — rkllama default port moved 8080 -> 7833 (#795)
+
+- **Affected:** installs that re-run `install-rknpu.sh` after this change while
+  their taOS config still points at 8080 (i.e. their recorded backend URL is
+  `http://localhost:8080` or `http://<host>:8080`).
+- **Symptom:** model pulls and chat fail with connection refused on 8080 after
+  re-running the installer, because the new systemd unit listens on 7833.
+- **Check:** `systemctl cat rkllama | grep port` -- should show `--port 7833`
+  on new installs. Compare against the backend URL shown in Settings; if it
+  still says `:8080` and rkllama is now on 7833, that is the mismatch.
+- **Fix:** re-run `install-rknpu.sh` (updates the systemd unit to 7833) AND
+  update the backend URL in Settings to `http://localhost:7833`, OR set
+  `TAOS_RKLLAMA_PORT=8080` before re-running to keep the old port.
+- **New installs:** unaffected -- the installer and all taOS defaults already
+  use 7833.
+- **Note:** the controller also probes port 8080 as a legacy fallback when
+  nothing is listening on 7833, so read-only operations (model list, health
+  checks) will still work automatically on mixed installs.
+
 ## 2026-06-11 — Docker app shortcuts recorded the container port (#788)
 
 - **Affected:** docker-backed store apps installed BEFORE #788 on builds that already

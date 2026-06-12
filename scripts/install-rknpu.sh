@@ -26,7 +26,7 @@
 #     TAOS_RKLLAMA_DIR        install dir (default: ~<user>/rkllama)
 #     TAOS_RKLLAMA_REPO       git remote (default: https://github.com/jaylfc/rkllama.git)
 #     TAOS_RKLLAMA_REF        git ref  (default: 06cf874d8b29767729ec06547cf02fc92acd875c)
-#     TAOS_RKLLAMA_PORT       HTTP port (default: 8080)
+#     TAOS_RKLLAMA_PORT       HTTP port (default: 7833)
 #     TAOS_QMD_EXPANSION_URL  override URL for qmd-query-expansion-1.7B-rk3588.rkllm
 #                             (default is the TAOS HF mirror at
 #                             jaysom/tinyagentos-rockchip-mirror; only set
@@ -64,7 +64,7 @@ LIBRKNNRT_EXPECTED_VERSION="2.3.0"
 
 RKLLAMA_REPO="${TAOS_RKLLAMA_REPO:-https://github.com/jaylfc/rkllama.git}"
 RKLLAMA_REF="${TAOS_RKLLAMA_REF:-06cf874d8b29767729ec06547cf02fc92acd875c}"
-RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-8080}"
+RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-7833}"
 
 # Qwen3-Embedding-0.6B rk3588 rkllm weights.
 # Upstream fallback: https://huggingface.co/dulimov/Qwen3-Embedding-0.6B-rk3588-1.2.1/resolve/main/Qwen3-Embedding-0.6B-rk3588-w8a8-opt-1-hybrid-ratio-0.5.rkllm

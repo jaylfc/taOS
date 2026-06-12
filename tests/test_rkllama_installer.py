@@ -67,17 +67,28 @@ class TestParseHfResolveUrl:
 
 
 class TestResolveRkllamaUrl:
-    def test_none_returns_loopback(self):
-        assert resolve_rkllama_url(None) == "http://localhost:8080"
+    """resolve_rkllama_url for local targets delegates to default_rkllama_url(),
+    which probes the network.  Monkeypatch _port_responds_with_rkllama to keep
+    tests hermetic (nothing listening -> returns 7833 default).
+    """
 
-    def test_empty_returns_loopback(self):
-        assert resolve_rkllama_url("") == "http://localhost:8080"
+    def test_none_returns_loopback_7833(self, monkeypatch):
+        import tinyagentos.installers.rkllama_installer as mod
+        monkeypatch.setattr(mod, "_port_responds_with_rkllama", lambda port, timeout=1.0: False)
+        assert resolve_rkllama_url(None) == "http://localhost:7833"
 
-    def test_local_returns_loopback(self):
-        assert resolve_rkllama_url("local") == "http://localhost:8080"
+    def test_empty_returns_loopback_7833(self, monkeypatch):
+        import tinyagentos.installers.rkllama_installer as mod
+        monkeypatch.setattr(mod, "_port_responds_with_rkllama", lambda port, timeout=1.0: False)
+        assert resolve_rkllama_url("") == "http://localhost:7833"
 
-    def test_remote_name_becomes_url(self):
-        assert resolve_rkllama_url("orange-pi") == "http://orange-pi:8080"
+    def test_local_returns_loopback_7833(self, monkeypatch):
+        import tinyagentos.installers.rkllama_installer as mod
+        monkeypatch.setattr(mod, "_port_responds_with_rkllama", lambda port, timeout=1.0: False)
+        assert resolve_rkllama_url("local") == "http://localhost:7833"
 
-    def test_ip_address(self):
-        assert resolve_rkllama_url("192.168.1.10") == "http://192.168.1.10:8080"
+    def test_remote_name_becomes_url_7833(self):
+        assert resolve_rkllama_url("orange-pi") == "http://orange-pi:7833"
+
+    def test_ip_address_7833(self):
+        assert resolve_rkllama_url("192.168.1.10") == "http://192.168.1.10:7833"

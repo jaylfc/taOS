@@ -1,10 +1,10 @@
-"""rkllama installer — pulls .rkllm models via rkllama's own /api/pull endpoint.
+"""rkllama installer -- pulls .rkllm models via rkllama's own /api/pull endpoint.
 
 rkllama is a local NPU model server (already running on Orange Pi via
 ``install-rknpu.sh``). It exposes an Ollama-compatible HTTP API including
 ``POST /api/pull`` which downloads a model from HuggingFace, places the
 ``.rkllm`` weight in its models directory, and writes a ``Modelfile``
-alongside it. This installer just calls that endpoint — no file pushing
+alongside it. This installer just calls that endpoint -- no file pushing
 from the controller, no remote SSH, no Modelfile generation on our side.
 
 The endpoint expects the model identifier in three slash-separated parts:
@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
+import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
@@ -25,12 +27,59 @@ from tinyagentos.installers.base import AppInstaller
 
 logger = logging.getLogger(__name__)
 
+# New installs use port 7833 (taOS service block, adjacent to qmd on 7832).
+# The legacy upstream default was 8080; existing installs keep working because
+# the recorded backend URL is used directly.  This constant is only the
+# fallback when no config entry is present.
+_DEFAULT_RKLLAMA_PORT = 7833
+_LEGACY_RKLLAMA_PORT = 8080
 
 # Match a full HF resolve URL and capture (user, repo, filename).
 # Example: https://huggingface.co/c01zaut/Qwen2.5-3B-Instruct-rk3588-1.1.4/resolve/main/foo.rkllm
 _HF_RESOLVE_RE = re.compile(
     r"^https?://huggingface\.co/(?P<user>[^/]+)/(?P<repo>[^/]+)/resolve/[^/]+/(?P<filename>[^/?#]+)$"
 )
+
+
+def _port_responds_with_rkllama(port: int, timeout: float = 1.0) -> bool:
+    """Return True if localhost:<port>/api/tags answers with 200 JSON."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            pass
+    except OSError:
+        return False
+    try:
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/tags",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200 and b"{" in resp.read(64)
+    except Exception:
+        return False
+
+
+def default_rkllama_url() -> str:
+    """Return the best local rkllama base URL.
+
+    Tries port 7833 (taOS default) first.  If nothing is there but port 8080
+    answers with rkllama's signature, returns the legacy URL and logs a hint
+    to update the service.
+
+    Safe to call at request time; uses a ~1 s socket timeout so it never
+    blocks startup paths for more than a couple of seconds.
+    """
+    if _port_responds_with_rkllama(_DEFAULT_RKLLAMA_PORT):
+        return f"http://localhost:{_DEFAULT_RKLLAMA_PORT}"
+    if _port_responds_with_rkllama(_LEGACY_RKLLAMA_PORT):
+        logger.warning(
+            "rkllama found on legacy port %d; update the service to %d "
+            "(re-run install-rknpu.sh or set TAOS_RKLLAMA_PORT=7833)",
+            _LEGACY_RKLLAMA_PORT,
+            _DEFAULT_RKLLAMA_PORT,
+        )
+        return f"http://localhost:{_LEGACY_RKLLAMA_PORT}"
+    return f"http://localhost:{_DEFAULT_RKLLAMA_PORT}"
 
 
 def parse_hf_resolve_url(url: str) -> tuple[str, str, str]:
@@ -50,15 +99,17 @@ def parse_hf_resolve_url(url: str) -> tuple[str, str, str]:
 class RkllamaInstaller(AppInstaller):
     """Install ``.rkllm`` models by calling the rkllama ``/api/pull`` endpoint.
 
-    By default the installer talks to ``http://localhost:8080`` — the
-    controller-local rkllama. When a remote worker hosts rkllama, callers
-    pass ``rkllama_url`` (e.g. ``http://192.168.6.123:8080``).
+    By default the installer talks to ``http://localhost:7833`` -- the
+    controller-local rkllama (taOS default port).  When a remote worker hosts
+    rkllama, callers pass ``rkllama_url`` (e.g. ``http://192.168.6.123:7833``).
+    Existing installs on 8080 keep working because the recorded backend URL is
+    used directly; ``default_rkllama_url()`` probes 8080 as a legacy fallback.
     """
 
     def __init__(self, rkllama_url: str | None = None, timeout: int = 1800):
-        # rkllama install can take many minutes for multi-GB weights — give it
+        # rkllama install can take many minutes for multi-GB weights -- give it
         # half an hour by default. Caller may override.
-        self.rkllama_url = (rkllama_url or "http://localhost:8080").rstrip("/")
+        self.rkllama_url = (rkllama_url or f"http://localhost:{_DEFAULT_RKLLAMA_PORT}").rstrip("/")
         self.timeout = timeout
 
     async def install(
@@ -139,7 +190,7 @@ class RkllamaInstaller(AppInstaller):
             logger.warning(
                 "rkllama install: /api/tags verification failed: %s", exc
             )
-            # Non-fatal — pull succeeded; verification problem is likely transient.
+            # Non-fatal -- pull succeeded; verification problem is likely transient.
 
         return {"success": True, "app_id": app_id, "model_name": app_id}
 
@@ -161,13 +212,12 @@ class RkllamaInstaller(AppInstaller):
 def resolve_rkllama_url(target_remote: str | None) -> str:
     """Resolve which rkllama instance to talk to.
 
-    - ``None`` / empty / "local" → controller's own rkllama on loopback.
-    - Anything else → the remote worker's hostname on port 8080.
+    - ``None`` / empty / "local" -> controller's own rkllama on loopback.
+    - Anything else -> the remote worker's hostname on port 7833 (taOS default).
 
-    rkllama always serves on 8080; that's hard-coded by ``install-rknpu.sh``
-    and the systemd unit. If we ever make the port configurable per worker
-    we'll need a registry lookup here.
+    New installs use port 7833; existing installs retain their recorded backend
+    URL so this fallback is only reached when no config entry exists.
     """
     if not target_remote or target_remote == "local":
-        return "http://localhost:8080"
-    return f"http://{target_remote}:8080"
+        return default_rkllama_url()
+    return f"http://{target_remote}:{_DEFAULT_RKLLAMA_PORT}"

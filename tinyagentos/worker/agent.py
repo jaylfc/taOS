@@ -125,7 +125,8 @@ class WorkerAgent:
         # 11434; we want to detect both so the user's pre-existing
         # backends are first-class citizens alongside the bundled one.
         candidates = [
-            ("rkllama", "http://localhost:8080"),
+            ("rkllama", "http://localhost:7833"),
+            ("rkllama", "http://localhost:8080"),         # legacy port; existing installs
             ("ollama", "http://localhost:11434"),         # user / system Ollama (default port)
             ("ollama", "http://localhost:21434"),         # TAOS-bundled Ollama (taos-ollama.service)
             ("llama-cpp", "http://localhost:8000"),

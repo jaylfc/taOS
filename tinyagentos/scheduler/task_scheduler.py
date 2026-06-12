@@ -41,7 +41,7 @@ DEFAULT_PRESETS = [
         "name": "Health Checks",
         "description": "Regular health monitoring tasks",
         "tasks": [
-            {"name": "Backend Ping", "schedule": "*/5 * * * *", "command": "curl -sf http://localhost:8080/health", "description": "Check rkllama every 5 min"},
+            {"name": "Backend Ping", "schedule": "*/5 * * * *", "command": "curl -sf http://localhost:7833/health", "description": "Check rkllama every 5 min"},
         ],
     },
 ]
