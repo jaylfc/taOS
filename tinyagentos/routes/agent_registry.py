@@ -253,10 +253,12 @@ async def list_revoked_entries(request: Request):
     exists.  JWT revocation is handled by suspending the agent or expiring the
     grant -- the token itself carries no exp claim.
     """
-    feed_caller = await _check_feed_token(request)
-    if feed_caller is None:
-        # Fall back to session/local-token admin check.
-        if not getattr(request.state, "is_admin", False):
+    # Admin (session or local token) wins before any JWT verification, so an
+    # admin-equivalent Bearer local token is never mis-verified as a registry
+    # JWT and rejected.
+    if not getattr(request.state, "is_admin", False):
+        feed_caller = await _check_feed_token(request)
+        if feed_caller is None:
             raise HTTPException(status_code=403, detail="forbidden")
     store = _get_store(request)
     return {"revoked": await store.list_revoked()}
@@ -298,10 +300,12 @@ async def list_active_grants(request: Request, canonical_id: Optional[str] = Non
 
     Optional ``?canonical_id=`` filter narrows to a single agent.
     """
-    feed_caller = await _check_feed_token(request)
-    if feed_caller is None:
-        # Fall back to session/local-token admin check.
-        if not getattr(request.state, "is_admin", False):
+    # Admin (session or local token) wins before any JWT verification, so an
+    # admin-equivalent Bearer local token is never mis-verified as a registry
+    # JWT and rejected.
+    if not getattr(request.state, "is_admin", False):
+        feed_caller = await _check_feed_token(request)
+        if feed_caller is None:
             raise HTTPException(status_code=403, detail="forbidden")
     grants_store = _get_grants_store(request)
     if canonical_id:

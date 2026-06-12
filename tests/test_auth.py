@@ -284,6 +284,24 @@ class TestAuthMiddleware:
         assert resp.json().get("needs_onboarding") is True
 
     @pytest.mark.asyncio
+    async def test_local_token_keeps_admin_on_registry_feeds(self, app, auth_client):
+        """The admin-equivalent local token must NOT be mis-verified as a
+        registry JWT on the feed endpoints (regression: the feed JWT branch
+        must sit after the local-token branch in the middleware)."""
+        await auth_client.post(
+            "/auth/setup",
+            json={"username": "admin", "full_name": "Admin", "email": "", "password": "adminpass", "auto_login": False},
+        )
+        if app.state.agent_grants._db is None:
+            await app.state.agent_grants.init()
+        tok = app.state.auth.get_local_token()
+        resp = await auth_client.get(
+            "/api/agents/registry/grants",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_protected_route_returns_401(self, app, auth_client):
         """With auth configured, API routes should return 401 without session."""
         app.state.auth.set_password("secretpass")

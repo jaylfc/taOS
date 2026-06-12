@@ -109,25 +109,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.via = "exempt"
             return await call_next(request)
 
-        # Registry feed endpoints (revoked + grants) accept a registry JWT as an
-        # alternative to the admin session.  When a Bearer token is present for
-        # these paths, pass the request through to the route handler, which calls
-        # _check_feed_token() to verify the JWT and the registry_feeds_read grant.
-        # The route also falls back to request.state.is_admin for admin sessions,
-        # so normal cookie-authenticated admin access continues to work.
-        auth_header = request.headers.get("authorization", "")
-        if path in _REGISTRY_FEED_PATHS and auth_header.lower().startswith("bearer "):
-            request.state.user_id = None
-            request.state.is_admin = False
-            request.state.via = "registry_jwt_candidate"
-            return await call_next(request)
-
         # Local token (Authorization: Bearer <token>) is accepted as a
         # substitute for the session cookie. The token lives at
         # {data_dir}/.auth_local_token, readable only by the user
         # running taOS, so possession = same-user-on-the-host trust.
         # Used by scripts and the upcoming CLI; the browser SPA keeps
         # using cookies.
+        auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and auth_mgr.validate_local_token(presented):
@@ -149,6 +137,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.is_admin = False
                     request.state.via = "local_token"
                 return await call_next(request)
+
+        # Registry feed endpoints (revoked + grants) accept a registry JWT as an
+        # alternative to the admin session.  This branch sits AFTER the
+        # local-token check on purpose: a local token is admin-equivalent and
+        # must keep its admin semantics on these paths (taOSmd polls the feeds
+        # with it today).  Only a Bearer that is NOT the local token falls
+        # through to here and is verified as a registry JWT by the route.
+        if path in _REGISTRY_FEED_PATHS and auth_header.lower().startswith("bearer "):
+            request.state.user_id = None
+            request.state.is_admin = False
+            request.state.via = "registry_jwt_candidate"
+            return await call_next(request)
 
         # First boot: no user yet. Browsers go to the setup page; APIs
         # hard-fail so a stale cached client knows to refresh.
