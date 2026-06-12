@@ -255,6 +255,11 @@ function renderInline(text: string, keyPrefix: string) {
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
 
+// Best-effort per-channel draft storage. Drafts are user input that may
+// contain sensitive material; they are kept in localStorage (the same
+// mechanism Slack's web client uses) and not synced to the server. Stored
+// unencrypted at rest in the browser profile. Users on shared machines
+// should clear site data to remove drafts.
 const draftKey = (channelId: string) => `taos-chat-draft:${channelId}`;
 function loadDraft(channelId: string): string {
   try { return localStorage.getItem(draftKey(channelId)) || ""; } catch { return ""; }
@@ -704,12 +709,19 @@ export function MessagesApp({
 
   /* ---- channel selection ---- */
   useEffect(() => {
-    if (!selectedChannel) return;
-    // leave previous channel
-    if (prevChannelRef.current && prevChannelRef.current !== selectedChannel && wsRef.current?.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
-      // persist draft for the channel we are leaving
+    // Persist the draft for the channel we are leaving, regardless of socket
+    // state, so a switch while offline still saves the composer's contents.
+    if (prevChannelRef.current && prevChannelRef.current !== selectedChannel) {
       saveDraft(prevChannelRef.current, input);
+    }
+    if (!selectedChannel) {
+      // No new channel: clear refs and stop here.
+      prevChannelRef.current = null;
+      return;
+    }
+    // leave previous channel (websocket signaling only)
+    if (prevChannelRef.current && wsRef.current?.readyState === 1) {
+      wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
     }
     // load draft for the new channel
     if (prevChannelRef.current !== selectedChannel) {
