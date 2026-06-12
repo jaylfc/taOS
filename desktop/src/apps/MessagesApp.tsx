@@ -68,6 +68,7 @@ import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
+import Picker, { Theme } from "emoji-picker-react";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -1878,16 +1879,26 @@ export function MessagesApp({
 
                   {/* emoji picker */}
                   {showEmoji === msg.id && (
-                    <div className="absolute right-2 top-5 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 flex gap-1 z-10">
-                      {EMOJI_PICKER.map((em) => (
-                        <button
-                          key={em}
-                          onClick={() => toggleReaction(msg.id, em)}
-                          className="text-lg hover:bg-white/10 rounded p-0.5 transition-colors"
-                        >
-                          {em}
-                        </button>
-                      ))}
+                    <div className="absolute right-2 top-5 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 z-10 w-[300px] h-[360px] flex flex-col gap-2">
+                      <div className="flex gap-1 shrink-0">
+                        {EMOJI_PICKER.map((em) => (
+                          <button
+                            key={em}
+                            onClick={() => toggleReaction(msg.id, em)}
+                            className="text-lg hover:bg-white/10 rounded p-0.5 transition-colors"
+                          >
+                            {em}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex-1 min-h-0 [&_.EmojiPickerReact]:h-full [&_.EmojiPickerReact]:w-full">
+                        <Picker
+                          theme={Theme.DARK}
+                          onEmojiClick={(d) => {
+                            toggleReaction(msg.id, d.emoji);
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
