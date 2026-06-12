@@ -1,6 +1,6 @@
 import pytest
 import yaml
-from tinyagentos.config import AppConfig, load_config, save_config, validate_config, normalize_agent
+from tinyagentos.config import AppConfig, load_config, save_config, validate_config, normalize_agent, _LITELLM_PORT_NEW, _LITELLM_PORT_LEGACY
 
 class TestLoadConfig:
     def test_loads_valid_config(self, tmp_data_dir):
@@ -313,3 +313,45 @@ class TestKvCacheQuantField:
         p.write_text(yaml.dump(old_config))
         config = load_config(p)
         assert config.agents[0]["paused"] is False
+
+
+class TestLitellmPortPin:
+    def test_from_disk_without_litellm_port_pins_legacy_and_persists(self, tmp_path):
+        """Existing install: config.yaml has no litellm_port -> pinned to 4000 on load
+        and the pin is persisted so subsequent boots don't toggle."""
+        old_cfg = {
+            "server": {"host": "0.0.0.0", "port": 6969},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        p = tmp_path / "config.yaml"
+        p.write_text(yaml.dump(old_cfg))
+        config = load_config(p)
+        assert config.server["litellm_port"] == _LITELLM_PORT_LEGACY
+        # Pin must be persisted so the next boot reads a concrete value.
+        on_disk = yaml.safe_load(p.read_text())
+        assert on_disk["server"]["litellm_port"] == _LITELLM_PORT_LEGACY
+
+    def test_fresh_install_records_new_port(self, tmp_path):
+        """No config file -> fresh install defaults record 7834 (not 4000)."""
+        config = load_config(tmp_path / "config.yaml")
+        assert config.server["litellm_port"] == _LITELLM_PORT_NEW
+
+    def test_explicit_existing_value_is_untouched(self, tmp_path):
+        """An explicit litellm_port in config (e.g. 5000) is preserved as-is."""
+        existing_cfg = {
+            "server": {"host": "0.0.0.0", "port": 6969, "litellm_port": 5000},
+            "backends": [],
+            "qmd": {"url": "http://localhost:7832"},
+            "agents": [],
+            "metrics": {"poll_interval": 30, "retention_days": 30},
+        }
+        p = tmp_path / "config.yaml"
+        p.write_text(yaml.dump(existing_cfg))
+        original_mtime = p.stat().st_mtime
+        config = load_config(p)
+        assert config.server["litellm_port"] == 5000
+        # File must not be rewritten when no pin was applied.
+        assert p.stat().st_mtime == original_mtime

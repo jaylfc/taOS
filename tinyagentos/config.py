@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,10 +11,19 @@ import yaml
 
 from tinyagentos.providers import ALL_TYPES as VALID_BACKEND_TYPES
 
+log = logging.getLogger(__name__)
+
 VALID_ON_WORKER_FAILURE = {"pause", "fallback", "escalate-immediately"}
 
+# Port used by LiteLLM on the host side.  Container-internal side is always
+# 4000 (the incus proxy device bridges container:4000 -> host:litellm_port).
+# New installs record 7834; existing installs that predate the #795 port move
+# are pinned to 4000 on first boot after update (see load_config below).
+_LITELLM_PORT_NEW = 7834
+_LITELLM_PORT_LEGACY = 4000
+
 DEFAULT_CONFIG = {
-    "server": {"host": "0.0.0.0", "port": 6969, "browser_proxy_port": 6970},
+    "server": {"host": "0.0.0.0", "port": 6969, "browser_proxy_port": 6970, "litellm_port": _LITELLM_PORT_NEW},
     "backends": [],
     "qmd": {"url": "http://localhost:7832"},
     "agents": [],
@@ -64,7 +74,11 @@ class AppConfig:
 
 def load_config(path: Path) -> AppConfig:
     if not path.exists():
-        return AppConfig(config_path=path)
+        # Fresh install: build defaults with litellm_port explicitly recorded
+        # so the choice is durable and never falls back to a hardcoded default.
+        cfg = AppConfig(config_path=path)
+        cfg.server.setdefault("litellm_port", _LITELLM_PORT_NEW)
+        return cfg
     text = path.read_text()
     try:
         data = yaml.safe_load(text)
@@ -81,8 +95,22 @@ def load_config(path: Path) -> AppConfig:
     archive_cfg = DEFAULT_ARCHIVE_CONFIG.copy()
     if isinstance(archive_raw, dict):
         archive_cfg.update(archive_raw)
-    return AppConfig(
-        server=data.get("server", DEFAULT_CONFIG["server"].copy()),
+    server = data.get("server", DEFAULT_CONFIG["server"].copy())
+    # One-time legacy pin: existing installs that predate #795 have no
+    # litellm_port in their config.  Their incus proxy devices target host
+    # port 4000, so we must pin to 4000 and persist it now.  Fresh installs
+    # (path didn't exist above) get 7834 recorded at creation.
+    _pin_applied = False
+    if "litellm_port" not in server:
+        server["litellm_port"] = _LITELLM_PORT_LEGACY
+        _pin_applied = True
+        log.info(
+            "existing install: pinning LiteLLM host port %d; "
+            "new installs use %d, see #795",
+            _LITELLM_PORT_LEGACY, _LITELLM_PORT_NEW,
+        )
+    cfg = AppConfig(
+        server=server,
         backends=data.get("backends", []),
         qmd=data.get("qmd", DEFAULT_CONFIG["qmd"].copy()),
         agents=agents,
@@ -92,6 +120,9 @@ def load_config(path: Path) -> AppConfig:
         archive=archive_cfg,
         config_path=path,
     )
+    if _pin_applied:
+        save_config(cfg, path)
+    return cfg
 
 AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
