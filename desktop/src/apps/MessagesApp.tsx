@@ -312,6 +312,7 @@ export function MessagesApp({
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
+  const unreadRef = useRef<Record<string, number>>({});
   const pendingNewCountRef = useRef(0);
   const [newDividerAtId, setNewDividerAtId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -716,13 +717,14 @@ export function MessagesApp({
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "join", channel_id: selectedChannel }));
     }
-    // capture unread count before markRead clears it
-    pendingNewCountRef.current = unread[selectedChannel] ?? 0;
+    // capture unread count before markRead clears it (read via ref so this
+    // effect does not re-run when markRead mutates the unread map).
+    pendingNewCountRef.current = unreadRef.current[selectedChannel] ?? 0;
     fetchMessages(selectedChannel);
     markRead(selectedChannel);
     setTypingHumans([]);
     setTypingAgents([]);
-  }, [selectedChannel, fetchMessages, markRead, unread]);
+  }, [selectedChannel, fetchMessages, markRead]);
 
   /* ---- deep-link scroll on ?msg=<id> — latch so it fires once per URL ---- */
   const deepLinkSeenRef = useRef<string | null>(null);
@@ -828,6 +830,7 @@ export function MessagesApp({
           return;
         }
         setInput("");
+        setNewDividerAtId(null);
         setPendingAttachments([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
@@ -859,6 +862,7 @@ export function MessagesApp({
           if ((body as { handled?: string }).handled) {
             setSendError(null);
             setInput("");
+            setNewDividerAtId(null);
             autoScrollRef.current = true;
             if (inputRef.current) inputRef.current.style.height = "auto";
             return;
