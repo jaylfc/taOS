@@ -20,6 +20,7 @@
 #     TAOS_PORT                 controller listen port (default: 6969)
 #     TAOS_BROWSER_PROXY_PORT   browser-proxy second-origin port (default: 6970); set to 0 to disable
 #     TAOS_QMD_PORT             qmd model service port (default: 7832)
+#     TAOS_BUS_PORT             taosmd A2A bus port (default: 7900); used only to open the firewall rule
 #     TAOS_SERVICE              install as system service: auto (default), system, user, skip
 #     TAOS_SKIP_QMD             if set, skip qmd.service install (useful for boxes without a model backend)
 #     TAOS_RKNPU_SETUP          if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
@@ -36,6 +37,7 @@ REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
 TAOS_PORT="${TAOS_PORT:-6969}"
 TAOS_BROWSER_PROXY_PORT="${TAOS_BROWSER_PROXY_PORT:-6970}"
 TAOS_QMD_PORT="${TAOS_QMD_PORT:-7832}"
+TAOS_BUS_PORT="${TAOS_BUS_PORT:-7900}"
 SERVICE_MODE="${TAOS_SERVICE:-auto}"
 COW_POOL_MODE="${TAOS_COW_POOL:-auto}"
 
@@ -1368,6 +1370,30 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
     fi
 else
     log "TAOS_SKIP_QMD is set — skipping qmd.service install"
+fi
+
+# --- ufw: open the A2A bus port when the firewall is active ---------------
+# When a shared taosmd serve instance acts as the A2A bus on this host,
+# remote agents and workers need inbound TCP access on the bus port.
+# ufw blocks that by default. Open the port automatically so the operator
+# does not have to do it by hand after install (see issue #691).
+#
+# Conditions: Linux only, ufw present, ufw currently ACTIVE.
+# We never enable ufw, never disable rules, never touch other rules.
+if [[ "$os_name" == "Linux" ]] && command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -q '^Status: active'; then
+        if ufw status 2>/dev/null | grep -qE "^${TAOS_BUS_PORT}[[:space:]]|^${TAOS_BUS_PORT}/tcp[[:space:]]"; then
+            log "ufw: port $TAOS_BUS_PORT/tcp already allowed, skipping"
+        else
+            if ufw allow "${TAOS_BUS_PORT}/tcp" comment 'taOS A2A bus' >/dev/null 2>&1; then
+                log "ufw: allowed port $TAOS_BUS_PORT/tcp (taOS A2A bus)"
+            else
+                warn "ufw allow ${TAOS_BUS_PORT}/tcp failed, open the port manually if needed"
+            fi
+        fi
+    else
+        log "ufw is installed but not active, skipping bus port rule"
+    fi
 fi
 
 # --- dedicated service user -----------------------------------------------
