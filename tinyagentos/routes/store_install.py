@@ -116,8 +116,8 @@ async def get_device_capability(request: Request, target_remote: str | None) -> 
                 # Offload the blocking socket probe so it never stalls the loop.
                 if await asyncio.to_thread(rkllama_is_running):
                     installed_backends = installed_backends + ("rkllama",)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("rkllama runtime detection skipped: %s", exc)
         return DeviceCapability(
             device_id="local",
             targets=targets,
