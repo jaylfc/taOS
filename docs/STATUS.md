@@ -1,27 +1,27 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
-Last updated: 2026-06-13 ~22:22 BST, @taOS (active, 5h usage 48%).
+Last updated: 2026-06-13 ~23:40 BST, @taOS (WIND-DOWN at 5h usage 93%).
 
-▶ WAKE QUEUE (Jay's active queue):
-1. THEME #865 MERGED to dev: #867 (Safari backdrop-filter repaint) + #868 (macOS graphite #1d1d1f/#171717 + LIVE adaptive neural wallpaper, generic slogan overlay, any aspect incl 3840x1200 ultrawide). Verified in a local vite build+preview (graphite + neural canvas render, Agents cols aligned). JAY TESTING ON PI (pull dev). Animation + Safari dark<->light need a live look.
-2. PROMO HERO PROGRAM (active, see memory [[promo-hero-initiative]]): build the REAL app seeded w/ mock data for a multi-window hero screenshot (chat + project canvas + store). Mocks approved. Public features to MERGE: App Store FULL redesign (popularity backend = real GitHub stars + Community section), project canvas/mind-map view (net-new), agent desktop window-mgmt API (#18). Mock DATA stays PRIVATE on the local `marketing` branch (never push/merge; MARKETING.md). STANDING: every promo render needs a 5:2 X-article cut. Tasks #13-18.
-3. BRAINSTORM live-wallpaper PACKAGE format + agent authoring guidelines + store sharing (see [[live-wallpapers]]).
-3. MOBILE AUDIT: check the Agents app + chat/Messages + composer look right on mobile (Jay flagged); verify the new neural wallpaper + graphite chrome on mobile too.
-4. WALLPAPER picker Phase 1 (#864): reorg into Theme-default / Built-in / Your-wallpapers(+upload) sections + a Settings entry point; Phase 2 = Wallhaven KEYLESS browse + optional API-key entry. Mock approved. NOTE: #868 already added a wallpaper "kind" + wordmark toggle to the picker; build on that.
-5. DYNAMIC ISLAND v2 (#854): design+mocks approved (island holds agent+search, agent chat bubble replaces side panel + poppable window, search bubble, Mac animations). Build plan then build.
-6. GITHUB (#858): Phase 1 connect flow MERGED (#862). Next: Phase 2 time-scoped sharing + consent picker; Phase 3 agent access-request + runtime token injection; Phase 4 fork->PR ops. OAuth app registered (Client ID Ov23licVGSIqagQLXAqb public/in-source; secret stays host-side, NOT in repo; device flow needs no secret).
+▶ WAKE QUEUE (resume after the ~01:40 BST 5h reset; resume pair armed 01:43/02:02). ORDER per Jay 2026-06-13 22:20: "real desktop next then live wallpaper work":
+1. REAL DESKTOP feature set (Jay's stated NEXT priority): #22 dock right-click menu (min/max/close/quit/keep-in-dock); #23 New Folder = inline untitled folder + instant rename in the real Desktop dir (NOT open Files -- current bug); #24 desktop renders the real profile Desktop folder as icons + thumbnails/previews (FS-backed via Files/FS API, open/rename/delete/drag). One "real desktop" feature set, mock-first.
+2. LIVE WALLPAPER work (after real desktop): verify tsParticles #872 LOOK live on Pi (headless can't rasterize it), then build the config sliders (#21: speed/density/glow/colour/text) -- the user/agent-authorable foundation (tsParticles engine).
+3. STORE redesign #871 OPEN -- @taOS to FIX 4 Gitar bugs (Jay said do it myself), then merge: (a) search doesn't filter Discover/Community views, (b) several app types unreachable from sidebar nav (NAV_TYPE_MAP incomplete), (c) "Updates" nav identical to "Installed", (d) RichCard install target captured at mount, ignores device selection. Redesign = hero + Popular (real GitHub stars + dashboard-icons logos) + Replace-your-subscriptions homelab + Community + frameworks, graphite, theme-aware.
+4. PROMO HERO PROGRAM (memory [[promo-hero-initiative]]): only the agent CHAT + a demo PROJECT stay mock; build everything else REAL. Hero = multi-window (chat + project canvas + store), 5:2 X-cut on all promo. Needs store (#871), project canvas/mind-map (#16, net-new), demo seed (#17), agent window-mgmt API (#18). Mock data PRIVATE on local `marketing` branch (never push/merge; MARKETING.md).
+5. Also queued: store popularity LIVE stars backend (#13), per-app install telemetry -> the now-secured stats page (#15), widget redesign (#19, NOT in the shot), mobile audit, wallpaper picker #864, island v2 #854, GitHub #858 ph2, live-wallpaper package brainstorm.
 
-Branch tips: master=6394a3ed. dev=865f278d (#867 + #868 merged). Local-only `marketing` branch (private, no upstream; promo mock data; NEVER push/merge).
+Branch tips: master=6394a3ed. dev=4f2259a3. Merged this session: #867 #868 (theme+neural), #869 (popover/widget graphite colours), #870 (graphite static wallpaper + light/dark inversion); taos-website #5 (stats Basic Auth -> main, set STATS_USER/STATS_PASS in Coolify). Local-only `marketing` branch (private, no upstream; NEVER push/merge).
 
-Session state: ACTIVE (5h 48%). #867+#868 merged to dev for Jay's Pi test. taos-website stats secured + merged to main (#5; set STATS_USER/STATS_PASS in Coolify). Next: build the promo/store program (tasks #13-18).
+Session state: WIND-DOWN at 5h 93%. OPEN PRs: #871 (store, needs the 4 bug fixes), #872 (tsParticles wallpaper, verify live). @taOS's next action on resume = fix #871's 4 bugs. tsParticles + Safari dark<->light + neural/live wallpaper animation are all invisible to screenshots -> Jay verifies live on the Pi.
 
 WEBSITE: taos.my live. All 4 taos-website PRs merged (stats/changelog/nav/accessibility).
 
 CI: test suite parallelized via #839 (xdist -n auto). CodeRabbit may be out of credits -- do not merge on a fake rate-limit pass. Use @coderabbitai full review to retrigger; manual review OK for tiny already-reviewed PRs.
 
 OPEN PRs:
+- #872 feat(wallpaper): tsParticles live "Neural (Live)" wallpaper (selectable, theme-aware) -- verify look live, then sliders (#21)
+- #871 feat(store): App Store redesign -- has 4 Gitar bugs for @taOS to fix before merge (see WAKE QUEUE 3)
 - #846 dependabot esbuild bump -- SUPERSEDED by #849 (already on dev); close it
 - #476 DRAFT feat(userspace): App Runtime v1 -- stays DRAFT, not ready to merge
-(merged to dev since last update: #867 Safari repaint, #868 macOS-dark + neural wallpaper. taos-website #5 stats-auth merged to main.)
+(merged to dev this session: #867 #868 #869 #870 theme/wallpaper/popovers/inversion. taos-website #5 stats-auth -> main.)
 
 Notable open issues (bugs first):
 - #844 rkllama store-UI install chain broken (wrong script + non-interactive false-success) -- unresolved
