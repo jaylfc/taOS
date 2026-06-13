@@ -48,6 +48,55 @@
   --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
+/* ==================================================================
+   Light-scheme compatibility layer
+   ==================================================================
+   The shell tokens above (window chrome, dock, top bar, text) already
+   flip per theme. But ~800 surfaces across the apps still use hardcoded
+   white-overlay utilities (bg-white/5, border-white/10) and ~140 use
+   hardcoded white text (text-white) — additive white that vanishes on a
+   light background. Rather than migrate every call site, this layer
+   inverts those utilities to dark-on-light, but ONLY when a light theme
+   is active (data-scheme="light", set from the theme's bg luminance in
+   theme-store.ts). The dark theme is never matched, so it is untouched.
+
+   Specificity note: `:root[data-scheme="light"] [class~="x"]` is (0,3,0),
+   which beats Tailwind's single-class utilities (0,1,0) and hover
+   variants (0,2,0) without !important. Hover overlays get their own
+   :hover rules below so the affordance survives the inversion.
+   ================================================================== */
+:root[data-scheme="light"] [class~="bg-white/3"]  { background-color: rgba(0, 0, 0, 0.03); }
+:root[data-scheme="light"] [class~="bg-white/5"]  { background-color: rgba(0, 0, 0, 0.04); }
+:root[data-scheme="light"] [class~="bg-white/10"] { background-color: rgba(0, 0, 0, 0.06); }
+:root[data-scheme="light"] [class~="bg-white/15"] { background-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="bg-white/20"] { background-color: rgba(0, 0, 0, 0.10); }
+
+:root[data-scheme="light"] [class~="border-white/5"]  { border-color: rgba(0, 0, 0, 0.08); }
+:root[data-scheme="light"] [class~="border-white/8"]  { border-color: rgba(0, 0, 0, 0.10); }
+:root[data-scheme="light"] [class~="border-white/10"] { border-color: rgba(0, 0, 0, 0.12); }
+:root[data-scheme="light"] [class~="border-white/15"] { border-color: rgba(0, 0, 0, 0.14); }
+:root[data-scheme="light"] [class~="border-white/20"] { border-color: rgba(0, 0, 0, 0.16); }
+
+:root[data-scheme="light"] [class~="text-white"]    { color: rgba(0, 0, 0, 0.88); }
+:root[data-scheme="light"] [class~="text-white/90"] { color: rgba(0, 0, 0, 0.84); }
+:root[data-scheme="light"] [class~="text-white/80"] { color: rgba(0, 0, 0, 0.78); }
+:root[data-scheme="light"] [class~="text-white/70"] { color: rgba(0, 0, 0, 0.68); }
+:root[data-scheme="light"] [class~="text-white/60"] { color: rgba(0, 0, 0, 0.58); }
+:root[data-scheme="light"] [class~="text-white/50"] { color: rgba(0, 0, 0, 0.50); }
+:root[data-scheme="light"] [class~="text-white/45"] { color: rgba(0, 0, 0, 0.48); }
+:root[data-scheme="light"] [class~="text-white/40"] { color: rgba(0, 0, 0, 0.45); }
+:root[data-scheme="light"] [class~="text-white/35"] { color: rgba(0, 0, 0, 0.44); }
+:root[data-scheme="light"] [class~="text-white/30"] { color: rgba(0, 0, 0, 0.42); }
+:root[data-scheme="light"] [class~="text-white/25"] { color: rgba(0, 0, 0, 0.40); }
+:root[data-scheme="light"] [class~="text-white/20"] { color: rgba(0, 0, 0, 0.40); }
+:root[data-scheme="light"] [class~="text-white/15"] { color: rgba(0, 0, 0, 0.38); }
+
+/* Hover overlays: re-assert the inverted fill on :hover so the affordance
+   does not flatten under the base-state override. */
+:root[data-scheme="light"] [class~="hover:bg-white/5"]:hover  { background-color: rgba(0, 0, 0, 0.05); }
+:root[data-scheme="light"] [class~="hover:bg-white/10"]:hover { background-color: rgba(0, 0, 0, 0.07); }
+:root[data-scheme="light"] [class~="hover:bg-white/[0.06]"]:hover { background-color: rgba(0, 0, 0, 0.05); }
+
 /* Wallpaper sizing
    ----------------
    Desktop fills the viewport (cover crops edges if aspect mismatches).

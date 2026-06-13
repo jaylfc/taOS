@@ -126,6 +126,26 @@ export const useThemeStore = create<ThemeStore>((set) => ({
 
 let _applied: string[] = []; // token keys currently set, for revert
 
+// Decide whether a theme reads as light or dark from its window-body colour,
+// so the light-scheme compatibility layer in tokens.css (which inverts the
+// hardcoded white overlays apps still use) keys off one attribute. Works for
+// the builtin Light theme and any agent-generated light theme alike.
+function schemeFromBg(bg: string | undefined): "light" | "dark" {
+  if (!bg) return "dark"; // no override (default theme) -> the dark base CSS
+  let r: number, g: number, b: number;
+  const hex = bg.trim().match(/^#([0-9a-fA-F]{6})$/);
+  if (hex) {
+    const n = parseInt(hex[1]!, 16);
+    [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  } else {
+    const m = bg.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i);
+    if (!m) return "dark";
+    [r, g, b] = [+m[1]!, +m[2]!, +m[3]!];
+  }
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.55 ? "light" : "dark";
+}
+
 export function applyThemeConfig(cfg: ThemeConfig) {
   revertTheme();
   const root = document.documentElement;
@@ -135,6 +155,7 @@ export function applyThemeConfig(cfg: ThemeConfig) {
       _applied.push(k);
     }
   }
+  root.dataset.scheme = schemeFromBg(cfg.tokens?.["--color-shell-bg"]);
   useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [] });
 }
 
@@ -142,6 +163,7 @@ export function revertTheme() {
   const root = document.documentElement;
   for (const k of _applied) root.style.removeProperty(k);
   _applied = [];
+  root.dataset.scheme = "dark"; // base shell is dark
   useThemeStore.setState({ structure: {}, effects: [] });
 }
 
