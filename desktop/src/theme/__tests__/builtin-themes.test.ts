@@ -4,10 +4,10 @@ import { BUILTIN_THEMES } from "../builtin-themes";
 import { ALLOWED_TOKENS } from "../theme-config";
 
 describe("builtin themes", () => {
-  it("includes an undeletable Default and a Matrix Terminal", () => {
+  it("includes an undeletable taOS Dark (default) and taOS Light", () => {
     const ids = BUILTIN_THEMES.map((t) => t.theme_id);
     expect(ids).toContain("default");
-    expect(ids).toContain("matrix-terminal");
+    expect(ids).toContain("light");
     expect(BUILTIN_THEMES.find((t) => t.theme_id === "default")!.builtin).toBe(true);
   });
   it("only uses allowlisted tokens", () => {
