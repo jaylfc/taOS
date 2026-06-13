@@ -59,6 +59,18 @@ def _port_responds_with_rkllama(port: int, timeout: float = 1.0) -> bool:
         return False
 
 
+def rkllama_is_running() -> bool:
+    """True if a live rkllama server answers on either the taOS or legacy port.
+
+    Used so a running-but-unregistered rkllama is treated as an installed
+    backend during model resolution (skips a needless reinstall chain).
+    """
+    return (
+        _port_responds_with_rkllama(_DEFAULT_RKLLAMA_PORT)
+        or _port_responds_with_rkllama(_LEGACY_RKLLAMA_PORT)
+    )
+
+
 def default_rkllama_url() -> str:
     """Return the best local rkllama base URL.
 
