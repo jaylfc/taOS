@@ -47,7 +47,14 @@ export function NeuralWallpaper() {
     let raf = 0;
     let running = false;
 
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // Gradients depend only on w/h, so they are built once per resize in build()
+    // and reused every frame rather than reallocated ~180x/sec (Pi GC churn).
+    let bgGrad: CanvasGradient | null = null;
+    let glowGrad: CanvasGradient | null = null;
+    let vignetteGrad: CanvasGradient | null = null;
+
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let reduceMotion = motionQuery.matches;
 
     function build() {
       const rect = canvas!.getBoundingClientRect();
@@ -56,6 +63,19 @@ export function NeuralWallpaper() {
       canvas!.width = Math.round(w * dpr);
       canvas!.height = Math.round(h * dpr);
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      bgGrad = ctx!.createLinearGradient(0, 0, w, h);
+      bgGrad.addColorStop(0, "#26262a");
+      bgGrad.addColorStop(0.42, "#1d1d1f");
+      bgGrad.addColorStop(1, "#101011");
+      glowGrad = ctx!.createRadialGradient(w * 0.5, h * 0.46, 0, w * 0.5, h * 0.46, Math.max(w, h) * 0.6);
+      glowGrad.addColorStop(0, "rgba(255,255,255,0.06)");
+      glowGrad.addColorStop(0.5, "rgba(255,255,255,0.015)");
+      glowGrad.addColorStop(1, "rgba(255,255,255,0)");
+      vignetteGrad = ctx!.createRadialGradient(w * 0.5, h * 0.48, Math.min(w, h) * 0.3, w * 0.5, h * 0.48, Math.max(w, h) * 0.75);
+      vignetteGrad.addColorStop(0, "rgba(0,0,0,0)");
+      vignetteGrad.addColorStop(1, "rgba(0,0,0,0.42)");
+
       const count = Math.max(40, Math.min(260, Math.round((w * h) / 14000)));
       nodes = Array.from({ length: count }, () => ({
         x: Math.random() * w,
@@ -69,27 +89,20 @@ export function NeuralWallpaper() {
     }
 
     function background() {
-      const g = ctx!.createLinearGradient(0, 0, w, h);
-      g.addColorStop(0, "#26262a");
-      g.addColorStop(0.42, "#1d1d1f");
-      g.addColorStop(1, "#101011");
-      ctx!.fillStyle = g;
+      ctx!.fillStyle = bgGrad!;
       ctx!.fillRect(0, 0, w, h);
-      const rg = ctx!.createRadialGradient(w * 0.5, h * 0.46, 0, w * 0.5, h * 0.46, Math.max(w, h) * 0.6);
-      rg.addColorStop(0, "rgba(255,255,255,0.06)");
-      rg.addColorStop(0.5, "rgba(255,255,255,0.015)");
-      rg.addColorStop(1, "rgba(255,255,255,0)");
-      ctx!.fillStyle = rg;
+      ctx!.fillStyle = glowGrad!;
       ctx!.fillRect(0, 0, w, h);
     }
 
     function vignette() {
-      const vg = ctx!.createRadialGradient(w * 0.5, h * 0.48, Math.min(w, h) * 0.3, w * 0.5, h * 0.48, Math.max(w, h) * 0.75);
-      vg.addColorStop(0, "rgba(0,0,0,0)");
-      vg.addColorStop(1, "rgba(0,0,0,0.42)");
-      ctx!.fillStyle = vg;
+      ctx!.fillStyle = vignetteGrad!;
       ctx!.fillRect(0, 0, w, h);
     }
+
+    const LINK_RGB = `rgb(${LINK})`;
+    const NODE_RGB = `rgb(${NODE})`;
+    const ACCENT_RGB = `rgb(${ACCENT})`;
 
     function frame(t: number) {
       background();
@@ -101,6 +114,10 @@ export function NeuralWallpaper() {
         if (n.y < -20) n.y = h + 20;
         else if (n.y > h + 20) n.y = -20;
       }
+      // Links: one fixed strokeStyle, per-pair opacity via globalAlpha (no
+      // per-pair rgba string allocation in this O(n^2) hot loop).
+      ctx!.strokeStyle = LINK_RGB;
+      ctx!.lineWidth = 0.7;
       for (let i = 0; i < nodes.length; i++) {
         const a = nodes[i]!;
         for (let j = i + 1; j < nodes.length; j++) {
@@ -109,9 +126,7 @@ export function NeuralWallpaper() {
           const dy = a.y - b.y;
           const d2 = dx * dx + dy * dy;
           if (d2 < LINK_DIST * LINK_DIST) {
-            const o = (1 - Math.sqrt(d2) / LINK_DIST) * 0.5;
-            ctx!.strokeStyle = `rgba(${LINK},${o.toFixed(3)})`;
-            ctx!.lineWidth = 0.7;
+            ctx!.globalAlpha = (1 - Math.sqrt(d2) / LINK_DIST) * 0.5;
             ctx!.beginPath();
             ctx!.moveTo(a.x, a.y);
             ctx!.lineTo(b.x, b.y);
@@ -119,20 +134,24 @@ export function NeuralWallpaper() {
           }
         }
       }
+      ctx!.globalAlpha = 1;
       for (const n of nodes) {
         const tw = 0.6 + 0.4 * Math.sin(t * 0.0014 + n.tw);
         if (n.active) {
-          ctx!.fillStyle = `rgba(${ACCENT},${(0.85 * tw).toFixed(3)})`;
+          ctx!.fillStyle = ACCENT_RGB;
+          ctx!.globalAlpha = 0.85 * tw;
           ctx!.shadowColor = `rgba(${ACCENT},0.7)`;
           ctx!.shadowBlur = 8;
         } else {
-          ctx!.fillStyle = `rgba(${NODE},${(0.6 * tw).toFixed(3)})`;
+          ctx!.fillStyle = NODE_RGB;
+          ctx!.globalAlpha = 0.6 * tw;
           ctx!.shadowBlur = 0;
         }
         ctx!.beginPath();
         ctx!.arc(n.x, n.y, n.r, 0, Math.PI * 2);
         ctx!.fill();
       }
+      ctx!.globalAlpha = 1;
       ctx!.shadowBlur = 0;
       vignette();
       raf = requestAnimationFrame(frame);
@@ -140,15 +159,21 @@ export function NeuralWallpaper() {
 
     function staticFrame() {
       background();
+      ctx!.fillStyle = NODE_RGB;
+      ctx!.globalAlpha = 0.6;
       for (const n of nodes) {
-        ctx!.fillStyle = `rgba(${NODE},0.6)`;
         ctx!.beginPath();
         ctx!.arc(n.x, n.y, n.r, 0, Math.PI * 2);
         ctx!.fill();
       }
+      ctx!.globalAlpha = 1;
       vignette();
     }
 
+    function render() {
+      if (reduceMotion) staticFrame();
+      else start();
+    }
     function start() {
       if (running || reduceMotion) return;
       running = true;
@@ -160,8 +185,7 @@ export function NeuralWallpaper() {
     }
 
     build();
-    if (reduceMotion) staticFrame();
-    else start();
+    render();
 
     const ro = new ResizeObserver(() => {
       stop();
@@ -177,10 +201,20 @@ export function NeuralWallpaper() {
     };
     document.addEventListener("visibilitychange", onVisibility);
 
+    // React to the OS reduced-motion setting changing mid-session.
+    const onMotionChange = () => {
+      reduceMotion = motionQuery.matches;
+      stop();
+      if (reduceMotion) staticFrame();
+      else if (!document.hidden) start();
+    };
+    motionQuery.addEventListener("change", onMotionChange);
+
     return () => {
       stop();
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
+      motionQuery.removeEventListener("change", onMotionChange);
     };
   }, []);
 
