@@ -1,9 +1,16 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
-Last updated: 2026-06-13, @taOS (freshness sweep).
+Last updated: 2026-06-13 ~18:46, @taOS (wind-down at 5h usage 92%).
 
-Branch tips: master=6394a3ed (PR #845 batch). dev=9c7c91fe (18 ahead of master). On dev since #845: rkllama install fix (#843), brand rename to taOS (#847), Light theme (#848), esbuild 0.28.1 RCE fix (#849), unified chat composer (#850), Agents redesign (#851), update reset-before-pull fix (#852), Chat Slack-polish (#853), agent kill switch (#857), doc fixes -- getting-started/CONTRIBUTING/README brand rename (#858-9-60 via GitHub API, parent 9c7c91fe).
+▶ WAKE QUEUE (resume here after the 19:40 UTC 5h reset, Jay's active queue):
+1. THEME: move taOS Dark off the blue-purple base (#1a1b2e) to macOS dark-mode NEUTRALS (#865). Edit dark @theme tokens in desktop/src/theme/tokens.css + retune WALLPAPERS off indigo; accent stays neutral grey; keep Light theme; verify contrast.
+2. MOBILE AUDIT: check the Agents app + chat/Messages + composer look right on mobile (Jay flagged).
+3. WALLPAPER picker Phase 1 (#864): reorg into Theme-default / Built-in / Your-wallpapers(+upload) sections + a Settings entry point; Phase 2 = Wallhaven KEYLESS browse + optional API-key entry. Mock approved.
+4. DYNAMIC ISLAND v2 (#854): design+mocks approved (island holds agent+search, agent chat bubble replaces side panel + poppable window, search bubble, Mac animations). Build plan then build.
+5. GITHUB (#858): Phase 1 connect flow MERGED (#862). Next: Phase 2 time-scoped sharing + consent picker; Phase 3 agent access-request + runtime token injection; Phase 4 fork->PR ops. OAuth app registered (Client ID Ov23licVGSIqagQLXAqb public/in-source; secret stays host-side, NOT in repo; device flow needs no secret).
 
-Session state: freshness sweep only. No active session crons armed this session.
+Branch tips: master=6394a3ed. dev advanced well past #845: merged this session = #843 #847 #848 #849 #850 #851 #852 #853 #857 #859 #860 #861 #862. OPEN PR baking: #863 (agents spacing + System-agent-label removal; merge on green).
+
+Session state: wind-down. Merge #863 when green. Resume the WAKE QUEUE after reset.
 
 WEBSITE: taos.my live. All 4 taos-website PRs merged (stats/changelog/nav/accessibility).
 
