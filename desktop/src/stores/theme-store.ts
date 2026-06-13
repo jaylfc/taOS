@@ -49,6 +49,18 @@ const WALLPAPERS: Wallpaper[] = [
     kind: "image",
   },
   {
+    id: "neural-live",
+    label: "Neural (Live)",
+    // Configurable live particle-network (tsParticles). Theme-aware: it derives
+    // its colours from the active scheme, so it inverts with the theme.
+    image: "",
+    fallback: "#141415",
+    lightFallback: "#eef0f3",
+    kind: "animated",
+    component: "particles",
+    overlayText: "taOS",
+  },
+  {
     id: "default",
     label: "Classic",
     image: "url('/static/wallpaper.png')",

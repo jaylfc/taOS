@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Desktop } from "@/components/Desktop";
 import { Dock } from "@/components/Dock";
-import { NeuralWallpaper } from "@/components/NeuralWallpaper";
+import { ParticlesWallpaper } from "@/components/ParticlesWallpaper";
 import { WallpaperTextOverlay } from "@/components/WallpaperTextOverlay";
 import { Launchpad } from "@/components/Launchpad";
 import { SearchPalette } from "@/components/SearchPalette";
@@ -304,7 +304,7 @@ export function App() {
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
     <div className={`taos-wallpaper relative h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: effWallpaperFallback, ["--wallpaper-desktop" as never]: isAnimatedWallpaper ? "none" : effWallpaperImage, ["--wallpaper-mobile" as never]: isAnimatedWallpaper ? "none" : effWallpaperMobile }}>
-      {isAnimatedWallpaper && wallpaperComponent === "neural" && <NeuralWallpaper />}
+      {isAnimatedWallpaper && wallpaperComponent === "particles" && <ParticlesWallpaper />}
       {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <EffectsLayer />
       {/* Install banner — shown in browser mode, hidden in PWA */}
