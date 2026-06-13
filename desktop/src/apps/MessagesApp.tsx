@@ -431,6 +431,10 @@ export function MessagesApp({
   // One 60s tick for the whole list so relative timestamps ("3m") stay fresh
   // without a reload. Only sub-hour labels depend on it; cheap re-render.
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // @mention autocomplete: the partial after "@" at the cursor + the @ index,
+  // or null when not in mention mode. mentionSel is the highlighted candidate.
+  const [mention, setMention] = useState<{ partial: string; atIndex: number } | null>(null);
+  const [mentionSel, setMentionSel] = useState(0);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -1105,6 +1109,12 @@ export function MessagesApp({
   const handleInputChange = (val: string) => {
     setInput(val);
     if (selectedChannel) saveDraft(selectedChannel, val);
+    // @mention detection: is the cursor inside an @token (no whitespace, the
+    // @ at the start or after whitespace)? If so, enter mention mode.
+    const pos = inputRef.current?.selectionStart ?? val.length;
+    const m = val.slice(0, pos).match(/(?:^|\s)@([^\s@]*)$/);
+    const part = m ? (m[1] ?? "") : "";
+    setMention(m ? { partial: part, atIndex: pos - part.length - 1 } : null);
     // auto-resize textarea
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
@@ -1124,6 +1134,8 @@ export function MessagesApp({
 
   /* ---- key handler ---- */
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // The mention popover (when open) owns Enter/Tab via a capture listener
+    // that stops propagation, so this send handler never sees those keys.
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -1331,6 +1343,49 @@ export function MessagesApp({
   const allChannels = [...channels, ...archivedChannels];
   const currentChannel = allChannels.find((c) => c.id === selectedChannel);
   const isCurrentArchived = currentChannel?.settings?.archived === true;
+
+  /* ---- @mention autocomplete: candidates = channel members + "all" ---- */
+  const mentionCandidates: string[] = (() => {
+    if (!mention) return [];
+    const q = mention.partial.toLowerCase();
+    const pool = [...(currentChannel?.members ?? []).filter((m) => m !== "user"), "all"];
+    const pref = pool.filter((m) => m.toLowerCase().startsWith(q));
+    const sub = pool.filter((m) => !m.toLowerCase().startsWith(q) && m.toLowerCase().includes(q));
+    return [...pref, ...sub].slice(0, 6);
+  })();
+
+  const insertMention = (slug: string | undefined) => {
+    if (!mention || !slug) return;
+    const el = inputRef.current;
+    const pos = el?.selectionStart ?? input.length;
+    const next = input.slice(0, mention.atIndex) + "@" + slug + " " + input.slice(pos);
+    setInput(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      if (el) {
+        const caret = mention.atIndex + slug.length + 2; // past "@slug "
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  };
+
+  useEffect(() => { setMentionSel(0); }, [mention?.partial]);
+
+  // Capture Arrow/Enter/Tab/Escape while the mention popover is open. Capture
+  // phase + stopPropagation so the composer's send handler never sees them.
+  useEffect(() => {
+    if (!mention || mentionCandidates.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setMention(null); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); setMentionSel((s) => Math.min(mentionCandidates.length - 1, s + 1)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); setMentionSel((s) => Math.max(0, s - 1)); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); insertMention(mentionCandidates[mentionSel]); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mention, mentionCandidates.join(","), mentionSel]);
 
   /* ---- project-grouped channels for sidebar (standalone mode) ---- */
   const projectGroups = (() => {
@@ -2354,6 +2409,27 @@ export function MessagesApp({
                   onClose={() => { /* leave input as-is; user can Esc or delete */ }}
                 />
               )}
+              {mention && mentionCandidates.length > 0 && !showSlash && (
+                <div
+                  role="listbox"
+                  aria-label="Mention a member"
+                  className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
+                >
+                  {mentionCandidates.map((slug, i) => (
+                    <button
+                      key={slug}
+                      role="option"
+                      aria-selected={i === mentionSel}
+                      onMouseEnter={() => setMentionSel(i)}
+                      onMouseDown={(e) => { e.preventDefault(); insertMention(slug); }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center gap-2 ${i === mentionSel ? "bg-white/10" : "hover:bg-white/5"}`}
+                    >
+                      <AtSign size={13} className="text-white/40" aria-hidden="true" />
+                      <span className="font-mono text-[13px]">@{slug}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className={`flex items-end gap-2 rounded-xl border px-2 py-1.5 ${isCurrentArchived ? "bg-white/[0.02] border-white/[0.04] opacity-50" : "bg-white/[0.06] border-white/[0.08]"}`}>
                 <Button
                   variant="ghost"
@@ -2370,6 +2446,7 @@ export function MessagesApp({
                   value={input}
                   onChange={(e) => !isCurrentArchived && handleInputChange(e.target.value)}
                   onKeyDown={(e) => !isCurrentArchived && handleKeyDown(e)}
+                  onBlur={() => setMention(null)}
                   onPaste={(e) => {
                     if (!e.clipboardData) return;
                     const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
