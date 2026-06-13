@@ -15,6 +15,29 @@ Format per entry: date, change (PR), affected installs, symptom, check, fix.
 
 ---
 
+## 2026-06-13 — Install Update 500s when desktop/package-lock.json is dirty (#852)
+
+- **Affected:** any install whose desktop rebuild has run `npm install` (which
+  rewrites `desktop/package-lock.json`), AND where an incoming update also
+  changes that file. The esbuild bump (#849) changed package-lock.json, so
+  installs updating across that commit are the trigger.
+- **Symptom:** the update *check* shows updates available, but clicking Install
+  Update fails: `POST /api/settings/update` returns 500 with
+  `Update failed: ... Your local changes to desktop/package-lock.json would be
+  overwritten by merge`. No real divergence or conflict, just a rebuild-dirtied
+  lockfile blocking `git pull --ff-only`.
+- **Check:** `sudo -u taos git -C /opt/tinyagentos status --short` shows
+  `M desktop/package-lock.json`.
+- **Fix (in #852):** the apply-update endpoint now restores
+  `desktop/package-lock.json` (alongside `tsconfig.tsbuildinfo` + `static/desktop`)
+  before the pull, so it never blocks. No user action needed once on a build
+  with #852.
+- **Manual unblock on an install stuck before #852:**
+  `sudo -u taos git -C /opt/tinyagentos checkout -- desktop/package-lock.json`
+  then click Install Update again.
+
+---
+
 ## 2026-06-12 — LiteLLM host port default moved 4000 -> 7834 (#795, pinned in #805)
 
 - **Affected:** existing installs that have no `litellm_port` key under `server:`
