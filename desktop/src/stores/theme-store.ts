@@ -146,6 +146,24 @@ function schemeFromBg(bg: string | undefined): "light" | "dark" {
   return luminance > 0.55 ? "light" : "dark";
 }
 
+// Safari/WebKit leaves backdrop-filter elements (dock, top bar, modals,
+// widgets) on stale GPU compositing layers when the theme custom properties
+// on :root change at runtime: the layer keeps its old raster until something
+// forces a re-composite (scroll, resize, screenshot), so on a theme switch it
+// can flash black on the live screen even though screenshots look correct
+// (the screenshot path forces a full raster). Dropping backdrop-filter for a
+// frame via [data-theme-switching] (see tokens.css) forces WebKit to rebuild
+// every backdrop layer against the new tokens. No-op outside the browser.
+function forceCompositingRepaint() {
+  if (typeof document === "undefined" || typeof requestAnimationFrame === "undefined") return;
+  const root = document.documentElement;
+  root.setAttribute("data-theme-switching", "");
+  void root.offsetHeight; // flush the filter:none state before restoring it
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => root.removeAttribute("data-theme-switching"));
+  });
+}
+
 export function applyThemeConfig(cfg: ThemeConfig) {
   revertTheme();
   const root = document.documentElement;
@@ -157,6 +175,7 @@ export function applyThemeConfig(cfg: ThemeConfig) {
   }
   root.dataset.scheme = schemeFromBg(cfg.tokens?.["--color-shell-bg"]);
   useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [] });
+  forceCompositingRepaint();
 }
 
 export function revertTheme() {
@@ -165,6 +184,7 @@ export function revertTheme() {
   _applied = [];
   root.dataset.scheme = "dark"; // base shell is dark
   useThemeStore.setState({ structure: {}, effects: [] });
+  forceCompositingRepaint();
 }
 
 export function setWallpaperForActiveTheme(value: string) {
