@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { ShoppingBag, Search, Download, Trash2, Check, Package, Loader2, Bot, Brain, Plug, Wrench, Image, Music, Video, Globe, Home, Cpu, Sparkles, Workflow, ClipboardList, Server } from "lucide-react";
-import { Button, Card, CardContent, CardFooter, CardHeader, Input } from "@/components/ui";
+import {
+  Search, Download, Trash2, Check, Package, Loader2, Server,
+  Compass, Grid2x2, Bot, Brain, Plug, Wrench, Star, Globe,
+  ArrowDownToLine, RefreshCw, Users, Cpu,
+} from "lucide-react";
+import { Input } from "@/components/ui";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
 import type { CatalogApp, InstallTarget, InstalledEntry } from "./types";
 import { DevicePillBar, UnknownHardwareBanner } from "./DevicePillBar";
@@ -12,406 +16,350 @@ import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
 import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 
-/* ------------------------------------------------------------------ */
-/*  Categories                                                         */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+   Dashboard-icons CDN helper
+   ------------------------------------------------------------------ */
 
-interface Category {
-  id: string;
+const di = (slug: string) =>
+  `https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/${slug}.png`;
+
+/* ------------------------------------------------------------------
+   Nav sections
+   ------------------------------------------------------------------ */
+
+type NavId =
+  | "discover"
+  | "apps"
+  | "agents"
+  | "models"
+  | "services"
+  | "mcp"
+  | "devtools"
+  | "community"
+  | "installed"
+  | "updates";
+
+interface NavItem {
+  id: NavId;
   label: string;
   icon: React.ReactNode;
-  types: string[];       // which app types belong here
-  description: string;
+  group?: string;
 }
 
-// Each category lists the identifiers (category OR type fallback) that land in it.
-// The Services category is intentionally absent — every service-typed app carries
-// an explicit `category:` that routes it to one of the categories below.
-const CATEGORIES: Category[] = [
-  { id: "all", label: "All Apps", icon: <ShoppingBag size={16} />, types: [], description: "Browse everything" },
-  { id: "frameworks", label: "Agent Frameworks", icon: <Bot size={16} />, types: ["agent-framework"], description: "Execution engines for your AI agents" },
-  { id: "models", label: "Models", icon: <Brain size={16} />, types: ["model"], description: "Language models for inference" },
-  { id: "llm-runtime", label: "LLM Runtime", icon: <Cpu size={16} />, types: ["llm-runtime"], description: "LLM servers, gateways, and distributed inference" },
-  { id: "memory", label: "Memory", icon: <Brain size={16} />, types: ["memory"], description: "Memory backends and knowledge stores for agents" },
-  { id: "plugins", label: "Plugins", icon: <Plug size={16} />, types: ["plugin"], description: "Tools and capabilities for agents" },
-  { id: "mcp-server", label: "MCP Servers", icon: <Cpu size={16} />, types: ["mcp"], description: "Model Context Protocol servers" },
-  { id: "ai-app", label: "AI Apps", icon: <Sparkles size={16} />, types: ["ai-app"], description: "Self-hosted AI frontends and builders" },
-  { id: "streaming", label: "Streaming Apps", icon: <Globe size={16} />, types: ["streaming-app"], description: "Desktop apps streamed via KasmVNC" },
-  { id: "image", label: "Image Generation", icon: <Image size={16} />, types: ["image-gen", "image-model"], description: "Stable Diffusion and image models" },
-  { id: "audio", label: "Audio & Voice", icon: <Music size={16} />, types: ["voice", "audio"], description: "TTS and speech-to-text" },
-  { id: "music", label: "Music", icon: <Music size={16} />, types: ["music"], description: "Music and sound generation" },
-  { id: "video", label: "Video", icon: <Video size={16} />, types: ["video-gen"], description: "Video generation tools" },
-  { id: "devtools", label: "Dev Tools", icon: <Wrench size={16} />, types: ["dev-tool"], description: "Development and coding tools" },
-  { id: "automation", label: "Automation", icon: <Workflow size={16} />, types: ["automation"], description: "Workflow automation and integrations" },
-  { id: "productivity", label: "Productivity", icon: <ClipboardList size={16} />, types: ["productivity"], description: "Notes, files, documents, and collaboration" },
-  { id: "home", label: "Home & Monitor", icon: <Home size={16} />, types: ["home", "monitoring"], description: "Home automation and monitoring" },
-  { id: "infra", label: "Infrastructure", icon: <Server size={16} />, types: ["infrastructure"], description: "Networking, mail, and system services" },
+const NAV: NavItem[] = [
+  { id: "discover",  label: "Discover",    icon: <Compass size={15} /> },
+  { id: "apps",      label: "Apps",        icon: <Grid2x2 size={15} /> },
+  { id: "agents",    label: "Agents",      icon: <Bot size={15} /> },
+  { id: "models",    label: "Models",      icon: <Brain size={15} /> },
+  { id: "services",  label: "Services",    icon: <Globe size={15} /> },
+  { id: "mcp",       label: "MCP Servers", icon: <Plug size={15} /> },
+  { id: "devtools",  label: "Dev Tools",   icon: <Wrench size={15} /> },
+  { id: "community", label: "Community",   icon: <Users size={15} /> },
+  { id: "installed", label: "Installed",   icon: <ArrowDownToLine size={15} />, group: "Library" },
+  { id: "updates",   label: "Updates",     icon: <RefreshCw size={15} />, group: "Library" },
 ];
 
-/** The identifier this app groups under — its explicit category, or its type as fallback. */
-const appGroup = (app: Pick<CatalogApp, "type" | "category">): string => app.category || app.type;
+/* ------------------------------------------------------------------
+   Homelab catalog additions with real star counts + dashboard-icons
+   ------------------------------------------------------------------ */
 
-/* ------------------------------------------------------------------ */
-/*  Mock data with proper categories                                   */
-/* ------------------------------------------------------------------ */
+const HOMELAB_APPS: CatalogApp[] = [
+  {
+    id: "home-assistant", name: "Home Assistant", type: "home",
+    version: "latest", description: "Run your whole smart home locally. 2,000+ integrations, no cloud.",
+    tagline: "Open-source home automation platform",
+    installed: false, compat: "green",
+    repo: "home-assistant/core", iconSlug: "home-assistant", stars: 72400,
+    cover: "radial-gradient(120% 120% at 30% 20%,#16607a,transparent 60%),linear-gradient(140deg,#0e2230,#0a1620)",
+    category: "home",
+  },
+  {
+    id: "immich", name: "Immich", type: "home",
+    version: "latest", description: "Your own Google Photos. AI search, face grouping, phone backup.",
+    tagline: "Self-hosted photo and video library",
+    installed: false, compat: "green",
+    repo: "immich-app/immich", iconSlug: "immich", stars: 50100,
+    cover: "radial-gradient(120% 120% at 70% 30%,#5a2f7a,transparent 60%),linear-gradient(140deg,#21142b,#150d1a)",
+    category: "home",
+  },
+  {
+    id: "jellyfin", name: "Jellyfin", type: "home",
+    version: "latest", description: "Stream your movies, shows and music to any device. Zero fees.",
+    tagline: "Free and open source media server",
+    installed: false, compat: "green",
+    repo: "jellyfin/jellyfin", iconSlug: "jellyfin", stars: 35000,
+    cover: "radial-gradient(120% 120% at 40% 30%,#1f4d63,transparent 60%),linear-gradient(140deg,#10222a,#0b161b)",
+    category: "home",
+  },
+  {
+    id: "vaultwarden", name: "Vaultwarden", type: "home",
+    version: "latest", description: "Self-hosted Bitwarden. Your passwords never leave the house.",
+    tagline: "Unofficial Bitwarden-compatible server",
+    installed: false, compat: "green",
+    repo: "dani-garcia/vaultwarden", iconSlug: "vaultwarden", stars: 42000,
+    cover: "radial-gradient(120% 120% at 60% 25%,#1f5a3a,transparent 60%),linear-gradient(140deg,#12261b,#0c1712)",
+    category: "home",
+  },
+  {
+    id: "sonarr", name: "Sonarr", type: "home",
+    version: "latest", description: "TV series library manager and downloader automation.",
+    tagline: "Smart PVR for Usenet and BitTorrent users",
+    installed: false, compat: "green",
+    repo: "Sonarr/Sonarr", iconSlug: "sonarr", stars: 11200,
+    category: "home",
+  },
+  {
+    id: "radarr", name: "Radarr", type: "home",
+    version: "latest", description: "Movie collection manager and download automator.",
+    tagline: "Fork of Sonarr to work with movies",
+    installed: false, compat: "green",
+    repo: "Radarr/Radarr", iconSlug: "radarr", stars: 9600,
+    category: "home",
+  },
+  {
+    id: "qbittorrent", name: "qBittorrent", type: "home",
+    version: "latest", description: "Fast and lightweight BitTorrent client with web UI.",
+    tagline: "Open-source software alternative to uTorrent",
+    installed: false, compat: "green",
+    repo: "qbittorrent/qBittorrent", iconSlug: "qbittorrent", stars: 27600,
+    category: "home",
+  },
+  {
+    id: "sabnzbd", name: "SABnzbd", type: "home",
+    version: "latest", description: "The automated Usenet download application.",
+    tagline: "Open source binary newsreader",
+    installed: false, compat: "green",
+    repo: "sabnzbd/sabnzbd", iconSlug: "sabnzbd", stars: 2600,
+    category: "home",
+  },
+  {
+    id: "homebridge", name: "Homebridge", type: "home",
+    version: "latest", description: "Bring non-native devices into Apple Home via HomeKit.",
+    tagline: "HomeKit support for non-native accessories",
+    installed: false, compat: "green",
+    repo: "homebridge/homebridge", iconSlug: "homebridge", stars: 24500,
+    category: "home",
+  },
+  {
+    id: "adguard-home", name: "AdGuard Home", type: "infrastructure",
+    version: "latest", description: "Network-wide ad and tracker blocking. No cloud dependency.",
+    tagline: "Network-wide software for blocking ads",
+    installed: false, compat: "green",
+    repo: "AdguardTeam/AdGuardHome", iconSlug: "adguard-home", stars: 26800,
+    category: "infrastructure",
+  },
+  {
+    id: "uptime-kuma", name: "Uptime Kuma", type: "monitoring",
+    version: "latest", description: "Self-hosted monitoring tool -- track uptime for services and APIs.",
+    tagline: "Fancy self-hosted monitoring tool",
+    installed: false, compat: "green",
+    repo: "louislam/uptime-kuma", iconSlug: "uptime-kuma", stars: 60300,
+    category: "monitoring",
+  },
+  {
+    id: "nextcloud", name: "Nextcloud", type: "productivity",
+    version: "latest", description: "Files, calendar, contacts and office suite in one open-source platform.",
+    tagline: "The most popular self-hosted collaboration platform",
+    installed: false, compat: "green",
+    repo: "nextcloud/server", iconSlug: "nextcloud", stars: 28100,
+    category: "productivity",
+  },
+];
+
+/* ------------------------------------------------------------------
+   Mock catalog (used when /api/store/catalog is unreachable)
+   ------------------------------------------------------------------ */
 
 const MOCK_APPS: CatalogApp[] = [
   // Agent Frameworks
-  { id: "smolagents", name: "SmolAgents", type: "agent-framework", version: "1.0.0", description: "HuggingFace code-based agents — well-documented, 26k stars", installed: false, compat: "green" },
-  { id: "pocketflow", name: "PocketFlow", type: "agent-framework", version: "1.0.0", description: "Minimal 100-line framework, zero deps, graph-based", installed: false, compat: "green" },
-  { id: "openclaw", name: "OpenClaw", type: "agent-framework", version: "1.0.0", description: "Full-featured multi-channel agent framework", installed: true, compat: "green" },
-  { id: "langroid", name: "Langroid", type: "agent-framework", version: "1.0.0", description: "Multi-agent message-passing framework", installed: false, compat: "green" },
-  { id: "openai-agents-sdk", name: "OpenAI Agents SDK", type: "agent-framework", version: "1.0.0", description: "Provider-agnostic agent SDK from OpenAI", installed: false, compat: "green" },
-
+  { id: "smolagents",       name: "SmolAgents",        type: "agent-framework", version: "1.0.0", description: "HuggingFace code-based agents -- well-documented, 26k stars", installed: false, compat: "green", stars: 26000 },
+  { id: "pocketflow",       name: "PocketFlow",        type: "agent-framework", version: "1.0.0", description: "Minimal 100-line framework, zero deps, graph-based", installed: false, compat: "green" },
+  { id: "openclaw",         name: "OpenClaw",          type: "agent-framework", version: "1.0.0", description: "Full-featured multi-channel agent framework", installed: true,  compat: "green" },
+  { id: "langroid",         name: "Langroid",          type: "agent-framework", version: "1.0.0", description: "Multi-agent message-passing framework", installed: false, compat: "green" },
+  { id: "openai-agents-sdk",name: "OpenAI Agents SDK", type: "agent-framework", version: "1.0.0", description: "Provider-agnostic agent SDK from OpenAI", installed: false, compat: "green" },
   // Models
-  { id: "qwen3-4b", name: "Qwen3 4B", type: "model", version: "3.0.0", description: "Good balance of speed and capability for most tasks", installed: true, compat: "green" },
-  { id: "qwen3-1.7b", name: "Qwen3 1.7B", type: "model", version: "3.0.0", description: "Fast, fits comfortably in 8GB RAM", installed: false, compat: "green" },
-  { id: "qwen3-8b", name: "Qwen3 8B", type: "model", version: "3.0.0", description: "Most capable local model for 16GB devices", installed: false, compat: "yellow" },
-
+  { id: "qwen3-4b",  name: "Qwen3 4B",  type: "model", version: "3.0.0", description: "Good balance of speed and capability for most tasks", installed: true,  compat: "green" },
+  { id: "qwen3-1.7b",name: "Qwen3 1.7B",type: "model", version: "3.0.0", description: "Fast, fits comfortably in 8GB RAM", installed: false, compat: "green" },
+  { id: "qwen3-8b",  name: "Qwen3 8B",  type: "model", version: "3.0.0", description: "Most capable local model for 16GB devices", installed: false, compat: "yellow" },
   // MCP Servers
-  { id: "mcp-pandoc", name: "MCP Pandoc", type: "mcp", version: "0.1.0", description: "Document format conversion — markdown, docx, pdf, 30+ formats", installed: false, compat: "green" },
-  { id: "mcp-server-office", name: "MCP Office Docs", type: "mcp", version: "0.1.0", description: "Read, write, and edit .docx files programmatically", installed: false, compat: "green" },
-  { id: "playwright-mcp", name: "Playwright MCP", type: "mcp", version: "1.0.0", description: "Browser automation for agents via Playwright", installed: false, compat: "green" },
-  { id: "github-mcp-server", name: "GitHub MCP", type: "mcp", version: "1.0.0", description: "Issues, PRs, repos, search — official GitHub MCP", installed: false, compat: "green" },
-  { id: "mcp-memory", name: "MCP Memory", type: "mcp", version: "1.0.0", description: "Knowledge graph memory for persistent context", installed: false, compat: "green" },
+  { id: "mcp-pandoc",       name: "MCP Pandoc",      type: "mcp", version: "0.1.0", description: "Document format conversion -- markdown, docx, pdf, 30+ formats", installed: false, compat: "green" },
+  { id: "mcp-server-office",name: "MCP Office Docs", type: "mcp", version: "0.1.0", description: "Read, write, and edit .docx files programmatically", installed: false, compat: "green" },
+  { id: "playwright-mcp",   name: "Playwright MCP",  type: "mcp", version: "1.0.0", description: "Browser automation for agents via Playwright", installed: false, compat: "green" },
+  { id: "github-mcp-server",name: "GitHub MCP",      type: "mcp", version: "1.0.0", description: "Issues, PRs, repos, search -- official GitHub MCP", installed: false, compat: "green" },
+  { id: "mcp-memory",       name: "MCP Memory",      type: "mcp", version: "1.0.0", description: "Knowledge graph memory for persistent context", installed: false, compat: "green" },
   // Plugins
-  { id: "web-search", name: "Web Search", type: "plugin", version: "0.3.0", description: "Search the web via SearXNG or Perplexica", installed: false, compat: "green" },
-  { id: "image-generation-tool", name: "Image Generation", type: "plugin", version: "0.1.0", description: "Generate images via Stable Diffusion", installed: false, compat: "green" },
-
-  // Ex-services, now categorised
+  { id: "web-search",          name: "Web Search",       type: "plugin", version: "0.3.0", description: "Search the web via SearXNG or Perplexica", installed: false, compat: "green" },
+  { id: "image-generation-tool",name: "Image Generation", type: "plugin", version: "0.1.0", description: "Generate images via Stable Diffusion", installed: false, compat: "green" },
+  // Services
   { id: "searxng", name: "SearXNG", type: "service", category: "infrastructure", version: "latest", description: "Privacy-respecting metasearch engine", installed: false, compat: "green" },
-  { id: "gitea", name: "Gitea", type: "service", category: "dev-tool", version: "latest", description: "Lightweight self-hosted Git service", installed: false, compat: "green" },
-  { id: "n8n", name: "n8n", type: "service", category: "automation", version: "latest", description: "Workflow automation platform", installed: false, compat: "green" },
-
-  // Streaming Apps
+  { id: "gitea",   name: "Gitea",   type: "service", category: "dev-tool",       version: "latest", description: "Lightweight self-hosted Git service", installed: false, compat: "green" },
+  { id: "n8n",     name: "n8n",     type: "service", category: "automation",     version: "latest", description: "Workflow automation platform", installed: false, compat: "green", iconSlug: "n8n" },
+  // Streaming apps
   { id: "code-server-kasm", name: "Code Server (Streamed)", type: "streaming-app", version: "latest", description: "VS Code in the browser via KasmVNC", installed: false, compat: "green" },
-  { id: "blender", name: "Blender", type: "streaming-app", version: "latest", description: "3D creation suite streamed via KasmVNC", installed: false, compat: "yellow" },
-  { id: "libreoffice", name: "LibreOffice", type: "streaming-app", version: "latest", description: "Full office suite streamed via KasmVNC", installed: false, compat: "green" },
-
-  // Image Gen
-  { id: "comfyui", name: "ComfyUI", type: "image-gen", version: "latest", description: "Node-based Stable Diffusion workflow editor", installed: false, compat: "yellow" },
+  { id: "blender",           name: "Blender",               type: "streaming-app", version: "latest", description: "3D creation suite streamed via KasmVNC", installed: false, compat: "yellow" },
+  { id: "libreoffice",       name: "LibreOffice",           type: "streaming-app", version: "latest", description: "Full office suite streamed via KasmVNC", installed: false, compat: "green" },
+  // Image gen
+  {
+    id: "comfyui", name: "ComfyUI", type: "image-gen", version: "latest",
+    description: "Node-based visual pipelines for image, video and audio generation. Runs on your cluster, drives any model you've installed.",
+    tagline: "Node-based Stable Diffusion workflow editor",
+    installed: false, compat: "yellow",
+    iconSlug: "comfyui",
+    cover: "radial-gradient(120% 140% at 12% 18%,#3a2d5e,transparent 55%),radial-gradient(120% 130% at 85% 80%,#1e4d63,transparent 55%),linear-gradient(120deg,#20202a,#14141a)",
+  },
   { id: "fooocus", name: "Fooocus", type: "image-gen", version: "latest", description: "Simple Stable Diffusion with minimal setup", installed: false, compat: "yellow" },
-
-  // Audio
-  { id: "kokoro-tts", name: "Kokoro TTS", type: "voice", version: "latest", description: "High-quality text-to-speech", installed: false, compat: "green" },
-  { id: "whisper-stt", name: "Whisper STT", type: "voice", version: "latest", description: "OpenAI Whisper speech-to-text", installed: false, compat: "green" },
-
-  // Video
-  { id: "animatediff", name: "AnimateDiff", type: "video-gen", version: "latest", description: "AI video generation from text and images", installed: false, compat: "yellow" },
-  { id: "corridorkey", name: "CorridorKey", type: "video-gen", version: "latest", description: "AI video generation via ComfyUI workflows", installed: false, compat: "yellow" },
-
-  // Dev Tools
-  { id: "code-server", name: "Code Server", type: "dev-tool", version: "latest", description: "VS Code in the browser — remote development environment", installed: false, compat: "green" },
-  { id: "jupyter-lab", name: "JupyterLab", type: "dev-tool", version: "latest", description: "Interactive notebooks for data science and experimentation", installed: false, compat: "green" },
-
-  // Home & Monitor
-  { id: "home-assistant", name: "Home Assistant", type: "home", version: "latest", description: "Open-source home automation platform", installed: false, compat: "green" },
-  { id: "uptime-kuma", name: "Uptime Kuma", type: "monitoring", version: "latest", description: "Self-hosted monitoring tool — track uptime for services and APIs", installed: false, compat: "green" },
-
-  // Infrastructure
-  { id: "tailscale", name: "Tailscale", type: "infrastructure", version: "latest", description: "Zero-config mesh VPN for secure networking between devices", installed: false, compat: "green" },
-  { id: "caddy", name: "Caddy", type: "infrastructure", version: "latest", description: "Automatic HTTPS reverse proxy and web server", installed: false, compat: "green" },
+  // Audio / video / devtools / infra
+  { id: "kokoro-tts",    name: "Kokoro TTS",    type: "voice",    version: "latest", description: "High-quality text-to-speech", installed: false, compat: "green" },
+  { id: "whisper-stt",   name: "Whisper STT",   type: "voice",    version: "latest", description: "OpenAI Whisper speech-to-text", installed: false, compat: "green" },
+  { id: "animatediff",   name: "AnimateDiff",   type: "video-gen",version: "latest", description: "AI video generation from text and images", installed: false, compat: "yellow" },
+  { id: "corridorkey",   name: "CorridorKey",   type: "video-gen",version: "latest", description: "AI video generation via ComfyUI workflows", installed: false, compat: "yellow" },
+  { id: "code-server",   name: "Code Server",   type: "dev-tool", version: "latest", description: "VS Code in the browser -- remote development environment", installed: false, compat: "green" },
+  { id: "jupyter-lab",   name: "JupyterLab",    type: "dev-tool", version: "latest", description: "Interactive notebooks for data science and experimentation", installed: false, compat: "green" },
+  { id: "tailscale",     name: "Tailscale",     type: "infrastructure", version: "latest", description: "Zero-config mesh VPN for secure networking between devices", installed: false, compat: "green", iconSlug: "tailscale" },
+  { id: "caddy",         name: "Caddy",         type: "infrastructure", version: "latest", description: "Automatic HTTPS reverse proxy and web server", installed: false, compat: "green" },
+  ...HOMELAB_APPS,
 ];
 
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+   Community showcase items (static mock -- no backend yet)
+   ------------------------------------------------------------------ */
 
-const TYPE_COLORS: Record<string, string> = {
-  "agent-framework": "bg-blue-500/20 text-blue-400",
-  model: "bg-slate-500/20 text-slate-400",
-  service: "bg-amber-500/20 text-amber-400",
-  plugin: "bg-teal-500/20 text-teal-400",
-  mcp: "bg-violet-500/20 text-violet-400",
-  "streaming-app": "bg-indigo-500/20 text-indigo-400",
-  "image-gen": "bg-pink-500/20 text-pink-400",
-  "image-model": "bg-pink-500/20 text-pink-400",
-  voice: "bg-orange-500/20 text-orange-400",
-  audio: "bg-orange-500/20 text-orange-400",
-  "video-gen": "bg-red-500/20 text-red-400",
-  "dev-tool": "bg-cyan-500/20 text-cyan-400",
-  home: "bg-green-500/20 text-green-400",
-  monitoring: "bg-green-500/20 text-green-400",
-  infrastructure: "bg-slate-500/20 text-slate-400",
-  "ai-app": "bg-fuchsia-500/20 text-fuchsia-400",
-  automation: "bg-lime-500/20 text-lime-400",
-  productivity: "bg-sky-500/20 text-sky-400",
-  "llm-runtime": "bg-purple-500/20 text-purple-400",
-  music: "bg-rose-500/20 text-rose-400",
-};
+interface CommunityItem {
+  id: string;
+  name: string;
+  badge: string;
+  author: string;
+  description: string;
+  installs: number;
+  icon: React.ReactNode;
+  cover: string;
+}
 
-const TYPE_LABELS: Record<string, string> = {
-  "agent-framework": "Framework",
-  model: "Model",
-  service: "Service",
-  plugin: "Plugin",
-  mcp: "MCP Server",
-  "streaming-app": "Streaming",
-  "image-gen": "Image Gen",
-  "image-model": "Image Model",
-  voice: "Voice",
-  audio: "Audio",
-  "video-gen": "Video",
-  "dev-tool": "Dev Tool",
-  home: "Home",
-  monitoring: "Monitor",
-  infrastructure: "Infra",
-  "ai-app": "AI App",
-  automation: "Automation",
-  productivity: "Productivity",
-  "llm-runtime": "LLM Runtime",
-  music: "Music",
-};
+const COMMUNITY_ITEMS: CommunityItem[] = [
+  {
+    id: "matrix-terminal",
+    name: "Matrix Terminal",
+    badge: "Theme",
+    author: "@neo",
+    description: "Phosphor-green terminal theme with a code-rain wallpaper.",
+    installs: 1240,
+    icon: <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#39ff88" }}>&gt;_</span>,
+    cover: "radial-gradient(120% 120% at 35% 25%,#103a2a,transparent 60%),linear-gradient(140deg,#0c1a14,#08120d)",
+  },
+  {
+    id: "aurora-drift",
+    name: "Aurora Drift",
+    badge: "Live Wallpaper",
+    author: "@ria",
+    description: "Slow-flowing aurora ribbons that adapt to any screen.",
+    installs: 842,
+    icon: <span style={{ fontSize: 18, background: "linear-gradient(150deg,#5ad0ff,#7b5cff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>✺</span>,
+    cover: "radial-gradient(120% 120% at 60% 25%,#2a3f7a,transparent 60%),linear-gradient(140deg,#141a2b,#0d1119)",
+  },
+  {
+    id: "habit-garden",
+    name: "Habit Garden",
+    badge: "App",
+    author: "@sol",
+    description: "Grow a plant as you keep streaks. Built with the App Builder.",
+    installs: 3110,
+    icon: <span style={{ fontSize: 18, color: "#ffb340" }}>❀</span>,
+    cover: "radial-gradient(120% 120% at 40% 25%,#5a3a1f,transparent 60%),linear-gradient(140deg,#231811,#16100a)",
+  },
+  {
+    id: "standup-bot",
+    name: "Standup Bot",
+    badge: "Agent",
+    author: "@max",
+    description: "Collects daily updates from your agents and posts a digest.",
+    installs: 567,
+    icon: <span style={{ fontSize: 18, background: "linear-gradient(150deg,#bf8cff,#8b5cff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>◆</span>,
+    cover: "radial-gradient(120% 120% at 55% 25%,#4a2a5e,transparent 60%),linear-gradient(140deg,#1c1426,#120c18)",
+  },
+];
 
-const COMPAT_COLORS: Record<string, string> = { green: "bg-emerald-400", yellow: "bg-amber-400", red: "bg-red-400" };
-const COMPAT_LABELS: Record<string, string> = { green: "Compatible", yellow: "Partial", red: "Unsupported" };
+/* ------------------------------------------------------------------
+   Agent framework showcase for "Build agents with" section
+   ------------------------------------------------------------------ */
 
-const TYPE_ICON_GRADIENTS: Record<string, string> = {
-  "agent-framework": "linear-gradient(135deg, rgba(59,130,246,0.3), rgba(59,130,246,0.1))",
-  model: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(139,92,246,0.1))",
-  service: "linear-gradient(135deg, rgba(245,158,11,0.3), rgba(245,158,11,0.1))",
-  plugin: "linear-gradient(135deg, rgba(20,184,166,0.3), rgba(20,184,166,0.1))",
-  "streaming-app": "linear-gradient(135deg, rgba(99,102,241,0.3), rgba(99,102,241,0.1))",
-  "image-gen": "linear-gradient(135deg, rgba(236,72,153,0.3), rgba(236,72,153,0.1))",
-  voice: "linear-gradient(135deg, rgba(249,115,22,0.3), rgba(249,115,22,0.1))",
-  "dev-tool": "linear-gradient(135deg, rgba(6,182,212,0.3), rgba(6,182,212,0.1))",
-  "ai-app": "linear-gradient(135deg, rgba(217,70,239,0.3), rgba(217,70,239,0.1))",
-  automation: "linear-gradient(135deg, rgba(132,204,22,0.3), rgba(132,204,22,0.1))",
-  productivity: "linear-gradient(135deg, rgba(14,165,233,0.3), rgba(14,165,233,0.1))",
-  "llm-runtime": "linear-gradient(135deg, rgba(168,85,247,0.3), rgba(168,85,247,0.1))",
-  music: "linear-gradient(135deg, rgba(244,63,94,0.3), rgba(244,63,94,0.1))",
-};
+interface FrameworkItem {
+  id: string;
+  name: string;
+  sub: string;
+  iconStyle: React.CSSProperties;
+  iconChar: string;
+  installed?: boolean;
+  stars?: number;
+}
 
-/* ------------------------------------------------------------------ */
-/*  App-specific icons                                                 */
-/*                                                                     */
-/*  URLs point at Simple Icons (SPDX CC0, curated brand assets) or    */
-/*  GitHub org/repo avatars. Every entry is an official logo from     */
-/*  the project's own canonical source — no third-party redraws.     */
-/*                                                                     */
-/*  Loading rules (resolveIconUrl below):                              */
-/*  1. Exact id match in APP_ICONS                                    */
-/*  2. Derived Simple Icons match for well-known models/services      */
-/*  3. Fallback to the Package placeholder icon                       */
-/* ------------------------------------------------------------------ */
+const FRAMEWORK_ITEMS: FrameworkItem[] = [
+  { id: "openclaw",  name: "OpenClaw",  sub: "Agent Framework · ACP", iconStyle: { background: "linear-gradient(150deg,#ff7a5c,#ff5b3d)" }, iconChar: "◆", installed: true },
+  { id: "hermes",    name: "Hermes",    sub: "Agent Framework",        iconStyle: { background: "linear-gradient(150deg,#8b5cff,#6a3dff)" }, iconChar: "⬡" },
+  { id: "pocketflow",name: "PocketFlow",sub: "Agent Framework",        iconStyle: { background: "linear-gradient(150deg,#41d0a3,#27a982)" }, iconChar: "⟡" },
+  { id: "smolagents",name: "SmolAgents",sub: "Agent Framework",        iconStyle: { background: "linear-gradient(150deg,#9aa0ad,#6e7686)" }, iconChar: "⬢", stars: 26000 },
+];
 
-// Simple Icons vendored locally under /static/store-icons/brands/ (white SVG).
-// Missing slugs (e.g. openai, removed upstream) 404 locally and fall back to
-// the Package placeholder via the onError handler on the <img> element.
+/* ------------------------------------------------------------------
+   Icon resolution: dashboard-icons CDN slug takes priority, then
+   existing APP_ICONS map, then derived family fallbacks.
+   ------------------------------------------------------------------ */
+
 const si = (slug: string): string => `/static/store-icons/brands/${slug}.svg`;
-
-// GitHub org/user avatar — used for projects without a Simple Icons
-// entry. `?size=96` keeps the transfer small; we render at 40px.
 const gh = (owner: string): string => `https://github.com/${owner}.png?size=96`;
 
 const APP_ICONS: Record<string, string> = {
-  // ---- Agent frameworks ----
-  // Where the project ships an official logo in its repo we link it
-  // directly; otherwise we use the owning org/user's GitHub avatar.
-  "smolagents": gh("huggingface"),
-  "pocketflow": gh("The-Pocket"),
+  // Agent frameworks
+  "smolagents": gh("huggingface"), "pocketflow": gh("The-Pocket"),
   "openclaw": "/static/store-icons/openclaw.jpg",
-  "nanoclaw": gh("openclaw"),
-  "picoclaw": "https://raw.githubusercontent.com/sipeed/picoclaw/main/assets/logo.webp",
-  "zeroclaw": gh("nicholasgasior"),
-  "microclaw": gh("nicholasgasior"),
-  "ironclaw": gh("nicholasgasior"),
-  "nullclaw": gh("nicholasgasior"),
-  "shibaclaw": "https://raw.githubusercontent.com/RikyZ90/ShibaClaw/main/assets/shibaclaw_logo.png",
-  "moltis": gh("moltis-ai"),
-  "hermes": gh("NousResearch"),
-  "agent-zero": gh("frdel"),
-  "openai-agents-sdk": si("openai"),
-  "langroid": gh("langroid"),
-
-  // ---- Model providers (Simple Icons / GitHub) ----
-  "qwen2.5-0.5b": gh("QwenLM"), "qwen2.5-1.5b": gh("QwenLM"), "qwen2.5-3b": gh("QwenLM"),
-  "qwen2.5-7b": gh("QwenLM"), "qwen2.5-14b": gh("QwenLM"), "qwen2.5-32b": gh("QwenLM"),
-  "qwen2.5-72b": gh("QwenLM"), "qwen2.5-1.5b-rkllm": gh("QwenLM"), "qwen2.5-3b-rkllm": gh("QwenLM"),
-  "qwen2.5-7b-rkllm": gh("QwenLM"), "qwen2.5-14b-rkllm": gh("QwenLM"),
-  "qwen2.5-coder-7b": gh("QwenLM"), "qwen2.5-coder-14b": gh("QwenLM"),
-  "qwen2.5-vl-7b": gh("QwenLM"), "qwen2-vl-7b": gh("QwenLM"),
-  "qwen3-1.7b": gh("QwenLM"), "qwen3-4b": gh("QwenLM"), "qwen3-8b": gh("QwenLM"),
-  "qwen3-14b": gh("QwenLM"), "qwen3-30b-a3b": gh("QwenLM"), "qwen3-32b": gh("QwenLM"),
-  "qwen3-embedding-0.6b": gh("QwenLM"), "qwen3-reranker-0.6b": gh("QwenLM"),
-  "llama-3.1-8b": si("meta"), "llama-3.2-1b": si("meta"), "llama-3.2-3b": si("meta"),
-  "llama-3.3-70b": si("meta"), "llama-3-70b": si("meta"),
-  "gemma-2-2b": si("googlegemini"), "gemma-2-9b": si("googlegemini"),
-  "gemma-3-1b": si("googlegemini"), "gemma-3-4b": si("googlegemini"), "gemma-3-12b": si("googlegemini"),
-  "phi-3.5-mini": gh("microsoft"), "phi-4": gh("microsoft"), "phi-4-mini": gh("microsoft"),
-  "mistral-7b-v0.3": gh("mistralai"), "mistral-nemo-12b": gh("mistralai"),
-  "mixtral-8x7b": gh("mistralai"), "ministral-3b": gh("mistralai"),
-  "deepseek-r1-14b": gh("deepseek-ai"), "deepseek-coder-v2-lite": gh("deepseek-ai"),
-  "granite-3.1-2b": gh("ibm-granite"), "granite-3.1-8b": gh("ibm-granite"),
-  "command-r-35b": gh("cohere"),
-  "smollm2": gh("huggingface"), "smollm2-135m": gh("huggingface"), "smollm2-360m": gh("huggingface"),
-  "tinyllama-1.1b": gh("jzhang38"),
-  "nemotron-mini-4b": gh("NVIDIA"),
-  "pelochus-qwen-1.8b-rkllm": gh("pelochus"),
-
-  // Vision / multimodal
-  "llava-1.6-mistral-7b": gh("haotian-liu"), "llava-phi-3-mini": gh("haotian-liu"),
-  "minicpm-v-2.6": gh("OpenBMB"),
-  "moondream2": gh("vikhyat"),
-  "florence-2-base": gh("microsoft"),
-
-  // Embeddings / rerankers
-  "bge-large-en-v1.5": gh("FlagOpen"), "bge-small-en-v1.5": gh("FlagOpen"),
-  "bge-m3": gh("FlagOpen"), "bge-reranker-v2-m3": gh("FlagOpen"),
-  "nomic-embed-text-v1.5": gh("nomic-ai"),
-  "mxbai-embed-large": gh("mixedbread-ai"),
-  "snowflake-arctic-embed-m": gh("Snowflake-Labs"),
-
-  // Speech
-  "whisper-tiny": si("openai"), "whisper-base": si("openai"), "whisper-small": si("openai"),
-  "whisper-medium": si("openai"), "whisper-large-v3": si("openai"), "whisper-large-v3-turbo": si("openai"),
-  "kokoro-tts": gh("hexgrad"),
-  "piper-en-lessac": gh("rhasspy"),
-  "parakeet-tdt-0.6b": gh("NVIDIA"),
-
-  // Image models
-  "sd-v1.5-lcm": gh("Stability-AI"),
-  "dreamshaper-8-lcm": gh("Lykon"),
-  "lcm-dreamshaper-v7": gh("Lykon"),
-  "sdxl-turbo": gh("Stability-AI"), "sdxl-lightning": gh("ByteDance"),
-  "sd3.5-large-turbo-gguf": gh("Stability-AI"),
-  "flux-dev-gguf": gh("black-forest-labs"), "flux-schnell-gguf": gh("black-forest-labs"),
-  "flux-schnell-unsloth": gh("black-forest-labs"),
-  "pixart-sigma-512": gh("PixArt-alpha"),
-  "sdxs-512": gh("IDKiro"),
-  "playground-v2.5": gh("playgroundai"),
-  "kolors": gh("Kwai-Kolors"),
-  "auraflow-v0.3": gh("cloneofsimo"),
-  "stable-cascade": gh("Stability-AI"),
-  "rmbg-1.4": gh("briaai"),
-  "birefnet": gh("ZhengPeng7"),
-  "real-esrgan-x4": gh("xinntao"),
-  "4x-ultrasharp": gh("xinntao"),
-  "gfpgan-v1.4": gh("TencentARC"),
-  "codeformer": gh("sczhou"),
-  "controlnet-canny": gh("lllyasviel"), "controlnet-depth": gh("lllyasviel"),
-  "controlnet-openpose": gh("lllyasviel"), "controlnet-openpose-sdxl": gh("lllyasviel"),
-
-  // ---- Services ----
-  "comfyui": gh("comfyanonymous"),
-  "fooocus": gh("lllyasviel"),
-  "stable-diffusion-webui": gh("AUTOMATIC1111"),
-  "stable-diffusion-cpp": gh("leejet"),
-  "fastsdcpu": gh("rupeshs"),
-  "rk-llama-cpp": gh("marty1885"),
-  "rk3588-sd-gpu": gh("happyme531"),
-  "lcm-dreamshaper-rknn": gh("happyme531"),
-  "ltx-video": gh("Lightricks"),
-  "wan2gp": gh("alibaba"),
-  "musicgpt": gh("gabotechs"),
-  "searxng": si("searxng"),
-  "gitea": si("gitea"),
-  "code-server": gh("coder"),
-  "n8n": si("n8n"),
-  "home-assistant": si("homeassistant"),
-  "uptime-kuma": si("uptimekuma"),
-  "filebrowser": gh("filebrowser"),
-  "excalidraw": si("excalidraw"),
-  "memos": gh("usememos"),
-  "linkwarden": gh("linkwarden"),
-  "open-webui": gh("open-webui"),
-  "dify": gh("langgenius"),
-  "perplexica": gh("ItzCrazyKns"),
-  "litellm": gh("BerriAI"),
-  "stirling-pdf": gh("Stirling-Tools"),
-  "paperless-ngx": gh("paperless-ngx"),
-  "docling": gh("DS4SD"),
-  "libretranslate": gh("LibreTranslate"),
-  "mailserver": gh("docker-mailserver"),
-  "chatterbox-tts": gh("resemble-ai"),
-  "piper-tts": gh("rhasspy"),
-  "kokoro-tts-server": gh("remsky"),
-  "tailscale": si("tailscale"),
-  "ddns": gh("ddclient"),
-  "exo": gh("exo-explore"),
-
-  // ---- Plugins / MCP ----
-  "github-mcp-server": si("github"),
-  "git-mcp": si("git"), "mcp-git": si("git"),
-  "mcp-filesystem": gh("modelcontextprotocol"),
-  "mcp-fetch": gh("modelcontextprotocol"),
+  "openai-agents-sdk": si("openai"), "langroid": gh("langroid"),
+  // Models
+  "qwen3-4b": gh("QwenLM"), "qwen3-1.7b": gh("QwenLM"), "qwen3-8b": gh("QwenLM"),
+  "llama-3.1-8b": si("meta"), "llama-3.2-1b": si("meta"),
+  "gemma-3-4b": si("googlegemini"),
+  // MCP / plugins
+  "github-mcp-server": si("github"), "playwright-mcp": si("playwright"),
   "mcp-memory": gh("modelcontextprotocol"),
-  "mcp-time": gh("modelcontextprotocol"),
-  "mcp-sequential-thinking": gh("modelcontextprotocol"),
-  "playwright-mcp": si("playwright"),
-  "mcp-server-docker": si("docker"),
-  "mcp-server-kubernetes": si("kubernetes"),
-  "mongodb-mcp-server": si("mongodb"),
-  "mcp-redis": si("redis"),
-  "chroma-mcp": gh("chroma-core"),
-  "supabase-mcp": si("supabase"),
-  "dbhub": si("postgresql"),
-  "mcp-toolbox-databases": gh("googleapis"),
-  "notion-mcp-server": si("notion"),
-  "mcp-obsidian": si("obsidian"),
-  "mcp-atlassian": si("atlassian"),
-  "google-workspace-mcp": si("google"),
-  "slack-mcp-server": si("slack"),
-  "whatsapp-mcp": si("whatsapp"),
-  "ha-mcp": si("homeassistant"),
-  "mcp-email-server": gh("modelcontextprotocol"),
-  "aws-mcp": si("amazonaws"),
-  "cloudflare-mcp": si("cloudflare"),
-  "mcp-grafana": si("grafana"),
-  "arxiv-mcp-server": si("arxiv"),
-  "firecrawl-mcp": gh("mendableai"),
-  "exa-mcp-server": gh("exa-labs"),
-  "context7-mcp": gh("upstash"),
-  "supergateway": gh("supercorp-ai"),
-  "browser-use-mcp": gh("browser-use"),
-  "camoufox": gh("daijro"),
-  "engram": gh("engramhq"),
-  "mcp-pandoc": gh("jgeorgeson"),
-  "mcp-server-office": gh("GongRzhe"),
-  "mcp-server-spreadsheet": gh("GongRzhe"),
-  "excel-mcp-server": gh("haris-musa"),
-  "markdownify-mcp": gh("zcaceres"),
-  "desktop-commander-mcp": gh("wonderwhy-er"),
-  "mcpo": gh("open-webui"),
-  "youtube-transcript-mcp": si("youtube"),
-  "todoist-mcp-server": si("todoist"),
-  "playwriter": si("playwright"),
-  "image-generation-tool": gh("comfyanonymous"),
-
-  // ---- Streaming apps (legacy MOCK_APPS entries) ----
-  "code-server-kasm": gh("coder"),
-  "blender": si("blender"),
-  "libreoffice": si("libreoffice"),
-  "jupyter-lab": si("jupyter"),
-  "caddy": gh("caddyserver"),
-  "animatediff": gh("guoyww"),
-  "corridorkey": gh("comfyanonymous"),
-  "whisper-stt": si("openai"),
+  // Services
+  "searxng": si("searxng"), "gitea": si("gitea"), "n8n": si("n8n"),
+  "code-server": gh("coder"), "code-server-kasm": gh("coder"),
+  "blender": si("blender"), "libreoffice": si("libreoffice"),
+  "jupyter-lab": si("jupyter"), "tailscale": si("tailscale"),
+  "caddy": gh("caddyserver"), "animatediff": gh("guoyww"),
+  "comfyui": gh("comfyanonymous"), "fooocus": gh("lllyasviel"),
+  "kokoro-tts": gh("hexgrad"), "whisper-stt": si("openai"),
+  // Homelab -- dashboard-icons CDN is handled via iconSlug on the app object;
+  // listing them here as fallback for when catalog comes from the API without iconSlug.
+  "home-assistant": si("homeassistant"), "uptime-kuma": si("uptimekuma"),
 };
 
-/** Resolve the best icon URL for an app id, falling back through derived matches. */
-function resolveIconUrl(appId: string): string | null {
-  if (APP_ICONS[appId]) return APP_ICONS[appId];
-  // Derived fallbacks for families we haven't enumerated every member of.
-  if (appId.startsWith("qwen")) return gh("QwenLM");
-  if (appId.startsWith("llama")) return si("meta");
-  if (appId.startsWith("gemma")) return si("googlegemini");
-  if (appId.startsWith("phi-")) return gh("microsoft");
-  if (appId.startsWith("whisper")) return si("openai");
-  if (appId.startsWith("deepseek")) return gh("deepseek-ai");
-  if (appId.startsWith("mistral") || appId.startsWith("mixtral")) return gh("mistralai");
-  if (appId.startsWith("bge-")) return gh("FlagOpen");
-  if (appId.startsWith("controlnet")) return gh("lllyasviel");
-  if (appId.startsWith("flux-")) return gh("black-forest-labs");
-  if (appId.startsWith("sd-") || appId.startsWith("sdxl") || appId.startsWith("sd3")) return gh("Stability-AI");
+function resolveIconUrl(app: CatalogApp): string | null {
+  if (app.iconSlug) return di(app.iconSlug);
+  if (APP_ICONS[app.id]) return APP_ICONS[app.id] ?? null;
+  // Family fallbacks
+  if (app.id.startsWith("qwen")) return gh("QwenLM");
+  if (app.id.startsWith("llama")) return si("meta");
+  if (app.id.startsWith("gemma")) return si("googlegemini");
+  if (app.id.startsWith("phi-")) return gh("microsoft");
+  if (app.id.startsWith("whisper")) return si("openai");
+  if (app.id.startsWith("deepseek")) return gh("deepseek-ai");
+  if (app.id.startsWith("mistral") || app.id.startsWith("mixtral")) return gh("mistralai");
+  if (app.id.startsWith("flux-")) return gh("black-forest-labs");
+  if (app.id.startsWith("sd-") || app.id.startsWith("sdxl") || app.id.startsWith("sd3")) return gh("Stability-AI");
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/*  AppCard                                                            */
-/* ------------------------------------------------------------------ */
+function formatStars(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
 
-function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote, resolveResponse }: {
+/* ------------------------------------------------------------------
+   AppCard -- used in grid views (non-discover sections)
+   ------------------------------------------------------------------ */
+
+function AppCard({
+  app, affected, onInstall, onUninstall, installTargets, runtimeHost, defaultTargetRemote, resolveResponse,
+}: {
   app: CatalogApp;
   affected: number;
   onInstall: (id: string) => void;
@@ -423,65 +371,30 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
 }) {
   const [busy, setBusy] = useState(false);
   const [iconFailed, setIconFailed] = useState(false);
-  const [selectedTarget, setSelectedTarget] = useState<string>(
-    defaultTargetRemote ?? "local"
-  );
-  // "auto" defers variant choice to the resolver — same default the
-  // backend uses when the field is absent. Users can override via the
-  // dropdown when the manifest exposes >1 variant.
+  const [selectedTarget, setSelectedTarget] = useState<string>(defaultTargetRemote ?? "local");
   const [selectedVariant, setSelectedVariant] = useState<string>("auto");
   const [error, setError] = useState<string | null>(null);
-  // Live install progress — polled from /api/store/install-progress
-  // while busy. null when no install is in-flight. Backend updates
-  // bytes_downloaded / bytes_total / state as the install runs.
-  interface InstallProgressSnapshot {
-    state: string;
-    percent: number | null;
-    bytes_downloaded: number;
-    bytes_total: number;
-    detail: string;
-    error: string | null;
-  }
-  const [progress, setProgress] = useState<InstallProgressSnapshot | null>(null);
+  interface ProgressSnap { state: string; percent: number | null; bytes_downloaded: number; bytes_total: number; detail: string; error: string | null; }
+  const [progress, setProgress] = useState<ProgressSnap | null>(null);
+
+  useEffect(() => { if (defaultTargetRemote !== undefined) setSelectedTarget(defaultTargetRemote); }, [defaultTargetRemote]);
 
   useEffect(() => {
-    if (defaultTargetRemote !== undefined) setSelectedTarget(defaultTargetRemote);
-  }, [defaultTargetRemote]);
-
-  // Poll install progress while a download is running. Stops on
-  // terminal states or when busy flips back to false.
-  useEffect(() => {
-    if (!busy) {
-      // Hold the last frame for a moment so the user sees "installed" /
-      // error before it disappears. The handleAction completion path
-      // handles the actual clear.
-      return;
-    }
+    if (!busy) return;
     let cancelled = false;
     const poll = async () => {
       while (!cancelled) {
         try {
-          const r = await fetch(`/api/store/install-progress/by-app/${encodeURIComponent(app.id)}`, {
-            headers: { Accept: "application/json" },
-          });
+          const r = await fetch(`/api/store/install-progress/by-app/${encodeURIComponent(app.id)}`, { headers: { Accept: "application/json" } });
           if (r.ok) {
             const j = await r.json();
             const a = j?.active;
             if (a) {
-              setProgress({
-                state: a.state,
-                percent: a.percent ?? null,
-                bytes_downloaded: a.bytes_downloaded ?? 0,
-                bytes_total: a.bytes_total ?? 0,
-                detail: a.detail ?? "",
-                error: a.error ?? null,
-              });
-              if (a.state === "installed" || a.state === "failed" || a.state === "cancelled") {
-                break; // terminal — handleAction will set busy=false on response return
-              }
+              setProgress({ state: a.state, percent: a.percent ?? null, bytes_downloaded: a.bytes_downloaded ?? 0, bytes_total: a.bytes_total ?? 0, detail: a.detail ?? "", error: a.error ?? null });
+              if (a.state === "installed" || a.state === "failed" || a.state === "cancelled") break;
             }
           }
-        } catch { /* network blip; keep polling */ }
+        } catch { /* network blip */ }
         await new Promise((res) => setTimeout(res, 1500));
       }
     };
@@ -489,190 +402,104 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
     return () => { cancelled = true; };
   }, [busy, app.id]);
 
-  const iconUrl = resolveIconUrl(app.id);
+  const iconUrl = resolveIconUrl(app);
   const variantOptions = app.variants ?? [];
   const showVariantPicker = !app.installed && variantOptions.length > 1;
-  // Show the target chooser whenever multiple targets exist — used to
-  // be gated to LXC apps only, but model installs also route to the
-  // selected worker so cluster users want the same pick on every card.
   const showTargetPicker = !app.installed && installTargets.length > 1;
 
   const handleAction = async () => {
-    setBusy(true);
-    setError(null);
-    setProgress(null);
+    setBusy(true); setError(null); setProgress(null);
     try {
       if (app.installed) {
-        const res = await fetch("/api/store/uninstall", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ app_id: app.id }),
-        });
-        if (!res.ok) {
-          let msg = `Uninstall failed (${res.status})`;
-          try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ }
-          setError(msg);
-          setBusy(false);
-          return;
-        }
+        const res = await fetch("/api/store/uninstall", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ app_id: app.id }) });
+        if (!res.ok) { let msg = `Uninstall failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
         onUninstall(app.id);
       } else {
         const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
-        if (selectedVariant !== "auto") {
-          body.variant_id = selectedVariant;
-        }
-        const res = await fetch("/api/store/install-v2", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          let msg = `Install failed (${res.status})`;
-          try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ }
-          setError(msg);
-          setBusy(false);
-          return;
-        }
+        if (selectedVariant !== "auto") body.variant_id = selectedVariant;
+        const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
+        if (!res.ok) { let msg = `Install failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
         onInstall(app.id);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Network error");
-    }
+    } catch (e) { setError(e instanceof Error ? e.message : "Network error"); }
     setBusy(false);
-    // Hold the last progress frame for a beat so the user reads
-    // "installed" / error before it fades. 1.5 s matches the poll
-    // interval, so the bar visibly settles rather than vanishing.
     setTimeout(() => setProgress(null), 1500);
   };
 
   const visuals = compatVisuals(resolveResponse);
+  const appType = app.category || app.type;
 
   return (
-    <Card
-      className={`flex flex-col rounded-2xl hover:-translate-y-0.5 hover:shadow-2xl hover:border-white/[0.12] transition-all duration-200 ${visuals.borderClass}`}
+    <div
+      className={`flex flex-col rounded-2xl border transition-all duration-200 hover:-translate-y-0.5 overflow-hidden ${visuals.borderClass} bg-shell-surface/60`}
+      style={{ borderColor: undefined }}
       title={visuals.tooltip || undefined}
     >
-      <CardHeader className="p-5 pb-2">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 overflow-hidden"
-              style={{ background: TYPE_ICON_GRADIENTS[appGroup(app)] ?? TYPE_ICON_GRADIENTS[app.type] ?? "rgba(255,255,255,0.06)" }}
-            >
-              {iconUrl && !iconFailed ? (
-                <img
-                  src={iconUrl}
-                  alt=""
-                  className="w-7 h-7 object-contain"
-                  onError={() => setIconFailed(true)}
-                  loading="lazy"
-                />
-              ) : (
-                <Package className="w-5 h-5 text-white/60" />
-              )}
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-medium text-white/90 truncate text-sm">{app.name}</span>
-                {app.installed && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                {affected > 0 && (
-                  <span className="bg-yellow-700/30 text-yellow-200 text-xs px-2 py-0.5 rounded ml-2 shrink-0">
-                    Update available · {affected} {affected === 1 ? "agent" : "agents"}
-                  </span>
-                )}
-              </div>
-              <span className="text-[11px] text-white/30">v{app.version}</span>
-            </div>
+      {/* Cover strip */}
+      <div
+        className="h-20 relative shrink-0"
+        style={{ background: app.cover ?? "linear-gradient(140deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))" }}
+      >
+        <span className="absolute top-2 left-2 text-[10px] font-bold tracking-wide uppercase px-2 py-0.5 rounded-full bg-black/40 backdrop-blur-sm text-white/80">
+          {appType}
+        </span>
+      </div>
+      {/* Meta */}
+      <div className="flex flex-col gap-2 p-3 flex-1">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 overflow-hidden bg-white/[0.06]" style={{ padding: 5 }}>
+            {iconUrl && !iconFailed
+              ? <img src={iconUrl} alt="" className="w-full h-full object-contain" onError={() => setIconFailed(true)} loading="lazy" />
+              : <Package className="w-4 h-4 text-white/50" />}
           </div>
-          <div className="flex items-center gap-1" title={COMPAT_LABELS[app.compat]}>
-            <span className={`w-1.5 h-1.5 rounded-full ${COMPAT_COLORS[app.compat]}`} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-semibold text-shell-text truncate leading-snug">{app.name}</span>
+              {app.installed && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
+              {affected > 0 && <span className="bg-yellow-700/30 text-yellow-200 text-[10px] px-1.5 py-0.5 rounded shrink-0">Update</span>}
+            </div>
+            <span className="text-[11px] text-shell-text-tertiary leading-none">v{app.version}</span>
           </div>
         </div>
-      </CardHeader>
-
-      <CardContent className="px-5 py-2 flex flex-col gap-3 flex-1">
-        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full w-fit ${TYPE_COLORS[appGroup(app)] ?? TYPE_COLORS[app.type] ?? "bg-white/10 text-white/50"}`}>
-          {TYPE_LABELS[appGroup(app)] ?? TYPE_LABELS[app.type] ?? appGroup(app)}
-        </span>
-        <p className="text-xs text-white/45 leading-relaxed flex-1">{app.description}</p>
-      </CardContent>
-
-      <CardFooter className="p-5 pt-2 flex flex-col gap-2 items-stretch">
-        {error && (
-          <div role="alert" className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
-            {error}
-          </div>
-        )}
+        <p className="text-[11.5px] text-shell-text-secondary leading-relaxed flex-1">{app.description}</p>
+        <div className="flex items-center justify-between">
+          {app.stars ? (
+            <span className="flex items-center gap-1 text-[11px] text-shell-text-tertiary">
+              <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+              {formatStars(app.stars)}
+            </span>
+          ) : <span />}
+        </div>
+      </div>
+      {/* Footer */}
+      <div className="px-3 pb-3 flex flex-col gap-1.5">
+        {error && <div role="alert" className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">{error}</div>}
         {progress && (
           <div className="flex flex-col gap-1" aria-live="polite">
             <div className="flex items-center justify-between text-[11px] text-shell-text-tertiary">
               <span className="capitalize">{progress.state.replace(/_/g, " ")}</span>
-              <span>
-                {progress.percent !== null
-                  ? `${progress.percent.toFixed(0)}%`
-                  : progress.bytes_downloaded > 0
-                    ? `${(progress.bytes_downloaded / (1024 * 1024)).toFixed(1)} MB`
-                    : ""}
-              </span>
+              <span>{progress.percent !== null ? `${progress.percent.toFixed(0)}%` : progress.bytes_downloaded > 0 ? `${(progress.bytes_downloaded / (1024 * 1024)).toFixed(1)} MB` : ""}</span>
             </div>
-            <div
-              className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden"
-              role="progressbar"
-              aria-valuenow={progress.percent ?? 0}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div
-                className={`h-full transition-all ${
-                  progress.state === "failed"
-                    ? "bg-red-400"
-                    : progress.state === "installed"
-                      ? "bg-emerald-400"
-                      : "bg-sky-400"
-                } ${progress.percent === null ? "animate-pulse w-1/3" : ""}`}
-                style={{ width: progress.percent !== null ? `${progress.percent}%` : undefined }}
-              />
+            <div className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden" role="progressbar" aria-valuenow={progress.percent ?? 0} aria-valuemin={0} aria-valuemax={100}>
+              <div className={`h-full transition-all ${progress.state === "failed" ? "bg-red-400" : progress.state === "installed" ? "bg-emerald-400" : "bg-sky-400"} ${progress.percent === null ? "animate-pulse w-1/3" : ""}`} style={{ width: progress.percent !== null ? `${progress.percent}%` : undefined }} />
             </div>
-            {progress.detail && (
-              <span className="text-[10px] text-shell-text-tertiary truncate" title={progress.detail}>
-                {progress.detail}
-              </span>
-            )}
+            {progress.detail && <span className="text-[10px] text-shell-text-tertiary truncate">{progress.detail}</span>}
           </div>
         )}
         {showTargetPicker && (
           <div className="flex items-center gap-2">
-            <label htmlFor={`target-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">
-              Install on
-            </label>
-            <select
-              id={`target-${app.id}`}
-              value={selectedTarget}
-              onChange={(e) => setSelectedTarget(e.target.value)}
-              className="flex-1 h-7 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-[11px] text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20 transition-colors"
-              aria-label="Install target host"
-            >
-              {installTargets.map((t) => (
-                <option key={t.name} value={t.name}>{t.label}</option>
-              ))}
+            <label htmlFor={`target-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">Install on</label>
+            <select id={`target-${app.id}`} value={selectedTarget} onChange={(e) => setSelectedTarget(e.target.value)} className="flex-1 h-7 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-[11px] text-shell-text focus-visible:outline-none" aria-label="Install target host">
+              {installTargets.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
             </select>
           </div>
         )}
         {showVariantPicker && (
           <div className="flex items-center gap-2">
-            <label htmlFor={`variant-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">
-              Variant
-            </label>
-            <select
-              id={`variant-${app.id}`}
-              value={selectedVariant}
-              onChange={(e) => setSelectedVariant(e.target.value)}
-              className="flex-1 h-7 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-[11px] text-shell-text focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20 transition-colors"
-              aria-label="Variant"
-            >
+            <label htmlFor={`variant-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">Variant</label>
+            <select id={`variant-${app.id}`} value={selectedVariant} onChange={(e) => setSelectedVariant(e.target.value)} className="flex-1 h-7 rounded-md border border-white/10 bg-shell-bg-deep px-2 text-[11px] text-shell-text focus-visible:outline-none" aria-label="Variant">
               <option value="auto">Auto (recommended)</option>
-              {variantOptions.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
+              {variantOptions.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </div>
         )}
@@ -682,56 +509,392 @@ function AppCard({ app, affected, onInstall, onUninstall, installTargets, runtim
             {runtimeHost === "127.0.0.1" ? "on controller" : `on ${runtimeHost}`}
           </p>
         )}
-        <Button
-          variant={app.installed ? "destructive" : "default"}
-          size="sm"
-          className="w-full"
+        <button
+          type="button"
           onClick={handleAction}
           disabled={busy}
           aria-label={app.installed ? `Uninstall ${app.name}` : `Install ${app.name}`}
+          className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-full text-[12px] font-bold transition-colors ${app.installed ? "bg-red-500/15 text-red-400 hover:bg-red-500/25" : "bg-shell-surface-active text-shell-text hover:bg-white/10"}`}
         >
           {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : app.installed ? <><Trash2 className="w-3.5 h-3.5" /> Uninstall</> : <><Download className="w-3.5 h-3.5" /> Install</>}
-        </Button>
-      </CardFooter>
-    </Card>
+        </button>
+      </div>
+    </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  StoreApp                                                           */
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+   RichCard -- hero-row cards with cover + logo + stars
+   ------------------------------------------------------------------ */
+
+function RichCard({
+  app, onInstall, installTargets,
+}: {
+  app: CatalogApp;
+  onInstall: (id: string) => void;
+  installTargets: InstallTarget[];
+}) {
+  const [busy, setBusy] = useState(false);
+  const [iconFailed, setIconFailed] = useState(false);
+  const [selectedTarget] = useState<string>(installTargets[0]?.name ?? "local");
+  const [error, setError] = useState<string | null>(null);
+
+  const iconUrl = resolveIconUrl(app);
+
+  const handleGet = async () => {
+    if (app.installed) return;
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ app_id: app.id, target_remote: selectedTarget }) });
+      if (!res.ok) { let msg = `Install failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
+      onInstall(app.id);
+    } catch (e) { setError(e instanceof Error ? e.message : "Network error"); }
+    setBusy(false);
+  };
+
+  const handleOpen = () => {
+    // Future: launch the app window
+  };
+
+  return (
+    <div className="flex flex-col rounded-2xl border border-shell-border bg-shell-surface/60 overflow-hidden shrink-0" style={{ width: 264 }}>
+      {/* Cover */}
+      <div className="h-28 relative shrink-0" style={{ background: app.cover ?? "linear-gradient(140deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))" }}>
+        <span className="absolute top-2 left-2 text-[10px] font-bold tracking-wide uppercase px-2 py-0.5 rounded-full bg-black/40 backdrop-blur-sm text-white/80">
+          {app.category || app.type}
+        </span>
+      </div>
+      {/* Meta */}
+      <div className="flex flex-col gap-2 p-3 flex-1">
+        <div className="flex items-center gap-2.5">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 overflow-hidden bg-white/[0.06]" style={{ padding: 6 }}>
+            {iconUrl && !iconFailed
+              ? <img src={iconUrl} alt="" className="w-full h-full object-contain" onError={() => setIconFailed(true)} loading="lazy" />
+              : <Package className="w-5 h-5 text-white/50" />}
+          </div>
+          <div>
+            <div className="text-[14px] font-semibold text-shell-text leading-snug">{app.name}</div>
+            <div className="text-[11.5px] text-shell-text-tertiary">{app.tagline ?? (app.category || app.type)}</div>
+          </div>
+        </div>
+        <p className="text-[12px] text-shell-text-secondary leading-relaxed flex-1">{app.description}</p>
+        {error && <div className="text-[10px] text-red-300">{error}</div>}
+        <div className="flex items-center justify-between">
+          {app.installed
+            ? <span className="flex items-center gap-1 text-[11.5px] text-emerald-400 font-semibold"><Check className="w-3 h-3" /> Installed</span>
+            : app.stars
+              ? <span className="flex items-center gap-1 text-[11.5px] text-shell-text-tertiary"><Star className="w-3 h-3 fill-amber-400 text-amber-400" />{formatStars(app.stars)}</span>
+              : <span />}
+          <button
+            type="button"
+            onClick={app.installed ? handleOpen : handleGet}
+            disabled={busy}
+            className="px-4 py-1.5 rounded-full bg-shell-surface-active text-shell-text text-[12px] font-bold hover:bg-white/10 transition-colors"
+          >
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : app.installed ? "Open" : "Get"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   SubscriptionRow -- compact 2-col list for "Replace your subs"
+   ------------------------------------------------------------------ */
+
+function SubscriptionRow({
+  app, onInstall, installTargets,
+}: {
+  app: CatalogApp;
+  onInstall: (id: string) => void;
+  installTargets: InstallTarget[];
+}) {
+  const [busy, setBusy] = useState(false);
+  const [iconFailed, setIconFailed] = useState(false);
+  const iconUrl = resolveIconUrl(app);
+
+  const handleGet = async () => {
+    if (app.installed) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ app_id: app.id, target_remote: installTargets[0]?.name ?? "local" }) });
+      if (res.ok) onInstall(app.id);
+    } catch { /* ignore */ }
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-shell-surface transition-colors">
+      <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 overflow-hidden bg-white/[0.06]" style={{ padding: 7 }}>
+        {iconUrl && !iconFailed
+          ? <img src={iconUrl} alt="" className="w-full h-full object-contain" onError={() => setIconFailed(true)} loading="lazy" />
+          : <Package className="w-5 h-5 text-white/50" />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[13.5px] font-semibold text-shell-text">{app.name}</div>
+        <div className="text-[11.5px] text-shell-text-tertiary">
+          {app.tagline ?? (app.category || app.type)}
+          {app.stars ? ` · ★ ${formatStars(app.stars)}` : ""}
+        </div>
+      </div>
+      {app.installed
+        ? <span className="flex items-center gap-1 text-[11.5px] text-emerald-400 font-semibold ml-auto"><Check className="w-3 h-3" /> Installed</span>
+        : <button
+            type="button"
+            onClick={handleGet}
+            disabled={busy}
+            className="ml-auto px-4 py-1.5 rounded-full bg-shell-surface-active text-shell-text text-[12px] font-bold hover:bg-white/10 transition-colors"
+          >
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : "Get"}
+          </button>}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   CommunityCard
+   ------------------------------------------------------------------ */
+
+function CommunityCard({ item }: { item: CommunityItem }) {
+  return (
+    <div className="flex flex-col rounded-2xl border border-shell-border bg-shell-surface/60 overflow-hidden shrink-0" style={{ width: 264 }}>
+      <div className="h-28 relative shrink-0" style={{ background: item.cover }} />
+      <div className="flex flex-col gap-2 p-3 flex-1">
+        <div className="flex items-center gap-2.5">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-white/[0.06]">
+            {item.icon}
+          </div>
+          <div>
+            <div className="text-[14px] font-semibold text-shell-text leading-snug">{item.name}</div>
+            <div className="text-[11.5px] text-shell-text-tertiary">{item.badge} · by {item.author}</div>
+          </div>
+        </div>
+        <p className="text-[12px] text-shell-text-secondary leading-relaxed flex-1">{item.description}</p>
+        <div className="flex items-center justify-between">
+          <span className="text-[11.5px] text-shell-text-tertiary">
+            <ArrowDownToLine className="w-3 h-3 inline mr-1" />{item.installs.toLocaleString()} installs
+          </span>
+          <button type="button" className="px-4 py-1.5 rounded-full bg-shell-surface-active text-shell-text text-[12px] font-bold hover:bg-white/10 transition-colors">
+            Get
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   HeroFeatured
+   ------------------------------------------------------------------ */
+
+function HeroFeatured({ app, onInstall, installTargets }: { app: CatalogApp; onInstall: (id: string) => void; installTargets: InstallTarget[] }) {
+  const [busy, setBusy] = useState(false);
+  const [iconFailed, setIconFailed] = useState(false);
+  const iconUrl = resolveIconUrl(app);
+
+  const handleGet = async () => {
+    if (app.installed) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ app_id: app.id, target_remote: installTargets[0]?.name ?? "local" }) });
+      if (res.ok) onInstall(app.id);
+    } catch { /* ignore */ }
+    setBusy(false);
+  };
+
+  return (
+    <div
+      className="relative h-56 rounded-2xl overflow-hidden border border-shell-border-strong flex items-end"
+      style={{ background: app.cover ?? "linear-gradient(120deg,#20202a,#14141a)" }}
+    >
+      {/* Scrim */}
+      <div className="absolute inset-0" style={{ background: "linear-gradient(90deg,rgba(10,10,12,0.80) 0%,rgba(10,10,12,0.35) 55%,rgba(10,10,12,0) 100%)" }} />
+      <div className="relative p-7" style={{ maxWidth: "62%" }}>
+        <div className="text-[11px] font-bold tracking-widest uppercase mb-2" style={{ color: "var(--color-accent)" }}>
+          Featured · Editor's Choice
+        </div>
+        <h2 className="text-[28px] font-extrabold text-shell-text leading-tight tracking-tight">{app.name}</h2>
+        <p className="text-[13.5px] text-shell-text-secondary mt-2 leading-relaxed">{app.description}</p>
+        <div className="flex items-center gap-3 mt-4">
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center overflow-hidden bg-white/[0.08]" style={{ padding: 8, boxShadow: "0 8px 24px rgba(0,0,0,.4)" }}>
+            {iconUrl && !iconFailed
+              ? <img src={iconUrl} alt="" className="w-full h-full object-contain" onError={() => setIconFailed(true)} loading="lazy" />
+              : <Package className="w-6 h-6 text-white/50" />}
+          </div>
+          <button type="button" onClick={handleGet} disabled={busy || app.installed} className="px-5 py-2 rounded-full text-[13px] font-bold text-white transition-colors" style={{ background: "var(--color-accent)" }}>
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : app.installed ? "Installed" : "Get"}
+          </button>
+          <button type="button" className="px-5 py-2 rounded-full text-[13px] font-bold text-shell-text bg-shell-surface-active hover:bg-white/10 transition-colors">
+            Preview
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   DiscoverView -- the main landing layout
+   ------------------------------------------------------------------ */
+
+function DiscoverView({
+  apps, onInstall, installTargets,
+}: {
+  apps: CatalogApp[];
+  onInstall: (id: string) => void;
+  installTargets: InstallTarget[];
+}) {
+  // Hero: first image-gen app with a cover, or comfyui
+  const hero = apps.find((a) => a.id === "comfyui") ?? apps.find((a) => a.cover) ?? apps[0];
+
+  // Popular: homelab apps with stars, top 4 by stars
+  const popular = [...apps]
+    .filter((a) => a.stars !== undefined && a.stars > 0)
+    .sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0))
+    .slice(0, 6);
+
+  // Subscriptions: curated homelab list
+  const subsIds = ["sonarr", "radarr", "qbittorrent", "sabnzbd", "homebridge", "adguard-home", "uptime-kuma", "nextcloud"];
+  const subscriptions = subsIds.map((id) => apps.find((a) => a.id === id)).filter(Boolean) as CatalogApp[];
+
+  // Frameworks
+  const frameworkApps = apps.filter((a) => a.type === "agent-framework" || a.category === "agent-framework");
+
+  const SectionHeader = ({ title, action }: { title: string; action?: string }) => (
+    <div className="flex items-baseline justify-between mb-3">
+      <h3 className="text-[18px] font-bold text-shell-text tracking-tight">{title}</h3>
+      {action && <button type="button" className="text-[12.5px] text-accent hover:text-shell-text-secondary transition-colors">{action}</button>}
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-7 pb-8">
+      {/* Hero */}
+      {hero && <HeroFeatured app={hero} onInstall={onInstall} installTargets={installTargets} />}
+
+      {/* Popular this week */}
+      {popular.length > 0 && (
+        <section>
+          <SectionHeader title="Popular this week" action="See all" />
+          <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
+            {popular.map((app) => (
+              <RichCard
+                key={app.id}
+                app={app}
+                onInstall={onInstall}
+                installTargets={installTargets}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Replace your subscriptions */}
+      {subscriptions.length > 0 && (
+        <section>
+          <SectionHeader title="Replace your subscriptions" action="See all" />
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+            {subscriptions.map((app) => (
+              <SubscriptionRow key={app.id} app={app} onInstall={onInstall} installTargets={installTargets} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* From the community */}
+      <section>
+        <SectionHeader title="From the community" action="See all" />
+        <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
+          {COMMUNITY_ITEMS.map((item) => (
+            <CommunityCard key={item.id} item={item} />
+          ))}
+        </div>
+      </section>
+
+      {/* Build agents with */}
+      {(frameworkApps.length > 0 || FRAMEWORK_ITEMS.length > 0) && (
+        <section>
+          <SectionHeader title="Build agents with" action="See all" />
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+            {FRAMEWORK_ITEMS.map((fw) => {
+              const catalogApp = apps.find((a) => a.id === fw.id);
+              const isInstalled = catalogApp?.installed ?? fw.installed ?? false;
+              return (
+                <div key={fw.id} className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-shell-surface transition-colors">
+                  <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 text-white text-lg font-bold" style={fw.iconStyle}>
+                    {fw.iconChar}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13.5px] font-semibold text-shell-text">{fw.name}</div>
+                    <div className="text-[11.5px] text-shell-text-tertiary">
+                      {fw.sub}{fw.stars ? ` · ★ ${formatStars(fw.stars)}` : ""}
+                    </div>
+                  </div>
+                  {isInstalled
+                    ? <span className="flex items-center gap-1 text-[11.5px] text-emerald-400 font-semibold ml-auto"><Check className="w-3 h-3" /> Installed</span>
+                    : <button type="button" className="ml-auto px-4 py-1.5 rounded-full bg-shell-surface-active text-shell-text text-[12px] font-bold hover:bg-white/10 transition-colors">Get</button>}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   CommunityView -- the community section
+   ------------------------------------------------------------------ */
+
+function CommunityView() {
+  return (
+    <div className="flex flex-col gap-7 pb-8">
+      <div>
+        <h3 className="text-[18px] font-bold text-shell-text mb-1">From the community</h3>
+        <p className="text-[13px] text-shell-text-secondary mb-4">Themes, wallpapers, apps and agents built by taOS users.</p>
+        <div className="flex gap-4 overflow-x-auto pb-2" style={{ scrollbarWidth: "none" }}>
+          {COMMUNITY_ITEMS.map((item) => (
+            <CommunityCard key={item.id} item={item} />
+          ))}
+        </div>
+      </div>
+      <div className="p-6 rounded-2xl border border-dashed border-shell-border text-center">
+        <Users className="w-8 h-8 text-shell-text-tertiary mx-auto mb-2" />
+        <div className="text-[14px] font-semibold text-shell-text mb-1">Share your creation</div>
+        <p className="text-[12.5px] text-shell-text-secondary">Build an app or agent with the App Builder and submit it to the community store.</p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------
+   StoreApp
+   ------------------------------------------------------------------ */
 
 export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const [apps, setApps] = useState<CatalogApp[]>([]);
   const [search, setSearch] = useState("");
-  const [activeCategory, setActiveCategory] = useState("all");
+  const [activeNav, setActiveNav] = useState<NavId>("discover");
   const [loading, setLoading] = useState(true);
   const [latest, setLatest] = useState<Record<string, LatestVersion>>({});
   const [agentList, setAgentList] = useState<any[]>([]);
-  const [installTargets, setInstallTargets] = useState<InstallTarget[]>([
-    { name: "local", label: "This controller", type: "local" },
-  ]);
+  const [installTargets, setInstallTargets] = useState<InstallTarget[]>([{ name: "local", label: "This controller", type: "local" }]);
   const [runtimeHosts, setRuntimeHosts] = useState<Record<string, string | null>>({});
   const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
   const [selectedBackends, setSelectedBackends] = useState<string[]>([]);
   const [compatMap, setCompatMap] = useState<Map<string, ResolveResponse>>(new Map());
-  // User identity for per-user filter persistence. Use an "anon" fallback
-  // so single-user setups still work; profile defaults to "default".
-  const userId = (typeof window !== "undefined"
-    ? window.localStorage.getItem("taos.user.id") || "anon"
-    : "anon");
-  const profileId = (typeof window !== "undefined"
-    ? window.localStorage.getItem("taos.profile.id") || "default"
-    : "default");
+
+  const userId = typeof window !== "undefined" ? window.localStorage.getItem("taos.user.id") || "anon" : "anon";
+  const profileId = typeof window !== "undefined" ? window.localStorage.getItem("taos.profile.id") || "default" : "default";
 
   const refreshInstalled = useCallback(() => {
     fetch("/api/store/installed-v2", { headers: { Accept: "application/json" } })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         const hosts: Record<string, string | null> = {};
-        for (const entry of (data?.installed ?? []) as InstalledEntry[]) {
-          hosts[entry.app_id] = entry.runtime_host ?? null;
-        }
+        for (const entry of (data?.installed ?? []) as InstalledEntry[]) hosts[entry.app_id] = entry.runtime_host ?? null;
         setRuntimeHosts(hosts);
       })
       .catch(() => {});
@@ -739,9 +902,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
 
   const fetchCatalog = useCallback(async () => {
     try {
-      const res = await fetch("/api/store/catalog", {
-        headers: { Accept: "application/json" },
-      });
+      const res = await fetch("/api/store/catalog", { headers: { Accept: "application/json" } });
       const ct = res.headers.get("content-type") ?? "";
       if (res.ok && ct.includes("application/json")) {
         const data = await res.json();
@@ -758,8 +919,16 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             install_method: a.install_method ? String(a.install_method) : undefined,
             hardware_tiers: (a.hardware_tiers as Record<string, unknown>) ?? undefined,
             variants: (a.variants as CatalogApp["variants"]) ?? undefined,
+            repo: a.repo ? String(a.repo) : undefined,
+            iconSlug: a.iconSlug ? String(a.iconSlug) : undefined,
+            stars: typeof a.stars === "number" ? a.stars : undefined,
+            tagline: a.tagline ? String(a.tagline) : undefined,
+            cover: a.cover ? String(a.cover) : undefined,
           }));
-          setApps(normalized);
+          // Merge homelab apps: only add those not already in the catalog
+          const catalogIds = new Set(normalized.map((a) => a.id));
+          const extra = HOMELAB_APPS.filter((a) => !catalogIds.has(a.id));
+          setApps([...normalized, ...extra]);
           setLoading(false);
           return true;
         }
@@ -777,56 +946,31 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     return () => { cancelled = true; };
   }, [fetchCatalog]);
 
-  // Resolve compatibility for every model card via /api/store/resolve.
-  // Runs after the catalog loads. Batches of 8 to avoid overwhelming the
-  // controller; Promise.allSettled so a single failure doesn't kill the batch.
   useEffect(() => {
-    const modelIds = apps
-      .filter((a) => a.type === "model")
-      .map((a) => a.id);
-
+    const modelIds = apps.filter((a) => a.type === "model").map((a) => a.id);
     if (modelIds.length === 0) return;
-
     let cancelled = false;
-
     const run = async () => {
       const next = new Map<string, ResolveResponse>();
       for (let i = 0; i < modelIds.length; i += 8) {
         if (cancelled) return;
         const batch = modelIds.slice(i, i + 8);
-        const results = await Promise.allSettled(
-          batch.map((id) => resolveModel(id, "auto")),
-        );
+        const results = await Promise.allSettled(batch.map((id) => resolveModel(id, "auto")));
         results.forEach((r, idx) => {
           const id = batch[idx];
-          if (id && r.status === "fulfilled" && r.value && "compat" in r.value) {
-            next.set(id, r.value);
-          }
+          if (id && r.status === "fulfilled" && r.value && "compat" in r.value) next.set(id, r.value);
         });
         if (!cancelled) setCompatMap(new Map(next));
       }
     };
-
     run();
     return () => { cancelled = true; };
   }, [apps]);
 
   useEffect(() => {
-    const qs = new URLSearchParams(window.location.hash.split("?")[1] || "");
-    const cat = qs.get("category");
-    if (cat) setActiveCategory(cat);
-  }, []);
-
-  useEffect(() => {
     fetchLatestFrameworks().then(setLatest).catch(() => {});
-    fetch("/api/agents")
-      .then((r) => r.ok ? r.json() : [])
-      .then((j) => setAgentList(Array.isArray(j) ? j : (j?.agents ?? [])))
-      .catch(() => {});
-    fetch("/api/cluster/install-targets", { headers: { Accept: "application/json" } })
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (Array.isArray(data)) setInstallTargets(data); })
-      .catch(() => {});
+    fetch("/api/agents").then((r) => r.ok ? r.json() : []).then((j) => setAgentList(Array.isArray(j) ? j : (j?.agents ?? []))).catch(() => {});
+    fetch("/api/cluster/install-targets", { headers: { Accept: "application/json" } }).then((r) => r.ok ? r.json() : null).then((data) => { if (Array.isArray(data)) setInstallTargets(data); }).catch(() => {});
     refreshInstalled();
   }, [refreshInstalled]);
 
@@ -835,53 +979,58 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     if (hydrated.current) return;
     if (installTargets.length === 0 || apps.length === 0) return;
     const validDevices = installTargets.map((t) => t.name);
-    const validBackends = Array.from(
-      new Set(
-        apps.flatMap((a) =>
-          (a.variants ?? []).flatMap((v) => v.backend ?? []).concat(
-            a.install_method ? [a.install_method] : []
-          )
-        )
-      )
-    );
+    const validBackends = Array.from(new Set(apps.flatMap((a) => (a.variants ?? []).flatMap((v) => v.backend ?? []).concat(a.install_method ? [a.install_method] : []))));
     const persisted = loadFilter(userId, profileId, validDevices, validBackends);
     setSelectedDevices(persisted.devices);
     setSelectedBackends(persisted.backends);
     hydrated.current = true;
   }, [installTargets, apps, userId, profileId]);
 
-  useEffect(() => {
-    saveFilter(userId, profileId, {
-      devices: selectedDevices,
-      backends: selectedBackends,
-    });
-  }, [selectedDevices, selectedBackends, userId, profileId]);
+  useEffect(() => { saveFilter(userId, profileId, { devices: selectedDevices, backends: selectedBackends }); }, [selectedDevices, selectedBackends, userId, profileId]);
 
-  const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
+  const handleInstall = useCallback((id: string) => {
+    setApps((prev) => prev.map((a) => a.id === id ? { ...a, installed: true } : a));
+    refreshInstalled();
+    emitAppEvent(APP_INSTALLED, id);
+  }, [refreshInstalled]);
 
-  const categoryFiltered = apps.filter((app) => {
-    if (activeCategory !== "all" && activeCat) {
-      if (!activeCat.types.includes(appGroup(app))) return false;
-    }
-    if (search) {
-      const q = search.toLowerCase();
-      return (
-        app.name.toLowerCase().includes(q) ||
-        app.description.toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
+  const handleUninstall = useCallback((id: string) => {
+    setApps((prev) => prev.map((a) => a.id === id ? { ...a, installed: false } : a));
+    refreshInstalled();
+  }, [refreshInstalled]);
 
-  const selectedDeviceObjs = installTargets.filter((t) =>
-    selectedDevices.includes(t.name)
-  );
-  const tierFilterResult = filterCatalog(categoryFiltered, selectedDeviceObjs, selectedBackends);
+  // --- Filtering for non-discover views ---
+  const NAV_TYPE_MAP: Record<NavId, string[]> = {
+    discover: [],
+    apps: ["streaming-app", "ai-app", "productivity", "home", "monitoring", "automation"],
+    agents: ["agent-framework"],
+    models: ["model", "llm-runtime"],
+    services: ["service", "infrastructure"],
+    mcp: ["mcp"],
+    devtools: ["dev-tool"],
+    community: [],
+    installed: [],
+    updates: [],
+  };
 
-  // Apply resolver compat as a second pass: any model the resolver classifies
-  // as "red" moves from compatible → incompatible, regardless of tier match.
-  // Models not yet classified (compatMap has no entry) stay compatible — the
-  // incompatibility signal must be explicit, not a default.
+  const searchFiltered = useMemo(() => {
+    if (!search) return apps;
+    const q = search.toLowerCase();
+    return apps.filter((a) => a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q));
+  }, [apps, search]);
+
+  const navFiltered = useMemo(() => {
+    if (activeNav === "discover" || activeNav === "community") return searchFiltered;
+    if (activeNav === "installed") return searchFiltered.filter((a) => a.installed);
+    if (activeNav === "updates") return searchFiltered.filter((a) => a.installed);
+    const types = NAV_TYPE_MAP[activeNav] ?? [];
+    if (types.length === 0) return searchFiltered;
+    return searchFiltered.filter((a) => types.includes(a.type) || types.includes(a.category ?? ""));
+  }, [activeNav, searchFiltered]);
+
+  const selectedDeviceObjs = installTargets.filter((t) => selectedDevices.includes(t.name));
+  const tierFilterResult = filterCatalog(navFiltered, selectedDeviceObjs, selectedBackends);
+
   const filtered: CatalogApp[] = [];
   const incompatible: CatalogApp[] = [...tierFilterResult.incompatible];
   for (const app of tierFilterResult.compatible) {
@@ -892,242 +1041,187 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     }
   }
 
-  // Backends shown in the BackendPillBar are the union of variants[].backend
-  // across manifests in the *current category* where any selected device's
-  // tier_id is supported. Two reasons this is category-scoped instead of
-  // catalog-wide:
-  //   1. On the Models view, runtime backends (rkllama, ollama, llama.cpp)
-  //      are meaningful filters; on the Agent Frameworks view they aren't.
-  //   2. install_method (docker, lxc, npm, pip) was leaking into the
-  //      backend pills via the no-variants fallback below — these are
-  //      deploy mechanisms, not runtime backends, and they don't belong
-  //      in this filter at all. Dropping the fallback closes that gap.
   const availableBackends = useMemo(() => {
     if (selectedDevices.length === 0) return [];
-    const memoSelectedDevices = installTargets.filter((t) =>
-      selectedDevices.includes(t.name)
-    );
-    const tiers = new Set(
-      memoSelectedDevices.map((d) => d.tier_id).filter(Boolean) as string[]
-    );
-    const sourceApps = activeCategory === "all" || !activeCat
-      ? apps
-      : apps.filter((a) => activeCat.types.includes(appGroup(a)));
+    const selDevObjs = installTargets.filter((t) => selectedDevices.includes(t.name));
+    const tiers = new Set(selDevObjs.map((d) => d.tier_id).filter(Boolean) as string[]);
+    const types = NAV_TYPE_MAP[activeNav] ?? [];
+    const sourceApps = types.length === 0 ? apps : apps.filter((a) => types.includes(a.type) || types.includes(a.category ?? ""));
     const out = new Set<string>();
     for (const app of sourceApps) {
       if (!app.hardware_tiers) continue;
-      const tierMatch = [...tiers].some(
-        (t) =>
-          app.hardware_tiers![t] !== undefined &&
-          app.hardware_tiers![t] !== "unsupported"
-      );
+      const tierMatch = [...tiers].some((t) => app.hardware_tiers![t] !== undefined && app.hardware_tiers![t] !== "unsupported");
       if (!tierMatch) continue;
-      for (const v of app.variants ?? []) {
-        for (const b of v.backend ?? []) out.add(b);
-      }
+      for (const v of app.variants ?? []) for (const b of v.backend ?? []) out.add(b);
     }
     return Array.from(out).sort();
-  }, [selectedDevices, installTargets, apps, activeCategory, activeCat]);
+  }, [selectedDevices, installTargets, apps, activeNav]);
 
   useEffect(() => {
-    if (availableBackends.length === 0) {
-      // Bar is hidden; clear any stale backend filter so it doesn't
-      // silently apply behind invisible UI.
-      if (selectedBackends.length > 0) setSelectedBackends([]);
-      return;
-    }
+    if (availableBackends.length === 0) { if (selectedBackends.length > 0) setSelectedBackends([]); return; }
     const availSet = new Set(availableBackends);
     const dropped = selectedBackends.filter((b) => !availSet.has(b));
-    if (dropped.length > 0) {
-      setSelectedBackends((prev) => prev.filter((b) => availSet.has(b)));
-      // Surface a toast — for now use a simple console warning since this
-      // codebase's toast helper is not yet wired into StoreApp. Adding a
-      // toast call here is a follow-up.
-      console.info(
-        `[store-filter] auto-deselected backend(s): ${dropped.join(", ")}`
-      );
-    }
+    if (dropped.length > 0) setSelectedBackends((prev) => prev.filter((b) => availSet.has(b)));
   }, [availableBackends, selectedBackends]);
 
-  const handleInstall = useCallback((id: string) => {
-    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, installed: true } : a)));
-    refreshInstalled();
-    emitAppEvent(APP_INSTALLED, id);
-  }, [refreshInstalled]);
+  // Hardware profile from first install target
+  const primaryTarget = installTargets[0];
+  const profileLabel = primaryTarget?.friendly_name ?? primaryTarget?.label ?? "This device";
+  const profileSub = primaryTarget?.tier_id ? primaryTarget.tier_id.replace(/-/g, " ") : "Connect a device";
 
-  const handleUninstall = useCallback((id: string) => {
-    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, installed: false } : a)));
-    refreshInstalled();
-  }, [refreshInstalled]);
-
-  // Count per category
-  const counts: Record<string, number> = {};
-  for (const cat of CATEGORIES) {
-    if (cat.id === "all") { counts[cat.id] = apps.length; continue; }
-    counts[cat.id] = apps.filter((a) => cat.types.includes(appGroup(a))).length;
-  }
-
-  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+  const showGrid = activeNav !== "discover" && activeNav !== "community";
 
   return (
-    <div className={`flex ${isMobile ? "flex-col" : ""} h-full overflow-hidden`}>
-      {/* Sidebar / Mobile pill row */}
-      {isMobile ? (
-        <div className="flex overflow-x-auto gap-2 px-3 py-2 border-b border-shell-border shrink-0">
-          {CATEGORIES.map((cat) => (
-            <Button
-              key={cat.id}
-              variant="outline"
-              size="sm"
-              onClick={() => setActiveCategory(cat.id)}
-              className={`whitespace-nowrap rounded-full ${
-                activeCategory === cat.id ? "bg-accent/15 text-accent border-accent/30" : ""
-              }`}
-            >
-              {cat.label}
-            </Button>
-          ))}
-        </div>
-      ) : (
-        <div className="w-52 shrink-0 border-r border-shell-border bg-shell-surface/30 flex flex-col overflow-y-auto">
-          <div className="px-3 py-3 border-b border-shell-border">
-            <div className="flex items-center gap-2">
-              <ShoppingBag size={16} className="text-accent" />
-              <span className="text-sm font-medium text-shell-text">Store</span>
-            </div>
-          </div>
-          <nav className="flex-1 py-2 px-2 space-y-0.5">
-            {CATEGORIES.map((cat) => (
-              <Button
-                key={cat.id}
-                variant="ghost"
-                size="sm"
-                onClick={() => setActiveCategory(cat.id)}
-                className={`w-full justify-start gap-2.5 text-xs ${
-                  activeCategory === cat.id ? "bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent" : ""
-                }`}
-              >
-                <span className="shrink-0">{cat.icon}</span>
-                <span className="flex-1 truncate text-left">{cat.label}</span>
-                {counts[cat.id] ? (
-                  <span className="text-[10px] text-shell-text-tertiary">{counts[cat.id]}</span>
-                ) : null}
-              </Button>
-            ))}
-          </nav>
-        </div>
-      )}
-
-      {/* Main content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <header className="shrink-0 px-5 py-4 border-b border-shell-border">
-          <div className="flex items-center justify-between mb-1">
-            <div>
-              <h2 className="text-base font-medium text-shell-text">{activeCat?.label ?? "All Apps"}</h2>
-              <p className="text-xs text-shell-text-tertiary">{activeCat?.description}</p>
-            </div>
-            <span className="text-xs text-shell-text-tertiary">{filtered.length} apps</span>
-          </div>
-          <div className="relative mt-3">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shell-text-tertiary pointer-events-none z-10" />
+    <div className="flex h-full overflow-hidden bg-shell-bg">
+      {/* Sidebar */}
+      <aside className="w-52 shrink-0 bg-shell-bg-deep border-r border-shell-border flex flex-col overflow-y-auto">
+        <div className="px-3 pt-4 pb-2">
+          {/* Inline search */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-shell-text-tertiary pointer-events-none" />
             <Input
               type="text"
-              placeholder="Search..."
+              placeholder="Search apps, agents..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
+              className="pl-8 h-8 text-xs"
               aria-label="Search apps"
             />
           </div>
-        </header>
+        </div>
+        <nav className="flex-1 py-1 px-2">
+          {(() => {
+            let lastGroup: string | undefined = undefined;
+            return NAV.map((item) => {
+              const showGroupHeader = item.group && item.group !== lastGroup;
+              lastGroup = item.group;
+              return (
+                <div key={item.id}>
+                  {showGroupHeader && (
+                    <div className="px-3 pt-4 pb-1 text-[10.5px] font-semibold uppercase tracking-widest text-shell-text-tertiary">
+                      {item.group}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setActiveNav(item.id)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition-colors ${activeNav === item.id ? "bg-shell-surface-active text-shell-text font-medium" : "text-shell-text-secondary hover:text-shell-text hover:bg-shell-surface"}`}
+                    aria-current={activeNav === item.id ? "page" : undefined}
+                  >
+                    <span className={`shrink-0 ${activeNav === item.id ? "text-accent" : ""}`}>{item.icon}</span>
+                    {item.label}
+                  </button>
+                </div>
+              );
+            });
+          })()}
+        </nav>
+        {/* Hardware profile pill */}
+        <div className="m-3 p-3 rounded-xl bg-shell-surface border border-shell-border">
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <Cpu className="w-3 h-3 text-accent shrink-0" />
+            <span className="text-[12px] font-semibold text-shell-text truncate">{profileLabel}</span>
+          </div>
+          <div className="text-[11px] text-shell-text-tertiary capitalize">{profileSub}</div>
+        </div>
+      </aside>
 
-        {/* Grid */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          <>
-            <DevicePillBar
-              devices={installTargets}
-              selected={selectedDevices}
-              onChange={setSelectedDevices}
-              showSkeleton={installTargets.length === 0 && loading}
-            />
-            {hasUnknownHardwareDevice(selectedDeviceObjs) && (
-              <UnknownHardwareBanner devices={selectedDeviceObjs} />
-            )}
-            <BackendPillBar
-              available={availableBackends}
-              selected={selectedBackends}
-              onChange={setSelectedBackends}
-              disabled={selectedDevices.length === 0}
-            />
-          </>
+      {/* Main content */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Filters (device + backend) -- shown above all views */}
+        <div className="shrink-0 px-6 pt-3 border-b border-shell-border">
+          <DevicePillBar
+            devices={installTargets}
+            selected={selectedDevices}
+            onChange={setSelectedDevices}
+            showSkeleton={installTargets.length === 0 && loading}
+          />
+          {hasUnknownHardwareDevice(selectedDeviceObjs) && <UnknownHardwareBanner devices={selectedDeviceObjs} />}
+          <BackendPillBar
+            available={availableBackends}
+            selected={selectedBackends}
+            onChange={setSelectedBackends}
+            disabled={selectedDevices.length === 0}
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5">
           {loading ? (
             <div className="flex items-center justify-center h-40">
               <Loader2 className="w-6 h-6 text-shell-text-tertiary animate-spin" />
             </div>
-          ) : filtered.length === 0 && activeCategory === "memory" ? (
-            <div className="p-6 text-center opacity-70">
-              No third-party memory plugins yet. <b>taOSmd</b> is installed by default and available on every agent.
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
-              <Package className="w-8 h-8" />
-              <span>No apps in this category</span>
-            </div>
-          ) : (
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-4">
-              {filtered.map((app) => {
-                const latestForApp = latest[app.id];
-                const affected = app.type === "agent-framework"
-                  ? agentList.filter(
-                      (a: any) =>
-                        a.framework === app.id &&
-                        a.framework_version_sha &&
-                        latestForApp &&
-                        latestForApp.sha !== a.framework_version_sha
-                    ).length
-                  : 0;
-                return (
-                  <AppCard
-                    key={app.id}
-                    app={app}
-                    affected={affected}
-                    onInstall={handleInstall}
-                    onUninstall={handleUninstall}
-                    installTargets={installTargets}
-                    runtimeHost={runtimeHosts[app.id] ?? null}
-                    defaultTargetRemote={
-                      selectedDevices.length === 1 ? selectedDevices[0] : undefined
-                    }
-                    resolveResponse={compatMap.get(app.id)}
-                  />
-                );
-              })}
-            </div>
-          )}
-          {incompatible.length > 0 && (
-            <IncompatibleToggle count={incompatible.length} compatibleCount={filtered.length}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {incompatible.map((app) => (
-                  <AppCard
-                    key={app.id}
-                    app={app}
-                    affected={0}
-                    onInstall={handleInstall}
-                    onUninstall={handleUninstall}
-                    installTargets={installTargets}
-                    runtimeHost={runtimeHosts[app.id] ?? null}
-                    defaultTargetRemote={
-                      selectedDevices.length === 1 ? selectedDevices[0] : undefined
-                    }
-                    resolveResponse={compatMap.get(app.id)}
-                  />
-                ))}
+          ) : activeNav === "community" ? (
+            <CommunityView />
+          ) : activeNav === "discover" ? (
+            <DiscoverView apps={apps} onInstall={handleInstall} installTargets={installTargets} />
+          ) : showGrid ? (
+            <>
+              <div className="mb-4 flex items-baseline justify-between">
+                <div>
+                  <h2 className="text-[17px] font-bold text-shell-text">{NAV.find((n) => n.id === activeNav)?.label}</h2>
+                  <p className="text-[12px] text-shell-text-tertiary mt-0.5">{filtered.length} apps</p>
+                </div>
               </div>
-            </IncompatibleToggle>
-          )}
+              {activeNav === "installed" && filtered.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
+                  <Package className="w-8 h-8" />
+                  <span>Nothing installed yet</span>
+                </div>
+              ) : activeNav === "models" && filtered.length === 0 ? (
+                <div className="p-6 text-center opacity-70 text-shell-text-secondary text-sm">
+                  No models cached. <b>taOSmd</b> handles memory by default on every agent.
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
+                  <Package className="w-8 h-8" />
+                  <span>No apps in this category</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+                  {filtered.map((app) => {
+                    const latestForApp = latest[app.id];
+                    const affected = app.type === "agent-framework"
+                      ? agentList.filter((a: any) => a.framework === app.id && a.framework_version_sha && latestForApp && latestForApp.sha !== a.framework_version_sha).length
+                      : 0;
+                    return (
+                      <AppCard
+                        key={app.id}
+                        app={app}
+                        affected={affected}
+                        onInstall={handleInstall}
+                        onUninstall={handleUninstall}
+                        installTargets={installTargets}
+                        runtimeHost={runtimeHosts[app.id] ?? null}
+                        defaultTargetRemote={selectedDevices.length === 1 ? selectedDevices[0] : undefined}
+                        resolveResponse={compatMap.get(app.id)}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+              {incompatible.length > 0 && (
+                <IncompatibleToggle count={incompatible.length} compatibleCount={filtered.length}>
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4 mt-2">
+                    {incompatible.map((app) => (
+                      <AppCard
+                        key={app.id}
+                        app={app}
+                        affected={0}
+                        onInstall={handleInstall}
+                        onUninstall={handleUninstall}
+                        installTargets={installTargets}
+                        runtimeHost={runtimeHosts[app.id] ?? null}
+                        defaultTargetRemote={selectedDevices.length === 1 ? selectedDevices[0] : undefined}
+                        resolveResponse={compatMap.get(app.id)}
+                      />
+                    ))}
+                  </div>
+                </IncompatibleToggle>
+              )}
+            </>
+          ) : null}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
