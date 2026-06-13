@@ -12,6 +12,7 @@ interface UpdateInfo {
 
 interface AutoUpdatePrefs {
   check_enabled?: boolean;
+  update_ping_enabled?: boolean;
 }
 
 interface UpdateStatus {
@@ -64,6 +65,7 @@ export function UpdatesPanel() {
           if (data && typeof data === "object") {
             setPrefs({
               check_enabled: data.check_enabled ?? true,
+              update_ping_enabled: data.update_ping_enabled ?? true,
             });
           }
         }
@@ -298,6 +300,20 @@ export function UpdatesPanel() {
             <Switch
               checked={prefs.check_enabled ?? true}
               onCheckedChange={(v) => savePrefs({ ...prefs, check_enabled: v })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <Label className="text-sm">Anonymous install ping</Label>
+              <p className="text-[11px] text-shell-text-tertiary mt-0.5">
+                Reports an anonymous install count with the update check. No personal data, no identifiers beyond a random id. Updates work either way.
+              </p>
+            </div>
+            <Switch
+              checked={prefs.update_ping_enabled ?? true}
+              onCheckedChange={(v) => savePrefs({ ...prefs, update_ping_enabled: v })}
+              aria-label="Anonymous install ping"
             />
           </div>
 

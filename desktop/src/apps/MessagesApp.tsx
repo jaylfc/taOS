@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   MessageCircle,
   Hash,
@@ -12,10 +13,13 @@ import {
   Wifi,
   WifiOff,
   ChevronRight,
+  ChevronDown,
   PanelRight,
   Archive,
   Trash2,
   RotateCcw,
+  MessagesSquare,
+  Search,
 } from "lucide-react";
 import {
   Button,
@@ -52,6 +56,9 @@ import { MessageEditor } from "./chat/MessageEditor";
 import { MessageTombstone } from "./chat/MessageTombstone";
 import { PinBadge } from "./chat/PinBadge";
 import { PinnedMessagesPopover, type PinnedMessage } from "./chat/PinnedMessagesPopover";
+import { AllThreadsList } from "./chat/AllThreadsList";
+import { ChannelSwitcher } from "./chat/ChannelSwitcher";
+import { useChatNotifications } from "./chat/useChatNotifications";
 import { PinRequestAffordance } from "./chat/PinRequestAffordance";
 import {
   pinMessage, unpinMessage, listPins,
@@ -68,6 +75,10 @@ import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import Picker, { Theme } from "emoji-picker-react";
+import { SearchPanel } from "./chat/SearchPanel";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -158,6 +169,8 @@ interface Message {
   author_id: string;
   author_type: "user" | "agent";
   content: string;
+  /** Parent message id when this message is a thread reply. */
+  thread_id?: string;
   content_type?: "text" | "canvas" | string;
   metadata?: {
     canvas_id?: string;
@@ -199,20 +212,17 @@ function toMs(ts: number | string): number {
   return new Date(ts).getTime();
 }
 
-function relativeTime(ts: number | string): string {
+function relativeTime(ts: number | string, nowMs: number = Date.now()): string {
   const ms = toMs(ts);
-  const diff = Date.now() - ms;
-  const mins = Math.floor(diff / 60000);
+  const mins = Math.floor((nowMs - ms) / 60000);
   if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(ms).toLocaleDateString();
+  if (mins < 60) return `${mins}m`;
+  // Older than an hour: show the clock time. The day context comes from the
+  // date separators rendered between message groups.
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function renderContent(text: string) {
+export function renderContent(text: string) {
   // Split on fenced code blocks first, then apply inline markdown to non-code segments.
   const result: (string | React.ReactElement)[] = [];
   const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
@@ -235,25 +245,94 @@ function renderContent(text: string) {
   return result;
 }
 
-function renderInline(text: string, keyPrefix: string) {
-  // basic markdown: bold, italic, inline code
-  const parts: (string | React.ReactElement)[] = [];
-  const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > last) parts.push(text.slice(last, match.index));
-    if (match[2]) parts.push(<strong key={`${keyPrefix}-${key++}`} className="font-semibold">{match[2]}</strong>);
-    else if (match[3]) parts.push(<em key={`${keyPrefix}-${key++}`} className="italic">{match[3]}</em>);
-    else if (match[4]) parts.push(<code key={`${keyPrefix}-${key++}`} className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono">{match[4]}</code>);
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
+export function renderInline(text: string, keyPrefix: string) {
+  return [
+    <div key={keyPrefix}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        disallowedElements={["img"]}
+        components={{
+          p: ({ node, ...props }) => <p className="mb-1 last:mb-0" {...props} />,
+          a: ({ node, ...props }) => (
+            <a className="text-blue-400 underline" target="_blank" rel="noopener noreferrer" {...props} />
+          ),
+          code: ({ node, className, children, ...props }) => {
+            const isBlock = typeof className === "string" && /language-/.test(className);
+            if (isBlock) {
+              return <code className={className} {...props}>{children}</code>;
+            }
+            return (
+              <code className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono" {...props}>
+                {children}
+              </code>
+            );
+          },
+          ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-1" {...props} />,
+          ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-1" {...props} />,
+          blockquote: ({ node, ...props }) => (
+            <blockquote className="border-l-2 border-white/20 pl-3 text-white/70" {...props} />
+          ),
+          pre: ({ node, ...props }) => (
+            <pre className="my-2 overflow-x-auto max-w-full bg-black/30 border border-white/10 rounded p-2 text-[13px]" {...props} />
+          ),
+          table: ({ node, ...props }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="min-w-full text-left text-[13px]" {...props} />
+            </div>
+          ),
+          th: ({ node, ...props }) => (
+            <th className="border-b border-white/10 px-2 py-1 font-semibold" {...props} />
+          ),
+          td: ({ node, ...props }) => (
+            <td className="border-b border-white/5 px-2 py-1 align-top" {...props} />
+          ),
+          h1: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h2: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h3: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h4: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h5: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h6: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>,
+  ];
 }
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
+
+// Best-effort per-channel draft storage. Drafts are user input that may
+// contain sensitive material; they are kept in localStorage (the same
+// mechanism Slack's web client uses) and not synced to the server. Stored
+// unencrypted at rest in the browser profile. Users on shared machines
+// should clear site data to remove drafts.
+const draftKey = (channelId: string) => `taos-chat-draft:${channelId}`;
+function loadDraft(channelId: string): string {
+  try { return localStorage.getItem(draftKey(channelId)) || ""; } catch { return ""; }
+}
+function saveDraft(channelId: string, text: string) {
+  try {
+    if (text) localStorage.setItem(draftKey(channelId), text);
+    else localStorage.removeItem(draftKey(channelId));
+  } catch { /* storage full or unavailable: drafts are best-effort */ }
+}
+
+export function dayLabel(ts: string | number): string {
+  const d = new Date(toMs(ts));
+  const now = new Date();
+  // Compare local calendar days, not UTC. Build local-midnight Dates for
+  // both, then divide by 86400000ms. A local day is 23-25 hours across
+  // DST, so the division can still produce fractional values; use
+  // Math.round so a one-calendar-day difference is reported as exactly
+  // 1 day. (A diff of 0.96 days is still a single calendar-day gap
+  // before noon, and a diff of 1.04 days is one calendar day after.)
+  const localMidnight = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const diffDays = Math.round((localMidnight(now).getTime() - localMidnight(d).getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
 
 /* ------------------------------------------------------------------ */
 /*  MessagesApp                                                        */
@@ -305,6 +384,10 @@ export function MessagesApp({
   });
   const [archivedChannels, setArchivedChannels] = useState<Channel[]>([]);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  // Collapsible sidebar sections, keyed by section label / project id, persisted.
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("taos-chat-collapsed") || "{}"); } catch { return {}; }
+  });
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [projectChannelExpanded, setProjectChannelExpanded] = useState<Record<string, boolean>>({});
   const [liveAgents, setLiveAgents] = useState<LiveAgent[]>([]);
@@ -312,10 +395,13 @@ export function MessagesApp({
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
+  const unreadRef = useRef<Record<string, number>>({});
+  const pendingNewCountRef = useRef(0);
+  const [newDividerAtId, setNewDividerAtId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("disconnected");
   const [showCreate, setShowCreate] = useState(false);
-  const [showEmoji, setShowEmoji] = useState<string | null>(null); // message id
+  const [showEmoji, setShowEmoji] = useState<{ messageId: string; rect: DOMRect } | null>(null); // message id + anchor
   const [viewingCanvas, setViewingCanvas] = useState<{ url: string; title?: string } | null>(null);
   const [newChannel, setNewChannel] = useState({ name: "", type: "topic" as "topic" | "group", description: "" });
   const [prefillBanner, setPrefillBanner] = useState<{ promptName: string; agentName?: string } | null>(null);
@@ -334,10 +420,45 @@ export function MessagesApp({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [pinnedPopoverOpen, setPinnedPopoverOpen] = useState(false);
   const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
+  const [showAllThreads, setShowAllThreads] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showSwitcher, setShowSwitcher] = useState(false);
+  // Which channel's message fetch has completed, so the "empty channel"
+  // placeholder only shows after a real fetch (never mid-load or mid-switch).
+  const [fetchedChannel, setFetchedChannel] = useState<string | null>(null);
+  // Scroll-to-bottom affordance: whether the list is near the bottom, and how
+  // many messages have arrived while scrolled away (shown as a badge).
+  const [atBottom, setAtBottom] = useState(true);
+  const [newCount, setNewCount] = useState(0);
+  const prevMsgCountRef = useRef(0);
+  // One 60s tick for the whole list so relative timestamps ("3m") stay fresh
+  // without a reload. Only sub-hour labels depend on it; cheap re-render.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  // @mention autocomplete: the partial after "@" at the cursor + the @ index,
+  // or null when not in mention mode. mentionSel is the highlighted candidate.
+  const [mention, setMention] = useState<{ partial: string; atIndex: number } | null>(null);
+  const [mentionSel, setMentionSel] = useState(0);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const { openThread, openThreadFor, closeThread } = useThreadPanel();
+  // Live thread replies: messages whose thread_id matches the open thread,
+  // captured from the main WS so the panel updates without a reopen. The ref
+  // lets the (long-lived) WS closure read the current open thread id.
+  const [threadLiveReplies, setThreadLiveReplies] = useState<Message[]>([]);
+  const openThreadIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    openThreadIdRef.current = openThread?.parentId ?? null;
+    setThreadLiveReplies([]); // reset when the open thread changes or closes
+  }, [openThread?.parentId]);
+
+  // Browser notifications for messages in background channels. Refs so the
+  // long-lived WS closure reads the current user id + channel list.
+  const { notify } = useChatNotifications();
+  const currentUserIdRef = useRef<string | null>(null);
+  const channelsRef = useRef<Channel[]>([]);
+  useEffect(() => { currentUserIdRef.current = currentUserId; }, [currentUserId]);
+  useEffect(() => { channelsRef.current = channels; }, [channels]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -420,8 +541,19 @@ export function MessagesApp({
       const res = await fetch(`/api/chat/channels/${channelId}/messages?limit=50`);
       if (res.ok) {
         const data = await res.json();
-        setMessages(data.messages ?? []);
+        const list: Message[] = data.messages ?? [];
+        setMessages(list);
+        setFetchedChannel(channelId);
         autoScrollRef.current = true;
+        const pending = pendingNewCountRef.current;
+        pendingNewCountRef.current = 0;
+        if (pending > 0 && list.length > 0) {
+          const idx = list.length - pending;
+          const atIdx = idx < 0 ? 0 : idx;
+          setNewDividerAtId(list[atIdx]?.id ?? null);
+        } else {
+          setNewDividerAtId(null);
+        }
       }
     } catch {
       /* offline */
@@ -481,9 +613,21 @@ export function MessagesApp({
               if (prev.some((m) => m.id === data.id)) return prev;
               return [...prev, data as Message];
             });
-            // bump unread if not the selected channel
+            // Live thread updates: if this is a reply in the open thread, feed
+            // it to the panel (de-duped by id).
+            if (data.thread_id && data.thread_id === openThreadIdRef.current) {
+              setThreadLiveReplies((prev) =>
+                prev.some((m) => m.id === data.id) ? prev : [...prev, data as Message],
+              );
+            }
+            // bump unread + browser-notify if not the selected channel and not
+            // the user's own message.
             if (data.channel_id !== prevChannelRef.current) {
               setUnread((u) => ({ ...u, [data.channel_id]: (u[data.channel_id] ?? 0) + 1 }));
+              if (data.author_id && data.author_id !== currentUserIdRef.current) {
+                const chName = channelsRef.current.find((c) => c.id === data.channel_id)?.name ?? "a channel";
+                notify(`${data.author_id} in #${chName}`, data.content ?? "", () => setSelectedChannel(data.channel_id));
+              }
             }
             break;
 
@@ -573,6 +717,27 @@ export function MessagesApp({
     wsRef.current = ws;
   }, []);
 
+  /* ---- emoji popover: escape and outside click ---- */
+  useEffect(() => {
+    if (!showEmoji) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowEmoji(null);
+    }
+    function onPointer(e: MouseEvent) {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest("[data-emoji-popover='1']")) return;
+      if (t.closest(`[data-message-id="${showEmoji!.messageId}"]`)) return;
+      setShowEmoji(null);
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointer);
+    };
+  }, [showEmoji]);
+
   /* ---- init ---- */
   useEffect(() => {
     fetchChannels();
@@ -586,6 +751,12 @@ export function MessagesApp({
       }
     };
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
+
+  /* ---- keep unreadRef in sync with the unread state without re-running
+   * the channel-selection effect (which would re-capture the pending count). ---- */
+  useEffect(() => {
+    unreadRef.current = unread;
+  }, [unread]);
 
   /* ---- default-select A2A channel on first project visit ----
    * Also runs when the project switches: if the previously selected channel
@@ -693,21 +864,39 @@ export function MessagesApp({
 
   /* ---- channel selection ---- */
   useEffect(() => {
-    if (!selectedChannel) return;
-    // leave previous channel
-    if (prevChannelRef.current && prevChannelRef.current !== selectedChannel && wsRef.current?.readyState === 1) {
+    // Persist the draft for the channel we are leaving, regardless of socket
+    // state, so a switch while offline still saves the composer's contents.
+    if (prevChannelRef.current && prevChannelRef.current !== selectedChannel) {
+      saveDraft(prevChannelRef.current, input);
+    }
+    if (!selectedChannel) {
+      // No new channel: clear refs and stop here.
+      prevChannelRef.current = null;
+      return;
+    }
+    // leave previous channel (websocket signaling only)
+    if (prevChannelRef.current && wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "leave", channel_id: prevChannelRef.current }));
     }
+    // load draft for the new channel
+    if (prevChannelRef.current !== selectedChannel) {
+      setInput(loadDraft(selectedChannel));
+      if (inputRef.current) inputRef.current.style.height = "auto";
+    }
     prevChannelRef.current = selectedChannel;
+    setNewDividerAtId(null);
     // join new
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "join", channel_id: selectedChannel }));
     }
+    // capture unread count before markRead clears it (read via ref so this
+    // effect does not re-run when markRead mutates the unread map).
+    pendingNewCountRef.current = unreadRef.current[selectedChannel] ?? 0;
     fetchMessages(selectedChannel);
     markRead(selectedChannel);
     setTypingHumans([]);
     setTypingAgents([]);
-  }, [selectedChannel, fetchMessages, markRead]);
+  }, [selectedChannel, fetchMessages, markRead]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---- deep-link scroll on ?msg=<id> — latch so it fires once per URL ---- */
   const deepLinkSeenRef = useRef<string | null>(null);
@@ -747,19 +936,60 @@ export function MessagesApp({
     return () => { alive = false; };
   }, [selectedChannel]);
 
-  /* ---- auto-scroll ---- */
+  /* ---- auto-scroll + new-message counter while scrolled away ---- */
   useEffect(() => {
+    const delta = messages.length - prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
     if (autoScrollRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (delta > 0) {
+      setNewCount((c) => c + delta);
     }
   }, [messages]);
+
+  /* ---- reset scroll affordance on channel switch ---- */
+  useEffect(() => {
+    setAtBottom(true);
+    setNewCount(0);
+    prevMsgCountRef.current = 0;
+  }, [selectedChannel]);
+
+  /* ---- 60s tick to keep relative timestamps fresh ---- */
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const handleScroll = () => {
     const el = messageListRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    autoScrollRef.current = atBottom;
+    const nowAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    autoScrollRef.current = nowAtBottom;
+    // Only flip state (avoids re-render storms on every scroll tick).
+    setAtBottom((prev) => (prev === nowAtBottom ? prev : nowAtBottom));
+    if (nowAtBottom) setNewCount(0);
   };
+
+  const scrollToLatest = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    autoScrollRef.current = true;
+    setAtBottom(true);
+    setNewCount(0);
+  };
+
+  const toggleSection = (key: string) => {
+    setCollapsedSections((s) => {
+      const next = { ...s, [key]: !s[key] };
+      try { localStorage.setItem("taos-chat-collapsed", JSON.stringify(next)); } catch { /* best-effort */ }
+      return next;
+    });
+  };
+  // When a section is collapsed, still surface channels that are unread or
+  // currently selected (Slack behavior), so nothing important is hidden.
+  const visibleInSection = (items: Channel[], key: string) =>
+    collapsedSections[key]
+      ? items.filter((ch) => (unread[ch.id] ?? 0) > 0 || ch.id === selectedChannel)
+      : items;
 
   /* ---- typing emitter + slash menu derived state ---- */
   const emitTyping = useTypingEmitter(selectedChannel, "user");
@@ -769,12 +999,29 @@ export function MessagesApp({
   /* ---- mutex: settings vs thread panel ---- */
   const handleOpenSettings = () => {
     closeThread();
+    setShowAllThreads(false);
+    setShowSearch(false);
     setShowSettings(true);
   };
   const handleOpenThreadFor = (channelId: string, parentId: string) => {
     setShowSettings(false);
+    setShowAllThreads(false);
+    setShowSearch(false);
     openThreadFor(channelId, parentId);
   };
+
+  // Cmd/Ctrl+K opens the quick channel switcher (suppressing the browser
+  // default). Idempotent: re-pressing while open does not reset it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setShowSwitcher(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   /* ---- send message ---- */
   const sendMessage = async () => {
@@ -813,6 +1060,8 @@ export function MessagesApp({
           return;
         }
         setInput("");
+        if (selectedChannel) saveDraft(selectedChannel, "");
+        setNewDividerAtId(null);
         setPendingAttachments([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
@@ -844,6 +1093,8 @@ export function MessagesApp({
           if ((body as { handled?: string }).handled) {
             setSendError(null);
             setInput("");
+            if (selectedChannel) saveDraft(selectedChannel, "");
+            setNewDividerAtId(null);
             autoScrollRef.current = true;
             if (inputRef.current) inputRef.current.style.height = "auto";
             return;
@@ -880,6 +1131,8 @@ export function MessagesApp({
       }
     }
     setInput("");
+    if (selectedChannel) saveDraft(selectedChannel, "");
+    setNewDividerAtId(null);
     autoScrollRef.current = true;
     if (inputRef.current) inputRef.current.style.height = "auto";
   };
@@ -887,6 +1140,13 @@ export function MessagesApp({
   /* ---- typing indicator ---- */
   const handleInputChange = (val: string) => {
     setInput(val);
+    if (selectedChannel) saveDraft(selectedChannel, val);
+    // @mention detection: is the cursor inside an @token (no whitespace, the
+    // @ at the start or after whitespace)? If so, enter mention mode.
+    const pos = inputRef.current?.selectionStart ?? val.length;
+    const m = val.slice(0, pos).match(/(?:^|\s)@([^\s@]*)$/);
+    const part = m ? (m[1] ?? "") : "";
+    setMention(m ? { partial: part, atIndex: pos - part.length - 1 } : null);
     // auto-resize textarea
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
@@ -906,6 +1166,8 @@ export function MessagesApp({
 
   /* ---- key handler ---- */
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // The mention popover (when open) owns Enter/Tab via a capture listener
+    // that stops propagation, so this send handler never sees those keys.
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -913,6 +1175,15 @@ export function MessagesApp({
   };
 
   /* ---- file upload ---- */
+  // Re-upload a File-based attachment (used by the retry affordance). Keeps the
+  // success/failure state updates identical to a first attempt.
+  const uploadFileAttachment = (id: string, file: File) => {
+    setPendingAttachments((p) => p.map((x) => (x.id === id ? { ...x, uploading: true, error: undefined } : x)));
+    uploadDiskFile(file, selectedChannel ?? undefined)
+      .then((rec) => setPendingAttachments((p) => p.map((x) => (x.id === id ? { ...x, record: rec, uploading: false, error: undefined } : x))))
+      .catch((err) => setPendingAttachments((p) => p.map((x) => (x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x))));
+  };
+
   const handleFileUpload = async () => {
     const selections = await openFilePicker({
       sources: ["disk", "workspace", "agent-workspace"],
@@ -922,7 +1193,7 @@ export function MessagesApp({
       const id = Math.random().toString(36).slice(2);
       const filename = sel.source === "disk" ? sel.file.name : sel.path.split("/").pop() || "";
       const size = sel.source === "disk" ? sel.file.size : 0;
-      setPendingAttachments((p) => [...p, { id, filename, size, uploading: true }]);
+      setPendingAttachments((p) => [...p, { id, filename, size, uploading: true, file: sel.source === "disk" ? sel.file : undefined }]);
       try {
         const rec = sel.source === "disk"
           ? await uploadDiskFile(sel.file, selectedChannel ?? undefined)
@@ -1114,6 +1385,49 @@ export function MessagesApp({
   const currentChannel = allChannels.find((c) => c.id === selectedChannel);
   const isCurrentArchived = currentChannel?.settings?.archived === true;
 
+  /* ---- @mention autocomplete: candidates = channel members + "all" ---- */
+  const mentionCandidates: string[] = (() => {
+    if (!mention) return [];
+    const q = mention.partial.toLowerCase();
+    const pool = [...(currentChannel?.members ?? []).filter((m) => m !== "user"), "all"];
+    const pref = pool.filter((m) => m.toLowerCase().startsWith(q));
+    const sub = pool.filter((m) => !m.toLowerCase().startsWith(q) && m.toLowerCase().includes(q));
+    return [...pref, ...sub].slice(0, 6);
+  })();
+
+  const insertMention = (slug: string | undefined) => {
+    if (!mention || !slug) return;
+    const el = inputRef.current;
+    const pos = el?.selectionStart ?? input.length;
+    const next = input.slice(0, mention.atIndex) + "@" + slug + " " + input.slice(pos);
+    setInput(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      if (el) {
+        const caret = mention.atIndex + slug.length + 2; // past "@slug "
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  };
+
+  useEffect(() => { setMentionSel(0); }, [mention?.partial]);
+
+  // Capture Arrow/Enter/Tab/Escape while the mention popover is open. Capture
+  // phase + stopPropagation so the composer's send handler never sees them.
+  useEffect(() => {
+    if (!mention || mentionCandidates.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setMention(null); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); setMentionSel((s) => Math.min(mentionCandidates.length - 1, s + 1)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); setMentionSel((s) => Math.max(0, s - 1)); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); insertMention(mentionCandidates[mentionSel]); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mention, mentionCandidates.join(","), mentionSel]);
+
   /* ---- project-grouped channels for sidebar (standalone mode) ---- */
   const projectGroups = (() => {
     const projectChannels = channels.filter((c) => c.project_id);
@@ -1179,11 +1493,19 @@ export function MessagesApp({
         </div>
       ) : SECTIONS.map((section) => (
         <div key={section.label} style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => toggleSection(section.label)}
+            aria-expanded={!collapsedSections[section.label]}
+            style={{ fontSize: 12, textTransform: "uppercase" as const, letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", width: "100%" }}
+          >
+            <ChevronRight size={13} aria-hidden="true" style={{ transition: "transform 0.15s", transform: collapsedSections[section.label] ? "none" : "rotate(90deg)" }} />
             {section.icon} {section.label}
-          </div>
-          {section.items.length === 0 ? (
-            <div style={{ padding: "0 20px", fontSize: 12, color: "rgba(255,255,255,0.2)", fontStyle: "italic" }}>None yet</div>
+          </button>
+          {visibleInSection(section.items, section.label).length === 0 ? (
+            collapsedSections[section.label] ? null : (
+              <div style={{ padding: "0 20px", fontSize: 12, color: "rgba(255,255,255,0.2)", fontStyle: "italic" }}>None yet</div>
+            )
           ) : (
             <div
               style={{
@@ -1194,7 +1516,7 @@ export function MessagesApp({
                 overflow: "hidden",
               }}
             >
-              {section.items.map((ch, idx, arr) => (
+              {visibleInSection(section.items, section.label).map((ch, idx, arr) => (
                 <button
                   key={ch.id}
                   type="button"
@@ -1416,13 +1738,23 @@ export function MessagesApp({
           </div>
         ) : SECTIONS.map((section) => (
           <div key={section.label}>
-            <div className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/30 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => toggleSection(section.label)}
+              aria-expanded={!collapsedSections[section.label]}
+              className="w-full px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/30 hover:text-white/50 flex items-center gap-1.5 transition-colors"
+            >
+              <ChevronRight
+                size={11}
+                aria-hidden="true"
+                className={`transition-transform ${collapsedSections[section.label] ? "" : "rotate-90"}`}
+              />
               {section.icon} {section.label}
-            </div>
-            {section.items.length === 0 && (
+            </button>
+            {!collapsedSections[section.label] && section.items.length === 0 && (
               <div className="px-3 py-1 text-[11px] text-white/20 italic">None yet</div>
             )}
-            {section.items.map((ch) => (
+            {visibleInSection(section.items, section.label).map((ch) => (
               <Button
                 key={ch.id}
                 variant={selectedChannel === ch.id ? "secondary" : "ghost"}
@@ -1556,13 +1888,27 @@ export function MessagesApp({
   /* ---------------------------------------------------------------- */
 
   const messageAreaUI = (
-    <div className="flex-1 flex flex-col min-w-0 h-full">
+    <div className="relative flex-1 flex flex-col min-w-0 h-full">
+      {selectedChannel && !atBottom && (
+        <button
+          type="button"
+          onClick={scrollToLatest}
+          aria-label="Jump to latest"
+          className="absolute right-4 bottom-24 z-20 flex items-center gap-1.5 px-3 h-9 rounded-full bg-zinc-800 border border-white/15 text-white/80 hover:text-white shadow-lg hover:bg-zinc-700 transition-colors"
+        >
+          <ChevronDown size={16} aria-hidden="true" />
+          {newCount > 0 && <span className="text-[11px] font-semibold">{newCount} new</span>}
+        </button>
+      )}
       {!selectedChannel ? (
-        /* empty state */
+        /* empty state: nothing selected yet */
         <div className="flex-1 flex items-center justify-center text-white/20">
-          <div className="text-center">
+          <div className="text-center px-6">
             <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm">Select a channel to start chatting</p>
+            <p className="text-sm mb-3">Pick a channel or start a DM</p>
+            <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
+              New channel
+            </Button>
           </div>
         </div>
       ) : (
@@ -1623,12 +1969,55 @@ export function MessagesApp({
                           el.scrollIntoView({ behavior: "smooth", block: "center" });
                           el.classList.add("data-highlight");
                           setTimeout(() => el.classList.remove("data-highlight"), 2000);
+                        } else {
+                          // Only ~50 messages load; a pin older than that is not in the DOM.
+                          setSendError("Message is older than the loaded history");
                         }
                       }}
                       onClose={() => setPinnedPopoverOpen(false)}
                     />
                   )}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showAllThreads) {
+                      setShowAllThreads(false);
+                    } else {
+                      closeThread();
+                      setShowSettings(false);
+                      setShowSearch(false);
+                      setShowAllThreads(true);
+                    }
+                  }}
+                  className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
+                  aria-label={showAllThreads ? "Hide all threads" : "Show all threads"}
+                  aria-expanded={showAllThreads}
+                  aria-controls="all-threads-panel"
+                  title="All threads"
+                >
+                  <MessagesSquare size={14} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showSearch) {
+                      setShowSearch(false);
+                    } else {
+                      closeThread();
+                      setShowSettings(false);
+                      setShowAllThreads(false);
+                      setShowSearch(true);
+                    }
+                  }}
+                  className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
+                  aria-label={showSearch ? "Hide search" : "Search messages"}
+                  aria-expanded={showSearch}
+                  aria-controls="search-panel"
+                  title="Search"
+                >
+                  <Search size={14} aria-hidden="true" />
+                </button>
               </div>
               {currentChannel?.description && (
                 <div className="text-[11px] text-white/35 truncate">{currentChannel.description}</div>
@@ -1667,7 +2056,7 @@ export function MessagesApp({
                 e.preventDefault();
                 for (const f of Array.from(e.dataTransfer.files)) {
                   const id = Math.random().toString(36).slice(2);
-                  setPendingAttachments((p) => [...p, { id, filename: f.name, size: f.size, uploading: true }]);
+                  setPendingAttachments((p) => [...p, { id, filename: f.name, size: f.size, uploading: true, file: f }]);
                   uploadDiskFile(f, selectedChannel ?? undefined)
                     .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
                     .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
@@ -1677,15 +2066,27 @@ export function MessagesApp({
               shellFileDropTarget.dropHandlers.onDrop(e);
             }}
           >
-            {messages.length === 0 && (
-              <div className="flex items-center justify-center h-full text-white/20 text-sm">
-                No messages yet. Say something!
+            {messages.length === 0 && fetchedChannel === selectedChannel && (
+              <div className="flex flex-col items-center justify-center h-full text-white/25 text-center px-6">
+                <MessageCircle size={40} className="mb-3 opacity-30" />
+                <p className="text-sm">
+                  No messages yet. Say hello to{" "}
+                  {currentChannel?.type === "dm"
+                    ? `@${(currentChannel.members ?? []).find((m) => m !== "user") ?? "them"}`
+                    : currentChannel?.name
+                      ? `#${currentChannel.name}`
+                      : "this channel"}
+                  .
+                </p>
               </div>
             )}
             {messages.map((msg, i) => {
               const isAgent = msg.author_type === "agent";
               const prev = i > 0 ? messages[i - 1] : undefined;
               const showAuthor = !prev || prev.author_id !== msg.author_id;
+              const prevDay = prev ? new Date(toMs(prev.created_at)).toDateString() : null;
+              const currDay = new Date(toMs(msg.created_at)).toDateString();
+              const showDaySeparator = !prev || prevDay !== currDay;
               const authorState = resolveAuthorDisplayState(
                 msg.author_id,
                 msg.author_type,
@@ -1700,8 +2101,26 @@ export function MessagesApp({
                     ? "Agent removed"
                     : undefined;
               return (
+                <React.Fragment key={msg.id}>
+                {showDaySeparator && (
+                  <div className="flex items-center gap-3 my-4 select-none">
+                    <div className="flex-1 h-px bg-white/10" />
+                    <span className="text-[11px] text-white/40 font-medium">{dayLabel(msg.created_at)}</span>
+                    <div className="flex-1 h-px bg-white/10" />
+                  </div>
+                )}
+                {newDividerAtId === msg.id && (
+                  <div
+                    role="separator"
+                    aria-label="New messages"
+                    className="flex items-center gap-3 my-3 select-none"
+                  >
+                    <div className="flex-1 h-px bg-red-400/40" />
+                    <span className="text-[11px] text-red-400 font-semibold">New</span>
+                    <div className="flex-1 h-px bg-red-400/40" />
+                  </div>
+                )}
                 <div
-                  key={msg.id}
                   data-message-id={msg.id}
                   className={`group relative px-3 py-1 rounded-md transition-colors hover:bg-white/[0.03] ${
                     isAgent && !isDeadAgent ? "bg-blue-500/[0.04]" : ""
@@ -1754,7 +2173,10 @@ export function MessagesApp({
                           {authorState === "archived" ? "inactive" : "removed"}
                         </span>
                       )}
-                      <span className={`text-[11px] ${isDeadAgent ? "text-white/15" : "text-white/25"}`}>{relativeTime(msg.created_at)}</span>
+                      <span
+                        className={`text-[11px] ${isDeadAgent ? "text-white/15" : "text-white/25"}`}
+                        title={new Date(toMs(msg.created_at)).toLocaleString()}
+                      >{relativeTime(msg.created_at, nowMs)}</span>
                       {msg.edited_at && <span className="text-[10px] text-white/20">(edited)</span>}
                     </div>
                   )}
@@ -1833,7 +2255,16 @@ export function MessagesApp({
                     return (
                       <div className="absolute top-0 right-2 -translate-y-1/2 z-10">
                         <MessageHoverActions
-                          onReact={() => setShowEmoji(showEmoji === msg.id ? null : msg.id)}
+                          onReact={() => {
+                            if (showEmoji && showEmoji.messageId === msg.id) {
+                              setShowEmoji(null);
+                              return;
+                            }
+                            const row = document.querySelector(`[data-message-id="${msg.id}"]`) as HTMLElement | null;
+                            const rect = row?.getBoundingClientRect();
+                            if (!rect) return;
+                            setShowEmoji({ messageId: msg.id, rect });
+                          }}
                           onReplyInThread={() => handleOpenThreadFor(msg.channel_id ?? selectedChannel ?? "", msg.id)}
                           onOverflow={(e) => {
                             e.preventDefault();
@@ -1876,21 +2307,55 @@ export function MessagesApp({
                     />
                   )}
 
-                  {/* emoji picker */}
-                  {showEmoji === msg.id && (
-                    <div className="absolute right-2 top-5 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 flex gap-1 z-10">
-                      {EMOJI_PICKER.map((em) => (
-                        <button
-                          key={em}
-                          onClick={() => toggleReaction(msg.id, em)}
-                          className="text-lg hover:bg-white/10 rounded p-0.5 transition-colors"
-                        >
-                          {em}
-                        </button>
-                      ))}
+                  {/* emoji picker — rendered in a portal to avoid clipping by the scrollable list */}
+                  {showEmoji && showEmoji.messageId === msg.id && createPortal(
+                    (() => {
+                      const POPOVER_W = 300;
+                      const POPOVER_H = 360;
+                      const vw = window.innerWidth;
+                      const vh = window.innerHeight;
+                      const r = showEmoji.rect;
+                      // Upper bounds are clamped to >=8 so a viewport smaller
+                      // than the popover (with margins) cannot produce a
+                      // negative limit and let Math.min return a value < 8.
+                      const top = Math.max(8, Math.min(r.top, Math.max(8, vh - POPOVER_H - 8)));
+                      const left = Math.max(8, Math.min(r.right - POPOVER_W, Math.max(8, vw - POPOVER_W - 8)));
+                      return (
+                    <div
+                      data-emoji-popover="1"
+                      role="dialog"
+                      aria-label="Emoji reactions"
+                      className="fixed z-50 bg-zinc-800 border border-white/10 rounded-lg shadow-xl p-2 w-[300px] h-[360px] flex flex-col gap-2"
+                      style={{ top, left }}
+                    >
+                      <div className="flex gap-1 shrink-0">
+                        {EMOJI_PICKER.map((em) => (
+                          <button
+                            key={em}
+                            onClick={() => toggleReaction(msg.id, em)}
+                            className="text-lg hover:bg-white/10 rounded p-0.5 transition-colors"
+                          >
+                            {em}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        <Picker
+                          theme={Theme.DARK}
+                          width="100%"
+                          height="100%"
+                          onEmojiClick={(d) => {
+                            toggleReaction(msg.id, d.emoji);
+                          }}
+                        />
+                      </div>
                     </div>
+                      );
+                    })(),
+                    document.body,
                   )}
                 </div>
+                </React.Fragment>
               );
             })}
             <div ref={messagesEndRef} />
@@ -1943,7 +2408,16 @@ export function MessagesApp({
             items={pendingAttachments}
             onRemove={(id) => setPendingAttachments((p) => p.filter((x) => x.id !== id))}
             onRetry={(id) => {
-              setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: "retry not yet supported — remove and re-add" } : x));
+              const entry = pendingAttachments.find((x) => x.id === id);
+              if (!entry) return;
+              if (!entry.file) {
+                // Path-based attachment (no File kept): can only re-add.
+                setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, error: "Can't retry, remove and re-add" } : x));
+                return;
+              }
+              if ((entry.retries ?? 0) >= 3) return;
+              setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, retries: (x.retries ?? 0) + 1 } : x));
+              uploadFileAttachment(id, entry.file);
             }}
           />
 
@@ -1985,6 +2459,27 @@ export function MessagesApp({
                   onClose={() => { /* leave input as-is; user can Esc or delete */ }}
                 />
               )}
+              {mention && mentionCandidates.length > 0 && !showSlash && (
+                <div
+                  role="listbox"
+                  aria-label="Mention a member"
+                  className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
+                >
+                  {mentionCandidates.map((slug, i) => (
+                    <button
+                      key={slug}
+                      role="option"
+                      aria-selected={i === mentionSel}
+                      onMouseEnter={() => setMentionSel(i)}
+                      onMouseDown={(e) => { e.preventDefault(); insertMention(slug); }}
+                      className={`w-full text-left px-3 py-1.5 flex items-center gap-2 ${i === mentionSel ? "bg-white/10" : "hover:bg-white/5"}`}
+                    >
+                      <AtSign size={13} className="text-white/40" aria-hidden="true" />
+                      <span className="font-mono text-[13px]">@{slug}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className={`flex items-end gap-2 rounded-xl border px-2 py-1.5 ${isCurrentArchived ? "bg-white/[0.02] border-white/[0.04] opacity-50" : "bg-white/[0.06] border-white/[0.08]"}`}>
                 <Button
                   variant="ghost"
@@ -2001,6 +2496,7 @@ export function MessagesApp({
                   value={input}
                   onChange={(e) => !isCurrentArchived && handleInputChange(e.target.value)}
                   onKeyDown={(e) => !isCurrentArchived && handleKeyDown(e)}
+                  onBlur={() => setMention(null)}
                   onPaste={(e) => {
                     if (!e.clipboardData) return;
                     const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
@@ -2008,7 +2504,7 @@ export function MessagesApp({
                     e.preventDefault();
                     for (const f of files) {
                       const id = Math.random().toString(36).slice(2);
-                      setPendingAttachments((p) => [...p, { id, filename: f.name || "pasted.png", size: f.size, uploading: true }]);
+                      setPendingAttachments((p) => [...p, { id, filename: f.name || "pasted.png", size: f.size, uploading: true, file: f }]);
                       uploadDiskFile(f, selectedChannel ?? undefined)
                         .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
                         .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
@@ -2161,6 +2657,7 @@ export function MessagesApp({
           parentId={openThread.parentId}
           onClose={closeThread}
           isFullscreen={isMobile}
+          liveReplies={threadLiveReplies}
           authorCtx={{ currentUserId, currentUserDisplayName }}
           onSend={async (content, attachments) => {
             const r = await fetch("/api/chat/messages", {
@@ -2181,6 +2678,61 @@ export function MessagesApp({
               throw new Error((body as { error?: string }).error || `HTTP ${r.status}`);
             }
           }}
+        />
+      )}
+
+      {/* ---- All Threads Panel ---- */}
+      {showAllThreads && selectedChannel && !openThread && !showSettings && !showSearch && (
+        <AllThreadsList
+          channelId={selectedChannel}
+          onClose={() => setShowAllThreads(false)}
+          onJumpToThread={(parentId) => {
+            setShowAllThreads(false);
+            openThreadFor(selectedChannel, parentId);
+          }}
+          authorCtx={{ currentUserId, currentUserDisplayName }}
+        />
+      )}
+
+      {/* ---- Search Panel ---- */}
+      {showSearch && !openThread && !showSettings && !showAllThreads && (
+        <SearchPanel
+          onJump={(channelId, messageId) => {
+            setShowSearch(false);
+            if (channelId !== selectedChannel) {
+              // Switching channel triggers fetchMessages; the scroll happens
+              // once the new messages render (the rAF retry below waits for it).
+              setSelectedChannel(channelId);
+            }
+            // Poll across a few frames so a slow channel switch/render still
+            // lands instead of relying on a single fixed delay. If the target
+            // is not in the first 50 loaded messages it never appears, so the
+            // jump silently no-ops (search hits are not paginated here).
+            let attempts = 0;
+            const tryScroll = () => {
+              const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+              if (el) {
+                el.scrollIntoView({ behavior: "smooth", block: "center" });
+                el.classList.add("data-highlight");
+                setTimeout(() => el.classList.remove("data-highlight"), 2000);
+                return;
+              }
+              if (attempts++ < 40) requestAnimationFrame(tryScroll);
+            };
+            requestAnimationFrame(tryScroll);
+          }}
+          onClose={() => setShowSearch(false)}
+          channels={allChannels.map((c) => ({ id: c.id, name: c.name }))}
+          authorCtx={{ currentUserId, currentUserDisplayName }}
+        />
+      )}
+
+      {/* ---- Quick channel switcher (Cmd/Ctrl+K) ---- */}
+      {showSwitcher && (
+        <ChannelSwitcher
+          channels={channels.map((c) => ({ id: c.id, name: c.name }))}
+          onSelect={(id) => setSelectedChannel(id)}
+          onClose={() => setShowSwitcher(false)}
         />
       )}
 

@@ -63,6 +63,37 @@ export function getApp(id: string): AppManifest | undefined {
   return apps.find((a) => a.id === id);
 }
 
+/** Friendly synonyms → canonical app id, for tokens that are neither an id
+ *  nor an exact app name. Lets deep links and the agent say "monitor" or
+ *  "chat" instead of "dashboard" / "messages". */
+const APP_ALIASES: Record<string, string> = {
+  activity: "dashboard",
+  "activity-monitor": "dashboard",
+  monitor: "dashboard",
+  chat: "messages",
+  assistant: "taos-agent",
+  agent: "taos-agent",
+};
+
+/**
+ * Resolve a user- or agent-supplied app token to a registered manifest.
+ * Matches in order: exact id, alias, then case-insensitive name. Powers the
+ * deep-navigation API (`?app=` and the `taos:open-app` event) so callers can
+ * use friendly names ("activity", "Activity", "monitor") instead of ids.
+ */
+export function resolveApp(token: string): AppManifest | undefined {
+  const key = token.trim().toLowerCase();
+  if (!key) return undefined;
+  const byId = apps.find((a) => a.id.toLowerCase() === key);
+  if (byId) return byId;
+  const aliasId = APP_ALIASES[key];
+  if (aliasId) {
+    const byAlias = apps.find((a) => a.id === aliasId);
+    if (byAlias) return byAlias;
+  }
+  return apps.find((a) => a.name.toLowerCase() === key);
+}
+
 export function getAppsByCategory(category: AppManifest["category"]): AppManifest[] {
   return apps.filter((a) => a.category === category);
 }

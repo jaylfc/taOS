@@ -7,8 +7,7 @@ type Msg = {
   author_id: string;
   author_type?: "user" | "agent" | "system";
   content: string;
-  created_at?: number;
-  [key: string]: unknown;
+  created_at?: number | string;
 };
 
 export function ThreadPanel({
@@ -17,6 +16,7 @@ export function ThreadPanel({
   onClose,
   onSend,
   isFullscreen = false,
+  liveReplies = [],
   authorCtx = { currentUserId: null, currentUserDisplayName: null },
 }: {
   channelId: string;
@@ -24,6 +24,9 @@ export function ThreadPanel({
   onClose: () => void;
   onSend: (content: string, attachments: AttachmentRecord[]) => Promise<void>;
   isFullscreen?: boolean;
+  /** Replies that arrived over the WS while the panel is open. Merged with the
+   *  initial fetch, de-duplicated by id. */
+  liveReplies?: Msg[];
   authorCtx?: AuthorContext;
 }) {
   const [parent, setParent] = useState<Msg | null>(null);
@@ -33,6 +36,26 @@ export function ThreadPanel({
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Merge the fetched replies with any live ones, de-duped by id (a reply can
+  // appear in both the initial fetch and the WS stream).
+  const renderedReplies: Msg[] = (() => {
+    const seen = new Set<string>();
+    const out: Msg[] = [];
+    for (const m of [...msgs, ...liveReplies]) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push(m);
+    }
+    return out;
+  })();
+
+  // Scroll to the bottom when a live reply lands.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [liveReplies.length]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -104,14 +127,14 @@ export function ThreadPanel({
         >{isFullscreen ? "◀" : "✕"}</button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
         {parent && (
           <div className="pb-3 border-b border-white/10">
             <div className="text-xs text-white/50 mb-1">{displayAuthor(parent, authorCtx)}</div>
             <div className="text-sm">{parent.content}</div>
           </div>
         )}
-        {msgs.map((m) => (
+        {renderedReplies.map((m) => (
           <div key={m.id}>
             <div className="text-xs text-white/50 mb-0.5">{displayAuthor(m, authorCtx)}</div>
             <div className="text-sm">{m.content}</div>

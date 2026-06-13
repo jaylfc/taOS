@@ -6,8 +6,27 @@ from unittest.mock import patch
 from tinyagentos.hardware import detect_hardware, get_hardware_profile, HardwareProfile
 from tinyagentos import hardware as hardware_mod
 from tinyagentos.hardware import _nvidia_vram_for_model, _amd_vram_for_model
+from tinyagentos.hardware import _soc_from_devicetree
 
 import pytest_asyncio
+
+
+class TestSocFromDeviceTree:
+    def test_rk3588_from_compatible_when_model_omits_it(self):
+        # The board name ("Orange Pi 5 Plus") does not contain the SoC; the
+        # compatible string does. Both files are concatenated before matching.
+        text = " orange pi 5 plus rockchip,rk3588-orangepi-5-plus rockchip,rk3588"
+        assert _soc_from_devicetree(text) == "rk3588"
+
+    def test_board_name_alone_does_not_match(self):
+        assert _soc_from_devicetree(" orange pi 5 plus") == ""
+
+    def test_raspberry_pi(self):
+        assert _soc_from_devicetree(" raspberry pi 5 brcm,bcm2712") == "bcm2712"
+        assert _soc_from_devicetree(" raspberry pi 4 model b") == "bcm2711"
+
+    def test_unknown_returns_empty(self):
+        assert _soc_from_devicetree(" generic x86 box") == ""
 
 
 class TestDetectHardware:

@@ -1,5 +1,32 @@
 import { describe, it, expect, vi } from "vitest";
-import { getOrRegisterServiceApp, prefetchApp } from "./app-registry";
+import { getOrRegisterServiceApp, prefetchApp, resolveApp } from "./app-registry";
+
+describe("resolveApp (deep-navigation token resolver)", () => {
+  it("resolves an exact app id", () => {
+    expect(resolveApp("messages")?.id).toBe("messages");
+  });
+
+  it("resolves a case-insensitive app name", () => {
+    // The Activity app's id is "dashboard"; its name is "Activity".
+    expect(resolveApp("Activity")?.id).toBe("dashboard");
+    expect(resolveApp("activity")?.id).toBe("dashboard");
+  });
+
+  it("resolves friendly aliases", () => {
+    expect(resolveApp("monitor")?.id).toBe("dashboard");
+    expect(resolveApp("chat")?.id).toBe("messages");
+  });
+
+  it("trims and lowercases the token", () => {
+    expect(resolveApp("  SETTINGS  ")?.id).toBe("settings");
+  });
+
+  it("returns undefined for unknown or empty tokens", () => {
+    expect(resolveApp("does-not-exist")).toBeUndefined();
+    expect(resolveApp("")).toBeUndefined();
+    expect(resolveApp("   ")).toBeUndefined();
+  });
+});
 
 describe("prefetchApp", () => {
   it("invokes the lazy component thunk once per app (memoized)", () => {

@@ -824,6 +824,20 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                   const cpuLabel = hardwareLabel("cpu", hw);
                   if (cpuLabel) cards.push({ kind: "cpu", label: cpuLabel, tierIdx: 2 });
 
+                  // The controller self-registers as a worker named "local"
+                  // (loopback url). Its NPU/CPU are already shown above as the
+                  // controller's own scheduler resources, so for the local node
+                  // only surface devices the controller does not already list
+                  // (e.g. an integrated GPU it does not schedule on). This
+                  // avoids the same physical hardware appearing twice.
+                  const isSelf =
+                    w.name === "local" ||
+                    /\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(w.url || "");
+                  const controllerTiers = new Set(schedulerStats.resources.map((res) => res.tier));
+                  const visibleCards = isSelf
+                    ? cards.filter((c) => !controllerTiers.has(c.tierIdx))
+                    : cards;
+
                   const tierLabels = ["GPU", "NPU", "CPU"];
                   const tierColors = [
                     "text-emerald-400 bg-emerald-500/10",
@@ -831,7 +845,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                     "text-sky-400 bg-sky-500/10",
                   ];
 
-                  return cards.map((card) => (
+                  return visibleCards.map((card) => (
                     <div
                       key={`${w.name}-${card.kind}`}
                       className={`p-2 rounded-lg border ${online ? "bg-white/[0.02] border-white/5" : "bg-white/[0.01] border-white/5 opacity-60"}`}
