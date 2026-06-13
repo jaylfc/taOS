@@ -693,7 +693,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and guidelines. Jo
 
 TinyAgentOS makes AI agents accessible on affordable hardware.
 
-- **Contact:** jaylfc25@gmail.com
+- **Website:** [taos.my](https://taos.my)
+- **Contact:** info@taos.my
 - **Donate:** [Buy Me a Coffee](https://buymeacoffee.com/jaylfc)
 - **Hardware donations/loans:** We test on real hardware. If you have spare SBCs, GPUs, or dev boards and want to help expand compatibility, reach out.
 
@@ -720,4 +721,4 @@ taOS is better for the people testing it, filing issues, and sending fixes:
 
 taOS Sustainable Use License v0.1 — source-available, not open source. See [LICENSE](LICENSE).
 
-Free to use, modify, and self-host for personal use and for your own organisation's internal business purposes — forever. A separate commercial license from JAN LABS LTD is required to sell taOS, host it as a paid service, or build it into a product or service you monetise (contact jaylfc25@gmail.com). Prior releases tagged under AGPL-3.0 remain available under AGPL-3.0.
+Free to use, modify, and self-host for personal use and for your own organisation's internal business purposes — forever. A separate commercial license from JAN LABS LTD is required to sell taOS, host it as a paid service, or build it into a product or service you monetise (contact info@taos.my). Prior releases tagged under AGPL-3.0 remain available under AGPL-3.0.

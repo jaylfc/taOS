@@ -233,4 +233,4 @@ Routes are registered in `app.py`. Route modules access stores via `request.app.
 
 ## Contact
 
-Questions not suited for a GitHub issue? Email jaylfc25@gmail.com.
+Questions not suited for a GitHub issue? Email info@taos.my.

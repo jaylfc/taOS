@@ -447,7 +447,7 @@ When filing a bug, it helps to include:
 - What you expected to happen vs. what actually happened
 - Relevant log output from `journalctl -u tinyagentos -n 50`
 
-**Email:** [jaylfc25@gmail.com](mailto:jaylfc25@gmail.com) — for anything that doesn't fit a GitHub issue.
+**Email:** [info@taos.my](mailto:info@taos.my) — for anything that doesn't fit a GitHub issue.
 
 **A note on maturity:** TinyAgentOS is in early development. If something doesn't work, it may genuinely be a bug rather than user error — please do report it. Contributions and hardware test reports are very welcome.
 
