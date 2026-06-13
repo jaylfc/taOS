@@ -2177,7 +2177,7 @@ export function MessagesApp({
                           isDeadAgent
                             ? "line-through text-shell-text-tertiary"
                             : isAgent
-                              ? "text-sky-500 dark:text-sky-400"
+                              ? "text-sky-500"
                               : "text-shell-text"
                         }`}
                         style={isDeadAgent ? { opacity: 0.55 } : undefined}
@@ -2186,7 +2186,7 @@ export function MessagesApp({
                         {displayAuthor(msg, { currentUserId, currentUserDisplayName })}
                       </span>
                       {isAgent && !isDeadAgent && (
-                        <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-600 dark:text-sky-300 px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
+                        <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-600 px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
                           <Bot size={10} aria-hidden="true" /> Agent
                         </span>
                       )}
@@ -2267,12 +2267,12 @@ export function MessagesApp({
                             aria-pressed={mine}
                             className={`text-[12px] rounded-full px-2 py-0.5 flex items-center gap-1 border transition-colors ${
                               mine
-                                ? "bg-sky-500/15 border-sky-500/40 text-sky-600 dark:text-sky-300"
+                                ? "bg-sky-500/15 border-sky-500/40 text-sky-600"
                                 : "bg-shell-surface border-shell-border hover:bg-shell-surface-hover text-shell-text-secondary"
                             }`}
                           >
                             <span>{emoji}</span>
-                            <span className={mine ? "text-sky-600 dark:text-sky-300 font-medium" : "text-shell-text-tertiary"}>{users.length}</span>
+                            <span className={mine ? "text-sky-600 font-medium" : "text-shell-text-tertiary"}>{users.length}</span>
                           </button>
                         );
                       })}
