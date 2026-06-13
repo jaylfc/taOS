@@ -59,19 +59,24 @@ export function SearchPanel({
   }, [onClose]);
 
   useEffect(() => {
-    if (query.trim().length < 2) {
+    const q = query.trim();
+    if (q.length < 2) {
+      // Cancel any in-flight request so a late response can't repopulate
+      // results after the user has cleared the query.
+      acRef.current?.abort();
+      acRef.current = null;
       setHits([]);
       setLoading(false);
       setError(null);
       return;
     }
+    const ac = new AbortController();
     const handle = setTimeout(() => {
       acRef.current?.abort();
-      const ac = new AbortController();
       acRef.current = ac;
       setLoading(true);
       setError(null);
-      fetch(`/api/chat/search?q=${encodeURIComponent(query)}`, {
+      fetch(`/api/chat/search?q=${encodeURIComponent(q)}`, {
         credentials: "include",
         signal: ac.signal,
       })
@@ -88,7 +93,10 @@ export function SearchPanel({
           if (!ac.signal.aborted) setLoading(false);
         });
     }, 300);
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      ac.abort();
+    };
   }, [query]);
 
   const grouped = new Map<string, SearchHit[]>();

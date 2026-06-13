@@ -2456,19 +2456,25 @@ export function MessagesApp({
             setShowSearch(false);
             if (channelId !== selectedChannel) {
               // Switching channel triggers fetchMessages; the scroll happens
-              // after the new messages render. If the target is not in the
-              // first 50 loaded messages, the scroll silently no-ops (the
-              // backend search hits are not paginated here).
+              // once the new messages render (the rAF retry below waits for it).
               setSelectedChannel(channelId);
             }
-            setTimeout(() => {
+            // Poll across a few frames so a slow channel switch/render still
+            // lands instead of relying on a single fixed delay. If the target
+            // is not in the first 50 loaded messages it never appears, so the
+            // jump silently no-ops (search hits are not paginated here).
+            let attempts = 0;
+            const tryScroll = () => {
               const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
               if (el) {
                 el.scrollIntoView({ behavior: "smooth", block: "center" });
                 el.classList.add("data-highlight");
                 setTimeout(() => el.classList.remove("data-highlight"), 2000);
+                return;
               }
-            }, channelId !== selectedChannel ? 200 : 0);
+              if (attempts++ < 40) requestAnimationFrame(tryScroll);
+            };
+            requestAnimationFrame(tryScroll);
           }}
           onClose={() => setShowSearch(false)}
           channels={allChannels.map((c) => ({ id: c.id, name: c.name }))}
