@@ -384,6 +384,10 @@ export function MessagesApp({
   });
   const [archivedChannels, setArchivedChannels] = useState<Channel[]>([]);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  // Collapsible sidebar sections, keyed by section label / project id, persisted.
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("taos-chat-collapsed") || "{}"); } catch { return {}; }
+  });
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [projectChannelExpanded, setProjectChannelExpanded] = useState<Record<string, boolean>>({});
   const [liveAgents, setLiveAgents] = useState<LiveAgent[]>([]);
@@ -931,6 +935,20 @@ export function MessagesApp({
     setNewCount(0);
   };
 
+  const toggleSection = (key: string) => {
+    setCollapsedSections((s) => {
+      const next = { ...s, [key]: !s[key] };
+      try { localStorage.setItem("taos-chat-collapsed", JSON.stringify(next)); } catch { /* best-effort */ }
+      return next;
+    });
+  };
+  // When a section is collapsed, still surface channels that are unread or
+  // currently selected (Slack behavior), so nothing important is hidden.
+  const visibleInSection = (items: Channel[], key: string) =>
+    collapsedSections[key]
+      ? items.filter((ch) => (unread[ch.id] ?? 0) > 0 || ch.id === selectedChannel)
+      : items;
+
   /* ---- typing emitter + slash menu derived state ---- */
   const emitTyping = useTypingEmitter(selectedChannel, "user");
   const showSlash = input.startsWith("/");
@@ -1373,11 +1391,19 @@ export function MessagesApp({
         </div>
       ) : SECTIONS.map((section) => (
         <div key={section.label} style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => toggleSection(section.label)}
+            aria-expanded={!collapsedSections[section.label]}
+            style={{ fontSize: 12, textTransform: "uppercase" as const, letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", width: "100%" }}
+          >
+            <ChevronRight size={13} aria-hidden="true" style={{ transition: "transform 0.15s", transform: collapsedSections[section.label] ? "none" : "rotate(90deg)" }} />
             {section.icon} {section.label}
-          </div>
-          {section.items.length === 0 ? (
-            <div style={{ padding: "0 20px", fontSize: 12, color: "rgba(255,255,255,0.2)", fontStyle: "italic" }}>None yet</div>
+          </button>
+          {visibleInSection(section.items, section.label).length === 0 ? (
+            collapsedSections[section.label] ? null : (
+              <div style={{ padding: "0 20px", fontSize: 12, color: "rgba(255,255,255,0.2)", fontStyle: "italic" }}>None yet</div>
+            )
           ) : (
             <div
               style={{
@@ -1388,7 +1414,7 @@ export function MessagesApp({
                 overflow: "hidden",
               }}
             >
-              {section.items.map((ch, idx, arr) => (
+              {visibleInSection(section.items, section.label).map((ch, idx, arr) => (
                 <button
                   key={ch.id}
                   type="button"
@@ -1610,13 +1636,23 @@ export function MessagesApp({
           </div>
         ) : SECTIONS.map((section) => (
           <div key={section.label}>
-            <div className="px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/30 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => toggleSection(section.label)}
+              aria-expanded={!collapsedSections[section.label]}
+              className="w-full px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/30 hover:text-white/50 flex items-center gap-1.5 transition-colors"
+            >
+              <ChevronRight
+                size={11}
+                aria-hidden="true"
+                className={`transition-transform ${collapsedSections[section.label] ? "" : "rotate-90"}`}
+              />
               {section.icon} {section.label}
-            </div>
-            {section.items.length === 0 && (
+            </button>
+            {!collapsedSections[section.label] && section.items.length === 0 && (
               <div className="px-3 py-1 text-[11px] text-white/20 italic">None yet</div>
             )}
-            {section.items.map((ch) => (
+            {visibleInSection(section.items, section.label).map((ch) => (
               <Button
                 key={ch.id}
                 variant={selectedChannel === ch.id ? "secondary" : "ghost"}
