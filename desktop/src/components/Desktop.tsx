@@ -1,10 +1,11 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { FolderPlus, Image, Monitor, Settings, LayoutGrid, Layers, BookmarkPlus } from "lucide-react";
 import { useProcessStore } from "@/stores/process-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useWidgetStore } from "@/stores/widget-store";
 import { useSnapZones } from "@/hooks/use-snap-zones";
-import { getApp, resolveApp } from "@/registry/app-registry";
+import { useDeepNavigation } from "@/hooks/use-deep-navigation";
+import { getApp } from "@/registry/app-registry";
 import { Window } from "./Window";
 import { SnapOverlay } from "./SnapOverlay";
 import { WidgetLayer } from "./WidgetLayer";
@@ -49,45 +50,9 @@ export function Desktop() {
     if (app) openWindow(appId, app.defaultSize);
   }, [openWindow]);
 
-  // Deep-navigation API. Opens an app from a `?app=` URL param on load (handy
-  // for tests, screenshots, and shareable links) and from a `taos:open-app`
-  // CustomEvent at runtime, so the taOS agent can drive the desktop for the
-  // user. A token may be an app id, exact name, or alias ("activity"); pass
-  // multiple comma-separated. Optional props deep-link into the app (e.g. a
-  // Messages channel) via `?appProps=<urlencoded-json>` or the event detail.
-  // Singleton apps are focused and re-receive props rather than duplicated.
-  useEffect(() => {
-    const openByToken = (token: string, props?: Record<string, unknown>) => {
-      const app = resolveApp(token);
-      if (app) openWindow(app.id, app.defaultSize, props);
-    };
-
-    const params = new URLSearchParams(window.location.search);
-    const requested = params.get("app");
-    if (requested) {
-      let props: Record<string, unknown> | undefined;
-      const rawProps = params.get("appProps");
-      if (rawProps) {
-        try {
-          props = JSON.parse(rawProps);
-        } catch {
-          /* malformed props: open the app without them */
-        }
-      }
-      for (const token of requested.split(",")) {
-        if (token.trim()) openByToken(token, props);
-      }
-    }
-
-    const onOpenApp = (e: Event) => {
-      const detail = (e as CustomEvent).detail as
-        | { app?: string; props?: Record<string, unknown> }
-        | undefined;
-      if (detail?.app) openByToken(detail.app, detail.props);
-    };
-    window.addEventListener("taos:open-app", onOpenApp);
-    return () => window.removeEventListener("taos:open-app", onOpenApp);
-  }, [openWindow]);
+  // Deep-navigation API: `?app=` URL param on load + `taos:open-app` event at
+  // runtime (lets the taOS agent drive the desktop). See the hook for details.
+  useDeepNavigation(openWindow);
 
   const menuItems: MenuItem[] = [
     {
