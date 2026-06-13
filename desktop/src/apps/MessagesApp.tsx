@@ -371,6 +371,9 @@ export function MessagesApp({
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
+  const unreadRef = useRef<Record<string, number>>({});
+  const pendingNewCountRef = useRef(0);
+  const [newDividerAtId, setNewDividerAtId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("disconnected");
   const [showCreate, setShowCreate] = useState(false);
@@ -480,8 +483,18 @@ export function MessagesApp({
       const res = await fetch(`/api/chat/channels/${channelId}/messages?limit=50`);
       if (res.ok) {
         const data = await res.json();
-        setMessages(data.messages ?? []);
+        const list: Message[] = data.messages ?? [];
+        setMessages(list);
         autoScrollRef.current = true;
+        const pending = pendingNewCountRef.current;
+        pendingNewCountRef.current = 0;
+        if (pending > 0 && list.length > 0) {
+          const idx = list.length - pending;
+          const atIdx = idx < 0 ? 0 : idx;
+          setNewDividerAtId(list[atIdx]?.id ?? null);
+        } else {
+          setNewDividerAtId(null);
+        }
       }
     } catch {
       /* offline */
@@ -668,6 +681,12 @@ export function MessagesApp({
     };
   }, [fetchChannels, fetchArchivedChannels, fetchAgentLists, connectWs]);
 
+  /* ---- keep unreadRef in sync with the unread state without re-running
+   * the channel-selection effect (which would re-capture the pending count). ---- */
+  useEffect(() => {
+    unreadRef.current = unread;
+  }, [unread]);
+
   /* ---- default-select A2A channel on first project visit ----
    * Also runs when the project switches: if the previously selected channel
    * is not in the new project's channel list, it's stale — fall back to
@@ -794,10 +813,14 @@ export function MessagesApp({
       if (inputRef.current) inputRef.current.style.height = "auto";
     }
     prevChannelRef.current = selectedChannel;
+    setNewDividerAtId(null);
     // join new
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "join", channel_id: selectedChannel }));
     }
+    // capture unread count before markRead clears it (read via ref so this
+    // effect does not re-run when markRead mutates the unread map).
+    pendingNewCountRef.current = unreadRef.current[selectedChannel] ?? 0;
     fetchMessages(selectedChannel);
     markRead(selectedChannel);
     setTypingHumans([]);
@@ -911,6 +934,7 @@ export function MessagesApp({
         }
         setInput("");
         if (selectedChannel) saveDraft(selectedChannel, "");
+        setNewDividerAtId(null);
         setPendingAttachments([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
@@ -943,6 +967,7 @@ export function MessagesApp({
             setSendError(null);
             setInput("");
             if (selectedChannel) saveDraft(selectedChannel, "");
+            setNewDividerAtId(null);
             autoScrollRef.current = true;
             if (inputRef.current) inputRef.current.style.height = "auto";
             return;
@@ -980,6 +1005,7 @@ export function MessagesApp({
     }
     setInput("");
     if (selectedChannel) saveDraft(selectedChannel, "");
+    setNewDividerAtId(null);
     autoScrollRef.current = true;
     if (inputRef.current) inputRef.current.style.height = "auto";
   };
@@ -1819,8 +1845,19 @@ export function MessagesApp({
                     ? "Agent removed"
                     : undefined;
               return (
+                <React.Fragment key={msg.id}>
+                {newDividerAtId === msg.id && (
+                  <div
+                    role="separator"
+                    aria-label="New messages"
+                    className="flex items-center gap-3 my-3 select-none"
+                  >
+                    <div className="flex-1 h-px bg-red-400/40" />
+                    <span className="text-[11px] text-red-400 font-semibold">New</span>
+                    <div className="flex-1 h-px bg-red-400/40" />
+                  </div>
+                )}
                 <div
-                  key={msg.id}
                   data-message-id={msg.id}
                   className={`group relative px-3 py-1 rounded-md transition-colors hover:bg-white/[0.03] ${
                     isAgent && !isDeadAgent ? "bg-blue-500/[0.04]" : ""
@@ -2052,6 +2089,7 @@ export function MessagesApp({
                     document.body,
                   )}
                 </div>
+                </React.Fragment>
               );
             })}
             <div ref={messagesEndRef} />
