@@ -1867,6 +1867,9 @@ export function MessagesApp({
                           el.scrollIntoView({ behavior: "smooth", block: "center" });
                           el.classList.add("data-highlight");
                           setTimeout(() => el.classList.remove("data-highlight"), 2000);
+                        } else {
+                          // Only ~50 messages load; a pin older than that is not in the DOM.
+                          setSendError("Message is older than the loaded history");
                         }
                       }}
                       onClose={() => setPinnedPopoverOpen(false)}
