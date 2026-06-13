@@ -9,6 +9,7 @@ import {
   Input,
   Label,
 } from "@/components/ui";
+import { GitHubConnect } from "./secrets/GitHubConnect";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -345,6 +346,9 @@ export function SecretsApp({ windowId: _windowId }: { windowId: string }) {
 
       {/* Content */}
       <div className="flex-1 overflow-auto">
+        <div className="p-4">
+          <GitHubConnect />
+        </div>
         {loading ? (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
             Loading secrets...

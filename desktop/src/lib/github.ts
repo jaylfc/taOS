@@ -1,3 +1,5 @@
+import { withCsrf } from "./csrf";
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -50,6 +52,26 @@ export interface GitHubAuthStatus {
   username?: string;
   method?: string;
 }
+
+export interface GitHubIdentity {
+  id: string;
+  login: string;
+  avatar_url: string;
+  created_at: number;
+}
+
+export interface DeviceStart {
+  user_code: string;
+  verification_uri: string;
+  device_code: string;
+  interval: number;
+  expires_in: number;
+}
+
+export type DevicePoll =
+  | { status: "pending"; slow_down?: boolean }
+  | { status: "connected"; identity: GitHubIdentity }
+  | { status: "error"; error: string };
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -196,4 +218,42 @@ export async function saveToLibrary(url: string): Promise<{ id: string; status: 
     categories: [],
     source: "github-browser",
   }, null);
+}
+
+/* ------------------------------------------------------------------ */
+/*  OAuth Device Flow (Connect GitHub)                                 */
+/* ------------------------------------------------------------------ */
+
+export async function startDeviceFlow(): Promise<DeviceStart> {
+  const res = await fetch(
+    "/api/github/oauth/device/start",
+    withCsrf({ method: "POST", headers: { Accept: "application/json" } }),
+  );
+  if (!res.ok) throw new Error("Failed to start GitHub connect");
+  return res.json();
+}
+
+export async function pollDeviceFlow(deviceCode: string): Promise<DevicePoll> {
+  const res = await fetch(
+    "/api/github/oauth/device/poll",
+    withCsrf({
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+  );
+  if (!res.ok) return { status: "error", error: "poll_failed" };
+  return res.json();
+}
+
+export async function listIdentities(): Promise<GitHubIdentity[]> {
+  return fetchJson<GitHubIdentity[]>("/api/github/identities", []);
+}
+
+export async function deleteIdentity(id: string): Promise<boolean> {
+  const res = await fetch(
+    `/api/github/identities/${encodeURIComponent(id)}`,
+    withCsrf({ method: "DELETE", headers: { Accept: "application/json" } }),
+  );
+  return res.ok;
 }
