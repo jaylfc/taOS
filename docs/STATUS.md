@@ -1,7 +1,7 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
 Last updated: 2026-06-13, @taOS (freshness sweep).
 
-Branch tips: master=6394a3ed (PR #845 batch). dev=cb0ee722 (8 ahead of master). On dev since #845: rkllama install fix (#843), brand rename to taOS + contact info@taos.my (#847), Light theme (#848), esbuild 0.28.1 RCE fix (#849), unified chat composer (#850), Agents app Apple-card redesign (#851), update reset-before-pull fix (#852), Chat Slack-polish (#853).
+Branch tips: master=6394a3ed (PR #845 batch). dev=09a497a2 (13 ahead of master). On dev since #845: rkllama install fix (#843), brand rename to taOS (#847), Light theme (#848), esbuild 0.28.1 RCE fix (#849), unified chat composer (#850), Agents redesign (#851), update reset-before-pull fix (#852), Chat Slack-polish (#853), agent kill switch (#857), doc fixes -- getting-started/CONTRIBUTING/README brand rename (#858-9-60 via GitHub API, parent 09a497a2).
 
 Session state: freshness sweep only. No active session crons armed this session.
 
@@ -10,8 +10,8 @@ WEBSITE: taos.my live. All 4 taos-website PRs merged (stats/changelog/nav/access
 CI: test suite parallelized via #839 (xdist -n auto). CodeRabbit may be out of credits -- do not merge on a fake rate-limit pass. Use @coderabbitai full review to retrigger; manual review OK for tiny already-reviewed PRs.
 
 OPEN PRs:
-- #857 feat(agents): top-bar agent kill switch (feat/agent-kill-switch) -- in review
-- #846 dependabot esbuild bump -- LIKELY SUPERSEDED by #849 (already on dev); verify and close if so
+- #859 fix(agents): kill switch surfaces failures -- Gitar review follow-up on #857, fix/kill-switch-error-handling
+- #846 dependabot esbuild bump -- SUPERSEDED by #849 (already on dev); close it
 - #476 DRAFT feat(userspace): App Runtime v1 -- stays DRAFT, not ready to merge
 
 Notable open issues (bugs first):
@@ -24,11 +24,12 @@ Notable open issues (bugs first):
 Done (since last STATUS.md update):
 - ALL 26 agent jobs COMPLETE and on master (via #845 batch).
 - Messages-polish (#838), agent manual templates (#842), CI parallelization (#839) all merged to dev then master.
-- Light theme (#848), esbuild RCE patch (#849), brand rename (#847), chat composer unified (#850), Agents redesign (#851), update flow fix (#852), Chat Slack-polish (#853) all on dev.
+- Light theme (#848), esbuild RCE patch (#849), brand rename (#847), chat composer unified (#850), Agents redesign (#851), update flow fix (#852), Chat Slack-polish (#853), agent kill switch (#857) all on dev.
+- This sweep: docs/STATUS.md, docs/getting-started.md, CONTRIBUTING.md, README.md brand rename residue fixed.
 
 Next queue:
-1. Verify and close #846 (superseded by #849).
-2. Land #857 (kill switch) after CI + review.
+1. Land #859 (kill switch error handling) after CI + review.
+2. Close #846 (superseded by #849).
 3. Fix #844 and #841 (bugs, high user impact).
 4. #825 key-scope fix.
 5. Desktop overhaul (#824) and widget epic: needs Jay design session first.
