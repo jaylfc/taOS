@@ -5,6 +5,7 @@ import { useWidgetStore } from "@/stores/widget-store";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useProcessStore } from "@/stores/process-store";
 import { StatusIndicators } from "./StatusIndicators";
+import { AgentKillSwitch } from "./AgentKillSwitch";
 import { withCsrf } from "@/lib/csrf";
 
 interface Props {
@@ -137,6 +138,7 @@ export function TopBar({ onSearchOpen, onAssistantOpen }: Props) {
       <div className="flex items-center gap-3 ml-auto">
         <StatusIndicators />
         <span className="text-xs text-shell-text-tertiary">{clock}</span>
+        <AgentKillSwitch />
         <PowerMenu />
         <button
           onClick={toggleWidgets}
