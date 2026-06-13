@@ -25,11 +25,20 @@ export function Desktop() {
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
   const wallpaperMobileImage = useThemeStore((s) => s.wallpaperMobileImage);
   const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
+  const wallpaperLightImage = useThemeStore((s) => s.wallpaperLightImage);
+  const wallpaperLightMobileImage = useThemeStore((s) => s.wallpaperLightMobileImage);
+  const wallpaperLightFallback = useThemeStore((s) => s.wallpaperLightFallback);
+  const scheme = useThemeStore((s) => s.scheme);
   const wallpaperKind = useThemeStore((s) => s.wallpaperKind);
   const wallpaperComponent = useThemeStore((s) => s.wallpaperComponent);
   const wallpaperOverlayText = useThemeStore((s) => s.wallpaperOverlayText);
   const showOverlayText = useThemeStore((s) => s.showOverlayText);
   const isAnimated = wallpaperKind === "animated";
+  // Invert the wallpaper with the theme: use the light variant when present.
+  const useLight = scheme === "light" && !!wallpaperLightImage;
+  const effImage = useLight ? wallpaperLightImage : wallpaperImage;
+  const effMobile = useLight ? wallpaperLightMobileImage : wallpaperMobileImage;
+  const effFallback = useLight ? wallpaperLightFallback : wallpaperFallback;
   const { showWidgets, toggleWidgets } = useWidgetStore();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [wallpaperPickerOpen, setWallpaperPickerOpen] = useState(false);
@@ -122,7 +131,7 @@ export function Desktop() {
   return (
     <div
       className="taos-wallpaper relative flex-1 overflow-hidden"
-      style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isAnimated ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isAnimated ? "none" : wallpaperMobileImage }}
+      style={{ backgroundColor: effFallback, ["--wallpaper-desktop" as never]: isAnimated ? "none" : effImage, ["--wallpaper-mobile" as never]: isAnimated ? "none" : effMobile }}
       onContextMenu={handleContextMenu}
       data-desktop-surface
     >

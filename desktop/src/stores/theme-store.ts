@@ -24,6 +24,12 @@ interface Wallpaper {
   // absent = no slogan. The overlay is generic, not tied to any wallpaper kind;
   // the user can toggle it off. Styling (colour/size/effects) defaults for now.
   overlayText?: string | null;
+  // Optional light-scheme variants. When the active theme reads as light, these
+  // are used instead so the wallpaper inverts with the theme. Fall back to the
+  // dark image when absent.
+  lightImage?: string;
+  lightMobileImage?: string;
+  lightFallback?: string;
 }
 
 const WALLPAPERS: Wallpaper[] = [
@@ -36,6 +42,10 @@ const WALLPAPERS: Wallpaper[] = [
     image: "url('/static/wallpaper-graphite.png')",
     mobileImage: "url('/static/wallpaper-graphite-mobile.png')",
     fallback: "#141415",
+    // Inverted variant (light field, dark network) for the light theme.
+    lightImage: "url('/static/wallpaper-graphite-light.png')",
+    lightMobileImage: "url('/static/wallpaper-graphite-light-mobile.png')",
+    lightFallback: "#eef0f3",
     kind: "image",
   },
   {
@@ -114,6 +124,12 @@ interface ThemeStore {
   wallpaperImage: string;
   wallpaperMobileImage: string;
   wallpaperFallback: string;
+  // Light-scheme variants (empty when the wallpaper has none). The desktop uses
+  // these when `scheme` is "light", so the wallpaper inverts with the theme.
+  wallpaperLightImage: string;
+  wallpaperLightMobileImage: string;
+  wallpaperLightFallback: string;
+  scheme: "light" | "dark";
   wallpaperKind: "image" | "animated";
   wallpaperComponent: string | null;
   wallpaperOverlayText: string | null;
@@ -137,6 +153,10 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   wallpaperImage: DEFAULT_WP.image,
   wallpaperMobileImage: DEFAULT_WP.mobileImage ?? DEFAULT_WP.image,
   wallpaperFallback: DEFAULT_WP.fallback,
+  wallpaperLightImage: DEFAULT_WP.lightImage ?? "",
+  wallpaperLightMobileImage: DEFAULT_WP.lightMobileImage ?? DEFAULT_WP.lightImage ?? "",
+  wallpaperLightFallback: DEFAULT_WP.lightFallback ?? DEFAULT_WP.fallback,
+  scheme: "dark",
   wallpaperKind: DEFAULT_WP.kind ?? "image",
   wallpaperComponent: DEFAULT_WP.component ?? null,
   wallpaperOverlayText: DEFAULT_WP.overlayText ?? null,
@@ -157,6 +177,9 @@ export const useThemeStore = create<ThemeStore>((set) => ({
         wallpaperImage: wp.image,
         wallpaperMobileImage: wp.mobileImage ?? wp.image,
         wallpaperFallback: wp.fallback,
+        wallpaperLightImage: wp.lightImage ?? "",
+        wallpaperLightMobileImage: wp.lightMobileImage ?? wp.lightImage ?? "",
+        wallpaperLightFallback: wp.lightFallback ?? wp.fallback,
         wallpaperKind: wp.kind ?? "image",
         wallpaperComponent: wp.component ?? null,
         wallpaperOverlayText: wp.overlayText ?? null,
@@ -238,8 +261,9 @@ export function applyThemeConfig(cfg: ThemeConfig) {
       _applied.push(k);
     }
   }
-  root.dataset.scheme = schemeFromBg(cfg.tokens?.["--color-shell-bg"]);
-  useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [] });
+  const scheme = schemeFromBg(cfg.tokens?.["--color-shell-bg"]);
+  root.dataset.scheme = scheme;
+  useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [], scheme });
   forceCompositingRepaint();
 }
 
@@ -248,7 +272,7 @@ export function revertTheme(opts?: { silent?: boolean }) {
   for (const k of _applied) root.style.removeProperty(k);
   _applied = [];
   root.dataset.scheme = "dark"; // base shell is dark
-  useThemeStore.setState({ structure: {}, effects: [] });
+  useThemeStore.setState({ structure: {}, effects: [], scheme: "dark" });
   // Skip when called from applyThemeConfig (which repaints once after applying
   // the new tokens) so a theme switch does not force two reflows.
   if (!opts?.silent) forceCompositingRepaint();
