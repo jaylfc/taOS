@@ -68,6 +68,8 @@ import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -236,21 +238,58 @@ function renderContent(text: string) {
 }
 
 function renderInline(text: string, keyPrefix: string) {
-  // basic markdown: bold, italic, inline code
-  const parts: (string | React.ReactElement)[] = [];
-  const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > last) parts.push(text.slice(last, match.index));
-    if (match[2]) parts.push(<strong key={`${keyPrefix}-${key++}`} className="font-semibold">{match[2]}</strong>);
-    else if (match[3]) parts.push(<em key={`${keyPrefix}-${key++}`} className="italic">{match[3]}</em>);
-    else if (match[4]) parts.push(<code key={`${keyPrefix}-${key++}`} className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono">{match[4]}</code>);
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
+  return [
+    <div key={keyPrefix}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        disallowedElements={["img"]}
+        components={{
+          p: ({ node, ...props }) => <p className="mb-1 last:mb-0" {...props} />,
+          a: ({ node, ...props }) => (
+            <a className="text-blue-400 underline" target="_blank" rel="noopener noreferrer" {...props} />
+          ),
+          code: ({ node, className, children, ...props }) => {
+            const isBlock = typeof className === "string" && /language-/.test(className);
+            if (isBlock) {
+              return <code className={className} {...props}>{children}</code>;
+            }
+            return (
+              <code className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono" {...props}>
+                {children}
+              </code>
+            );
+          },
+          ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-1" {...props} />,
+          ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-1" {...props} />,
+          blockquote: ({ node, ...props }) => (
+            <blockquote className="border-l-2 border-white/20 pl-3 text-white/70" {...props} />
+          ),
+          pre: ({ node, ...props }) => (
+            <pre className="my-2 overflow-x-auto max-w-full bg-black/30 border border-white/10 rounded p-2 text-[13px]" {...props} />
+          ),
+          table: ({ node, ...props }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="min-w-full text-left text-[13px]" {...props} />
+            </div>
+          ),
+          th: ({ node, ...props }) => (
+            <th className="border-b border-white/10 px-2 py-1 font-semibold" {...props} />
+          ),
+          td: ({ node, ...props }) => (
+            <td className="border-b border-white/5 px-2 py-1 align-top" {...props} />
+          ),
+          h1: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h2: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h3: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h4: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h5: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+          h6: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>,
+  ];
 }
 
 const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
