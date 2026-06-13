@@ -1,12 +1,12 @@
-# Getting Started with TinyAgentOS
+# Getting Started with taOS
 
-Welcome. This guide walks you through installing TinyAgentOS, getting your first AI agent running, and finding your way around the platform. It assumes you're comfortable with a Linux terminal but have never run an AI agent before — every concept is explained along the way.
+Welcome. This guide walks you through installing taOS, getting your first AI agent running, and finding your way around the platform. It assumes you're comfortable with a Linux terminal but have never run an AI agent before — every concept is explained along the way.
 
 ---
 
-## What is TinyAgentOS?
+## What is taOS?
 
-TinyAgentOS is a self-hosted platform for running AI agents on affordable hardware — a single-board computer, a budget PC, or anything in between. You get a web dashboard (no coding required) where you can browse an app store of agent frameworks and models, deploy agents in isolated containers, configure how they communicate (Telegram, Discord, web chat), and monitor everything in one place.
+taOS is a self-hosted platform for running AI agents on affordable hardware — a single-board computer, a budget PC, or anything in between. You get a web dashboard (no coding required) where you can browse an app store of agent frameworks and models, deploy agents in isolated containers, configure how they communicate (Telegram, Discord, web chat), and monitor everything in one place.
 
 Think of it like a home server for AI agents: you own the hardware, you own the data, and nothing phones home.
 
@@ -35,7 +35,7 @@ The platform itself uses roughly 345 MB of RAM when idle, so it runs comfortably
 
 - **OS:** Armbian or Debian-based Linux (Ubuntu works too). The installer handles everything else.
 - **Network:** The device needs internet access to download models and framework packages.
-- **Browser:** On any other device on the same network (laptop, phone, tablet). The TinyAgentOS web GUI runs on your device; you access it from your browser.
+- **Browser:** On any other device on the same network (laptop, phone, tablet). The taOS web GUI runs on your device; you access it from your browser.
 
 **SQLCipher (for the browser app's encrypted cookie jar)** — the browser app needs the SQLCipher C library installed at the system level before `pip install` can build its `sqlcipher3` Python binding:
 
@@ -58,14 +58,14 @@ curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/i
 
 This script will:
 1. Install system dependencies (`python3`, `git`, `nodejs`, `avahi-daemon` for mDNS, and others)
-2. Clone TinyAgentOS to `~/tinyagentos` (override with `TAOS_INSTALL_DIR`)
+2. Clone taOS to `~/tinyagentos` (override with `TAOS_INSTALL_DIR`)
 3. Create a Python virtual environment and install all Python packages
-4. Register and start a `systemd` service so TinyAgentOS runs automatically on boot
+4. Register and start a `systemd` service so taOS runs automatically on boot
 
 At the end, it prints your device's IP address:
 
 ```
-  TinyAgentOS installed successfully!
+  taOS installed successfully!
 
   Open: http://your-device-ip:6969
 
@@ -81,7 +81,7 @@ Open that URL in your browser. You're done with installation.
 
 ### Manual Install
 
-If you prefer to install manually or want to run TinyAgentOS in a specific location:
+If you prefer to install manually or want to run taOS in a specific location:
 
 ```bash
 # Clone the repository
@@ -92,7 +92,7 @@ cd tinyagentos
 python3 -m venv venv
 source venv/bin/activate
 
-# Install TinyAgentOS and its dependencies
+# Install taOS and its dependencies
 pip install -e .
 
 # Start the server
@@ -112,7 +112,7 @@ sudo systemctl enable --now tinyagentos
 
 ## 3. First Boot
 
-When you open `http://your-host:6969` for the first time, TinyAgentOS loads the **web desktop shell** directly — a full browser-based desktop environment with a dock, launchpad, window manager, and 26 bundled apps. On phones and tablets it automatically swaps to a touch-first mobile view with a home grid and card switcher. A setup wizard runs on first launch to walk you through hardware detection and your first agent.
+When you open `http://your-host:6969` for the first time, taOS loads the **web desktop shell** directly — a full browser-based desktop environment with a dock, launchpad, window manager, and 26 bundled apps. On phones and tablets it automatically swaps to a touch-first mobile view with a home grid and card switcher. A setup wizard runs on first launch to walk you through hardware detection and your first agent.
 
 ### Hardware Auto-Detection
 
@@ -138,7 +138,7 @@ You don't have to follow the wizard step-by-step — you can dismiss it and navi
 
 ## 3a. Using the Desktop Shell
 
-The desktop is the main way you'll interact with TinyAgentOS. It works like a regular operating system's desktop — but it runs entirely in your browser.
+The desktop is the main way you'll interact with taOS. It works like a regular operating system's desktop — but it runs entirely in your browser.
 
 ### The window manager
 
@@ -262,7 +262,7 @@ Here's a quick map of the apps available from the desktop dock and launchpad.
 | **Tasks** | Schedule recurring jobs for your agents — daily summaries, memory cleanup, data imports. Built-in presets for common patterns. |
 | **Import** | Drag and drop files to embed into an agent's memory. Supported formats: `.txt`, `.md`, `.pdf`, `.html`, `.json`, `.csv`. |
 | **Files** | Real virtual filesystem with your personal workspace and shared folders that agents can read and write to. |
-| **Settings** | System info, storage usage, backup/restore, update TinyAgentOS, test backend connections, toggle dark/light theme, and per-category toggles for User Memory auto-capture. taOS periodically checks for updates and reports an anonymous install count (a daily aggregate estimate, no identifiers); disable with `TAOS_NO_UPDATE_PING=1` or in Settings. |
+| **Settings** | System info, storage usage, backup/restore, update taOS, test backend connections, toggle dark/light theme, and per-category toggles for User Memory auto-capture. taOS periodically checks for updates and reports an anonymous install count (a daily aggregate estimate, no identifiers); disable with `TAOS_NO_UPDATE_PING=1` or in Settings. |
 
 ### OS apps
 
@@ -289,13 +289,13 @@ Here's a quick map of the apps available from the desktop dock and launchpad.
 
 ## 5a. Mobile Install (iOS / Android)
 
-TinyAgentOS works as a fullscreen Progressive Web App (PWA) on phones and tablets. Once installed, it hides the browser chrome, respects the device's safe area, and behaves like a native app.
+taOS works as a fullscreen Progressive Web App (PWA) on phones and tablets. Once installed, it hides the browser chrome, respects the device's safe area, and behaves like a native app.
 
 ### iOS / iPadOS
 
 1. Open `http://your-host:6969` in **Safari** (PWA install must go through Safari on iOS).
 2. Tap the **Share** button, then **Add to Home Screen**.
-3. Launch TinyAgentOS from the home screen icon — it opens fullscreen with no browser bars.
+3. Launch taOS from the home screen icon — it opens fullscreen with no browser bars.
 
 The Messages app has its own dedicated PWA at `http://your-host:6969/chat-pwa` — install it the same way to get a private, agent-only messenger on your home screen (works like an internal Discord).
 
@@ -313,11 +313,11 @@ The mobile shell uses a bottom **pill bar** for navigation: tap the pill to go h
 
 ## 5b. User Memory
 
-TinyAgentOS includes a personal memory system just for you, think of it as your own private notebook that the platform helps fill in automatically. It's separate from agent memories. Under the hood it is powered by taosmd (`pip install taosmd`, the same library that backs agent memories): writes go to taosmd's `POST /ingest/batch` endpoint and keyword reads go to `GET /search?mode=bm25`. A local SQLite FTS5 store acts as an automatic fallback if taosmd is unreachable. You configure the taosmd address via the `TAOS_USER_MEMORY_URL` environment variable.
+taOS includes a personal memory system just for you, think of it as your own private notebook that the platform helps fill in automatically. It's separate from agent memories. Under the hood it is powered by taosmd (`pip install taosmd`, the same library that backs agent memories): writes go to taosmd's `POST /ingest/batch` endpoint and keyword reads go to `GET /search?mode=bm25`. A local SQLite FTS5 store acts as an automatic fallback if taosmd is unreachable. You configure the taosmd address via the `TAOS_USER_MEMORY_URL` environment variable.
 
 ### What gets captured
 
-By default, TinyAgentOS can auto-capture:
+By default, taOS can auto-capture:
 - **Conversations** from the Messages app
 - **Notes** you write in the Text Editor
 - **File activity** in the Files app
@@ -355,7 +355,7 @@ BotFather will ask for a name (displayed to users) and a username (must end in `
 
 **Step 2 — Store the token**
 
-In TinyAgentOS, go to **Secrets** and click **Add Secret**. Name it something like `telegram_bot_token`, paste your token as the value, and save. The token is now encrypted on your device.
+In taOS, go to **Secrets** and click **Add Secret**. Name it something like `telegram_bot_token`, paste your token as the value, and save. The token is now encrypted on your device.
 
 **Step 3 — Configure the channel**
 
@@ -400,7 +400,7 @@ Click the bell to see notification history. Click a notification to mark it read
 
 Each agent has its own log stream. Go to **Agents**, click on an agent, then open the **Logs** tab. Logs stream live — useful for debugging why an agent isn't responding or is producing unexpected output.
 
-For TinyAgentOS itself (not individual agents), you can view system logs from the terminal:
+For taOS itself (not individual agents), you can view system logs from the terminal:
 
 ```bash
 journalctl -u tinyagentos -f
@@ -412,7 +412,7 @@ The `-f` flag follows the log in real time.
 
 ## 8. Backup
 
-TinyAgentOS stores your configuration, agent data, secrets, and memories in `~/tinyagentos/data/` (or `$TAOS_INSTALL_DIR/data/` if you set a custom install path).
+taOS stores your configuration, agent data, secrets, and memories in `~/tinyagentos/data/` (or `$TAOS_INSTALL_DIR/data/` if you set a custom install path).
 
 ### Backup via Settings
 
@@ -424,7 +424,7 @@ Go to **Settings** and scroll to the **Backup** section. Click **Create Backup**
 
 ### Restore
 
-On a fresh TinyAgentOS install, go to **Settings > Backup > Restore**, upload your backup file, and click **Restore**. Your agents, channels, and secrets will be recreated.
+On a fresh taOS install, go to **Settings > Backup > Restore**, upload your backup file, and click **Restore**. Your agents, channels, and secrets will be recreated.
 
 ### Manual Backup
 
@@ -443,13 +443,13 @@ cp -r ~/tinyagentos/data /your/backup/location/tinyagentos-data-$(date +%Y%m%d)
 
 When filing a bug, it helps to include:
 - Your hardware (e.g. "Orange Pi 5 Plus, 16 GB, Armbian 24.x")
-- The TinyAgentOS version (visible in **Settings > System Info**)
+- The taOS version (visible in **Settings > System Info**)
 - What you expected to happen vs. what actually happened
 - Relevant log output from `journalctl -u tinyagentos -n 50`
 
 **Email:** [info@taos.my](mailto:info@taos.my) — for anything that doesn't fit a GitHub issue.
 
-**A note on maturity:** TinyAgentOS is in early development. If something doesn't work, it may genuinely be a bug rather than user error — please do report it. Contributions and hardware test reports are very welcome.
+**A note on maturity:** taOS is in early development. If something doesn't work, it may genuinely be a bug rather than user error — please do report it. Contributions and hardware test reports are very welcome.
 
 ---
 
