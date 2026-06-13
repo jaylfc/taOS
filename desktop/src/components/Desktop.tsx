@@ -11,6 +11,7 @@ import { SnapOverlay } from "./SnapOverlay";
 import { WidgetLayer } from "./WidgetLayer";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { WallpaperPicker } from "./WallpaperPicker";
+import { NeuralWallpaper } from "./NeuralWallpaper";
 
 type ContextMenuState = {
   x: number;
@@ -23,6 +24,9 @@ export function Desktop() {
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
   const wallpaperMobileImage = useThemeStore((s) => s.wallpaperMobileImage);
   const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
+  const wallpaperKind = useThemeStore((s) => s.wallpaperKind);
+  const showWallpaperWordmark = useThemeStore((s) => s.showWallpaperWordmark);
+  const isNeural = wallpaperKind === "neural";
   const { showWidgets, toggleWidgets } = useWidgetStore();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [wallpaperPickerOpen, setWallpaperPickerOpen] = useState(false);
@@ -115,10 +119,11 @@ export function Desktop() {
   return (
     <div
       className="taos-wallpaper relative flex-1 overflow-hidden"
-      style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}
+      style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isNeural ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isNeural ? "none" : wallpaperMobileImage }}
       onContextMenu={handleContextMenu}
       data-desktop-surface
     >
+      {isNeural && <NeuralWallpaper wordmark={showWallpaperWordmark} />}
       <SnapOverlay bounds={previewBounds} />
       <WidgetLayer />
       {windows.map((win) => (

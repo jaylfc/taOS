@@ -11,15 +11,25 @@ import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 interface Wallpaper {
   id: string;
   label: string;
-  image: string; // desktop background-image
+  image: string; // desktop background-image (empty for live wallpapers)
   mobileImage?: string; // portrait-cropped variant, falls back to `image` if absent
   fallback: string; // background-color used as a fallback colour behind the image
+  // "image" = CSS background (url/gradient); "neural" = the live adaptive canvas
+  // wallpaper component. Defaults to "image" when absent.
+  kind?: "image" | "neural";
 }
 
 const WALLPAPERS: Wallpaper[] = [
   {
+    id: "neural-graphite",
+    label: "Neural (Graphite)",
+    image: "",
+    fallback: "#141415",
+    kind: "neural",
+  },
+  {
     id: "default",
-    label: "Default",
+    label: "Neural (Classic)",
     image: "url('/static/wallpaper.png')",
     mobileImage: "url('/static/wallpaper-mobile.png')",
     fallback: "#1a1b2e",
@@ -74,11 +84,27 @@ const WALLPAPERS: Wallpaper[] = [
   },
 ];
 
+// Default wallpaper for taOS Dark: the live neural graphite field.
+const DEFAULT_WP = WALLPAPERS.find((w) => w.id === "neural-graphite") ?? WALLPAPERS[0]!;
+
+// The wallpaper wordmark toggle persists locally so a clean desktop survives a
+// reload. Best-effort: any storage failure falls back to "on".
+const WORDMARK_KEY = "taos-wallpaper-wordmark";
+function loadWordmarkPref(): boolean {
+  try {
+    return localStorage.getItem(WORDMARK_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
 interface ThemeStore {
   wallpaperId: string;
   wallpaperImage: string;
   wallpaperMobileImage: string;
   wallpaperFallback: string;
+  wallpaperKind: "image" | "neural";
+  showWallpaperWordmark: boolean;
   showDesktopIcons: boolean;
   structure: Record<string, { variant?: string } & Record<string, unknown>>;
   effects: { module: string; params?: Record<string, unknown> }[];
@@ -88,15 +114,18 @@ interface ThemeStore {
   themeDefaultWallpaper: Record<string, string>;
 
   setWallpaper: (id: string) => void;
+  toggleWallpaperWordmark: () => void;
   toggleDesktopIcons: () => void;
   getWallpapers: () => Wallpaper[];
 }
 
 export const useThemeStore = create<ThemeStore>((set) => ({
-  wallpaperId: "default",
-  wallpaperImage: WALLPAPERS[0]!.image,
-  wallpaperMobileImage: WALLPAPERS[0]!.mobileImage ?? WALLPAPERS[0]!.image,
-  wallpaperFallback: WALLPAPERS[0]!.fallback,
+  wallpaperId: DEFAULT_WP.id,
+  wallpaperImage: DEFAULT_WP.image,
+  wallpaperMobileImage: DEFAULT_WP.mobileImage ?? DEFAULT_WP.image,
+  wallpaperFallback: DEFAULT_WP.fallback,
+  wallpaperKind: DEFAULT_WP.kind ?? "image",
+  showWallpaperWordmark: loadWordmarkPref(),
   showDesktopIcons: true,
   structure: {},
   effects: [],
@@ -113,8 +142,21 @@ export const useThemeStore = create<ThemeStore>((set) => ({
         wallpaperImage: wp.image,
         wallpaperMobileImage: wp.mobileImage ?? wp.image,
         wallpaperFallback: wp.fallback,
+        wallpaperKind: wp.kind ?? "image",
       });
     }
+  },
+
+  toggleWallpaperWordmark() {
+    set((s) => {
+      const next = !s.showWallpaperWordmark;
+      try {
+        localStorage.setItem(WORDMARK_KEY, next ? "on" : "off");
+      } catch {
+        // best-effort
+      }
+      return { showWallpaperWordmark: next };
+    });
   },
 
   toggleDesktopIcons() {
