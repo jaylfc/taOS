@@ -9,6 +9,7 @@ script).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import asdict
 from urllib.parse import urlparse
@@ -112,7 +113,8 @@ async def get_device_capability(request: Request, target_remote: str | None) -> 
         if "rkllama" not in installed_backends:
             try:
                 from tinyagentos.installers.rkllama_installer import rkllama_is_running
-                if rkllama_is_running():
+                # Offload the blocking socket probe so it never stalls the loop.
+                if await asyncio.to_thread(rkllama_is_running):
                     installed_backends = installed_backends + ("rkllama",)
             except Exception:  # noqa: BLE001
                 pass
