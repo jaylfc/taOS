@@ -18,11 +18,11 @@
 </a>
 </p>
 
-Self-hosted AI agent platform that runs on whatever hardware you have. An old laptop, a Raspberry Pi, a gaming PC, an SBC gathering dust, or all of them at once. TinyAgentOS turns your spare hardware into a distributed AI compute cluster.
+Self-hosted AI agent platform that runs on whatever hardware you have. An old laptop, a Raspberry Pi, a gaming PC, an SBC gathering dust, or all of them at once. taOS (short for TinyAgentOS) turns your spare hardware into a distributed AI compute cluster.
 
 A full web desktop environment with 36 bundled apps, 108 catalog apps, 47 MCP plugins, 16 agent frameworks, a curated local model catalog of 112 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
 
-**Framework-agnostic by design.** TinyAgentOS owns everything that matters: your agent's memory, files, communication channels, model access, and configuration. The agent framework is just a replaceable execution engine. Switch from SmolAgents to LangChain to OpenClaw and your agent keeps its entire history, all its Telegram/Discord/Slack connections, its trained LoRA adapters, its files, and its API keys. No migration, no data loss, no reconfiguration. This is possible because TinyAgentOS manages the full agent lifecycle outside the framework.
+**Framework-agnostic by design.** taOS owns everything that matters: your agent's memory, files, communication channels, model access, and configuration. The agent framework is just a replaceable execution engine. Switch from SmolAgents to LangChain to OpenClaw and your agent keeps its entire history, all its Telegram/Discord/Slack connections, its trained LoRA adapters, its files, and its API keys. No migration, no data loss, no reconfiguration. This is possible because taOS manages the full agent lifecycle outside the framework.
 
 **[taOSmd](https://github.com/jaylfc/taosmd) — Framework-agnostic AI memory system.** 97.0% **end-to-end Judge accuracy** on [LongMemEval-S](https://github.com/xiaowu0162/LongMemEval) — retrieve → generate → judge-with-LLM-grader, 500 questions across 50+ sessions each. For context, the most-cited open comparators — MemPalace (96.6%) and agentmemory (95.2%) — publish **Recall@5** retrieval scores on the same dataset, which measures only whether the correct session lands in the top-5 (no generation, no judge). The metrics aren't apples-to-apples until one of us re-runs end-to-end; ours is the stricter measurement. Per-category on our hybrid-plus-query-expansion config: knowledge-update 100%, multi-session 98.5%, single-session-user 97.1%, single-session-assistant 96.4%, temporal-reasoning 94.0%, single-session-preference 90.0%. Everything runs on a £170 Orange Pi 5 Plus with no cloud dependencies. The stack: temporal knowledge graph with validity windows + contradiction detection, hybrid semantic+keyword vector search with cross-encoder rerank and LLM-assisted query expansion (the "Librarian" layer), zero-loss append-only archive, automatic fact extraction, intent-aware retrieval routing, multi-layer context assembly. Any agent framework can read/write through the HTTP API.
 
@@ -72,7 +72,7 @@ Open `http://your-host:6969` (or `http://taos.local:6969` with mDNS). The root U
 
 ## Web Desktop Experience
 
-TinyAgentOS ships with a full browser-based desktop environment. Open it at `http://your-host:6969/` and you get a window manager, dock, launchpad, notifications, widgets, and 36 bundled apps, no native install required. On phones and tablets it automatically swaps to a widget-first home screen with swipeable pages, a persistent dock, and desktop-style app windows with close/minimise title bars, installable as a fullscreen PWA from the browser's "Add to Home Screen".
+taOS ships with a full browser-based desktop environment. Open it at `http://your-host:6969/` and you get a window manager, dock, launchpad, notifications, widgets, and 36 bundled apps, no native install required. On phones and tablets it automatically swaps to a widget-first home screen with swipeable pages, a persistent dock, and desktop-style app windows with close/minimise title bars, installable as a fullscreen PWA from the browser's "Add to Home Screen".
 
 - **Window manager.** Float, snap zones, drag, resize, minimise, maximise, close
 - **Top bar.** Global search (Ctrl+Space), clock, notifications, widget toggle
@@ -190,7 +190,7 @@ Pick from 1,467 agent templates, 12 built-in plus 196 from awesome-openclaw-agen
 One-click install for agent frameworks, AI models, and services. Hardware-aware, only shows what works on your device.
 
 ### Agent Deployment
-5-step wizard: pick framework → choose model → configure → deploy into an isolated container (LXC on bare metal, Docker on VPS, auto-detected). Each agent gets its own memory system (taOSmd instance), its own file storage, and its own network identity. The framework runs inside the container but TinyAgentOS manages everything around it: memory, channels, secrets, model access, scheduled tasks, and inter-agent communication. This means the framework is a swappable component, not a lock-in decision.
+5-step wizard: pick framework → choose model → configure → deploy into an isolated container (LXC on bare metal, Docker on VPS, auto-detected). Each agent gets its own memory system (taOSmd instance), its own file storage, and its own network identity. The framework runs inside the container but taOS manages everything around it: memory, channels, secrets, model access, scheduled tasks, and inter-agent communication. This means the framework is a swappable component, not a lock-in decision.
 
 > **Running taOS *inside* an LXC (e.g. Proxmox)?** Deploying an agent creates a *nested* container, which an **unprivileged** LXC cannot do — the kernel can't remap the nested container's filesystem, so the deploy fails with an `idmapped storage / change ownership` error. Run the taOS LXC as **privileged with nesting enabled**. On Proxmox: untick *Unprivileged container* and set Options → Features → `nesting=1` (plus `keyctl=1`, `fuse=1`), then redeploy. Bare-metal and VM installs are unaffected. (taOS detects this and surfaces the fix in the deploy error.)
 
@@ -201,7 +201,7 @@ One-click install for agent frameworks, AI models, and services. Hardware-aware,
 <p align="center"><sub>The Agents app on mobile — one tap from empty to your first deployed agent.</sub></p>
 
 ### Channel Hub (Framework-Agnostic Messaging)
-Most agent frameworks force you to wire up Telegram, Discord, or Slack directly into their code. If you switch frameworks, you rebuild all those integrations from scratch. TinyAgentOS flips this: the platform owns the messaging connections and routes messages to whichever framework the agent currently uses. Switch an agent from SmolAgents to LangChain and it keeps every channel, every conversation, every connection. The framework never touches the bot tokens.
+Most agent frameworks force you to wire up Telegram, Discord, or Slack directly into their code. If you switch frameworks, you rebuild all those integrations from scratch. taOS flips this: the platform owns the messaging connections and routes messages to whichever framework the agent currently uses. Switch an agent from SmolAgents to LangChain and it keeps every channel, every conversation, every connection. The framework never touches the bot tokens.
 
 - **6 connectors**. Telegram, Discord, Slack, Email (IMAP/SMTP), Web Chat (WebSocket), Webhooks
 - **15 framework adapters.** Thin HTTP bridges (~25 lines each) that translate the universal message format to framework-specific APIs
@@ -209,7 +209,7 @@ Most agent frameworks force you to wire up Telegram, Discord, or Slack directly 
 - **Per-agent or shared bots.** Each agent gets its own bot, or share one across a group
 
 ### LLM Proxy (LiteLLM)
-Hidden internal gateway that unifies all inference providers behind a single OpenAI-compatible API. Each agent gets a virtual API key with budget and rate limits. The proxy is auto-configured from your backend list. Switch from a local Ollama backend to a cloud provider (or add both as fallbacks) and no agent config changes. The agent just calls its local API key and TinyAgentOS routes to the best available backend.
+Hidden internal gateway that unifies all inference providers behind a single OpenAI-compatible API. Each agent gets a virtual API key with budget and rate limits. The proxy is auto-configured from your backend list. Switch from a local Ollama backend to a cloud provider (or add both as fallbacks) and no agent config changes. The agent just calls its local API key and taOS routes to the best available backend.
 
 ### Dynamic Capabilities
 Features unlock automatically based on your hardware and cluster. Solo Pi sees core features. Add a GPU worker and image generation, video, and training appear. No configuration, the platform just knows what's possible.
@@ -243,7 +243,7 @@ taOS wraps taOSmd with platform-specific scheduling (job queue, resource manager
 - **Browse / collections**. `GET /browse`, `GET /collections`, `POST /ingest`, `POST /delete-chunk`
 - **Memory browser.** Web UI to search across all agents' knowledge bases from one place
 - **Framework-independent.** Memory lives on the host, not in the framework or the container. Switch frameworks and the agent's entire knowledge base stays intact.
-- **Portable.** Export an agent's config, channels, and memory. Import on another TinyAgentOS instance.
+- **Portable.** Export an agent's config, channels, and memory. Import on another taOS instance.
 
 The embedding backend (`qmd.service`, port 7832) provides an Ollama-compatible embedding API with batch embedding and retry logic, backed by rkllama on RK3588 or node-llama-cpp elsewhere. LiteLLM also exposes a `/v1/embeddings` endpoint that routes to the same backends so frameworks using the OpenAI embeddings API work without any shim.
 
@@ -347,7 +347,7 @@ Search across agents, apps, messages, and files from a single endpoint. Finds an
 ## Architecture
 
 ```
-TinyAgentOS Controller (FastAPI + htmx + React Desktop Shell)
+taOS Controller (FastAPI + htmx + React Desktop Shell)
 ├── Web Desktop Shell (window manager, dock, launchpad, widgets, 36 bundled apps)
 ├── Mobile/Tablet Shell (widget home, dock, app title bars, swipeable pages, iOS PWA)
 ├── Skills & Plugins Registry (8 default skills, 15 framework adapters)
@@ -495,7 +495,7 @@ The bytecode cleanup line is belt-and-braces; Python's mtime-based invalidation 
 
 ## Service Management
 
-TinyAgentOS ships with a systemd unit at `/etc/systemd/system/tinyagentos.service`. It auto-restarts on failure and auto-starts on boot.
+taOS ships with a systemd unit at `/etc/systemd/system/tinyagentos.service`. It auto-restarts on failure and auto-starts on boot.
 
 ```bash
 sudo systemctl start tinyagentos
@@ -518,7 +518,7 @@ See [docs/mirror-policy.md](docs/mirror-policy.md) for the mirror governance pol
 
 ## TurboQuant KV cache compression
 
-**768K context window on a single RTX 3060 (12 GB).** TinyAgentOS integrates Google's TurboQuant (ICLR 2026) KV cache quantization via TheTom/llama-cpp-turboquant. Unlike weight quantization, which compresses model files, TurboQuant compresses the per-request KV cache -- the per-token memory that scales with context length and is the actual bottleneck on consumer hardware.
+**768K context window on a single RTX 3060 (12 GB).** taOS integrates Google's TurboQuant (ICLR 2026) KV cache quantization via TheTom/llama-cpp-turboquant. Unlike weight quantization, which compresses model files, TurboQuant compresses the per-request KV cache -- the per-token memory that scales with context length and is the actual bottleneck on consumer hardware.
 
 Measured on Qwen3.5-9B-Q4_K_M, single RTX 3060 12 GB, decode speed stable at 52-62 t/s across the entire range:
 
@@ -547,7 +547,7 @@ The llama.cpp CUDA build works on Debian 12 (glibc 2.36) and older distributions
 
 ## Exo Distributed Inference
 
-TinyAgentOS integrates [exo](https://github.com/exo-explore/exo) for running models that are too large for any single device. While the TAOS cluster routes different tasks to different workers (task parallelism), exo splits a single large model across multiple devices (pipeline parallelism). The two are complementary.
+taOS integrates [exo](https://github.com/exo-explore/exo) for running models that are too large for any single device. While the TAOS cluster routes different tasks to different workers (task parallelism), exo splits a single large model across multiple devices (pipeline parallelism). The two are complementary.
 
 **What exo enables:** Run 70B+ parameter models by pooling VRAM across multiple machines. A 70B model that needs ~40 GB can be split across a 12 GB desktop GPU + a 16 GB laptop + a 24 GB Mac, with exo handling the shard placement and inter-device communication automatically.
 
@@ -594,7 +594,7 @@ uv run exo
 - [docs/design/framework-agnostic-runtime.md](docs/design/framework-agnostic-runtime.md). containers hold code, hosts hold state (load-bearing architectural rule)
 - [docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md](docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md). TAOS Framework Integration Bridge design (OpenClaw → Hermes → OpenClaw round-trip, not yet implemented)
 - [docs/mirror-policy.md](docs/mirror-policy.md). binary mirror governance: what is mirrored, SHA256 verification, self-hosting guide
-- [docs/deploy/platform.md](docs/deploy/platform.md). Runbook for the tinyagentos.com platform LXC, covering landing page, docs site, and bittorrent tracker. Uses `scripts/install-platform-lxc.sh` on the Proxmox host to provision. Infrastructure for the project's public web presence, not part of the TinyAgentOS product itself.
+- [docs/deploy/platform.md](docs/deploy/platform.md). Runbook for the tinyagentos.com platform LXC, covering landing page, docs site, and bittorrent tracker. Uses `scripts/install-platform-lxc.sh` on the Proxmox host to provision. Infrastructure for the project's public web presence, not part of the taOS product itself.
 
 ## Development
 
@@ -691,7 +691,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and guidelines. Jo
 
 ## Support the Project
 
-TinyAgentOS makes AI agents accessible on affordable hardware.
+taOS makes AI agents accessible on affordable hardware.
 
 - **Website:** [taos.my](https://taos.my)
 - **Contact:** info@taos.my
@@ -700,10 +700,10 @@ TinyAgentOS makes AI agents accessible on affordable hardware.
 
 ## Acknowledgments
 
-TinyAgentOS stands on a lot of excellent community work, particularly on Rockchip. Shout-outs where they are earned:
+taOS stands on a lot of excellent community work, particularly on Rockchip. Shout-outs where they are earned:
 
 - **[c01zaut](https://huggingface.co/c01zaut)**. Qwen2.5 1.5B → 14B RKLLM model ports that let chat work on RK3588 at all.
-- **[NotPunchnox](https://github.com/NotPunchnox).** Original rkllama HTTP server that TinyAgentOS extends with a rerank patch.
+- **[NotPunchnox](https://github.com/NotPunchnox).** Original rkllama HTTP server that taOS extends with a rerank patch.
 - **[tobi](https://github.com/tobi)** and contributors on [qmd](https://github.com/tobi/qmd), the embedding / reranker / query-expansion backend that taOSmd uses for vector operations, including the centralised `qmd serve` mode ([PR #511](https://github.com/tobi/qmd/pull/511)).
 
 If you maintain one of the libraries above and want a different phrasing or a link added, open an issue and I will fix it.
