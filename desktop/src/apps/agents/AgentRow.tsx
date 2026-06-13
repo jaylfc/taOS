@@ -337,8 +337,10 @@ export function AgentRow({
         <span className="text-shell-text-secondary font-mono tabular-nums truncate">{agent.host}</span>
       </div>
 
-      {/* Status */}
-      <StatusIndicator status={agent.status} paused={agent.paused} />
+      {/* Status (fixed-width column so the metadata columns line up row to row) */}
+      <div className="w-24 shrink-0">
+        <StatusIndicator status={agent.status} paused={agent.paused} />
+      </div>
 
       {/* Vectors metric (de-emphasized) */}
       <span className="hidden sm:inline-flex items-center justify-end gap-1.5 w-28 text-right shrink-0">
@@ -349,8 +351,9 @@ export function AgentRow({
         <span className="text-[10px] text-shell-text-tertiary">vectors</span>
       </span>
 
-      {/* Actions */}
-      <div className="flex items-center gap-1 border-l border-shell-border pl-2 shrink-0">
+      {/* Actions: fixed-width + right-aligned so a protected agent's 3 icons
+          reserve the same column as a deployed agent's 4 (no column drift). */}
+      <div className="flex items-center justify-end gap-1 border-l border-shell-border pl-2 shrink-0 w-[152px]">
         {leftActions}
         {actionButtons}
       </div>

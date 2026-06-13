@@ -89,6 +89,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                 status: String(a.status ?? "stopped") as Agent["status"],
                 vectors: Number(a.vectors ?? 0),
                 framework: a.framework ? String(a.framework) : undefined,
+                model: a.model ? String(a.model) : undefined,
                 paused: Boolean(a.paused),
                 on_worker_failure: (a.on_worker_failure as Agent["on_worker_failure"]) ?? "pause",
                 fallback_models: Array.isArray(a.fallback_models) ? (a.fallback_models as string[]) : [],
