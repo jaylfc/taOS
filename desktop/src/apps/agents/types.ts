@@ -13,6 +13,8 @@ export interface Agent {
   status: "running" | "stopped" | "error" | "deploying";
   vectors: number;
   framework?: string;
+  /** Current chat model, shown as an indicator line on the card when known. */
+  model?: string;
   paused?: boolean;
   on_worker_failure?: "pause" | "fallback" | "escalate-immediately";
   fallback_models?: string[];
