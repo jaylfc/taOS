@@ -314,6 +314,22 @@ function saveDraft(channelId: string, text: string) {
   } catch { /* storage full or unavailable: drafts are best-effort */ }
 }
 
+function dayLabel(ts: string | number): string {
+  const d = new Date(toMs(ts));
+  const now = new Date();
+  // Compare local calendar days, not UTC. Build local-midnight Dates for
+  // both, then divide by 86400000ms. A local day is 23-25 hours across
+  // DST, so the division can still produce fractional values; use
+  // Math.round so a one-calendar-day difference is reported as exactly
+  // 1 day. (A diff of 0.96 days is still a single calendar-day gap
+  // before noon, and a diff of 1.04 days is one calendar day after.)
+  const localMidnight = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const diffDays = Math.round((localMidnight(now).getTime() - localMidnight(d).getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
+
 /* ------------------------------------------------------------------ */
 /*  MessagesApp                                                        */
 /* ------------------------------------------------------------------ */
@@ -1831,6 +1847,9 @@ export function MessagesApp({
               const isAgent = msg.author_type === "agent";
               const prev = i > 0 ? messages[i - 1] : undefined;
               const showAuthor = !prev || prev.author_id !== msg.author_id;
+              const prevDay = prev ? new Date(toMs(prev.created_at)).toDateString() : null;
+              const currDay = new Date(toMs(msg.created_at)).toDateString();
+              const showDaySeparator = !prev || prevDay !== currDay;
               const authorState = resolveAuthorDisplayState(
                 msg.author_id,
                 msg.author_type,
@@ -1846,6 +1865,13 @@ export function MessagesApp({
                     : undefined;
               return (
                 <React.Fragment key={msg.id}>
+                {showDaySeparator && (
+                  <div className="flex items-center gap-3 my-4 select-none">
+                    <div className="flex-1 h-px bg-white/10" />
+                    <span className="text-[11px] text-white/40 font-medium">{dayLabel(msg.created_at)}</span>
+                    <div className="flex-1 h-px bg-white/10" />
+                  </div>
+                )}
                 {newDividerAtId === msg.id && (
                   <div
                     role="separator"
