@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  Send,
+  ArrowUp,
   Sparkles,
   X,
   Settings,
@@ -332,7 +332,11 @@ export function TaosAssistantPanelInner({ embedded = false }: { embedded?: boole
             </button>
           </p>
         )}
-        <div className="flex gap-2 items-end">
+        {/* One unified composer: attach + screenshot inside on the left, the
+            field borderless in the middle, send on the right. Bottom-aligned so
+            the icons sit on the last line as the textarea grows (chat-app
+            convention). Shell tokens only, so it flips for the Light theme. */}
+        <div className="flex items-end gap-1 rounded-2xl border border-shell-border bg-shell-bg-deep px-2 py-1.5 transition-colors focus-within:border-accent/50">
           <AttachButton onClick={handleFileUpload} disabled={noModel || streaming} />
           <ScreenshotButton onClick={handleScreenshot} disabled={noModel || streaming} />
           <textarea
@@ -342,14 +346,14 @@ export function TaosAssistantPanelInner({ embedded = false }: { embedded?: boole
             onKeyDown={handleKeyDown}
             placeholder={noModel ? "Choose a model first…" : "Ask taOS agent…"}
             disabled={noModel || streaming}
-            rows={2}
+            rows={1}
             aria-label="Message taOS agent"
-            className="flex-1 resize-none rounded-lg border border-white/10 bg-shell-bg-deep text-sm text-shell-text placeholder:text-shell-text-tertiary focus:outline-none focus:border-accent/40 px-3 py-2 disabled:opacity-40"
-            style={{ minHeight: 64, maxHeight: 160 }}
+            className="flex-1 resize-none border-none bg-transparent text-sm text-shell-text placeholder:text-shell-text-tertiary focus:outline-none px-1.5 py-2 disabled:opacity-40"
+            style={{ minHeight: 36, maxHeight: 160 }}
           />
           <SendButton onClick={sendMessage} disabled={!input.trim() || noModel || streaming} />
         </div>
-        <p className="text-[10px] text-shell-text-tertiary mt-1">Cmd+Enter to send</p>
+        <p className="text-[10px] text-shell-text-tertiary mt-1.5 pr-1 text-right">Cmd+Enter to send</p>
       </div>
 
       {/* Settings modal */}
@@ -440,9 +444,9 @@ function SendButton({ onClick, disabled }: { onClick: () => void; disabled: bool
       onClick={onClick}
       disabled={disabled}
       aria-label="Send message"
-      className="p-2.5 rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+      className="grid place-items-center h-8 w-8 rounded-xl bg-accent text-white hover:brightness-110 transition disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
     >
-      <Send size={14} />
+      <ArrowUp size={16} strokeWidth={2.4} />
     </button>
   );
 }
@@ -454,9 +458,9 @@ function AttachButton({ onClick, disabled }: { onClick: () => void; disabled: bo
       disabled={disabled}
       aria-label="Upload file"
       title="Attach file"
-      className="p-2 rounded-lg border border-white/10 hover:bg-shell-surface-hover transition-colors text-shell-text-secondary shrink-0 disabled:opacity-40"
+      className="grid place-items-center h-8 w-8 rounded-lg text-shell-text-tertiary hover:bg-shell-surface-hover hover:text-shell-text-secondary transition-colors shrink-0 disabled:opacity-40"
     >
-      <Paperclip size={15} />
+      <Paperclip size={16} />
     </button>
   );
 }
@@ -468,9 +472,9 @@ function ScreenshotButton({ onClick, disabled }: { onClick: () => void; disabled
       disabled={disabled}
       aria-label="Take screenshot"
       title="Take screenshot"
-      className="p-2 rounded-lg border border-white/10 hover:bg-shell-surface-hover transition-colors text-shell-text-secondary shrink-0 disabled:opacity-40"
+      className="grid place-items-center h-8 w-8 rounded-lg text-shell-text-tertiary hover:bg-shell-surface-hover hover:text-shell-text-secondary transition-colors shrink-0 disabled:opacity-40"
     >
-      <Camera size={15} />
+      <Camera size={16} />
     </button>
   );
 }
