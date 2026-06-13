@@ -146,8 +146,32 @@ function schemeFromBg(bg: string | undefined): "light" | "dark" {
   return luminance > 0.55 ? "light" : "dark";
 }
 
+// Safari/WebKit leaves backdrop-filter elements (dock, top bar, modals,
+// widgets) on stale GPU compositing layers when the theme custom properties
+// on :root change at runtime: the layer keeps its old raster until something
+// forces a re-composite (scroll, resize, screenshot), so on a theme switch it
+// can flash black on the live screen even though screenshots look correct
+// (the screenshot path forces a full raster). Dropping backdrop-filter for a
+// frame via [data-theme-switching] (see tokens.css) forces WebKit to rebuild
+// every backdrop layer against the new tokens. No-op outside the browser.
+function forceCompositingRepaint() {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  root.setAttribute("data-theme-switching", "");
+  void root.offsetHeight; // flush the filter:none state before restoring it
+  const clear = () => root.removeAttribute("data-theme-switching");
+  // Two nested rAFs let one frame paint with the filter off before restoring it.
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(clear));
+  }
+  // rAF is paused on a hidden/background tab, which would otherwise leave the
+  // attribute (and the backdrop-filter:none rule) stuck until the tab is shown.
+  // A timer guarantees cleanup regardless; removeAttribute is idempotent.
+  setTimeout(clear, 250);
+}
+
 export function applyThemeConfig(cfg: ThemeConfig) {
-  revertTheme();
+  revertTheme({ silent: true }); // applyThemeConfig owns the single repaint below
   const root = document.documentElement;
   for (const [k, v] of Object.entries(cfg.tokens || {})) {
     if (ALLOWED_TOKENS.has(k) && typeof v === "string") {
@@ -157,14 +181,18 @@ export function applyThemeConfig(cfg: ThemeConfig) {
   }
   root.dataset.scheme = schemeFromBg(cfg.tokens?.["--color-shell-bg"]);
   useThemeStore.setState({ structure: cfg.structure || {}, effects: cfg.effects || [] });
+  forceCompositingRepaint();
 }
 
-export function revertTheme() {
+export function revertTheme(opts?: { silent?: boolean }) {
   const root = document.documentElement;
   for (const k of _applied) root.style.removeProperty(k);
   _applied = [];
   root.dataset.scheme = "dark"; // base shell is dark
   useThemeStore.setState({ structure: {}, effects: [] });
+  // Skip when called from applyThemeConfig (which repaints once after applying
+  // the new tokens) so a theme switch does not force two reflows.
+  if (!opts?.silent) forceCompositingRepaint();
 }
 
 export function setWallpaperForActiveTheme(value: string) {

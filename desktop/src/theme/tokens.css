@@ -97,6 +97,21 @@
 :root[data-scheme="light"] [class~="hover:bg-white/10"]:hover { background-color: rgba(0, 0, 0, 0.07); }
 :root[data-scheme="light"] [class~="hover:bg-white/[0.06]"]:hover { background-color: rgba(0, 0, 0, 0.05); }
 
+/* Safari backdrop-filter repaint guard
+   ====================================
+   WebKit keeps backdrop-filter elements on cached GPU layers and does not
+   re-rasterize them when the theme custom properties on :root change at
+   runtime, so a dark<->light switch can leave the dock, top bar, modals and
+   widgets rendering black on the live screen (screenshots force a full raster
+   and look fine, which masks the bug). theme-store.ts sets
+   [data-theme-switching] for one frame on every theme apply/revert; dropping
+   the filter for that frame forces WebKit to rebuild each layer against the
+   new tokens. Imperceptible (~1 frame) and a no-op in Chrome/Firefox. */
+:root[data-theme-switching] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 /* Wallpaper sizing
    ----------------
    Desktop fills the viewport (cover crops edges if aspect mismatches).
