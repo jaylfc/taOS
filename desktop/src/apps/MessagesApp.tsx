@@ -168,6 +168,8 @@ interface Message {
   author_id: string;
   author_type: "user" | "agent";
   content: string;
+  /** Parent message id when this message is a thread reply. */
+  thread_id?: string;
   content_type?: "text" | "canvas" | string;
   metadata?: {
     canvas_id?: string;
@@ -439,6 +441,15 @@ export function MessagesApp({
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const { openThread, openThreadFor, closeThread } = useThreadPanel();
+  // Live thread replies: messages whose thread_id matches the open thread,
+  // captured from the main WS so the panel updates without a reopen. The ref
+  // lets the (long-lived) WS closure read the current open thread id.
+  const [threadLiveReplies, setThreadLiveReplies] = useState<Message[]>([]);
+  const openThreadIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    openThreadIdRef.current = openThread?.parentId ?? null;
+    setThreadLiveReplies([]); // reset when the open thread changes or closes
+  }, [openThread?.parentId]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -593,6 +604,13 @@ export function MessagesApp({
               if (prev.some((m) => m.id === data.id)) return prev;
               return [...prev, data as Message];
             });
+            // Live thread updates: if this is a reply in the open thread, feed
+            // it to the panel (de-duped by id).
+            if (data.thread_id && data.thread_id === openThreadIdRef.current) {
+              setThreadLiveReplies((prev) =>
+                prev.some((m) => m.id === data.id) ? prev : [...prev, data as Message],
+              );
+            }
             // bump unread if not the selected channel
             if (data.channel_id !== prevChannelRef.current) {
               setUnread((u) => ({ ...u, [data.channel_id]: (u[data.channel_id] ?? 0) + 1 }));
@@ -2607,6 +2625,7 @@ export function MessagesApp({
           parentId={openThread.parentId}
           onClose={closeThread}
           isFullscreen={isMobile}
+          liveReplies={threadLiveReplies}
           authorCtx={{ currentUserId, currentUserDisplayName }}
           onSend={async (content, attachments) => {
             const r = await fetch("/api/chat/messages", {
