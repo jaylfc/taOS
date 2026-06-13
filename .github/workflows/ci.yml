@@ -48,7 +48,10 @@ jobs:
       # The real build is exercised in the spa-build job below.
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short --ignore=tests/e2e
+        # Run across all runner cores. The serial suite (4845 tests) took
+        # ~22 min; -n auto cuts it to a few minutes so "merge on green" is
+        # practical. Dropped -v so xdist worker output stays readable.
+        run: pytest tests/ --tb=short --ignore=tests/e2e -n auto
 
       - name: Verify app starts
         run: python -c "from tinyagentos.app import create_app; print('OK')"
