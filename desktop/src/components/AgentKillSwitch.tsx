@@ -36,7 +36,17 @@ async function postStop(path: string): Promise<boolean> {
 export function AgentKillSwitch() {
   const [agents, setAgents] = useState<RunningAgent[]>([]);
   const [pending, setPending] = useState<Pending>(null);
+  // Retains the last target so the dialog title does not flash "Kill ?" during
+  // the close animation (pending goes null before the content unmounts).
+  const [shown, setShown] = useState<Exclude<Pending, null> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const openConfirm = useCallback((p: Exclude<Pending, null>) => {
+    setShown(p);
+    setFailed(false);
+    setPending(p);
+  }, []);
 
   // Refresh the running-agent list each time the menu opens (cheap, and keeps
   // the list current without a global store).
@@ -63,6 +73,7 @@ export function AgentKillSwitch() {
   const confirmKill = useCallback(async () => {
     if (!pending) return;
     setBusy(true);
+    setFailed(false);
     const ok =
       pending.mode === "all"
         ? await postStop("/api/agents/bulk/stop")
@@ -73,8 +84,12 @@ export function AgentKillSwitch() {
       setAgents((prev) =>
         pending.mode === "all" ? [] : prev.filter((a) => a.name !== pending.name),
       );
+      setPending(null);
+    } else {
+      // Surface the failure and keep the dialog open instead of closing as if
+      // the kill succeeded.
+      setFailed(true);
     }
-    setPending(null);
   }, [pending]);
 
   const menuItem =
@@ -82,9 +97,9 @@ export function AgentKillSwitch() {
   const dangerItem = `${menuItem} text-red-400 hover:bg-red-500/15 focus:bg-red-500/15`;
   const plainItem = `${menuItem} text-shell-text-secondary hover:bg-shell-surface-hover hover:text-shell-text focus:bg-shell-surface-hover focus:text-shell-text`;
 
-  const dialogTitle = pending?.mode === "all" ? "Kill all agents?" : `Kill ${pending?.mode === "one" ? pending.label : ""}?`;
+  const dialogTitle = shown?.mode === "all" ? "Kill all agents?" : `Kill ${shown?.mode === "one" ? shown.label : ""}?`;
   const dialogBody =
-    pending?.mode === "all"
+    shown?.mode === "all"
       ? "Every running agent will be stopped immediately. In-flight work is lost. You can start them again from the Agents app."
       : "This agent will be stopped immediately. In-flight work is lost. You can start it again from the Agents app.";
 
@@ -114,7 +129,7 @@ export function AgentKillSwitch() {
 
             <DropdownMenu.Item
               className={agents.length === 0 ? `${dangerItem} opacity-40 pointer-events-none` : dangerItem}
-              onSelect={() => agents.length > 0 && setPending({ mode: "all" })}
+              onSelect={() => agents.length > 0 && openConfirm({ mode: "all" })}
             >
               <OctagonX size={14} />
               <span className="flex-1">Kill all agents</span>
@@ -134,7 +149,7 @@ export function AgentKillSwitch() {
                   <DropdownMenu.Item
                     key={a.name}
                     className={plainItem}
-                    onSelect={() => setPending({ mode: "one", name: a.name, label })}
+                    onSelect={() => openConfirm({ mode: "one", name: a.name, label })}
                   >
                     <CircleStop size={14} className="text-shell-text-tertiary shrink-0" />
                     <span className="flex-1 truncate">{label}</span>
@@ -164,6 +179,11 @@ export function AgentKillSwitch() {
                 </Dialog.Description>
               </div>
             </div>
+            {failed && (
+              <p role="alert" className="mt-3 text-sm text-red-400">
+                Could not stop {shown?.mode === "all" ? "the agents" : "the agent"}. Please try again.
+              </p>
+            )}
             <div className="mt-5 flex justify-end gap-2">
               <button
                 onClick={() => setPending(null)}
@@ -177,7 +197,7 @@ export function AgentKillSwitch() {
                 disabled={busy}
                 className="px-3.5 py-2 rounded-lg text-sm font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-50"
               >
-                {busy ? "Stopping..." : pending?.mode === "all" ? "Kill all" : "Kill agent"}
+                {busy ? "Stopping..." : failed ? "Try again" : shown?.mode === "all" ? "Kill all" : "Kill agent"}
               </button>
             </div>
           </Dialog.Content>
