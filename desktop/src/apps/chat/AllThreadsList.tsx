@@ -61,6 +61,7 @@ export function AllThreadsList({
 
   return (
     <aside
+      id="all-threads-panel"
       role="complementary"
       aria-label="All threads"
       className="fixed top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-white/10 shadow-xl flex flex-col z-40"
