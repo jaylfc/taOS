@@ -497,7 +497,6 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
         ) : agents.length === 0 && archived.length === 0 ? (
           <div className="flex flex-col h-full min-h-0">
             <div className="p-4">
-              <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
               <AgentRow
                 agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
                 diskState={null}
@@ -531,7 +530,6 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         ) : agents.length === 0 ? (
           <div className="p-4">
-            <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
             <AgentRow
               agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
               diskState={null}
@@ -552,19 +550,19 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </div>
         ) : (
           <div className="p-4">
-            {/* System agent — always shown above the deployed agents list */}
-            <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
-            <AgentRow
-              agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
-              diskState={null}
-              latestByFramework={latestByFramework}
-              onViewLogs={() => setTaosDetailOpen(true)}
-              onViewSkills={() => setTaosDetailOpen(true)}
-              onViewMessages={() => setTaosDetailOpen(true)}
-              onDelete={() => {}}
-              onResume={() => {}}
-              protected
-            />
+            <div className="mb-3">
+              <AgentRow
+                agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
+                diskState={null}
+                latestByFramework={latestByFramework}
+                onViewLogs={() => setTaosDetailOpen(true)}
+                onViewSkills={() => setTaosDetailOpen(true)}
+                onViewMessages={() => setTaosDetailOpen(true)}
+                onDelete={() => {}}
+                onResume={() => {}}
+                protected
+              />
+            </div>
 
             {/* Disk quota notification cards */}
             {agents
@@ -615,7 +613,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
                   </div>
                 );
               })}
-            <div className="space-y-2" role="list" aria-label="Agent list">
+            <div className="space-y-3" role="list" aria-label="Agent list">
               {agents.map((agent) => (
                 <AgentRow
                   key={agent.name}
