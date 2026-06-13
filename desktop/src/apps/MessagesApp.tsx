@@ -13,6 +13,7 @@ import {
   Wifi,
   WifiOff,
   ChevronRight,
+  ChevronDown,
   PanelRight,
   Archive,
   Trash2,
@@ -421,6 +422,11 @@ export function MessagesApp({
   // Which channel's message fetch has completed, so the "empty channel"
   // placeholder only shows after a real fetch (never mid-load or mid-switch).
   const [fetchedChannel, setFetchedChannel] = useState<string | null>(null);
+  // Scroll-to-bottom affordance: whether the list is near the bottom, and how
+  // many messages have arrived while scrolled away (shown as a badge).
+  const [atBottom, setAtBottom] = useState(true);
+  const [newCount, setNewCount] = useState(0);
+  const prevMsgCountRef = useRef(0);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -890,18 +896,39 @@ export function MessagesApp({
     return () => { alive = false; };
   }, [selectedChannel]);
 
-  /* ---- auto-scroll ---- */
+  /* ---- auto-scroll + new-message counter while scrolled away ---- */
   useEffect(() => {
+    const delta = messages.length - prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
     if (autoScrollRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (delta > 0) {
+      setNewCount((c) => c + delta);
     }
   }, [messages]);
+
+  /* ---- reset scroll affordance on channel switch ---- */
+  useEffect(() => {
+    setAtBottom(true);
+    setNewCount(0);
+    prevMsgCountRef.current = 0;
+  }, [selectedChannel]);
 
   const handleScroll = () => {
     const el = messageListRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    autoScrollRef.current = atBottom;
+    const nowAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    autoScrollRef.current = nowAtBottom;
+    // Only flip state (avoids re-render storms on every scroll tick).
+    setAtBottom((prev) => (prev === nowAtBottom ? prev : nowAtBottom));
+    if (nowAtBottom) setNewCount(0);
+  };
+
+  const scrollToLatest = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    autoScrollRef.current = true;
+    setAtBottom(true);
+    setNewCount(0);
   };
 
   /* ---- typing emitter + slash menu derived state ---- */
@@ -1723,7 +1750,18 @@ export function MessagesApp({
   /* ---------------------------------------------------------------- */
 
   const messageAreaUI = (
-    <div className="flex-1 flex flex-col min-w-0 h-full">
+    <div className="relative flex-1 flex flex-col min-w-0 h-full">
+      {selectedChannel && !atBottom && (
+        <button
+          type="button"
+          onClick={scrollToLatest}
+          aria-label="Jump to latest"
+          className="absolute right-4 bottom-24 z-20 flex items-center gap-1.5 px-3 h-9 rounded-full bg-zinc-800 border border-white/15 text-white/80 hover:text-white shadow-lg hover:bg-zinc-700 transition-colors"
+        >
+          <ChevronDown size={16} aria-hidden="true" />
+          {newCount > 0 && <span className="text-[11px] font-semibold">{newCount} new</span>}
+        </button>
+      )}
       {!selectedChannel ? (
         /* empty state: nothing selected yet */
         <div className="flex-1 flex items-center justify-center text-white/20">
