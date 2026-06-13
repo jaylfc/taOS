@@ -58,6 +58,7 @@ import { PinBadge } from "./chat/PinBadge";
 import { PinnedMessagesPopover, type PinnedMessage } from "./chat/PinnedMessagesPopover";
 import { AllThreadsList } from "./chat/AllThreadsList";
 import { ChannelSwitcher } from "./chat/ChannelSwitcher";
+import { useChatNotifications } from "./chat/useChatNotifications";
 import { PinRequestAffordance } from "./chat/PinRequestAffordance";
 import {
   pinMessage, unpinMessage, listPins,
@@ -451,6 +452,14 @@ export function MessagesApp({
     setThreadLiveReplies([]); // reset when the open thread changes or closes
   }, [openThread?.parentId]);
 
+  // Browser notifications for messages in background channels. Refs so the
+  // long-lived WS closure reads the current user id + channel list.
+  const { notify } = useChatNotifications();
+  const currentUserIdRef = useRef<string | null>(null);
+  const channelsRef = useRef<Channel[]>([]);
+  useEffect(() => { currentUserIdRef.current = currentUserId; }, [currentUserId]);
+  useEffect(() => { channelsRef.current = channels; }, [channels]);
+
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -611,9 +620,14 @@ export function MessagesApp({
                 prev.some((m) => m.id === data.id) ? prev : [...prev, data as Message],
               );
             }
-            // bump unread if not the selected channel
+            // bump unread + browser-notify if not the selected channel and not
+            // the user's own message.
             if (data.channel_id !== prevChannelRef.current) {
               setUnread((u) => ({ ...u, [data.channel_id]: (u[data.channel_id] ?? 0) + 1 }));
+              if (data.author_id && data.author_id !== currentUserIdRef.current) {
+                const chName = channelsRef.current.find((c) => c.id === data.channel_id)?.name ?? "a channel";
+                notify(`${data.author_id} in #${chName}`, data.content ?? "", () => setSelectedChannel(data.channel_id));
+              }
             }
             break;
 
