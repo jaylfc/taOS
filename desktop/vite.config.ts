@@ -21,6 +21,7 @@ export default defineConfig({
     alias: { "@": path.resolve(__dirname, "src") },
   },
   build: {
+    target: "es2022",
     outDir: "../static/desktop",
     emptyOutDir: true,
     // CodeMirror + mathjs + lucide each ship genuinely large libraries
