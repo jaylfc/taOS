@@ -141,6 +141,51 @@
   transition: outline 0.2s ease-out;
 }
 
+/* Agents app — gentle breathing pulse for the running status dot.
+   Scales/fades a halo behind the dot so it reads as "live" without the
+   jarring full-opacity blink of animate-pulse. Disabled under
+   prefers-reduced-motion. */
+@keyframes taos-status-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.55; }
+  50% { transform: scale(1.9); opacity: 0; }
+}
+.taos-status-pulse {
+  animation: taos-status-pulse 2.4s ease-in-out infinite;
+}
+
+/* Agents app — skeleton shimmer for loading cards. */
+@keyframes taos-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.taos-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: taos-shimmer 1.6s ease-in-out infinite;
+}
+
+/* Agents app — subtle card entrance (mount fade + lift). */
+@keyframes taos-card-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.taos-card-enter {
+  animation: taos-card-enter 0.24s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .taos-status-pulse,
+  .taos-shimmer,
+  .taos-card-enter {
+    animation: none;
+  }
+}
+
 /* Projects board — Apple-grade chrome (Pass B Kanban) */
 :root {
   --board-accent-violet: #a78bfa;
