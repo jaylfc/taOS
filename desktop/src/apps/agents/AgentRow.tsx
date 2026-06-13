@@ -156,12 +156,13 @@ export function AgentRow({
     latestForAgent.sha !== agent.framework_version_sha;
   // The framework an agent runs on (openclaw, hermes, ...). The emoji alone is
   // ambiguous, so surface the name as the identity sub-label. "none"/"generic"
-  // agents have no meaningful framework, so we fall back to the host.
+  // agents have no meaningful framework, so the sub-label is simply omitted
+  // (the host already has its own metadata slot, so don't repeat it here).
   const frameworkLabel =
     agent.framework && !["none", "generic"].includes(agent.framework)
       ? agent.framework
       : null;
-  const subLabel = frameworkLabel ?? agent.host;
+  const subLabel = frameworkLabel;
 
   // Only allow management actions while the agent is running.
   const running = agent.status === "running";
