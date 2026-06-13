@@ -37,6 +37,7 @@ import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { useDropTarget } from "@/shell/dnd/use-drop-target";
 import { startDrag, endDrag } from "@/shell/dnd/dnd-bus";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
+import { MessageAvatar } from "./chat/MessageAvatar";
 import { ChannelSettingsPanel } from "./chat/ChannelSettingsPanel";
 import { AgentContextMenu } from "./chat/AgentContextMenu";
 import { SlashMenu, type SlashCommandsBySlug } from "./chat/SlashMenu";
@@ -2122,12 +2123,46 @@ export function MessagesApp({
                 )}
                 <div
                   data-message-id={msg.id}
-                  className={`group relative px-3 py-1 rounded-md transition-colors hover:bg-white/[0.03] ${
-                    isAgent && !isDeadAgent ? "bg-blue-500/[0.04]" : ""
-                  } ${showAuthor ? "mt-3" : ""}`}
+                  className={`group relative flex gap-2.5 px-3 py-0.5 rounded-md transition-colors hover:bg-shell-surface ${showAuthor ? (isMobile ? "mt-2" : "mt-3") : ""}`}
                   onMouseEnter={() => setHoveredMessageId(msg.id)}
                   onMouseLeave={() => setHoveredMessageId((id) => id === msg.id ? null : id)}
                 >
+                  {/* avatar gutter */}
+                  <div
+                    className="flex-shrink-0 flex justify-end pt-0.5"
+                    style={{ width: isMobile ? 34 : 38 }}
+                    onContextMenu={(e) => {
+                      if (msg.author_type !== "agent") return;
+                      e.preventDefault();
+                      setContextMenu({ slug: msg.author_id, x: e.clientX, y: e.clientY });
+                    }}
+                  >
+                    {showAuthor ? (
+                      (() => {
+                        const agent = isAgent ? liveAgents.find((a) => a.name === msg.author_id) : undefined;
+                        return (
+                          <MessageAvatar
+                            size={isMobile ? 34 : 38}
+                            authorId={msg.author_id}
+                            displayName={displayAuthor(msg, { currentUserId, currentUserDisplayName })}
+                            kind={isAgent ? "agent" : "user"}
+                            dead={isDeadAgent}
+                            emoji={agent ? resolveAgentEmoji(agent.emoji, agent.framework) : isAgent ? resolveAgentEmoji(undefined, undefined) : undefined}
+                          />
+                        );
+                      })()
+                    ) : (
+                      <span
+                        className="text-[10px] leading-none text-shell-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity self-center select-none"
+                        aria-hidden="true"
+                        title={new Date(toMs(msg.created_at)).toLocaleString()}
+                      >
+                        {new Date(toMs(msg.created_at)).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
+                  </div>
+                  {/* content column */}
+                  <div className="flex-1 min-w-0">
                   {showAuthor && (
                     <div
                       className="flex items-center gap-2 mb-0.5"
@@ -2137,25 +2172,13 @@ export function MessagesApp({
                         setContextMenu({ slug: msg.author_id, x: e.clientX, y: e.clientY });
                       }}
                     >
-                      {isAgent && !isDeadAgent && (() => {
-                        const agent = liveAgents.find((a) => a.name === msg.author_id);
-                        if (!agent) return null;
-                        return (
-                          <span
-                            className="text-[14px] leading-none"
-                            aria-hidden="true"
-                          >
-                            {resolveAgentEmoji(agent.emoji, agent.framework)}
-                          </span>
-                        );
-                      })()}
                       <span
-                        className={`text-[13px] font-semibold ${
+                        className={`${isMobile ? "text-[14px]" : "text-[15px]"} font-semibold ${
                           isDeadAgent
-                            ? "line-through text-white/35"
+                            ? "line-through text-shell-text-tertiary"
                             : isAgent
-                              ? "text-blue-400"
-                              : "text-white/90"
+                              ? "text-sky-500 dark:text-sky-400"
+                              : "text-shell-text"
                         }`}
                         style={isDeadAgent ? { opacity: 0.55 } : undefined}
                         title={authorTooltip}
@@ -2163,21 +2186,21 @@ export function MessagesApp({
                         {displayAuthor(msg, { currentUserId, currentUserDisplayName })}
                       </span>
                       {isAgent && !isDeadAgent && (
-                        <span className="text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-medium flex items-center gap-0.5">
+                        <span className="text-[10px] uppercase tracking-wide bg-sky-500/15 text-sky-600 dark:text-sky-300 px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
                           <Bot size={10} aria-hidden="true" /> Agent
                         </span>
                       )}
                       {isDeadAgent && (
-                        <span className="text-[10px] bg-zinc-500/20 text-zinc-500 px-1.5 py-0.5 rounded font-medium flex items-center gap-0.5">
+                        <span className="text-[10px] uppercase tracking-wide bg-shell-surface-active text-shell-text-tertiary px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
                           <Bot size={10} aria-hidden="true" />
                           {authorState === "archived" ? "inactive" : "removed"}
                         </span>
                       )}
                       <span
-                        className={`text-[11px] ${isDeadAgent ? "text-white/15" : "text-white/25"}`}
+                        className="text-[11px] text-shell-text-tertiary"
                         title={new Date(toMs(msg.created_at)).toLocaleString()}
                       >{relativeTime(msg.created_at, nowMs)}</span>
-                      {msg.edited_at && <span className="text-[10px] text-white/20">(edited)</span>}
+                      {msg.edited_at && <span className="text-[10px] text-shell-text-tertiary">(edited)</span>}
                     </div>
                   )}
                   {msg.deleted_at ? (
@@ -2189,10 +2212,10 @@ export function MessagesApp({
                       onCancel={() => setEditingMessageId(null)}
                     />
                   ) : (
-                    <div className={`text-[13px] leading-relaxed whitespace-pre-wrap break-words ${isDeadAgent ? "text-white/45" : "text-white/80"}`}>
+                    <div className={`${isMobile ? "text-[14px]" : "text-[15px]"} leading-[1.46] whitespace-pre-wrap break-words ${isDeadAgent ? "text-shell-text-secondary" : "text-shell-text"}`}>
                       {renderContent(msg.content)}
                       {msg.state === "pending" && (
-                        <span className="ml-1 text-white/30">...</span>
+                        <span className="ml-1 text-shell-text-tertiary">...</span>
                       )}
                       {msg.state === "streaming" && (
                         <span className="ml-1 inline-flex gap-0.5">
@@ -2223,7 +2246,7 @@ export function MessagesApp({
                           const url = msg.metadata?.canvas_url ?? `/canvas/${msg.metadata?.canvas_id}`;
                           setViewingCanvas({ url, title: msg.metadata?.canvas_title as string | undefined });
                         }}
-                        className="h-7 px-2.5 text-[12px] gap-1.5 bg-white/[0.04] border-white/10 hover:bg-white/[0.08]"
+                        className="h-7 px-2.5 text-[12px] gap-1.5 bg-shell-surface border-shell-border-strong hover:bg-shell-surface-hover"
                         aria-label="View canvas"
                       >
                         <PanelRight size={13} />
@@ -2234,17 +2257,25 @@ export function MessagesApp({
 
                   {/* reactions */}
                   {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {Object.entries(msg.reactions).map(([emoji, users]) => (
-                        <button
-                          key={emoji}
-                          onClick={() => toggleReaction(msg.id, emoji)}
-                          className="text-[12px] bg-white/[0.06] hover:bg-white/10 border border-white/[0.06] rounded-full px-2 py-0.5 flex items-center gap-1 transition-colors"
-                        >
-                          <span>{emoji}</span>
-                          <span className="text-white/40">{users.length}</span>
-                        </button>
-                      ))}
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {Object.entries(msg.reactions).map(([emoji, users]) => {
+                        const mine = currentUserId != null && users.includes(currentUserId);
+                        return (
+                          <button
+                            key={emoji}
+                            onClick={() => toggleReaction(msg.id, emoji)}
+                            aria-pressed={mine}
+                            className={`text-[12px] rounded-full px-2 py-0.5 flex items-center gap-1 border transition-colors ${
+                              mine
+                                ? "bg-sky-500/15 border-sky-500/40 text-sky-600 dark:text-sky-300"
+                                : "bg-shell-surface border-shell-border hover:bg-shell-surface-hover text-shell-text-secondary"
+                            }`}
+                          >
+                            <span>{emoji}</span>
+                            <span className={mine ? "text-sky-600 dark:text-sky-300 font-medium" : "text-shell-text-tertiary"}>{users.length}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
 
@@ -2253,7 +2284,7 @@ export function MessagesApp({
                     const excerpt = (msg.content || "").slice(0, 80);
                     const msgChannelId = msg.channel_id ?? selectedChannel ?? "";
                     return (
-                      <div className="absolute top-0 right-2 -translate-y-1/2 z-10">
+                      <div className="absolute -top-3 right-2 z-10">
                         <MessageHoverActions
                           onReact={() => {
                             if (showEmoji && showEmoji.messageId === msg.id) {
@@ -2354,6 +2385,7 @@ export function MessagesApp({
                     })(),
                     document.body,
                   )}
+                  </div>
                 </div>
                 </React.Fragment>
               );

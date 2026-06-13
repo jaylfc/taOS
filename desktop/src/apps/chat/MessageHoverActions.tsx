@@ -13,12 +13,12 @@ export function MessageHoverActions({
     <div
       role="toolbar"
       aria-label="Message actions"
-      className="inline-flex items-center gap-0.5 bg-shell-surface border border-white/10 rounded-md shadow-sm px-1"
+      className="inline-flex items-center gap-0.5 bg-shell-bg-deep border border-shell-border-strong rounded-lg shadow-md px-1 py-0.5"
     >
       {dragHandle}
-      <button aria-label="Add reaction" onClick={onReact} className="p-1 hover:bg-white/5">😀</button>
-      <button aria-label="Reply in thread" onClick={onReplyInThread} className="p-1 hover:bg-white/5">💬</button>
-      <button aria-label="More" onClick={onOverflow} className="p-1 hover:bg-white/5">⋯</button>
+      <button aria-label="Add reaction" onClick={onReact} className="p-1 rounded hover:bg-shell-surface-hover">😀</button>
+      <button aria-label="Reply in thread" onClick={onReplyInThread} className="p-1 rounded hover:bg-shell-surface-hover">💬</button>
+      <button aria-label="More" onClick={onOverflow} className="p-1 rounded hover:bg-shell-surface-hover">⋯</button>
     </div>
   );
 }
