@@ -418,6 +418,9 @@ export function MessagesApp({
   const [showAllThreads, setShowAllThreads] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  // Which channel's message fetch has completed, so the "empty channel"
+  // placeholder only shows after a real fetch (never mid-load or mid-switch).
+  const [fetchedChannel, setFetchedChannel] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -506,6 +509,7 @@ export function MessagesApp({
         const data = await res.json();
         const list: Message[] = data.messages ?? [];
         setMessages(list);
+        setFetchedChannel(channelId);
         autoScrollRef.current = true;
         const pending = pendingNewCountRef.current;
         pendingNewCountRef.current = 0;
@@ -1721,11 +1725,14 @@ export function MessagesApp({
   const messageAreaUI = (
     <div className="flex-1 flex flex-col min-w-0 h-full">
       {!selectedChannel ? (
-        /* empty state */
+        /* empty state: nothing selected yet */
         <div className="flex-1 flex items-center justify-center text-white/20">
-          <div className="text-center">
+          <div className="text-center px-6">
             <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm">Select a channel to start chatting</p>
+            <p className="text-sm mb-3">Pick a channel or start a DM</p>
+            <Button variant="outline" size="sm" onClick={() => setShowCreate(true)}>
+              New channel
+            </Button>
           </div>
         </div>
       ) : (
@@ -1880,9 +1887,18 @@ export function MessagesApp({
               shellFileDropTarget.dropHandlers.onDrop(e);
             }}
           >
-            {messages.length === 0 && (
-              <div className="flex items-center justify-center h-full text-white/20 text-sm">
-                No messages yet. Say something!
+            {messages.length === 0 && fetchedChannel === selectedChannel && (
+              <div className="flex flex-col items-center justify-center h-full text-white/25 text-center px-6">
+                <MessageCircle size={40} className="mb-3 opacity-30" />
+                <p className="text-sm">
+                  No messages yet. Say hello to{" "}
+                  {currentChannel?.type === "dm"
+                    ? `@${(currentChannel.members ?? []).find((m) => m !== "user") ?? "them"}`
+                    : currentChannel?.name
+                      ? `#${currentChannel.name}`
+                      : "this channel"}
+                  .
+                </p>
               </div>
             )}
             {messages.map((msg, i) => {
