@@ -64,9 +64,9 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [diskStates, setDiskStates] = useState<Record<string, DiskState>>({});
   const [quotaErrors, setQuotaErrors] = useState<Record<string, string>>({});
   const [latestByFramework, setLatestByFramework] = useState<Record<string, LatestVersion>>({});
-  // Hydrate the taOS agent stub with live model info (display only — the detail
-  // panel fetches its own config on open). We only use this to show the current
-  // model in the row's framework pill area; failures are silently ignored.
+  // Hydrate the taOS agent stub with live model info (display only; the detail
+  // panel fetches its own config on open). Shown as the model indicator line on
+  // the system agent's card; failures are silently ignored.
   const [taosModel, setTaosModel] = useState<string | undefined>(undefined);
   const isMobile = useIsMobile();
   const openWindow = useProcessStore((s) => s.openWindow);
@@ -498,7 +498,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             <div className="p-4">
               <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
               <AgentRow
-                agent={{ ...TAOS_AGENT_STUB, display_name: taosModel ? `taOS agent - ${taosModel}` : "taOS agent" }}
+                agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
                 diskState={null}
                 latestByFramework={latestByFramework}
                 onViewLogs={() => setTaosDetailOpen(true)}
@@ -532,7 +532,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           <div className="p-4">
             <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
             <AgentRow
-              agent={{ ...TAOS_AGENT_STUB, display_name: taosModel ? `taOS agent - ${taosModel}` : "taOS agent" }}
+              agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
               diskState={null}
               latestByFramework={latestByFramework}
               onViewLogs={() => setTaosDetailOpen(true)}
@@ -554,7 +554,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             {/* System agent — always shown above the deployed agents list */}
             <p className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wider mb-2">System agent</p>
             <AgentRow
-              agent={{ ...TAOS_AGENT_STUB, display_name: taosModel ? `taOS agent - ${taosModel}` : "taOS agent" }}
+              agent={{ ...TAOS_AGENT_STUB, model: taosModel }}
               diskState={null}
               latestByFramework={latestByFramework}
               onViewLogs={() => setTaosDetailOpen(true)}
