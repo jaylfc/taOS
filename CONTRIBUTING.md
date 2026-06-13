@@ -1,6 +1,6 @@
-# Contributing to TinyAgentOS
+# Contributing to taOS
 
-Welcome — and thanks for your interest in contributing. TinyAgentOS is a self-hosted AI agent platform for low-power hardware. Before diving in, please read the [README](README.md) for a project overview.
+Welcome — and thanks for your interest in contributing. taOS is a self-hosted AI agent platform for low-power hardware. Before diving in, please read the [README](README.md) for a project overview.
 
 > **Note:** The project is in early development. APIs and interfaces may change. That is fine — contributions of all sizes are welcome.
 
