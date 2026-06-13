@@ -1,7 +1,7 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
-Last updated: 2026-06-13, @taOS freshness sweep (cycle 3).
+Last updated: 2026-06-13, @taOS freshness sweep (cycle 4).
 
-Branch tips: master=99cf786e (PR #813 batch). dev=5ebb6995 (6 docs commits ahead of master, pre-sweep).
+Branch tips: master=99cf786e (PR #813 batch). dev=f215668a (7 docs commits ahead of master).
 
 Open PRs: #826-#832 Messages train (7 PRs, awaiting review). #476 App Runtime v1 DRAFT.
 
