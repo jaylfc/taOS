@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { useIsMobile } from "@/hooks/use-is-mobile";
-import { ScrollText, Trash2, Server, Wrench, MessageSquare, PauseCircle, RotateCcw, HardDrive, Database, Cpu } from "lucide-react";
+import { ScrollText, Trash2, Server, Wrench, MessageSquare, PauseCircle, RotateCcw, HardDrive, Database } from "lucide-react";
 import { LatestVersion } from "@/lib/framework-api";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { Button, Card } from "@/components/ui";
@@ -73,31 +73,17 @@ function PausedChip() {
   );
 }
 
-/** A single indicator chip (icon + value) for the indicators line. */
-function IndicatorChip({ icon, value, title }: { icon: ReactNode; value: string; title: string }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded-md bg-shell-surface border border-shell-border text-[10px] text-shell-text-tertiary font-mono"
-      title={title}
-    >
-      {icon}
-      <span className="truncate">{value}</span>
-    </span>
-  );
-}
-
-/** The indicators line under an agent's identity: model now, room for more
- *  (memory, region, ...) later. Renders nothing when there is nothing to show. */
+/** The model label under an agent's identity: plain muted text, no pill or
+ *  icon. Renders nothing when there is no model. */
 function IndicatorRow({ agent }: { agent: Agent }) {
   if (!agent.model) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1 mt-1">
-      <IndicatorChip
-        icon={<Cpu size={10} className="shrink-0" aria-hidden="true" />}
-        value={agent.model}
-        title={`Model: ${agent.model}`}
-      />
-    </div>
+    <span
+      className="block mt-0.5 text-[11px] text-shell-text-tertiary font-mono truncate"
+      title={`Model: ${agent.model}`}
+    >
+      {agent.model}
+    </span>
   );
 }
 
