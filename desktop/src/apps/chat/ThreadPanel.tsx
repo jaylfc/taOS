@@ -7,8 +7,7 @@ type Msg = {
   author_id: string;
   author_type?: "user" | "agent" | "system";
   content: string;
-  created_at?: number;
-  [key: string]: unknown;
+  created_at?: number | string;
 };
 
 export function ThreadPanel({
