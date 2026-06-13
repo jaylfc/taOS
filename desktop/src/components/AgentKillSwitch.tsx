@@ -121,7 +121,7 @@ export function AgentKillSwitch() {
             align="end"
             sideOffset={6}
             className="z-50 min-w-[200px] rounded-xl border border-shell-border p-1.5 shadow-2xl backdrop-blur-xl"
-            style={{ backgroundColor: "rgba(28,26,44,0.96)" }}
+            style={{ backgroundColor: "var(--color-dock-bg)" }}
           >
             <div className="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wide text-shell-text-tertiary">
               Stop agents

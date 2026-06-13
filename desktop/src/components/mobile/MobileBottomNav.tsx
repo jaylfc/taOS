@@ -14,7 +14,7 @@ export function MobileBottomNav({ onBack, onHome, onSearch, onSwitcher, hasActiv
       className="shrink-0 flex items-center justify-around"
       style={{
         height: 48,
-        backgroundColor: "rgba(20, 20, 42, 0.98)",
+        backgroundColor: "var(--color-dock-bg)",
         borderTop: "1px solid rgba(255, 255, 255, 0.1)",
         backdropFilter: "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",

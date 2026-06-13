@@ -25,7 +25,7 @@ export function MobileAppWindow({ appId, windowId, onClose, onMinimise }: Props)
         className="flex items-center px-3 gap-2 shrink-0"
         style={{
           height: "32px",
-          background: "rgba(30, 30, 60, 0.9)",
+          background: "rgba(28, 28, 31, 0.9)",
           borderBottom: "1px solid rgba(255,255,255,0.08)",
         }}
       >
