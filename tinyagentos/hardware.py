@@ -122,6 +122,24 @@ def _run(cmd: list[str]) -> str:
         return ""
 
 
+def _soc_from_devicetree(text: str) -> str:
+    """Map a lowercased device-tree string to a known SoC id, or "".
+
+    `text` should combine /proc/device-tree/model and
+    /proc/device-tree/compatible: the board name in `model` often omits the
+    SoC ("Orange Pi 5 Plus") while `compatible` names it ("rockchip,rk3588").
+    """
+    if "rk3588" in text:
+        return "rk3588"
+    if "rk3576" in text:
+        return "rk3576"
+    if "bcm2712" in text:
+        return "bcm2712"
+    if "bcm2711" in text or "raspberry pi 4" in text:
+        return "bcm2711"
+    return ""
+
+
 def _detect_cpu() -> CpuInfo:
     arch = platform.machine()
     cores = 0
@@ -134,18 +152,15 @@ def _detect_cpu() -> CpuInfo:
                 cores += 1
             if "model name" in line.lower() or "hardware" in line.lower():
                 model = line.split(":")[-1].strip()
-        # Detect SoC for ARM
-        dt_model = Path("/proc/device-tree/model")
-        if dt_model.exists():
-            soc_str = dt_model.read_text().strip("\x00").lower()
-            if "rk3588" in soc_str:
-                soc = "rk3588"
-            elif "rk3576" in soc_str:
-                soc = "rk3576"
-            elif "bcm2712" in soc_str:
-                soc = "bcm2712"
-            elif "bcm2711" in soc_str or "raspberry pi 4" in soc_str:
-                soc = "bcm2711"
+        # Detect SoC for ARM. Read both model and compatible: the board name
+        # in device-tree/model often omits the SoC, so device-tree/compatible
+        # ("rockchip,rk3588") is the reliable source.
+        dt_text = ""
+        for dt in ("/proc/device-tree/model", "/proc/device-tree/compatible"):
+            p = Path(dt)
+            if p.exists():
+                dt_text += " " + p.read_text().replace("\x00", " ").lower()
+        soc = _soc_from_devicetree(dt_text)
     except OSError:
         pass
     # macOS / Apple Silicon detection
