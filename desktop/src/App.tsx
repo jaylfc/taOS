@@ -3,6 +3,7 @@ import { TopBar } from "@/components/TopBar";
 import { Desktop } from "@/components/Desktop";
 import { Dock } from "@/components/Dock";
 import { NeuralWallpaper } from "@/components/NeuralWallpaper";
+import { WallpaperTextOverlay } from "@/components/WallpaperTextOverlay";
 import { Launchpad } from "@/components/Launchpad";
 import { SearchPalette } from "@/components/SearchPalette";
 import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
@@ -127,8 +128,10 @@ export function App() {
   const wallpaperMobileImage = useThemeStore((s) => s.wallpaperMobileImage);
   const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
   const wallpaperKind = useThemeStore((s) => s.wallpaperKind);
-  const showWallpaperWordmark = useThemeStore((s) => s.showWallpaperWordmark);
-  const isNeuralWallpaper = wallpaperKind === "neural";
+  const wallpaperComponent = useThemeStore((s) => s.wallpaperComponent);
+  const wallpaperOverlayText = useThemeStore((s) => s.wallpaperOverlayText);
+  const showOverlayText = useThemeStore((s) => s.showOverlayText);
+  const isAnimatedWallpaper = wallpaperKind === "animated";
   const windows = useProcessStore((s) => s.windows);
   const openWindow = useProcessStore((s) => s.openWindow);
   const closeWindow = useProcessStore((s) => s.closeWindow);
@@ -292,8 +295,9 @@ export function App() {
     <ShortcutProvider>
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
-    <div className={`taos-wallpaper relative h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isNeuralWallpaper ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isNeuralWallpaper ? "none" : wallpaperMobileImage }}>
-      {isNeuralWallpaper && <NeuralWallpaper wordmark={showWallpaperWordmark} />}
+    <div className={`taos-wallpaper relative h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isAnimatedWallpaper ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isAnimatedWallpaper ? "none" : wallpaperMobileImage }}>
+      {isAnimatedWallpaper && wallpaperComponent === "neural" && <NeuralWallpaper />}
+      {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <EffectsLayer />
       {/* Install banner — shown in browser mode, hidden in PWA */}
       {isBrowserMobile && <InstallPromptBanner />}

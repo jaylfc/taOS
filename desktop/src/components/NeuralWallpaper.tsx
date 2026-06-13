@@ -1,11 +1,15 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Live "neural" wallpaper — an adaptive canvas of drifting nodes and proximity
- * links over a graphite field, inspired by the original taOS neural wallpaper
- * but calmed to a neutral macOS-dark palette. Renders at native resolution for
- * any aspect ratio (16:10, ultrawide 32:10, mobile portrait) from one source,
- * so no per-resolution image assets are needed.
+ * "neural" animated wallpaper renderer — an adaptive canvas of drifting nodes
+ * and proximity links over a graphite field, inspired by the original taOS
+ * neural wallpaper but calmed to a neutral macOS-dark palette. Renders at
+ * native resolution for any aspect ratio (16:10, ultrawide 32:10, mobile
+ * portrait) from one source, so no per-resolution image assets are needed.
+ *
+ * One render component behind the generic animated-wallpaper kind. The optional
+ * slogan is a separate overlay (WallpaperTextOverlay), not part of the
+ * renderer, so it works over any wallpaper.
  *
  * Perf: density scales with viewport area, the loop pauses while the tab/app is
  * hidden, and prefers-reduced-motion renders a single static frame. The canvas
@@ -27,7 +31,7 @@ interface Node {
   tw: number;
 }
 
-export function NeuralWallpaper({ wordmark = true }: { wordmark?: boolean }) {
+export function NeuralWallpaper() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -183,20 +187,6 @@ export function NeuralWallpaper({ wordmark = true }: { wordmark?: boolean }) {
   return (
     <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
-      {wordmark && (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center">
-          <span
-            className="font-semibold tracking-tight"
-            style={{
-              fontSize: "clamp(64px, 11vmin, 240px)",
-              color: "rgba(236,236,238,0.96)",
-              textShadow: "0 0 40px rgba(180,186,200,0.25), 0 2px 30px rgba(0,0,0,0.4)",
-            }}
-          >
-            taOS
-          </span>
-        </div>
-      )}
     </div>
   );
 }

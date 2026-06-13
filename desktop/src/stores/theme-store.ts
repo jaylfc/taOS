@@ -11,25 +11,34 @@ import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 interface Wallpaper {
   id: string;
   label: string;
-  image: string; // desktop background-image (empty for live wallpapers)
+  image: string; // desktop background-image (empty for animated wallpapers)
   mobileImage?: string; // portrait-cropped variant, falls back to `image` if absent
   fallback: string; // background-color used as a fallback colour behind the image
-  // "image" = CSS background (url/gradient); "neural" = the live adaptive canvas
-  // wallpaper component. Defaults to "image" when absent.
-  kind?: "image" | "neural";
+  // "image" = CSS background (url/gradient); "animated" = a live render component
+  // selected by `component`. Defaults to "image" when absent.
+  kind?: "image" | "animated";
+  // Render component id for animated wallpapers (e.g. "neural"). New animated
+  // wallpapers register a renderer and reference it here.
+  component?: string;
+  // Optional default slogan overlaid (centered) on top of this wallpaper. null /
+  // absent = no slogan. The overlay is generic, not tied to any wallpaper kind;
+  // the user can toggle it off. Styling (colour/size/effects) defaults for now.
+  overlayText?: string | null;
 }
 
 const WALLPAPERS: Wallpaper[] = [
   {
-    id: "neural-graphite",
-    label: "Neural (Graphite)",
+    id: "graphite",
+    label: "Graphite",
     image: "",
     fallback: "#141415",
-    kind: "neural",
+    kind: "animated",
+    component: "neural",
+    overlayText: "taOS",
   },
   {
     id: "default",
-    label: "Neural (Classic)",
+    label: "Classic",
     image: "url('/static/wallpaper.png')",
     mobileImage: "url('/static/wallpaper-mobile.png')",
     fallback: "#1a1b2e",
@@ -84,15 +93,15 @@ const WALLPAPERS: Wallpaper[] = [
   },
 ];
 
-// Default wallpaper for taOS Dark: the live neural graphite field.
-const DEFAULT_WP = WALLPAPERS.find((w) => w.id === "neural-graphite") ?? WALLPAPERS[0]!;
+// Default wallpaper for taOS Dark: the animated graphite field.
+const DEFAULT_WP = WALLPAPERS.find((w) => w.id === "graphite") ?? WALLPAPERS[0]!;
 
-// The wallpaper wordmark toggle persists locally so a clean desktop survives a
+// The slogan-overlay toggle persists locally so a clean desktop survives a
 // reload. Best-effort: any storage failure falls back to "on".
-const WORDMARK_KEY = "taos-wallpaper-wordmark";
-function loadWordmarkPref(): boolean {
+const SLOGAN_KEY = "taos-wallpaper-slogan";
+function loadSloganPref(): boolean {
   try {
-    return localStorage.getItem(WORDMARK_KEY) !== "off";
+    return localStorage.getItem(SLOGAN_KEY) !== "off";
   } catch {
     return true;
   }
@@ -103,8 +112,10 @@ interface ThemeStore {
   wallpaperImage: string;
   wallpaperMobileImage: string;
   wallpaperFallback: string;
-  wallpaperKind: "image" | "neural";
-  showWallpaperWordmark: boolean;
+  wallpaperKind: "image" | "animated";
+  wallpaperComponent: string | null;
+  wallpaperOverlayText: string | null;
+  showOverlayText: boolean;
   showDesktopIcons: boolean;
   structure: Record<string, { variant?: string } & Record<string, unknown>>;
   effects: { module: string; params?: Record<string, unknown> }[];
@@ -114,7 +125,7 @@ interface ThemeStore {
   themeDefaultWallpaper: Record<string, string>;
 
   setWallpaper: (id: string) => void;
-  toggleWallpaperWordmark: () => void;
+  toggleOverlayText: () => void;
   toggleDesktopIcons: () => void;
   getWallpapers: () => Wallpaper[];
 }
@@ -125,7 +136,9 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   wallpaperMobileImage: DEFAULT_WP.mobileImage ?? DEFAULT_WP.image,
   wallpaperFallback: DEFAULT_WP.fallback,
   wallpaperKind: DEFAULT_WP.kind ?? "image",
-  showWallpaperWordmark: loadWordmarkPref(),
+  wallpaperComponent: DEFAULT_WP.component ?? null,
+  wallpaperOverlayText: DEFAULT_WP.overlayText ?? null,
+  showOverlayText: loadSloganPref(),
   showDesktopIcons: true,
   structure: {},
   effects: [],
@@ -143,19 +156,21 @@ export const useThemeStore = create<ThemeStore>((set) => ({
         wallpaperMobileImage: wp.mobileImage ?? wp.image,
         wallpaperFallback: wp.fallback,
         wallpaperKind: wp.kind ?? "image",
+        wallpaperComponent: wp.component ?? null,
+        wallpaperOverlayText: wp.overlayText ?? null,
       });
     }
   },
 
-  toggleWallpaperWordmark() {
+  toggleOverlayText() {
     set((s) => {
-      const next = !s.showWallpaperWordmark;
+      const next = !s.showOverlayText;
       try {
-        localStorage.setItem(WORDMARK_KEY, next ? "on" : "off");
+        localStorage.setItem(SLOGAN_KEY, next ? "on" : "off");
       } catch {
         // best-effort
       }
-      return { showWallpaperWordmark: next };
+      return { showOverlayText: next };
     });
   },
 

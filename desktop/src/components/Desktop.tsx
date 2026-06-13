@@ -12,6 +12,7 @@ import { WidgetLayer } from "./WidgetLayer";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { WallpaperPicker } from "./WallpaperPicker";
 import { NeuralWallpaper } from "./NeuralWallpaper";
+import { WallpaperTextOverlay } from "./WallpaperTextOverlay";
 
 type ContextMenuState = {
   x: number;
@@ -25,8 +26,10 @@ export function Desktop() {
   const wallpaperMobileImage = useThemeStore((s) => s.wallpaperMobileImage);
   const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
   const wallpaperKind = useThemeStore((s) => s.wallpaperKind);
-  const showWallpaperWordmark = useThemeStore((s) => s.showWallpaperWordmark);
-  const isNeural = wallpaperKind === "neural";
+  const wallpaperComponent = useThemeStore((s) => s.wallpaperComponent);
+  const wallpaperOverlayText = useThemeStore((s) => s.wallpaperOverlayText);
+  const showOverlayText = useThemeStore((s) => s.showOverlayText);
+  const isAnimated = wallpaperKind === "animated";
   const { showWidgets, toggleWidgets } = useWidgetStore();
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [wallpaperPickerOpen, setWallpaperPickerOpen] = useState(false);
@@ -119,11 +122,12 @@ export function Desktop() {
   return (
     <div
       className="taos-wallpaper relative flex-1 overflow-hidden"
-      style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isNeural ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isNeural ? "none" : wallpaperMobileImage }}
+      style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isAnimated ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isAnimated ? "none" : wallpaperMobileImage }}
       onContextMenu={handleContextMenu}
       data-desktop-surface
     >
-      {isNeural && <NeuralWallpaper wordmark={showWallpaperWordmark} />}
+      {isAnimated && wallpaperComponent === "neural" && <NeuralWallpaper />}
+      {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <SnapOverlay bounds={previewBounds} />
       <WidgetLayer />
       {windows.map((win) => (

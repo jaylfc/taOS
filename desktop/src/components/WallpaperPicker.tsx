@@ -7,7 +7,7 @@ interface Props {
 }
 
 export function WallpaperPicker({ open, onClose }: Props) {
-  const { wallpaperId, setWallpaper, getWallpapers, wallpaperKind, showWallpaperWordmark, toggleWallpaperWordmark } =
+  const { wallpaperId, setWallpaper, getWallpapers, wallpaperOverlayText, showOverlayText, toggleOverlayText } =
     useThemeStore();
   const wallpapers = getWallpapers();
 
@@ -58,7 +58,7 @@ export function WallpaperPicker({ open, onClose }: Props) {
               <div
                 className="relative h-24 w-full"
                 style={
-                  wp.kind === "neural"
+                  wp.kind === "animated"
                     ? { background: "radial-gradient(120% 120% at 50% 46%, #2a2a2e 0%, #1d1d1f 45%, #101011 100%)" }
                     : {
                         backgroundImage: wp.image,
@@ -69,9 +69,9 @@ export function WallpaperPicker({ open, onClose }: Props) {
                       }
                 }
               >
-                {wp.kind === "neural" && (
+                {wp.overlayText && (
                   <span className="absolute inset-0 grid place-items-center text-[13px] font-semibold tracking-tight text-white/85">
-                    taOS
+                    {wp.overlayText}
                   </span>
                 )}
               </div>
@@ -86,23 +86,23 @@ export function WallpaperPicker({ open, onClose }: Props) {
             </button>
           ))}
         </div>
-        {wallpaperKind === "neural" && (
+        {wallpaperOverlayText && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-shell-border shrink-0">
-            <label htmlFor="wp-wordmark" className="text-xs text-shell-text-secondary">
-              Show taOS wordmark
+            <label htmlFor="wp-slogan" className="text-xs text-shell-text-secondary">
+              Show slogan ({wallpaperOverlayText})
             </label>
             <button
-              id="wp-wordmark"
+              id="wp-slogan"
               role="switch"
-              aria-checked={showWallpaperWordmark}
-              onClick={toggleWallpaperWordmark}
+              aria-checked={showOverlayText}
+              onClick={toggleOverlayText}
               className={`relative h-5 w-9 rounded-full transition-colors ${
-                showWallpaperWordmark ? "bg-accent" : "bg-shell-surface-active"
+                showOverlayText ? "bg-accent" : "bg-shell-surface-active"
               }`}
             >
               <span
                 className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                  showWallpaperWordmark ? "translate-x-4" : "translate-x-0.5"
+                  showOverlayText ? "translate-x-4" : "translate-x-0.5"
                 }`}
               />
             </button>
