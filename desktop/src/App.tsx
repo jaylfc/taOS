@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect } from "react";
 import { TopBar } from "@/components/TopBar";
 import { Desktop } from "@/components/Desktop";
 import { Dock } from "@/components/Dock";
+import { NeuralWallpaper } from "@/components/NeuralWallpaper";
+import { WallpaperTextOverlay } from "@/components/WallpaperTextOverlay";
 import { Launchpad } from "@/components/Launchpad";
 import { SearchPalette } from "@/components/SearchPalette";
 import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
@@ -125,6 +127,11 @@ export function App() {
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
   const wallpaperMobileImage = useThemeStore((s) => s.wallpaperMobileImage);
   const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
+  const wallpaperKind = useThemeStore((s) => s.wallpaperKind);
+  const wallpaperComponent = useThemeStore((s) => s.wallpaperComponent);
+  const wallpaperOverlayText = useThemeStore((s) => s.wallpaperOverlayText);
+  const showOverlayText = useThemeStore((s) => s.showOverlayText);
+  const isAnimatedWallpaper = wallpaperKind === "animated";
   const windows = useProcessStore((s) => s.windows);
   const openWindow = useProcessStore((s) => s.openWindow);
   const closeWindow = useProcessStore((s) => s.closeWindow);
@@ -288,11 +295,13 @@ export function App() {
     <ShortcutProvider>
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
-    <div className={`taos-wallpaper h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: wallpaperImage, ["--wallpaper-mobile" as never]: wallpaperMobileImage }}>
+    <div className={`taos-wallpaper relative h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: wallpaperFallback, ["--wallpaper-desktop" as never]: isAnimatedWallpaper ? "none" : wallpaperImage, ["--wallpaper-mobile" as never]: isAnimatedWallpaper ? "none" : wallpaperMobileImage }}>
+      {isAnimatedWallpaper && wallpaperComponent === "neural" && <NeuralWallpaper />}
+      {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <EffectsLayer />
       {/* Install banner — shown in browser mode, hidden in PWA */}
       {isBrowserMobile && <InstallPromptBanner />}
-      <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
+      <div className={`relative z-[1] flex-1 flex flex-col overflow-hidden transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
         <MobileTopBar
           onHome={handleMobileHome}
           onSearch={() => { setCardSwitcherOpen(false); setSearchOpen((v) => !v); }}

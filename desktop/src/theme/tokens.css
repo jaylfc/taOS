@@ -1,9 +1,9 @@
 @import "tailwindcss";
 
 @theme {
-  /* Background layers */
-  --color-shell-bg: #1a1b2e;
-  --color-shell-bg-deep: #151625;
+  /* Background layers — macOS-dark graphite (warm charcoal, neutral, no indigo) */
+  --color-shell-bg: #1d1d1f;
+  --color-shell-bg-deep: #171717;
   --color-shell-surface: rgba(255, 255, 255, 0.04);
   --color-shell-surface-hover: rgba(255, 255, 255, 0.06);
   --color-shell-surface-active: rgba(255, 255, 255, 0.08);
@@ -24,10 +24,10 @@
   --color-accent: #8b92a3;
   --color-accent-glow: rgba(139, 146, 163, 0.3);
 
-  /* Dock + top bar — dark gunmetal chrome */
-  --color-dock-bg: rgba(22, 25, 32, 0.92);
+  /* Dock + top bar — neutral graphite frosted chrome */
+  --color-dock-bg: rgba(29, 29, 31, 0.92);
   --color-dock-border: rgba(255, 255, 255, 0.08);
-  --color-topbar-bg: rgba(22, 25, 32, 0.92);
+  --color-topbar-bg: rgba(29, 29, 31, 0.92);
 
   /* Snap zones */
   --color-snap-preview: rgba(139, 146, 163, 0.15);
