@@ -209,17 +209,14 @@ function toMs(ts: number | string): number {
   return new Date(ts).getTime();
 }
 
-function relativeTime(ts: number | string): string {
+function relativeTime(ts: number | string, nowMs: number = Date.now()): string {
   const ms = toMs(ts);
-  const diff = Date.now() - ms;
-  const mins = Math.floor(diff / 60000);
+  const mins = Math.floor((nowMs - ms) / 60000);
   if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(ms).toLocaleDateString();
+  if (mins < 60) return `${mins}m`;
+  // Older than an hour: show the clock time. The day context comes from the
+  // date separators rendered between message groups.
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 function renderContent(text: string) {
@@ -431,6 +428,9 @@ export function MessagesApp({
   const [atBottom, setAtBottom] = useState(true);
   const [newCount, setNewCount] = useState(0);
   const prevMsgCountRef = useRef(0);
+  // One 60s tick for the whole list so relative timestamps ("3m") stay fresh
+  // without a reload. Only sub-hour labels depend on it; cheap re-render.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -917,6 +917,12 @@ export function MessagesApp({
     setNewCount(0);
     prevMsgCountRef.current = 0;
   }, [selectedChannel]);
+
+  /* ---- 60s tick to keep relative timestamps fresh ---- */
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const handleScroll = () => {
     const el = messageListRef.current;
@@ -2071,7 +2077,10 @@ export function MessagesApp({
                           {authorState === "archived" ? "inactive" : "removed"}
                         </span>
                       )}
-                      <span className={`text-[11px] ${isDeadAgent ? "text-white/15" : "text-white/25"}`}>{relativeTime(msg.created_at)}</span>
+                      <span
+                        className={`text-[11px] ${isDeadAgent ? "text-white/15" : "text-white/25"}`}
+                        title={new Date(toMs(msg.created_at)).toLocaleString()}
+                      >{relativeTime(msg.created_at, nowMs)}</span>
                       {msg.edited_at && <span className="text-[10px] text-white/20">(edited)</span>}
                     </div>
                   )}
