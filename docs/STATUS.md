@@ -1,26 +1,28 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
-Last updated: 2026-06-13 ~18:46, @taOS (wind-down at 5h usage 92%).
+Last updated: 2026-06-13 ~21:25 BST, @taOS (active, 5h usage 21% post-reset).
 
-▶ WAKE QUEUE (resume here after the 19:40 UTC 5h reset, Jay's active queue):
-1. THEME: move taOS Dark off the blue-purple base (#1a1b2e) to macOS dark-mode NEUTRALS (#865). Edit dark @theme tokens in desktop/src/theme/tokens.css + retune WALLPAPERS off indigo; accent stays neutral grey; keep Light theme; verify contrast.
-2. MOBILE AUDIT: check the Agents app + chat/Messages + composer look right on mobile (Jay flagged).
-3. WALLPAPER picker Phase 1 (#864): reorg into Theme-default / Built-in / Your-wallpapers(+upload) sections + a Settings entry point; Phase 2 = Wallhaven KEYLESS browse + optional API-key entry. Mock approved.
-4. DYNAMIC ISLAND v2 (#854): design+mocks approved (island holds agent+search, agent chat bubble replaces side panel + poppable window, search bubble, Mac animations). Build plan then build.
-5. GITHUB (#858): Phase 1 connect flow MERGED (#862). Next: Phase 2 time-scoped sharing + consent picker; Phase 3 agent access-request + runtime token injection; Phase 4 fork->PR ops. OAuth app registered (Client ID Ov23licVGSIqagQLXAqb public/in-source; secret stays host-side, NOT in repo; device flow needs no secret).
+▶ WAKE QUEUE (Jay's active queue, resumed post-reset):
+1. THEME #865 DONE-IN-PR: taOS Dark moved off blue-indigo (#1a1b2e) to macOS graphite NEUTRALS (#1d1d1f / #171717), neutral frosted chrome, accent grey kept, Light theme untouched. Shipped with a LIVE adaptive neural wallpaper (canvas, any aspect ratio incl 3840x1200 ultrawide; optional taOS wordmark toggle). PR #868. Also Safari backdrop-filter repaint fix = PR #867. Both need Jay's live Pi visual check (animation + Safari dark<->light are invisible to screenshots). Merge each when bot-review green.
+2. BRAINSTORM (next-up, Jay's call): live-wallpaper PACKAGE format + agent authoring guidelines + store sharing. Prototype proven (neural graphite). See memory [[live-wallpapers]]. Brainstorm after Jay confirms #868 live.
+3. MOBILE AUDIT: check the Agents app + chat/Messages + composer look right on mobile (Jay flagged); verify the new neural wallpaper + graphite chrome on mobile too.
+4. WALLPAPER picker Phase 1 (#864): reorg into Theme-default / Built-in / Your-wallpapers(+upload) sections + a Settings entry point; Phase 2 = Wallhaven KEYLESS browse + optional API-key entry. Mock approved. NOTE: #868 already added a wallpaper "kind" + wordmark toggle to the picker; build on that.
+5. DYNAMIC ISLAND v2 (#854): design+mocks approved (island holds agent+search, agent chat bubble replaces side panel + poppable window, search bubble, Mac animations). Build plan then build.
+6. GITHUB (#858): Phase 1 connect flow MERGED (#862). Next: Phase 2 time-scoped sharing + consent picker; Phase 3 agent access-request + runtime token injection; Phase 4 fork->PR ops. OAuth app registered (Client ID Ov23licVGSIqagQLXAqb public/in-source; secret stays host-side, NOT in repo; device flow needs no secret).
 
-Branch tips: master=6394a3ed. dev advanced well past #845: merged this session = #843 #847 #848 #849 #850 #851 #852 #853 #857 #859 #860 #861 #862. OPEN PR baking: #863 (agents spacing + System-agent-label removal; merge on green).
+Branch tips: master=6394a3ed. dev=7f14fc88 (#863 merged). OPEN PRs baking (merge on green): #867 (Safari backdrop-filter repaint), #868 (macOS-dark graphite + live neural wallpaper, #865).
 
-Session state: wind-down. Merge #863 when green. Resume the WAKE QUEUE after reset.
+Session state: ACTIVE (resumed post-reset, 5h 21%). PRs #867 + #868 open for review; resume the WAKE QUEUE.
 
 WEBSITE: taos.my live. All 4 taos-website PRs merged (stats/changelog/nav/accessibility).
 
 CI: test suite parallelized via #839 (xdist -n auto). CodeRabbit may be out of credits -- do not merge on a fake rate-limit pass. Use @coderabbitai full review to retrigger; manual review OK for tiny already-reviewed PRs.
 
 OPEN PRs:
-- #860 feat(theme): theme chooser shows only taOS Dark + taOS Light (remove Matrix Terminal) -- feat/themes-taos-light-dark
-- #859 fix(agents): kill switch surfaces failures -- Gitar review follow-up on #857, fix/kill-switch-error-handling
+- #868 feat(theme): macOS-dark graphite palette + live neural wallpaper (#865) -- feat/macos-dark-theme; merge on green; needs Jay live Pi check
+- #867 fix(theme): repaint backdrop-filter layers on theme switch (Safari blacked-out) -- fix/safari-theme-repaint; merge on green; Safari-only, verify live
 - #846 dependabot esbuild bump -- SUPERSEDED by #849 (already on dev); close it
 - #476 DRAFT feat(userspace): App Runtime v1 -- stays DRAFT, not ready to merge
+(merged since last update: #859 kill-switch errors, #860 theme chooser taOS Dark+Light, #863 agents spacing)
 
 Notable open issues (bugs first):
 - #844 rkllama store-UI install chain broken (wrong script + non-interactive false-success) -- unresolved
