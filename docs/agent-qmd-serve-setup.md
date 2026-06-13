@@ -7,7 +7,7 @@ Each agent runs its own `qmd serve` instance inside its LXC container. This keep
 ```
 Host (Orange Pi / x86)
 ├── rkllama (port 7833) — shared NPU/GPU inference
-├── TinyAgentOS (port 6969) — web GUI, talks to each agent's qmd serve
+├── taOS (port 6969) — web GUI, talks to each agent's qmd serve
 │
 ├── LXC: agent-alpha
 │   ├── agent framework gateway
@@ -25,7 +25,7 @@ Host (Orange Pi / x86)
         └── ~/.cache/qmd/index.sqlite
 ```
 
-**Key point:** Each agent's `qmd serve` uses the shared rkllama/ollama backend for inference but stores its own index database locally. TinyAgentOS accesses each agent's memory via the agent's `qmd_url`.
+**Key point:** Each agent's `qmd serve` uses the shared rkllama/ollama backend for inference but stores its own index database locally. taOS accesses each agent's memory via the agent's `qmd_url`.
 
 ## Install QMD in Agent LXC
 
@@ -84,9 +84,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now qmd-serve
 ```
 
-## TinyAgentOS Config
+## taOS Config
 
-In TinyAgentOS's `data/config.yaml`, point each agent to its QMD serve instance:
+In taOS's `data/config.yaml`, point each agent to its QMD serve instance:
 
 ```yaml
 agents:
@@ -104,7 +104,7 @@ agents:
     color: "#ff7eb3"
 ```
 
-TinyAgentOS then queries each agent's endpoints:
+taOS then queries each agent's endpoints:
 - `GET /status` — index health
 - `GET /collections` — list memory collections
 - `GET /search?q=X` — keyword search
