@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { AgentKillSwitch } from "./AgentKillSwitch";
 
@@ -7,6 +7,9 @@ import { AgentKillSwitch } from "./AgentKillSwitch";
 describe("AgentKillSwitch", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })) as unknown as typeof fetch);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("renders the top-bar trigger with an accessible label", () => {

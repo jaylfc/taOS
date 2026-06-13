@@ -161,7 +161,15 @@ export function AgentKillSwitch() {
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
 
-      <Dialog.Root open={pending !== null} onOpenChange={(o) => !o && setPending(null)}>
+      <Dialog.Root
+        open={pending !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setPending(null);
+            setFailed(false);
+          }
+        }}
+      >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm" />
           <Dialog.Content
@@ -186,7 +194,10 @@ export function AgentKillSwitch() {
             )}
             <div className="mt-5 flex justify-end gap-2">
               <button
-                onClick={() => setPending(null)}
+                onClick={() => {
+                  setPending(null);
+                  setFailed(false);
+                }}
                 disabled={busy}
                 className="px-3.5 py-2 rounded-lg text-sm font-medium text-shell-text-secondary hover:bg-shell-surface-hover transition-colors disabled:opacity-50"
               >
