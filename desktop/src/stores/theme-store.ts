@@ -30,11 +30,13 @@ const WALLPAPERS: Wallpaper[] = [
   {
     id: "graphite",
     label: "Graphite",
-    image: "",
+    // The original neural-brain wallpaper regraded to neutral graphite (taOS is
+    // baked into the artwork). The animated/custom configurable wallpaper is a
+    // follow-up (tsParticles); this static image is the screenshot-ready default.
+    image: "url('/static/wallpaper-graphite.png')",
+    mobileImage: "url('/static/wallpaper-graphite-mobile.png')",
     fallback: "#141415",
-    kind: "animated",
-    component: "neural",
-    overlayText: "taOS",
+    kind: "image",
   },
   {
     id: "default",
