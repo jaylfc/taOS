@@ -100,7 +100,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       style={{
         left: adjustedX,
         top: adjustedY,
-        backgroundColor: "rgba(30, 31, 50, 0.95)",
+        backgroundColor: "var(--color-dock-bg)",
         backdropFilter: "blur(20px)",
         boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
       }}

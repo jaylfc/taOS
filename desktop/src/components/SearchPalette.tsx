@@ -205,7 +205,7 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
       <div
         className="w-full max-w-[560px] max-h-[50vh] rounded-xl border border-shell-border-strong overflow-hidden flex flex-col"
         style={{
-          backgroundColor: "rgba(26, 27, 46, 0.97)",
+          backgroundColor: "var(--color-dock-bg)",
           boxShadow: "0 16px 64px rgba(0,0,0,0.5)",
         }}
         onClick={(e) => e.stopPropagation()}

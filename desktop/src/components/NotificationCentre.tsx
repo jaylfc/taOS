@@ -34,14 +34,14 @@ export function NotificationCentre() {
         style={
           isMobile
             ? {
-                backgroundColor: "rgba(26, 27, 46, 0.97)",
+                backgroundColor: "var(--color-dock-bg)",
                 backdropFilter: "blur(20px)",
                 boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
                 top: "calc(env(safe-area-inset-top, 0px) + 52px)",
                 bottom: "calc(40px + env(safe-area-inset-bottom, 0px) * 0.35 + 16px)",
               }
             : {
-                backgroundColor: "rgba(26, 27, 46, 0.97)",
+                backgroundColor: "var(--color-dock-bg)",
                 backdropFilter: "blur(20px)",
                 boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
               }

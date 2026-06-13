@@ -308,7 +308,7 @@ export function ModelBrowser({
     >
       <div
         className="w-full max-w-4xl h-full max-h-full flex flex-col rounded-2xl border border-white/10 overflow-hidden"
-        style={{ backgroundColor: "rgba(26, 27, 46, 0.98)" }}
+        style={{ backgroundColor: "var(--color-dock-bg)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

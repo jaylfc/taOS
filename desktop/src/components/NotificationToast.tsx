@@ -279,7 +279,7 @@ function ToastItem({ notif }: { notif: Notification }) {
   return (
     <div
       className={`flex items-start gap-3 p-3 rounded-xl border backdrop-blur-lg shadow-xl w-80 ${LEVEL_COLORS[notif.level]}`}
-      style={{ backgroundColor: "rgba(26, 27, 46, 0.9)" }}
+      style={{ backgroundColor: "var(--color-dock-bg)" }}
       role="alert"
       aria-live="assertive"
     >
