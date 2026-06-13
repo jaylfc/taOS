@@ -699,14 +699,18 @@ async def apply_update(request: Request):
     import asyncio
     project_dir = Path(__file__).parent.parent.parent
 
-    # systemd ExecStartPre rebuilds produce new content-hashed files in
-    # static/desktop/assets/ and modify desktop/tsconfig.tsbuildinfo on each
-    # restart, leaving the tree dirty. git pull --ff-only then refuses to
-    # overwrite the locals and the Install Update button always 500s. Wipe
-    # build outputs first — git pull restores them or the rebuild below
-    # regenerates them.
+    # The desktop rebuild leaves the tree dirty in three ways, and a dirty
+    # tracked file makes the next git pull --ff-only refuse to overwrite the
+    # local and the Install Update button 500s:
+    #   - static/desktop/assets/* : new content-hashed bundle files (npm build)
+    #   - desktop/tsconfig.tsbuildinfo : touched on every tsc build
+    #   - desktop/package-lock.json : npm install rewrites it (esp. when an
+    #     incoming update also changes it, e.g. the esbuild bump in #849)
+    # Restore all of them before pulling; the pull restores the committed
+    # versions or the rebuild below regenerates the build outputs.
     reset_proc = await asyncio.create_subprocess_exec(
-        "git", "checkout", "--", "desktop/tsconfig.tsbuildinfo", "static/desktop",
+        "git", "checkout", "--",
+        "desktop/tsconfig.tsbuildinfo", "desktop/package-lock.json", "static/desktop",
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         cwd=str(project_dir),
     )
