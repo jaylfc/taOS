@@ -20,10 +20,10 @@ describe("ThemesPanel", () => {
     expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("");
   });
 
-  it("shows built-in Default and Matrix Terminal even when server returns empty list", async () => {
+  it("shows built-in taOS Dark and taOS Light even when server returns empty list", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
     render(<ThemesPanel />);
-    expect(await screen.findByText("Default")).toBeInTheDocument();
-    expect(screen.getByText("Matrix Terminal")).toBeInTheDocument();
+    expect(await screen.findByText("taOS Dark")).toBeInTheDocument();
+    expect(screen.getByText("taOS Light")).toBeInTheDocument();
   });
 });

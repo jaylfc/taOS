@@ -15,15 +15,15 @@ describe("restoreActiveTheme", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/api/preferences/themes")) {
-        return Promise.resolve(new Response(JSON.stringify({ active_theme_id: "matrix-terminal" })));
+        return Promise.resolve(new Response(JSON.stringify({ active_theme_id: "light" })));
       }
       return Promise.resolve(new Response(JSON.stringify([])));
     });
 
     await restoreActiveTheme();
 
-    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#00ff46");
-    expect(useThemeStore.getState().activeThemeId).toBe("matrix-terminal");
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#5b6472");
+    expect(useThemeStore.getState().activeThemeId).toBe("light");
   });
 
   it("is a no-op when no active theme is saved", async () => {
