@@ -155,17 +155,23 @@ function schemeFromBg(bg: string | undefined): "light" | "dark" {
 // frame via [data-theme-switching] (see tokens.css) forces WebKit to rebuild
 // every backdrop layer against the new tokens. No-op outside the browser.
 function forceCompositingRepaint() {
-  if (typeof document === "undefined" || typeof requestAnimationFrame === "undefined") return;
+  if (typeof document === "undefined") return;
   const root = document.documentElement;
   root.setAttribute("data-theme-switching", "");
   void root.offsetHeight; // flush the filter:none state before restoring it
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => root.removeAttribute("data-theme-switching"));
-  });
+  const clear = () => root.removeAttribute("data-theme-switching");
+  // Two nested rAFs let one frame paint with the filter off before restoring it.
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(clear));
+  }
+  // rAF is paused on a hidden/background tab, which would otherwise leave the
+  // attribute (and the backdrop-filter:none rule) stuck until the tab is shown.
+  // A timer guarantees cleanup regardless; removeAttribute is idempotent.
+  setTimeout(clear, 250);
 }
 
 export function applyThemeConfig(cfg: ThemeConfig) {
-  revertTheme();
+  revertTheme({ silent: true }); // applyThemeConfig owns the single repaint below
   const root = document.documentElement;
   for (const [k, v] of Object.entries(cfg.tokens || {})) {
     if (ALLOWED_TOKENS.has(k) && typeof v === "string") {
@@ -178,13 +184,15 @@ export function applyThemeConfig(cfg: ThemeConfig) {
   forceCompositingRepaint();
 }
 
-export function revertTheme() {
+export function revertTheme(opts?: { silent?: boolean }) {
   const root = document.documentElement;
   for (const k of _applied) root.style.removeProperty(k);
   _applied = [];
   root.dataset.scheme = "dark"; // base shell is dark
   useThemeStore.setState({ structure: {}, effects: [] });
-  forceCompositingRepaint();
+  // Skip when called from applyThemeConfig (which repaints once after applying
+  // the new tokens) so a theme switch does not force two reflows.
+  if (!opts?.silent) forceCompositingRepaint();
 }
 
 export function setWallpaperForActiveTheme(value: string) {
