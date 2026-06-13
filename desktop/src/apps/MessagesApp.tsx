@@ -219,7 +219,7 @@ function relativeTime(ts: number | string, nowMs: number = Date.now()): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function renderContent(text: string) {
+export function renderContent(text: string) {
   // Split on fenced code blocks first, then apply inline markdown to non-code segments.
   const result: (string | React.ReactElement)[] = [];
   const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
@@ -242,7 +242,7 @@ function renderContent(text: string) {
   return result;
 }
 
-function renderInline(text: string, keyPrefix: string) {
+export function renderInline(text: string, keyPrefix: string) {
   return [
     <div key={keyPrefix}>
       <ReactMarkdown
@@ -315,7 +315,7 @@ function saveDraft(channelId: string, text: string) {
   } catch { /* storage full or unavailable: drafts are best-effort */ }
 }
 
-function dayLabel(ts: string | number): string {
+export function dayLabel(ts: string | number): string {
   const d = new Date(toMs(ts));
   const now = new Date();
   // Compare local calendar days, not UTC. Build local-midnight Dates for
