@@ -58,6 +58,7 @@ from tinyagentos.scheduler import BackendCatalog, HistoryStore, ScoreCache, Task
 from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
 from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
+from tinyagentos.github_identities import GitHubIdentitiesStore
 from tinyagentos.secrets import SecretsStore
 from tinyagentos.training import TrainingManager
 from tinyagentos.conversion import ConversionManager
@@ -260,6 +261,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     torrent_settings_store = TorrentSettingsStore(data_dir / "torrent_settings.json")
     download_manager = DownloadManager(torrent_settings_store=torrent_settings_store)
     secrets_store = SecretsStore(data_dir / "secrets.db")
+    github_identities_store = GitHubIdentitiesStore(data_dir / "github_identities.db")
     relationship_mgr = RelationshipManager(data_dir / "relationships.db")
     channel_store = ChannelStore(data_dir / "channels.db")
     scheduler = TaskScheduler(data_dir / "scheduler.db")
@@ -388,6 +390,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await notif_store.init()
         await qmd_client.init()
         await secrets_store.init()
+        await github_identities_store.init()
         await relationship_mgr.init()
         await channel_store.init()
         await scheduler.init()
@@ -595,6 +598,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.download_manager = download_manager
         app.state.torrent_settings_store = torrent_settings_store
         app.state.secrets = secrets_store
+        app.state.github_identities = github_identities_store
         app.state.relationships = relationship_mgr
         app.state.channels = channel_store
         app.state.fallback = fallback
@@ -1185,6 +1189,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.http_client = http_client
     app.state.download_manager = download_manager
     app.state.secrets = secrets_store
+    app.state.github_identities = github_identities_store
     app.state.relationships = relationship_mgr
     app.state.channels = channel_store
     app.state.fallback = fallback

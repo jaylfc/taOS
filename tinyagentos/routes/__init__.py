@@ -184,6 +184,9 @@ def register_all_routers(app):
     from tinyagentos.routes.github import router as github_router
     app.include_router(github_router)
 
+    from tinyagentos.routes.github_oauth import router as github_oauth_router
+    app.include_router(github_oauth_router)
+
     from tinyagentos.routes.youtube import router as youtube_router
     app.include_router(youtube_router)
 
