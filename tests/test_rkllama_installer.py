@@ -11,7 +11,32 @@ import pytest
 from tinyagentos.installers.rkllama_installer import (
     parse_hf_resolve_url,
     resolve_rkllama_url,
+    rkllama_is_running,
 )
+from tinyagentos.installers import rkllama_installer
+
+
+class TestRkllamaIsRunning:
+    def test_true_when_taos_port_responds(self, monkeypatch):
+        monkeypatch.setattr(
+            rkllama_installer, "_port_responds_with_rkllama",
+            lambda port, timeout=1.0: port == rkllama_installer._DEFAULT_RKLLAMA_PORT,
+        )
+        assert rkllama_is_running() is True
+
+    def test_true_when_only_legacy_port_responds(self, monkeypatch):
+        monkeypatch.setattr(
+            rkllama_installer, "_port_responds_with_rkllama",
+            lambda port, timeout=1.0: port == rkllama_installer._LEGACY_RKLLAMA_PORT,
+        )
+        assert rkllama_is_running() is True
+
+    def test_false_when_nothing_responds(self, monkeypatch):
+        monkeypatch.setattr(
+            rkllama_installer, "_port_responds_with_rkllama",
+            lambda port, timeout=1.0: False,
+        )
+        assert rkllama_is_running() is False
 
 
 class TestParseHfResolveUrl:

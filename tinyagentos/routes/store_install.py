@@ -104,6 +104,18 @@ async def get_device_capability(request: Request, target_remote: str | None) -> 
                 installed_backends = tuple(b for b in _KNOWN_BACKENDS if b in ids)
             except Exception:  # noqa: BLE001
                 installed_backends = ()
+        # A backend that is actually running but missing from the registry must
+        # still count as installed, so the resolver uses it (action="use")
+        # instead of trying to (re)install it. rkllama runs as a bare process on
+        # the Pi and is often not registered, which made every model install
+        # take a broken install_chain path (issue #783 follow-up).
+        if "rkllama" not in installed_backends:
+            try:
+                from tinyagentos.installers.rkllama_installer import rkllama_is_running
+                if rkllama_is_running():
+                    installed_backends = installed_backends + ("rkllama",)
+            except Exception:  # noqa: BLE001
+                pass
         return DeviceCapability(
             device_id="local",
             targets=targets,

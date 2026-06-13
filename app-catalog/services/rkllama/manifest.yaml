@@ -14,7 +14,7 @@ requires:
 
 install:
   method: script
-  script: scripts/install-rkllama.sh
+  script: scripts/install-rknpu.sh
 
 hardware_tiers:
   arm-npu-16gb: full
