@@ -69,7 +69,7 @@ export interface DeviceStart {
 }
 
 export type DevicePoll =
-  | { status: "pending" }
+  | { status: "pending"; slow_down?: boolean }
   | { status: "connected"; identity: GitHubIdentity }
   | { status: "error"; error: string };
 

@@ -42,10 +42,32 @@ class GitHubIdentitiesStore(BaseStore):
         token: str,
         scopes: str = "",
     ) -> dict:
-        """Store a new identity. Returns the public fields (never the token)."""
+        """Store an identity. Returns the public fields (never the token).
+
+        Reconnecting an already-connected account (same login) refreshes the
+        token in place rather than creating a duplicate row.
+        """
+        encrypted = _encrypt(token, self._key_dir)
+        async with self._db.execute(
+            "SELECT id, created_at FROM github_identities WHERE login = ?", (login,)
+        ) as cursor:
+            existing = await cursor.fetchone()
+        if existing:
+            identity_id, created_at = existing[0], existing[1]
+            await self._db.execute(
+                "UPDATE github_identities SET avatar_url = ?, token = ?, scopes = ? "
+                "WHERE id = ?",
+                (avatar_url, encrypted, scopes, identity_id),
+            )
+            await self._db.commit()
+            return {
+                "id": identity_id,
+                "login": login,
+                "avatar_url": avatar_url,
+                "created_at": created_at,
+            }
         identity_id = str(uuid.uuid4())
         now = int(time.time())
-        encrypted = _encrypt(token, self._key_dir)
         await self._db.execute(
             "INSERT INTO github_identities (id, login, avatar_url, token, scopes, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",

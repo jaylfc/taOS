@@ -162,6 +162,10 @@ async def device_poll(request: Request, body: DevicePollBody):
         return {"status": "connected", "identity": identity}
 
     error = data.get("error", "")
+    if error == "slow_down":
+        # RFC 8628 §3.5: the client must back off. Signal the frontend to add
+        # to its poll interval.
+        return {"status": "pending", "slow_down": True}
     if error in _PENDING_ERRORS:
         return {"status": "pending"}
     if error in _TERMINAL_ERRORS:

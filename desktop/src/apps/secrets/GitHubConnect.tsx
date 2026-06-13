@@ -52,7 +52,7 @@ export function GitHubConnect() {
 
   const beginPolling = useCallback(
     (deviceCode: string, intervalSec: number, expiresInSec: number) => {
-      const intervalMs = Math.max(intervalSec, 1) * 1000;
+      let intervalMs = Math.max(intervalSec, 1) * 1000;
 
       const tick = async () => {
         const result = await pollDeviceFlow(deviceCode);
@@ -75,7 +75,10 @@ export function GitHubConnect() {
           });
           return;
         }
-        // pending -> schedule the next poll
+        // pending -> back off by 5s on slow_down (RFC 8628 §3.5), then poll again
+        if ("slow_down" in result && result.slow_down) {
+          intervalMs += 5000;
+        }
         pollTimer.current = setTimeout(tick, intervalMs);
       };
 

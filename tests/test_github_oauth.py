@@ -111,7 +111,22 @@ async def test_device_poll_slow_down_is_pending(client_factory):
     gh = _make_response({"error": "slow_down"})
     c = await client_factory(post_effects=[gh])
     resp = await c.post("/api/github/oauth/device/poll", json={"device_code": "DEV123"})
-    assert resp.json()["status"] == "pending"
+    body = resp.json()
+    assert body["status"] == "pending"
+    # The frontend backs off its poll interval when slow_down is signalled.
+    assert body.get("slow_down") is True
+
+
+@pytest.mark.asyncio
+async def test_reconnect_same_login_updates_not_duplicates(store):
+    first = await store.add("octocat", "a1", "gho_token1", "repo")
+    second = await store.add("octocat", "a2", "gho_token2", "repo")
+    # Same login -> same row refreshed in place, no duplicate.
+    assert first["id"] == second["id"]
+    assert second["avatar_url"] == "a2"
+    identities = await store.list()
+    assert len(identities) == 1
+    assert await store.get_token(first["id"]) == "gho_token2"
 
 
 @pytest.mark.asyncio
