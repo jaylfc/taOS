@@ -1161,6 +1161,15 @@ export function MessagesApp({
   };
 
   /* ---- file upload ---- */
+  // Re-upload a File-based attachment (used by the retry affordance). Keeps the
+  // success/failure state updates identical to a first attempt.
+  const uploadFileAttachment = (id: string, file: File) => {
+    setPendingAttachments((p) => p.map((x) => (x.id === id ? { ...x, uploading: true, error: undefined } : x)));
+    uploadDiskFile(file, selectedChannel ?? undefined)
+      .then((rec) => setPendingAttachments((p) => p.map((x) => (x.id === id ? { ...x, record: rec, uploading: false, error: undefined } : x))))
+      .catch((err) => setPendingAttachments((p) => p.map((x) => (x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x))));
+  };
+
   const handleFileUpload = async () => {
     const selections = await openFilePicker({
       sources: ["disk", "workspace", "agent-workspace"],
@@ -1170,7 +1179,7 @@ export function MessagesApp({
       const id = Math.random().toString(36).slice(2);
       const filename = sel.source === "disk" ? sel.file.name : sel.path.split("/").pop() || "";
       const size = sel.source === "disk" ? sel.file.size : 0;
-      setPendingAttachments((p) => [...p, { id, filename, size, uploading: true }]);
+      setPendingAttachments((p) => [...p, { id, filename, size, uploading: true, file: sel.source === "disk" ? sel.file : undefined }]);
       try {
         const rec = sel.source === "disk"
           ? await uploadDiskFile(sel.file, selectedChannel ?? undefined)
@@ -2033,7 +2042,7 @@ export function MessagesApp({
                 e.preventDefault();
                 for (const f of Array.from(e.dataTransfer.files)) {
                   const id = Math.random().toString(36).slice(2);
-                  setPendingAttachments((p) => [...p, { id, filename: f.name, size: f.size, uploading: true }]);
+                  setPendingAttachments((p) => [...p, { id, filename: f.name, size: f.size, uploading: true, file: f }]);
                   uploadDiskFile(f, selectedChannel ?? undefined)
                     .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
                     .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
@@ -2385,7 +2394,16 @@ export function MessagesApp({
             items={pendingAttachments}
             onRemove={(id) => setPendingAttachments((p) => p.filter((x) => x.id !== id))}
             onRetry={(id) => {
-              setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: "retry not yet supported — remove and re-add" } : x));
+              const entry = pendingAttachments.find((x) => x.id === id);
+              if (!entry) return;
+              if (!entry.file) {
+                // Path-based attachment (no File kept): can only re-add.
+                setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, error: "Can't retry, remove and re-add" } : x));
+                return;
+              }
+              if ((entry.retries ?? 0) >= 3) return;
+              setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, retries: (x.retries ?? 0) + 1 } : x));
+              uploadFileAttachment(id, entry.file);
             }}
           />
 
@@ -2472,7 +2490,7 @@ export function MessagesApp({
                     e.preventDefault();
                     for (const f of files) {
                       const id = Math.random().toString(36).slice(2);
-                      setPendingAttachments((p) => [...p, { id, filename: f.name || "pasted.png", size: f.size, uploading: true }]);
+                      setPendingAttachments((p) => [...p, { id, filename: f.name || "pasted.png", size: f.size, uploading: true, file: f }]);
                       uploadDiskFile(f, selectedChannel ?? undefined)
                         .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
                         .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));

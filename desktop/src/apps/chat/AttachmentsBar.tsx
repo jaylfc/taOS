@@ -8,6 +8,8 @@ export type PendingAttachment = {
   record?: AttachmentRecord;  // set once upload completes
   error?: string;
   uploading?: boolean;
+  file?: File;        // original file kept so a failed upload can be retried
+  retries?: number;   // retry attempts so far (capped at 3)
 };
 
 export function AttachmentsBar({
@@ -31,7 +33,11 @@ export function AttachmentsBar({
           <span className="opacity-50">{Math.max(1, Math.round(it.size / 1024))} KB</span>
           {it.uploading && <span className="opacity-70">…</span>}
           {it.error && (
-            <button aria-label="Retry upload" onClick={() => onRetry(it.id)} className="text-red-300">retry</button>
+            (it.retries ?? 0) < 3 && it.file ? (
+              <button aria-label="Retry upload" onClick={() => onRetry(it.id)} className="text-red-300">retry</button>
+            ) : (
+              <span title="Upload failed" className="text-red-400/70">failed</span>
+            )
           )}
           <button aria-label={`Remove ${it.filename}`} onClick={() => onRemove(it.id)} className="opacity-70 hover:opacity-100">×</button>
         </div>
