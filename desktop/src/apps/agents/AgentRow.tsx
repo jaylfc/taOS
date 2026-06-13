@@ -257,14 +257,6 @@ export function AgentRow({
       : "border border-shell-border",
   ].join(" ");
 
-  const systemChip = isProtected ? (
-    <span
-      className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wide bg-accent/15 text-accent border border-accent/25 shrink-0"
-      title="taOS system agent"
-    >
-      System
-    </span>
-  ) : null;
 
   if (isMobile) {
     return (
@@ -277,7 +269,6 @@ export function AgentRow({
               <span className="text-shell-text font-medium text-[15px] truncate">
                 {agent.display_name || agent.name}
               </span>
-              {systemChip}
               {updateDot}
             </div>
             {subLabel && (
@@ -326,7 +317,6 @@ export function AgentRow({
             <span className="text-shell-text font-medium text-[15px] truncate">
               {agent.display_name || agent.name}
             </span>
-            {systemChip}
             {updateDot}
           </div>
           {subLabel && (

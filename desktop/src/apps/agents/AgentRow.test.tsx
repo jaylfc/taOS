@@ -64,10 +64,9 @@ describe("AgentRow", () => {
     expect(screen.getByLabelText("Status: Stopped")).toBeInTheDocument();
   });
 
-  it("hides destructive actions and shows a System chip when protected", () => {
+  it("hides destructive actions when protected", () => {
     renderRow({}, { protected: true });
     expect(screen.queryByRole("button", { name: "Delete scout" })).toBeNull();
-    expect(screen.getByText("System")).toBeInTheDocument();
   });
 
   it("shows a resume action and Paused status when paused", () => {
