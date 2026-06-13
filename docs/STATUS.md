@@ -1,7 +1,7 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
 Last updated: 2026-06-13, @taOS (freshness sweep).
 
-Branch tips: master=99cf786e. dev=0cf41bc6 (26 ahead of master: Messages train + activity fix + deep-nav API + agent jobs 8/12/16/17).
+Branch tips: master=99cf786e. dev=960d5464 (27 ahead of master: Messages train + activity fix + deep-nav API + agent jobs 8/12/16/17).
 
 Session state: ACTIVE. A2A poll monitor ARMED (seeded id 413). Freshness cron :08/:38 ARMED. 5h resume-pair ARMED (primary 15:53, retry 16:12 local; session-scoped). 5h usage 47%, weekly 5%.
 
