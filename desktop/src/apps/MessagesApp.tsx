@@ -1481,9 +1481,9 @@ export function MessagesApp({
 
       {allEmpty ? (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 24px", textAlign: "center", gap: 12 }}>
-          <MessageCircle size={36} style={{ color: "rgba(255,255,255,0.15)" }} aria-hidden="true" />
-          <p style={{ fontSize: 15, fontWeight: 600, color: "rgba(255,255,255,0.7)", margin: 0 }}>No conversations yet</p>
-          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.35)", margin: 0 }}>Deploy an agent to start chatting</p>
+          <MessageCircle size={36} style={{ color: "var(--color-shell-text-tertiary)" }} aria-hidden="true" />
+          <p style={{ fontSize: 15, fontWeight: 600, color: "var(--color-shell-text)", margin: 0 }}>No conversations yet</p>
+          <p style={{ fontSize: 13, color: "var(--color-shell-text-secondary)", margin: 0 }}>Deploy an agent to start chatting</p>
           <button
             type="button"
             onClick={openAgentsApp}
@@ -1498,64 +1498,77 @@ export function MessagesApp({
             type="button"
             onClick={() => toggleSection(section.label)}
             aria-expanded={!collapsedSections[section.label]}
-            style={{ fontSize: 12, textTransform: "uppercase" as const, letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", width: "100%" }}
+            style={{ fontSize: 12, textTransform: "uppercase" as const, letterSpacing: 0.5, color: "var(--color-shell-text-secondary)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", width: "100%" }}
           >
             <ChevronRight size={13} aria-hidden="true" style={{ transition: "transform 0.15s", transform: collapsedSections[section.label] ? "none" : "rotate(90deg)" }} />
             {section.icon} {section.label}
           </button>
           {visibleInSection(section.items, section.label).length === 0 ? (
             collapsedSections[section.label] ? null : (
-              <div style={{ padding: "0 20px", fontSize: 12, color: "rgba(255,255,255,0.2)", fontStyle: "italic" }}>None yet</div>
+              <div style={{ padding: "0 20px", fontSize: 12, color: "var(--color-shell-text-tertiary)", fontStyle: "italic" }}>None yet</div>
             )
           ) : (
             <div
               style={{
                 margin: "0 12px",
                 borderRadius: 16,
-                background: "rgba(255,255,255,0.05)",
-                border: "1px solid rgba(255,255,255,0.08)",
+                background: "var(--color-shell-surface)",
+                border: "1px solid var(--color-shell-border)",
                 overflow: "hidden",
               }}
             >
-              {visibleInSection(section.items, section.label).map((ch, idx, arr) => (
+              {visibleInSection(section.items, section.label).map((ch, idx, arr) => {
+                const agentMember = (ch.members ?? []).find((m) => m !== "user");
+                const isA2A = ch.settings?.kind === "a2a";
+                const count = unread[ch.id] ?? 0;
+                return (
                 <button
                   key={ch.id}
                   type="button"
                   onClick={() => setSelectedChannel(ch.id)}
                   aria-label={`Channel ${ch.name}`}
-                  title={ch.settings?.kind === "a2a" ? "Agent coordination — mention @<slug> to hand off." : undefined}
+                  title={isA2A ? "Agent coordination — mention @<slug> to hand off." : undefined}
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 10,
+                    gap: 12,
                     width: "100%",
-                    padding: "14px 16px",
-                    background: selectedChannel === ch.id ? "rgba(59,130,246,0.15)" : "none",
+                    padding: "11px 14px",
+                    background: selectedChannel === ch.id ? "var(--color-shell-surface-active)" : "none",
                     border: "none",
-                    borderBottom: idx === arr.length - 1 ? "none" : "1px solid rgba(255,255,255,0.06)",
+                    borderBottom: idx === arr.length - 1 ? "none" : "1px solid var(--color-shell-border)",
                     cursor: "pointer",
                     color: "inherit",
                     textAlign: "left",
                   }}
                 >
-                  {ch.settings?.kind === "a2a" && (
-                    <Bot
-                      size={14}
-                      aria-hidden
-                      style={{ color: "rgba(255,255,255,0.6)", flexShrink: 0 }}
-                    />
+                  {agentMember ? (
+                    <MessageAvatar size={38} authorId={agentMember} displayName={agentMember} kind="agent" />
+                  ) : (
+                    <div style={{ width: 38, height: 38, borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--color-shell-surface-active)", color: "var(--color-shell-text-secondary)", flexShrink: 0 }}>
+                      {isA2A ? <Bot size={18} aria-hidden /> : <Hash size={18} aria-hidden />}
+                    </div>
                   )}
-                  <span style={{ flex: 1, fontSize: 15, fontWeight: 400, color: "rgba(255,255,255,0.9)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {ch.name}
-                  </span>
-                  {(unread[ch.id] ?? 0) > 0 && (
-                    <span style={{ background: "#3b82f6", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 9999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>
-                      {unread[ch.id]}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ flex: 1, fontSize: 15, fontWeight: count > 0 ? 700 : 600, color: "var(--color-shell-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {ch.name}
+                      </span>
+                      {ch.last_message_at && (
+                        <span style={{ fontSize: 11, color: "var(--color-shell-text-tertiary)", flexShrink: 0 }}>
+                          {relativeTime(ch.last_message_at)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {count > 0 && (
+                    <span style={{ background: "#3b82f6", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 9999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px", flexShrink: 0 }}>
+                      {count}
                     </span>
                   )}
-                  <ChevronRight size={16} style={{ color: "rgba(255,255,255,0.25)", flexShrink: 0 }} />
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1569,7 +1582,7 @@ export function MessagesApp({
             onClick={() => setProjectsExpanded((v) => !v)}
             aria-expanded={projectsExpanded}
             aria-controls="projects-section-mobile"
-            style={{ fontSize: 12, textTransform: "uppercase" as const, letterSpacing: 0.5, color: "rgba(255,255,255,0.45)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", width: "100%" }}
+            style={{ fontSize: 12, textTransform: "uppercase" as const, letterSpacing: 0.5, color: "var(--color-shell-text-secondary)", padding: "0 20px 6px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", width: "100%" }}
           >
             <ChevronRight size={12} style={{ transition: "transform 0.15s", transform: projectsExpanded ? "rotate(90deg)" : "none", color: "rgba(255,255,255,0.3)" }} aria-hidden="true" />
             Projects ({projectGroups.length})
