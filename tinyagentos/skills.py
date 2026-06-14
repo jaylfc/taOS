@@ -348,15 +348,15 @@ class SkillStore(BaseStore):
                 "description": "Place a generated image on a project's canvas",
                 "tool_schema": {
                     "name": "canvas_add_image",
-                    "description": "Place a generated image (by file_id from generate_image) on a project's ideas board.",
+                    "description": "Place a generated image on a project's ideas board.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
                             "project_id": {"type": "string", "description": "Id from create_project."},
-                            "file_id": {"type": "string", "description": "Image file id from generate_image."},
+                            "image_ref": {"type": "string", "description": "The image_ref returned by generate_image."},
                             "alt": {"type": "string", "description": "Alt text."},
                         },
-                        "required": ["project_id", "file_id"],
+                        "required": ["project_id", "image_ref"],
                     },
                 },
                 "frameworks": {

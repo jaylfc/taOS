@@ -172,10 +172,9 @@ async def execute_image_generation(
     fallback omits the model field so the local backend uses whatever
     checkpoint it has loaded rather than a pinned model name.
 
-    Returns dict with 'success', 'image_b64' (base64 PNG), and 'error'
-    if failed.
+    Returns dict with 'success', 'image_ref' (the saved filename, usable by
+    canvas_add_image), 'url' (web path to the PNG), and 'error' if failed.
     """
-    import base64
     import httpx
     import random
 
@@ -203,14 +202,15 @@ async def execute_image_generation(
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(target_url, json=payload)
             resp.raise_for_status()
-            # /api/images/generate returns raw PNG bytes
-            image_bytes = resp.content
+            # The scheduler route saves the PNG and returns JSON metadata.
+            data = resp.json()
             return {
                 "success": True,
-                "image_b64": base64.b64encode(image_bytes).decode(),
-                "seed": seed,
-                "model": model or "",
-                "size": size,
+                "image_ref": data.get("filename", ""),
+                "url": data.get("path", ""),
+                "seed": data.get("seed", seed),
+                "model": data.get("model", model or ""),
+                "size": data.get("size", size),
             }
     except httpx.ConnectError:
         controller_unreachable = True  # fall through to direct path below

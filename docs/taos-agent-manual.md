@@ -162,10 +162,11 @@ update the open Projects app in real time):
   Returns a `project_id` to use in the next calls.
 - **add_task** — add a to-do task to a project's board. Args: `project_id`, `title`.
 - **canvas_add_image** — place a generated image on a project's ideas board. Args:
-  `project_id`, `file_id` (from `generate_image`), optional `alt`.
+  `project_id`, `image_ref` (the `image_ref` returned by `generate_image`), optional `alt`.
 
-A typical flow: open the Projects app, create_project, add a few tasks, generate
-an image, then canvas_add_image it onto the board.
+A typical flow: open the Projects app, create_project, add a few tasks, call
+generate_image and keep its `image_ref`, then canvas_add_image(project_id, image_ref)
+to drop it on the board.
 
 These drive the user's own desktop in their session. Use them to make your work
 visible: open the relevant app so the user can watch, then carry out the task with

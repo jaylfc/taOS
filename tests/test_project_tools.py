@@ -22,7 +22,7 @@ class _FakeProjectStore:
     async def get_project(self, project_id):
         if project_id == "missing":
             return None
-        return {"id": project_id, "user_id": self._owner}
+        return {"id": project_id, "user_id": self._owner, "slug": "luna"}
 
 
 class _FakeTaskStore:
@@ -43,16 +43,28 @@ class _FakeCanvasStore:
         return {"id": "el_1"}
 
 
-def _req(user_id="user-1", owner="user-1", is_admin=False):
+def _req(user_id="user-1", owner="user-1", is_admin=False, base=None):
     state = types.SimpleNamespace(
         project_store=_FakeProjectStore(owner=owner),
         project_task_store=_FakeTaskStore(),
         project_canvas_store=_FakeCanvasStore(),
     )
+    if base is not None:
+        # config_path.parent is the data dir; projects live under projects_root.
+        state.config_path = str(base / "config.json")
+        state.projects_root = base / "projects"
     app = types.SimpleNamespace(state=state)
     return types.SimpleNamespace(
         app=app, state=types.SimpleNamespace(user_id=user_id, is_admin=is_admin)
     )
+
+
+def _seed_generated_image(base, name="img_cover.png"):
+    """Create a fake generated image where generate_image would have saved it."""
+    d = base / "workspace" / "images" / "generated"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(b"\x89PNG\r\n\x1a\n fake")
+    return name
 
 
 def test_slugify():
@@ -92,15 +104,26 @@ async def test_add_task_requires_fields():
 
 
 @pytest.mark.asyncio
-async def test_canvas_add_image():
-    req = _req()
-    res = await execute_canvas_add_image({"project_id": "proj_1", "file_id": "img_cover", "alt": "cover"}, req)
+async def test_canvas_add_image(tmp_path):
+    ref = _seed_generated_image(tmp_path)
+    req = _req(base=tmp_path)
+    res = await execute_canvas_add_image({"project_id": "proj_1", "image_ref": ref, "alt": "cover"}, req)
     assert res["ok"] and res["element_id"] == "el_1"
+    # the generated image was copied into the project's canvas files
+    canvas_dir = tmp_path / "projects" / "luna" / "files" / "canvas"
+    copied = list(canvas_dir.glob("*.png"))
+    assert len(copied) == 1
     call = req.app.state.project_canvas_store.calls[0]
-    assert call["project_id"] == "proj_1"
     assert call["author_kind"] == "agent" and call["author_id"] == "user-1"
     el = call["element"]
-    assert el["kind"] == "image" and el["payload"]["file_id"] == "img_cover"
+    assert el["kind"] == "image" and el["payload"]["file_id"] == copied[0].name
+
+
+@pytest.mark.asyncio
+async def test_canvas_add_image_missing_file(tmp_path):
+    req = _req(base=tmp_path)
+    res = await execute_canvas_add_image({"project_id": "proj_1", "image_ref": "nope.png"}, req)
+    assert "error" in res and "not found" in res["error"]
 
 
 @pytest.mark.asyncio
