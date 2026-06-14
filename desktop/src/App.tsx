@@ -10,7 +10,7 @@ import { ShortcutProvider, useShortcut } from "@/hooks/use-shortcut-registry";
 import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
 import { useIsPwa } from "@/hooks/use-is-pwa";
-import { useThemeStore, restoreActiveTheme } from "@/stores/theme-store";
+import { useThemeStore, restoreActiveTheme, installWebkitRepaintGuards } from "@/stores/theme-store";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp } from "@/registry/app-registry";
@@ -193,6 +193,9 @@ export function App() {
   // user's chosen theme app-wide (not only when Settings is opened).
   useEffect(() => {
     void restoreActiveTheme();
+    // WebKit blanks backdrop-filter surfaces when the tab is hidden then shown
+    // again (switching back into taOS); re-composite them on return.
+    installWebkitRepaintGuards();
   }, []);
 
   // Welcome notification — shown once per install, gated on a

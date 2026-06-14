@@ -282,7 +282,7 @@ function schemeFromBg(bg: string | undefined): "light" | "dark" {
 // (the screenshot path forces a full raster). Dropping backdrop-filter for a
 // frame via [data-theme-switching] (see tokens.css) forces WebKit to rebuild
 // every backdrop layer against the new tokens. No-op outside the browser.
-function forceCompositingRepaint() {
+export function forceCompositingRepaint() {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   root.setAttribute("data-theme-switching", "");
@@ -296,6 +296,27 @@ function forceCompositingRepaint() {
   // attribute (and the backdrop-filter:none rule) stuck until the tab is shown.
   // A timer guarantees cleanup regardless; removeAttribute is idempotent.
   setTimeout(clear, 250);
+}
+
+// Safari/WebKit drops or staleifies backdrop-filter compositing layers while a
+// tab is hidden and does NOT rebuild them when the tab is shown again, so
+// switching back into taOS leaves frosted-glass surfaces (windows, dock, top
+// bar, the agent chat panel) blank/black until something forces a re-composite.
+// rAF is paused while hidden, so the theme-switch repaint never runs on its own.
+// Re-run the same repaint nudge the moment the page becomes visible again (and
+// on bfcache restore via pageshow). Idempotent: installs the listeners once.
+let _webkitRepaintGuardsInstalled = false;
+export function installWebkitRepaintGuards() {
+  if (_webkitRepaintGuardsInstalled) return;
+  if (typeof document === "undefined" || typeof window === "undefined") return;
+  _webkitRepaintGuardsInstalled = true;
+  const onVisible = () => {
+    if (document.visibilityState === "visible") forceCompositingRepaint();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("pageshow", forceCompositingRepaint);
+  // Some WebKit builds only fire focus, not visibilitychange, on tab return.
+  window.addEventListener("focus", forceCompositingRepaint);
 }
 
 export function applyThemeConfig(cfg: ThemeConfig) {
