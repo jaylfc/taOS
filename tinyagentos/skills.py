@@ -367,6 +367,24 @@ class SkillStore(BaseStore):
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.project_tools",
             },
+            {
+                "id": "describe_image_capabilities",
+                "name": "Describe Image Capabilities",
+                "category": "media",
+                "description": "See the cluster's image-generation tiers and tools (NPU/GPU/CPU)",
+                "tool_schema": {
+                    "name": "describe_image_capabilities",
+                    "description": "List the hardware tiers (this host + cluster workers) and which image-generation tools/models each has loaded, so you can pick the best one before generate_image.",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.cluster_tools",
+            },
         ]
 
         for skill in defaults:

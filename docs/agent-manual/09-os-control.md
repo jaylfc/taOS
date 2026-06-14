@@ -21,6 +21,11 @@ update the open Projects app in real time):
 - **add_task** — add a to-do task to a project's board. Args: `project_id`, `title`.
 - **canvas_add_image** — place a generated image on a project's ideas board. Args:
   `project_id`, `image_ref` (the `image_ref` returned by `generate_image`), optional `alt`.
+- **describe_image_capabilities** — see the hardware tiers (this host + any cluster
+  workers, e.g. an NVIDIA box) and which image tools/models each has loaded. Use it
+  to pick the right model before `generate_image`: an NPU model for a fast draft, a
+  GPU model for a quality cover. The system loads/unloads and queues for you — you
+  just choose the model.
 
 A typical flow: open the Projects app, create_project, add a few tasks, call
 generate_image and keep its `image_ref`, then canvas_add_image(project_id, image_ref)
