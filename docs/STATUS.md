@@ -1,5 +1,16 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
-Last updated: 2026-06-14 ~13:05 BST, @taOS (active).
+Last updated: 2026-06-14 ~13:30 BST, @taOS (PAUSED for a fresh session).
+
+▶▶ SESSION PAUSED 2026-06-14 ~13:30 BST (Jay asked to pause + update handoff). NEW SESSION START HERE:
+   - master=51837bed, dev=118409a5. Working tree clean. NO uncommitted work anywhere.
+   - TWO PRs IN FLIGHT, both baking (only `test (3.12/3.13)` pending; lint/spa-build/Gitar/Kilo/CodeRabbit all green on the last bake):
+     • PR #884 feat(agent) agent-controlled image generation. Branch feat/agent-image-gen, tip ddeb1bec. Commits this session: 443e70ff canvas wiring + e94de444 describe_image_capabilities + 165e0b83/10f4732c/a578a870 bot-review hardening + ddeb1bec image-prompting manual. WHEN GREEN: merge to dev, then DEPLOY Pi and drive the storybook flow.
+     • PR #886 fix(store) rkllama install entry (#844). Branch fix/rkllama-store-install, tip d6960af0 (cleanly off origin/dev, 3 code files + tests + manual). WHEN GREEN: merge to dev, then dev->master (Jay wanted #844 fixed for the target audience).
+   - REMAINING BOT NITS on both PRs are MINOR + non-blocking (judged, not yet actioned, left for your call): #884 kilo wants _image_backends_from_worker hardened per-entry (worker-level guard already contains it; symmetric 1-line isinstance guard would fully satisfy). #886 kilo flags the install-rkllama.sh `"models"` short-circuit on `{"models":[]}` (that is CORRECT: an empty-but-running rkllama IS installed; models are a separate concern) and non-string model names in verify (can't false-match a string app_id, safe). Decide per-nit; none block merge.
+   - MERGE GATE (handoff 0f): green CI + Kilo + Qodo + Gitar + author. CodeRabbit is legacy/rate-limited, do not block on it. Check INLINE bot comments, not just the check summary.
+   - Tasks #30 (rkllama/#844, in_progress -> close when #886 merges) and #35 (NEW: ~19 other catalog manifests reference missing install scripts; separate follow-up) capture the store-install debt.
+   - 3060 SD BACKEND UNBLOCKED (task #34): @taOSmd relayed Jay's GO 2026-06-14 ~12:30 -- the Fedora RTX 3060 window is OURS to install the SD backend ourselves (stable-diffusion.cpp or ComfyUI, our pick); @taOSmd manages nothing outside taOSmd, so we own the SD backend + its model + pointing the controller's image_backend_url at it. Do this AFTER #884 merges so the storybook image step has a real GPU backend. Box access = resolve the Fedora node via our own tailscale (NEVER commit the IP / put it on the bus).
+   - Re-arm on arrival: freshness cron (:08/:38), A2A SSE monitor, repo-watch (:23). Resume pair for the 15:40Z window is armed (primary 16:42, retry 17:01 local).
 
 
 ▶ RELEASED TO MASTER 2026-06-14 (#883, master=c9c5b0c9, Jay asked "merge dev to main so all users get updates"): the whole overnight body of work is now on master — agent OS control framework (#877-882), macOS-dark theme + purple purge (#879), App Store/real-desktop/Agents/chat redesigns, mobile chat #880 + chat-pwa theme #881. Merge-commit (history preserved), dev NOT deleted. master strict-mode + behind required an admin merge.
