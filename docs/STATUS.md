@@ -1,5 +1,10 @@
 SINGLE SOURCE OF TRUTH for cross-agent handoff.
-Last updated: 2026-06-14 ~03:36 BST, @taOS (active, autonomous overnight).
+Last updated: 2026-06-14 ~04:05 BST, @taOS (active, autonomous overnight).
+
+▶▶ MORNING MUST-DO (Jay overnight ask, asleep): features tested+working by morning; agent OS control DONE simple; **offline agent RESULTS by morning**.
+   ** WHEN FEDORA FREES (~05:40Z; A2A monitor watches @taOSmd box-free ping on taOS-taOSmd-hermes-integration; it's running E-009 til then): RUN THE OFFLINE EVAL. cd ~/tinyagentos-private/specs/storybook-demo/ ; follow RUNBOOK.md — score the full roster via storybook_toolcall_eval.py vs the Fedora Ollama (host 100.78.225.80:11434/v1): qwen3.5:9b iq4_xs/q5_k_m/q6_k + qwen3:14b + llama3.1:8b + qwen3:4b + gemma4:12b + qwen3.6:35b-a3b-q4 (+pull qwen3.5:4b). ONE Ollama job at a time (12GB 3060). Produce a tool-call leaderboard. taOSmd pings when free; if this session is dead, the resume cron resumes from here. **
+
+▶ 3 PRs BAKING (merge when green+bots -> ONE Pi deploy -> test ALL light+dark): #878 agent OS control phase-2 (open_app/arrange_windows tools + 09-os-control manual; phase-1 transport #877 ALREADY MERGED), #879 purge-purple-from-dark (cyan swap), #880 mobile-chat polish (avatars+tokens+timestamps, fixes light theme; /chat-pwa = chromeless mobile Messages, mirrors it). VERIFY ON PI: purple gone both themes, /chat-pwa mobile, agent control.
 
 ▶ LIVE SESSION STATE (compaction insurance — Jay asked to record often):
 - NEW LOOP AUTHORIZED (Jay 2026-06-14 ~02:34): I deploy to the Pi now. Loop = merge to dev when good -> DEPLOY dev to Pi -> TEST on Pi (real screenshots, LIGHT + DARK both) -> more work -> repeat. Reverses the old manual-update rule ([[feedback_taos_update_manual]] updated). PI DEPLOY FACTS: repo /opt/tinyagentos owned by `taos`, service `tinyagentos.service` (User=taos, `python -m tinyagentos`), on branch `dev` (currently behind at 0c367e2c), :6969. jay has sudo (pw in creds), node22/npm present. static/desktop is GITIGNORED -> must rebuild SPA on device. DEPLOY = sudo -u taos git -C /opt/tinyagentos pull origin dev; (cd desktop && sudo -u taos npm ci && npm run build); sudo systemctl restart tinyagentos.service; then VERIFY live (running commit + change actually visible, watch stale PWA cache). Test URL http://192.168.6.123:6969/desktop/ (creds jay/alexander04).
