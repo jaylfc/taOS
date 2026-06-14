@@ -158,7 +158,8 @@ class TestInstallVerification:
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_failure_when_model_absent_from_tags(self):
+    async def test_failure_when_model_absent_from_tags(self, monkeypatch):
+        monkeypatch.setattr(rkllama_installer.asyncio, "sleep", _no_sleep)
         respx.post("http://localhost:7833/api/pull").mock(
             return_value=httpx.Response(200, text='{"status":"success"}\n')
         )
@@ -167,7 +168,7 @@ class TestInstallVerification:
         )
         res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
         assert res["success"] is False
-        assert "not in" in res["error"]
+        assert "could not confirm" in res["error"]
 
     @respx.mock
     @pytest.mark.asyncio
@@ -183,7 +184,41 @@ class TestInstallVerification:
         )
         res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
         assert res["success"] is False
-        assert "could not be reached" in res["error"]
+        assert "could not confirm" in res["error"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_failure_when_tags_returns_non_json(self, monkeypatch):
+        # A 200 with a non-JSON body must be treated as a failed check, not
+        # raise an uncaught JSONDecodeError out of install().
+        monkeypatch.setattr(rkllama_installer.asyncio, "sleep", _no_sleep)
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text='{"status":"success"}\n')
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, text="<html>nginx</html>")
+        )
+        res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
+        assert res["success"] is False
+        assert "could not confirm" in res["error"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_retries_then_succeeds_when_model_appears_late(self, monkeypatch):
+        # Registration can lag the pull's 200; the verify loop retries on an
+        # absent model and succeeds once it appears.
+        monkeypatch.setattr(rkllama_installer.asyncio, "sleep", _no_sleep)
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text='{"status":"success"}\n')
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            side_effect=[
+                httpx.Response(200, json={"models": []}),
+                httpx.Response(200, json={"models": [{"name": "rkllama-x"}]}),
+            ]
+        )
+        res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
+        assert res["success"] is True
 
 
 async def _no_sleep(*_a, **_k):

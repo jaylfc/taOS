@@ -25,8 +25,13 @@ PORT="${TAOS_RKLLAMA_PORT:-7833}"
 LEGACY_PORT=8080
 
 # 1. Idempotent short-circuit: a live rkllama already satisfies the install.
+#    Require an rkllama/Ollama-shaped /api/tags body (a "models" key), not just
+#    any HTTP 200 -- another local service on these ports must not be mistaken
+#    for an installed rkllama. Mirrors _port_responds_with_rkllama() in the
+#    Python installer.
 for p in "$PORT" "$LEGACY_PORT"; do
-    if curl -fsS --max-time 2 "http://localhost:${p}/api/tags" >/dev/null 2>&1; then
+    body="$(curl -fsS --max-time 2 "http://localhost:${p}/api/tags" 2>/dev/null || true)"
+    if printf '%s' "$body" | grep -q '"models"'; then
         echo "rkllama already running on port ${p} — nothing to install"
         exit 0
     fi

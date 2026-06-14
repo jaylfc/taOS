@@ -187,43 +187,50 @@ class RkllamaInstaller(AppInstaller):
         # Verify the model now appears in /api/tags so we know rkllama
         # successfully registered it. The pull returning 200 is necessary but
         # not sufficient: only /api/tags confirms the weight is loadable. We
-        # retry a few times to tolerate a transient blip, but if the check
-        # never succeeds we report failure rather than a false success -- a
-        # model the agent can't actually load is worse than a clear error.
-        last_exc: httpx.HTTPError | None = None
+        # retry a few times to tolerate a transient blip AND registration lag
+        # (the model can take a moment to appear after pull returns), but if the
+        # check never confirms the model we report failure rather than a false
+        # success -- a model the agent can't actually load is worse than a clear
+        # error. Malformed/unexpected /api/tags bodies are treated as a failed
+        # check, not allowed to raise out of the installer.
+        last_problem = "verification did not run"
+        verified = False
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     tags = await client.get(f"{self.rkllama_url}/api/tags")
                     tags.raise_for_status()
-                    names = {m.get("name") for m in tags.json().get("models", [])}
-                if app_id not in names:
-                    return {
-                        "success": False,
-                        "error": (
-                            f"rkllama pull returned 200 but {app_id!r} is not in "
-                            f"/api/tags. Known models: {sorted(names)[:5]}"
-                        ),
-                    }
-                break  # verified
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                logger.warning(
-                    "rkllama install: /api/tags verification attempt %d/3 failed: %s",
-                    attempt + 1, exc,
+                    payload = tags.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                # ValueError covers a 200 with a non-JSON body (json.JSONDecodeError).
+                last_problem = f"/api/tags unreachable or not JSON: {exc}"
+            else:
+                models = payload.get("models") if isinstance(payload, dict) else None
+                names = (
+                    {m.get("name") for m in models if isinstance(m, dict)}
+                    if isinstance(models, list)
+                    else set()
                 )
-                if attempt < 2:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-        else:
-            # Exhausted retries without ever confirming the model.
+                if app_id in names:
+                    verified = True
+                    break
+                known = sorted(n for n in names if n)[:5]
+                last_problem = f"{app_id!r} not yet in /api/tags (known: {known})"
+            logger.warning(
+                "rkllama install: /api/tags verification attempt %d/3: %s",
+                attempt + 1, last_problem,
+            )
+            if attempt < 2:
+                await asyncio.sleep(1.0 * (attempt + 1))
+
+        if not verified:
             return {
                 "success": False,
                 "error": (
-                    f"rkllama pull returned 200 but /api/tags could not be reached "
-                    f"to confirm {app_id!r} installed: {last_exc}. Retry the install."
+                    f"rkllama pull returned 200 but could not confirm {app_id!r} "
+                    f"installed after 3 checks: {last_problem}. Retry the install."
                 ),
             }
-
         return {"success": True, "app_id": app_id, "model_name": app_id}
 
     async def uninstall(self, app_id: str) -> dict:
