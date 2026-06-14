@@ -643,12 +643,6 @@ apps:
     version: 0.1.0
     name: LCM Dreamshaper (RKNN Rust)
     description: "Fast Rust-based text-to-image on RK3588 NPU — optimized LCM pipeline"
-  - id: rk3588-sd-gpu
-    type: image-gen
-    version: 0.1.0
-    name: Stable Diffusion (Mali GPU)
-    description: "SD on RK3588 Mali-G610 via MLC/TVM — GPU alternative to NPU path"
-
   # Home Automation & Monitoring
   - id: home-assistant
     type: home

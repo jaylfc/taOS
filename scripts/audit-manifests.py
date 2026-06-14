@@ -96,6 +96,49 @@ def audit(root: Path) -> int:
                 if int(d.get("min_ram_mb") or 0) <= 0:
                     issues.append(f"{mid}/{vid}: backend {bid!r} has min_ram_mb=0")
 
+    # ------------------------------------------------------------------
+    # install.script existence — a manifest that names an install script
+    # which does not exist on disk produces a broken store install. The
+    # two installer code paths resolve the path differently, so mirror them:
+    #   - services -> ScriptInstaller resolves install.script against the
+    #                 repo root (project_dir), e.g. scripts/install-x.sh
+    #   - agents   -> deployer resolves against the manifest dir, and also
+    #                 accepts tinyagentos/scripts/install_<id>.sh
+    # Plugins that declare install.method: script may instead carry an inline
+    # command in install.package or install.command (not a script file), so a
+    # missing install.script is only flagged when none of those are present.
+    repo_root = root.resolve().parent
+    for sp in sorted(root.rglob("manifest.yaml")):
+        d = _load(sp)
+        if not d:
+            continue
+        inst = d.get("install") or {}
+        if not isinstance(inst, dict) or inst.get("method") != "script":
+            continue
+        rel = sp.relative_to(root)
+        kind = rel.parts[0] if rel.parts else ""
+        mid = d.get("id", sp.parent.name)
+        script = inst.get("script")
+        if not script:
+            if not (inst.get("package") or inst.get("command")):
+                issues.append(
+                    f"{kind}/{mid}: install.method=script but none of "
+                    "install.script / install.package / install.command is set"
+                )
+            continue
+        if kind == "services":
+            candidates = [repo_root / script]
+        else:
+            candidates = [
+                sp.parent / script,
+                repo_root / "tinyagentos" / "scripts" / f"install_{mid}.sh",
+            ]
+        if not any(c.exists() for c in candidates):
+            issues.append(
+                f"{kind}/{mid}: install.script {script!r} not found "
+                f"(checked: {', '.join(str(c) for c in candidates)})"
+            )
+
     if not issues:
         print("clean: catalog matches requires.backends schema")
         return 0

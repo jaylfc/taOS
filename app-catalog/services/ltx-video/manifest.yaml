@@ -10,7 +10,7 @@ license: Apache-2.0
 requires:
   ram_mb: 4096
   disk_mb: 10000
-  ports: [7861]
+  ports: [36909]
 
 install:
   method: script

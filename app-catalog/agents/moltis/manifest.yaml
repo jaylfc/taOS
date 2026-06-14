@@ -4,8 +4,8 @@ type: agent-framework
 verification_status: alpha
 version: 0.1.0
 description: "Enterprise Rust agent framework — high performance, memory safe, production-grade"
-homepage: https://github.com/moltis-ai/moltis
-license: Apache-2.0
+homepage: https://github.com/moltis-org/moltis
+license: MIT
 requires:
   ram_mb: 64
 install:
