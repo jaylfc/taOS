@@ -291,6 +291,82 @@ class SkillStore(BaseStore):
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.desktop_tools",
             },
+            {
+                "id": "create_project",
+                "name": "Create Project",
+                "category": "projects",
+                "description": "Create a project for the user",
+                "tool_schema": {
+                    "name": "create_project",
+                    "description": "Create a project and return its id.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Project title."},
+                            "description": {"type": "string", "description": "Short summary."},
+                        },
+                        "required": ["name"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
+                "id": "add_task",
+                "name": "Add Task",
+                "category": "projects",
+                "description": "Add a task to a project's board",
+                "tool_schema": {
+                    "name": "add_task",
+                    "description": "Add a to-do task to a project board (appears live).",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Id from create_project."},
+                            "title": {"type": "string", "description": "Task title."},
+                        },
+                        "required": ["project_id", "title"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
+                "id": "canvas_add_image",
+                "name": "Add Image to Canvas",
+                "category": "projects",
+                "description": "Place a generated image on a project's canvas",
+                "tool_schema": {
+                    "name": "canvas_add_image",
+                    "description": "Place a generated image (by file_id from generate_image) on a project's ideas board.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Id from create_project."},
+                            "file_id": {"type": "string", "description": "Image file id from generate_image."},
+                            "alt": {"type": "string", "description": "Alt text."},
+                        },
+                        "required": ["project_id", "file_id"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.project_tools",
+            },
         ]
 
         for skill in defaults:
