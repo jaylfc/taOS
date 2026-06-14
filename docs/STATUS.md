@@ -3,7 +3,7 @@ Last updated: 2026-06-14 ~13:30 BST, @taOS (PAUSED for a fresh session).
 
 ▶▶ SESSION PAUSED 2026-06-14 ~13:30 BST (Jay asked to pause + update handoff). NEW SESSION START HERE:
    - master=51837bed, dev=118409a5. Working tree clean. NO uncommitted work anywhere.
-   - TWO PRs IN FLIGHT, both baking (only `test (3.12/3.13)` pending; lint/spa-build/Gitar/Kilo/CodeRabbit all green on the last bake):
+   - TWO PRs IN FLIGHT, both now CLEAN + FULLY GREEN as of ~13:35 BST (all checks + Gitar/Kilo/CodeRabbit SUCCESS) -- READY TO MERGE, left for the fresh session per the pause:
      • PR #884 feat(agent) agent-controlled image generation. Branch feat/agent-image-gen, tip ddeb1bec. Commits this session: 443e70ff canvas wiring + e94de444 describe_image_capabilities + 165e0b83/10f4732c/a578a870 bot-review hardening + ddeb1bec image-prompting manual. WHEN GREEN: merge to dev, then DEPLOY Pi and drive the storybook flow.
      • PR #886 fix(store) rkllama install entry (#844). Branch fix/rkllama-store-install, tip d6960af0 (cleanly off origin/dev, 3 code files + tests + manual). WHEN GREEN: merge to dev, then dev->master (Jay wanted #844 fixed for the target audience).
    - REMAINING BOT NITS on both PRs are MINOR + non-blocking (judged, not yet actioned, left for your call): #884 kilo wants _image_backends_from_worker hardened per-entry (worker-level guard already contains it; symmetric 1-line isinstance guard would fully satisfy). #886 kilo flags the install-rkllama.sh `"models"` short-circuit on `{"models":[]}` (that is CORRECT: an empty-but-running rkllama IS installed; models are a separate concern) and non-string model names in verify (can't false-match a string app_id, safe). Decide per-nit; none block merge.
