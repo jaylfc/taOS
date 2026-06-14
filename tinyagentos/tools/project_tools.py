@@ -56,8 +56,8 @@ async def execute_create_project(args: dict, request: Request) -> dict:
 async def execute_add_task(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
     title = (args or {}).get("title")
-    if not project_id or not title:
-        return {"error": "add_task requires 'project_id' and 'title'"}
+    if not isinstance(project_id, str) or not project_id or not isinstance(title, str) or not title:
+        return {"error": "add_task requires 'project_id' and 'title' strings"}
     user_id = _user_id(request)
     if not user_id:
         return {"error": "no authenticated user"}
@@ -72,8 +72,13 @@ async def execute_add_task(args: dict, request: Request) -> dict:
 async def execute_canvas_add_image(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
     file_id = (args or {}).get("file_id")
-    if not project_id or not file_id:
-        return {"error": "canvas_add_image requires 'project_id' and 'file_id'"}
+    if not isinstance(project_id, str) or not project_id or not isinstance(file_id, str) or not file_id:
+        return {"error": "canvas_add_image requires 'project_id' and 'file_id' strings"}
+    try:
+        x = float((args or {}).get("x", 80))
+        y = float((args or {}).get("y", 80))
+    except (TypeError, ValueError):
+        return {"error": "x and y must be numbers"}
     user_id = _user_id(request)
     if not user_id:
         return {"error": "no authenticated user"}
@@ -85,8 +90,8 @@ async def execute_canvas_add_image(args: dict, request: Request) -> dict:
         project_id=project_id,
         element={
             "kind": "image",
-            "x": float((args or {}).get("x", 80)),
-            "y": float((args or {}).get("y", 80)),
+            "x": x,
+            "y": y,
             "w": 240.0,
             "h": 240.0,
             "payload": {"file_id": file_id, "alt": (args or {}).get("alt", ""), "mime": "image/png"},
