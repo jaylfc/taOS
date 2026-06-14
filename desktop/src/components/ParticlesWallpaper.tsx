@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadSlim } from "@tsparticles/slim";
-import type { ISourceOptions } from "@tsparticles/engine";
+import type { Container, ISourceOptions } from "@tsparticles/engine";
 import { useThemeStore } from "@/stores/theme-store";
 
 /**
@@ -23,6 +23,7 @@ export function ParticlesWallpaper() {
   const [ready, setReady] = useState(false);
   const scheme = useThemeStore((s) => s.scheme);
   const params = useThemeStore((s) => s.wallpaperParams);
+  const containerRef = useRef<Container | null>(null);
 
   useEffect(() => {
     if (!enginePromise) {
@@ -31,12 +32,38 @@ export function ParticlesWallpaper() {
       });
     }
     let alive = true;
-    enginePromise.then(() => {
-      if (alive) setReady(true);
-    });
+    enginePromise.then(
+      () => {
+        if (alive) setReady(true);
+      },
+      (err) => {
+        // Engine failed to load: leave the wallpaper unrendered so the graphite
+        // fallback background shows, and don't leave the rejection unhandled.
+        console.warn("tsParticles engine failed to load", err);
+      },
+    );
     return () => {
       alive = false;
     };
+  }, []);
+
+  // tsParticles only auto-pauses when its element leaves the viewport, which a
+  // full-screen wallpaper never does (it just gets covered by windows). Pause
+  // it when the tab/desktop is hidden so it doesn't burn the Pi in the
+  // background.
+  useEffect(() => {
+    const onVisibility = () => {
+      const c = containerRef.current;
+      if (!c) return;
+      if (document.hidden) c.pause();
+      else c.play();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  const onLoaded = useCallback(async (container?: Container) => {
+    containerRef.current = container ?? null;
   }, []);
 
   const options = useMemo<ISourceOptions>(() => {
@@ -50,7 +77,7 @@ export function ParticlesWallpaper() {
       fpsLimit: 60,
       detectRetina: true,
       pauseOnBlur: false,
-      pauseOnOutsideViewport: true, // pause when the desktop is hidden (Pi perf)
+      pauseOnOutsideViewport: true, // plus a visibilitychange pause (see effect above) for the covered/hidden case
       particles: {
         number: { value: params.density, density: { enable: true, area: 900 } },
         color: { value: node },
@@ -67,7 +94,7 @@ export function ParticlesWallpaper() {
 
   return (
     <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
-      <Particles id="taos-particles" options={options} className="absolute inset-0 h-full w-full" />
+      <Particles id="taos-particles" options={options} particlesLoaded={onLoaded} className="absolute inset-0 h-full w-full" />
     </div>
   );
 }

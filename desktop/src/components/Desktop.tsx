@@ -12,7 +12,6 @@ import { WidgetLayer } from "./WidgetLayer";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { WallpaperPicker } from "./WallpaperPicker";
 import { DesktopIcons } from "./DesktopIcons";
-import { NeuralWallpaper } from "./NeuralWallpaper";
 import { ParticlesWallpaper } from "./ParticlesWallpaper";
 import { WallpaperTextOverlay } from "./WallpaperTextOverlay";
 
@@ -137,7 +136,6 @@ export function Desktop() {
       onContextMenu={handleContextMenu}
       data-desktop-surface
     >
-      {isAnimated && wallpaperComponent === "neural" && <NeuralWallpaper />}
       {isAnimated && wallpaperComponent === "particles" && <ParticlesWallpaper />}
       {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <DesktopIcons />
