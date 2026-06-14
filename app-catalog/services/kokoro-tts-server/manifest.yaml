@@ -10,7 +10,7 @@ license: Apache-2.0
 requires:
   ram_mb: 256
   disk_mb: 500
-  ports: [8880]
+  ports: [36195]
 
 install:
   method: pip

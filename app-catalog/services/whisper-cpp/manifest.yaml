@@ -10,7 +10,7 @@ license: MIT
 requires:
   ram_mb: 512
   disk_mb: 200
-  ports: [8080]
+  ports: [36823]
 
 install:
   method: script

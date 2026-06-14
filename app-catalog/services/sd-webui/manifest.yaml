@@ -10,7 +10,7 @@ license: AGPL-3.0
 requires:
   ram_mb: 4096
   disk_mb: 5000
-  ports: [7860]
+  ports: [35685]
 
 install:
   method: script
