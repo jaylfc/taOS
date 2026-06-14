@@ -15,6 +15,18 @@ export interface CatalogApp {
     backend?: string[];
     [key: string]: unknown;
   }>;
+  /** GitHub owner/repo slug for star count display (e.g. "home-assistant/core"). */
+  repo?: string;
+  /** dashboard-icons CDN slug for the official logo image. */
+  iconSlug?: string;
+  /** Real GitHub star count (e.g. 72400). */
+  stars?: number;
+  /** Short tagline used in hero and rich-card previews. */
+  tagline?: string;
+  /** Cover art URL or gradient CSS value for rich cards. */
+  cover?: string;
+  /** True when an installed app has a newer version available (drives Updates). */
+  update_available?: boolean;
 }
 
 export interface InstallTarget {
