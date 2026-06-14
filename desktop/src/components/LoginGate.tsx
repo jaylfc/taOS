@@ -142,7 +142,7 @@ export function LoginGate({ children }: Props) {
     return (
       <div
         className="h-screen w-screen flex items-center justify-center p-4"
-        style={{ background: "linear-gradient(160deg, #1a1b2e 0%, #1e2140 40%, #252848 100%)" }}
+        style={{ background: "var(--color-shell-bg)" }}
       >
         <form
           onSubmit={handleSubmit}

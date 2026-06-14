@@ -169,10 +169,14 @@ function MobileNavBar({
       style={{
         display: "flex",
         flexDirection: "column",
-        background: "rgba(15, 15, 30, 0.7)",
+        // Theme-aware graphite glass (was a hardcoded indigo rgba(15,15,30)).
+        background: "var(--color-shell-bg-glass)",
         backdropFilter: "blur(20px) saturate(180%)",
         WebkitBackdropFilter: "blur(20px) saturate(180%)",
-        borderBottom: "1px solid rgba(255,255,255,0.06)",
+        borderBottom: "1px solid var(--color-shell-border)",
+        // Extend the bar's background up behind the status bar so the top
+        // safe-area strip matches the bar, not the document body.
+        paddingTop: "env(safe-area-inset-top, 0px)",
       }}
     >
       {/* Top row — back button / actions */}

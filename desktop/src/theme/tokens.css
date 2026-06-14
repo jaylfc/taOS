@@ -9,6 +9,9 @@
   --color-shell-surface-active: rgba(255, 255, 255, 0.08);
   --color-shell-border: rgba(255, 255, 255, 0.06);
   --color-shell-border-strong: rgba(255, 255, 255, 0.1);
+  /* Semi-transparent shell bg for frosted-glass bars (mobile top bar, etc.).
+     A theme can override this; base is neutral graphite, never indigo. */
+  --color-shell-bg-glass: rgba(22, 22, 24, 0.72);
 
   /* Text */
   --color-shell-text: rgba(255, 255, 255, 0.85);

@@ -5,8 +5,8 @@
   "start_url": "/chat-pwa",
   "scope": "/chat-pwa",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#1a1a2e",
+  "background_color": "#141415",
+  "theme_color": "#141415",
   "icons": [
     {
       "src": "/static/icon-192.png",

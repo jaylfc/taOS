@@ -7,7 +7,7 @@ export function ChatStandalone() {
   return (
     <div
       className="h-screen w-screen flex flex-col overflow-hidden"
-      style={{ backgroundColor: "#1a1b2e", paddingTop: "env(safe-area-inset-top, 0px)" }}
+      style={{ backgroundColor: "var(--color-shell-bg)", paddingTop: "env(safe-area-inset-top, 0px)" }}
     >
       <InstallPromptBanner />
       <Suspense fallback={

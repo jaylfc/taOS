@@ -12,7 +12,7 @@
 
     <!-- PWA -->
     <link rel="manifest" href="/static/manifest-desktop.json" />
-    <meta name="theme-color" content="#1a1b2e" />
+    <meta name="theme-color" content="#141415" />
 
     <!-- iOS PWA — full screen, hide native status bar -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -31,7 +31,11 @@
         overflow: hidden;
         height: 100vh;
         width: 100vw;
-        background: transparent;
+        /* Dark document canvas so Safari tints its top/bottom chrome and the
+           safe-area strips with the theme, not the browser-default white.
+           Theme-aware once tokens.css loads; graphite fallback before it. */
+        background: var(--color-shell-bg, #141415);
+        color-scheme: dark;
         overscroll-behavior: none;
         -webkit-user-select: none;
         user-select: none;
