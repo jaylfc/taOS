@@ -68,3 +68,14 @@ async def test_scoped_to_caller_user():
     await execute_open_app({"app": "store"}, _fake_request(broker, user_id="user-1"))
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(other.get(), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_refuses_when_no_authenticated_user():
+    """With no user_id, the tool refuses rather than emitting to a shared bucket."""
+    broker = DesktopCommandBroker()
+    sub = await broker.subscribe("system")
+    res = await execute_open_app({"app": "projects"}, _fake_request(broker, user_id=None))
+    assert "error" in res
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(sub.get(), timeout=0.1)

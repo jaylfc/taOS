@@ -34,11 +34,11 @@ class SkillStore(BaseStore):
     """
 
     async def _post_init(self):
-        assert self._db is not None
-        cursor = await self._db.execute("SELECT COUNT(*) FROM skills")
-        row = await cursor.fetchone()
-        if row and row[0] == 0:
-            await self._seed_defaults()
+        # Seed is idempotent (INSERT OR IGNORE on the id PK), so run it on every
+        # startup: a fresh install gets the full set, and an EXISTING install
+        # backfills any builtin skills added since it was first seeded (e.g. new
+        # desktop-control tools) without disturbing user-installed skills.
+        await self._seed_defaults()
 
     async def _seed_defaults(self):
         """Seed the default skill set."""
@@ -295,7 +295,7 @@ class SkillStore(BaseStore):
 
         for skill in defaults:
             await self._db.execute(
-                """INSERT INTO skills (id, name, category, description, tool_schema, frameworks,
+                """INSERT OR IGNORE INTO skills (id, name, category, description, tool_schema, frameworks,
                    requires_services, install_method, install_target, installed, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
                 (

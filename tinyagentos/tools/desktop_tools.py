@@ -68,23 +68,26 @@ ARRANGE_WINDOWS_TOOL = {
 }
 
 
-def _user_id(request: Request) -> str:
+def _user_id(request: Request) -> str | None:
     # Drive the desktop of the authenticated caller (AuthMiddleware ->
     # request.state.user_id). The taOS agent runs in the user's session, so this
-    # resolves to that user; a caller with no session has no desktop to drive.
-    uid = getattr(request.state, "user_id", None)
-    return uid if uid else "system"
+    # resolves to that user. Returns None when there is no authenticated user;
+    # the caller refuses rather than emitting onto a shared bucket.
+    return getattr(request.state, "user_id", None) or None
 
 
 async def execute_open_app(args: dict, request: Request) -> dict:
     app = (args or {}).get("app")
     if not app or not isinstance(app, str):
         return {"error": "open_app requires an 'app' string"}
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user desktop to drive"}
     broker = request.app.state.desktop_command_broker
     payload = {"app": app}
     if isinstance((args or {}).get("props"), dict):
         payload["props"] = args["props"]
-    delivered = await broker.emit(_user_id(request), DesktopCommand(kind="open-app", payload=payload))
+    delivered = await broker.emit(user_id, DesktopCommand(kind="open-app", payload=payload))
     return {"ok": True, "app": app, "delivered": delivered}
 
 
@@ -92,9 +95,12 @@ async def execute_arrange_windows(args: dict, request: Request) -> dict:
     preset = (args or {}).get("preset")
     if preset not in {"tile-2", "tile-3", "center", "cascade"}:
         return {"error": "arrange_windows requires a valid 'preset'"}
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user desktop to drive"}
     broker = request.app.state.desktop_command_broker
     delivered = await broker.emit(
-        _user_id(request),
+        user_id,
         DesktopCommand(kind="window", payload={"action": "arrange", "preset": preset}),
     )
     return {"ok": True, "preset": preset, "delivered": delivered}
