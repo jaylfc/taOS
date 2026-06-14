@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Upstream: https://github.com/leejet/stable-diffusion.cpp  (MIT)
 # Pure C/C++ image generation. Builds the `sd-server` HTTP server target and
-# leaves it runnable on port 7861 (override: TAOS_SD_CPP_PORT).
+# leaves it runnable on port 30450 (override: TAOS_SD_CPP_PORT).
 #
 # Every build step is taken verbatim from the OFFICIAL upstream docs:
 #   - Clone / cmake build:  docs/build.md
@@ -12,7 +12,7 @@
 #       ROCm=-DSD_HIPBLAS=ON  Metal=-DSD_METAL=ON
 #   - Server binary + flags: examples/server/README.md + examples/server/main.cpp
 #       binary: build/bin/sd-server ; flags: --listen-ip / --listen-port
-#       (upstream defaults 127.0.0.1:1234; we bind 0.0.0.0:7861)
+#       (upstream defaults 127.0.0.1:1234; we bind 0.0.0.0:30450)
 #
 # stable-diffusion.cpp has NO NPU backend (docs list only CUDA/Vulkan/Metal/
 # SYCL/OpenCL/CPU), so the arm-npu and cpu-only tiers both build the CPU path.

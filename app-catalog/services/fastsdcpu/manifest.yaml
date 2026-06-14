@@ -10,7 +10,7 @@ license: MIT
 requires:
   ram_mb: 2048
   disk_mb: 4000
-  ports: [7860]
+  ports: [37120]
 
 install:
   method: pip

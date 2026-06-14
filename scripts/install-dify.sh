@@ -14,7 +14,7 @@
 #   https://github.com/langgenius/dify/blob/main/docker/.env.example
 #
 # Web UI: the compose nginx gateway defaults to host port 80 via the
-# EXPOSE_NGINX_PORT env var. taOS expects this service on port 3000, so we
+# EXPOSE_NGINX_PORT env var. taOS expects this service on port 35444, so we
 # pin EXPOSE_NGINX_PORT=3000 in the generated .env (only when not already set).
 #
 # Pinned release tag — bump when validating a newer Dify release:
@@ -78,7 +78,7 @@ fi
 
 # --- generate .env (idempotent) --------------------------------------------
 # Official step: cp .env.example .env. We only create it if absent, then make
-# sure the nginx gateway is exposed on the taOS-expected port 3000.
+# sure the nginx gateway is exposed on the taOS-expected port 35444.
 ENV_FILE="${DIFY_DOCKER_DIR}/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
     [[ -f "${DIFY_DOCKER_DIR}/.env.example" ]] || die ".env.example missing in ${DIFY_DOCKER_DIR}"

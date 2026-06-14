@@ -6,7 +6,7 @@
 #
 # This is a HOST-side SERVICE installer. It receives the taOS project_dir as
 # $1 and installs the `musicgpt` binary, then records how to launch its web
-# UI / server on port 8882 (override with TAOS_MUSICGPT_PORT).
+# UI / server on port 30264 (override with TAOS_MUSICGPT_PORT).
 #
 # Strategy (per official README + GitHub Releases):
 #   1. Prefer the prebuilt release binary for the host arch, pinned to a

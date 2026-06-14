@@ -15,7 +15,7 @@
 #   2. Ensure a Rust toolchain (rustup) is present.
 #   3. Ensure librknnrt.so is installed under /usr/lib.
 #   4. Clone the upstream repo at a PINNED commit and `cargo build --release`.
-#   5. Launch serve mode bound to 0.0.0.0:7864 (override TAOS_LCM_PORT).
+#   5. Launch serve mode bound to 0.0.0.0:32275 (override TAOS_LCM_PORT).
 #
 # Model weights: the binary auto-downloads RKNN models from HuggingFace on
 # first run (README: kautism/LCM_Dreamshaper_v7-RKNN-2.3.2, with fallback
@@ -186,7 +186,7 @@ log "built: $LCM_BIN"
 
 # --- 6. Launch serve mode on the taOS service port --------------------------
 # README serve mode: `dreamshaper-cli serve --host <h> --port <p>`
-# (upstream default is 8080; taOS pins 7864, override with TAOS_LCM_PORT).
+# (upstream default is 8080; taOS pins 32275, override with TAOS_LCM_PORT).
 # Models are auto-downloaded from HuggingFace on first serve.
 log "starting service: $LCM_BIN serve --host $LCM_HOST --port $LCM_PORT"
 log "(first run downloads RKNN model weights from HuggingFace — may take a while)"

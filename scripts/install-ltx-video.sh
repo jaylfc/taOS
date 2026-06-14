@@ -15,7 +15,7 @@
 #   2. creates a Python venv
 #   3. pip installs CUDA torch + the package's [inference] extra
 #   4. downloads the 2B distilled 0.9.8 weights from HuggingFace at a PINNED revision
-#   5. installs a minimal HTTP server on TAOS_LTX_PORT (default 7861)
+#   5. installs a minimal HTTP server on TAOS_LTX_PORT (default 36909)
 #
 # Sources (verified 2026-06-14):
 #   README install steps : https://github.com/Lightricks/LTX-Video#installation
@@ -23,11 +23,12 @@
 #   model weights        : https://huggingface.co/Lightricks/LTX-Video
 #
 # NOTE: Upstream ships NO server/UI — the README directs local users to the
-# CLI inference.py (or ComfyUI). The taOS port-7861 server below is a thin
+# CLI inference.py (or ComfyUI). The taOS port-36909 server below is a thin
 # shim we add on top of the official, unmodified inference.py CLI.
 #
-# PORT COLLISION: 7861 is also used by the stable-diffusion-cpp service.
-# Remap one of them (override here via TAOS_LTX_PORT) before running both.
+# Both this service and stable-diffusion-cpp now bind distinct high-pool
+# ports (ltx-video 36909, sd-cpp 30450), so they no longer collide.
+# Override here via TAOS_LTX_PORT if needed.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -138,7 +139,7 @@ if [[ ! -f "$SERVER_PY" ]]; then
     log "writing taOS inference server shim -> $SERVER_PY"
     cat > "$SERVER_PY" <<'PYEOF'
 #!/usr/bin/env python3
-"""taOS port-7861 shim around Lightricks/LTX-Video's official inference.py.
+"""taOS port-36909 shim around Lightricks/LTX-Video's official inference.py.
 
 Upstream provides no server; this stdlib HTTP wrapper invokes the unmodified
 CLI per request. Not a fabrication of upstream features — just a launcher.

@@ -5,7 +5,7 @@
 # SERVICE script. Runs ON THE HOST (Linux x86 with NVIDIA CUDA most likely).
 # Clones the repo, creates a Python 3.11 venv, installs CUDA torch + the
 # upstream requirements, and writes a launcher that serves the Gradio UI on
-# port 7860 (override with TAOS_WAN2GP_PORT).
+# port 33109 (override with TAOS_WAN2GP_PORT).
 #
 # Source of truth — upstream README / docs (read 2026-06-14):
 #   https://github.com/deepbeepmeep/Wan2GP

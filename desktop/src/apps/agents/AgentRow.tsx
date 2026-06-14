@@ -12,51 +12,111 @@ import { type Agent, type DiskState } from "./types";
 
 type AgentStatus = Agent["status"];
 
-/** Semantic colour + copy for the status indicator dot. Colour here carries
+/** Semantic colour + copy for the status indicator. Colour here carries
  *  meaning (running/paused/error), so Tailwind colour utilities are allowed,
- *  kept at tasteful alpha so they read in both the dark and light themes. */
-type StatusMeta = { label: string; dot: string; text: string; pulse: boolean };
+ *  kept at tasteful alpha so they read in both the dark and light themes. The
+ *  pill tints its background + border from the same semantic colour. */
+type StatusMeta = { label: string; dot: string; text: string; pill: string; pulse: boolean };
 
-const STATUS_STOPPED: StatusMeta = { label: "Stopped", dot: "bg-shell-text-tertiary", text: "text-shell-text-tertiary", pulse: false };
+const STATUS_STOPPED: StatusMeta = {
+  label: "Stopped",
+  dot: "bg-shell-text-tertiary",
+  text: "text-shell-text-tertiary",
+  pill: "bg-shell-surface-hover border-shell-border",
+  pulse: false,
+};
 const STATUS_META: Record<string, StatusMeta> = {
-  running: { label: "Running", dot: "bg-emerald-400", text: "text-emerald-400", pulse: true },
+  running: { label: "Running", dot: "bg-emerald-400", text: "text-emerald-400", pill: "bg-emerald-500/12 border-emerald-500/25", pulse: true },
   stopped: STATUS_STOPPED,
-  error: { label: "Error", dot: "bg-red-400", text: "text-red-400", pulse: false },
-  deploying: { label: "Deploying", dot: "bg-amber-400", text: "text-amber-400", pulse: false },
+  error: { label: "Error", dot: "bg-red-400", text: "text-red-400", pill: "bg-red-500/12 border-red-500/25", pulse: false },
+  deploying: { label: "Deploying", dot: "bg-amber-400", text: "text-amber-400", pill: "bg-amber-500/12 border-amber-500/25", pulse: false },
 };
 
-/** A small dot + label conveying live agent state. The running dot breathes
- *  via a halo that is disabled under prefers-reduced-motion (see tokens.css). */
+const STATUS_PAUSED: StatusMeta = {
+  label: "Paused",
+  dot: "bg-amber-400",
+  text: "text-amber-400",
+  pill: "bg-amber-500/12 border-amber-500/25",
+  pulse: false,
+};
+
+/** A pill chip with a glowing dot + label conveying live agent state. The
+ *  running dot breathes via a halo that is disabled under
+ *  prefers-reduced-motion (see tokens.css). */
 function StatusIndicator({ status, paused }: { status: AgentStatus; paused?: boolean }) {
   // A paused agent reads as paused regardless of its container status.
-  const meta: StatusMeta = paused
-    ? { label: "Paused", dot: "bg-amber-400", text: "text-amber-400", pulse: false }
-    : STATUS_META[status] ?? STATUS_STOPPED;
+  const meta: StatusMeta = paused ? STATUS_PAUSED : STATUS_META[status] ?? STATUS_STOPPED;
   return (
-    <span className="inline-flex items-center gap-1.5 shrink-0" aria-label={`Status: ${meta.label}`}>
-      <span className="relative inline-flex h-2 w-2 shrink-0">
+    <span
+      className={`inline-flex items-center gap-1.5 shrink-0 rounded-full border px-2.5 py-1 ${meta.pill}`}
+      aria-label={`Status: ${meta.label}`}
+    >
+      <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
         {meta.pulse && (
           <span
             aria-hidden="true"
             className={`taos-status-pulse absolute inset-0 rounded-full ${meta.dot}`}
           />
         )}
-        <span className={`relative inline-flex h-2 w-2 rounded-full ${meta.dot}`} />
+        <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${meta.dot}`} />
       </span>
-      <span className={`text-xs font-medium ${meta.text}`}>{meta.label}</span>
+      <span className={`text-xs font-semibold ${meta.text}`}>{meta.label}</span>
     </span>
   );
 }
 
-/** The agent-identity tile: a colour-tinted rounded square holding the emoji. */
+/** The agent-identity tile: a glossy, colour-tinted rounded square holding the
+ *  emoji. The gradient + tinted border + inner highlight + soft glow give it the
+ *  Store's depth (the colour is the agent's own identity colour, not a theme
+ *  literal, so it carries per-agent meaning and reads in both themes). */
 function IdentityTile({ color, emoji, size = 36 }: { color: string; emoji: string; size?: number }) {
   return (
     <span
-      className="inline-flex items-center justify-center rounded-lg border border-shell-border shrink-0"
-      style={{ width: size, height: size, backgroundColor: `${color}22` }}
+      className="relative inline-flex items-center justify-center rounded-xl border shrink-0 overflow-hidden"
+      style={{
+        width: size,
+        height: size,
+        background: `linear-gradient(145deg, ${color}38, ${color}12)`,
+        borderColor: `${color}40`,
+        boxShadow: `inset 0 1px 0 0 ${color}33, 0 3px 10px -3px ${color}2b`,
+      }}
       aria-hidden="true"
     >
-      <span className="text-lg leading-none">{emoji}</span>
+      <span className="relative text-lg leading-none">{emoji}</span>
+    </span>
+  );
+}
+
+/** The framework an agent runs on (openclaw, hermes, ...) as a small uppercase
+ *  accent-tinted pill, echoing the Store's framework tags. */
+function FrameworkPill({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center rounded-full bg-accent/12 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent border border-accent/20 shrink-0">
+      {label}
+    </span>
+  );
+}
+
+/** A compact metadata chip (host, vectors) with a small leading icon, matching
+ *  the mockup's `.chip`: deep surface, hairline border, rounded-full. */
+function MetricChip({
+  icon: Icon,
+  children,
+  title,
+  className = "",
+}: {
+  icon: typeof Server;
+  children: ReactNode;
+  title?: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full bg-shell-bg-deep border border-shell-border px-2.5 py-1 text-[11px] text-shell-text-secondary ${className}`}
+      title={title}
+    >
+      <Icon size={11} className="text-shell-text-tertiary shrink-0" aria-hidden="true" />
+      {children}
     </span>
   );
 }
@@ -169,6 +229,16 @@ export function AgentRow({
     />
   ) : null;
 
+  // A thin vertical accent bar keyed to the agent's identity colour, hugging
+  // the card's left edge (the card clips it via overflow-hidden + rounded).
+  const accentBar = (
+    <span
+      aria-hidden="true"
+      className="absolute left-0 top-0 bottom-0 w-[3px] rounded-r-[3px]"
+      style={{ background: `linear-gradient(180deg, ${agent.color}, ${agent.color}aa)` }}
+    />
+  );
+
   const actionButtons = (
     <>
       {!isProtected && agent.paused && (
@@ -234,7 +304,7 @@ export function AgentRow({
   // Shared card surface: one radius, token colours, tactile press + focus ring.
   // The "System" agent gets a faintly elevated ring + tint.
   const cardCls = [
-    "taos-card-enter group rounded-xl bg-shell-surface shadow-[var(--shadow-card)]",
+    "taos-card-enter group relative overflow-hidden rounded-xl bg-shell-surface shadow-[var(--shadow-card)]",
     "transition-[background-color,box-shadow,transform] duration-200",
     "hover:bg-shell-surface-hover hover:shadow-[var(--shadow-card-hover)]",
     "active:translate-y-px",
@@ -248,7 +318,8 @@ export function AgentRow({
   if (isMobile) {
     return (
       <Card className={`${cardCls} px-3 py-3`}>
-        {/* Row 1: identity tile + name/sub-label + status */}
+        {accentBar}
+        {/* Row 1: identity tile + name/framework + status pill */}
         <div className="flex items-center gap-2.5 min-w-0">
           <IdentityTile color={agent.color} emoji={emoji} size={36} />
           <div className="flex-1 min-w-0">
@@ -259,25 +330,23 @@ export function AgentRow({
               {updateDot}
             </div>
             {subLabel && (
-              <span className="block text-shell-text-tertiary text-xs lowercase truncate">
-                {subLabel}
-              </span>
+              <div className="mt-1">
+                <FrameworkPill label={subLabel} />
+              </div>
             )}
             <IndicatorRow agent={agent} />
           </div>
           <StatusIndicator status={agent.status} paused={agent.paused} />
         </div>
-        {/* Row 2: host + vectors */}
+        {/* Row 2: host + vectors chips */}
         <div className="flex items-center gap-2 mt-2 min-w-0">
-          <Server size={13} className="text-shell-text-tertiary shrink-0" />
-          <span className="text-xs text-shell-text-secondary font-mono tabular-nums truncate flex-1 min-w-0">
-            {agent.host}
-          </span>
-          <span className="inline-flex items-center gap-1 text-shell-text-tertiary tabular-nums shrink-0">
-            <Database size={13} aria-hidden="true" />
-            <span className="text-xs text-shell-text-secondary">{agent.vectors.toLocaleString()}</span>
-            <span className="text-[10px]">vectors</span>
-          </span>
+          <MetricChip icon={Server} title={`Host: ${agent.host}`} className="min-w-0 flex-1">
+            <span className="font-mono tabular-nums truncate">{agent.host}</span>
+          </MetricChip>
+          <MetricChip icon={Database} title={`${agent.vectors.toLocaleString()} vectors`}>
+            <span className="tabular-nums">{agent.vectors.toLocaleString()}</span>
+            <span className="text-shell-text-tertiary">vectors</span>
+          </MetricChip>
         </div>
         {(agent.paused || (diskState && diskState.state !== "ok")) && (
           <div className="flex flex-wrap gap-1.5 mt-2">
@@ -296,50 +365,47 @@ export function AgentRow({
 
   return (
     <Card className={`${cardCls} flex items-center gap-4 px-4 py-3.5`}>
-      {/* Identity: tile + two-line name / sub-label */}
+      {accentBar}
+      {/* Identity: tile + name (with framework pill) / model */}
       <div className="flex items-center gap-3 flex-1 min-w-0">
         <IdentityTile color={agent.color} emoji={emoji} size={36} />
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
             <span className="text-shell-text font-medium text-[15px] truncate">
               {agent.display_name || agent.name}
             </span>
+            {subLabel && <FrameworkPill label={subLabel} />}
             {updateDot}
           </div>
-          {subLabel && (
-            <span className="block text-shell-text-tertiary text-xs lowercase truncate">
-              {subLabel}
-            </span>
-          )}
           <IndicatorRow agent={agent} />
         </div>
         {agent.paused && <PausedChip />}
         {diskState && diskState.state !== "ok" && <DiskChip diskState={diskState} verbose />}
       </div>
 
-      {/* Metadata: host */}
-      <div className="hidden sm:flex items-center gap-1.5 text-sm min-w-0 w-40">
-        <Server size={13} className="text-shell-text-tertiary shrink-0" />
-        <span className="text-shell-text-secondary font-mono tabular-nums truncate">{agent.host}</span>
+      {/* Metadata chips: host + vectors */}
+      <div className="hidden sm:flex items-center gap-2 shrink-0">
+        <MetricChip icon={Server} title={`Host: ${agent.host}`} className="max-w-44">
+          <span className="font-mono tabular-nums truncate">{agent.host}</span>
+        </MetricChip>
+        <MetricChip
+          icon={Database}
+          title={`${agent.vectors.toLocaleString()} vectors`}
+        >
+          <span className="tabular-nums">{agent.vectors.toLocaleString()}</span>
+          <span className="text-shell-text-tertiary">vectors</span>
+        </MetricChip>
       </div>
 
-      {/* Status (fixed-width column so the metadata columns line up row to row) */}
-      <div className="w-24 shrink-0">
+      {/* Status pill (fixed-width column so it lines up row to row) */}
+      <div className="w-24 shrink-0 flex justify-end">
         <StatusIndicator status={agent.status} paused={agent.paused} />
       </div>
 
-      {/* Vectors metric (de-emphasized) */}
-      <span className="hidden sm:inline-flex items-center justify-end gap-1.5 w-28 text-right shrink-0">
-        <Database size={13} className="text-shell-text-tertiary shrink-0" aria-hidden="true" />
-        <span className="text-sm text-shell-text-secondary tabular-nums">
-          {agent.vectors.toLocaleString()}
-        </span>
-        <span className="text-[10px] text-shell-text-tertiary">vectors</span>
-      </span>
-
       {/* Actions: fixed-width + right-aligned so a protected agent's 3 icons
-          reserve the same column as a deployed agent's 4 (no column drift). */}
-      <div className="flex items-center justify-end gap-1 border-l border-shell-border pl-2 shrink-0 w-[152px]">
+          reserve the same column as a deployed agent's 4 (no column drift).
+          Calm at rest, revealed on card hover / keyboard focus. */}
+      <div className="flex items-center justify-end gap-1 border-l border-shell-border pl-2 shrink-0 w-[152px] opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
         {leftActions}
         {actionButtons}
       </div>

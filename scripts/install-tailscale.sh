@@ -7,11 +7,14 @@
 # only; it does NOT run `tailscale up` and does NOT require an auth key. The
 # user authenticates interactively afterwards (`tailscale up` / web login).
 #
-# Linux:  wraps the OFFICIAL installer https://tailscale.com/install.sh
-#         (verified by pinned SHA256 before execution — never unverified
-#         curl|bash). The official script auto-detects the distro/arch and
-#         configures the correct apt/dnf/zypper/pacman/apk/etc. repo, so it
-#         covers every supported arm + x86 distribution from one path.
+# Linux:  wraps the OFFICIAL installer https://tailscale.com/install.sh,
+#         fetched over HTTPS and verified against the pinned SHA256
+#         FAIL-CLOSED: a mismatch aborts. When upstream rotates the script,
+#         an operator updates TAILSCALE_INSTALL_SHA256 (preferred) or sets
+#         TAOS_TAILSCALE_ALLOW_UNPINNED=1 to override one run. The official
+#         script auto-detects the distro/arch and configures the correct
+#         apt/dnf/zypper/pacman/apk/etc. repo, covering every supported
+#         arm + x86 distribution from one path.
 # macOS:  no headless CLI install path — point the user at the Mac App Store
 #         build (or `brew install --cask tailscale`).
 #
@@ -20,9 +23,9 @@
 # Pinned constants — update when Tailscale revises their installer:
 #   TAILSCALE_INSTALL_SHA256: SHA-256 of https://tailscale.com/install.sh
 #   Verify with: curl -fsSL https://tailscale.com/install.sh | sha256sum
-#   RESIDUAL RISK: Tailscale publishes no detached signature for this script;
-#   SHA256 is the only integrity guard. Update when the installer changes.
-#   Pinned: 2026-06-14
+#   RESIDUAL RISK: Tailscale publishes no detached signature for this script,
+#   so the pinned SHA256 is the integrity guard (verification is fail-closed;
+#   HTTPS transport alone is not trusted). Pinned: 2026-06-14
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -65,24 +68,23 @@ case "$(uname -s)" in
         local_tmp="$(mktemp /tmp/tailscale-install.XXXXXX.sh)"
         trap 'rm -f "$local_tmp"' EXIT
         curl -fsSL https://tailscale.com/install.sh -o "$local_tmp"
-        # The official installer is fetched over HTTPS from tailscale.com and is
-        # revised frequently, so the bundled SHA256 is ADVISORY by default: a
-        # mismatch warns and proceeds (the HTTPS fetch is the trust anchor),
-        # rather than hard-failing every time upstream rotates the script. Set
-        # TAOS_TAILSCALE_INSTALL_SHA256 to a known hash to enforce a strict pin.
-        if [[ -n "${TAOS_TAILSCALE_INSTALL_SHA256:-}" ]]; then
-            verify_sha256 "$local_tmp" "$TAILSCALE_INSTALL_SHA256" "tailscale-install.sh"
+        # Verify the installer's SHA256, FAIL-CLOSED by default: a mismatch
+        # aborts the install. Tailscale rotates install.sh periodically; when
+        # that happens an operator who has reviewed the new script should update
+        # TAILSCALE_INSTALL_SHA256 (preferred), or set
+        # TAOS_TAILSCALE_ALLOW_UNPINNED=1 to proceed past the mismatch for one
+        # run. The HTTPS fetch is NOT a substitute for the pin.
+        if command -v sha256sum >/dev/null 2>&1; then
+            _ts_actual="$(sha256sum "$local_tmp" | awk '{print $1}')"
         else
-            if command -v sha256sum >/dev/null 2>&1; then
-                _ts_actual="$(sha256sum "$local_tmp" | awk '{print $1}')"
-            else
-                _ts_actual="$(shasum -a 256 "$local_tmp" | awk '{print $1}')"
-            fi
-            if [[ "$_ts_actual" == "$TAILSCALE_INSTALL_SHA256" ]]; then
-                log "sha256 ok for tailscale-install.sh (${_ts_actual:0:16})"
-            else
-                log "WARN: tailscale-install.sh sha256 changed since the pin (${_ts_actual:0:16}); upstream rotated the script. Proceeding over HTTPS. Set TAOS_TAILSCALE_INSTALL_SHA256 to enforce a strict pin."
-            fi
+            _ts_actual="$(shasum -a 256 "$local_tmp" | awk '{print $1}')"
+        fi
+        if [[ "$_ts_actual" == "$TAILSCALE_INSTALL_SHA256" ]]; then
+            log "sha256 ok for tailscale-install.sh (${_ts_actual:0:16})"
+        elif [[ "${TAOS_TAILSCALE_ALLOW_UNPINNED:-0}" == "1" ]]; then
+            log "WARN: tailscale-install.sh sha256 mismatch (${_ts_actual:0:16}); proceeding because TAOS_TAILSCALE_ALLOW_UNPINNED=1"
+        else
+            die "tailscale-install.sh sha256 mismatch: expected $TAILSCALE_INSTALL_SHA256, got $_ts_actual. Upstream likely rotated the installer: review it and update TAILSCALE_INSTALL_SHA256, or set TAOS_TAILSCALE_ALLOW_UNPINNED=1 to override this run."
         fi
         sh "$local_tmp"
         rm -f "$local_tmp"
