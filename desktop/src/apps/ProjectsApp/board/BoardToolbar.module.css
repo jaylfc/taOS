@@ -4,18 +4,18 @@
 .seg { display: inline-flex; gap: 0; background: rgba(255,255,255,.05); border: 1px solid var(--board-hair); border-radius: 8px; padding: 2px; }
 .seg button { background: transparent; border: 0; padding: 4px 10px; border-radius: 6px; color: #86868b; font: 600 11.5px -apple-system; cursor: pointer; }
 .seg button:disabled { opacity: .4; cursor: not-allowed; }
-.seg button.on { background: rgba(167,139,250,.18); color: #fff; box-shadow: 0 0 0 1px rgba(167,139,250,.3); }
+.seg button.on { background: rgba(34,211,238,.18); color: #fff; box-shadow: 0 0 0 1px rgba(34,211,238,.3); }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(255,255,255,.05); border: 1px solid var(--board-hair); border-radius: 8px; color: #d2d2d7; font: 600 11.5px -apple-system; cursor: pointer; }
 .pill select { background: transparent; color: inherit; border: 0; font: inherit; outline: none; }
 .live { color: #5fdb84; }
 .live::before, .dead::before { content: "● "; }
 .dead { color: #86868b; }
 .search { background: rgba(255,255,255,.05); border: 1px solid var(--board-hair); border-radius: 8px; color: #f5f5f7; padding: 5px 10px; font: 11.5px -apple-system; min-width: 220px; outline: none; }
-.search:focus { border-color: rgba(167,139,250,.5); }
+.search:focus { border-color: rgba(34,211,238,.5); }
 .add { background: var(--board-accent-cyan); border: 0; color: #1a1a1c; padding: 5px 12px; border-radius: 8px; font: 700 11.5px -apple-system; cursor: pointer; }
 .filterWrap { position: relative; }
 .popover { position: absolute; top: calc(100% + 6px); right: 0; background: #1f1f22; border: 1px solid var(--board-hair); padding: 10px; border-radius: 10px; min-width: 200px; box-shadow: 0 10px 30px rgba(0,0,0,.4); z-index: 10; display: flex; flex-direction: column; gap: 8px; }
 .popRow { display: flex; gap: 8px; align-items: center; font: 12px -apple-system; color: #d2d2d7; }
 .chipRow { display: flex; gap: 4px; }
 .chip { background: rgba(255,255,255,.05); border: 1px solid var(--board-hair); border-radius: 6px; padding: 3px 8px; color: #86868b; font: 600 10.5px -apple-system; cursor: pointer; }
-.chipOn { background: rgba(167,139,250,.18); color: #fff; border-color: rgba(167,139,250,.4); }
+.chipOn { background: rgba(34,211,238,.18); color: #fff; border-color: rgba(34,211,238,.4); }

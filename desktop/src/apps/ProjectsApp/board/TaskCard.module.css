@@ -1,5 +1,5 @@
 .card { width: 100%; text-align: left; padding: 0; background: var(--board-card-bg); border: 1px solid var(--board-hair); border-radius: 11px; cursor: pointer; transition: transform .18s, box-shadow .18s, border-color .18s; position: relative; overflow: hidden; color: var(--ink-1, #f5f5f7); }
-.card:hover { transform: translateY(-2px); border-color: var(--board-hair-strong); box-shadow: 0 14px 30px rgba(0,0,0,.4), 0 0 0 1px rgba(167,139,250,.18); }
+.card:hover { transform: translateY(-2px); border-color: var(--board-hair-strong); box-shadow: 0 14px 30px rgba(0,0,0,.4), 0 0 0 1px rgba(34,211,238,.18); }
 .priEdge { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
 .p0 .priEdge { background: linear-gradient(180deg, var(--board-p0), #c70015); }
 .p1 .priEdge { background: linear-gradient(180deg, var(--board-p1), #c97e15); }
