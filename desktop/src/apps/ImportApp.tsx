@@ -295,7 +295,7 @@ export function ImportApp({ windowId: _windowId }: { windowId: string }) {
             variant="secondary"
             onClick={handleEmbed}
             disabled={!selectedAgent || embedding}
-            className="bg-violet-600 text-white hover:bg-violet-500"
+            className="bg-cyan-600 text-white hover:bg-cyan-500"
           >
             <Brain size={14} />
             {embedding ? "Embedding..." : "Embed"}

@@ -102,7 +102,7 @@ const STATUS_LABEL: Record<ServerStatus, string> = {
 
 const TRANSPORT_PILL: Record<string, string> = {
   stdio: "bg-blue-500/20 text-blue-300",
-  sse: "bg-violet-500/20 text-violet-300",
+  sse: "bg-cyan-500/20 text-cyan-300",
   ws: "bg-teal-500/20 text-teal-300",
 };
 
@@ -876,7 +876,7 @@ function PermissionsTab({
                     <p className="text-[10px] text-shell-text-tertiary uppercase tracking-wide mb-1">Resource patterns</p>
                     <div className="flex flex-wrap gap-1">
                       {a.allowed_resources.map((r, i) => (
-                        <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 font-mono">{r}</span>
+                        <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono">{r}</span>
                       ))}
                     </div>
                   </div>

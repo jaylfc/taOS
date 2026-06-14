@@ -5,8 +5,8 @@
 export const MEMORY_STEPS_MB = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072];
 
 export const COLORS = [
-  "#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b",
-  "#10b981", "#ef4444", "#06b6d4", "#f97316",
+  "#3b82f6", "#06b6d4", "#ec4899", "#f59e0b",
+  "#10b981", "#ef4444", "#2dd4bf", "#f97316",
 ];
 
 export const STATUS_STYLES: Record<string, string> = {

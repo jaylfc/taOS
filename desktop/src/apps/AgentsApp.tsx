@@ -27,7 +27,7 @@ const TAOS_AGENT_STUB: Agent = {
   name: "taos-agent",
   display_name: "taOS agent",
   host: "localhost",
-  color: "#6366f1",
+  color: "#06b6d4",
   emoji: "🤖",
   status: "running",
   vectors: 0,

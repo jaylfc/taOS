@@ -203,8 +203,8 @@
 
 /* Projects board — Apple-grade chrome (Pass B Kanban) */
 :root {
-  --board-accent-violet: #a78bfa;
-  --board-accent-violet-soft: rgba(167, 139, 250, 0.14);
+  --board-accent-cyan: #22d3ee;
+  --board-accent-cyan-soft: rgba(34, 211, 238, 0.14);
   --board-hair: rgba(255, 255, 255, 0.07);
   --board-hair-strong: rgba(255, 255, 255, 0.12);
   --board-card-bg: linear-gradient(180deg, #26262b, #1f1f22);

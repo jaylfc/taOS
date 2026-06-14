@@ -639,7 +639,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                             {capabilities.map((c) => (
                               <span
                                 key={`${w.name}-c-${c}`}
-                                className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-200 font-medium"
+                                className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
                                 aria-label={`Current capability: ${c}`}
                               >
                                 {c}
@@ -699,7 +699,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
             <CardContent className="p-0">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <Network size={14} className="text-indigo-400" />
+                  <Network size={14} className="text-cyan-400" />
                   <h3 className="text-xs font-semibold text-shell-text">Network</h3>
                 </div>
               </div>
@@ -726,7 +726,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
             <CardContent className="p-0">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <Activity size={14} className="text-violet-400" />
+                  <Activity size={14} className="text-cyan-400" />
                   <h3 className="text-xs font-semibold text-shell-text">Scheduler</h3>
                 </div>
                 <div className="flex items-center gap-3 text-[10px] text-shell-text-tertiary tabular-nums">
@@ -747,7 +747,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                   const tierLabel = ["GPU", "NPU", "CPU", "CLUSTER"][r.tier] ?? "?";
                   const tierColor = [
                     "text-emerald-400 bg-emerald-500/10",
-                    "text-violet-400 bg-violet-500/10",
+                    "text-cyan-400 bg-cyan-500/10",
                     "text-sky-400 bg-sky-500/10",
                     "text-amber-400 bg-amber-500/10",
                   ][r.tier] ?? "text-shell-text-tertiary bg-white/5";
@@ -791,7 +791,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                         {r.capabilities.map((c) => (
                           <span
                             key={`ready-${c}`}
-                            className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-200 font-medium"
+                            className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-200 font-medium"
                             title="Ready now — backend is loaded"
                           >
                             {c}
@@ -841,7 +841,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                   const tierLabels = ["GPU", "NPU", "CPU"];
                   const tierColors = [
                     "text-emerald-400 bg-emerald-500/10",
-                    "text-violet-400 bg-violet-500/10",
+                    "text-cyan-400 bg-cyan-500/10",
                     "text-sky-400 bg-sky-500/10",
                   ];
 
@@ -877,7 +877,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                             ...(w.capabilities || []).map((c) => (
                               <span
                                 key={`worker-ready-${c}`}
-                                className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-200 font-medium"
+                                className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-200 font-medium"
                                 title="Ready now — backend is loaded"
                               >
                                 {c}
@@ -907,7 +907,7 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
                       t.status === "complete"
                         ? "text-emerald-400"
                         : t.status === "running"
-                        ? "text-violet-400"
+                        ? "text-cyan-400"
                         : t.status === "error"
                         ? "text-red-400"
                         : t.status === "rejected"

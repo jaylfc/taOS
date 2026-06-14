@@ -161,7 +161,7 @@ function TypePill({ type }: { type: string }) {
   return (
     <span
       className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-        cloud ? "bg-violet-500/20 text-violet-300" : "bg-teal-500/20 text-teal-300"
+        cloud ? "bg-sky-500/20 text-sky-300" : "bg-teal-500/20 text-teal-300"
       }`}
     >
       {type}
@@ -1029,7 +1029,7 @@ function ProviderDetail({
                   return (
                     <span
                       key={`m-${i}-${label}`}
-                      className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-200 font-medium"
+                      className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
                     >
                       {label}
                     </span>

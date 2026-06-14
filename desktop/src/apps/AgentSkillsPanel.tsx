@@ -22,7 +22,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   media: "bg-pink-500/20 text-pink-400",
   browser: "bg-cyan-500/20 text-cyan-400",
   data: "bg-emerald-500/20 text-emerald-400",
-  comms: "bg-indigo-500/20 text-indigo-400",
+  comms: "bg-cyan-500/20 text-cyan-400",
   system: "bg-slate-500/20 text-slate-400",
 };
 
