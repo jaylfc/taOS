@@ -152,7 +152,7 @@ chmod 700 /root/.moltis
 : "${OPENAI_API_KEY:=}"
 : "${OPENAI_BASE_URL:=http://127.0.0.1:4000/v1}"
 : "${MOLTIS_HOST:=127.0.0.1}"
-: "${MOLTIS_PORT:=3000}"
+: "${MOLTIS_PORT:=32213}"
 
 cat > /root/.moltis/env <<ENV_EOF
 MOLTIS_SHARE_DIR=${INSTALL_DIR}/share/moltis

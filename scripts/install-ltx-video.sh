@@ -46,7 +46,7 @@ LTX_MODEL_FILE="ltxv-2b-0.9.8-distilled.safetensors"
 # CUDA torch wheel index (CUDA 12.x; README targets CUDA 12.2, torch>=2.1.2)
 TORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
 
-PORT="${TAOS_LTX_PORT:-7862}"
+PORT="${TAOS_LTX_PORT:-36909}"
 
 log() { echo -e "\033[1;34m[ltx-video]\033[0m $*"; }
 die() { echo -e "\033[1;31m[ltx-video]\033[0m $*" >&2; exit 1; }
@@ -151,7 +151,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PORT = int(os.environ.get("TAOS_LTX_PORT", "7862"))
+PORT = int(os.environ.get("TAOS_LTX_PORT", "36909"))
 HERE = Path(__file__).resolve().parent
 REPO = HERE / "LTX-Video"
 PY = sys.executable

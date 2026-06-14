@@ -42,7 +42,7 @@ MUSICGPT_SHA256_DARWIN_AARCH64="eebc080ad944bf4a3f89222e569f3b9bf785259db991b961
 
 # --- taOS wiring ----------------------------------------------------------
 PROJECT_DIR="${1:-}"
-MUSICGPT_PORT="${TAOS_MUSICGPT_PORT:-8882}"
+MUSICGPT_PORT="${TAOS_MUSICGPT_PORT:-30264}"
 INSTALL_DIR="${TAOS_MUSICGPT_BIN_DIR:-/usr/local/bin}"
 BIN_PATH="${INSTALL_DIR}/musicgpt"
 

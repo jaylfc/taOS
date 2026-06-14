@@ -42,7 +42,7 @@ WAN2GP_REPO="${TAOS_WAN2GP_REPO:-https://github.com/deepbeepmeep/Wan2GP.git}"
 # Pin a commit for a reproducible checkout. Set to a 40-char SHA to lock it;
 # defaults to the upstream default branch when unset.
 WAN2GP_REF="${TAOS_WAN2GP_REF:-main}"
-WAN2GP_PORT="${TAOS_WAN2GP_PORT:-7860}"
+WAN2GP_PORT="${TAOS_WAN2GP_PORT:-33109}"
 WAN2GP_PY="${TAOS_WAN2GP_PYTHON:-python3.11}"
 # Upstream RTX 20xx-50xx profile (docs/INSTALLATION.md). Override for ROCm/older GPUs.
 TORCH_SPEC="${TAOS_WAN2GP_TORCH_SPEC:-torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0}"

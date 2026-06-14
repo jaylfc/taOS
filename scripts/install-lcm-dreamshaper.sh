@@ -42,7 +42,7 @@ LCM_REPO_URL="https://github.com/darkautism/LCM-Dreamshaper-V7-rs.git"
 # once you have verified the exact SHA you intend to ship.
 LCM_PIN_COMMIT="${TAOS_LCM_COMMIT:-master}"
 
-LCM_PORT="${TAOS_LCM_PORT:-7864}"
+LCM_PORT="${TAOS_LCM_PORT:-32275}"
 LCM_HOST="${TAOS_LCM_HOST:-0.0.0.0}"
 LCM_PREFIX="${TAOS_LCM_PREFIX:-/opt/taos/lcm-dreamshaper-rknn}"
 LCM_SRC_DIR="${LCM_PREFIX}/src"

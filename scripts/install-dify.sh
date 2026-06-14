@@ -27,7 +27,7 @@ PROJECT_DIR="${1:?[dify] usage: install-dify.sh <project_dir>}"
 
 DIFY_VERSION="${TAOS_DIFY_VERSION:-1.14.2}"
 DIFY_REPO="https://github.com/langgenius/dify.git"
-DIFY_PORT="${TAOS_DIFY_PORT:-3000}"
+DIFY_PORT="${TAOS_DIFY_PORT:-35444}"
 
 # Where the Dify source/compose stack lives, under the taOS project dir.
 DIFY_HOME="${PROJECT_DIR%/}/services/dify"

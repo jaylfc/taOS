@@ -29,7 +29,7 @@ set -euo pipefail
 PROJECT_DIR="${1:-$PWD}"
 SD_CPP_TAG="${TAOS_SD_CPP_TAG:-master-700-c2df4e1}"
 SD_CPP_SHA256="${TAOS_SD_CPP_SHA256:-7b859e9d5cb5f84b86dcb8e2dd4badf49d8e53a9743f2d1551a9fbae8f011d83}"
-SD_CPP_PORT="${TAOS_SD_CPP_PORT:-7861}"
+SD_CPP_PORT="${TAOS_SD_CPP_PORT:-30450}"
 
 # Install root lives under the taOS project_dir so it is self-contained.
 SD_CPP_ROOT="${PROJECT_DIR}/services/stable-diffusion-cpp"
