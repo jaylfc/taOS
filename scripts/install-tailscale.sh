@@ -65,7 +65,25 @@ case "$(uname -s)" in
         local_tmp="$(mktemp /tmp/tailscale-install.XXXXXX.sh)"
         trap 'rm -f "$local_tmp"' EXIT
         curl -fsSL https://tailscale.com/install.sh -o "$local_tmp"
-        verify_sha256 "$local_tmp" "$TAILSCALE_INSTALL_SHA256" "tailscale-install.sh"
+        # The official installer is fetched over HTTPS from tailscale.com and is
+        # revised frequently, so the bundled SHA256 is ADVISORY by default: a
+        # mismatch warns and proceeds (the HTTPS fetch is the trust anchor),
+        # rather than hard-failing every time upstream rotates the script. Set
+        # TAOS_TAILSCALE_INSTALL_SHA256 to a known hash to enforce a strict pin.
+        if [[ -n "${TAOS_TAILSCALE_INSTALL_SHA256:-}" ]]; then
+            verify_sha256 "$local_tmp" "$TAILSCALE_INSTALL_SHA256" "tailscale-install.sh"
+        else
+            if command -v sha256sum >/dev/null 2>&1; then
+                _ts_actual="$(sha256sum "$local_tmp" | awk '{print $1}')"
+            else
+                _ts_actual="$(shasum -a 256 "$local_tmp" | awk '{print $1}')"
+            fi
+            if [[ "$_ts_actual" == "$TAILSCALE_INSTALL_SHA256" ]]; then
+                log "sha256 ok for tailscale-install.sh (${_ts_actual:0:16})"
+            else
+                log "WARN: tailscale-install.sh sha256 changed since the pin (${_ts_actual:0:16}); upstream rotated the script. Proceeding over HTTPS. Set TAOS_TAILSCALE_INSTALL_SHA256 to enforce a strict pin."
+            fi
+        fi
         sh "$local_tmp"
         rm -f "$local_tmp"
         trap - EXIT

@@ -40,7 +40,7 @@ set -euo pipefail
 LCM_REPO_URL="https://github.com/darkautism/LCM-Dreamshaper-V7-rs.git"
 # Pin to a specific commit for reproducible builds. Override with TAOS_LCM_COMMIT
 # once you have verified the exact SHA you intend to ship.
-LCM_PIN_COMMIT="${TAOS_LCM_COMMIT:-master}"
+LCM_PIN_COMMIT="${TAOS_LCM_COMMIT:-4de3c8180d11585f513803504c74811845275317}"
 
 LCM_PORT="${TAOS_LCM_PORT:-32275}"
 LCM_HOST="${TAOS_LCM_HOST:-0.0.0.0}"

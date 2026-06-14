@@ -158,7 +158,7 @@ PY = sys.executable
 OUT_DIR = HERE / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
 # README-recommended distilled config for the 2B/13B distilled line.
-PIPELINE_CONFIG = REPO / "configs" / "ltxv-13b-0.9.8-distilled.yaml"
+PIPELINE_CONFIG = REPO / "configs" / "ltxv-2b-0.9.8-distilled.yaml"
 
 
 class Handler(BaseHTTPRequestHandler):
