@@ -161,6 +161,9 @@ async def test_image_generation_forwards_new_params():
     mock_resp.status_code = 200
     mock_resp.content = fake_png
     mock_resp.raise_for_status = MagicMock()
+    # Scheduler route returns JSON metadata (filename + path), which the tool
+    # now requires to honour the image_ref contract.
+    mock_resp.json = MagicMock(return_value={"filename": "gen.png", "path": "/api/images/files/gen.png"})
 
     captured_payload: dict = {}
     captured_url: dict = {}
@@ -205,6 +208,9 @@ async def test_image_generation_default_routes_via_scheduler():
     mock_resp.status_code = 200
     mock_resp.content = fake_png
     mock_resp.raise_for_status = MagicMock()
+    # Scheduler route returns JSON metadata (filename + path), which the tool
+    # now requires to honour the image_ref contract.
+    mock_resp.json = MagicMock(return_value={"filename": "gen.png", "path": "/api/images/files/gen.png"})
 
     captured: dict = {}
 
@@ -245,6 +251,9 @@ async def test_image_generation_blank_model_treated_as_omitted():
     mock_resp.status_code = 200
     mock_resp.content = fake_png
     mock_resp.raise_for_status = MagicMock()
+    # Scheduler route returns JSON metadata (filename + path), which the tool
+    # now requires to honour the image_ref contract.
+    mock_resp.json = MagicMock(return_value={"filename": "gen.png", "path": "/api/images/files/gen.png"})
 
     captured: dict = {}
 

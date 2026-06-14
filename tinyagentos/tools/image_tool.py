@@ -174,6 +174,13 @@ async def execute_image_generation(
 
     Returns dict with 'success', 'image_ref' (the saved filename, usable by
     canvas_add_image), 'url' (web path to the PNG), and 'error' if failed.
+
+    Note: the connect-failure fallback (used only when the controller itself
+    is unreachable, e.g. an LXC agent that can't see localhost:6969) returns
+    'image_b64' instead of 'image_ref' -- it has no controller workspace to
+    save into. In-process tool calls always take the scheduler path above and
+    get an 'image_ref', so canvas_add_image works; a caller relying on the
+    fallback must handle the bytes itself.
     """
     import httpx
     import random
@@ -205,7 +212,7 @@ async def execute_image_generation(
             # The scheduler route saves the PNG and returns JSON metadata.
             data = resp.json()
             filename = data.get("filename")
-            if not filename:
+            if not isinstance(filename, str) or not filename:
                 return {"success": False, "error": f"image backend returned no filename: {str(data)[:200]}"}
             return {
                 "success": True,

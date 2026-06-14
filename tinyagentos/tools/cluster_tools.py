@@ -40,7 +40,10 @@ def _hw_summary(hw) -> dict:
     """Best-effort, JSON-safe summary of a hardware profile (object or dict)."""
     if hw is None:
         return {}
-    keys = ("cpu", "gpu", "npu", "vram", "ram", "tier", "platform")
+    # HardwareProfile stores total RAM as `ram_mb`; include both that and the
+    # generic `ram`/`vram` keys so dict- and dataclass-shaped profiles both
+    # surface memory, the main tier-selection signal.
+    keys = ("cpu", "gpu", "npu", "vram", "ram", "ram_mb", "tier", "platform")
     if isinstance(hw, dict):
         return {k: _json_safe(hw.get(k)) for k in keys if hw.get(k) is not None}
     return {k: _json_safe(getattr(hw, k)) for k in keys if getattr(hw, k, None) is not None}

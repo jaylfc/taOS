@@ -103,8 +103,17 @@ async def execute_canvas_add_image(args: dict, request: Request) -> dict:
     src = _data_dir(request) / "workspace" / "images" / "generated" / Path(image_ref).name
     if not src.is_file():
         return {"error": f"image not found: {image_ref}"}
+    # The slug is the on-disk directory AND the key the canvas render route
+    # (/api/projects/{slug}/files/canvas/{file_id}) reads back, so it must stay
+    # the project's real slug. New projects slugify safely, but reject a legacy
+    # row or fallback id that carries separators rather than escape projects_root.
     slug = project.get("slug") or project_id
-    canvas_dir = Path(request.app.state.projects_root) / slug / "files" / "canvas"
+    if slug != _slugify(slug):
+        return {"error": f"unsafe project slug: {slug!r}"}
+    projects_root = Path(request.app.state.projects_root).resolve()
+    canvas_dir = (projects_root / slug / "files" / "canvas").resolve()
+    if not canvas_dir.is_relative_to(projects_root):
+        return {"error": "resolved canvas path escapes projects_root"}
     canvas_dir.mkdir(parents=True, exist_ok=True)
     file_id = f"{uuid4().hex}{src.suffix or '.png'}"
     (canvas_dir / file_id).write_bytes(src.read_bytes())

@@ -400,6 +400,24 @@ class SkillStore(BaseStore):
                     time.time(),
                 ),
             )
+            # INSERT OR IGNORE leaves an existing row untouched, so an install
+            # seeded by an earlier release keeps its stale tool_schema (e.g. the
+            # pre-image_ref canvas_add_image contract). Refresh the code-owned
+            # fields for builtin skills so existing installs converge on the
+            # current definition. Scoped to install_method='builtin' so a user's
+            # installed/customised skills are never overwritten.
+            await self._db.execute(
+                """UPDATE skills
+                   SET name = ?, category = ?, description = ?, tool_schema = ?,
+                       frameworks = ?, requires_services = ?, install_target = ?
+                   WHERE id = ? AND install_method = 'builtin'""",
+                (
+                    skill["name"], skill["category"], skill["description"],
+                    json.dumps(skill["tool_schema"]), json.dumps(skill["frameworks"]),
+                    json.dumps(skill.get("requires_services", [])),
+                    skill["install_target"], skill["id"],
+                ),
+            )
         await self._db.commit()
 
     async def list_skills(self, category: str | None = None) -> list[dict]:
