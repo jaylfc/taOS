@@ -11,6 +11,7 @@ import { SnapOverlay } from "./SnapOverlay";
 import { WidgetLayer } from "./WidgetLayer";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { WallpaperPicker } from "./WallpaperPicker";
+import { DesktopIcons } from "./DesktopIcons";
 import { NeuralWallpaper } from "./NeuralWallpaper";
 import { WallpaperTextOverlay } from "./WallpaperTextOverlay";
 
@@ -74,7 +75,7 @@ export function Desktop() {
     {
       label: "New Folder",
       icon: <FolderPlus size={14} />,
-      action: () => openApp("files"),
+      action: () => window.dispatchEvent(new CustomEvent("taos:new-desktop-folder")),
     },
     { label: "", separator: true },
     {
@@ -137,6 +138,7 @@ export function Desktop() {
     >
       {isAnimated && wallpaperComponent === "neural" && <NeuralWallpaper />}
       {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
+      <DesktopIcons />
       <SnapOverlay bounds={previewBounds} />
       <WidgetLayer />
       {windows.map((win) => (
