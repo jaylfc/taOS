@@ -10,12 +10,22 @@ the agent opens Projects, then builds in it visibly.
 from __future__ import annotations
 
 import re
+from pathlib import Path
+from uuid import uuid4
 
 from fastapi import Request
 
 
 def _user_id(request: Request) -> str | None:
     return getattr(request.state, "user_id", None) or None
+
+
+def _data_dir(request: Request) -> Path:
+    """Workspace data dir, resolved the same way images.py does."""
+    config_path = getattr(request.app.state, "config_path", None)
+    if config_path is not None:
+        return Path(config_path).parent
+    return Path(__file__).parent.parent.parent / "data"
 
 
 async def _owned_project(request: Request, project_id: str, user_id: str):
@@ -71,9 +81,10 @@ async def execute_add_task(args: dict, request: Request) -> dict:
 
 async def execute_canvas_add_image(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
-    file_id = (args or {}).get("file_id")
-    if not isinstance(project_id, str) or not project_id or not isinstance(file_id, str) or not file_id:
-        return {"error": "canvas_add_image requires 'project_id' and 'file_id' strings"}
+    # `image_ref` is the filename returned by generate_image (a workspace file).
+    image_ref = (args or {}).get("image_ref")
+    if not isinstance(project_id, str) or not project_id or not isinstance(image_ref, str) or not image_ref:
+        return {"error": "canvas_add_image requires 'project_id' and 'image_ref' strings"}
     try:
         x = float((args or {}).get("x", 80))
         y = float((args or {}).get("y", 80))
@@ -82,9 +93,31 @@ async def execute_canvas_add_image(args: dict, request: Request) -> dict:
     user_id = _user_id(request)
     if not user_id:
         return {"error": "no authenticated user"}
-    _, err = await _owned_project(request, project_id, user_id)
+    project, err = await _owned_project(request, project_id, user_id)
     if err:
         return err
+
+    # Copy the generated image (saved by generate_image under the workspace) into
+    # the project's canvas files, where the canvas renders it from
+    # /api/projects/{slug}/files/canvas/{file_id}. `.name` strips any path part.
+    src = _data_dir(request) / "workspace" / "images" / "generated" / Path(image_ref).name
+    if not src.is_file():
+        return {"error": f"image not found: {image_ref}"}
+    # The slug is the on-disk directory AND the key the canvas render route
+    # (/api/projects/{slug}/files/canvas/{file_id}) reads back, so it must stay
+    # the project's real slug. New projects slugify safely, but reject a legacy
+    # row or fallback id that carries separators rather than escape projects_root.
+    slug = project.get("slug") or project_id
+    if slug != _slugify(slug):
+        return {"error": f"unsafe project slug: {slug!r}"}
+    projects_root = Path(request.app.state.projects_root).resolve()
+    canvas_dir = (projects_root / slug / "files" / "canvas").resolve()
+    if not canvas_dir.is_relative_to(projects_root):
+        return {"error": "resolved canvas path escapes projects_root"}
+    canvas_dir.mkdir(parents=True, exist_ok=True)
+    file_id = f"{uuid4().hex}{src.suffix or '.png'}"
+    (canvas_dir / file_id).write_bytes(src.read_bytes())
+
     store = request.app.state.project_canvas_store
     el = await store.add_element(
         project_id=project_id,
@@ -99,4 +132,4 @@ async def execute_canvas_add_image(args: dict, request: Request) -> dict:
         author_kind="agent",
         author_id=user_id,
     )
-    return {"ok": True, "element_id": el["id"]}
+    return {"ok": True, "element_id": el["id"], "file_id": file_id}

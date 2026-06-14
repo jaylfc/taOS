@@ -348,15 +348,15 @@ class SkillStore(BaseStore):
                 "description": "Place a generated image on a project's canvas",
                 "tool_schema": {
                     "name": "canvas_add_image",
-                    "description": "Place a generated image (by file_id from generate_image) on a project's ideas board.",
+                    "description": "Place a generated image on a project's ideas board.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
                             "project_id": {"type": "string", "description": "Id from create_project."},
-                            "file_id": {"type": "string", "description": "Image file id from generate_image."},
+                            "image_ref": {"type": "string", "description": "The image_ref returned by generate_image."},
                             "alt": {"type": "string", "description": "Alt text."},
                         },
-                        "required": ["project_id", "file_id"],
+                        "required": ["project_id", "image_ref"],
                     },
                 },
                 "frameworks": {
@@ -366,6 +366,24 @@ class SkillStore(BaseStore):
                 },
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
+                "id": "describe_image_capabilities",
+                "name": "Describe Image Capabilities",
+                "category": "media",
+                "description": "See the cluster's image-generation tiers and tools (NPU/GPU/CPU)",
+                "tool_schema": {
+                    "name": "describe_image_capabilities",
+                    "description": "List the hardware tiers (this host + cluster workers) and which image-generation tools/models each has loaded, so you can pick the best one before generate_image.",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.cluster_tools",
             },
         ]
 
@@ -380,6 +398,24 @@ class SkillStore(BaseStore):
                     json.dumps(skill.get("requires_services", [])),
                     skill["install_method"], skill["install_target"],
                     time.time(),
+                ),
+            )
+            # INSERT OR IGNORE leaves an existing row untouched, so an install
+            # seeded by an earlier release keeps its stale tool_schema (e.g. the
+            # pre-image_ref canvas_add_image contract). Refresh the code-owned
+            # fields for builtin skills so existing installs converge on the
+            # current definition. Scoped to install_method='builtin' so a user's
+            # installed/customised skills are never overwritten.
+            await self._db.execute(
+                """UPDATE skills
+                   SET name = ?, category = ?, description = ?, tool_schema = ?,
+                       frameworks = ?, requires_services = ?, install_target = ?
+                   WHERE id = ? AND install_method = 'builtin'""",
+                (
+                    skill["name"], skill["category"], skill["description"],
+                    json.dumps(skill["tool_schema"]), json.dumps(skill["frameworks"]),
+                    json.dumps(skill.get("requires_services", [])),
+                    skill["install_target"], skill["id"],
                 ),
             )
         await self._db.commit()

@@ -10,7 +10,15 @@ IMAGE_GENERATION_TOOL = {
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "Text description of the image to generate",
+                "description": (
+                    "Text description of the image. Lead with the subject, then "
+                    "layer descriptors, setting, composition, and an explicit style "
+                    "(e.g. 'children's book watercolour', 'flat vector', "
+                    "'photorealistic'). Be specific, not long; front-load what "
+                    "matters; keep to one clear scene. Example: 'a friendly cartoon "
+                    "fox reading under a tree, autumn leaves, warm soft light, "
+                    "watercolour children's book illustration, centred'."
+                ),
             },
             "size": {
                 "type": "string",
@@ -172,10 +180,16 @@ async def execute_image_generation(
     fallback omits the model field so the local backend uses whatever
     checkpoint it has loaded rather than a pinned model name.
 
-    Returns dict with 'success', 'image_b64' (base64 PNG), and 'error'
-    if failed.
+    Returns dict with 'success', 'image_ref' (the saved filename, usable by
+    canvas_add_image), 'url' (web path to the PNG), and 'error' if failed.
+
+    Note: the connect-failure fallback (used only when the controller itself
+    is unreachable, e.g. an LXC agent that can't see localhost:6969) returns
+    'image_b64' instead of 'image_ref' -- it has no controller workspace to
+    save into. In-process tool calls always take the scheduler path above and
+    get an 'image_ref', so canvas_add_image works; a caller relying on the
+    fallback must handle the bytes itself.
     """
-    import base64
     import httpx
     import random
 
@@ -203,14 +217,18 @@ async def execute_image_generation(
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(target_url, json=payload)
             resp.raise_for_status()
-            # /api/images/generate returns raw PNG bytes
-            image_bytes = resp.content
+            # The scheduler route saves the PNG and returns JSON metadata.
+            data = resp.json()
+            filename = data.get("filename")
+            if not isinstance(filename, str) or not filename:
+                return {"success": False, "error": f"image backend returned no filename: {str(data)[:200]}"}
             return {
                 "success": True,
-                "image_b64": base64.b64encode(image_bytes).decode(),
-                "seed": seed,
-                "model": model or "",
-                "size": size,
+                "image_ref": filename,
+                "url": data.get("path", ""),
+                "seed": data.get("seed", seed),
+                "model": data.get("model", model or ""),
+                "size": data.get("size", size),
             }
     except httpx.ConnectError:
         controller_unreachable = True  # fall through to direct path below

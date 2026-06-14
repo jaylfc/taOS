@@ -18,3 +18,4 @@ Run `python3 scripts/build-agent-manual.py` to compile these into `docs/taos-age
 | `07-after-update.md` | Breakage-log-first troubleshooting for post-update reports |
 | `08-answer-templates.md` | Canned answer shapes for common questions |
 | `09-os-control.md` | Driving the desktop: open_app / arrange_windows tools |
+| `10-image-prompting.md` | Writing good prompts for the generate_image tool |

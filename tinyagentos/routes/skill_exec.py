@@ -225,6 +225,16 @@ async def _skill_canvas_add_image(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_describe_image_capabilities(args: dict, request: Request) -> dict:
+    """Describe the cluster's image-gen tiers + tools (agent OS control)."""
+    try:
+        from tinyagentos.tools.cluster_tools import execute_describe_image_capabilities
+
+        return await execute_describe_image_capabilities(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 SKILL_IMPLEMENTATIONS = {
     "memory_search": _skill_memory_search,
     "file_read": _skill_file_read,
@@ -239,6 +249,7 @@ SKILL_IMPLEMENTATIONS = {
     "create_project": _skill_create_project,
     "add_task": _skill_add_task,
     "canvas_add_image": _skill_canvas_add_image,
+    "describe_image_capabilities": _skill_describe_image_capabilities,
 }
 
 
