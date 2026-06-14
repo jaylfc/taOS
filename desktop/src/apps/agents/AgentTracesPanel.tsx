@@ -63,7 +63,7 @@ const KIND_COLOR: Record<string, string> = {
   llm_call: "text-blue-400",
   tool_call: "text-yellow-400",
   tool_result: "text-green-400",
-  reasoning: "text-purple-400",
+  reasoning: "text-cyan-400",
   message_in: "text-shell-text-secondary",
   message_out: "text-shell-text-secondary",
   error: "text-red-400",

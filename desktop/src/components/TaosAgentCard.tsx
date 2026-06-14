@@ -156,7 +156,7 @@ export function TaosAgentCard() {
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <span className="text-sm font-semibold">taOS agent</span>
         <span
-          className="bg-indigo-600/40 text-indigo-200 px-2 py-0.5 rounded text-[10px] leading-none"
+          className="bg-cyan-600/40 text-cyan-200 px-2 py-0.5 rounded text-[10px] leading-none"
           aria-label="Framework: opencode"
         >
           opencode

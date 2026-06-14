@@ -139,7 +139,7 @@ export function Dashboard() {
           label="KG Entities"
           value={fmt(stats.kg_entities)}
           sub={`${fmt(stats.kg_triples)} triples`}
-          accent="text-violet-400"
+          accent="text-cyan-400"
         />
         <StatCard
           icon={<Activity size={18} />}

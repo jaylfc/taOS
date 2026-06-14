@@ -95,7 +95,7 @@ function WorkerListCard({
         {capabilities.slice(0, 4).map((c) => (
           <span
             key={`${worker.name}-lc-${c}`}
-            className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-200 font-medium"
+            className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
             aria-label={`Current capability: ${c}`}
           >
             {c}
@@ -346,7 +346,7 @@ function WorkerDetail({
                       {b.capabilities.map((c) => (
                         <span
                           key={`b-${i}-cap-${c}`}
-                          className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-200 font-medium"
+                          className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
                         >
                           {c}
                         </span>
@@ -394,7 +394,7 @@ function WorkerDetail({
         {/* Capabilities */}
         <Section
           title={`Capabilities (${capabilities.length} active${latentCaps.length > 0 ? ` · ${latentCaps.length} potential` : ""})`}
-          icon={<Zap size={14} className="text-violet-400" />}
+          icon={<Zap size={14} className="text-cyan-400" />}
         >
           {capabilities.length === 0 && latentCaps.length === 0 ? (
             <p className="text-[11px] text-shell-text-tertiary italic">No capabilities reported</p>
@@ -409,7 +409,7 @@ function WorkerDetail({
                     {capabilities.map((c) => (
                       <span
                         key={`detail-cap-${c}`}
-                        className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-200 font-medium"
+                        className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-medium"
                         aria-label={`Current capability: ${c}`}
                       >
                         {c}

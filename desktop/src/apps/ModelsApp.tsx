@@ -83,7 +83,7 @@ const COMPAT_STYLES: Record<string, { dot: string; label: string }> = {
 
 const CAPABILITY_COLORS: Record<string, string> = {
   chat: "bg-sky-500/20 text-sky-400",
-  code: "bg-violet-500/20 text-violet-400",
+  code: "bg-cyan-500/20 text-cyan-400",
   reasoning: "bg-amber-500/20 text-amber-400",
   multilingual: "bg-emerald-500/20 text-emerald-400",
 };
@@ -424,7 +424,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                 aria-pressed={subFilter === opt}
                 className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
                   subFilter === opt
-                    ? "bg-violet-500/25 border-violet-500/40 text-violet-200"
+                    ? "bg-cyan-500/25 border-cyan-500/40 text-cyan-200"
                     : "bg-white/5 border-white/10 text-shell-text-secondary hover:bg-white/10"
                 }`}
               >
@@ -531,7 +531,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
             {filteredCloud.length > 0 && (
               <section aria-label="Cloud models">
                 <div className="flex items-center gap-2 mb-3">
-                  <Cloud size={15} className="text-violet-400" />
+                  <Cloud size={15} className="text-cyan-400" />
                   <h2 className="text-sm font-semibold">Cloud Models</h2>
                   <span className="text-xs text-shell-text-tertiary">({filteredCloud.length})</span>
                 </div>
@@ -541,7 +541,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                       <CardContent className="p-3.5 flex flex-col gap-2">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <p className="text-sm font-medium truncate" title={model.filename}>{model.filename}</p>
-                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-200 font-semibold whitespace-nowrap shrink-0">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-200 font-semibold whitespace-nowrap shrink-0">
                             {model.host}
                           </span>
                         </div>
