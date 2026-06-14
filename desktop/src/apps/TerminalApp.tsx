@@ -1,8 +1,34 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useThemeStore } from "@/stores/theme-store";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+
+// Read a CSS custom property off :root at call time, with a fallback. Lets the
+// terminal track the active theme (xterm wants literal colours, not CSS vars).
+function _cssVar(name: string, fallback: string): string {
+  if (typeof getComputedStyle === "undefined" || typeof document === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+// Build the xterm theme from the active theme's tokens. Chrome colours
+// (background/foreground/cursor/selection) follow the theme; the ANSI 16 stay
+// fixed so terminal programs render consistent colours across themes.
+function buildXtermTheme() {
+  return {
+    background: _cssVar("--color-shell-bg", "#1d1d1f"),
+    foreground: _cssVar("--color-shell-text", "rgba(255, 255, 255, 0.85)"),
+    cursor: _cssVar("--color-accent", "#8b92a3"),
+    cursorAccent: _cssVar("--color-shell-bg", "#1c1c1f"),
+    selectionBackground: _cssVar("--color-accent-glow", "rgba(139, 146, 163, 0.3)"),
+    black: "#141415", red: "#ff5f57", green: "#28c840", yellow: "#febc2e",
+    blue: "#8b92a3", magenta: "#f093fb", cyan: "#4facfe", white: "rgba(255,255,255,0.85)",
+    brightBlack: "#555", brightRed: "#ff6b6b", brightGreen: "#51cf66", brightYellow: "#ffd43b",
+    brightBlue: "#748ffc", brightMagenta: "#e599f7", brightCyan: "#66d9e8", brightWhite: "#ffffff",
+  };
+}
 import {
   Button,
   Card,
@@ -70,6 +96,14 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+
+  // Re-apply the xterm theme when the user switches themes, so the terminal
+  // tracks the active theme at runtime instead of the colours baked at init.
+  const activeThemeId = useThemeStore((s) => s.activeThemeId);
+  const themeScheme = useThemeStore((s) => s.scheme);
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = buildXtermTheme();
+  }, [activeThemeId, themeScheme]);
 
   const [session, setSession] = useState<Session | null>(null);
   const [view, setView] = useState<"picker" | "ssh-form" | "terminal">(
@@ -157,29 +191,7 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
     // If the container is available and ResizeObserver is supported, set up xterm too
     if (containerRef.current && typeof ResizeObserver !== "undefined") {
       const term = new Terminal({
-        theme: {
-          background: "#151625",
-          foreground: "rgba(255, 255, 255, 0.85)",
-          cursor: "#8b92a3",
-          cursorAccent: "#1c1c1f",
-          selectionBackground: "rgba(139, 146, 163, 0.3)",
-          black: "#141415",
-          red: "#ff5f57",
-          green: "#28c840",
-          yellow: "#febc2e",
-          blue: "#8b92a3",
-          magenta: "#f093fb",
-          cyan: "#4facfe",
-          white: "rgba(255,255,255,0.85)",
-          brightBlack: "#555",
-          brightRed: "#ff6b6b",
-          brightGreen: "#51cf66",
-          brightYellow: "#ffd43b",
-          brightBlue: "#748ffc",
-          brightMagenta: "#e599f7",
-          brightCyan: "#66d9e8",
-          brightWhite: "#ffffff",
-        },
+        theme: buildXtermTheme(),
         fontFamily:
           "'JetBrains Mono', 'Fira Code', 'MesloLGS NF', 'Hack Nerd Font', 'Cascadia Code', 'SF Mono', monospace",
         fontSize: 14,
@@ -235,29 +247,7 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
     if (!containerRef.current || termRef.current) return;
 
     const term = new Terminal({
-      theme: {
-        background: "#151625",
-        foreground: "rgba(255, 255, 255, 0.85)",
-        cursor: "#8b92a3",
-        cursorAccent: "#1c1c1f",
-        selectionBackground: "rgba(139, 146, 163, 0.3)",
-        black: "#141415",
-        red: "#ff5f57",
-        green: "#28c840",
-        yellow: "#febc2e",
-        blue: "#8b92a3",
-        magenta: "#f093fb",
-        cyan: "#4facfe",
-        white: "rgba(255,255,255,0.85)",
-        brightBlack: "#555",
-        brightRed: "#ff6b6b",
-        brightGreen: "#51cf66",
-        brightYellow: "#ffd43b",
-        brightBlue: "#748ffc",
-        brightMagenta: "#e599f7",
-        brightCyan: "#66d9e8",
-        brightWhite: "#ffffff",
-      },
+      theme: buildXtermTheme(),
       fontFamily:
         "'JetBrains Mono', 'Fira Code', 'MesloLGS NF', 'Hack Nerd Font', 'Cascadia Code', 'SF Mono', monospace",
       fontSize: 14,
@@ -360,7 +350,7 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
     return (
       <div
         className="h-full w-full overflow-auto p-6"
-        style={{ backgroundColor: "#151625", color: "rgba(255,255,255,0.85)" }}
+        style={{ backgroundColor: "var(--color-shell-bg)", color: "rgba(255,255,255,0.85)" }}
       >
         <div className="mx-auto max-w-xl">
           <h2 className="mb-1 text-xl font-semibold">Terminal</h2>
@@ -454,7 +444,7 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
     return (
       <div
         className="h-full w-full overflow-auto p-6"
-        style={{ backgroundColor: "#151625", color: "rgba(255,255,255,0.85)" }}
+        style={{ backgroundColor: "var(--color-shell-bg)", color: "rgba(255,255,255,0.85)" }}
       >
         <form onSubmit={submitSsh} className="mx-auto max-w-md space-y-3">
           <h2 className="mb-4 text-xl font-semibold">SSH Connection</h2>
@@ -541,7 +531,7 @@ export function TerminalApp({ windowId: _windowId, shortcut }: { windowId?: stri
   return (
     <div
       className="flex h-full w-full flex-col"
-      style={{ backgroundColor: "#151625" }}
+      style={{ backgroundColor: "var(--color-shell-bg)" }}
     >
       <Toolbar className="text-xs" style={{ color: "rgba(255,255,255,0.7)" }}>
         <ToolbarGroup>

@@ -91,7 +91,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: env(safe-area-inset-top, 16px) env(safe-area-inset-right, 16px) env(safe-area-inset-bottom, 16px) env(safe-area-inset-left, 16px);
-  background: linear-gradient(160deg, #1a1b2e 0%, #1e2140 40%, #252848 100%);
+  background: linear-gradient(160deg, #141415 0%, #1a1a1d 45%, #202024 100%);
   color: rgba(255, 255, 255, 0.85);
   font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -101,7 +101,7 @@ body {
   padding: 28px 24px;
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 18px;
-  background: rgba(28, 26, 44, 0.72);
+  background: rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
@@ -138,7 +138,7 @@ input[type="text"], input[type="password"], input[type="email"] {
   padding: 10px 14px;
   border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.10);
-  background: #151625;
+  background: #171717;
   color: rgba(255,255,255,0.85);
   font: inherit;
   outline: none;
