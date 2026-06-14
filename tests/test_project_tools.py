@@ -138,7 +138,7 @@ async def test_add_task_denied_on_other_users_project():
 @pytest.mark.asyncio
 async def test_canvas_add_image_denied_on_other_users_project():
     req = _req(user_id="attacker", owner="victim")
-    res = await execute_canvas_add_image({"project_id": "proj_1", "file_id": "f"}, req)
+    res = await execute_canvas_add_image({"project_id": "proj_1", "image_ref": "f"}, req)
     assert res.get("error") == "not your project"
     assert req.app.state.project_canvas_store.calls == []
 
@@ -160,4 +160,4 @@ async def test_add_task_missing_project():
 async def test_tools_refuse_without_user():
     assert "error" in await execute_create_project({"name": "x"}, _req(user_id=None))
     assert "error" in await execute_add_task({"project_id": "p", "title": "t"}, _req(user_id=None))
-    assert "error" in await execute_canvas_add_image({"project_id": "p", "file_id": "f"}, _req(user_id=None))
+    assert "error" in await execute_canvas_add_image({"project_id": "p", "image_ref": "f"}, _req(user_id=None))

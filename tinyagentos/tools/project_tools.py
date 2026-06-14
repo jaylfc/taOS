@@ -81,9 +81,8 @@ async def execute_add_task(args: dict, request: Request) -> dict:
 
 async def execute_canvas_add_image(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
-    # `image_ref` is the filename returned by generate_image; accept the legacy
-    # `file_id` key too for callers that already have a canvas file id.
-    image_ref = (args or {}).get("image_ref") or (args or {}).get("file_id")
+    # `image_ref` is the filename returned by generate_image (a workspace file).
+    image_ref = (args or {}).get("image_ref")
     if not isinstance(project_id, str) or not project_id or not isinstance(image_ref, str) or not image_ref:
         return {"error": "canvas_add_image requires 'project_id' and 'image_ref' strings"}
     try:

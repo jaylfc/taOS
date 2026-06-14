@@ -79,3 +79,25 @@ async def test_empty_state_is_safe():
     res = await execute_describe_image_capabilities({}, _req())
     assert res["tiers"][0]["node"] == "local"
     assert res["tiers"][0]["image_backends"] == []
+
+
+@pytest.mark.asyncio
+async def test_object_hardware_profile_is_json_safe():
+    """A real hardware_profile is an object with nested objects; the summary must
+    stay JSON-serialisable (else the tool 500s when returned as JSON)."""
+    import json
+
+    class _Gpu:
+        def __repr__(self):
+            return "RTX 3060 12GB"
+
+    class _HW:
+        gpu = _Gpu()
+        npu = None
+        cpu = "x86"
+        vram = 12
+
+    res = await execute_describe_image_capabilities({}, _req(hardware=_HW()))
+    hw = res["tiers"][0]["hardware"]
+    assert hw["gpu"] == "RTX 3060 12GB" and hw["cpu"] == "x86" and hw["vram"] == 12
+    json.dumps(res)  # must not raise

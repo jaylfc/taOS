@@ -204,9 +204,12 @@ async def execute_image_generation(
             resp.raise_for_status()
             # The scheduler route saves the PNG and returns JSON metadata.
             data = resp.json()
+            filename = data.get("filename")
+            if not filename:
+                return {"success": False, "error": f"image backend returned no filename: {str(data)[:200]}"}
             return {
                 "success": True,
-                "image_ref": data.get("filename", ""),
+                "image_ref": filename,
                 "url": data.get("path", ""),
                 "seed": data.get("seed", seed),
                 "model": data.get("model", model or ""),

@@ -24,17 +24,26 @@ _TIER = {
 }
 
 
+def _json_safe(v):
+    """Coerce a value to something JSON-serialisable (the tool result is
+    returned as JSON, so nested dataclasses/objects would 500)."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, dict):
+        return {str(k): _json_safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    return str(v)
+
+
 def _hw_summary(hw) -> dict:
-    """Best-effort dict summary of a hardware profile (object or dict)."""
+    """Best-effort, JSON-safe summary of a hardware profile (object or dict)."""
     if hw is None:
         return {}
+    keys = ("cpu", "gpu", "npu", "vram", "ram", "tier", "platform")
     if isinstance(hw, dict):
-        return {k: hw.get(k) for k in ("cpu", "gpu", "npu", "vram", "ram", "tier", "platform") if k in hw}
-    return {
-        k: getattr(hw, k)
-        for k in ("cpu", "gpu", "npu", "vram", "ram", "tier", "platform")
-        if getattr(hw, k, None) is not None
-    }
+        return {k: _json_safe(hw.get(k)) for k in keys if hw.get(k) is not None}
+    return {k: _json_safe(getattr(hw, k)) for k in keys if getattr(hw, k, None) is not None}
 
 
 def _image_backends_from_catalog(catalog) -> list[dict]:
@@ -60,10 +69,13 @@ def _image_backends_from_worker(worker) -> list[dict]:
     for b in (getattr(worker, "backends", None) or []):
         caps = b.get("capabilities") or []
         if "image-generation" in caps or b.get("type") in ("sd-cpp", "rkllama", "comfyui"):
+            ls = b.get("lifecycle_state")
             out.append({
                 "name": b.get("name"),
                 "type": b.get("type"),
                 "tier": _TIER.get(b.get("type"), "unknown"),
+                # mirror the 'loaded' field local backends report; None = unknown
+                "loaded": b.get("loaded") if "loaded" in b else (ls == "running" if ls else None),
                 "models": [m.get("id") or m.get("name") if isinstance(m, dict) else m for m in (b.get("models") or [])][:10],
             })
     return out
