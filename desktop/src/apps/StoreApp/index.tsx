@@ -536,7 +536,6 @@ function RichCard({
 }) {
   const [busy, setBusy] = useState(false);
   const [iconFailed, setIconFailed] = useState(false);
-  const [selectedTarget] = useState<string>(installTargets[0]?.name ?? "local");
   const [error, setError] = useState<string | null>(null);
 
   const iconUrl = resolveIconUrl(app);
@@ -545,7 +544,10 @@ function RichCard({
     if (app.installed) return;
     setBusy(true); setError(null);
     try {
-      const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ app_id: app.id, target_remote: selectedTarget }) });
+      // Read the current install target at click time so it tracks the device
+      // selection, rather than a value captured at mount.
+      const target = installTargets[0]?.name ?? "local";
+      const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ app_id: app.id, target_remote: target }) });
       if (!res.ok) { let msg = `Install failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
       onInstall(app.id);
     } catch (e) { setError(e instanceof Error ? e.message : "Network error"); }
@@ -1002,7 +1004,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   // --- Filtering for non-discover views ---
   const NAV_TYPE_MAP: Record<NavId, string[]> = {
     discover: [],
-    apps: ["streaming-app", "ai-app", "productivity", "home", "monitoring", "automation"],
+    apps: ["streaming-app", "ai-app", "productivity", "home", "monitoring", "automation", "image-gen", "voice", "video-gen", "plugin"],
     agents: ["agent-framework"],
     models: ["model", "llm-runtime"],
     services: ["service", "infrastructure"],
@@ -1022,7 +1024,10 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const navFiltered = useMemo(() => {
     if (activeNav === "discover" || activeNav === "community") return searchFiltered;
     if (activeNav === "installed") return searchFiltered.filter((a) => a.installed);
-    if (activeNav === "updates") return searchFiltered.filter((a) => a.installed);
+    // Updates lists only installed apps that actually have a newer version
+    // available, not every installed app. No update-check feed exists yet, so
+    // this is empty until one lands (see the "up to date" empty state below).
+    if (activeNav === "updates") return searchFiltered.filter((a) => a.installed && a.update_available === true);
     const types = NAV_TYPE_MAP[activeNav] ?? [];
     if (types.length === 0) return searchFiltered;
     return searchFiltered.filter((a) => types.includes(a.type) || types.includes(a.category ?? ""));
@@ -1069,7 +1074,10 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const profileLabel = primaryTarget?.friendly_name ?? primaryTarget?.label ?? "This device";
   const profileSub = primaryTarget?.tier_id ? primaryTarget.tier_id.replace(/-/g, " ") : "Connect a device";
 
-  const showGrid = activeNav !== "discover" && activeNav !== "community";
+  // When the user is searching, show the results grid even on the curated
+  // Discover/Community views (which otherwise ignore the search box).
+  const searching = search.trim().length > 0;
+  const showGrid = searching || (activeNav !== "discover" && activeNav !== "community");
 
   return (
     <div className="flex h-full overflow-hidden bg-shell-bg">
@@ -1150,19 +1158,29 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             <div className="flex items-center justify-center h-40">
               <Loader2 className="w-6 h-6 text-shell-text-tertiary animate-spin" />
             </div>
-          ) : activeNav === "community" ? (
+          ) : activeNav === "community" && !searching ? (
             <CommunityView />
-          ) : activeNav === "discover" ? (
+          ) : activeNav === "discover" && !searching ? (
             <DiscoverView apps={apps} onInstall={handleInstall} installTargets={installTargets} />
           ) : showGrid ? (
             <>
               <div className="mb-4 flex items-baseline justify-between">
                 <div>
-                  <h2 className="text-[17px] font-bold text-shell-text">{NAV.find((n) => n.id === activeNav)?.label}</h2>
+                  <h2 className="text-[17px] font-bold text-shell-text">{searching ? `Results for "${search.trim()}"` : NAV.find((n) => n.id === activeNav)?.label}</h2>
                   <p className="text-[12px] text-shell-text-tertiary mt-0.5">{filtered.length} apps</p>
                 </div>
               </div>
-              {activeNav === "installed" && filtered.length === 0 ? (
+              {searching && filtered.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
+                  <Package className="w-8 h-8" />
+                  <span>No matches for &ldquo;{search.trim()}&rdquo;</span>
+                </div>
+              ) : activeNav === "updates" && filtered.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
+                  <Package className="w-8 h-8" />
+                  <span>You&rsquo;re all up to date</span>
+                </div>
+              ) : activeNav === "installed" && filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
                   <Package className="w-8 h-8" />
                   <span>Nothing installed yet</span>

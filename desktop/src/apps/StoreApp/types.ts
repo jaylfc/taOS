@@ -25,6 +25,8 @@ export interface CatalogApp {
   tagline?: string;
   /** Cover art URL or gradient CSS value for rich cards. */
   cover?: string;
+  /** True when an installed app has a newer version available (drives Updates). */
+  update_available?: boolean;
 }
 
 export interface InstallTarget {
