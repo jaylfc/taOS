@@ -1518,8 +1518,10 @@ export function MessagesApp({
               }}
             >
               {visibleInSection(section.items, section.label).map((ch, idx, arr) => {
-                const agentMember = (ch.members ?? []).find((m) => m !== "user");
                 const isA2A = ch.settings?.kind === "a2a";
+                // Only direct messages get an agent avatar; topics/groups/a2a get
+                // a glyph tile (a topic/group can include agent members too).
+                const agentMember = ch.type === "dm" ? (ch.members ?? []).find((m) => m !== "user") : undefined;
                 const count = unread[ch.id] ?? 0;
                 return (
                 <button
@@ -1546,7 +1548,7 @@ export function MessagesApp({
                     <MessageAvatar size={38} authorId={agentMember} displayName={agentMember} kind="agent" />
                   ) : (
                     <div style={{ width: 38, height: 38, borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--color-shell-surface-active)", color: "var(--color-shell-text-secondary)", flexShrink: 0 }}>
-                      {isA2A ? <Bot size={18} aria-hidden /> : <Hash size={18} aria-hidden />}
+                      {isA2A ? <Bot size={18} aria-hidden /> : ch.type === "group" ? <Users size={18} aria-hidden /> : <Hash size={18} aria-hidden />}
                     </div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -1556,10 +1558,15 @@ export function MessagesApp({
                       </span>
                       {ch.last_message_at && (
                         <span style={{ fontSize: 11, color: "var(--color-shell-text-tertiary)", flexShrink: 0 }}>
-                          {relativeTime(ch.last_message_at)}
+                          {relativeTime(ch.last_message_at, nowMs)}
                         </span>
                       )}
                     </div>
+                    {ch.lastPreview && (
+                      <div style={{ fontSize: 13, color: "var(--color-shell-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
+                        {ch.lastPreview}
+                      </div>
+                    )}
                   </div>
                   {count > 0 && (
                     <span style={{ background: "#3b82f6", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 9999, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px", flexShrink: 0 }}>
