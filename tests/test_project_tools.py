@@ -11,12 +11,18 @@ from tinyagentos.tools.project_tools import (
 
 
 class _FakeProjectStore:
-    def __init__(self):
+    def __init__(self, owner="user-1"):
         self.calls = []
+        self._owner = owner
 
     async def create_project(self, **kw):
         self.calls.append(kw)
         return {"id": "proj_1", "name": kw["name"]}
+
+    async def get_project(self, project_id):
+        if project_id == "missing":
+            return None
+        return {"id": project_id, "user_id": self._owner}
 
 
 class _FakeTaskStore:
@@ -37,14 +43,16 @@ class _FakeCanvasStore:
         return {"id": "el_1"}
 
 
-def _req(user_id="user-1"):
+def _req(user_id="user-1", owner="user-1", is_admin=False):
     state = types.SimpleNamespace(
-        project_store=_FakeProjectStore(),
+        project_store=_FakeProjectStore(owner=owner),
         project_task_store=_FakeTaskStore(),
         project_canvas_store=_FakeCanvasStore(),
     )
     app = types.SimpleNamespace(state=state)
-    return types.SimpleNamespace(app=app, state=types.SimpleNamespace(user_id=user_id))
+    return types.SimpleNamespace(
+        app=app, state=types.SimpleNamespace(user_id=user_id, is_admin=is_admin)
+    )
 
 
 def test_slugify():
@@ -93,6 +101,36 @@ async def test_canvas_add_image():
     assert call["author_kind"] == "agent" and call["author_id"] == "user-1"
     el = call["element"]
     assert el["kind"] == "image" and el["payload"]["file_id"] == "img_cover"
+
+
+@pytest.mark.asyncio
+async def test_add_task_denied_on_other_users_project():
+    """Writing to a project the caller does not own is refused."""
+    req = _req(user_id="attacker", owner="victim")
+    res = await execute_add_task({"project_id": "proj_1", "title": "x"}, req)
+    assert res.get("error") == "not your project"
+    assert req.app.state.project_task_store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_canvas_add_image_denied_on_other_users_project():
+    req = _req(user_id="attacker", owner="victim")
+    res = await execute_canvas_add_image({"project_id": "proj_1", "file_id": "f"}, req)
+    assert res.get("error") == "not your project"
+    assert req.app.state.project_canvas_store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_admin_may_write_any_project():
+    req = _req(user_id="admin", owner="someone", is_admin=True)
+    res = await execute_add_task({"project_id": "proj_1", "title": "ok"}, req)
+    assert res["ok"]
+
+
+@pytest.mark.asyncio
+async def test_add_task_missing_project():
+    res = await execute_add_task({"project_id": "missing", "title": "x"}, _req())
+    assert res.get("error") == "project not found"
 
 
 @pytest.mark.asyncio

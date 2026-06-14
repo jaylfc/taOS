@@ -18,6 +18,18 @@ def _user_id(request: Request) -> str | None:
     return getattr(request.state, "user_id", None) or None
 
 
+async def _owned_project(request: Request, project_id: str, user_id: str):
+    """Return (project, None) if the caller owns project_id (or is admin), else
+    (None, error_dict). Prevents writing tasks/images into another user's project."""
+    project = await request.app.state.project_store.get_project(project_id)
+    if not project:
+        return None, {"error": "project not found"}
+    is_admin = bool(getattr(request.state, "is_admin", False))
+    if not is_admin and project.get("user_id") != user_id:
+        return None, {"error": "not your project"}
+    return project, None
+
+
 def _slugify(name: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
     return s or "project"
@@ -49,6 +61,9 @@ async def execute_add_task(args: dict, request: Request) -> dict:
     user_id = _user_id(request)
     if not user_id:
         return {"error": "no authenticated user"}
+    _, err = await _owned_project(request, project_id, user_id)
+    if err:
+        return err
     store = request.app.state.project_task_store
     task = await store.create_task(project_id=project_id, title=title, created_by=user_id)
     return {"ok": True, "task_id": task["id"], "title": task["title"]}
@@ -62,6 +77,9 @@ async def execute_canvas_add_image(args: dict, request: Request) -> dict:
     user_id = _user_id(request)
     if not user_id:
         return {"error": "no authenticated user"}
+    _, err = await _owned_project(request, project_id, user_id)
+    if err:
+        return err
     store = request.app.state.project_canvas_store
     el = await store.add_element(
         project_id=project_id,
