@@ -327,6 +327,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
     project_store = ProjectStore(data_dir / "projects.db")
     project_event_broker = ProjectEventBroker()
+    from tinyagentos.desktop_control import DesktopCommandBroker
+    desktop_command_broker = DesktopCommandBroker()
     project_task_store = ProjectTaskStore(data_dir / "projects.db", broker=project_event_broker)
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
     projects_root = data_dir / "projects"
@@ -634,6 +636,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.project_store = project_store
         app.state.project_task_store = project_task_store
         app.state.project_event_broker = project_event_broker
+        app.state.desktop_command_broker = desktop_command_broker
         app.state.project_canvas_store = project_canvas_store
         app.state.projects_root = projects_root
         app.state.chat_hub = chat_hub
@@ -1221,6 +1224,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_store = project_store
     app.state.project_task_store = project_task_store
     app.state.project_event_broker = project_event_broker
+    app.state.desktop_command_broker = desktop_command_broker
     app.state.project_canvas_store = project_canvas_store
     app.state.beads_bridge = None
     app.state.canvas_snapshotter = None

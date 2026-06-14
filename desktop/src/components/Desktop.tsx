@@ -6,6 +6,7 @@ import { useWidgetStore } from "@/stores/widget-store";
 import { useSnapZones } from "@/hooks/use-snap-zones";
 import { useDeepNavigation } from "@/hooks/use-deep-navigation";
 import { useDesktopControl } from "@/hooks/use-desktop-control";
+import { useDesktopCommandStream } from "@/hooks/use-desktop-command-stream";
 import { getApp } from "@/registry/app-registry";
 import { Window } from "./Window";
 import { SnapOverlay } from "./SnapOverlay";
@@ -72,6 +73,10 @@ export function Desktop() {
   // runtime (lets the taOS agent drive the desktop). See the hook for details.
   useDeepNavigation(openWindow);
   useDesktopControl();
+  // Backend -> browser command channel: lets the taOS agent drive this desktop
+  // (open apps, move/arrange windows) by pushing commands the controller streams
+  // here. Re-dispatches to the taos:open-app / taos:window receivers above.
+  useDesktopCommandStream();
 
   const menuItems: MenuItem[] = [
     {

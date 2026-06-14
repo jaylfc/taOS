@@ -60,8 +60,48 @@ await page.evaluate(() => {
 const layout = await page.evaluate(() => window.taosDesktop.getLayout());
 ```
 
+## Controller → browser transport (backend command channel)
+
+`window.taosDesktop` and the `taos:window` / `taos:open-app` events run in the
+browser. To let the **controller** (and through it, the taOS agent) drive a
+specific user's desktop, the backend streams commands to the browser over SSE.
+
+- **Backend broker:** `tinyagentos/desktop_control/broker.py` —
+  `DesktopCommandBroker`, one channel per `user_id`, **no replay** (a command is a
+  one-shot side effect; replaying buffered commands to a reconnecting desktop
+  would re-open closed apps).
+- **Routes:** `tinyagentos/routes/desktop_control.py`
+  - `GET /api/desktop/stream` — SSE; the desktop subscribes (scoped to the
+    caller's `user_id`), receives each command as `data: {kind, payload, ts}`.
+  - `POST /api/desktop/command` — body `{kind, payload}`; emits to the caller's
+    own desktop(s). Returns `{delivered: N}` (0 = no desktop connected). Privileged:
+    only the agent runtime / authed server-side callers push here, never arbitrary
+    clients; a user only ever drives their own desktop.
+- **Browser receiver:** `desktop/src/hooks/use-desktop-command-stream.ts`
+  (mounted in `Desktop.tsx`) subscribes to the stream and re-dispatches each
+  command to the existing receivers:
+  - `{ kind: "open-app", payload: { app, props } }` → `taos:open-app`
+  - `{ kind: "window",   payload: WindowOp }`       → `taos:window`
+
+So a command pushed server-side lands on the same `useDeepNavigation` /
+`useDesktopControl` handlers a local caller would hit — no new app logic.
+
+```bash
+# Open the Projects app on the calling user's desktop. The command is scoped to
+# the authenticated session (AuthMiddleware -> request.state.user_id), so pass
+# the caller's session cookie; without auth it resolves to the inert "system"
+# channel that no real desktop subscribes to.
+curl -X POST http://<host>:6969/api/desktop/command \
+  -H 'Content-Type: application/json' \
+  -b 'taos_session=<session-cookie>' \
+  -d '{"kind":"open-app","payload":{"app":"projects"}}'
+```
+
 ## Follow-up
 
-The controller-side agent tool (`desktop_get_layout` / `desktop_arrange`) that
-lets the taOS agent call this over the agent bridge, and the matching agent
-manual entry, are a separate change (see [[agent-desktop-control]] in memory).
+Built (this PR): the controller→browser transport above. **Next:** the agent MCP
+tools (`open_app`, `arrange_windows`, plus the data tools that wrap existing
+project/canvas/image routes) that call `POST /api/desktop/command`, and the
+matching agent-manual entry — they land together so the manual only advertises
+capabilities the agent can actually invoke. `getLayout` over the channel (a
+browser→backend read round-trip) is deferred until screen-aware arrange needs it.
