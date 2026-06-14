@@ -238,6 +238,59 @@ class SkillStore(BaseStore):
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.http_request",
             },
+            {
+                "id": "open_app",
+                "name": "Open App",
+                "category": "desktop",
+                "description": "Open an app on the user's desktop so they can see it",
+                "tool_schema": {
+                    "name": "open_app",
+                    "description": "Open (or focus) an app on the user's desktop (e.g. projects, images, chat).",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "app": {"type": "string", "description": "App id, e.g. 'projects', 'images', 'chat'."},
+                            "props": {"type": "object", "description": "Optional deep-link props."},
+                        },
+                        "required": ["app"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.desktop_tools",
+            },
+            {
+                "id": "arrange_windows",
+                "name": "Arrange Windows",
+                "category": "desktop",
+                "description": "Arrange the user's desktop windows into a tidy layout",
+                "tool_schema": {
+                    "name": "arrange_windows",
+                    "description": "Arrange open windows. Presets: tile-2, tile-3, center, cascade.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "preset": {
+                                "type": "string",
+                                "enum": ["tile-2", "tile-3", "center", "cascade"],
+                                "description": "Layout preset.",
+                            },
+                        },
+                        "required": ["preset"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.desktop_tools",
+            },
         ]
 
         for skill in defaults:

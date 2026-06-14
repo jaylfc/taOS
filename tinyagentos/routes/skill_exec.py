@@ -175,6 +175,26 @@ async def _skill_list_image_models(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_open_app(args: dict, request: Request) -> dict:
+    """Open an app on the user's desktop (agent OS control)."""
+    try:
+        from tinyagentos.tools.desktop_tools import execute_open_app
+
+        return await execute_open_app(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_arrange_windows(args: dict, request: Request) -> dict:
+    """Arrange the user's desktop windows (agent OS control)."""
+    try:
+        from tinyagentos.tools.desktop_tools import execute_arrange_windows
+
+        return await execute_arrange_windows(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 SKILL_IMPLEMENTATIONS = {
     "memory_search": _skill_memory_search,
     "file_read": _skill_file_read,
@@ -184,6 +204,8 @@ SKILL_IMPLEMENTATIONS = {
     "http_request": _skill_http_request,
     "image_generation": _skill_image_generation,
     "list_image_models": _skill_list_image_models,
+    "open_app": _skill_open_app,
+    "arrange_windows": _skill_arrange_windows,
 }
 
 
