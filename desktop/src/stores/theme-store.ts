@@ -131,6 +131,25 @@ function loadSloganPref(): boolean {
   }
 }
 
+// User-tunable parameters for animated (live) wallpapers, persisted locally.
+// density: particle-count target; speed: drift speed; glow: node bloom radius.
+export interface WallpaperParams {
+  density: number;
+  speed: number;
+  glow: number;
+}
+export const DEFAULT_WALLPAPER_PARAMS: WallpaperParams = { density: 200, speed: 0.5, glow: 6 };
+const PARAMS_KEY = "taos-wallpaper-params";
+function loadWallpaperParams(): WallpaperParams {
+  try {
+    const raw = localStorage.getItem(PARAMS_KEY);
+    if (raw) return { ...DEFAULT_WALLPAPER_PARAMS, ...JSON.parse(raw) };
+  } catch {
+    // best-effort
+  }
+  return { ...DEFAULT_WALLPAPER_PARAMS };
+}
+
 interface ThemeStore {
   wallpaperId: string;
   wallpaperImage: string;
@@ -146,6 +165,7 @@ interface ThemeStore {
   wallpaperComponent: string | null;
   wallpaperOverlayText: string | null;
   showOverlayText: boolean;
+  wallpaperParams: WallpaperParams;
   showDesktopIcons: boolean;
   structure: Record<string, { variant?: string } & Record<string, unknown>>;
   effects: { module: string; params?: Record<string, unknown> }[];
@@ -156,6 +176,7 @@ interface ThemeStore {
 
   setWallpaper: (id: string) => void;
   toggleOverlayText: () => void;
+  setWallpaperParam: (key: keyof WallpaperParams, value: number) => void;
   toggleDesktopIcons: () => void;
   getWallpapers: () => Wallpaper[];
 }
@@ -173,6 +194,7 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   wallpaperComponent: DEFAULT_WP.component ?? null,
   wallpaperOverlayText: DEFAULT_WP.overlayText ?? null,
   showOverlayText: loadSloganPref(),
+  wallpaperParams: loadWallpaperParams(),
   showDesktopIcons: true,
   structure: {},
   effects: [],
@@ -208,6 +230,18 @@ export const useThemeStore = create<ThemeStore>((set) => ({
         // best-effort
       }
       return { showOverlayText: next };
+    });
+  },
+
+  setWallpaperParam(key, value) {
+    set((s) => {
+      const wallpaperParams = { ...s.wallpaperParams, [key]: value };
+      try {
+        localStorage.setItem(PARAMS_KEY, JSON.stringify(wallpaperParams));
+      } catch {
+        // best-effort
+      }
+      return { wallpaperParams };
     });
   },
 

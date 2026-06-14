@@ -22,6 +22,7 @@ let enginePromise: Promise<void> | null = null;
 export function ParticlesWallpaper() {
   const [ready, setReady] = useState(false);
   const scheme = useThemeStore((s) => s.scheme);
+  const params = useThemeStore((s) => s.wallpaperParams);
 
   useEffect(() => {
     if (!enginePromise) {
@@ -51,16 +52,16 @@ export function ParticlesWallpaper() {
       pauseOnBlur: false,
       pauseOnOutsideViewport: true, // pause when the desktop is hidden (Pi perf)
       particles: {
-        number: { value: 200, density: { enable: true, area: 900 } },
+        number: { value: params.density, density: { enable: true, area: 900 } },
         color: { value: node },
         links: { enable: true, distance: 140, color: link, opacity: dark ? 0.3 : 0.42, width: 1 },
-        move: { enable: true, speed: 0.5, outModes: { default: "bounce" } },
+        move: { enable: true, speed: params.speed, outModes: { default: "bounce" } },
         size: { value: { min: 1, max: 2.6 } },
         opacity: { value: { min: 0.25, max: 0.9 }, animation: { enable: true, speed: 0.7, sync: false } },
-        shadow: { enable: true, color: dark ? "#aab8d0" : "#1b1d22", blur: 6 },
+        shadow: { enable: params.glow > 0, color: dark ? "#aab8d0" : "#1b1d22", blur: params.glow },
       },
     };
-  }, [scheme]);
+  }, [scheme, params.density, params.speed, params.glow]);
 
   if (!ready) return null;
 

@@ -6,9 +6,24 @@ interface Props {
   onClose: () => void;
 }
 
+const SLIDERS: { key: "density" | "speed" | "glow"; label: string; min: number; max: number; step: number }[] = [
+  { key: "density", label: "Density", min: 40, max: 340, step: 10 },
+  { key: "speed", label: "Speed", min: 0, max: 2, step: 0.1 },
+  { key: "glow", label: "Glow", min: 0, max: 16, step: 1 },
+];
+
 export function WallpaperPicker({ open, onClose }: Props) {
-  const { wallpaperId, setWallpaper, getWallpapers, wallpaperOverlayText, showOverlayText, toggleOverlayText } =
-    useThemeStore();
+  const {
+    wallpaperId,
+    setWallpaper,
+    getWallpapers,
+    wallpaperOverlayText,
+    showOverlayText,
+    toggleOverlayText,
+    wallpaperKind,
+    wallpaperParams,
+    setWallpaperParam,
+  } = useThemeStore();
   const wallpapers = getWallpapers();
 
   if (!open) return null;
@@ -86,6 +101,30 @@ export function WallpaperPicker({ open, onClose }: Props) {
             </button>
           ))}
         </div>
+        {wallpaperKind === "animated" && (
+          <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-shell-border shrink-0">
+            {SLIDERS.map((s) => (
+              <div key={s.key} className="flex items-center gap-3">
+                <label htmlFor={`wp-${s.key}`} className="w-14 text-xs text-shell-text-secondary">
+                  {s.label}
+                </label>
+                <input
+                  id={`wp-${s.key}`}
+                  type="range"
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  value={wallpaperParams[s.key]}
+                  onChange={(e) => setWallpaperParam(s.key, Number(e.target.value))}
+                  className="flex-1 accent-accent"
+                />
+                <span className="w-9 text-right text-[11px] tabular-nums text-shell-text-tertiary">
+                  {wallpaperParams[s.key]}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {wallpaperOverlayText && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-shell-border shrink-0">
             <label htmlFor="wp-slogan" className="text-xs text-shell-text-secondary">
