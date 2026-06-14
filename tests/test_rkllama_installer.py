@@ -6,9 +6,12 @@ roundtrip to /api/pull is exercised manually on the Pi (see PR description).
 """
 from __future__ import annotations
 
+import httpx
 import pytest
+import respx
 
 from tinyagentos.installers.rkllama_installer import (
+    RkllamaInstaller,
     parse_hf_resolve_url,
     resolve_rkllama_url,
     rkllama_is_running,
@@ -117,3 +120,93 @@ class TestResolveRkllamaUrl:
 
     def test_ip_address_7833(self):
         assert resolve_rkllama_url("192.168.1.10") == "http://192.168.1.10:7833"
+
+
+_VARIANT = {
+    "id": "qwen2.5-3b",
+    "download_url": (
+        "https://huggingface.co/c01zaut/Qwen2.5-3B-Instruct-rk3588-1.1.1/"
+        "resolve/main/Qwen2.5-3B-Instruct-rk3588-w8a8.rkllm"
+    ),
+}
+
+
+class TestInstallVerification:
+    """install() must only report success once /api/tags confirms the model.
+
+    A 200 from /api/pull alone is necessary but not sufficient -- a model the
+    agent can't load is worse than a clear error, so an unconfirmable pull
+    fails rather than returning a false success.
+    """
+
+    def _installer(self):
+        # Pass an explicit URL so __init__ doesn't probe the network.
+        return RkllamaInstaller(rkllama_url="http://localhost:7833")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_success_when_tags_lists_model(self):
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text='{"status":"success"}\n')
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})
+        )
+        res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
+        assert res["success"] is True
+        assert res["model_name"] == "rkllama-x"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_failure_when_model_absent_from_tags(self):
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text='{"status":"success"}\n')
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "other"}]})
+        )
+        res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
+        assert res["success"] is False
+        assert "not in" in res["error"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_failure_when_tags_unreachable(self, monkeypatch):
+        # Previously this path returned a false success. Now an unreachable
+        # /api/tags (after retries) is a clean failure.
+        monkeypatch.setattr(rkllama_installer.asyncio, "sleep", _no_sleep)
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text='{"status":"success"}\n')
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
+        assert res["success"] is False
+        assert "could not be reached" in res["error"]
+
+
+async def _no_sleep(*_a, **_k):
+    return None
+
+
+class TestRkllamaServiceManifest:
+    """The rkllama service manifest (install.method: script) must point at a
+    script that actually exists. ScriptInstaller resolves install.script
+    relative to the repo root (its cwd), so a missing file means the store
+    install fails with 'script not found'. This is the #844 regression guard.
+    """
+
+    def test_install_script_exists(self):
+        import pathlib
+        import yaml
+
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        manifest = yaml.safe_load(
+            (repo / "app-catalog" / "services" / "rkllama" / "manifest.yaml").read_text()
+        )
+        install = manifest.get("install") or {}
+        assert install.get("method") == "script"
+        script = install.get("script")
+        assert script, "rkllama manifest declares no install.script"
+        assert (repo / script).is_file(), f"rkllama install script missing: {script}"

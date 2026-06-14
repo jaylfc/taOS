@@ -14,6 +14,7 @@ URL), so we don't need any extra fields on the manifest.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import socket
@@ -184,12 +185,18 @@ class RkllamaInstaller(AppInstaller):
             }
 
         # Verify the model now appears in /api/tags so we know rkllama
-        # successfully registered it.
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                tags = await client.get(f"{self.rkllama_url}/api/tags")
-                tags.raise_for_status()
-                names = {m.get("name") for m in tags.json().get("models", [])}
+        # successfully registered it. The pull returning 200 is necessary but
+        # not sufficient: only /api/tags confirms the weight is loadable. We
+        # retry a few times to tolerate a transient blip, but if the check
+        # never succeeds we report failure rather than a false success -- a
+        # model the agent can't actually load is worse than a clear error.
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    tags = await client.get(f"{self.rkllama_url}/api/tags")
+                    tags.raise_for_status()
+                    names = {m.get("name") for m in tags.json().get("models", [])}
                 if app_id not in names:
                     return {
                         "success": False,
@@ -198,11 +205,24 @@ class RkllamaInstaller(AppInstaller):
                             f"/api/tags. Known models: {sorted(names)[:5]}"
                         ),
                     }
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "rkllama install: /api/tags verification failed: %s", exc
-            )
-            # Non-fatal -- pull succeeded; verification problem is likely transient.
+                break  # verified
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                logger.warning(
+                    "rkllama install: /api/tags verification attempt %d/3 failed: %s",
+                    attempt + 1, exc,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+        else:
+            # Exhausted retries without ever confirming the model.
+            return {
+                "success": False,
+                "error": (
+                    f"rkllama pull returned 200 but /api/tags could not be reached "
+                    f"to confirm {app_id!r} installed: {last_exc}. Retry the install."
+                ),
+            }
 
         return {"success": True, "app_id": app_id, "model_name": app_id}
 
