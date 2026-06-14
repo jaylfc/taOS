@@ -34,12 +34,18 @@ class DesktopCommandBroker:
     desktop SSE stream) share one process, same as the canvas broker.
     """
 
+    # Per-subscriber queues are bounded so a stalled/dead SSE consumer can't grow
+    # memory without limit. On overflow we drop the OLDEST command (a desktop
+    # that far behind has already missed the UI state these describe; the newest
+    # commands are the ones worth keeping).
+    _MAX_QUEUE = 128
+
     def __init__(self) -> None:
         self._queues: dict[str, list[asyncio.Queue[DesktopCommand]]] = {}
         self._lock = asyncio.Lock()
 
     async def subscribe(self, user_id: str) -> asyncio.Queue[DesktopCommand]:
-        queue: asyncio.Queue[DesktopCommand] = asyncio.Queue()
+        queue: asyncio.Queue[DesktopCommand] = asyncio.Queue(maxsize=self._MAX_QUEUE)
         async with self._lock:
             self._queues.setdefault(user_id, []).append(queue)
         return queue
@@ -61,5 +67,10 @@ class DesktopCommandBroker:
         async with self._lock:
             qs = list(self._queues.get(user_id, []))
             for q in qs:
+                if q.full():
+                    try:
+                        q.get_nowait()  # drop the oldest to make room for the newest
+                    except asyncio.QueueEmpty:
+                        pass
                 q.put_nowait(command)
         return len(qs)

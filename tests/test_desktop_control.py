@@ -48,6 +48,24 @@ async def test_no_replay_for_late_subscriber():
 
 
 @pytest.mark.asyncio
+async def test_overflow_drops_oldest_keeps_newest():
+    """A stalled desktop's bounded queue drops the OLDEST command, never grows
+    unbounded, and still surfaces the most recent commands."""
+    broker = DesktopCommandBroker()
+    q = await broker.subscribe("user-1")
+    n = DesktopCommandBroker._MAX_QUEUE + 5
+    for i in range(n):
+        await broker.emit("user-1", DesktopCommand(kind="open-app", payload={"app": f"app-{i}"}))
+    assert q.qsize() == DesktopCommandBroker._MAX_QUEUE
+    # The newest command must still be in the queue (oldest were dropped).
+    apps = []
+    while not q.empty():
+        apps.append(q.get_nowait().payload["app"])
+    assert apps[-1] == f"app-{n - 1}"
+    assert f"app-0" not in apps
+
+
+@pytest.mark.asyncio
 async def test_emit_with_no_subscribers_returns_zero():
     broker = DesktopCommandBroker()
     assert await broker.emit("nobody", DesktopCommand(kind="window", payload={"action": "arrange"})) == 0

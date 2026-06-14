@@ -17,12 +17,15 @@ export function useDesktopCommandStream(): void {
   useEffect(() => {
     const es = new EventSource("/api/desktop/stream");
     es.onmessage = (msg) => {
-      let cmd: { kind?: string; payload?: Record<string, unknown> };
+      let cmd: { kind?: string; payload?: Record<string, unknown> } | null;
       try {
         cmd = JSON.parse(msg.data);
       } catch {
         return;
       }
+      // JSON.parse can legally return null (or a non-object); guard before
+      // reading .kind so a stray payload can't throw and kill the listener.
+      if (!cmd || typeof cmd !== "object") return;
       if (cmd.kind === "open-app") {
         window.dispatchEvent(new CustomEvent("taos:open-app", { detail: cmd.payload ?? {} }));
       } else if (cmd.kind === "window") {

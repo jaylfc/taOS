@@ -87,9 +87,13 @@ So a command pushed server-side lands on the same `useDeepNavigation` /
 `useDesktopControl` handlers a local caller would hit — no new app logic.
 
 ```bash
-# Open the Projects app on the calling user's desktop:
-curl -X POST /api/desktop/command \
+# Open the Projects app on the calling user's desktop. The command is scoped to
+# the authenticated session (AuthMiddleware -> request.state.user_id), so pass
+# the caller's session cookie; without auth it resolves to the inert "system"
+# channel that no real desktop subscribes to.
+curl -X POST http://<host>:6969/api/desktop/command \
   -H 'Content-Type: application/json' \
+  -b 'taos_session=<session-cookie>' \
   -d '{"kind":"open-app","payload":{"app":"projects"}}'
 ```
 

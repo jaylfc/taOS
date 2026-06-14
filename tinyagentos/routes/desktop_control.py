@@ -25,10 +25,13 @@ router = APIRouter()
 
 
 def _user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None)
-    if user and isinstance(user, dict) and "id" in user:
-        return user["id"]
-    return "system"
+    # AuthMiddleware sets request.state.user_id (a string id or None). Scoping
+    # the command channel by the authenticated user is SECURITY-CRITICAL here:
+    # if every caller collapsed to one id, an agent acting for user A could
+    # drive user B's desktop. Unauthenticated/exempt requests have no desktop to
+    # drive, so the "system" fallback is inert rather than a shared channel.
+    uid = getattr(request.state, "user_id", None)
+    return uid if uid else "system"
 
 
 class CommandIn(BaseModel):
@@ -70,4 +73,10 @@ async def desktop_stream(request: Request):
         finally:
             await broker.unsubscribe(user_id, queue)
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    # no-cache + X-Accel-Buffering stop nginx/proxies from buffering the stream
+    # (which would delay or coalesce commands the user is waiting to see act).
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
