@@ -100,6 +100,46 @@ class TestUserWorkspaceRoutes:
         resp = await client.get("/api/workspace/files?path=../../etc")
         assert resp.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_rename_file(self, client):
+        """POST /api/workspace/rename moves a file to its new name."""
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("old.txt", io.BytesIO(b"x"), "text/plain")},
+        )
+        resp = await client.post("/api/workspace/rename", json={"src": "old.txt", "dst": "new.txt"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "renamed"
+        names = [e["name"] for e in (await client.get("/api/workspace/files")).json()]
+        assert "new.txt" in names and "old.txt" not in names
+
+    @pytest.mark.asyncio
+    async def test_rename_nonexistent_returns_404(self, client):
+        """Renaming a missing source returns 404."""
+        resp = await client.post("/api/workspace/rename", json={"src": "ghost", "dst": "x"})
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_rename_onto_existing_returns_409(self, client):
+        """Renaming onto an existing target returns 409."""
+        for n in ("a.txt", "b.txt"):
+            await client.post(
+                "/api/workspace/files/upload",
+                files={"file": (n, io.BytesIO(b"x"), "text/plain")},
+            )
+        resp = await client.post("/api/workspace/rename", json={"src": "a.txt", "dst": "b.txt"})
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_rename_traversal_blocked(self, client):
+        """Rename targets outside the workspace are blocked with 400."""
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("safe.txt", io.BytesIO(b"x"), "text/plain")},
+        )
+        resp = await client.post("/api/workspace/rename", json={"src": "safe.txt", "dst": "../escape.txt"})
+        assert resp.status_code == 400
+
     def test_dir_signature_changes_on_modification(self):
         """Signature helper drives the SSE watch change-detection loop.
         Unit-tested directly — the full SSE stream endpoint is tested
