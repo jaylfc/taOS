@@ -139,6 +139,48 @@ def audit(root: Path) -> int:
                 f"(checked: {', '.join(str(c) for c in candidates)})"
             )
 
+    # ------------------------------------------------------------------
+    # Port hygiene — pip/script services run ON THE HOST, so the port they
+    # declare is the effective host bind. Those must live in the managed
+    # high pool (>= 30000), never on a reserved/common port. Docker/LXC
+    # apps are exempt: their host port comes from allocate_host_port and the
+    # manifest port is container-internal.
+    #
+    # ALLOWLIST: LLM/inference/NPU backends that taOS connects to by a
+    # hardcoded localhost URL (e.g. ollama on 11434, referenced across
+    # resource_manager / job_worker / cluster probe). Moving these needs a
+    # coordinated code+config change, tracked separately; they are not
+    # user-installed store apps grabbing a core port.
+    try:
+        from tinyagentos.installers.port_allocator import RESERVED_PORTS, _POOL_START
+    except Exception:  # pragma: no cover - keep the audit usable standalone
+        _POOL_START = 30_000
+        RESERVED_PORTS = frozenset()
+    PORT_HYGIENE_ALLOWLIST = frozenset({
+        "ollama", "rkllama", "rk-llama-cpp", "vllm", "llama-cpp", "mlc-llm",
+        "openllm", "ezrknpu",
+    })
+    for sp in sorted((root / "services").rglob("manifest.yaml")):
+        d = _load(sp)
+        if not d or d.get("type") != "service":
+            continue
+        if (d.get("install") or {}).get("method") not in ("pip", "script"):
+            continue
+        sid = d.get("id", sp.parent.name)
+        if sid in PORT_HYGIENE_ALLOWLIST:
+            continue
+        declared = []
+        for src in (d.get("ports"), (d.get("requires") or {}).get("ports")):
+            if isinstance(src, list):
+                declared += [p for p in src if isinstance(p, int)]
+        for p in declared:
+            if p in RESERVED_PORTS or p < _POOL_START:
+                issues.append(
+                    f"services/{sid}: host-binding {d['install']['method']} service "
+                    f"declares port {p} outside the managed pool (>= {_POOL_START}); "
+                    "remap to a high-pool port or allowlist if it is an integrated backend"
+                )
+
     if not issues:
         print("clean: catalog matches requires.backends schema")
         return 0

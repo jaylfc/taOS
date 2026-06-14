@@ -12,7 +12,7 @@ requires:
   ram_mb: 24576
   python: ">=3.10"
 
-  ports: [7860]
+  ports: [39378]
 
 install:
   method: pip
