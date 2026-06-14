@@ -81,6 +81,28 @@ async def test_empty_state_is_safe():
     assert res["tiers"][0]["image_backends"] == []
 
 
+class _BadBackend:
+    """A backend whose .models raises when iterated for ids."""
+    name = "bad"
+    type = "sd-cpp"
+    lifecycle_state = "running"
+
+    @property
+    def models(self):
+        raise RuntimeError("boom")
+
+
+@pytest.mark.asyncio
+async def test_one_malformed_backend_does_not_drop_the_rest():
+    catalog = _Catalog([
+        _BadBackend(),
+        _Backend("good", "sd-cpp", [{"id": "sdxl"}], "running"),
+    ])
+    res = await execute_describe_image_capabilities({}, _req(catalog=catalog))
+    names = [b["name"] for b in res["tiers"][0]["image_backends"]]
+    assert "good" in names  # the healthy backend survives the bad one
+
+
 @pytest.mark.asyncio
 async def test_object_hardware_profile_is_json_safe():
     """A real hardware_profile is an object with nested objects; the summary must

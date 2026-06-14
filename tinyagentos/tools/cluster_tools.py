@@ -49,21 +49,34 @@ def _hw_summary(hw) -> dict:
     return {k: _json_safe(getattr(hw, k)) for k in keys if getattr(hw, k, None) is not None}
 
 
+def _model_id(m):
+    """Best-effort model identifier from a dict-or-str model entry."""
+    if isinstance(m, dict):
+        return m.get("id") or m.get("name")
+    return m
+
+
 def _image_backends_from_catalog(catalog) -> list[dict]:
     out = []
     if not catalog:
         return out
     try:
-        for be in catalog.backends_with_capability("image-generation"):
+        backends = catalog.backends_with_capability("image-generation")
+    except Exception:
+        return out
+    # Guard each backend independently: one malformed entry must not drop the
+    # whole capability list (the agent relies on this menu to pick a tier).
+    for be in backends or []:
+        try:
             out.append({
                 "name": be.name,
                 "type": be.type,
                 "tier": _TIER.get(be.type, "unknown"),
                 "loaded": getattr(be, "lifecycle_state", "running") == "running",
-                "models": [m.get("id") or m.get("name") for m in (be.models or [])][:10],
+                "models": [_model_id(m) for m in (be.models or [])][:10],
             })
-    except Exception:
-        pass
+        except Exception:
+            continue
     return out
 
 
@@ -79,7 +92,7 @@ def _image_backends_from_worker(worker) -> list[dict]:
                 "tier": _TIER.get(b.get("type"), "unknown"),
                 # mirror the 'loaded' field local backends report; None = unknown
                 "loaded": b.get("loaded") if "loaded" in b else (ls == "running" if ls else None),
-                "models": [m.get("id") or m.get("name") if isinstance(m, dict) else m for m in (b.get("models") or [])][:10],
+                "models": [_model_id(m) for m in (b.get("models") or [])][:10],
             })
     return out
 
@@ -94,7 +107,13 @@ async def execute_describe_image_capabilities(args: dict, request: Request) -> d
     cluster = getattr(state, "cluster_manager", None)
     if cluster is not None:
         try:
-            for w in cluster.get_workers():
+            workers = cluster.get_workers()
+        except Exception:
+            workers = []
+        # Guard each worker independently so one bad worker entry doesn't drop
+        # the rest of the cluster from the menu.
+        for w in workers or []:
+            try:
                 if getattr(w, "status", "online") != "online":
                     continue
                 tiers.append({
@@ -102,8 +121,8 @@ async def execute_describe_image_capabilities(args: dict, request: Request) -> d
                     "hardware": _hw_summary(getattr(w, "hardware", None)),
                     "image_backends": _image_backends_from_worker(w),
                 })
-        except Exception:
-            pass
+            except Exception:
+                continue
     return {
         "tiers": tiers,
         "hint": "Pick a model on the tier that fits the task (npu = fast draft, gpu = best quality), then call generate_image with that model. The system loads/unloads and queues for you.",
