@@ -334,8 +334,8 @@ export function UpdatesPanel() {
 
           {advancedOpen && (
             <div className="mt-3 space-y-3">
-              <div className="flex items-end gap-2 flex-wrap">
-                <div className="flex flex-col gap-1">
+              <div className="flex flex-col sm:flex-row sm:items-end gap-2">
+                <div className="flex flex-col gap-1 min-w-0 flex-1">
                   <label htmlFor="branch-select" className="text-[11px] text-shell-text-tertiary">
                     Branch
                   </label>
@@ -344,7 +344,7 @@ export function UpdatesPanel() {
                     aria-label="Branch"
                     value={selectedBranch}
                     onChange={(e) => setSelectedBranch(e.target.value)}
-                    className="text-sm bg-white/5 border border-white/10 rounded px-2 py-1 text-shell-text-primary focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    className="w-full min-w-0 max-w-full text-sm bg-white/5 border border-white/10 rounded px-2 py-1 text-shell-text-primary focus:outline-none focus:ring-1 focus:ring-sky-500"
                   >
                     {branchInfo?.branches.map((b) => (
                       <option key={b} value={b}>{b}</option>
