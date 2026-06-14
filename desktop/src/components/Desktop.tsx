@@ -5,6 +5,7 @@ import { useThemeStore } from "@/stores/theme-store";
 import { useWidgetStore } from "@/stores/widget-store";
 import { useSnapZones } from "@/hooks/use-snap-zones";
 import { useDeepNavigation } from "@/hooks/use-deep-navigation";
+import { useDesktopControl } from "@/hooks/use-desktop-control";
 import { getApp } from "@/registry/app-registry";
 import { Window } from "./Window";
 import { SnapOverlay } from "./SnapOverlay";
@@ -69,6 +70,7 @@ export function Desktop() {
   // Deep-navigation API: `?app=` URL param on load + `taos:open-app` event at
   // runtime (lets the taOS agent drive the desktop). See the hook for details.
   useDeepNavigation(openWindow);
+  useDesktopControl();
 
   const menuItems: MenuItem[] = [
     {
