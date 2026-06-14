@@ -153,6 +153,30 @@ class TestDockerSetRootQuota:
         assert quota_calls, "expected a docker container update --storage-opt call"
 
 
+class TestDockerPorts:
+    @pytest.mark.asyncio
+    async def test_create_container_publishes_ports(self):
+        backend = DockerBackend("docker")
+        run = AsyncMock(return_value=(0, "abc123"))
+        backend._run = run
+        await backend.create_container("taos-app-echo", image="hashicorp/http-echo:latest", ports=[(13042, 5678)])
+        args = run.call_args[0][0]            # the cmd list passed to _run
+        assert "-p" in args
+        i = args.index("-p")
+        assert args[i + 1] == "13042:5678"
+        # image is still the last positional arg
+        assert args[-1] == "hashicorp/http-echo:latest"
+
+    @pytest.mark.asyncio
+    async def test_create_container_without_ports_unchanged(self):
+        backend = DockerBackend("docker")
+        run = AsyncMock(return_value=(0, "abc123"))
+        backend._run = run
+        await backend.create_container("taos-app-x", image="busybox:latest")
+        args = run.call_args[0][0]
+        assert "-p" not in args
+
+
 class TestPodmanBinary:
     @pytest.mark.asyncio
     async def test_uses_podman_binary(self):

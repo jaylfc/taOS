@@ -86,6 +86,8 @@ from tinyagentos.desktop_settings import DesktopSettingsStore
 from tinyagentos.user_memory import UserMemoryStore
 from tinyagentos.user_personas import UserPersonaStore
 from tinyagentos.installed_apps import InstalledAppsStore
+from tinyagentos.userspace.store import UserspaceAppStore
+from tinyagentos.userspace.data_store import UserspaceDataStore
 from tinyagentos.skills import SkillStore
 from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
@@ -338,6 +340,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_memory = UserMemoryStore(data_dir / "user_memory.db")
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
+    userspace_apps = UserspaceAppStore(data_dir / "userspace_apps.db")
+    userspace_data = UserspaceDataStore(data_dir / "apps" / "userspace_data.db")
     skills = SkillStore(data_dir / "skills.db")
     from tinyagentos.themes.store import ThemeStore
     themes = ThemeStore(data_dir / "themes.sqlite3")
@@ -412,6 +416,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await desktop_settings.init()
         await user_memory.init()
         await installed_apps.init()
+        await userspace_apps.init()
+        await userspace_data.init()
         await skills.init()
         await themes.init()
         app.state.themes = themes
@@ -653,6 +659,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.user_memory = user_memory
         app.state.user_personas = user_personas
         app.state.installed_apps = installed_apps
+        app.state.userspace_apps = userspace_apps
+        app.state.userspace_data = userspace_data
         app.state.skills = skills
         app.state.benchmark_store = benchmark_store
         app.state.score_cache = score_cache
@@ -1084,6 +1092,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await knowledge_graph.close()
         await archive.close()
         await installed_apps.close()
+        await userspace_apps.close()
+        await userspace_data.close()
         await user_memory.close()
         await desktop_settings.close()
         await canvas_store.close()
@@ -1240,6 +1250,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.user_memory = user_memory
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
+    app.state.userspace_apps = userspace_apps
+    app.state.userspace_data = userspace_data
     app.state.skills = skills
     app.state.themes = themes
     app.state.knowledge_store = knowledge_store
@@ -1296,6 +1308,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     # Agent base image prefetch status endpoint
     register_prefetch_endpoint(app)
+
+    from tinyagentos.routes import userspace_apps as userspace_apps_routes
+    app.include_router(userspace_apps_routes.router)
 
     return app
 

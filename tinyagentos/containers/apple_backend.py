@@ -100,6 +100,7 @@ class AppleContainerBackend(ContainerBackend):
         env: dict[str, str] | None = None,
         host_uid: int | None = None,
         root_size_gib: int | None = None,
+        ports: list[tuple[int, int]] | None = None,
     ) -> dict:
         # Apple's container CLI does not currently expose host UID mapping for
         # bind mounts. Reject the request explicitly so callers don't silently
@@ -110,6 +111,8 @@ class AppleContainerBackend(ContainerBackend):
                 "output": "",
                 "note": "apple container backend does not support host_uid mapping yet",
             }
+        # port publish not wired for apple backend yet
+        _ = ports
         argv = [self.binary, "run", "-d", "--name", name]
         if memory_limit:
             # Convert "2GB"/"512MB" → "2g"/"512m" for Apple CLI

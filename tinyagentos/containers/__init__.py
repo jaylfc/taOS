@@ -134,6 +134,7 @@ async def create_container(
     env: dict[str, str] | None = None,
     host_uid: int | None = None,
     root_size_gib: int | None = None,
+    ports: list[tuple[int, int]] | None = None,
 ) -> dict:
     """Create and start a new LXC container with mounts and env injected.
 

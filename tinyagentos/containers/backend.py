@@ -90,6 +90,7 @@ class ContainerBackend(ABC):
         env: dict[str, str] | None = None,
         host_uid: int | None = None,
         root_size_gib: int | None = None,
+        ports: list[tuple[int, int]] | None = None,
     ) -> dict:
         """Create and start a new container.
 
@@ -107,6 +108,10 @@ class ContainerBackend(ABC):
         ``set_root_quota`` after the container is created. On btrfs/ZFS
         pools this is enforced at the kernel level; on dir-backed pools
         and Docker overlay2 without pquota it is accounting-only.
+
+        ``ports``: list of ``(host_port, container_port)`` tuples to publish
+        via ``-p host_port:container_port``. Docker implements this; LXC uses
+        proxy devices instead (accepted and ignored here).
         """
         ...
 
