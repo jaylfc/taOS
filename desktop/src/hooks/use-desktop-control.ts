@@ -69,22 +69,38 @@ function workArea() {
 
 function getLayout(): DesktopLayout {
   const { windows } = useProcessStore.getState();
+  const area = workArea();
   return {
     screen: { width: window.innerWidth, height: window.innerHeight, ratio: +(window.innerWidth / window.innerHeight).toFixed(3) },
-    windows: windows.map((w) => ({
-      id: w.id,
-      appId: w.appId,
-      x: w.position.x,
-      y: w.position.y,
-      w: w.size.w,
-      h: w.size.h,
-      minimized: w.minimized,
-      maximized: w.maximized,
-      snapped: w.snapped,
-      focused: w.focused,
-      zIndex: w.zIndex,
-    })),
+    windows: windows.map((w) => {
+      // A maximized window fills the work area regardless of its stored bounds;
+      // report the rendered geometry so callers see where it actually is.
+      const m = w.maximized;
+      return {
+        id: w.id,
+        appId: w.appId,
+        x: m ? area.x : w.position.x,
+        y: m ? area.y : w.position.y,
+        w: m ? area.w : w.size.w,
+        h: m ? area.h : w.size.h,
+        minimized: w.minimized,
+        maximized: w.maximized,
+        snapped: w.snapped,
+        focused: w.focused,
+        zIndex: w.zIndex,
+      };
+    }),
   };
+}
+
+// Clear maximized / snapped state so an explicit move/resize actually applies
+// (the Window derives its rendered geometry from those, ignoring stored bounds).
+function freePlacement(id: string) {
+  const s = useProcessStore.getState();
+  const win = s.windows.find((w) => w.id === id);
+  if (!win) return;
+  if (win.snapped) s.snapWindow(id, null);
+  if (win.maximized) s.maximizeWindow(id); // maximizeWindow toggles; this un-maximizes
 }
 
 function resolveId(op: WindowOp): string | undefined {
@@ -100,7 +116,7 @@ function arrange(preset: WindowOp["preset"]) {
   if (wins.length === 0) return;
   const a = workArea();
   const place = (id: string, x: number, y: number, w: number, h: number) => {
-    s.snapWindow(id, null);
+    freePlacement(id);
     s.updatePosition(id, Math.round(x), Math.round(y));
     s.updateSize(id, Math.round(w), Math.round(h));
   };
@@ -135,17 +151,24 @@ function run(op: WindowOp): string | void {
     }
     case "move": {
       const id = resolveId(op);
-      if (id && op.x != null && op.y != null) s.updatePosition(id, op.x, op.y);
+      if (id && op.x != null && op.y != null) {
+        freePlacement(id);
+        s.updatePosition(id, op.x, op.y);
+      }
       return;
     }
     case "resize": {
       const id = resolveId(op);
-      if (id && op.w != null && op.h != null) s.updateSize(id, op.w, op.h);
+      if (id && op.w != null && op.h != null) {
+        freePlacement(id);
+        s.updateSize(id, op.w, op.h);
+      }
       return;
     }
     case "maximize": {
       const id = resolveId(op);
-      if (id) s.maximizeWindow(id);
+      const win = id ? s.windows.find((w) => w.id === id) : undefined;
+      if (win && !win.maximized) s.maximizeWindow(win.id); // always maximizes, never toggles off
       return;
     }
     case "minimize": {
