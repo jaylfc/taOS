@@ -27,6 +27,9 @@ const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"])
 const isImg = (n: string) => IMG.has(n.split(".").pop()?.toLowerCase() ?? "");
 const DESKTOP = "Desktop";
 const fileUrl = (p: string) => `/api/workspace/files/${p.split("/").map(encodeURIComponent).join("/")}`;
+// Strip path separators and leading dots so a rename can't escape the Desktop
+// folder (the backend also guards, but reject it client-side too).
+const cleanName = (raw: string) => raw.trim().replace(/[/\\]/g, "").replace(/^\.+/, "");
 
 async function jget<T>(url: string): Promise<T> {
   const r = await fetch(url, { credentials: "include" });
@@ -67,6 +70,7 @@ export function DesktopIcons() {
   }, []);
 
   useEffect(() => {
+    if (!show) return; // don't create / fetch the Desktop dir when icons are hidden
     void (async () => {
       try {
         await jmut("/api/workspace/mkdir", "POST", { path: DESKTOP });
@@ -75,7 +79,7 @@ export function DesktopIcons() {
       }
       refresh();
     })();
-  }, [refresh]);
+  }, [refresh, show]);
 
   const createFolder = useCallback(async () => {
     const names = new Set(files.map((f) => f.name));
@@ -88,8 +92,8 @@ export function DesktopIcons() {
       setSelected(name);
       setEditing(name);
       setEditName(name);
-    } catch {
-      // ignore: surfaced by the unchanged listing
+    } catch (e) {
+      console.warn("desktop: create folder failed", e);
     }
   }, [files, refresh]);
 
@@ -110,7 +114,7 @@ export function DesktopIcons() {
   const commitRename = useCallback(
     async (f: FileEntry) => {
       if (renamingRef.current) return;
-      const nn = editName.trim();
+      const nn = cleanName(editName);
       if (!nn || nn === f.name) {
         setEditing(null);
         return;
@@ -120,8 +124,8 @@ export function DesktopIcons() {
         await jmut("/api/workspace/rename", "POST", { src: f.path, dst: `${DESKTOP}/${nn}` });
         await refresh();
         setSelected(nn);
-      } catch {
-        // ignore: listing stays unchanged
+      } catch (e) {
+        console.warn("desktop: rename failed", e);
       } finally {
         renamingRef.current = false;
         setEditing(null);
@@ -132,11 +136,13 @@ export function DesktopIcons() {
 
   const del = useCallback(
     async (f: FileEntry) => {
+      // Deletion is permanent (no trash yet), so confirm first.
+      if (!window.confirm(`Delete "${f.name}"? This can't be undone.`)) return;
       try {
         await jmut(fileUrl(f.path), "DELETE");
         await refresh();
-      } catch {
-        // ignore
+      } catch (e) {
+        console.warn("desktop: delete failed", e);
       }
     },
     [refresh],
@@ -232,7 +238,7 @@ export function DesktopIcons() {
               },
             },
             { label: "", separator: true },
-            { label: "Move to Trash", action: () => del(menu.file) },
+            { label: "Delete", action: () => del(menu.file) },
           ]}
         />
       )}
