@@ -120,6 +120,9 @@ def register_all_routers(app):
     from tinyagentos.routes.project_canvas import router as project_canvas_router
     app.include_router(project_canvas_router)
 
+    from tinyagentos.routes.desktop_control import router as desktop_control_router
+    app.include_router(desktop_control_router)
+
     from tinyagentos.routes.shared_folders import router as shared_folders_router
     app.include_router(shared_folders_router)
 
