@@ -163,3 +163,51 @@ class TestMultipleApps:
         item = resp.json()[0]
         for key in ("app_id", "display_name", "icon", "url", "category", "backend", "status"):
             assert key in item, f"Missing key: {key}"
+
+
+class TestOptionalApps:
+    @pytest.mark.asyncio
+    async def test_install_then_listed(self, apps_client):
+        client, _ = apps_client
+        # Nothing installed initially.
+        resp = await client.get("/api/apps/optional/installed")
+        assert resp.status_code == 200
+        assert resp.json() == {"installed": []}
+
+        # Install an allowlisted optional app.
+        resp = await client.post("/api/apps/optional/reddit/install")
+        assert resp.status_code == 200
+        assert resp.json()["app_id"] == "reddit"
+
+        resp = await client.get("/api/apps/optional/installed")
+        assert resp.json()["installed"] == ["reddit"]
+
+    @pytest.mark.asyncio
+    async def test_uninstall_removes(self, apps_client):
+        client, _ = apps_client
+        await client.post("/api/apps/optional/x-monitor/install")
+        resp = await client.get("/api/apps/optional/installed")
+        assert "x-monitor" in resp.json()["installed"]
+
+        resp = await client.post("/api/apps/optional/x-monitor/uninstall")
+        assert resp.status_code == 200
+        resp = await client.get("/api/apps/optional/installed")
+        assert "x-monitor" not in resp.json()["installed"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_app_rejected(self, apps_client):
+        client, _ = apps_client
+        resp = await client.post("/api/apps/optional/not-a-real-app/install")
+        assert resp.status_code == 404
+        resp = await client.post("/api/apps/optional/not-a-real-app/uninstall")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_optional_apps_excluded_from_services_list(self, apps_client):
+        """Installed optional frontend apps must NOT show as proxy services
+        (they have no runtime location)."""
+        client, _ = apps_client
+        await client.post("/api/apps/optional/github-browser/install")
+        resp = await client.get("/api/apps/installed")
+        ids = {i["app_id"] for i in resp.json()}
+        assert "github-browser" not in ids
