@@ -722,8 +722,14 @@ function DesktopDockSection() {
 /*  Main SettingsApp                                                   */
 /* ------------------------------------------------------------------ */
 
-export function SettingsApp({ windowId: _windowId }: { windowId: string }) {
-  const [section, setSection] = useState<Section>("system");
+function isSection(value: string | undefined): value is Section {
+  return value != null && SECTIONS.some((s) => s.id === value);
+}
+
+export function SettingsApp({ windowId: _windowId, section: initialSection }: { windowId: string; section?: string }) {
+  const [section, setSection] = useState<Section>(() =>
+    isSection(initialSection) ? initialSection : "system"
+  );
   const [mobileShowSection, setMobileShowSection] = useState(false);
 
   const isMobile = typeof window !== "undefined" && window.innerWidth < 640;

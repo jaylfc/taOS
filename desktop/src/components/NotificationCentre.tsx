@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { X, Bell, CheckCheck, Trash2 } from "lucide-react";
-import { useNotificationStore } from "@/stores/notification-store";
+import { useNotificationStore, type Notification } from "@/stores/notification-store";
+import { useProcessStore } from "@/stores/process-store";
+import { getApp } from "@/registry/app-registry";
 import { markServerRead, markAllServerRead } from "@/lib/server-notifications";
 import { SetupChecklist } from "./SetupChecklist";
+
+const FALLBACK_SIZE = { w: 900, h: 640 };
 
 function formatTime(ts: number): string {
   const delta = Date.now() - ts;
@@ -14,6 +18,7 @@ function formatTime(ts: number): string {
 
 export function NotificationCentre() {
   const { notifications, centreOpen, closeCentre, markRead, markAllRead, clearAll, dismiss } = useNotificationStore();
+  const openWindow = useProcessStore((s) => s.openWindow);
   const [checklistDismissed, setChecklistDismissed] = useState(false);
 
   // Optimistic local mark-read, plus a best-effort backend write for server
@@ -21,6 +26,21 @@ export function NotificationCentre() {
   const handleMarkRead = (id: string) => {
     markRead(id);
     void markServerRead(id);
+  };
+
+  // Clicking an actionable notification opens its target app (with any meta as
+  // launch props), marks it read, and closes the centre. Action-less items just
+  // get marked read in place.
+  const handleItemClick = (n: Notification) => {
+    if (n.action) {
+      const size = getApp(n.action)?.defaultSize ?? FALLBACK_SIZE;
+      const props = n.meta && Object.keys(n.meta).length ? n.meta : undefined;
+      openWindow(n.action, size, props);
+      handleMarkRead(n.id);
+      closeCentre();
+      return;
+    }
+    handleMarkRead(n.id);
   };
 
   const handleMarkAllRead = () => {
@@ -97,8 +117,8 @@ export function NotificationCentre() {
             notifications.map((n) => (
               <button
                 key={n.id}
-                onClick={() => handleMarkRead(n.id)}
-                className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors ${!n.read ? "bg-accent/5" : ""}`}
+                onClick={() => handleItemClick(n)}
+                className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors ${!n.read ? "bg-accent/5" : ""} ${n.action ? "cursor-pointer" : ""}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">

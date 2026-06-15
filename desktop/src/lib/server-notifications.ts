@@ -28,10 +28,43 @@ const VALID_LEVELS: ReadonlySet<Notification["level"]> = new Set([
   "error",
 ]);
 
+/**
+ * Map a backend event `source` to the app a click on the notification should
+ * open. Sources that have no relevant destination return an empty object, which
+ * leaves the notification non-navigable. `action` is an app id understood by the
+ * process store; `meta` carries an optional launch prop (e.g. a Settings section).
+ */
+export function sourceToTarget(
+  source: string,
+): { action?: string; meta?: Record<string, string> } {
+  switch (source) {
+    case "system.update":
+    case "system.lifecycle":
+      return { action: "settings", meta: { section: "updates" } };
+    case "disk_quota":
+      return { action: "settings", meta: { section: "storage" } };
+    case "worker.join":
+    case "worker.online":
+    case "worker.leave":
+    case "backend.up":
+    case "backend.down":
+      return { action: "cluster" };
+    case "training.complete":
+    case "training.failed":
+      return { action: "agents" };
+    case "app.installed":
+    case "app.failed":
+      return { action: "store" };
+    default:
+      return {};
+  }
+}
+
 function mapRow(row: ServerNotificationRow): Notification {
   const level = VALID_LEVELS.has(row.level as Notification["level"])
     ? (row.level as Notification["level"])
     : "info";
+  const { action, meta } = sourceToTarget(row.source);
   return {
     id: `srv-${row.id}`,
     source: row.source || "system",
@@ -40,6 +73,8 @@ function mapRow(row: ServerNotificationRow): Notification {
     level,
     read: row.read,
     timestamp: row.timestamp * 1000,
+    ...(action ? { action } : {}),
+    ...(meta ? { meta } : {}),
   };
 }
 
