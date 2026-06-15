@@ -27,14 +27,24 @@ async function captureAndReport(requestId: string): Promise<void> {
   window.dispatchEvent(new CustomEvent(SCREENSHOT_FLASH_EVENT));
   let body: { request_id: string; image?: string; error?: string };
   try {
-    const { domToPng } = await import("modern-screenshot");
-    // Full viewport: top bar + desktop + dock.
-    const dataUrl = await domToPng(document.body, {
-      backgroundColor: getComputedStyle(document.body).backgroundColor || "#000",
-      // Skip the capture overlay/flash node itself.
-      filter: (node) =>
-        !(node instanceof HTMLElement && node.dataset.screenshotExclude === "true"),
-    });
+    // Prefer a live screen-capture grant (full fidelity incl. cross-origin
+    // iframes like the Browser's proxied page); fall back to DOM rasterisation
+    // (chrome + native apps only) when no grant is active.
+    const { hasScreenCapture, grabScreenFrame } = await import("@/lib/screen-capture");
+    let dataUrl: string | null = null;
+    if (hasScreenCapture()) {
+      dataUrl = await grabScreenFrame();
+    }
+    if (!dataUrl) {
+      const { domToPng } = await import("modern-screenshot");
+      // Full viewport: top bar + desktop + dock.
+      dataUrl = await domToPng(document.body, {
+        backgroundColor: getComputedStyle(document.body).backgroundColor || "#000",
+        // Skip the capture overlay/flash node itself.
+        filter: (node) =>
+          !(node instanceof HTMLElement && node.dataset.screenshotExclude === "true"),
+      });
+    }
     body = { request_id: requestId, image: dataUrl };
   } catch (e) {
     body = { request_id: requestId, error: e instanceof Error ? e.message : "capture failed" };
