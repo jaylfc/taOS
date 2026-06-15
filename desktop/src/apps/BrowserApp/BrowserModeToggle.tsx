@@ -17,7 +17,7 @@
  * A 409 with `no_capable_node` means the taOS has no device able to run a real
  * browser; we show a small inline gate hint, matching EscalateButton.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Globe, MonitorPlay } from "lucide-react";
 import { useBrowserStore } from "@/stores/browser-store";
 
@@ -48,6 +48,19 @@ export function BrowserModeToggle({ windowId }: BrowserModeToggleProps) {
 
   const activeTab = win?.tabs.find((t) => t.id === win.activeTabId);
   const isStreamed = !!activeTab?.liveSession;
+
+  // Stop any in-flight poll if this instance unmounts (tab closed, strip
+  // re-rendered away). Without this the pending setTimeout keeps firing poll(),
+  // which fetches and calls setPhase on a dead component.
+  useEffect(() => {
+    return () => {
+      cancelledRef.current = true;
+      if (pollRef.current) {
+        clearTimeout(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, []);
 
   const poll = useCallback(
     (sessionId: string, tabId: string) => {
@@ -103,6 +116,11 @@ export function BrowserModeToggle({ windowId }: BrowserModeToggleProps) {
       setPhase("idle");
       return;
     }
+
+    // The user may have clicked Proxy while the POST was in flight (goProxy sets
+    // cancelledRef + phase=idle). Honour that cancellation instead of forcing
+    // the tab back into a streamed session it no longer wants.
+    if (cancelledRef.current) return;
 
     if (resp.status === 409) {
       let body: { error?: string } = {};
