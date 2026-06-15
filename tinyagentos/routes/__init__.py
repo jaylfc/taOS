@@ -87,6 +87,9 @@ def register_all_routers(app):
     from tinyagentos.routes.secrets import router as secrets_router
     app.include_router(secrets_router)
 
+    from tinyagentos.routes.mail import router as mail_router
+    app.include_router(mail_router)
+
     from tinyagentos.routes.desktop_browser import router as desktop_browser_router
     app.include_router(desktop_browser_router)
 

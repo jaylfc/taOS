@@ -60,6 +60,7 @@ from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
 from tinyagentos.github_identities import GitHubIdentitiesStore
 from tinyagentos.secrets import SecretsStore
+from tinyagentos.mail_store import MailAccountStore
 from tinyagentos.training import TrainingManager
 from tinyagentos.conversion import ConversionManager
 from tinyagentos.agent_messages import AgentMessageStore
@@ -261,6 +262,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     torrent_settings_store = TorrentSettingsStore(data_dir / "torrent_settings.json")
     download_manager = DownloadManager(torrent_settings_store=torrent_settings_store)
     secrets_store = SecretsStore(data_dir / "secrets.db")
+    mail_store = MailAccountStore(data_dir / "mail.db")
     github_identities_store = GitHubIdentitiesStore(data_dir / "github_identities.db")
     relationship_mgr = RelationshipManager(data_dir / "relationships.db")
     channel_store = ChannelStore(data_dir / "channels.db")
@@ -392,6 +394,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await notif_store.init()
         await qmd_client.init()
         await secrets_store.init()
+        await mail_store.init()
+        app.state.mail_store = mail_store
         await github_identities_store.init()
         await relationship_mgr.init()
         await channel_store.init()
@@ -1137,6 +1141,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_cookie_store.close()
         await browser_store.close()
         await secrets_store.close()
+        await mail_store.close()
         await notif_store.close()
         await app.state.system_events.close()
         await metrics_store.close()
