@@ -107,18 +107,29 @@ async def add_account(
         secret_name=MailAccountStore.secret_name_for("pending"),
     )
     secret_name = MailAccountStore.secret_name_for(account["id"])
-    await secrets.add(
-        name=secret_name,
-        value=body.password,
-        category="credentials",
-        description=f"Mail account password for {body.email_address}",
-    )
-    # Re-point the row at the real secret name now that we have the account id.
-    await store._db.execute(  # noqa: SLF001 -- internal store connection
-        "UPDATE mail_accounts SET secret_name = ? WHERE id = ? AND user_id = ?",
-        (secret_name, account["id"], user.user_id),
-    )
-    await store._db.commit()  # noqa: SLF001
+    # If storing the secret or re-pointing the row fails, roll back the account
+    # row instead of leaving it pointing at a non-existent secret (which would
+    # make every later op return "account credential missing" with no way to fix
+    # it but delete and re-add).
+    try:
+        await secrets.add(
+            name=secret_name,
+            value=body.password,
+            category="credentials",
+            description=f"Mail account password for {body.email_address}",
+        )
+        await store._db.execute(  # noqa: SLF001 -- internal store connection
+            "UPDATE mail_accounts SET secret_name = ? WHERE id = ? AND user_id = ?",
+            (secret_name, account["id"], user.user_id),
+        )
+        await store._db.commit()  # noqa: SLF001
+    except Exception:
+        await store.delete(account["id"], user.user_id)
+        try:
+            await secrets.delete(secret_name)
+        except Exception:
+            pass
+        raise
     account["secret_name"] = secret_name
     return JSONResponse(_public_account(account), status_code=201)
 
@@ -176,6 +187,8 @@ async def list_messages(
         return JSONResponse({"error": "account credential missing"}, status_code=400)
     try:
         envelopes = await mail_client.list_messages(cfg, folder, limit=limit)
+    except mail_client.MailFolderError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         return JSONResponse({"error": f"imap error: {exc}"}, status_code=502)
     return {"messages": [asdict(e) for e in envelopes]}
@@ -198,6 +211,8 @@ async def get_message(
         return JSONResponse({"error": "account credential missing"}, status_code=400)
     try:
         detail = await mail_client.get_message(cfg, folder, uid)
+    except mail_client.MailFolderError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         return JSONResponse({"error": f"imap error: {exc}"}, status_code=502)
     if detail is None:

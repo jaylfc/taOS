@@ -1,6 +1,24 @@
 from email.message import EmailMessage
 
-from tinyagentos.mail_client import parse_detail, parse_envelope
+import pytest
+
+from tinyagentos.mail_client import (
+    MailFolderError,
+    _validate_folder,
+    parse_detail,
+    parse_envelope,
+)
+
+
+class TestValidateFolder:
+    def test_accepts_normal_names(self):
+        assert _validate_folder("INBOX") == "INBOX"
+        assert _validate_folder("[Gmail]/Sent Mail") == "[Gmail]/Sent Mail"
+
+    @pytest.mark.parametrize("bad", ['IN"BOX', "a\r\nLOGOUT", "x\x00y", ""])
+    def test_rejects_injection_chars(self, bad):
+        with pytest.raises(MailFolderError):
+            _validate_folder(bad)
 
 
 def _plain_message():

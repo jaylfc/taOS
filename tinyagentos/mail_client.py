@@ -27,6 +27,27 @@ from email.utils import parseaddr
 # Servers vary, so the route layer also passes the raw IMAP folder name through.
 CANONICAL_FOLDERS = ["INBOX", "Sent", "Drafts", "Archive", "Trash"]
 
+# Upper bound on how many envelopes a single list call will fetch. Each id is a
+# separate IMAP round trip, so an unbounded limit lets one request tie up the
+# connection (and the to_thread worker) indefinitely.
+MAX_MESSAGE_LIMIT = 200
+
+
+class MailFolderError(ValueError):
+    """Raised when a folder name is unsafe to interpolate into an IMAP command."""
+
+
+def _validate_folder(folder: str) -> str:
+    """Reject folder names that could break out of the quoted IMAP argument.
+
+    ``folder`` is an untrusted query-string value interpolated into
+    ``conn.select(f'"{folder}"')``. A double-quote or CR/LF would let a caller
+    inject extra IMAP protocol tokens on their own authenticated connection, so
+    we forbid those characters outright rather than try to escape them."""
+    if not folder or any(c in folder for c in ('"', "\r", "\n", "\x00")):
+        raise MailFolderError(f"invalid folder name: {folder!r}")
+    return folder
+
 
 @dataclass
 class MailAccountConfig:
@@ -223,18 +244,23 @@ def _list_folders_blocking(cfg: MailAccountConfig) -> list[str]:
 def _list_messages_blocking(
     cfg: MailAccountConfig, folder: str, limit: int
 ) -> list[MessageEnvelope]:
+    _validate_folder(folder)
+    limit = max(1, min(limit, MAX_MESSAGE_LIMIT))
     conn = _imap_connect(cfg)
     try:
         conn.select(f'"{folder}"', readonly=True)
-        typ, data = conn.search(None, "ALL")
+        # UID SEARCH/FETCH so the identifier surfaced to the client is a stable
+        # IMAP UID, not a sequence number (which the server renumbers when
+        # messages are expunged, breaking a later open/delete by that id).
+        typ, data = conn.uid("SEARCH", None, "ALL")
         if typ != "OK" or not data or not data[0]:
             return []
         ids = data[0].split()
         ids = ids[-limit:][::-1]  # newest first
         envelopes: list[MessageEnvelope] = []
         for num in ids:
-            typ, msg_data = conn.fetch(
-                num, "(FLAGS BODY.PEEK[HEADER] BODY.PEEK[TEXT]<0.4096>)"
+            typ, msg_data = conn.uid(
+                "FETCH", num, "(FLAGS BODY.PEEK[HEADER] BODY.PEEK[TEXT]<0.4096>)"
             )
             if typ != "OK" or not msg_data:
                 continue
@@ -255,10 +281,12 @@ def _list_messages_blocking(
 def _get_message_blocking(
     cfg: MailAccountConfig, folder: str, uid: str
 ) -> MessageDetail | None:
+    _validate_folder(folder)
     conn = _imap_connect(cfg)
     try:
         conn.select(f'"{folder}"', readonly=True)
-        typ, msg_data = conn.fetch(uid, "(RFC822)")
+        # Fetch by UID to match the stable id handed out by list_messages.
+        typ, msg_data = conn.uid("FETCH", uid, "(RFC822)")
         if typ != "OK" or not msg_data or not msg_data[0]:
             return None
         raw_email = msg_data[0][1]
