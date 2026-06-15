@@ -305,9 +305,12 @@ def _persist_cache() -> None:
         return
     try:
         _cache_path.parent.mkdir(parents=True, exist_ok=True)
-        _cache_path.write_text(
+        # Atomic write: a crash mid-write must not corrupt the persisted cache.
+        tmp_path = _cache_path.with_name(_cache_path.name + ".tmp")
+        tmp_path.write_text(
             json.dumps({r: [exp, stars] for r, (exp, stars) in _star_cache.items()})
         )
+        tmp_path.replace(_cache_path)
     except Exception as exc:
         logger.debug("store popularity cache persist failed: %s", exc)
 
