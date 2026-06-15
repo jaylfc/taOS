@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { Search, X } from "lucide-react";
-import { getAllApps, getApp } from "@/registry/app-registry";
+import { getLaunchableApps, getApp } from "@/registry/app-registry";
 import { useProcessStore } from "@/stores/process-store";
 import { useShortcut } from "@/hooks/use-shortcut-registry";
+import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
 import * as icons from "lucide-react";
 
 interface Props {
@@ -28,6 +29,7 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
   openRef.current = open;
   const { openWindow } = useProcessStore();
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const installedOptional = useInstalledOptionalApps();
 
   // Register Escape at overlay priority so it beats any system shortcuts when open
   useShortcut("Escape", () => { if (openRef.current) onClose(); }, "Close search", "overlay");
@@ -41,7 +43,7 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
   }, [open]);
 
   const appResults = useMemo<SearchResult[]>(() => {
-    const all = getAllApps();
+    const all = getLaunchableApps(installedOptional);
     const q = query.toLowerCase().trim();
 
     return all
@@ -62,7 +64,7 @@ export function SearchPalette({ open, onClose, onOpenApp }: Props) {
           onClose();
         },
       }));
-  }, [query, openWindow, onClose, onOpenApp]);
+  }, [query, openWindow, onClose, onOpenApp, installedOptional]);
 
   const [memoryResults, setMemoryResults] = useState<SearchResult[]>([]);
 

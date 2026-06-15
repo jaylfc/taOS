@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { InstalledService } from "@/hooks/use-installed-services";
-import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
+import { emitAppEvent, onAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 
 // Mockable list of installed services returned by the hook.
 let mockServices: InstalledService[] = [];
+
+vi.mock("@/hooks/use-installed-optional-apps", () => ({
+  useInstalledOptionalApps: () => new Set<string>(),
+}));
 
 vi.mock("@/hooks/use-installed-services", () => ({
   useInstalledServices: () => mockServices,
@@ -21,10 +25,11 @@ vi.mock("@/stores/process-store", () => ({
   useProcessStore: () => ({ openWindow }),
 }));
 
-// Registry: getAllApps returns no core apps so the test isolates the Services
-// section; getApp/getOrRegisterServiceApp echo a minimal manifest.
+// Registry: getLaunchableApps returns no core apps so the test isolates the
+// Services section; getApp/getOrRegisterServiceApp echo a minimal manifest.
 vi.mock("@/registry/app-registry", () => ({
   getAllApps: () => [],
+  getLaunchableApps: () => [],
   getApp: (id: string) => ({ id, defaultSize: { w: 100, h: 100 } }),
   getOrRegisterServiceApp: (appId: string, displayName: string) => ({
     id: `service:${appId}`,
@@ -94,7 +99,6 @@ describe("Launchpad Services section", () => {
     // Verify the EventBus module works correctly in isolation:
     // emitting an event should invoke any registered listener.
     const listener = vi.fn();
-    const { onAppEvent } = require("@/lib/app-event-bus");
     const unsub = onAppEvent(APP_INSTALLED, listener);
     act(() => { emitAppEvent(APP_INSTALLED, "searxng"); });
     expect(listener).toHaveBeenCalledWith("searxng");

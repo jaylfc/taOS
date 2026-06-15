@@ -3,7 +3,7 @@ import { useMobileHomeStore } from "./mobile-home-store";
 import { getAllApps } from "@/registry/app-registry";
 
 describe("mobile-home-store", () => {
-  it("home grid includes every registered app", () => {
+  it("home grid includes every non-optional registered app", () => {
     const { pages } = useMobileHomeStore.getState();
     const allIdsInPages = new Set(
       pages.flatMap((p) =>
@@ -12,9 +12,15 @@ describe("mobile-home-store", () => {
           .map((i) => (i as { type: "app"; appId: string }).appId),
       ),
     );
-    const registryIds = getAllApps().map((a) => a.id);
-    for (const id of registryIds) {
+    // Optional apps (Reddit/YouTube/GitHub/X) ship uninstalled and are added
+    // from the Store, so they are intentionally absent from the default grid.
+    const defaultIds = getAllApps().filter((a) => !a.optional).map((a) => a.id);
+    for (const id of defaultIds) {
       expect(allIdsInPages.has(id), `missing app "${id}" in home grid`).toBe(true);
+    }
+    const optionalIds = getAllApps().filter((a) => a.optional).map((a) => a.id);
+    for (const id of optionalIds) {
+      expect(allIdsInPages.has(id), `optional app "${id}" should NOT be in default grid`).toBe(false);
     }
   });
 

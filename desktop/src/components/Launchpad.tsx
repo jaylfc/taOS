@@ -1,11 +1,12 @@
 import { useState, useMemo, useRef } from "react";
 import { Search, X } from "lucide-react";
-import { getAllApps, getApp, getOrRegisterServiceApp } from "@/registry/app-registry";
+import { getLaunchableApps, getApp, getOrRegisterServiceApp } from "@/registry/app-registry";
 import { useProcessStore } from "@/stores/process-store";
 import { useShortcut } from "@/hooks/use-shortcut-registry";
 import { LaunchpadIcon } from "./LaunchpadIcon";
 import { ServiceIcon } from "./ServiceIcon";
 import { useInstalledServices } from "@/hooks/use-installed-services";
+import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
 
 interface Props {
   open: boolean;
@@ -26,6 +27,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
   openRef.current = open;
   const { openWindow } = useProcessStore();
   const installedServices = useInstalledServices();
+  const installedOptional = useInstalledOptionalApps();
 
   // Register Escape at overlay priority so it beats any system shortcuts when open
   useShortcut("Escape", () => { if (openRef.current) onClose(); }, "Close launchpad", "overlay");
@@ -37,11 +39,13 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
     // /api/apps/installed). Exclude any dynamically-registered service:* apps
     // from the registry grouping so they don't also appear under a built-in
     // category (e.g. SearXNG showing under both Platform and Services).
-    const all = getAllApps().filter((a) => !a.id.startsWith("service:"));
+    const all = getLaunchableApps(installedOptional).filter(
+      (a) => !a.id.startsWith("service:"),
+    );
     if (!query.trim()) return all;
     const q = query.toLowerCase();
     return all.filter((a) => a.name.toLowerCase().includes(q));
-  }, [query]);
+  }, [query, installedOptional]);
 
   const grouped = useMemo(() => {
     const groups: Record<string, typeof apps> = {};

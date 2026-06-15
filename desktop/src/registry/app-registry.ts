@@ -11,6 +11,13 @@ export interface AppManifest {
   singleton: boolean;
   pinned: boolean;
   launchpadOrder: number;
+  /**
+   * Optional apps ship in the build but are NOT installed by default. The
+   * desktop launcher (launchpad, search, mobile home) hides them until the
+   * user installs them from the Store's "taOS Apps" section. Install state is
+   * persisted server-side (installed_apps, kind=frontend-app).
+   */
+  optional?: boolean;
 }
 
 const apps: AppManifest[] = [
@@ -35,10 +42,10 @@ const apps: AppManifest[] = [
   { id: "import", name: "Import", icon: "upload", category: "platform", component: () => import("@/apps/ImportApp").then((m) => ({ default: m.ImportApp })), defaultSize: { w: 700, h: 450 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 12 },
   { id: "images", name: "Images", icon: "image", category: "platform", component: () => import("@/apps/ImagesApp").then((m) => ({ default: m.ImagesApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 13 },
   { id: "library", name: "Library", icon: "book-open", category: "platform", component: () => import("@/apps/LibraryApp").then((m) => ({ default: m.LibraryApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: true, launchpadOrder: 13.5 },
-  { id: "reddit", name: "Reddit", icon: "scroll-text", category: "platform", component: () => import("@/apps/RedditApp").then((m) => ({ default: m.RedditApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 14 },
-  { id: "youtube-library", name: "YouTube", icon: "play-circle", category: "platform", component: () => import("@/apps/YouTubeApp").then((m) => ({ default: m.YouTubeApp })), defaultSize: { w: 1050, h: 700 }, minSize: { w: 600, h: 450 }, singleton: true, pinned: false, launchpadOrder: 14.5 },
-  { id: "github-browser", name: "GitHub", icon: "github", category: "platform", component: () => import("@/apps/GitHubApp").then((m) => ({ default: m.GitHubApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 15 },
-  { id: "x-monitor", name: "X", icon: "at-sign", category: "platform", component: () => import("@/apps/XApp").then((m) => ({ default: m.XApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 15.5 },
+  { id: "reddit", name: "Reddit", icon: "scroll-text", category: "platform", component: () => import("@/apps/RedditApp").then((m) => ({ default: m.RedditApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 14, optional: true },
+  { id: "youtube-library", name: "YouTube", icon: "play-circle", category: "platform", component: () => import("@/apps/YouTubeApp").then((m) => ({ default: m.YouTubeApp })), defaultSize: { w: 1050, h: 700 }, minSize: { w: 600, h: 450 }, singleton: true, pinned: false, launchpadOrder: 14.5, optional: true },
+  { id: "github-browser", name: "GitHub", icon: "github", category: "platform", component: () => import("@/apps/GitHubApp").then((m) => ({ default: m.GitHubApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 15, optional: true },
+  { id: "x-monitor", name: "X", icon: "at-sign", category: "platform", component: () => import("@/apps/XApp").then((m) => ({ default: m.XApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 15.5, optional: true },
   { id: "agent-browsers", name: "Browsers", icon: "globe", category: "platform", component: () => import("@/apps/AgentBrowsersApp").then((m) => ({ default: m.AgentBrowsersApp })), defaultSize: { w: 1000, h: 650 }, minSize: { w: 550, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16 },
 
   // OS apps
@@ -101,6 +108,20 @@ export function getAppsByCategory(category: AppManifest["category"]): AppManifes
 
 export function getAllApps(): AppManifest[] {
   return [...apps].sort((a, b) => a.launchpadOrder - b.launchpadOrder);
+}
+
+/** The optional (Store-installable) apps, in launchpad order. */
+export function getOptionalApps(): AppManifest[] {
+  return getAllApps().filter((a) => a.optional);
+}
+
+/**
+ * Apps the desktop launcher should surface: every always-on app plus the
+ * optional apps the user has installed. `installedOptional` is the set of
+ * installed optional app ids (from /api/apps/optional/installed).
+ */
+export function getLaunchableApps(installedOptional: Set<string>): AppManifest[] {
+  return getAllApps().filter((a) => !a.optional || installedOptional.has(a.id));
 }
 
 const prefetched = new Set<string>();

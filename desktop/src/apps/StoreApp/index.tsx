@@ -15,6 +15,7 @@ import { resolveModel, type ResolveResponse } from "./resolver-types";
 import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
 import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
+import { TaosAppsSection } from "./TaosAppsSection";
 
 /* ------------------------------------------------------------------
    Dashboard-icons CDN helper
@@ -1164,6 +1165,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             <DiscoverView apps={apps} onInstall={handleInstall} installTargets={installTargets} />
           ) : showGrid ? (
             <>
+              {activeNav === "apps" && !searching && <TaosAppsSection />}
               <div className="mb-4 flex items-baseline justify-between">
                 <div>
                   <h2 className="text-[17px] font-bold text-shell-text">{searching ? `Results for "${search.trim()}"` : NAV.find((n) => n.id === activeNav)?.label}</h2>

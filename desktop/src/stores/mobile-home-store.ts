@@ -21,7 +21,11 @@ const DEFAULT_PAGES: HomePage[] = [
     ],
   },
   {
-    items: getAllApps().map((a) => ({ type: "app", appId: a.id }) as AppItem),
+    // Optional apps (Reddit/YouTube/GitHub/X) are excluded from the default
+    // home grid; they ship uninstalled and are added from the Store.
+    items: getAllApps()
+      .filter((a) => !a.optional)
+      .map((a) => ({ type: "app", appId: a.id }) as AppItem),
   },
 ];
 

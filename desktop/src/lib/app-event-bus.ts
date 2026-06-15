@@ -30,3 +30,10 @@ export function onAppEvent(
 
 /** Event name emitted on successful app install. */
 export const APP_INSTALLED = "app.installed";
+
+/**
+ * Emitted when an optional frontend app is installed or removed from the Store,
+ * so the launchpad / search / mobile home re-fetch their installed set and the
+ * app appears or disappears immediately. Detail is the affected app id.
+ */
+export const APP_OPTIONAL_CHANGED = "app.optional.changed";
