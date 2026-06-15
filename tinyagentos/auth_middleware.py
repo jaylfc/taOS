@@ -61,13 +61,16 @@ _PREPARE_SHUTDOWN = "/api/system/prepare-shutdown"
 
 
 def _is_loopback_client(request: Request) -> bool:
-    """Return True when the request originates from the loopback interface.
+    """Return True only when the request's immediate TCP peer is loopback.
 
-    request.client.host is the immediate peer address; for a direct localhost
-    connection that is 127.0.0.1 or ::1. taOS binds to 127.0.0.1 by default and
-    has no trusted reverse proxy in front of it, so we do NOT honour
-    X-Forwarded-For here: a remote caller cannot spoof loopback by setting a
-    header.
+    The controller binds 0.0.0.0, so it IS reachable remotely; the safety here
+    does not come from the bind address. request.client.host is the immediate
+    peer of the TCP connection (set by the ASGI server from the socket), which a
+    remote caller cannot make 127.0.0.1 / ::1 -- they would have to be connecting
+    over the loopback interface, i.e. already on the host. We deliberately do NOT
+    consult X-Forwarded-For (taOS runs no trusted reverse proxy that would set
+    it), so a remote caller cannot spoof loopback with a header. If a trusted
+    proxy is ever placed in front, this check must be revisited.
     """
     client = request.client
     if client is None:
