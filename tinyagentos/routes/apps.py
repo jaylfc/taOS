@@ -12,10 +12,22 @@ a runtime location.
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
 _GENERIC_ICON = "/static/app-icons/generic-service.svg"
+
+# Optional, frontend-only desktop apps that ship in the build but are NOT
+# installed by default. They live in the Store under "taOS Apps" and the
+# desktop launcher hides them until the user installs one. Install state is a
+# single row in installed_apps tagged kind="frontend-app" (no runtime/service is
+# spawned), so these never appear in /api/apps/installed (which requires a
+# runtime location). The frontend owns name/icon/cover; the backend only tracks
+# which ids are installed, gated to this allowlist so the endpoint can't be used
+# to write arbitrary install rows.
+OPTIONAL_FRONTEND_APPS = {"reddit", "youtube-library", "github-browser", "x-monitor"}
+_FRONTEND_APP_KIND = "frontend-app"
 
 
 def _resolve_icon(manifest_icon: str, manifest_dir) -> str:
@@ -114,3 +126,57 @@ async def list_installed_apps(request: Request):
         })
 
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Optional frontend apps (Reddit / YouTube / GitHub / X) — Store install state.
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/api/apps/optional/installed")
+async def list_installed_optional_apps(request: Request):
+    """Return the ids of optional frontend apps the user has installed.
+
+    Shape: {"installed": ["reddit", "x-monitor"]}. The desktop launcher unions
+    this with the always-on apps to decide what to show; the Store uses it to
+    render Install vs Remove. Unknown/legacy rows are ignored via the allowlist.
+    """
+    store = getattr(request.app.state, "installed_apps", None)
+    if store is None:
+        return {"installed": []}
+    rows = await store.list_installed()
+    installed = [
+        r["app_id"]
+        for r in rows
+        if r["app_id"] in OPTIONAL_FRONTEND_APPS
+        and (r.get("metadata") or {}).get("kind") == _FRONTEND_APP_KIND
+    ]
+    return {"installed": installed}
+
+
+@router.post("/api/apps/optional/{app_id}/install")
+async def install_optional_app(app_id: str, request: Request):
+    """Mark an optional frontend app installed. Instant — no service is spawned.
+
+    Rejected unless app_id is in the OPTIONAL_FRONTEND_APPS allowlist so this
+    endpoint can't seed arbitrary install rows.
+    """
+    if app_id not in OPTIONAL_FRONTEND_APPS:
+        return JSONResponse({"error": f"not an optional app: {app_id}"}, status_code=404)
+    store = getattr(request.app.state, "installed_apps", None)
+    if store is None:
+        return JSONResponse({"error": "install store unavailable"}, status_code=503)
+    await store.install(app_id, metadata={"kind": _FRONTEND_APP_KIND})
+    return {"status": "installed", "app_id": app_id}
+
+
+@router.post("/api/apps/optional/{app_id}/uninstall")
+async def uninstall_optional_app(app_id: str, request: Request):
+    """Remove an optional frontend app so it leaves the launcher again."""
+    if app_id not in OPTIONAL_FRONTEND_APPS:
+        return JSONResponse({"error": f"not an optional app: {app_id}"}, status_code=404)
+    store = getattr(request.app.state, "installed_apps", None)
+    if store is None:
+        return JSONResponse({"error": "install store unavailable"}, status_code=503)
+    await store.uninstall(app_id)
+    return {"status": "uninstalled", "app_id": app_id}
