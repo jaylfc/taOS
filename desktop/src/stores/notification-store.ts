@@ -19,6 +19,7 @@ interface NotificationStore {
   centreOpen: boolean;
 
   addNotification: (n: Omit<Notification, "id" | "read" | "timestamp">) => string;
+  mergeServerNotifications: (items: Notification[]) => void;
   markRead: (id: string) => void;
   markAllRead: () => void;
   dismiss: (id: string) => void;
@@ -44,6 +45,26 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     };
     set((s) => ({ notifications: [notif, ...s.notifications].slice(0, 100) }));
     return id;
+  },
+
+  mergeServerNotifications(items) {
+    set((s) => {
+      // Read state already applied locally for a server item must survive a
+      // poll, so the fresh row is OR-ed with the prior local read flag.
+      const priorRead = new Map<string, boolean>();
+      for (const n of s.notifications) {
+        if (n.id.startsWith("srv-") && n.read) priorRead.set(n.id, true);
+      }
+      const merged = items.map((n) =>
+        priorRead.get(n.id) ? { ...n, read: true } : n,
+      );
+      // Keep every client-origin item ("notif-N") untouched, drop the old
+      // server items (replaced by the fresh list), de-dupe, sort newest-first.
+      const client = s.notifications.filter((n) => !n.id.startsWith("srv-"));
+      const combined = [...merged, ...client];
+      combined.sort((a, b) => b.timestamp - a.timestamp);
+      return { notifications: combined.slice(0, 100) };
+    });
   },
 
   markRead(id) {

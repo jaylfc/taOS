@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { X, Bell, CheckCheck, Trash2 } from "lucide-react";
 import { useNotificationStore } from "@/stores/notification-store";
+import { markServerRead, markAllServerRead } from "@/lib/server-notifications";
 import { SetupChecklist } from "./SetupChecklist";
 
 function formatTime(ts: number): string {
@@ -14,6 +15,18 @@ function formatTime(ts: number): string {
 export function NotificationCentre() {
   const { notifications, centreOpen, closeCentre, markRead, markAllRead, clearAll, dismiss } = useNotificationStore();
   const [checklistDismissed, setChecklistDismissed] = useState(false);
+
+  // Optimistic local mark-read, plus a best-effort backend write for server
+  // items so the read state persists across reloads. Network never blocks the UI.
+  const handleMarkRead = (id: string) => {
+    markRead(id);
+    void markServerRead(id);
+  };
+
+  const handleMarkAllRead = () => {
+    markAllRead();
+    void markAllServerRead();
+  };
 
   if (!centreOpen) return null;
 
@@ -56,7 +69,7 @@ export function NotificationCentre() {
           <div className="flex items-center gap-1">
             {notifications.length > 0 && (
               <>
-                <button onClick={markAllRead} className="p-1.5 rounded hover:bg-white/5" title="Mark all read">
+                <button onClick={handleMarkAllRead} className="p-1.5 rounded hover:bg-white/5" title="Mark all read">
                   <CheckCheck size={14} className="text-shell-text-tertiary" />
                 </button>
                 <button onClick={clearAll} className="p-1.5 rounded hover:bg-white/5" title="Clear all">
@@ -84,7 +97,7 @@ export function NotificationCentre() {
             notifications.map((n) => (
               <button
                 key={n.id}
-                onClick={() => markRead(n.id)}
+                onClick={() => handleMarkRead(n.id)}
                 className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors ${!n.read ? "bg-accent/5" : ""}`}
               >
                 <div className="flex items-start justify-between gap-2">
