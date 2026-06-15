@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -50,6 +52,30 @@ _CLUSTER_PAIRING_ANNOUNCE = "/api/cluster/pairing/announce"
 _CLUSTER_PAIRING_CLAIM = "/api/cluster/pairing/claim"
 _CLUSTER_WORKERS = "/api/cluster/workers"
 _CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
+
+# Local-only shutdown drain: the systemd ExecStop hook (taos-graceful-stop)
+# POSTs this from localhost with no session cookie and no token, so it was
+# getting 401 and the in-app drain never ran. We exempt it ONLY for loopback
+# callers (127.0.0.1 / ::1) so a remote caller still hits the normal auth gate.
+_PREPARE_SHUTDOWN = "/api/system/prepare-shutdown"
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """Return True when the request originates from the loopback interface.
+
+    request.client.host is the immediate peer address; for a direct localhost
+    connection that is 127.0.0.1 or ::1. taOS binds to 127.0.0.1 by default and
+    has no trusted reverse proxy in front of it, so we do NOT honour
+    X-Forwarded-For here: a remote caller cannot spoof loopback by setting a
+    header.
+    """
+    client = request.client
+    if client is None:
+        return False
+    try:
+        return ipaddress.ip_address(client.host).is_loopback
+    except ValueError:
+        return False
 
 
 def _is_exempt(method: str, path: str) -> bool:
@@ -107,6 +133,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "exempt"
+            return await call_next(request)
+
+        # Loopback-only shutdown drain: POST /api/system/prepare-shutdown from
+        # the local systemd stop hook (curl on 127.0.0.1, no session/token).
+        # Remote callers fall through to the normal session gate below.
+        if (
+            request.method == "POST"
+            and path == _PREPARE_SHUTDOWN
+            and _is_loopback_client(request)
+        ):
+            request.state.user_id = None
+            request.state.is_admin = False
+            request.state.via = "loopback"
             return await call_next(request)
 
         # Local token (Authorization: Bearer <token>) is accepted as a

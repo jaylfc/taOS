@@ -102,7 +102,7 @@ PROJECT_DIR = Path(__file__).parent.parent
 _STARTUP_EXEMPT_PATHS = frozenset({"/api/health", "/api/version"})
 _STARTUP_EXEMPT_PREFIXES = ("/static/", "/desktop/", "/chat-pwa/", "/ws/", "/auth/", "/setup", "/shortcut/")
 
-from tinyagentos.task_utils import _create_supervised_task  # noqa: E402
+from tinyagentos.task_utils import _create_supervised_task, cancel_and_wait  # noqa: E402
 
 
 def _resolve_browser_cookie_key(data_dir: "Path") -> str:
@@ -1031,13 +1031,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # gracefully drain here. Only true system halt (system-shutdown) and
         # explicit agent pause/stop go through the orchestrator.
 
-        # Cancel supervised background tasks (fire-and-forget loops etc.)
-        _bg = getattr(app.state, "_background_tasks", set())
-        for _t in list(_bg):
-            if not _t.done():
-                _t.cancel()
-        if _bg:
-            await asyncio.gather(*_bg, return_exceptions=True)
+        # Cancel supervised background tasks (fire-and-forget loops etc.) plus
+        # the local-heartbeat loop under ONE bounded budget. An unbounded gather
+        # here is what stranded shutdown in the FastAPI lifespan: if any loop did
+        # not unwind promptly on cancel, the context manager blocked until systemd
+        # SIGKILLed the process at TimeoutStopUSec (~45s). cancel_and_wait caps the
+        # wait and logs any straggler by name instead of blocking forever.
+        _bg = set(getattr(app.state, "_background_tasks", set()))
+        _hb_task = getattr(app.state, "local_heartbeat_task", None)
+        if _hb_task is not None:
+            _bg.add(_hb_task)
+        await cancel_and_wait(_bg, timeout=5.0)
 
         # Unregister mDNS first so the goodbye packet goes out before other
         # services start tearing down (and potentially blocking the loop).
@@ -1052,15 +1056,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await c.stop()
         await score_cache.stop()
         await backend_catalog.stop()
-        _hb_task = getattr(app.state, "local_heartbeat_task", None)
-        if _hb_task is not None:
-            _hb_task.cancel()
-            # Await it so the loop has actually exited before teardown moves on
-            # (cancel() alone doesn't guarantee the coroutine has unwound).
-            try:
-                await _hb_task
-            except asyncio.CancelledError:
-                pass
+        # local_heartbeat_task is cancelled+awaited above under the bounded
+        # cancel_and_wait budget alongside the supervised background tasks.
         await cluster_manager.stop()
         llm_proxy.stop()
         try:
