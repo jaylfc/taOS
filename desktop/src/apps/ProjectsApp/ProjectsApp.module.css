@@ -1,0 +1,530 @@
+/* Projects app redesign (task #59).
+   Tokens come from theme/tokens.css so dark and light both work; no hardcoded
+   theme colors here beyond the board status hues, which mirror the existing
+   board tokens. */
+
+/* ---- left sidebar: project list ---- */
+.sidebar {
+  width: 248px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-shell-bg-deep);
+  border-right: 1px solid var(--color-shell-border);
+  height: 100%;
+  min-height: 0;
+}
+.sbHead {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+.sbHead h2 {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-shell-text);
+}
+.newBtn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 999px;
+  padding: 5px 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.newBtn:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text);
+  border-color: var(--color-shell-border-strong);
+}
+.newBtn svg {
+  width: 13px;
+  height: 13px;
+}
+.sbList {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  list-style: none;
+  margin: 0;
+}
+.pj {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: 2px;
+  color: var(--color-shell-text);
+}
+.pj:hover {
+  background: var(--color-shell-surface-hover);
+}
+.pjOn {
+  background: var(--color-shell-surface-active);
+}
+.pjOn .pjMark {
+  box-shadow: 0 0 0 2px var(--color-accent-glow);
+}
+.pjMark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #15161a;
+  background: linear-gradient(135deg, #7c8ba1, #aab4c9);
+}
+.pjBody {
+  min-width: 0;
+  flex: 1;
+}
+.pjName {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pjMeta {
+  font-size: 11px;
+  color: var(--color-shell-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pjDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+  flex: none;
+  box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.15);
+}
+.sbEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px 16px;
+  text-align: center;
+  gap: 12px;
+}
+.sbEmpty p {
+  margin: 0;
+}
+.sbEmptyTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-shell-text);
+}
+.sbEmptySub {
+  font-size: 12px;
+  color: var(--color-shell-text-secondary);
+  line-height: 1.45;
+}
+
+/* ---- main column header ---- */
+.header {
+  flex: none;
+  padding: 14px 22px 0;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.titleRow h1 {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-shell-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desc {
+  font-size: 12.5px;
+  color: var(--color-shell-text-secondary);
+  margin-top: 4px;
+  max-width: 680px;
+  line-height: 1.45;
+}
+
+/* presence row */
+.presence {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.stack {
+  display: flex;
+}
+.av {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--color-shell-bg);
+  margin-left: -8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  position: relative;
+}
+.av:first-child {
+  margin-left: 0;
+}
+.avHuman {
+  background: linear-gradient(135deg, #6f7d93, #9aa4b8);
+  color: #15161a;
+}
+.avAgent {
+  background: linear-gradient(135deg, #2c303b, #444a5b);
+  color: var(--color-shell-text);
+}
+.avRing {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+  border: 2px solid var(--color-shell-bg);
+}
+.presenceLbl {
+  font-size: 11px;
+  color: var(--color-shell-text-tertiary);
+  font-weight: 600;
+}
+
+/* tabs */
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 10px 0 0;
+  margin-top: 12px;
+  overflow-x: auto;
+}
+.tab {
+  position: relative;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-shell-text-tertiary);
+  padding: 8px 13px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s;
+  border: none;
+  background: none;
+  text-transform: capitalize;
+}
+.tab:hover {
+  color: var(--color-shell-text-secondary);
+}
+.tabOn {
+  color: var(--color-shell-text);
+}
+.tabOn::after {
+  content: "";
+  position: absolute;
+  left: 11px;
+  right: 11px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-accent-strong);
+}
+
+/* panel host */
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.panelPad {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 22px;
+}
+
+/* =========================================================
+   WORKSPACE (hero) split pane
+   ========================================================= */
+.ws {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.wsLeft {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.wsDivider {
+  width: 5px;
+  flex: none;
+  cursor: col-resize;
+  position: relative;
+  background: transparent;
+}
+.wsDivider::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-shell-border);
+}
+.wsDivider::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 34px;
+  border-radius: 99px;
+  background: var(--color-shell-border-strong);
+}
+.wsRight {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-shell-bg-deep);
+}
+
+/* left: thread host (MessagesApp scoped to the project) */
+.wsThread {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* right: preview pane */
+.pvBar {
+  height: 50px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+.seg {
+  display: flex;
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 999px;
+  padding: 3px;
+}
+.seg button {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+  padding: 5px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  transition: all 0.15s;
+}
+.segOn {
+  background: var(--color-shell-surface-active);
+  color: var(--color-shell-text) !important;
+}
+.pvLive {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+}
+.pvPulse {
+  position: relative;
+  width: 7px;
+  height: 7px;
+}
+.pvPulse i {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+}
+.pvPulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-board-status-closed, #30d158);
+  animation: pvPulse 2.2s ease-out infinite;
+}
+@keyframes pvPulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(3); opacity: 0; }
+}
+.pvTools {
+  margin-left: auto;
+  display: flex;
+  gap: 5px;
+}
+.pvTool {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-shell-text-tertiary);
+  cursor: pointer;
+  border: 1px solid var(--color-shell-border);
+  background: var(--color-shell-surface);
+  transition: all 0.15s;
+}
+.pvTool:hover {
+  background: var(--color-shell-surface-hover);
+  color: var(--color-shell-text-secondary);
+  border-color: var(--color-shell-border-strong);
+}
+.pvTool svg {
+  width: 15px;
+  height: 15px;
+}
+.pvStage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.pvCanvas {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* honest preview placeholder */
+.placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 40px;
+  text-align: center;
+}
+.phIc {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-shell-surface);
+  border: 1px solid var(--color-shell-border);
+}
+.phIc svg {
+  width: 28px;
+  height: 28px;
+  color: var(--color-accent-strong);
+}
+.placeholder h3 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-shell-text);
+}
+.placeholder p {
+  font-size: 12.5px;
+  color: var(--color-shell-text-secondary);
+  max-width: 340px;
+  line-height: 1.5;
+}
+.tagb {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-accent-strong);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent-line);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+/* code view */
+.codeStage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.codeView {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.65;
+  background: var(--color-shell-bg);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  color: var(--color-shell-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* =========================================================
+   Mobile: stack the split pane
+   ========================================================= */
+@media (max-width: 767px) {
+  .ws {
+    flex-direction: column;
+  }
+  .wsDivider {
+    display: none;
+  }
+  .wsRight {
+    width: 100% !important;
+    border-top: 1px solid var(--color-shell-border);
+    min-height: 280px;
+  }
+}

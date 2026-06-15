@@ -42,10 +42,12 @@ describe("ProjectsApp mobile shell", () => {
     expect(screen.getByTestId("mobile-split-view")).toHaveAttribute("data-list-title", "Projects");
   });
 
-  it("renders side-by-side flex layout when useIsMobile is false", () => {
+  it("renders side-by-side layout (project-list sidebar + main) when useIsMobile is false", () => {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
     render(<ProjectsApp windowId="test-window" />);
     expect(screen.queryByTestId("mobile-split-view")).not.toBeInTheDocument();
-    expect(document.querySelector("aside.w-72")).toBeInTheDocument();
+    // ProjectList (the 248px sidebar) and the main detail column render together.
+    expect(screen.getByTestId("project-list")).toBeInTheDocument();
+    expect(document.querySelector("main")).toBeInTheDocument();
   });
 });

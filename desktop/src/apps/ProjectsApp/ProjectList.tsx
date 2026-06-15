@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Project } from "@/lib/projects";
 import { CreateProjectDialog } from "./CreateProjectDialog";
+import styles from "./ProjectsApp.module.css";
 
 type Props = {
   projects: Project[];
@@ -9,30 +10,42 @@ type Props = {
   onCreated: () => void;
 };
 
+function mark(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
+  return (words[0]![0]! + words[1]![0]!).toUpperCase();
+}
+
 export function ProjectList({ projects, selectedId, onSelect, onCreated }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
   return (
-    <>
-      <header className="p-3 border-b border-zinc-800 flex items-center justify-between">
-        <h2 className="font-medium">Projects</h2>
+    <aside className={styles.sidebar}>
+      <header className={styles.sbHead}>
+        <h2>Projects</h2>
         <button
           type="button"
           aria-label="Create project"
-          className="text-sm px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700"
+          className={styles.newBtn}
           onClick={() => setDialogOpen(true)}
         >
-          + New
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          New
         </button>
       </header>
-      <ul className="flex-1 overflow-auto" aria-label="Projects">
+      <ul className={styles.sbList} aria-label="Projects">
         {projects.length === 0 ? (
-          <li className="flex flex-col items-center justify-center h-full px-4 py-12 text-center gap-3">
-            <p className="text-sm font-medium text-zinc-300">No projects yet</p>
-            <p className="text-xs text-zinc-500">Organise your work and agent conversations into projects.</p>
+          <li className={styles.sbEmpty}>
+            <p className={styles.sbEmptyTitle}>No projects yet</p>
+            <p className={styles.sbEmptySub}>
+              Organise your work and agent conversations into projects.
+            </p>
             <button
               type="button"
               onClick={() => setDialogOpen(true)}
-              className="mt-1 text-sm px-3 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100"
+              className={styles.newBtn}
             >
               Create your first project
             </button>
@@ -44,12 +57,13 @@ export function ProjectList({ projects, selectedId, onSelect, onCreated }: Props
                 type="button"
                 aria-pressed={p.id === selectedId}
                 onClick={() => onSelect(p.id)}
-                className={`w-full text-left px-3 py-2 hover:bg-zinc-800 ${
-                  p.id === selectedId ? "bg-zinc-800" : ""
-                }`}
+                className={`${styles.pj} ${p.id === selectedId ? styles.pjOn : ""}`}
               >
-                <div className="font-medium">{p.name}</div>
-                <div className="text-xs text-zinc-500">{p.slug}</div>
+                <span className={styles.pjMark} aria-hidden>{mark(p.name)}</span>
+                <span className={styles.pjBody}>
+                  <span className={styles.pjName}>{p.name}</span>
+                  <span className={styles.pjMeta}>{p.slug}</span>
+                </span>
               </button>
             </li>
           ))
@@ -64,6 +78,6 @@ export function ProjectList({ projects, selectedId, onSelect, onCreated }: Props
           }}
         />
       )}
-    </>
+    </aside>
   );
 }

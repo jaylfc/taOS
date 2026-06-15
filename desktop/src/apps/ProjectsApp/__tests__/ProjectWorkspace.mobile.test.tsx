@@ -8,7 +8,7 @@ vi.mock("../../../hooks/use-is-mobile", () => ({
 }));
 import { useIsMobile } from "../../../hooks/use-is-mobile";
 
-// Mock heavy children — we only care about the tab strip switch here.
+// Mock heavy children: we only care about the tab strip switch here.
 vi.mock("../board/ProjectBoard", () => ({ ProjectBoard: () => <div /> }));
 vi.mock("../board/TaskModal", () => ({ TaskModal: () => <div /> }));
 vi.mock("../canvas/CanvasView", () => ({ CanvasView: () => <div /> }));
@@ -17,6 +17,7 @@ vi.mock("../ProjectMembers", () => ({ ProjectMembers: () => <div /> }));
 vi.mock("../ProjectActivity", () => ({ ProjectActivity: () => <div /> }));
 vi.mock("@/apps/FilesApp", () => ({ FilesApp: () => <div /> }));
 vi.mock("@/apps/MessagesApp", () => ({ MessagesApp: () => <div /> }));
+vi.mock("../ProjectWorkspacePane", () => ({ ProjectWorkspacePane: () => <div data-testid="workspace-pane" /> }));
 
 const fakeProject: Project = {
   id: "p1",
@@ -62,10 +63,34 @@ describe("ProjectWorkspace tab strip", () => {
     expect(screen.queryByTestId("workspace-tab-pills-scroller")).not.toBeInTheDocument();
   });
 
+  it("defaults to the Workspace tab and renders the workspace pane", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    await act(async () => {
+      render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
+    });
+    expect(screen.getByRole("tab", { name: "workspace" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("workspace-pane")).toBeInTheDocument();
+  });
+
+  it("switches tabs when a tab is clicked", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    await act(async () => {
+      render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: "members" }));
+    });
+    expect(screen.getByRole("tab", { name: "members" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByTestId("workspace-pane")).not.toBeInTheDocument();
+  });
+
   it("renders the FAB on mobile when the Tasks tab is active", async () => {
     (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
     await act(async () => {
       render(<ProjectWorkspace project={fakeProject} onChanged={() => {}} />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: "Tasks" }));
     });
     expect(screen.getByLabelText("Create task")).toBeInTheDocument();
   });

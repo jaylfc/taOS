@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { projectsApi, type Project } from "@/lib/projects";
+import { useEffect, useMemo, useState } from "react";
+import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
 import { ProjectTaskList } from "./ProjectTaskList";
 import { ProjectMembers } from "./ProjectMembers";
 import { ProjectActivity } from "./ProjectActivity";
@@ -8,13 +8,22 @@ import { TaskModal } from "./board/TaskModal";
 import { FilesApp } from "@/apps/FilesApp";
 import { MessagesApp } from "@/apps/MessagesApp";
 import { CanvasView } from "./canvas/CanvasView";
+import { ProjectWorkspacePane } from "./ProjectWorkspacePane";
+import { derivePresence } from "./presence";
 import { useIsMobile } from "../../hooks/use-is-mobile";
 import { WorkspaceTabPills } from "../../components/mobile/WorkspaceTabPills";
 import { ProjectFab } from "./mobile/ProjectFab";
 import { TaskCreateSheet } from "./mobile/TaskCreateSheet";
+import styles from "./ProjectsApp.module.css";
 
-type Tab = "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity";
-const TABS: Tab[] = ["board", "canvas", "tasks", "files", "messages", "members", "activity"];
+type Tab = "workspace" | "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity";
+const TABS: Tab[] = ["workspace", "board", "canvas", "tasks", "files", "messages", "members", "activity"];
+
+interface AgentSummary {
+  id: string;
+  name: string;
+  display_name?: string;
+}
 
 function readTaskParam(): string | null {
   if (typeof window === "undefined") return null;
@@ -31,11 +40,13 @@ function setTaskParam(taskId: string | null) {
 
 export function ProjectWorkspace({ project, onChanged }: { project: Project; onChanged: () => void }) {
   const isMobile = useIsMobile();
-  const [tab, setTab] = useState<Tab>("tasks");
+  const [tab, setTab] = useState<Tab>("workspace");
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(() => readTaskParam());
   const [createSheetOpen, setCreateSheetOpen] = useState(false);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
 
   const handleCreateTask = async ({ title }: { title: string }) => {
     await projectsApi.tasks.create(project.id, { title });
@@ -58,61 +69,114 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
     return () => { cancelled = true; };
   }, []);
 
+  // Members + agent roster drive the header presence row (static-but-real:
+  // derived from the existing member data, not live multiplayer presence).
+  useEffect(() => {
+    let cancelled = false;
+    projectsApi.members
+      .list(project.id)
+      .then((rows) => { if (!cancelled) setMembers(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (!cancelled) setMembers([]); });
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/agents")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => { if (!cancelled && Array.isArray(rows)) setAgents(rows); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     const onPop = () => setOpenTaskId(readTaskParam());
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  const agentName = useMemo(() => {
+    const byId = new Map<string, AgentSummary>();
+    for (const a of agents) byId.set(a.id, a);
+    return (id: string) => {
+      const a = byId.get(id);
+      return a ? a.display_name || a.name : id;
+    };
+  }, [agents]);
+
+  const presence = useMemo(
+    () => derivePresence({ ownerInitial: "Y", members, agentName }),
+    [members, agentName],
+  );
+
   const openTask = (id: string) => { setTaskParam(id); setOpenTaskId(id); };
   const closeTask = () => { setTaskParam(null); setOpenTaskId(null); };
 
   return (
-    <div className="flex flex-col h-full">
-      <header className="flex flex-col gap-3 px-4 py-3 border-b border-zinc-800 md:flex-row md:items-center md:justify-between md:px-6 md:py-4">
-        <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold md:text-xl" title={project.name}>{project.name}</h1>
-          {project.description && (
-            <p className="mt-1 line-clamp-2 text-xs text-zinc-500 md:line-clamp-none" title={project.description}>{project.description}</p>
+    <div className="flex flex-col h-full min-h-0">
+      <header className={styles.header}>
+        <div className={styles.titleRow}>
+          <h1 title={project.name}>{project.name}</h1>
+          {!isMobile && presence.length > 0 && (
+            <div className={styles.presence}>
+              <div className={styles.stack}>
+                {presence.map((f) => (
+                  <span
+                    key={f.id}
+                    className={`${styles.av} ${f.kind === "agent" ? styles.avAgent : styles.avHuman}`}
+                    title={f.title}
+                  >
+                    {f.initial}
+                    <span className={styles.avRing} aria-hidden />
+                  </span>
+                ))}
+              </div>
+              <span className={styles.presenceLbl}>
+                {presence.length} {presence.length === 1 ? "here" : "here now"}
+              </span>
+            </div>
           )}
         </div>
+        {project.description && (
+          <p className={styles.desc} title={project.description}>{project.description}</p>
+        )}
+        {isMobile ? (
+          <WorkspaceTabPills
+            tabs={tabPills}
+            active={tab}
+            onSelect={(id) => setTab(id as Tab)}
+          />
+        ) : (
+          <nav className={styles.tabs} role="tablist">
+            {TABS.map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                id={`workspace-tab-${t}`}
+                aria-selected={tab === t}
+                aria-controls={`workspace-tabpanel-${t}`}
+                onClick={() => setTab(t)}
+                className={`${styles.tab} ${tab === t ? styles.tabOn : ""}`}
+              >
+                {t}
+              </button>
+            ))}
+          </nav>
+        )}
       </header>
-      {isMobile ? (
-        <WorkspaceTabPills
-          tabs={tabPills}
-          active={tab}
-          onSelect={(id) => setTab(id as Tab)}
-        />
-      ) : (
-        <nav className="flex border-b border-zinc-800 px-2" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              type="button"
-              role="tab"
-              id={`workspace-tab-${t}`}
-              aria-selected={tab === t}
-              aria-controls={`workspace-tabpanel-${t}`}
-              onClick={() => setTab(t)}
-              className={`px-3 py-2 text-sm capitalize ${
-                tab === t ? "border-b-2 border-blue-400" : "text-zinc-400"
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </nav>
-      )}
+
       <div
-        className="flex-1 min-h-0 overflow-auto p-4"
+        className={tab === "workspace" ? styles.panel : styles.panelPad}
         role="tabpanel"
         id={`workspace-tabpanel-${tab}`}
         aria-labelledby={`workspace-tab-${tab}`}
       >
+        {tab === "workspace" && <ProjectWorkspacePane project={project} />}
         {tab === "board" && (
           <>
             {!authResolved ? (
-              <div className="text-sm text-zinc-500">Loading board…</div>
+              <div className="text-sm text-shell-text-secondary">Loading board…</div>
             ) : currentUserId ? (
               <ProjectBoard
                 projectId={project.id}
@@ -120,7 +184,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
                 onOpenTask={openTask}
               />
             ) : (
-              <div className="text-sm text-zinc-500">Sign in required to view the board.</div>
+              <div className="text-sm text-shell-text-secondary">Sign in required to view the board.</div>
             )}
             {currentUserId && (
               <TaskModal
@@ -151,6 +215,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         {tab === "members" && <ProjectMembers project={project} onChanged={onChanged} />}
         {tab === "activity" && <ProjectActivity projectId={project.id} />}
       </div>
+
       {isMobile && (tab === "tasks" || tab === "board") && (
         <>
           <ProjectFab onClick={() => setCreateSheetOpen(true)} />

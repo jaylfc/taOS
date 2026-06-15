@@ -52,7 +52,7 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
       {selected ? (
         <ProjectWorkspace project={selected} onChanged={refresh} />
       ) : (
-        <div className="p-6 text-zinc-500">Select or create a project.</div>
+        <div className="p-6 text-shell-text-secondary">Select or create a project.</div>
       )}
     </>
   );
@@ -69,13 +69,12 @@ export function ProjectsApp({ windowId: _windowId }: { windowId: string }) {
     );
   }
 
-  // Desktop branch — byte-identical layout preserved
+  // Desktop branch: project-list sidebar + main column. ProjectList renders
+  // its own <aside> (the 248px sidebar), so this row just lays them out.
   return (
-    <div className="flex h-full w-full">
-      <aside className="w-72 border-r border-zinc-800 flex flex-col">
-        {listPane}
-      </aside>
-      <main className="flex-1 min-w-0">
+    <div className="flex h-full w-full bg-shell-bg text-shell-text">
+      {listPane}
+      <main className="flex-1 min-w-0 flex flex-col min-h-0">
         {detailPane}
       </main>
     </div>
