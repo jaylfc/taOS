@@ -143,9 +143,13 @@ export function BrowserModeToggle({ windowId }: BrowserModeToggleProps) {
       const body = await resp.json();
       session = body.session ?? body;
     } catch {
-      setPhase("idle");
+      if (!cancelledRef.current) setPhase("idle");
       return;
     }
+
+    // Re-check after the JSON-parse await as well: a Proxy click or unmount
+    // during that await must still cancel before we commit the live session.
+    if (cancelledRef.current) return;
 
     if (session.status === "running" && session.neko_url && session.stream_token) {
       setTabLiveSession(windowId, tabId, {
