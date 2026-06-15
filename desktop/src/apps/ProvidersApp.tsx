@@ -18,7 +18,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 /* ------------------------------------------------------------------ */
 
 /** Fallback constants used before the API call completes. */
-const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "openai-compatible"] as const;
+const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "deepseek", "openai-compatible"] as const;
 const FALLBACK_LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp"] as const;
 
 /** Active cloud types — seeded with fallback, updated from /api/providers/types.
@@ -34,6 +34,7 @@ const DEFAULT_URLS: Partial<Record<ProviderType, string>> = {
   anthropic: "https://api.anthropic.com/v1",
   openrouter: "https://openrouter.ai/api/v1",
   kilocode: "https://api.kilo.ai/api/gateway",
+  deepseek: "https://api.deepseek.com",
   ollama: "http://localhost:11434",
   rkllama: "http://localhost:8080",
   "llama-cpp": "http://localhost:8080",
@@ -71,6 +72,12 @@ const CLOUD_PROVIDER_META: Record<string, CloudProviderMeta> = {
     description: "500+ models, smart routing",
     url: "https://api.kilo.ai/api/gateway",
     keyPlaceholder: "kilo-...",
+  },
+  deepseek: {
+    label: "DeepSeek",
+    description: "DeepSeek V4 Pro, Flash, Reasoner",
+    url: "https://api.deepseek.com",
+    keyPlaceholder: "sk-...",
   },
   "openai-compatible": {
     label: "OpenAI-Compatible",

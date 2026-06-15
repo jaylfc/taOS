@@ -30,6 +30,7 @@ ALL_TYPES: set[str] = {
     "anthropic",
     "openrouter",
     "kilocode",
+    "deepseek",
     "openai-compatible",
     # -- local image-generation backends --
     "sd-cpp",
@@ -43,6 +44,7 @@ CLOUD_TYPES: set[str] = {
     "anthropic",
     "openrouter",
     "kilocode",
+    "deepseek",
     "openai-compatible",
 }
 
@@ -69,6 +71,7 @@ BACKEND_TYPE_MAP: dict[str, str] = {
     "anthropic": "anthropic",
     "openrouter": "openrouter",
     "kilocode": "openai",  # kilocode is OpenAI-compatible; api_base set explicitly
+    "deepseek": "deepseek",  # native LiteLLM provider; api_base set to official base
     "openai-compatible": "openai",  # user-supplied OpenAI-compatible endpoint
 }
 

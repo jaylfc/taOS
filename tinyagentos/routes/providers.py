@@ -26,6 +26,7 @@ PROVIDER_URL_DEFAULTS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "deepseek": "https://api.deepseek.com",
 }
 
 # Seed model list for cloud providers that don't expose an openly-listable
@@ -34,6 +35,17 @@ PROVIDER_URL_DEFAULTS: dict[str, str] = {
 # so we keep that as a safety net.
 PROVIDER_DEFAULT_MODELS: dict[str, list[dict]] = {
     "kilocode": [{"id": "kilo-auto/free"}],
+    # DeepSeek's /models endpoint needs an API key, so a fresh add without a
+    # working key won't auto-discover. Seed the current catalog so the entry
+    # registers routable models either way. deepseek-v4-pro / deepseek-v4-flash
+    # are the V4 generation ids; deepseek-chat / deepseek-reasoner are the
+    # compatibility aliases (deprecated 2026/07/24).
+    "deepseek": [
+        {"id": "deepseek-v4-pro"},
+        {"id": "deepseek-v4-flash"},
+        {"id": "deepseek-chat"},
+        {"id": "deepseek-reasoner"},
+    ],
 }
 
 

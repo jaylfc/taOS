@@ -189,6 +189,7 @@ _ADAPTERS: dict[str, BackendAdapter] = {
     "anthropic": CloudAPIAdapter(),
     "openrouter": CloudAPIAdapter(),
     "kilocode": CloudAPIAdapter(),
+    "deepseek": CloudAPIAdapter(),
     "openai-compatible": CloudAPIAdapter(),
     "sd-cpp": StableDiffusionCppAdapter(),
     "iopaint": IOPaintAdapter(),
