@@ -134,7 +134,7 @@ describe("AgentPresencePill", () => {
     );
     await waitFor(() => {
       const btn = screen.getByRole("button");
-      expect(btn.className).toContain("bg-shell-hover");
+      expect(btn.className).toContain("bg-accent-glow");
     });
   });
 

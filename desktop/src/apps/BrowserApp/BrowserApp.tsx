@@ -1,13 +1,15 @@
 /**
  * BrowserApp v2 — top-level container.
  *
- * Mounted by WindowContent for each browser window. Composes:
- *   - Chrome      (browser-specific nav row + profile chip)
- *   - TabStrip    (compact tab strip with embedded AddressBar in active tab)
- *   - AddressBar  (URL input + suggest popover) — for now rendered ABOVE
- *                 TabStrip; PR 5 may move it inside the active tab per
- *                 the Q8 layout A "compact unified bar" mockup.
+ * Mounted by WindowContent for each browser window. Composes (top to bottom):
+ *   - TabStrip    (tab strip + Proxy/Streamed engine toggle)
+ *   - Chrome      (toolbar: nav buttons, pill omnibox with AddressBar, agent
+ *                  presence pill, settings, profile chip)
+ *   - BookmarksBar
  *   - TabRenderer (iframe pool + discard scheduler)
+ *
+ * On mobile, a single bottom bar hosts the window switcher, the AddressBar
+ * omnibox, and the tab overview.
  *
  * On mount, auto-creates the window entry in browser-store with the
  * default profile if it doesn't exist. Idempotent — preserves any
@@ -119,21 +121,23 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
           )}
         </div>
 
-        <div className="flex items-center gap-1 px-2 py-1 bg-shell-surface border-t border-shell-border-subtle">
+        <div className="flex items-center gap-1 px-2 py-1 bg-shell-surface border-t border-shell-border">
           <button
             type="button"
             aria-label="Browser windows"
             onClick={() => setWindowChooserOpen(true)}
-            className="p-1.5 rounded hover:bg-shell-hover"
+            className="p-1.5 rounded hover:bg-white/[0.06]"
           >
             <Layers size={14} />
           </button>
-          <AddressBar windowId={windowId} />
+          <div className="flex flex-1 min-w-0 items-center h-9 px-3 rounded-full bg-shell-bg-deep border border-shell-border focus-within:border-accent/40">
+            <AddressBar windowId={windowId} />
+          </div>
           <button
             type="button"
             aria-label="Tab overview"
             onClick={() => setTabOverviewOpen(true)}
-            className="p-1.5 rounded hover:bg-shell-hover"
+            className="p-1.5 rounded hover:bg-white/[0.06]"
           >
             <ListChecks size={14} />
           </button>
@@ -145,12 +149,9 @@ export function BrowserApp({ windowId }: BrowserAppProps) {
 
   return (
     <div className="relative flex flex-col h-full bg-shell-bg overflow-hidden">
-      <Chrome windowId={windowId} />
-      <div className="flex items-center gap-1 px-2 py-1 bg-shell-surface border-b border-shell-border-subtle">
-        <AddressBar windowId={windowId} />
-      </div>
-      <BookmarksBar windowId={windowId} profileId={win.profileId} />
       <TabStrip windowId={windowId} />
+      <Chrome windowId={windowId} />
+      <BookmarksBar windowId={windowId} profileId={win.profileId} />
       <TabRenderer windowId={windowId} />
       {findOpen && (
         <FindInPage

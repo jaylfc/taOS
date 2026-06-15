@@ -125,8 +125,8 @@ export function AgentPresencePill({
       aria-expanded={panelIsOpen}
       onClick={() => togglePanel(windowId, tabId, firstAgentId)}
       className={[
-        "flex items-center relative p-0.5 rounded-full border border-shell-border-subtle",
-        panelIsOpen ? "bg-shell-hover" : "bg-shell-bg-deep hover:bg-shell-hover",
+        "flex items-center relative h-[32px] px-1.5 rounded-full border border-accent-line transition-colors",
+        panelIsOpen ? "bg-accent-glow" : "bg-accent-soft hover:bg-accent-glow",
       ].join(" ")}
     >
       {/* Stacked avatars */}

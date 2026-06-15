@@ -266,7 +266,7 @@ export function AddressBar({ windowId }: AddressBarProps) {
             setSelectedIndex((i) => Math.max(i - 1, -1));
           }
         }}
-        className={`w-full bg-shell-bg-deep text-shell-text px-2 py-0.5 rounded text-xs border border-shell-border-subtle focus:border-accent focus:outline-none ${
+        className={`w-full bg-transparent text-[13px] text-shell-text placeholder:text-shell-text-tertiary focus:outline-none ${
           activeTab?.readerAvailable && activeTab.url !== "about:blank"
             ? "pr-14"
             : activeTab?.readerAvailable || activeTab?.url !== "about:blank"

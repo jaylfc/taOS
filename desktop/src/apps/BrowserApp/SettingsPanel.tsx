@@ -92,7 +92,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
       ref={ref}
       role="dialog"
       aria-label="Browser settings"
-      className="absolute right-0 top-full mt-1 z-[60] w-72 rounded-lg border border-shell-border-subtle bg-shell-surface shadow-xl p-4 flex flex-col gap-4"
+      className="absolute right-0 top-full mt-1.5 z-[60] w-72 rounded-xl border border-shell-border-strong bg-shell-bg-glass shadow-window backdrop-blur-xl p-4 flex flex-col gap-4"
     >
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -101,7 +101,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
           type="button"
           aria-label="Close settings"
           onClick={onClose}
-          className="p-1 rounded hover:bg-shell-hover text-shell-text-secondary"
+          className="p-1 rounded hover:bg-white/[0.06] text-shell-text-secondary"
         >
           <X size={14} />
         </button>
@@ -145,7 +145,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
           max={50}
           value={maxLiveTabs}
           onChange={(e) => setMaxLiveTabs(Number(e.target.value))}
-          className="bg-shell-bg-deep text-shell-text text-xs px-2 py-1 rounded border border-shell-border-subtle focus:border-accent focus:outline-none w-20"
+          className="bg-shell-bg-deep text-shell-text text-xs px-2 py-1 rounded border border-shell-border focus:border-accent focus:outline-none w-20"
         />
       </div>
 
@@ -158,7 +158,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
           id="search-engine-select"
           value={searchEngine}
           onChange={(e) => setSearchEngine(e.target.value)}
-          className="bg-shell-bg-deep text-shell-text text-xs px-2 py-1 rounded border border-shell-border-subtle focus:border-accent focus:outline-none"
+          className="bg-shell-bg-deep text-shell-text text-xs px-2 py-1 rounded border border-shell-border focus:border-accent focus:outline-none"
         >
           {(Object.keys(SEARCH_ENGINES) as SearchEngine[]).map((engine) => (
             <option key={engine} value={engine}>
@@ -169,7 +169,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
       </div>
 
       {/* Agent capabilities */}
-      <div className="border-t border-shell-border-subtle pt-3">
+      <div className="border-t border-shell-border pt-3">
         <button
           type="button"
           onClick={() => setCapsOpen(true)}
@@ -188,7 +188,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
       )}
 
       {/* Site permissions */}
-      <div className="border-t border-shell-border-subtle pt-3">
+      <div className="border-t border-shell-border pt-3">
         <button
           type="button"
           onClick={() => setSitePermsOpen(true)}
@@ -207,7 +207,7 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
       )}
 
       {/* Notifications */}
-      <div className="border-t border-shell-border-subtle pt-3 flex flex-col gap-2">
+      <div className="border-t border-shell-border pt-3 flex flex-col gap-2">
         <span className="text-xs text-shell-text-secondary">Notifications</span>
         <button
           type="button"
@@ -216,9 +216,9 @@ export function SettingsPanel({ profileId, onClose }: SettingsPanelProps) {
           className={[
             "w-full text-left text-xs px-2 py-1.5 rounded border transition-colors",
             notifPermission === "granted"
-              ? "border-shell-border-subtle text-shell-text-secondary cursor-default"
+              ? "border-shell-border text-shell-text-secondary cursor-default"
               : notifPermission === "denied"
-              ? "border-shell-border-subtle text-shell-text-secondary cursor-default opacity-60"
+              ? "border-shell-border text-shell-text-secondary cursor-default opacity-60"
               : "border-accent text-accent hover:bg-accent/10 cursor-pointer",
           ].join(" ")}
         >

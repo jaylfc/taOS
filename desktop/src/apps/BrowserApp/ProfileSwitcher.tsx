@@ -64,19 +64,20 @@ export function ProfileSwitcher({
       ref={ref}
       role="menu"
       aria-label="Switch profile"
-      className="absolute z-[60] min-w-[220px] rounded-md bg-shell-surface border border-shell-border shadow-lg py-1 text-xs"
+      className="absolute right-0 z-[60] mt-1.5 w-[262px] rounded-xl border border-shell-border-strong bg-shell-bg-glass p-1.5 text-xs shadow-window backdrop-blur-xl"
     >
-      <div className="px-2 py-1 text-shell-text-tertiary uppercase tracking-wide text-[10px]">
+      <div className="px-2.5 pb-1.5 pt-1.5 text-[10px] font-bold uppercase tracking-[0.07em] text-shell-text-tertiary">
         Profiles
       </div>
 
       {profiles === null ? (
-        <div className="px-2 py-1 opacity-60 italic">Loading…</div>
+        <div className="px-2.5 py-1.5 italic text-shell-text-tertiary">Loading…</div>
       ) : profiles.length === 0 ? (
-        <div className="px-2 py-1 opacity-60 italic">No profiles</div>
+        <div className="px-2.5 py-1.5 italic text-shell-text-tertiary">No profiles</div>
       ) : (
         profiles.map((p) => {
           const isActive = p.profile_id === win.profileId;
+          const initial = (p.name?.[0] ?? "?").toUpperCase();
           return (
             <button
               key={p.profile_id}
@@ -87,26 +88,35 @@ export function ProfileSwitcher({
                 if (!isActive) switchProfile(windowId, p.profile_id);
                 onClose();
               }}
-              className="w-full text-left px-2 py-1 hover:bg-shell-hover flex items-center gap-2"
+              className="flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
             >
               <span
-                className="inline-block w-2 h-2 rounded-full shrink-0"
+                className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
                 style={{ backgroundColor: p.color ?? "#8b92a3" }}
                 aria-hidden="true"
-              />
-              <span className="capitalize flex-1">{p.name}</span>
+              >
+                {initial}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-semibold capitalize text-shell-text">
+                  {p.name}
+                </span>
+                <span className="block truncate text-[11px] text-shell-text-secondary">
+                  {isActive ? "Signed in" : "Isolated cookies and storage"}
+                </span>
+              </span>
               {isActive && (
-                <Check size={12} className="opacity-70" aria-label="Active" />
+                <Check size={15} className="shrink-0 text-accent-strong" aria-label="Active" />
               )}
             </button>
           );
         })
       )}
 
-      <div className="border-t border-shell-border-subtle my-1" />
+      <div className="my-1.5 mx-1 h-px bg-shell-border" />
 
       {creating ? (
-        <div className="px-2 py-1 flex gap-1">
+        <div className="px-2 py-1">
           <input
             type="text"
             aria-label="New profile name"
@@ -121,7 +131,7 @@ export function ProfileSwitcher({
               }
             }}
             placeholder="Profile name"
-            className="flex-1 bg-shell-bg-deep border border-shell-border-subtle rounded px-1.5 py-0.5 text-xs outline-none focus:border-accent"
+            className="w-full rounded-lg border border-shell-border bg-shell-bg-deep px-2 py-1.5 text-xs text-shell-text outline-none focus:border-accent/40"
           />
         </div>
       ) : (
@@ -129,9 +139,9 @@ export function ProfileSwitcher({
           type="button"
           role="menuitem"
           onClick={() => setCreating(true)}
-          className="w-full text-left px-2 py-1 hover:bg-shell-hover flex items-center gap-1.5"
+          className="flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left font-semibold text-shell-text-secondary transition-colors hover:bg-white/[0.06] hover:text-shell-text"
         >
-          <Plus size={12} />
+          <Plus size={15} />
           New profile
         </button>
       )}
@@ -144,10 +154,10 @@ export function ProfileSwitcher({
             onManage();
             onClose();
           }}
-          className="w-full text-left px-2 py-1 hover:bg-shell-hover flex items-center gap-1.5"
+          className="flex w-full items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left font-semibold text-shell-text-secondary transition-colors hover:bg-white/[0.06] hover:text-shell-text"
         >
-          <Settings size={12} />
-          Manage profiles…
+          <Settings size={15} />
+          Manage profiles
         </button>
       )}
     </div>
