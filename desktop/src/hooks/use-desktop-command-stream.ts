@@ -23,8 +23,6 @@ export const SCREENSHOT_FLASH_EVENT = "taos:screenshot-flash";
  * appear blank; the desktop chrome and native apps capture fully.
  */
 async function captureAndReport(requestId: string): Promise<void> {
-  // Flash first so the effect is visible in the capture's run, then rasterise.
-  window.dispatchEvent(new CustomEvent(SCREENSHOT_FLASH_EVENT));
   let body: { request_id: string; image?: string; error?: string };
   try {
     // Prefer a live screen-capture grant (full fidelity incl. cross-origin
@@ -49,6 +47,11 @@ async function captureAndReport(requestId: string): Promise<void> {
   } catch (e) {
     body = { request_id: requestId, error: e instanceof Error ? e.message : "capture failed" };
   }
+  // Flash AFTER the frame is captured so the white veil never leaks into a
+  // full-fidelity getDisplayMedia frame (that path captures the real composited
+  // screen, where an on-screen overlay is not excludable like the DOM-raster
+  // filter is). Still reads as a shutter: capture is sub-second.
+  window.dispatchEvent(new CustomEvent(SCREENSHOT_FLASH_EVENT));
   try {
     await fetch("/api/desktop/screenshot-result", {
       method: "POST",

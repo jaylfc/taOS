@@ -23,6 +23,7 @@ import {
   grantScreenCapture,
   hasScreenCapture,
   revokeScreenCapture,
+  SCREEN_CAPTURE_CHANGED_EVENT,
 } from "@/lib/screen-capture";
 import { useProcessStore } from "@/stores/process-store";
 
@@ -481,12 +482,18 @@ function AttachButton({ onClick, disabled }: { onClick: () => void; disabled: bo
  */
 function ScreenCaptureGrantButton() {
   const [granted, setGranted] = useState(hasScreenCapture());
+  // Stay in sync when the share ends from anywhere (native browser bar, another
+  // control), not just our own click.
+  useEffect(() => {
+    const sync = () => setGranted(hasScreenCapture());
+    window.addEventListener(SCREEN_CAPTURE_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(SCREEN_CAPTURE_CHANGED_EVENT, sync);
+  }, []);
   const toggle = useCallback(async () => {
     if (hasScreenCapture()) {
       revokeScreenCapture();
-      setGranted(false);
     } else {
-      setGranted(await grantScreenCapture());
+      await grantScreenCapture();
     }
   }, []);
   return (

@@ -18,6 +18,17 @@
 let _stream: MediaStream | null = null;
 let _video: HTMLVideoElement | null = null;
 
+/**
+ * Fired on window whenever the capture grant changes (granted, or stopped --
+ * including when the user ends the share from the browser's native bar). UI
+ * controls listen to stay in sync rather than only updating on their own click.
+ */
+export const SCREEN_CAPTURE_CHANGED_EVENT = "taos:screen-capture-changed";
+
+function _emitChange(): void {
+  window.dispatchEvent(new CustomEvent(SCREEN_CAPTURE_CHANGED_EVENT));
+}
+
 /** True when a live capture stream is available for frame grabs. */
 export function hasScreenCapture(): boolean {
   return !!_stream && _stream.getVideoTracks().some((t) => t.readyState === "live");
@@ -57,17 +68,20 @@ export async function grantScreenCapture(): Promise<boolean> {
     /* autoplay of a muted stream rarely fails; frames still grab from currentTime */
   }
   _video = video;
+  _emitChange();
   return true;
 }
 
 /** Stop the capture grant and release the stream. */
 export function revokeScreenCapture(): void {
+  const had = !!_stream;
   _stream?.getTracks().forEach((t) => t.stop());
   _stream = null;
   if (_video) {
     _video.srcObject = null;
     _video = null;
   }
+  if (had) _emitChange();
 }
 
 /**
