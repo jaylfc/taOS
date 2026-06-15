@@ -2,6 +2,7 @@ import React from "react";
 import * as icons from "lucide-react";
 import { useMobileHomeStore, type HomePage } from "@/stores/mobile-home-store";
 import { getApp } from "@/registry/app-registry";
+import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
 import { GreetingWidget } from "@/components/widgets/GreetingWidget";
 import { ClockWidget } from "@/components/widgets/ClockWidget";
 import { AgentStatusWidget } from "@/components/widgets/AgentStatusWidget";
@@ -238,10 +239,31 @@ function PageContent({ page, onOpenApp }: { page: HomePage; onOpenApp: (appId: s
 }
 
 export function MobileHomePages({ onOpenApp }: Props) {
-  const pages = useMobileHomeStore((s) => s.pages);
+  const storePages = useMobileHomeStore((s) => s.pages);
   const activePageIndex = useMobileHomeStore((s) => s.activePageIndex);
   const setActivePage = useMobileHomeStore((s) => s.setActivePage);
+  const installedOptional = useInstalledOptionalApps();
   const touchStartX = React.useRef<number | null>(null);
+
+  // Optional apps (Reddit/YouTube/GitHub/X) are excluded from the default grid
+  // and only appear once installed from the Store. The mobile home is the only
+  // launcher on phones, so append any installed optional app that isn't already
+  // placed on a page to the last page, where it becomes reachable.
+  const pages = React.useMemo<HomePage[]>(() => {
+    if (installedOptional.size === 0) return storePages;
+    const placed = new Set(
+      storePages.flatMap((p) =>
+        p.items.filter((i) => i.type === "app").map((i) => (i as { appId: string }).appId),
+      ),
+    );
+    const missing = [...installedOptional].filter((id) => !placed.has(id));
+    if (missing.length === 0) return storePages;
+    const next = storePages.map((p) => ({ ...p, items: [...p.items] }));
+    const last = next[next.length - 1];
+    if (!last) return [{ items: missing.map((id) => ({ type: "app", appId: id })) }];
+    for (const id of missing) last.items.push({ type: "app", appId: id });
+    return next;
+  }, [storePages, installedOptional]);
 
   const activePage = pages[activePageIndex] ?? pages[0];
 
