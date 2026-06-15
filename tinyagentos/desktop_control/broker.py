@@ -48,16 +48,23 @@ class DesktopCommandBroker:
         # carrying the request_id, and awaits; the desktop POSTs the result back
         # which resolves the future.
         self._results: dict[str, asyncio.Future[Any]] = {}
+        # Owner user_id per pending request, so a result can only be resolved by
+        # the user who initiated it (defence in depth on top of the unguessable
+        # request_id, which is only ever delivered to that user's desktops).
+        self._result_owner: dict[str, str] = {}
 
-    def register_result(self, request_id: str) -> asyncio.Future[Any]:
+    def register_result(self, request_id: str, owner_user_id: str) -> asyncio.Future[Any]:
         """Register a pending result future for request_id and return it."""
-        loop = asyncio.get_event_loop()
-        fut: asyncio.Future[Any] = loop.create_future()
+        fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._results[request_id] = fut
+        self._result_owner[request_id] = owner_user_id
         return fut
 
-    def resolve_result(self, request_id: str, value: Any) -> bool:
-        """Resolve a pending result. Returns False if no one is waiting."""
+    def resolve_result(self, request_id: str, value: Any, *, user_id: str | None = None) -> bool:
+        """Resolve a pending result. Returns False if no one is waiting, or if
+        user_id is given and does not own the request."""
+        if user_id is not None and self._result_owner.get(request_id) != user_id:
+            return False
         fut = self._results.get(request_id)
         if fut is None or fut.done():
             return False
@@ -66,6 +73,7 @@ class DesktopCommandBroker:
 
     def discard_result(self, request_id: str) -> None:
         self._results.pop(request_id, None)
+        self._result_owner.pop(request_id, None)
 
     async def subscribe(self, user_id: str) -> asyncio.Queue[DesktopCommand]:
         queue: asyncio.Queue[DesktopCommand] = asyncio.Queue(maxsize=self._MAX_QUEUE)

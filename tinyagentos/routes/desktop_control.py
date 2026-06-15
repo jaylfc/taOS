@@ -53,10 +53,16 @@ async def post_command(body: CommandIn, request: Request):
     return {"delivered": delivered}
 
 
+# Upper bound on an uploaded screenshot payload (base64 of the PNG). A 4K-ish
+# desktop PNG is well under this; the cap stops a rogue desktop from buffering
+# an unbounded body into memory.
+_MAX_SCREENSHOT_B64 = 24 * 1024 * 1024  # ~24 MB base64 (~18 MB image)
+
+
 class ScreenshotResultIn(BaseModel):
     request_id: str
     # data URL ("data:image/png;base64,....") or bare base64 of a PNG.
-    image: str
+    image: str = ""
     error: str = ""
 
 
@@ -75,7 +81,7 @@ async def take_screenshot(request: Request):
     broker = request.app.state.desktop_command_broker
     user_id = _user_id(request)
     request_id = uuid.uuid4().hex
-    fut = broker.register_result(request_id)
+    fut = broker.register_result(request_id, user_id)
     try:
         delivered = await broker.emit(
             user_id,
@@ -109,11 +115,16 @@ async def take_screenshot(request: Request):
 async def screenshot_result(body: ScreenshotResultIn, request: Request):
     """A desktop uploads its captured screenshot, resolving the waiting request.
 
-    Scoped implicitly: only this user's desktops ever receive the screenshot
-    command (which carries the request_id), so only they know a valid id."""
+    Scoped two ways: only this user's desktops ever receive the screenshot
+    command (which carries the request_id), and resolve_result re-checks that
+    the calling user owns the request before resolving."""
+    if len(body.image) > _MAX_SCREENSHOT_B64:
+        return JSONResponse({"error": "screenshot too large"}, status_code=413)
     broker = request.app.state.desktop_command_broker
     payload = {"error": body.error} if body.error else {"image": body.image}
-    resolved = broker.resolve_result(body.request_id, payload)
+    resolved = broker.resolve_result(
+        body.request_id, payload, user_id=_user_id(request),
+    )
     return {"resolved": resolved}
 
 
