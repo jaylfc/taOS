@@ -1,9 +1,16 @@
 """Adds security headers (CSP, X-Frame-Options, X-Content-Type-Options) to every response."""
 from __future__ import annotations
 
+import re
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+
+# The Host header is attacker-controllable; only interpolate it into the CSP
+# when it is a bare hostname/IP (no spaces, ';' or other CSP-breaking chars),
+# otherwise a crafted Host could inject CSP directives.
+_SAFE_HOST_RE = re.compile(r"^[A-Za-z0-9.\-\[\]]+$")
 
 # connect-src includes ws:/wss: so WebSocket upgrades are permitted.
 # style-src includes 'unsafe-inline' because the server-rendered auth pages
@@ -38,7 +45,7 @@ def _proxy_frame_origin(request: Request) -> str:
     if not main_port or not proxy_port or main_port == proxy_port:
         return ""
     host = _strip_port(request.headers.get("host") or "")
-    if not host:
+    if not host or not _SAFE_HOST_RE.fullmatch(host):
         return ""
     scheme = (request.url.scheme or "http").lower()
     scheme = scheme if scheme in ("http", "https") else "http"

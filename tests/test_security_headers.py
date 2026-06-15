@@ -41,3 +41,16 @@ class TestSecurityHeaders:
         resp = await client.get("/auth/login")
         assert resp.headers.get("x-frame-options", "").upper() == "SAMEORIGIN"
         assert resp.headers.get("x-content-type-options", "").lower() == "nosniff"
+
+
+class TestProxyFrameSrc:
+    def test_safe_host_allowed(self):
+        from tinyagentos.middleware.security_headers import _SAFE_HOST_RE
+        for h in ("192.168.6.123", "taos.local", "localhost", "a-b.example.com"):
+            assert _SAFE_HOST_RE.fullmatch(h)
+
+    def test_injection_host_rejected(self):
+        from tinyagentos.middleware.security_headers import _SAFE_HOST_RE
+        # A crafted Host header must not be interpolatable into the CSP.
+        for h in ("evil.com; script-src *", "a b", "x'y", 'x"y', "a;b", "a,b"):
+            assert not _SAFE_HOST_RE.fullmatch(h)
