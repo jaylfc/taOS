@@ -23,10 +23,32 @@ export function useServerNotifications() {
     };
 
     void sync();
-    const interval = setInterval(() => void sync(), POLL_MS);
+    // Only poll while the tab is visible; a backgrounded tab does not need to
+    // keep hitting the endpoint, and it resyncs the moment it returns.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (interval === null) interval = setInterval(() => void sync(), POLL_MS);
+    };
+    const stopPolling = () => {
+      if (interval !== null) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        void sync();
+        startPolling();
+      }
+    };
+    if (!document.hidden) startPolling();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      stopPolling();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 

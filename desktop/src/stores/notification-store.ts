@@ -31,6 +31,12 @@ interface NotificationStore {
 
 let counter = 0;
 
+// Server items dismissed this session. The backend has no "dismiss" concept
+// (only read), so without this a dismissed server notification would be
+// re-added by the very next poll. Session-scoped: a hard reload re-shows
+// items that are still unread on the server, which is the intended behaviour.
+const dismissedServerIds = new Set<string>();
+
 export const useNotificationStore = create<NotificationStore>((set, get) => ({
   notifications: [],
   centreOpen: false,
@@ -55,9 +61,9 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
       for (const n of s.notifications) {
         if (n.id.startsWith("srv-") && n.read) priorRead.set(n.id, true);
       }
-      const merged = items.map((n) =>
-        priorRead.get(n.id) ? { ...n, read: true } : n,
-      );
+      const merged = items
+        .filter((n) => !dismissedServerIds.has(n.id))
+        .map((n) => (priorRead.get(n.id) ? { ...n, read: true } : n));
       // Keep every client-origin item ("notif-N") untouched, drop the old
       // server items (replaced by the fresh list), de-dupe, sort newest-first.
       const client = s.notifications.filter((n) => !n.id.startsWith("srv-"));
@@ -78,11 +84,17 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   dismiss(id) {
+    if (id.startsWith("srv-")) dismissedServerIds.add(id);
     set((s) => ({ notifications: s.notifications.filter((n) => n.id !== id) }));
   },
 
   clearAll() {
-    set({ notifications: [] });
+    set((s) => {
+      for (const n of s.notifications) {
+        if (n.id.startsWith("srv-")) dismissedServerIds.add(n.id);
+      }
+      return { notifications: [] };
+    });
   },
 
   toggleCentre() {

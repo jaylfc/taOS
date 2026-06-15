@@ -66,6 +66,20 @@ describe("mergeServerNotifications", () => {
     expect(ids).toEqual(["srv-1"]);
   });
 
+  it("does not resurrect a dismissed server item on the next poll", () => {
+    const store = useNotificationStore.getState();
+    // Unique id: dismissedServerIds is module-scoped and persists across tests.
+    store.mergeServerNotifications([srv(901, 100)]);
+    expect(useNotificationStore.getState().notifications.map((n) => n.id)).toContain("srv-901");
+
+    store.dismiss("srv-901");
+    expect(useNotificationStore.getState().notifications.map((n) => n.id)).not.toContain("srv-901");
+
+    // Backend still reports it (no server-side dismiss); it must stay hidden.
+    store.mergeServerNotifications([srv(901, 100)]);
+    expect(useNotificationStore.getState().notifications.map((n) => n.id)).not.toContain("srv-901");
+  });
+
   it("caps the merged list at 100 items", () => {
     const store = useNotificationStore.getState();
     const many = Array.from({ length: 150 }, (_, i) => srv(i, i));
