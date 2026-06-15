@@ -43,6 +43,29 @@ class DesktopCommandBroker:
     def __init__(self) -> None:
         self._queues: dict[str, list[asyncio.Queue[DesktopCommand]]] = {}
         self._lock = asyncio.Lock()
+        # Pending screenshot (and other request/response) round-trips, keyed by
+        # request_id. The agent endpoint registers a future, emits a command
+        # carrying the request_id, and awaits; the desktop POSTs the result back
+        # which resolves the future.
+        self._results: dict[str, asyncio.Future[Any]] = {}
+
+    def register_result(self, request_id: str) -> asyncio.Future[Any]:
+        """Register a pending result future for request_id and return it."""
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[Any] = loop.create_future()
+        self._results[request_id] = fut
+        return fut
+
+    def resolve_result(self, request_id: str, value: Any) -> bool:
+        """Resolve a pending result. Returns False if no one is waiting."""
+        fut = self._results.get(request_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(value)
+        return True
+
+    def discard_result(self, request_id: str) -> None:
+        self._results.pop(request_id, None)
 
     async def subscribe(self, user_id: str) -> asyncio.Queue[DesktopCommand]:
         queue: asyncio.Queue[DesktopCommand] = asyncio.Queue(maxsize=self._MAX_QUEUE)

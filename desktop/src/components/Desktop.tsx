@@ -16,6 +16,7 @@ import { WallpaperPicker } from "./WallpaperPicker";
 import { DesktopIcons } from "./DesktopIcons";
 import { ParticlesWallpaper } from "./ParticlesWallpaper";
 import { WallpaperTextOverlay } from "./WallpaperTextOverlay";
+import { ScreenshotFlash } from "./ScreenshotFlash";
 
 type ContextMenuState = {
   x: number;
@@ -145,6 +146,7 @@ export function Desktop() {
     >
       {isAnimated && wallpaperComponent === "particles" && <ParticlesWallpaper />}
       {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
+      <ScreenshotFlash />
       <DesktopIcons />
       <SnapOverlay bounds={previewBounds} />
       <WidgetLayer />

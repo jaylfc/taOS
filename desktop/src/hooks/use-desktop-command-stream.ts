@@ -13,6 +13,43 @@ import { useEffect } from "react";
  * existing use-deep-navigation / use-desktop-control receivers. The browser
  * auto-reconnects on transient errors (same as the canvas stream).
  */
+/** Event the ScreenshotFlash overlay listens for to play the capture effect. */
+export const SCREENSHOT_FLASH_EVENT = "taos:screenshot-flash";
+
+/**
+ * Rasterise the live desktop and POST it back to resolve an agent screenshot
+ * request. Plays a subtle flash effect around the capture. DOM rasterisation
+ * cannot read cross-origin iframes (the Browser's proxied page), so those
+ * appear blank; the desktop chrome and native apps capture fully.
+ */
+async function captureAndReport(requestId: string): Promise<void> {
+  // Flash first so the effect is visible in the capture's run, then rasterise.
+  window.dispatchEvent(new CustomEvent(SCREENSHOT_FLASH_EVENT));
+  let body: { request_id: string; image?: string; error?: string };
+  try {
+    const { domToPng } = await import("modern-screenshot");
+    // Full viewport: top bar + desktop + dock.
+    const dataUrl = await domToPng(document.body, {
+      backgroundColor: getComputedStyle(document.body).backgroundColor || "#000",
+      // Skip the capture overlay/flash node itself.
+      filter: (node) =>
+        !(node instanceof HTMLElement && node.dataset.screenshotExclude === "true"),
+    });
+    body = { request_id: requestId, image: dataUrl };
+  } catch (e) {
+    body = { request_id: requestId, error: e instanceof Error ? e.message : "capture failed" };
+  }
+  try {
+    await fetch("/api/desktop/screenshot-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    /* the agent side will time out and report it */
+  }
+}
+
 export function useDesktopCommandStream(): void {
   useEffect(() => {
     const es = new EventSource("/api/desktop/stream");
@@ -30,6 +67,9 @@ export function useDesktopCommandStream(): void {
         window.dispatchEvent(new CustomEvent("taos:open-app", { detail: cmd.payload ?? {} }));
       } else if (cmd.kind === "window") {
         window.dispatchEvent(new CustomEvent("taos:window", { detail: cmd.payload ?? {} }));
+      } else if (cmd.kind === "screenshot") {
+        const requestId = (cmd.payload?.request_id as string) ?? "";
+        if (requestId) void captureAndReport(requestId);
       }
     };
     es.onerror = () => {

@@ -10,12 +10,14 @@ the browser receivers already exist and are tested.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from tinyagentos.desktop_control.broker import DesktopCommand
@@ -49,6 +51,70 @@ async def post_command(body: CommandIn, request: Request):
         DesktopCommand(kind=body.kind, payload=body.payload),
     )
     return {"delivered": delivered}
+
+
+class ScreenshotResultIn(BaseModel):
+    request_id: str
+    # data URL ("data:image/png;base64,....") or bare base64 of a PNG.
+    image: str
+    error: str = ""
+
+
+@router.post("/api/desktop/screenshot")
+async def take_screenshot(request: Request):
+    """Capture the calling user's live desktop and return a PNG.
+
+    Emits a `screenshot` command to every open desktop for the user; the first
+    desktop to respond uploads its rasterised canvas to
+    POST /api/desktop/screenshot-result, which resolves this request. 504 if no
+    desktop is connected or none responds within the deadline.
+
+    Note: DOM rasterisation cannot read cross-origin iframes (e.g. the Browser's
+    proxied page) -- the desktop chrome and native apps capture fully.
+    """
+    broker = request.app.state.desktop_command_broker
+    user_id = _user_id(request)
+    request_id = uuid.uuid4().hex
+    fut = broker.register_result(request_id)
+    try:
+        delivered = await broker.emit(
+            user_id,
+            DesktopCommand(kind="screenshot", payload={"request_id": request_id}),
+        )
+        if delivered == 0:
+            return JSONResponse(
+                {"error": "no desktop connected"}, status_code=409,
+            )
+        try:
+            result = await asyncio.wait_for(fut, timeout=20.0)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                {"error": "desktop did not respond in time"}, status_code=504,
+            )
+    finally:
+        broker.discard_result(request_id)
+
+    if isinstance(result, dict) and result.get("error"):
+        return JSONResponse({"error": result["error"]}, status_code=502)
+    data_url: str = result.get("image", "") if isinstance(result, dict) else ""
+    b64 = data_url.split(",", 1)[1] if data_url.startswith("data:") else data_url
+    try:
+        png = base64.b64decode(b64)
+    except Exception:
+        return JSONResponse({"error": "invalid image payload"}, status_code=502)
+    return Response(content=png, media_type="image/png")
+
+
+@router.post("/api/desktop/screenshot-result")
+async def screenshot_result(body: ScreenshotResultIn, request: Request):
+    """A desktop uploads its captured screenshot, resolving the waiting request.
+
+    Scoped implicitly: only this user's desktops ever receive the screenshot
+    command (which carries the request_id), so only they know a valid id."""
+    broker = request.app.state.desktop_command_broker
+    payload = {"error": body.error} if body.error else {"image": body.image}
+    resolved = broker.resolve_result(body.request_id, payload)
+    return {"resolved": resolved}
 
 
 @router.get("/api/desktop/stream")
