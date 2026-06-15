@@ -24,6 +24,8 @@ _SCRIPT_SRC = "/__taos/copilot.js"
 _WS_META_NAME = "taos-copilot-ws"
 _PAGE_BASE_META_NAME = "taos-page-base"
 _PROFILE_ID_META_NAME = "taos-profile-id"
+# Read by copilot.js to emulate prefers-color-scheme for the proxied site.
+_COLOR_SCHEME_META_NAME = "taos-color-scheme"
 
 
 def _set_meta(head, name: str, content: str) -> None:
@@ -44,6 +46,7 @@ def inject_into_head(
     ws_url: str,
     page_base_url: str = "",
     profile_id: str = "",
+    color_scheme: str = "",
 ) -> bytes:
     """Insert the copilot.js script + meta tags into the document head.
 
@@ -86,5 +89,10 @@ def inject_into_head(
         _set_meta(head, _PAGE_BASE_META_NAME, page_base_url)
     if profile_id:
         _set_meta(head, _PROFILE_ID_META_NAME, profile_id)
+    if color_scheme in ("light", "dark"):
+        # Read by copilot.js (matchMedia emulation); the standard color-scheme
+        # meta drives UA default surfaces (form controls, scrollbars, bg).
+        _set_meta(head, _COLOR_SCHEME_META_NAME, color_scheme)
+        _set_meta(head, "color-scheme", color_scheme)
 
     return lxml_html.tostring(tree, encoding="utf-8")

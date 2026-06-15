@@ -35,7 +35,7 @@ import { AgentPickerPopover } from "./AgentPickerPopover";
 import { AgentPresencePill } from "./AgentPresencePill";
 import { CoPilotBanner } from "./CoPilotBanner";
 
-const HOME_URL = "about:blank";
+import { HOME_URL } from "@/stores/browser-store";
 
 interface ChromeProps {
   windowId: string;

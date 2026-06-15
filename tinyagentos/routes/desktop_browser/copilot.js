@@ -9,6 +9,43 @@
 (function () {
   'use strict';
 
+  // ─── prefers-color-scheme emulation (taOS theme → proxied site) ─────────────
+  // copilot.js is injected as the FIRST head element, so this runs before the
+  // page's own scripts. When the taOS theme is dark/light, sites that read the
+  // colour-scheme preference in JS (matchMedia) see the taOS scheme, so sites
+  // that support dark/light render to match the shell. Pure CSS
+  // @media(prefers-color-scheme) still follows the host browser (an iframe's UA
+  // preference cannot be overridden from the parent); the injected
+  // <meta name="color-scheme"> covers UA default surfaces. Runs before the
+  // idempotency guard so it always applies, even on PJAX re-injection.
+  (function applyColorScheme() {
+    try {
+      var meta = document.querySelector('meta[name="taos-color-scheme"]');
+      var cs = meta ? (meta.getAttribute('content') || '') : '';
+      if (cs !== 'dark' && cs !== 'light') return;
+      try { document.documentElement.style.colorScheme = cs; } catch (e) {}
+      if (window.__taosColorScheme === cs) return;
+      window.__taosColorScheme = cs;
+      var isDark = cs === 'dark';
+      var orig = window.matchMedia ? window.matchMedia.bind(window) : null;
+      if (!orig) return;
+      window.matchMedia = function (q) {
+        var qs = String(q);
+        if (/prefers-color-scheme/i.test(qs)) {
+          var wantDark = /dark/i.test(qs);
+          var matches = wantDark ? isDark : !isDark;
+          return {
+            media: qs, matches: matches, onchange: null,
+            addListener: function () {}, removeListener: function () {},
+            addEventListener: function () {}, removeEventListener: function () {},
+            dispatchEvent: function () { return false; },
+          };
+        }
+        return orig(q);
+      };
+    } catch (e) { /* never break the page over theming */ }
+  })();
+
   // Idempotent guard — re-injection (e.g. turbo / PJAX frame swap) is a no-op.
   if (window.__taosCopilot) return;
   window.__taosCopilot = true;

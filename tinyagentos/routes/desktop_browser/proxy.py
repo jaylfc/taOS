@@ -420,11 +420,16 @@ async def proxy_get(
             f"{ws_scheme}://{request.url.netloc}/api/desktop/browser/copilot"
             f"?profile_id={quote(profile_id, safe='')}"
         )
+        # Colour scheme is set once at redeem (taos_cs cookie on this origin) and
+        # carried on every proxied request, so each page is injected with the
+        # taOS theme's scheme.
+        color_scheme = request.cookies.get("taos_cs", "")
         injected = inject_into_head(
             rewritten,
             ws_url=ws_url,
             page_base_url=str(response.url),
             profile_id=profile_id,
+            color_scheme=color_scheme if color_scheme in ("light", "dark") else "",
         )
 
         # Page-change broadcast for any agents pinned to this tab.

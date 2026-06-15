@@ -20,6 +20,7 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useBrowserStore } from "@/stores/browser-store";
+import { useThemeStore } from "@/stores/theme-store";
 import { useBrowserSettingsStore } from "@/stores/browser-settings-store";
 import { useBrowserAgentStore } from "@/stores/browser-agent-store";
 import { mintCopilotTicket } from "@/lib/browser-agent-api";
@@ -414,6 +415,10 @@ interface TabFrameProps {
  * inline error instead of a blank iframe.
  */
 function TabFrame({ profileId, url, tabId, title, zoom, visible }: TabFrameProps) {
+  // Active taOS colour scheme — proxied sites that support dark/light render to
+  // match. A change re-mints the redeem URL (effect dep), so switching the taOS
+  // theme re-themes proxied pages on their next load.
+  const colorScheme = useThemeStore((s) => s.scheme);
   // null = loading; "" = about:blank passthrough; string = redeem URL.
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -448,13 +453,13 @@ function TabFrame({ profileId, url, tabId, title, zoom, visible }: TabFrameProps
         return;
       }
       setCrossOrigin(proxyOrigin !== window.location.origin);
-      setSrc(buildRedeemUrl(proxyOrigin, ticket, proxiedPath));
+      setSrc(buildRedeemUrl(proxyOrigin, ticket, proxiedPath, colorScheme));
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [profileId, url, tabId]);
+  }, [profileId, url, tabId, colorScheme]);
 
   const frameStyle: CSSProperties = {
     display: visible && !error ? "block" : "none",

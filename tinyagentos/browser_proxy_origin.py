@@ -266,6 +266,7 @@ def create_browser_proxy_app(main_app_state) -> FastAPI:
         request: Request,
         ticket: str = Query(..., description="Signed proxy ticket from the main app"),
         next: str = Query("/", description="On-origin proxy path to land on"),
+        cs: str = Query("", description="taOS colour scheme (light|dark) for proxied sites"),
     ):
         """Validate a ticket, set the taos_browser cookie, 302 to ``next``.
 
@@ -311,6 +312,17 @@ def create_browser_proxy_app(main_app_state) -> FastAPI:
             max_age=_BROWSER_SESSION_IDLE_TTL,
             path="/",
         )
+        # Carry the taOS colour scheme as a cookie so every proxied page on this
+        # origin can be injected with the matching prefers-color-scheme. Not
+        # httponly — only a UI hint, no security value; readable is harmless.
+        if cs in ("light", "dark"):
+            response.set_cookie(
+                key="taos_cs",
+                value=cs,
+                samesite="lax",
+                max_age=_BROWSER_SESSION_IDLE_TTL,
+                path="/",
+            )
         # Prevent the single-use ticket in the redeem URL from leaking to the
         # proxied site via the Referer header on the subsequent navigation.
         response.headers["referrer-policy"] = "no-referrer"

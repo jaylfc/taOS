@@ -71,3 +71,21 @@ class TestInjectIntoHead:
 
         assert b'name="taos-page-base"' not in out
         assert b'name="taos-profile-id"' not in out
+
+    def test_injects_color_scheme_meta_when_dark(self):
+        from tinyagentos.routes.desktop_browser.injector import inject_into_head
+
+        html = b"<html><head></head><body></body></html>"
+        out = inject_into_head(html, ws_url="ws://x/", color_scheme="dark")
+        assert b'name="taos-color-scheme"' in out
+        assert b'content="dark"' in out
+        assert b'name="color-scheme"' in out
+
+    def test_omits_color_scheme_when_absent_or_invalid(self):
+        from tinyagentos.routes.desktop_browser.injector import inject_into_head
+
+        html = b"<html><head></head><body></body></html>"
+        assert b"taos-color-scheme" not in inject_into_head(html, ws_url="ws://x/")
+        assert b"taos-color-scheme" not in inject_into_head(
+            html, ws_url="ws://x/", color_scheme="purple"
+        )

@@ -17,6 +17,9 @@ import type {
 } from "@/apps/BrowserApp/types";
 
 const NEW_TAB_URL = "about:blank";
+// The browser's homepage: the first tab when a window opens, and the Home
+// button target. New blank tabs still open about:blank.
+export const HOME_URL = "https://taos.my";
 const MAX_RECENTLY_CLOSED = 50;
 
 let _tabIdCounter = 0;
@@ -109,7 +112,7 @@ export const useBrowserStore = create<BrowserStore>((set, get) => ({
   createWindow(windowId, profileId) {
     set((s) => {
       if (s.windows[windowId]) return s; // idempotent
-      const initialTab = makeTab();
+      const initialTab = makeTab(HOME_URL);
       const win: BrowserWindowState = {
         windowId,
         profileId,

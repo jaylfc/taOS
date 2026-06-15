@@ -107,10 +107,16 @@ export function buildRedeemUrl(
   proxyOrigin: string,
   ticket: string,
   proxiedPath: string,
+  colorScheme?: "light" | "dark",
 ): string {
   const params = new URLSearchParams({
     ticket,
     next: proxiedPath,
   });
+  // Carry the taOS colour scheme so proxied sites that support dark/light
+  // render to match the shell (redeem sets a taos_cs cookie on the proxy origin).
+  if (colorScheme === "light" || colorScheme === "dark") {
+    params.set("cs", colorScheme);
+  }
   return `${proxyOrigin}/__taos/redeem?${params.toString()}`;
 }
