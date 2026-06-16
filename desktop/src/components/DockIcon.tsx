@@ -20,6 +20,7 @@ export function DockIcon({ appId, isRunning, onClick }: Props) {
   const restoreWindow = useProcessStore((s) => s.restoreWindow);
   const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
   const maximizeWindow = useProcessStore((s) => s.maximizeWindow);
+  const recenterWindow = useProcessStore((s) => s.recenterWindow);
   const closeWindow = useProcessStore((s) => s.closeWindow);
   const pinned = useDockStore((s) => s.pinned);
   const pin = useDockStore((s) => s.pin);
@@ -55,6 +56,11 @@ export function DockIcon({ appId, isRunning, onClick }: Props) {
           label: win.maximized ? "Restore" : "Maximise",
           icon: <icons.Maximize2 size={14} />,
           action: () => maximizeWindow(win.id),
+        },
+        {
+          label: "Center Window",
+          icon: <icons.LocateFixed size={14} />,
+          action: () => recenterWindow(win.id),
         },
         { label: "", separator: true },
         isPinned
