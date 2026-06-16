@@ -265,6 +265,45 @@ class TestRunCaptureTimeout:
         )
 
 
+class TestUpdateCheckVersion:
+    """update-check endpoint must return the installed version from tinyagentos.__version__."""
+
+    @pytest.mark.asyncio
+    async def test_current_version_matches_package(self, client):
+        """current_version in the response must equal tinyagentos.__version__."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import tinyagentos
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def fake_rev_parse(*_args, **_kwargs):
+            p = MagicMock()
+            p.communicate = AsyncMock(return_value=(b"abc123\n", b""))
+            return p
+
+        with (
+            patch(
+                "tinyagentos.routes.settings.asyncio.create_subprocess_exec",
+                side_effect=fake_rev_parse,
+            ),
+            patch(
+                "tinyagentos.auto_update.remote_is_strictly_ahead",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            resp = await client.get("/api/settings/update-check")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current_version"] == tinyagentos.__version__, (
+            f"Expected {tinyagentos.__version__!r} but got {data['current_version']!r}"
+        )
+
+
 class TestRebuildResultStructured:
     """Issue #327: rebuild_desktop_bundle_if_stale returns a structured
     RebuildResult so callers don't have to string-match the message field."""

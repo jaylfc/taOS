@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tinyagentos"
-version = "1.0.0-beta"
+version = "1.0.0-beta.2"
 description = "Self-hosted AI agent memory system for low-power hardware"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

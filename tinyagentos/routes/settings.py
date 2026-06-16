@@ -500,6 +500,8 @@ async def set_container_runtime(request: Request):
 async def check_for_updates(request: Request):
     """Check if a newer version of TinyAgentOS is available on GitHub."""
     import asyncio
+    import re
+    from tinyagentos import __version__
     from tinyagentos.auto_update import remote_is_strictly_ahead
     project_dir = str(Path(__file__).parent.parent.parent)
 
@@ -548,9 +550,26 @@ async def check_for_updates(request: Request):
     current = await _log1("HEAD")
     new_commit = await _log1(f"origin/{branch}") if has_updates else None
 
+    # Read the version string from the remote branch HEAD so the UI can show
+    # the target version number without requiring a full install first.
+    new_version: str | None = None
+    if has_updates:
+        try:
+            rc, raw = await _run_capture(
+                ["git", "show", f"origin/{branch}:tinyagentos/__init__.py"],
+                cwd=project_dir,
+            )
+            if rc == 0 and raw:
+                m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', raw)
+                if m:
+                    new_version = m.group(1)
+        except Exception:
+            pass
+
     return {
         "has_updates": has_updates,
-        "current_version": "0.1.0",
+        "current_version": __version__,
+        "new_version": new_version,
         "current_commit": current,
         "new_commit": new_commit,
     }

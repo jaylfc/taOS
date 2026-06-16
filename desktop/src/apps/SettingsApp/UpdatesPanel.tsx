@@ -6,6 +6,7 @@ import { RestartProgressModal } from "@/apps/SettingsApp/_shared";
 interface UpdateInfo {
   has_updates: boolean;
   current_version: string;
+  new_version?: string | null;
   current_commit: string;
   new_commit?: string | null;
 }
@@ -234,17 +235,31 @@ export function UpdatesPanel() {
             <p className="text-sm font-medium">taOS</p>
             {info?.has_updates && info.new_commit ? (
               <div className="flex flex-col gap-0.5">
-                <p className="text-xs text-shell-text-tertiary tabular-nums">
-                  <span className="text-white/40">installed </span>{info.current_commit}
+                <p className="text-xs text-shell-text-secondary">
+                  <span className="text-white/40">installed </span>
+                  <span className="font-mono">{info.current_version}</span>
+                  {info.new_version ? (
+                    <>
+                      <span className="text-white/40"> &rarr; </span>
+                      <span className="font-mono text-amber-300/90">{info.new_version}</span>
+                    </>
+                  ) : null}
                 </p>
-                <p className="text-xs text-amber-300/90 tabular-nums">
-                  <span className="text-amber-300/50">available </span>{info.new_commit}
+                <p className="text-[10px] text-shell-text-tertiary tabular-nums font-mono opacity-60">
+                  {info.current_commit} &rarr; {info.new_commit}
                 </p>
               </div>
             ) : (
-              <p className="text-xs text-shell-text-tertiary tabular-nums">
-                {info?.current_commit ?? "v0.1.0-dev"}
-              </p>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs text-shell-text-secondary font-mono">
+                  {info?.current_version ?? "unknown"}
+                </p>
+                {info?.current_commit ? (
+                  <p className="text-[10px] text-shell-text-tertiary tabular-nums font-mono opacity-60">
+                    {info.current_commit}
+                  </p>
+                ) : null}
+              </div>
             )}
           </div>
           {info?.has_updates && (

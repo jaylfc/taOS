@@ -7,12 +7,39 @@ const jResp = (b: any) => Promise.resolve({ ok: true, json: async () => b } as a
 beforeEach(() => {
   global.fetch = vi.fn(async (url: string) => {
     if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
-    if (url === "/api/settings/update-check") return jResp({ has_updates: false, current_commit: "abc x" });
+    if (url === "/api/settings/update-check")
+      return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
     if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
     if (url === "/api/settings/branches") return jResp({ branches: ["master", "dev"], current: "dev" });
     if (url === "/api/settings/update-channel") return jResp({ status: "switching", branch: "master" });
     return jResp({});
   }) as any;
+});
+
+describe("UpdatesPanel — version display", () => {
+  it("shows current version prominently when up to date", async () => {
+    render(<UpdatesPanel />);
+    await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
+  });
+
+  it("shows available version when an update is present", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check")
+        return jResp({
+          has_updates: true,
+          current_version: "1.0.0-beta.2",
+          new_version: "1.0.0-beta.3",
+          current_commit: "abc defg",
+          new_commit: "xyz uvwx",
+        });
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1.0.0-beta.3")).toBeInTheDocument());
+  });
 });
 
 describe("UpdatesPanel — branch selector", () => {
