@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
 import { motion, useReducedMotion } from "motion/react";
 import { useProcessStore, type WindowState, type SnapPosition } from "@/stores/process-store";
@@ -13,9 +13,20 @@ interface Props {
   onDragStop: () => SnapPosition;
 }
 
-export function Window({ win, onDrag, onDragStop }: Props) {
-  const { focusWindow, closeWindow, removeWindow, minimizeWindow, maximizeWindow, updatePosition, updateSize, snapWindow } =
-    useProcessStore();
+function WindowImpl({ win, onDrag, onDragStop }: Props) {
+  // Select each action individually. Destructuring useProcessStore() with no
+  // selector subscribes the window to EVERY store change, so any unrelated
+  // store write would re-render it mid-drag and react-rnd would reset its
+  // controlled position. Action references are stable, so these never trigger
+  // a re-render on their own.
+  const focusWindow = useProcessStore((s) => s.focusWindow);
+  const closeWindow = useProcessStore((s) => s.closeWindow);
+  const removeWindow = useProcessStore((s) => s.removeWindow);
+  const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
+  const maximizeWindow = useProcessStore((s) => s.maximizeWindow);
+  const updatePosition = useProcessStore((s) => s.updatePosition);
+  const updateSize = useProcessStore((s) => s.updateSize);
+  const snapWindow = useProcessStore((s) => s.snapWindow);
   const app = getApp(win.appId);
   const preSnapRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const isMobile = useIsMobile();
@@ -248,3 +259,9 @@ export function Window({ win, onDrag, onDragStop }: Props) {
     </Rnd>
   );
 }
+
+// Memoized so unrelated desktop re-renders (snap-zone preview, the live
+// wallpaper, the agent command stream) do not re-render every window during a
+// drag. Props are stable: `win` only changes when this window's own state
+// changes, and onDrag/onDragStop are stabilized in useSnapZones.
+export const Window = memo(WindowImpl);

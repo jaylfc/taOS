@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { SnapPosition } from "@/stores/process-store";
 
 const EDGE_THRESHOLD = 16;
@@ -55,16 +55,28 @@ export function getSnapBounds(snap: SnapPosition, vp: Viewport): { x: number; y:
 
 export function useSnapZones(viewport: Viewport) {
   const [preview, setPreview] = useState<SnapPosition>(null);
+  // Refs so onDrag/onDragStop keep a STABLE identity across renders. react-rnd's
+  // position prop is controlled, so a Window re-render mid-drag re-applies the
+  // stored position and yanks the window back ("jumping"). Stable callbacks let
+  // <Window> be memoized and skip those re-renders while a drag is in flight.
+  const previewRef = useRef<SnapPosition>(null);
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
 
   const onDrag = useCallback((x: number, y: number) => {
-    setPreview(detectSnapZone(x, y, viewport));
-  }, [viewport]);
+    const zone = detectSnapZone(x, y, viewportRef.current);
+    previewRef.current = zone;
+    // Only flip state when the zone actually changes, so crossing the same zone
+    // repeatedly does not re-render the desktop on every pointer move.
+    setPreview((prev) => (prev === zone ? prev : zone));
+  }, []);
 
-  const onDragStop = useCallback(() => {
-    const result = preview;
+  const onDragStop = useCallback((): SnapPosition => {
+    const result = previewRef.current;
+    previewRef.current = null;
     setPreview(null);
     return result;
-  }, [preview]);
+  }, []);
 
   return { preview, previewBounds: getSnapBounds(preview, viewport), onDrag, onDragStop };
 }
