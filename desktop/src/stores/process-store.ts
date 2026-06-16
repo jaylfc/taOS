@@ -37,6 +37,7 @@ interface ProcessStore {
   maximizeWindow: (id: string) => void;
   updatePosition: (id: string, x: number, y: number) => void;
   updateSize: (id: string, w: number, h: number) => void;
+  updateBounds: (id: string, x: number, y: number, w: number, h: number) => void;
   snapWindow: (id: string, snap: SnapPosition) => void;
   runningAppIds: () => string[];
 }
@@ -152,6 +153,18 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
     set((s) => ({
       windows: s.windows.map((win) =>
         win.id === id ? { ...win, size: { w, h } } : win
+      ),
+    }));
+  },
+
+  // Position and size in ONE update. A resize from a top/left edge moves the
+  // window's x/y as well as its w/h; committing them separately renders one
+  // frame with the new size but the old position, which reads as a jump. This
+  // applies both atomically.
+  updateBounds(id, x, y, w, h) {
+    set((s) => ({
+      windows: s.windows.map((win) =>
+        win.id === id ? { ...win, position: { x, y }, size: { w, h } } : win
       ),
     }));
   },

@@ -25,7 +25,7 @@ function WindowImpl({ win, onDrag, onDragStop }: Props) {
   const minimizeWindow = useProcessStore((s) => s.minimizeWindow);
   const maximizeWindow = useProcessStore((s) => s.maximizeWindow);
   const updatePosition = useProcessStore((s) => s.updatePosition);
-  const updateSize = useProcessStore((s) => s.updateSize);
+  const updateBounds = useProcessStore((s) => s.updateBounds);
   const snapWindow = useProcessStore((s) => s.snapWindow);
   const app = getApp(win.appId);
   const preSnapRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -106,12 +106,37 @@ function WindowImpl({ win, onDrag, onDragStop }: Props) {
     [onDragStop, snapWindow, updatePosition, win.id, win.size],
   );
 
-  const handleResizeStop = useCallback(
-    (_e: unknown, _dir: unknown, ref: HTMLElement) => {
-      setDragging(false);
-      updateSize(win.id, ref.offsetWidth, ref.offsetHeight);
+  // Feed react-rnd's live position+size back every resize tick. react-rnd's
+  // position prop is controlled, and resizing from a top/left edge changes the
+  // position; without live feedback react-rnd's own internal re-render re-reads
+  // the stale stored position and the window jumps sideways mid-resize. Keeping
+  // the controlled props in lockstep with react-rnd's reported bounds keeps the
+  // resize smooth from every edge.
+  const handleResize = useCallback(
+    (
+      _e: unknown,
+      _dir: unknown,
+      ref: HTMLElement,
+      _delta: unknown,
+      position: { x: number; y: number },
+    ) => {
+      updateBounds(win.id, position.x, position.y, ref.offsetWidth, ref.offsetHeight);
     },
-    [updateSize, win.id],
+    [updateBounds, win.id],
+  );
+
+  const handleResizeStop = useCallback(
+    (
+      _e: unknown,
+      _dir: unknown,
+      ref: HTMLElement,
+      _delta: unknown,
+      position: { x: number; y: number },
+    ) => {
+      setDragging(false);
+      updateBounds(win.id, position.x, position.y, ref.offsetWidth, ref.offsetHeight);
+    },
+    [updateBounds, win.id],
   );
 
   const minSize = app?.minSize ?? { w: 300, h: 200 };
@@ -153,6 +178,7 @@ function WindowImpl({ win, onDrag, onDragStop }: Props) {
       onDrag={handleDrag}
       onDragStop={handleDragStop}
       onResizeStart={() => setDragging(true)}
+      onResize={handleResize}
       onResizeStop={handleResizeStop}
       onMouseDown={() => focusWindow(win.id)}
       bounds="parent"
