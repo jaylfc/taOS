@@ -131,13 +131,21 @@ function hydrateEditor(
     if (toRemove.length) editor.deleteShapes(toRemove.map((s) => s.id) as any);
 
     for (const el of elements) {
-      const id = `shape:${el.id}` as TLShape["id"];
-      const existingShape = editor.getShape(id);
-      const newShape = elementToShape(el, projectSlug);
-      if (existingShape) {
-        editor.updateShape(newShape);
-      } else {
-        editor.createShape(newShape);
+      // Isolate each element: a single malformed shape (bad payload, a props
+      // shape tldraw's validator rejects, a version-skewed tldraw_shape) must
+      // not throw out of editor.run and take down the whole canvas. Skip it and
+      // keep going; the rest of the board still renders.
+      try {
+        const id = `shape:${el.id}` as TLShape["id"];
+        const existingShape = editor.getShape(id);
+        const newShape = elementToShape(el, projectSlug);
+        if (existingShape) {
+          editor.updateShape(newShape);
+        } else {
+          editor.createShape(newShape);
+        }
+      } catch (err) {
+        console.warn("canvas: skipping unrenderable element", el.id, err);
       }
     }
   });
