@@ -211,3 +211,81 @@ class TestOptionalApps:
         resp = await client.get("/api/apps/installed")
         ids = {i["app_id"] for i in resp.json()}
         assert "github-browser" not in ids
+
+
+class TestOptionalAppCatalog:
+    @pytest.mark.asyncio
+    async def test_catalog_returns_all_allowlisted_apps(self, apps_client):
+        """Catalog must include every id in OPTIONAL_FRONTEND_APPS with source=core."""
+        from tinyagentos.routes.apps import OPTIONAL_FRONTEND_APPS
+        client, _ = apps_client
+        resp = await client.get("/api/apps/optional/catalog")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "apps" in data
+        returned_ids = {a["id"] for a in data["apps"]}
+        assert returned_ids == OPTIONAL_FRONTEND_APPS
+        for app in data["apps"]:
+            assert app["source"] == "core"
+            assert "version" in app
+            assert "trust" in app
+            assert "installed" in app
+            assert "update_available" in app
+
+    @pytest.mark.asyncio
+    async def test_install_records_app_versions_version(self, apps_client):
+        """Installing an app should record the APP_VERSIONS version in the DB."""
+        from tinyagentos.routes.apps import APP_VERSIONS
+        client, store = apps_client
+        resp = await client.post("/api/apps/optional/reddit/install")
+        assert resp.status_code == 200
+        rows = await store.list_installed()
+        row = next((r for r in rows if r["app_id"] == "reddit"), None)
+        assert row is not None
+        assert row["version"] == APP_VERSIONS["reddit"]
+
+    @pytest.mark.asyncio
+    async def test_update_available_false_for_fresh_install(self, apps_client):
+        """A freshly installed app records the current version, so update_available=false."""
+        client, _ = apps_client
+        await client.post("/api/apps/optional/youtube-library/install")
+        resp = await client.get("/api/apps/optional/catalog")
+        app = next(a for a in resp.json()["apps"] if a["id"] == "youtube-library")
+        assert app["installed"] is True
+        assert app["update_available"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_available_true_when_recorded_version_is_older(self, apps_client):
+        """update_available flips true when the stored version is behind APP_VERSIONS."""
+        from tinyagentos.routes.apps import APP_VERSIONS
+        import json
+        client, store = apps_client
+        # Seed the DB with an older version directly.
+        await store._db.execute(
+            "INSERT OR REPLACE INTO installed_apps (app_id, installed_at, version, metadata) VALUES (?, ?, ?, ?)",
+            ("x-monitor", 1000.0, "0.9.0", json.dumps({"kind": "frontend-app"})),
+        )
+        await store._db.commit()
+        resp = await client.get("/api/apps/optional/catalog")
+        app = next(a for a in resp.json()["apps"] if a["id"] == "x-monitor")
+        assert app["installed"] is True
+        # APP_VERSIONS["x-monitor"] is "1.0.0" which is > "0.9.0"
+        assert app["update_available"] is True
+        assert app["version"] == APP_VERSIONS["x-monitor"]
+
+    @pytest.mark.asyncio
+    async def test_catalog_does_not_leak_unknown_ids(self, apps_client):
+        """Catalog must never return ids outside the allowlist."""
+        from tinyagentos.routes.apps import OPTIONAL_FRONTEND_APPS
+        import json
+        client, store = apps_client
+        # Inject a foreign row directly (bypassing the install endpoint).
+        await store._db.execute(
+            "INSERT OR REPLACE INTO installed_apps (app_id, installed_at, version, metadata) VALUES (?, ?, ?, ?)",
+            ("totally-random-app", 1000.0, "1.0.0", json.dumps({"kind": "frontend-app"})),
+        )
+        await store._db.commit()
+        resp = await client.get("/api/apps/optional/catalog")
+        returned_ids = {a["id"] for a in resp.json()["apps"]}
+        assert "totally-random-app" not in returned_ids
+        assert returned_ids == OPTIONAL_FRONTEND_APPS

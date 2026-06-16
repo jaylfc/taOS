@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Settings, RefreshCw, AlertCircle, Check, ChevronDown, ChevronRight } from "lucide-react";
+import { Settings, RefreshCw, AlertCircle, Check, ChevronDown, ChevronRight, Package } from "lucide-react";
+import * as LucideIcons from "lucide-react";
 import { Button, Card, Label, Switch } from "@/components/ui";
 import { RestartProgressModal } from "@/apps/SettingsApp/_shared";
+import { OPTIONAL_APPS } from "@/registry/optional-apps";
 
 interface UpdateInfo {
   has_updates: boolean;
@@ -27,6 +29,76 @@ interface BranchInfo {
   current: string;
 }
 
+interface OptionalAppCatalogEntry {
+  id: string;
+  version: string;
+  trust: string;
+  source: "core" | string;
+  installed: boolean;
+  update_available: boolean;
+}
+
+// Render a lucide icon by kebab-case name (matches the format used in optional-apps registry).
+function AppIconGlyph({ iconName, size = 16 }: { iconName: string; size?: number }) {
+  const pascal = iconName
+    .split("-")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+  const Glyph = (LucideIcons[pascal as keyof typeof LucideIcons] as LucideIcons.LucideIcon) ?? Package;
+  return <Glyph size={size} />;
+}
+
+// A single optional app row in the Updates panel. Keyed by `source` so a
+// future "package" source can add its own Update button without touching this
+// component layout.
+function OptionalAppRow({
+  entry,
+  displayName,
+  iconName,
+  onScrollToSystem,
+}: {
+  entry: OptionalAppCatalogEntry;
+  displayName: string;
+  iconName: string;
+  onScrollToSystem: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-2.5">
+      <div className="w-8 h-8 rounded-lg bg-shell-surface-active flex items-center justify-center shrink-0 text-shell-text-secondary">
+        <AppIconGlyph iconName={iconName} size={15} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-medium text-shell-text truncate">{displayName}</span>
+          <span className="font-mono text-[10px] text-shell-text-tertiary">{entry.version}</span>
+          {entry.source === "core" && (
+            <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-shell-surface-active text-shell-text-tertiary border border-shell-border-strong">
+              Core
+            </span>
+          )}
+        </div>
+        {entry.source === "core" && entry.update_available ? (
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-[11px] text-amber-300/80">
+              Update available, included in the next system update
+            </span>
+            <button
+              type="button"
+              onClick={onScrollToSystem}
+              className="text-[11px] text-accent underline underline-offset-2 hover:text-shell-text-secondary transition-colors"
+              aria-label="Scroll to system update"
+            >
+              Install now
+            </button>
+          </div>
+        ) : (
+          <span className="text-[11px] text-shell-text-tertiary mt-0.5">Up to date</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function UpdatesPanel() {
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -36,6 +108,7 @@ export function UpdatesPanel() {
   const [prefs, setPrefs] = useState<AutoUpdatePrefs>({ check_enabled: true });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [showRestartModal, setShowRestartModal] = useState(false);
+  const [optionalCatalog, setOptionalCatalog] = useState<OptionalAppCatalogEntry[]>([]);
 
   // Advanced / branch selector state
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -45,6 +118,7 @@ export function UpdatesPanel() {
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false);
   const branchFetched = useRef(false);
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
+  const systemCardRef = useRef<HTMLDivElement>(null);
 
   // Focus management for the confirm dialog: move focus into the dialog when it
   // opens and return it to the previously focused control when it closes, so
@@ -78,6 +152,13 @@ export function UpdatesPanel() {
       try {
         const r3 = await fetch("/api/settings/update-status");
         if (r3.ok) setUpdateStatus(await r3.json());
+      } catch { /* ignore */ }
+      try {
+        const r4 = await fetch("/api/apps/optional/catalog");
+        if (r4.ok) {
+          const data = await r4.json();
+          if (data && Array.isArray(data.apps)) setOptionalCatalog(data.apps);
+        }
       } catch { /* ignore */ }
     })();
   }, []);
@@ -121,7 +202,7 @@ export function UpdatesPanel() {
     try {
       const res = await fetch("/api/settings/update", { method: "POST" });
       if (res.ok) {
-        // Server always restarts after a successful install — show the modal.
+        // Server always restarts after a successful install -- show the modal.
         setShowRestartModal(true);
       } else {
         const err = await res.json().catch(() => ({}));
@@ -208,7 +289,14 @@ export function UpdatesPanel() {
     setSwitching(false);
   };
 
+  const scrollToSystem = useCallback(() => {
+    systemCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
   const hasPendingRestart = !!updateStatus?.pending_restart_sha;
+
+  // Only show installed optional apps that have a matching registry entry for display metadata.
+  const installedOptional = optionalCatalog.filter((e) => e.installed);
 
   return (
     <section aria-label="System updates">
@@ -226,7 +314,7 @@ export function UpdatesPanel() {
         </div>
       )}
 
-      <Card className="p-4 space-y-4">
+      <Card ref={systemCardRef} className="p-4 space-y-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-white/5 text-sky-400">
             <Settings size={20} />
@@ -385,6 +473,29 @@ export function UpdatesPanel() {
           )}
         </div>
       </Card>
+
+      {/* Apps section: installed optional apps with version + source badge */}
+      <div className="mt-6">
+        <h3 className="text-sm font-semibold text-shell-text mb-3">Apps</h3>
+        {installedOptional.length === 0 ? (
+          <p className="text-[12px] text-shell-text-tertiary">No optional apps installed.</p>
+        ) : (
+          <Card className="px-4 py-1 divide-y divide-shell-border">
+            {installedOptional.map((entry) => {
+              const meta = OPTIONAL_APPS.find((a) => a.id === entry.id);
+              return (
+                <OptionalAppRow
+                  key={entry.id}
+                  entry={entry}
+                  displayName={meta?.name ?? entry.id}
+                  iconName={meta?.icon ?? "package"}
+                  onScrollToSystem={scrollToSystem}
+                />
+              );
+            })}
+          </Card>
+        )}
+      </div>
 
       {/* Branch-switch confirm dialog */}
       {showSwitchConfirm && (

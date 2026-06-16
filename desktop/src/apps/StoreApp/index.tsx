@@ -19,6 +19,7 @@ import { TaosAppsSection } from "./TaosAppsSection";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MobileStore } from "./MobileStore";
 import { AppIcon, StoreCover } from "./AppIcon";
+import { OPTIONAL_APPS } from "@/registry/optional-apps";
 import { StudiosView } from "./StudiosView";
 
 /* ------------------------------------------------------------------
@@ -841,6 +842,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
   const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
   const [selectedBackends, setSelectedBackends] = useState<string[]>([]);
   const [compatMap, setCompatMap] = useState<Map<string, ResolveResponse>>(new Map());
+  const [optionalCatalog, setOptionalCatalog] = useState<Array<{ id: string; version: string; installed: boolean; update_available: boolean }>>([]);
 
   const userId = typeof window !== "undefined" ? window.localStorage.getItem("taos.user.id") || "anon" : "anon";
   const profileId = typeof window !== "undefined" ? window.localStorage.getItem("taos.profile.id") || "default" : "default";
@@ -928,6 +930,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
     fetchLatestFrameworks().then(setLatest).catch(() => {});
     fetch("/api/agents").then((r) => r.ok ? r.json() : []).then((j) => setAgentList(Array.isArray(j) ? j : (j?.agents ?? []))).catch(() => {});
     fetch("/api/cluster/install-targets", { headers: { Accept: "application/json" } }).then((r) => r.ok ? r.json() : null).then((data) => { if (Array.isArray(data)) setInstallTargets(data); }).catch(() => {});
+    fetch("/api/apps/optional/catalog", { headers: { Accept: "application/json" } }).then((r) => r.ok ? r.json() : null).then((data) => { if (data?.apps) setOptionalCatalog(data.apps); }).catch(() => {});
     refreshInstalled();
   }, [refreshInstalled]);
 
@@ -1154,10 +1157,34 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                   <span>No matches for &ldquo;{search.trim()}&rdquo;</span>
                 </div>
               ) : activeNav === "updates" && filtered.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
-                  <Package className="w-8 h-8" />
-                  <span>You&rsquo;re all up to date</span>
-                </div>
+                <>
+                  {(() => {
+                    const updatableOptional = optionalCatalog.filter((e) => e.installed && e.update_available);
+                    return updatableOptional.length > 0 ? (
+                      <div className="mb-4">
+                        <h3 className="text-[13px] font-semibold text-shell-text mb-2">taOS Apps</h3>
+                        <div className="flex flex-col gap-1">
+                          {updatableOptional.map((entry) => {
+                            const meta = OPTIONAL_APPS.find((a) => a.id === entry.id);
+                            return (
+                              <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-shell-surface border border-shell-border">
+                                <span className="text-[12.5px] font-medium text-shell-text">{meta?.name ?? entry.id}</span>
+                                <span className="font-mono text-[10px] text-shell-text-tertiary">{entry.version}</span>
+                                <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-shell-surface-active text-shell-text-tertiary border border-shell-border-strong">Core</span>
+                                <span className="ml-auto text-[11px] text-amber-300/80">Included in next system update</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
+                        <Package className="w-8 h-8" />
+                        <span>You&rsquo;re all up to date</span>
+                      </div>
+                    );
+                  })()}
+                </>
               ) : activeNav === "installed" && filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
                   <Package className="w-8 h-8" />

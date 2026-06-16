@@ -4,19 +4,22 @@ import { UpdatesPanel } from "./UpdatesPanel";
 
 const jResp = (b: any) => Promise.resolve({ ok: true, json: async () => b } as any);
 
+const BASE_FETCH = async (url: string) => {
+  if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+  if (url === "/api/settings/update-check")
+    return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+  if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+  if (url === "/api/settings/branches") return jResp({ branches: ["master", "dev"], current: "dev" });
+  if (url === "/api/settings/update-channel") return jResp({ status: "switching", branch: "master" });
+  if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+  return jResp({});
+};
+
 beforeEach(() => {
-  global.fetch = vi.fn(async (url: string) => {
-    if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
-    if (url === "/api/settings/update-check")
-      return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
-    if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
-    if (url === "/api/settings/branches") return jResp({ branches: ["master", "dev"], current: "dev" });
-    if (url === "/api/settings/update-channel") return jResp({ status: "switching", branch: "master" });
-    return jResp({});
-  }) as any;
+  global.fetch = vi.fn(BASE_FETCH) as any;
 });
 
-describe("UpdatesPanel — version display", () => {
+describe("UpdatesPanel -- version display", () => {
   it("shows current version prominently when up to date", async () => {
     render(<UpdatesPanel />);
     await waitFor(() => expect(screen.getByText("1.0.0-beta.2")).toBeInTheDocument());
@@ -34,6 +37,7 @@ describe("UpdatesPanel — version display", () => {
           new_commit: "xyz uvwx",
         });
       if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
       return jResp({});
     });
     render(<UpdatesPanel />);
@@ -42,7 +46,7 @@ describe("UpdatesPanel — version display", () => {
   });
 });
 
-describe("UpdatesPanel — branch selector", () => {
+describe("UpdatesPanel -- branch selector", () => {
   it("hides the branch selector until Advanced is expanded", async () => {
     render(<UpdatesPanel />);
     expect(screen.queryByRole("combobox", { name: /branch/i })).toBeNull();
@@ -61,5 +65,49 @@ describe("UpdatesPanel — branch selector", () => {
     await waitFor(() =>
       expect((global.fetch as any).mock.calls.find((c: any[]) => c[0] === "/api/settings/update-channel")).toBeTruthy()
     );
+  });
+});
+
+describe("UpdatesPanel -- optional apps section", () => {
+  it("renders nothing in the Apps section when no optional apps are installed", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [
+        { id: "reddit", version: "1.0.0", trust: "first-party", source: "core", installed: false, update_available: false },
+      ]});
+      return jResp(await BASE_FETCH(url).then((r) => r.json()));
+    });
+    render(<UpdatesPanel />);
+    await waitFor(() => {
+      expect(screen.getByText("No optional apps installed.")).toBeInTheDocument();
+    });
+  });
+
+  it("renders an installed app row with its version and Core badge", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [
+        { id: "reddit", version: "1.0.0", trust: "first-party", source: "core", installed: true, update_available: false },
+      ]});
+      return jResp(await BASE_FETCH(url).then((r) => r.json()));
+    });
+    render(<UpdatesPanel />);
+    await waitFor(() => expect(screen.getByText("Reddit")).toBeInTheDocument());
+    expect(screen.getByText("1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("Core")).toBeInTheDocument();
+    expect(screen.getByText("Up to date")).toBeInTheDocument();
+  });
+
+  it("shows update available copy when catalog flags it", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [
+        { id: "reddit", version: "1.0.0", trust: "first-party", source: "core", installed: true, update_available: true },
+      ]});
+      return jResp(await BASE_FETCH(url).then((r) => r.json()));
+    });
+    render(<UpdatesPanel />);
+    await waitFor(() =>
+      expect(screen.getByText(/Update available, included in the next system update/i)).toBeInTheDocument()
+    );
+    // Should have a button/link to trigger the system update flow.
+    expect(screen.getByRole("button", { name: /scroll to system update/i })).toBeInTheDocument();
   });
 });
