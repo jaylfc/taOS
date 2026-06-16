@@ -283,7 +283,12 @@ export function App() {
               Return to fullscreen
             </button>
           )}
-          <div className={`transition-all duration-500 ${launched ? "opacity-100 scale-100" : "opacity-0 scale-95"}`}>
+          {/* Keep the entrance zoom (scale-95 -> none animates), but do NOT
+              retain a transform once launched: a `transform` on this ancestor
+              (even scale(1)) makes a containing block for every position:fixed
+              descendant, which pins the dock to the top and renders context
+              menus in the wrong corner. Steady state must be transform-free. */}
+          <div className={`transition-all duration-500 ${launched ? "opacity-100" : "opacity-0 scale-95"}`}>
             <div className="h-screen w-screen flex flex-col overflow-hidden bg-shell-bg text-shell-text">
               <EffectsLayer />
               <TopBar onSearchOpen={toggleSearch} onAssistantOpen={toggleAssistant} />
