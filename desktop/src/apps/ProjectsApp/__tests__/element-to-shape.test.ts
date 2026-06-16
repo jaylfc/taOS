@@ -64,4 +64,56 @@ describe("elementToShape", () => {
     expect(s.meta.taos_author_id).toBe("bot");
     expect(s.meta.taos_author_kind).toBe("agent");
   });
+
+  // The backend only validates `kind`, not the payload shape, so an agent can
+  // store note/link/image elements whose payload would fail tldraw's strict
+  // props schema. elementToShape must coerce those to valid, renderable props
+  // instead of producing a shape that throws a ValidationError and vanishes.
+  describe("payload coercion (malformed agent writes still render)", () => {
+    it("note: fills a missing field with its default", () => {
+      const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "blue" } }), "slug");
+      expect(s.props.taos_payload).toEqual({ text: "hi", color: "blue", font_size: 14 });
+    });
+
+    it("note: coerces a numeric string font_size to a number", () => {
+      const s = elementToShape(makeElement({ kind: "note", payload: { text: "x", color: "blue", font_size: "18" } }), "slug");
+      expect(s.props.taos_payload.font_size).toBe(18);
+    });
+
+    it("note: empty payload falls back to all defaults", () => {
+      const s = elementToShape(makeElement({ kind: "note", payload: {} }), "slug");
+      expect(s.props.taos_payload).toEqual({ text: "", color: "yellow", font_size: 14 });
+    });
+
+    it("link: missing/empty fields coerce to typed defaults", () => {
+      const s = elementToShape(makeElement({ kind: "link", payload: { url: "https://x.test" } }), "slug");
+      expect(s.props.taos_payload).toEqual({
+        url: "https://x.test",
+        title: "",
+        description: "",
+        preview_image_url: "",
+        favicon_url: "",
+        fetched_at: 0,
+      });
+    });
+
+    it("image: missing mime falls back to image/png", () => {
+      const s = elementToShape(makeElement({ kind: "image", payload: { file_id: "f1" } }), "slug");
+      expect(s.props.taos_payload).toEqual({ file_id: "f1", alt: "", mime: "image/png" });
+    });
+
+    it("coerces non-numeric geometry to numeric defaults", () => {
+      const s = elementToShape(
+        makeElement({ kind: "note", x: "5" as unknown as number, w: null as unknown as number, payload: {} }),
+        "slug",
+      );
+      expect(s.x).toBe(5);
+      expect(s.props.w).toBe(100);
+    });
+
+    it("coerces a non-enum author_kind to 'user'", () => {
+      const s = elementToShape(makeElement({ kind: "note", author_kind: "system" as unknown as "user", payload: {} }), "slug");
+      expect(s.props.taos_author_kind).toBe("user");
+    });
+  });
 });
