@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import email
 import imaplib
+import re
 import smtplib
 from dataclasses import dataclass, field
 from email.header import decode_header, make_header
@@ -33,7 +34,11 @@ CANONICAL_FOLDERS = ["INBOX", "Sent", "Drafts", "Archive", "Trash"]
 MAX_MESSAGE_LIMIT = 200
 
 
-class MailFolderError(ValueError):
+class MailValidationError(ValueError):
+    """Raised when an untrusted value is unsafe to use in a mail command."""
+
+
+class MailFolderError(MailValidationError):
     """Raised when a folder name is unsafe to interpolate into an IMAP command."""
 
 
@@ -47,6 +52,32 @@ def _validate_folder(folder: str) -> str:
     if not folder or any(c in folder for c in ('"', "\r", "\n", "\x00")):
         raise MailFolderError(f"invalid folder name: {folder!r}")
     return folder
+
+
+_UID_RE = re.compile(r"^[0-9]+$")
+
+
+def _validate_uid(uid: str) -> str:
+    """Reject message ids that are not a plain IMAP UID.
+
+    ``uid`` is an untrusted path parameter passed straight to
+    ``conn.uid("FETCH", uid, ...)``. A non-numeric value could carry extra IMAP
+    command tokens, so we require a bare numeric UID. The ids we hand out from
+    ``list_messages`` are always numeric UIDs, so this rejects nothing legitimate."""
+    if not uid or not _UID_RE.fullmatch(uid):
+        raise MailValidationError(f"invalid message id: {uid!r}")
+    return uid
+
+
+def _validate_header(value: str, field: str) -> str:
+    """Reject CR/LF/NUL in a value destined for a MIME header.
+
+    ``to``/``cc``/``subject`` come from the client and are assigned directly to
+    message headers. A newline would let a caller inject extra headers (a hidden
+    Bcc, a spoofed From), so we forbid the line-break characters outright."""
+    if any(c in value for c in ("\r", "\n", "\x00")):
+        raise MailValidationError(f"invalid characters in {field}")
+    return value
 
 
 @dataclass
@@ -282,6 +313,7 @@ def _get_message_blocking(
     cfg: MailAccountConfig, folder: str, uid: str
 ) -> MessageDetail | None:
     _validate_folder(folder)
+    _validate_uid(uid)
     conn = _imap_connect(cfg)
     try:
         conn.select(f'"{folder}"', readonly=True)
@@ -306,10 +338,10 @@ def _build_outgoing(
 ) -> MIMEMultipart:
     msg = MIMEMultipart()
     msg["From"] = cfg.email_address or cfg.username
-    msg["To"] = to
+    msg["To"] = _validate_header(to, "to")
     if cc:
-        msg["Cc"] = cc
-    msg["Subject"] = subject
+        msg["Cc"] = _validate_header(cc, "cc")
+    msg["Subject"] = _validate_header(subject, "subject")
     msg.attach(MIMEText(body, "plain"))
     for filename, content, content_type in attachments or []:
         maintype, _, subtype = content_type.partition("/")

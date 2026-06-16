@@ -211,7 +211,7 @@ async def get_message(
         return JSONResponse({"error": "account credential missing"}, status_code=400)
     try:
         detail = await mail_client.get_message(cfg, folder, uid)
-    except mail_client.MailFolderError as exc:
+    except mail_client.MailValidationError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         return JSONResponse({"error": f"imap error: {exc}"}, status_code=502)
@@ -240,6 +240,8 @@ async def send(
         # TODO(phase-2): attachment upload pass-through (multipart) -- the
         # client supports it; the route only sends a text body for now.
         await mail_client.send_message(cfg, body.to, body.subject, body.body, cc=body.cc)
+    except mail_client.MailValidationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         return JSONResponse({"error": f"smtp error: {exc}"}, status_code=502)
     return {"status": "sent"}

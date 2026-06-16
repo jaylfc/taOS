@@ -33,6 +33,12 @@ def _build_csp(frame_src_extra: str = "") -> str:
 
 
 def _strip_port(host: str) -> str:
+    # A bracketed IPv6 host ("[::1]" or "[::1]:6969") is full of colons, so a
+    # naive rsplit on ":" would corrupt it. Keep everything up to the closing
+    # bracket; for a normal "host:port" just drop the trailing port.
+    if host.startswith("["):
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
