@@ -4,7 +4,7 @@ export interface AppManifest {
   id: string;
   name: string;
   icon: string;
-  category: "platform" | "os" | "streaming" | "game";
+  category: "platform" | "os" | "streaming" | "game" | "userspace";
   component: () => Promise<{ default: ComponentType<{ windowId: string }> }>;
   defaultSize: { w: number; h: number };
   minSize: { w: number; h: number };

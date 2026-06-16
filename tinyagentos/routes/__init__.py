@@ -284,8 +284,11 @@ def register_all_routers(app):
     from tinyagentos.routes.events import router as events_router
     app.include_router(events_router)
 
-    # OTLP/HTTP+JSON receiver — Phase 2 observability.
+    # OTLP/HTTP+JSON receiver -- Phase 2 observability.
     # POST /v1/traces accepts ExportTraceServiceRequest JSON and writes spans
     # to the per-agent SpanStore (app.state.span_store_registry).
     from tinyagentos.otel.receiver import router as otel_receiver_router
     app.include_router(otel_receiver_router)
+
+    from tinyagentos.routes.userspace_apps import router as userspace_apps_router
+    app.include_router(userspace_apps_router)
