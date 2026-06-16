@@ -3,7 +3,7 @@ import { Settings, RefreshCw, AlertCircle, Check, ChevronDown, ChevronRight, Pac
 import * as LucideIcons from "lucide-react";
 import { Button, Card, Label, Switch } from "@/components/ui";
 import { RestartProgressModal } from "@/apps/SettingsApp/_shared";
-import { OPTIONAL_APPS } from "@/registry/optional-apps";
+import { getApp } from "@/registry/app-registry";
 
 interface UpdateInfo {
   has_updates: boolean;
@@ -295,7 +295,8 @@ export function UpdatesPanel() {
 
   const hasPendingRestart = !!updateStatus?.pending_restart_sha;
 
-  // Only show installed optional apps that have a matching registry entry for display metadata.
+  // Installed optional apps; display name/icon come from the app registry
+  // (getApp covers every optional app, including the studios).
   const installedOptional = optionalCatalog.filter((e) => e.installed);
 
   return (
@@ -482,7 +483,7 @@ export function UpdatesPanel() {
         ) : (
           <Card className="px-4 py-1 divide-y divide-shell-border">
             {installedOptional.map((entry) => {
-              const meta = OPTIONAL_APPS.find((a) => a.id === entry.id);
+              const meta = getApp(entry.id);
               return (
                 <OptionalAppRow
                   key={entry.id}

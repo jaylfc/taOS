@@ -19,7 +19,7 @@ import { TaosAppsSection } from "./TaosAppsSection";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MobileStore } from "./MobileStore";
 import { AppIcon, StoreCover } from "./AppIcon";
-import { OPTIONAL_APPS } from "@/registry/optional-apps";
+import { getApp } from "@/registry/app-registry";
 import { StudiosView } from "./StudiosView";
 
 /* ------------------------------------------------------------------
@@ -1151,40 +1151,40 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                   <p className="text-[12px] text-shell-text-tertiary mt-0.5">{filtered.length} apps</p>
                 </div>
               </div>
+              {activeNav === "updates" && (() => {
+                const updatableOptional = optionalCatalog.filter((e) => e.installed && e.update_available);
+                if (updatableOptional.length === 0) return null;
+                return (
+                  <div className="mb-4">
+                    <h3 className="text-[13px] font-semibold text-shell-text mb-2">taOS Apps</h3>
+                    <div className="flex flex-col gap-1">
+                      {updatableOptional.map((entry) => {
+                        const meta = getApp(entry.id);
+                        return (
+                          <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-shell-surface border border-shell-border">
+                            <span className="text-[12.5px] font-medium text-shell-text">{meta?.name ?? entry.id}</span>
+                            <span className="font-mono text-[10px] text-shell-text-tertiary">{entry.version}</span>
+                            <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-shell-surface-active text-shell-text-tertiary border border-shell-border-strong">Core</span>
+                            <span className="ml-auto text-[11px] text-amber-300/80">Included in next system update</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
               {searching && filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
                   <Package className="w-8 h-8" />
                   <span>No matches for &ldquo;{search.trim()}&rdquo;</span>
                 </div>
               ) : activeNav === "updates" && filtered.length === 0 ? (
-                <>
-                  {(() => {
-                    const updatableOptional = optionalCatalog.filter((e) => e.installed && e.update_available);
-                    return updatableOptional.length > 0 ? (
-                      <div className="mb-4">
-                        <h3 className="text-[13px] font-semibold text-shell-text mb-2">taOS Apps</h3>
-                        <div className="flex flex-col gap-1">
-                          {updatableOptional.map((entry) => {
-                            const meta = OPTIONAL_APPS.find((a) => a.id === entry.id);
-                            return (
-                              <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-shell-surface border border-shell-border">
-                                <span className="text-[12.5px] font-medium text-shell-text">{meta?.name ?? entry.id}</span>
-                                <span className="font-mono text-[10px] text-shell-text-tertiary">{entry.version}</span>
-                                <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-shell-surface-active text-shell-text-tertiary border border-shell-border-strong">Core</span>
-                                <span className="ml-auto text-[11px] text-amber-300/80">Included in next system update</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
-                        <Package className="w-8 h-8" />
-                        <span>You&rsquo;re all up to date</span>
-                      </div>
-                    );
-                  })()}
-                </>
+                optionalCatalog.some((e) => e.installed && e.update_available) ? null : (
+                  <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
+                    <Package className="w-8 h-8" />
+                    <span>You&rsquo;re all up to date</span>
+                  </div>
+                )
               ) : activeNav === "installed" && filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-40 text-shell-text-tertiary text-sm gap-2">
                   <Package className="w-8 h-8" />

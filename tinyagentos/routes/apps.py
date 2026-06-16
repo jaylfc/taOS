@@ -62,17 +62,21 @@ APP_TRUST: dict[str, str] = {
 }
 
 
-def _semver_tuple(version: str) -> tuple[int, ...]:
-    """Parse a semver string into a comparable tuple of ints.
+def _semver_tuple(version: str) -> tuple[int, int, int]:
+    """Parse a semver string into a fixed-length (major, minor, patch) tuple.
 
-    Strips leading 'v' and ignores pre-release/build suffixes for ordering.
-    Returns (0,) on any parse failure so comparisons degrade gracefully.
+    Strips a leading 'v' and ignores pre-release/build suffixes for ordering,
+    and pads to three components so "1.0" and "1.0.0" compare equal. Returns
+    (0, 0, 0) on any parse failure so comparisons degrade gracefully without
+    masking a real update.
     """
     v = version.lstrip("v").split("-")[0].split("+")[0]
     try:
-        return tuple(int(p) for p in v.split("."))
+        parts = [int(p) for p in v.split(".")]
     except ValueError:
-        return (0,)
+        return (0, 0, 0)
+    parts = (parts + [0, 0, 0])[:3]
+    return (parts[0], parts[1], parts[2])
 
 
 def _resolve_icon(manifest_icon: str, manifest_dir) -> str:
