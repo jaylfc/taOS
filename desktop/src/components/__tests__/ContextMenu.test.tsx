@@ -30,8 +30,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("ArrowDown moves focus to next enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     fireEvent.keyDown(menu, { key: "ArrowDown" });
     const items = screen.getAllByRole("menuitem");
     // Skip disabled "Delete", so ArrowDown from Copy → Paste
@@ -39,8 +39,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("ArrowDown wraps from last to first enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     // Navigate to last enabled item (Rename)
     fireEvent.keyDown(menu, { key: "End" });
     fireEvent.keyDown(menu, { key: "ArrowDown" });
@@ -49,8 +49,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("ArrowUp moves focus to previous enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     fireEvent.keyDown(menu, { key: "ArrowDown" }); // Paste
     fireEvent.keyDown(menu, { key: "ArrowUp" });   // back to Copy
     const items = screen.getAllByRole("menuitem");
@@ -58,8 +58,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("Home moves focus to first enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     fireEvent.keyDown(menu, { key: "ArrowDown" });
     fireEvent.keyDown(menu, { key: "Home" });
     const items = screen.getAllByRole("menuitem");
@@ -67,8 +67,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("End moves focus to last enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     fireEvent.keyDown(menu, { key: "End" });
     // Rename is last enabled (Delete is disabled)
     const items = screen.getAllByRole("menuitem");
@@ -77,15 +77,15 @@ describe("ContextMenu keyboard navigation", () => {
 
   it("Escape calls onClose", () => {
     const onClose = vi.fn();
-    const { container } = renderMenu(onClose);
-    const menu = container.firstChild as HTMLElement;
+    renderMenu(onClose);
+    const menu = screen.getByRole("menu");
     fireEvent.keyDown(menu, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
 
   it("disabled item is skipped by arrow navigation", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     // ArrowDown from Copy → Paste, ArrowDown again → Rename (skipping disabled Delete)
     fireEvent.keyDown(menu, { key: "ArrowDown" }); // Paste
     fireEvent.keyDown(menu, { key: "ArrowDown" }); // Rename (skips Delete)
@@ -106,8 +106,8 @@ describe("ContextMenu keyboard navigation", () => {
       { label: "Copy", action: vi.fn(), disabled: true },
       { label: "Paste", action: vi.fn(), disabled: true },
     ];
-    const { container } = render(<ContextMenu x={100} y={100} items={allDisabled} onClose={vi.fn()} />);
-    const menu = container.firstChild as HTMLElement;
+    render(<ContextMenu x={100} y={100} items={allDisabled} onClose={vi.fn()} />);
+    const menu = screen.getByRole("menu");
     // None of these should throw or attempt to focus undefined
     expect(() => fireEvent.keyDown(menu, { key: "ArrowDown" })).not.toThrow();
     expect(() => fireEvent.keyDown(menu, { key: "ArrowUp" })).not.toThrow();
@@ -115,8 +115,9 @@ describe("ContextMenu keyboard navigation", () => {
     expect(() => fireEvent.keyDown(menu, { key: "End" })).not.toThrow();
     // Escape still calls onClose even with all disabled
     const onClose = vi.fn();
-    const { container: c2 } = render(<ContextMenu x={100} y={100} items={allDisabled} onClose={onClose} />);
-    fireEvent.keyDown(c2.firstChild as HTMLElement, { key: "Escape" });
+    render(<ContextMenu x={100} y={100} items={allDisabled} onClose={onClose} />);
+    const menus = screen.getAllByRole("menu");
+    fireEvent.keyDown(menus[menus.length - 1], { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -160,8 +161,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("ArrowDown when focus is outside list moves to first enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     // Move focus to a focusable element outside the menu
     const outside = document.createElement("button");
     document.body.appendChild(outside);
@@ -174,8 +175,8 @@ describe("ContextMenu keyboard navigation", () => {
   });
 
   it("ArrowUp when focus is outside list moves to last enabled item", () => {
-    const { container } = renderMenu();
-    const menu = container.firstChild as HTMLElement;
+    renderMenu();
+    const menu = screen.getByRole("menu");
     const outside = document.createElement("button");
     document.body.appendChild(outside);
     outside.focus();

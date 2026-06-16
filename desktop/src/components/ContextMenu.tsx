@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 
 export interface MenuItem {
@@ -103,7 +104,11 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   // Roving tabindex: track which navigable (non-separator, non-disabled) item is active
   let navigableCounter = -1;
 
-  return (
+  // Portal to <body> so the menu is never trapped inside a transformed ancestor
+  // (e.g. the dock's -translate-x-1/2). A transform on any ancestor makes a
+  // containing block for position:fixed, which would offset the menu away from
+  // the cursor. Rendered on body, its fixed coordinates are viewport-relative.
+  return createPortal(
     <div
       ref={menuRef}
       role="menu"
@@ -158,6 +163,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           </button>
         );
       })}
-    </div>
+    </div>,
+    document.body,
   );
 }
