@@ -31,8 +31,14 @@
       if (!orig) return;
       window.matchMedia = function (q) {
         var qs = String(q);
-        if (/prefers-color-scheme/i.test(qs)) {
-          var wantDark = /dark/i.test(qs);
+        // Only override a query that is EXACTLY a prefers-color-scheme test with
+        // a dark/light value. Compound queries (e.g. "(min-width: 600px) and
+        // (prefers-color-scheme: dark)") or valueless ones fall through to the
+        // real matchMedia so their other conditions evaluate correctly --
+        // keying off just the colour-scheme term there returns wrong matches.
+        var m = /^\s*\(\s*prefers-color-scheme\s*:\s*(dark|light)\s*\)\s*$/i.exec(qs);
+        if (m) {
+          var wantDark = m[1].toLowerCase() === 'dark';
           var matches = wantDark ? isDark : !isDark;
           return {
             media: qs, matches: matches, onchange: null,
