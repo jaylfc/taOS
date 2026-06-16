@@ -19,6 +19,10 @@ def parse_manifest(text: str) -> dict:
         data = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
         raise PackageError(f"invalid manifest YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise PackageError(
+            f"manifest.yaml must be a YAML mapping, got {type(data).__name__}"
+        )
     for key in _REQUIRED:
         if not data.get(key):
             raise PackageError(f"manifest missing required field: {key}")
@@ -60,14 +64,16 @@ def extract_package(data: bytes, apps_root: Path) -> dict:
     apps_root = Path(apps_root).resolve()
     app_dir = (apps_root / manifest["id"]).resolve()
     # app_dir itself must stay within apps_root (defends against a crafted id)
-    if not str(app_dir).startswith(str(apps_root) + "/"):
+    if not app_dir.is_relative_to(apps_root) or app_dir == apps_root:
         raise PackageError(f"unsafe path in package: id {manifest['id']!r}")
     app_dir.mkdir(parents=True, exist_ok=True)
     for member in zf.namelist():
         if member.endswith("/"):
             continue
         dest = (app_dir / member).resolve()
-        if not str(dest).startswith(str(app_dir) + "/") and dest != app_dir:
+        # dest must be a file strictly inside app_dir -- reject traversals and
+        # members that resolve to app_dir itself (e.g. "." -> IsADirectoryError)
+        if dest == app_dir or not dest.is_relative_to(app_dir):
             raise PackageError(f"unsafe path in package: {member}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(member))

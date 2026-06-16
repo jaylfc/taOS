@@ -44,4 +44,26 @@ describe("SandboxedAppWindow", () => {
     }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("coerces non-object args to {} before forwarding to broker", async () => {
+    // Finding 1: array, null, or scalar args must not be forwarded as-is.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ result: "ok" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SandboxedAppWindow windowId="w1" appId="todo" />);
+    const iframe = screen.getByTitle("todo") as HTMLIFrameElement;
+    Object.defineProperty(iframe, "contentWindow", {
+      value: { postMessage: vi.fn() }, configurable: true
+    });
+
+    for (const badArgs of [["array"], null, "string", 42]) {
+      fetchMock.mockClear();
+      window.dispatchEvent(new MessageEvent("message", {
+        source: iframe.contentWindow as Window,
+        data: { taosApp: "todo", id: 2, capability: "app.kv.get", args: badArgs },
+      }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.args).toEqual({});
+    }
+  });
 });

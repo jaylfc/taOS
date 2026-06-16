@@ -38,7 +38,7 @@
     },
     notify: (title, body) => call("app.notify", { title, body }),
     // gated -- resolve to {error:"permission_denied"} if not granted
-    net: { fetch: (url, opts) => call("app.net", { url, opts }) },
+    net: { fetch: (url, opts) => call("app.net", { path: url, method: (opts && opts.method) || "GET", body: opts && opts.body, headers: opts && opts.headers }) },
     backend: {
       fetch: (path, opts) => call("app.net", {
         path,

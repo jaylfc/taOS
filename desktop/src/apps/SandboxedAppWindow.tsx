@@ -23,6 +23,14 @@ export function SandboxedAppWindow({ appId }: Props) {
       if (!iframe || e.source !== iframe.contentWindow) return;
       const msg = e.data as BrokerRequest;
       if (!msg || msg.taosApp !== appId || typeof msg.id !== "number" || !msg.capability) return;
+      // Validate args: must be a plain object (not an array, null, or primitive).
+      // Non-conforming values are coerced to {} rather than forwarded as-is into
+      // backend capability handling.
+      const rawArgs = msg.args;
+      const safeArgs: Record<string, unknown> =
+        rawArgs !== null && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+          ? rawArgs
+          : {};
       let result: Record<string, unknown>;
       try {
         const res = await fetch(`/api/userspace-apps/${encodeURIComponent(appId)}/broker`, {
@@ -32,7 +40,7 @@ export function SandboxedAppWindow({ appId }: Props) {
           // under the Vite dev proxy (SPA :5173 -> API :6969).
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ capability: msg.capability, args: msg.args || {} }),
+          body: JSON.stringify({ capability: msg.capability, args: safeArgs }),
         });
         result = res.ok ? await res.json() : { error: `broker_${res.status}` };
       } catch {

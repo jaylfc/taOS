@@ -55,7 +55,10 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
     if package is not None:
         data = await package.read()
     else:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
         url = body.get("source_url")
         if not url:
             return JSONResponse({"error": "source_url or package required"}, status_code=400)
@@ -67,14 +70,28 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
                           "(no private, loopback, link-local or reserved addresses)"},
                 status_code=400,
             )
-        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as c:
-            resp = await c.get(url)
-            resp.raise_for_status()
-            data = resp.content
+        try:
+            async with httpx.AsyncClient(timeout=120, follow_redirects=False) as c:
+                resp = await c.get(url)
+                resp.raise_for_status()
+                data = resp.content
+        except httpx.HTTPStatusError as exc:
+            return JSONResponse(
+                {"error": f"upstream returned {exc.response.status_code}"},
+                status_code=502,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse({"error": f"upstream fetch failed: {exc}"}, status_code=502)
     try:
         manifest = extract_package(data, apps_root=_apps_root(request))
     except PackageError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    # Reject container packages before persisting anything -- no partial state.
+    if manifest["app_type"] == "container":
+        return JSONResponse(
+            {"error": "container packages are not supported in this release (web-only)"},
+            status_code=501,
+        )
     existing = await store.get(manifest["id"])
     new_perms = [
         p for p in manifest["permissions"]
@@ -85,17 +102,11 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
         app_type=manifest["app_type"], entry=manifest["entry"], icon=manifest["icon"],
         permissions_requested=manifest["permissions"],
     )
-    deploy_info: dict = {}
-    if manifest["app_type"] == "container":
-        # Container deploy is not yet wired in this phase (web-only).
-        # Re-installs of container apps are accepted and stored, but not deployed.
-        raise NotImplementedError("container packages: web-only for now")
     return {
         "app_id": manifest["id"],
         "permissions_requested": manifest["permissions"],
         "needs_consent": bool(existing and new_perms),
         "new_permissions": new_perms,
-        **deploy_info,
     }
 
 
@@ -124,7 +135,7 @@ async def uninstall_app(request: Request, app_id: str):
     removed = await store.uninstall(app_id)
     root = _apps_root(request).resolve()
     app_dir = (root / app_id).resolve()
-    if str(app_dir).startswith(str(root) + "/") and app_dir.exists():
+    if app_dir.is_relative_to(root) and app_dir != root and app_dir.exists():
         shutil.rmtree(app_dir, ignore_errors=True)
     return {"status": "ok", "removed": removed}
 
@@ -133,7 +144,7 @@ async def uninstall_app(request: Request, app_id: str):
 async def serve_bundle(request: Request, app_id: str, path: str):
     root = (_apps_root(request) / app_id).resolve()
     target = (root / path).resolve()
-    if not str(target).startswith(str(root) + "/") or not target.is_file():
+    if not target.is_relative_to(root) or target == root or not target.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
     resp = FileResponse(target)
     resp.headers["Content-Security-Policy"] = _BUNDLE_CSP
@@ -148,7 +159,7 @@ async def serve_icon(request: Request, app_id: str):
         return Response(status_code=404)
     root = (_apps_root(request) / app_id).resolve()
     icon = (root / app["icon"]).resolve()
-    if not str(icon).startswith(str(root) + "/") or not icon.is_file():
+    if not icon.is_relative_to(root) or icon == root or not icon.is_file():
         return Response(status_code=404)
     return FileResponse(icon)
 

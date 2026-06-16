@@ -52,3 +52,28 @@ def test_extract_rejects_path_traversal(tmp_path):
     data = _zip(WEB_MANIFEST, {"../evil.txt": "pwned"})
     with pytest.raises(PackageError, match="unsafe path"):
         extract_package(data, apps_root=tmp_path)
+
+
+def test_parse_manifest_rejects_yaml_list():
+    # Finding 5: safe_load returns a list -- must raise PackageError, not AttributeError.
+    with pytest.raises(PackageError, match="mapping"):
+        parse_manifest("- item1\n- item2\n")
+
+
+def test_parse_manifest_rejects_yaml_scalar():
+    # Finding 5: safe_load returns a scalar -- must raise PackageError.
+    with pytest.raises(PackageError, match="mapping"):
+        parse_manifest("just a string")
+
+
+def test_extract_rejects_dot_member(tmp_path):
+    # Finding 7: a zip member "." resolves to app_dir itself -- must raise PackageError,
+    # not an IsADirectoryError when write_bytes is called on a directory.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("manifest.yaml", WEB_MANIFEST.strip())
+        z.writestr("index.html", "<h1>ok</h1>")
+        # Add a member whose name is just "." -- resolves to app_dir on extraction.
+        z.writestr(".", "bad")
+    with pytest.raises(PackageError, match="unsafe path"):
+        extract_package(buf.getvalue(), apps_root=tmp_path)
