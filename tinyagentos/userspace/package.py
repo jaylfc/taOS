@@ -9,6 +9,11 @@ import yaml
 _ALLOWED_TYPES = {"web", "container"}
 _REQUIRED = ("id", "name", "version", "app_type")
 
+# Zip-bomb defenses: cap the declared uncompressed total, per-member size, and count.
+_MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+_MAX_MEMBER_BYTES = 64 * 1024 * 1024
+_MAX_MEMBERS = 10000
+
 
 class PackageError(Exception):
     """Raised when a .taosapp package is invalid or unsafe."""
@@ -56,6 +61,18 @@ def extract_package(data: bytes, apps_root: Path) -> dict:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
         raise PackageError("not a valid .taosapp (zip) archive") from exc
+    infos = zf.infolist()
+    if len(infos) > _MAX_MEMBERS:
+        raise PackageError(f"package has too many files ({len(infos)} > {_MAX_MEMBERS})")
+    total_uncompressed = 0
+    for zi in infos:
+        if zi.file_size > _MAX_MEMBER_BYTES:
+            raise PackageError(f"package member too large: {zi.filename}")
+        total_uncompressed += zi.file_size
+    if total_uncompressed > _MAX_UNCOMPRESSED_BYTES:
+        raise PackageError(
+            f"package uncompressed size too large ({total_uncompressed} bytes)"
+        )
     try:
         manifest = parse_manifest(zf.read("manifest.yaml").decode("utf-8"))
     except KeyError as exc:

@@ -131,3 +131,15 @@ async def test_app_net_blocks_dangerous_headers_and_passes_safe_ones(tmp_path):
     assert "host" not in lower_keys, "Host header must be stripped"
     assert "x-ok" in lower_keys, "X-Ok header must be forwarded"
     await s.close()
+
+
+@pytest.mark.asyncio
+async def test_files_write_to_jail_root_rejected(tmp_path):
+    # app.files.write with an empty path targets the jail root (a directory) and
+    # must return invalid_path, not raise an uncaught IsADirectoryError (a 500).
+    s = await _store(tmp_path)
+    (tmp_path / "todo" / "files").mkdir(parents=True)
+    out = await handle_capability("todo", "app.files.write", {"path": "", "content": "x"},
+                                  granted=[], data_store=s, app_dir=tmp_path / "todo", services={})
+    assert out["error"] == "invalid_path"
+    await s.close()

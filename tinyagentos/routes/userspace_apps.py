@@ -49,11 +49,15 @@ async def list_apps(request: Request):
     return await request.app.state.userspace_apps.list_installed()
 
 
+# Cap the package upload / fetch size to bound memory and pre-filter zip bombs.
+_MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+
+
 @router.post("/api/userspace-apps/install")
 async def install_app(request: Request, package: UploadFile | None = File(default=None)):
     store = request.app.state.userspace_apps
     if package is not None:
-        data = await package.read()
+        data = await package.read(_MAX_PACKAGE_BYTES + 1)
     else:
         try:
             body = await request.json()
@@ -82,6 +86,8 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
             )
         except httpx.HTTPError as exc:
             return JSONResponse({"error": f"upstream fetch failed: {exc}"}, status_code=502)
+    if len(data) > _MAX_PACKAGE_BYTES:
+        return JSONResponse({"error": "package too large"}, status_code=413)
     try:
         manifest = extract_package(data, apps_root=_apps_root(request))
     except PackageError as exc:

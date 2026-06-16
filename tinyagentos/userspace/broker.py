@@ -54,12 +54,16 @@ async def handle_capability(app_id, capability, args, *, granted, data_store, ap
     if capability in ("app.files.read", "app.files.write"):
         files_root = (Path(app_dir) / "files").resolve()
         target = (files_root / args.get("path", "")).resolve()
-        if not str(target).startswith(str(files_root) + "/") and target != files_root:
+        if target != files_root and not target.is_relative_to(files_root):
             return {"error": "invalid_path"}
         if capability == "app.files.read":
             if not target.is_file():
                 return {"error": "not_found"}
             return {"result": target.read_text()}
+        # write: reject the jail root itself or any existing directory, which
+        # would otherwise raise an uncaught IsADirectoryError (a 500).
+        if target == files_root or target.is_dir():
+            return {"error": "invalid_path"}
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(args.get("content", ""))
         return {"result": True}
