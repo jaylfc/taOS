@@ -2754,7 +2754,7 @@ export function MessagesApp({
             id: currentChannel.id,
             name: currentChannel.name,
             type: currentChannel.type,
-            topic: currentChannel.topic ?? "",
+            topic: currentChannel.topic ?? currentChannel.description ?? "",
             members: currentChannel.members ?? [],
             settings: currentChannel.settings ?? {},
           }}
