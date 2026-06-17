@@ -1,5 +1,11 @@
 import type { AppManifest } from "@/registry/app-registry";
 
+/**
+ * Event name emitted when the installed userspace-app list changes (install,
+ * uninstall, or enable/disable). Mirrors APP_INSTALLED from app-event-bus.
+ */
+export const USERSPACE_APPS_CHANGED = "taos:userspace-apps-changed";
+
 export interface UserspaceAppRow {
   app_id: string;
   name: string;
@@ -15,7 +21,9 @@ export interface UserspaceAppRow {
 export function toAppManifest(row: UserspaceAppRow): AppManifest {
   const trust = row.trust ?? "community";
   return {
-    id: row.app_id,
+    // Registry id is namespaced (mirrors "service:") so a community app cannot
+    // shadow a built-in app id. The broker/bundle still use the raw app_id.
+    id: `userspace:${row.app_id}`,
     name: row.name,
     icon: "layout-grid",
     category: "userspace",

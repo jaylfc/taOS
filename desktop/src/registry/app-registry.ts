@@ -190,3 +190,22 @@ export function getOrRegisterServiceApp(
   apps.push(manifest);
   return manifest;
 }
+
+/**
+ * Replace the full set of registered userspace app manifests in one atomic
+ * operation. Removes every existing "userspace:*" entry then pushes all the
+ * provided manifests. Call this after fetching /api/userspace-apps so that
+ * getApp() resolves userspace ids for openWindow, Dock, and prefetch without
+ * any additional lookups.
+ */
+export function syncUserspaceApps(manifests: AppManifest[]): void {
+  // Remove stale userspace entries in place (keeps the const binding intact)
+  for (let i = apps.length - 1; i >= 0; i--) {
+    if (apps[i]?.id.startsWith("userspace:")) {
+      apps.splice(i, 1);
+    }
+  }
+  for (const m of manifests) {
+    apps.push(m);
+  }
+}

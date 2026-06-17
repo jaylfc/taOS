@@ -7,6 +7,7 @@ import { LaunchpadIcon } from "./LaunchpadIcon";
 import { ServiceIcon } from "./ServiceIcon";
 import { useInstalledServices } from "@/hooks/use-installed-services";
 import { useInstalledOptionalApps } from "@/hooks/use-installed-optional-apps";
+import { useInstalledUserspaceApps } from "@/hooks/use-installed-userspace-apps";
 
 interface Props {
   open: boolean;
@@ -28,6 +29,7 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
   const { openWindow } = useProcessStore();
   const installedServices = useInstalledServices();
   const installedOptional = useInstalledOptionalApps();
+  const installedUserspace = useInstalledUserspaceApps();
 
   // Register Escape at overlay priority so it beats any system shortcuts when open
   useShortcut("Escape", () => { if (openRef.current) onClose(); }, "Close launchpad", "overlay");
@@ -35,12 +37,11 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
   const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
 
   const apps = useMemo(() => {
-    // Installed services render once under the Services section below (from
-    // /api/apps/installed). Exclude any dynamically-registered service:* apps
-    // from the registry grouping so they don't also appear under a built-in
-    // category (e.g. SearXNG showing under both Platform and Services).
+    // Installed services and userspace apps render in their own sections below.
+    // Exclude dynamically-registered service:* and userspace:* entries from the
+    // registry grouping so they don't also appear under a built-in category.
     const all = getLaunchableApps(installedOptional).filter(
-      (a) => !a.id.startsWith("service:"),
+      (a) => !a.id.startsWith("service:") && !a.id.startsWith("userspace:"),
     );
     if (!query.trim()) return all;
     const q = query.toLowerCase();
@@ -79,6 +80,13 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
     const q = query.toLowerCase();
     return installedServices.filter((s) => s.display_name.toLowerCase().includes(q));
   }, [installedServices, query]);
+
+  // Filter userspace apps by search query if one is active
+  const filteredUserspace = useMemo(() => {
+    if (!query.trim()) return installedUserspace;
+    const q = query.toLowerCase();
+    return installedUserspace.filter((a) => a.name.toLowerCase().includes(q));
+  }, [installedUserspace, query]);
 
   if (!open) return null;
 
@@ -137,6 +145,19 @@ export function Launchpad({ open, onClose, onOpenApp }: Props) {
               </div>
             </div>
           ))}
+
+          {filteredUserspace.length > 0 && (
+            <div>
+              <h3 className="text-xs font-medium text-shell-text-tertiary uppercase tracking-wide mb-4 px-1">
+                Apps
+              </h3>
+              <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))" }}>
+                {filteredUserspace.map((app) => (
+                  <LaunchpadIcon key={app.id} app={app} onClick={() => handleLaunch(app.id)} />
+                ))}
+              </div>
+            </div>
+          )}
 
           {filteredServices.length > 0 && (
             <div>
