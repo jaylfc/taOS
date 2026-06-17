@@ -502,7 +502,7 @@ async def check_for_updates(request: Request):
     import asyncio
     import re
     from tinyagentos import __version__
-    from tinyagentos.auto_update import remote_is_strictly_ahead
+    from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead
     project_dir = str(Path(__file__).parent.parent.parent)
 
     # Track the user's selected branch (Updates → Advanced selector), or the
@@ -537,6 +537,8 @@ async def check_for_updates(request: Request):
     # Only a real update when the remote is strictly ahead of us — never offer
     # an older or divergent commit.
     has_updates = await remote_is_strictly_ahead(project_dir, local_sha, remote_sha)
+    if has_updates and await changes_are_docs_only(Path(project_dir), local_sha, remote_sha):
+        has_updates = False
 
     async def _log1(ref: str) -> str:
         p = await asyncio.create_subprocess_exec(

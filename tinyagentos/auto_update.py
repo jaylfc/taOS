@@ -200,6 +200,34 @@ async def resolve_tracked_branch(settings_store, project_dir: Path) -> str:
     return await update_tracking_branch(project_dir)
 
 
+def is_documentation_path(path: str) -> bool:
+    """True when *path* is documentation-only (under docs/ or a .md file)."""
+    p = path.strip().replace("\\", "/")
+    if not p:
+        return False
+    return p.startswith("docs/") or p.endswith(".md")
+
+
+async def changes_are_docs_only(
+    project_dir: Path, current: str, remote: str
+) -> bool:
+    """True when every file changed between *current* and *remote* is documentation."""
+    if not current or not remote or current == remote:
+        return False
+    if project_dir is None or not Path(project_dir).exists():
+        return False
+    rc, out = await _run(
+        ["git", "diff", "--name-only", f"{current}..{remote}"],
+        project_dir,
+    )
+    if rc != 0:
+        return False
+    paths = [line.strip() for line in out.splitlines() if line.strip()]
+    if not paths:
+        return False
+    return all(is_documentation_path(p) for p in paths)
+
+
 async def remote_is_strictly_ahead(project_dir: Path, current: str, remote: str) -> bool:
     """True only if ``current`` is a strict ancestor of ``remote`` -- i.e. the
     remote is genuinely newer. Prevents offering an older or divergent commit
@@ -299,6 +327,13 @@ class AutoUpdateService:
             # flag an older/divergent commit (e.g. master's tip while we run
             # ahead on dev) as available.
             if await remote_is_strictly_ahead(self._project_dir, current, new_commit):
+                if await changes_are_docs_only(self._project_dir, current, new_commit):
+                    logger.debug(
+                        "auto-update: skipping docs-only diff %s..%s",
+                        (current or "")[:7],
+                        new_commit[:7],
+                    )
+                    return
                 # Skip re-notifying for a commit we've already flagged.
                 if prefs.get("last_notified_commit") != new_commit:
                     await self._notify_available(current, new_commit)
