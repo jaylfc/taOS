@@ -62,7 +62,8 @@ class UserspaceAppStore(BaseStore):
                  name=excluded.name, version=excluded.version,
                  app_type=excluded.app_type, entry=excluded.entry,
                  icon=excluded.icon,
-                 permissions_requested=excluded.permissions_requested""",
+                 permissions_requested=excluded.permissions_requested,
+                 trust=excluded.trust""",
             (app_id, name, version, app_type, entry, icon,
              json.dumps(permissions_requested), int(time.time()), trust),
         )

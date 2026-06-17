@@ -18,7 +18,7 @@
       resolve(m);
     }
     // Theme push from the shell (only first-party apps receive this)
-    if (m && m.taosTheme && typeof m.taosTheme === "object") {
+    if (m && m.taosTheme && typeof m.taosTheme === "object" && !Array.isArray(m.taosTheme)) {
       _themeTokens = m.taosTheme;
       for (const cb of _themeSubscribers) {
         try { cb(_themeTokens); } catch (_) {}

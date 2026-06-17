@@ -123,50 +123,52 @@ describe("SandboxedAppWindow -- theme injection", () => {
   });
 });
 
-describe("SDK theme API (message handler)", () => {
-  it("taosTheme message is stored and accessible via taos.theme.get()", () => {
-    // Simulate the SDK's message handler inline (no iframe needed -- pure unit test).
-    let themeTokens: Record<string, string> = {};
-    const subscribers: Array<(t: Record<string, string>) => void> = [];
-
+describe("SDK theme API (mirrors taos-app-sdk.js handler)", () => {
+  // The SDK ships as a plain IIFE loaded inside the sandbox iframe, so it cannot
+  // be imported here without eval/new-Function (a flagged pattern). These tests
+  // mirror its taosTheme message handling, including the non-object guard; the
+  // shipped guard lives in tinyagentos/userspace/sdk/taos-app-sdk.js.
+  function makeHandler() {
+    let tokens: Record<string, string> = {};
+    const subs: Array<(t: Record<string, string>) => void> = [];
     const handler = (e: MessageEvent) => {
       const m = e.data;
-      if (m && m.taosTheme && typeof m.taosTheme === "object") {
-        themeTokens = m.taosTheme;
-        for (const cb of subscribers) cb(themeTokens);
+      if (m && m.taosTheme && typeof m.taosTheme === "object" && !Array.isArray(m.taosTheme)) {
+        tokens = m.taosTheme;
+        for (const cb of subs) cb(tokens);
       }
     };
-    window.addEventListener("message", handler);
+    return {
+      handler,
+      get: () => tokens,
+      subscribe: (cb: (t: Record<string, string>) => void) => subs.push(cb),
+    };
+  }
 
-    const tokens = { "--color-accent": "#7c3aed", "--color-shell-bg": "#1a1b2e" };
-    window.dispatchEvent(new MessageEvent("message", { data: { taosTheme: tokens } }));
-
-    expect(themeTokens).toEqual(tokens);
-
-    window.removeEventListener("message", handler);
+  it("stores taosTheme tokens (theme.get equivalent)", () => {
+    const sdk = makeHandler();
+    window.addEventListener("message", sdk.handler);
+    window.dispatchEvent(new MessageEvent("message", { data: { taosTheme: { "--color-accent": "#7c3aed" } } }));
+    expect(sdk.get()["--color-accent"]).toBe("#7c3aed");
+    window.removeEventListener("message", sdk.handler);
   });
 
-  it("taosTheme subscribers are called on theme push", () => {
+  it("notifies subscribers on theme push", () => {
+    const sdk = makeHandler();
     const received: Record<string, string>[] = [];
-    const subscribers: Array<(t: Record<string, string>) => void> = [
-      (t) => received.push(t),
-    ];
+    sdk.subscribe((t) => received.push(t));
+    window.addEventListener("message", sdk.handler);
+    window.dispatchEvent(new MessageEvent("message", { data: { taosTheme: { "--x": "1" } } }));
+    expect(received).toEqual([{ "--x": "1" }]);
+    window.removeEventListener("message", sdk.handler);
+  });
 
-    const handler = (e: MessageEvent) => {
-      const m = e.data;
-      if (m && m.taosTheme && typeof m.taosTheme === "object") {
-        for (const cb of subscribers) cb(m.taosTheme);
-      }
-    };
-    window.addEventListener("message", handler);
-
-    window.dispatchEvent(new MessageEvent("message", {
-      data: { taosTheme: { "--color-accent": "#ff0000" } },
-    }));
-
-    expect(received).toHaveLength(1);
-    expect(received[0]!["--color-accent"]).toBe("#ff0000");
-
-    window.removeEventListener("message", handler);
+  it("ignores a non-object (array) taosTheme payload", () => {
+    const sdk = makeHandler();
+    window.addEventListener("message", sdk.handler);
+    window.dispatchEvent(new MessageEvent("message", { data: { taosTheme: { "--x": "1" } } }));
+    window.dispatchEvent(new MessageEvent("message", { data: { taosTheme: ["bad"] } }));
+    expect(sdk.get()).toEqual({ "--x": "1" });
+    window.removeEventListener("message", sdk.handler);
   });
 });

@@ -119,6 +119,15 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
             status_code=501,
         )
     existing = await store.get(manifest["id"])
+    # A public install must never replace an app installed as first-party: that
+    # would let an attacker overwrite a trusted studio's bundle (and, before the
+    # UPSERT fix, inherit its first-party privileges).
+    if existing is not None and existing.get("trust") == "first-party":
+        return JSONResponse(
+            {"error": "an app with this id is installed as first-party "
+                      "and cannot be replaced by a public install"},
+            status_code=409,
+        )
     new_perms = [
         p for p in manifest["permissions"]
         if existing and p not in existing["permissions_granted"]

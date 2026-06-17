@@ -261,3 +261,35 @@ async def test_broker_all_gated_caps_granted_for_first_party(tmp_path):
             f"GATED_CAPS grant did not bypass gate for {capability}: {out}"
         )
     await ds.close()
+
+
+@pytest.mark.asyncio
+async def test_public_install_cannot_overwrite_first_party(client, app):
+    """A public install of an id already installed as first-party is rejected,
+    so it cannot overwrite a trusted bundle or inherit first-party privileges."""
+    await app.state.userspace_apps.install(
+        app_id="studio", name="Studio", version="1.0.0", app_type="web",
+        entry="index.html", icon="", permissions_requested=[], trust="first-party",
+    )
+    r = await client.post(
+        "/api/userspace-apps/install",
+        files={"package": ("studio.taosapp", _zip(), "application/zip")},
+    )
+    assert r.status_code == 409
+    row = await app.state.userspace_apps.get("studio")
+    assert row["trust"] == "first-party"
+
+
+@pytest.mark.asyncio
+async def test_upsert_updates_trust_on_reinstall(tmp_path):
+    """The install UPSERT updates trust (not only on first insert), so a later
+    install with a different trust never retains a stale elevated trust."""
+    store = UserspaceAppStore(tmp_path / "u.db")
+    await store.init()
+    await store.install(app_id="a", name="A", version="1", app_type="web",
+                        entry="index.html", icon="", permissions_requested=[], trust="first-party")
+    assert (await store.get("a"))["trust"] == "first-party"
+    await store.install(app_id="a", name="A", version="2", app_type="web",
+                        entry="index.html", icon="", permissions_requested=[], trust="community")
+    assert (await store.get("a"))["trust"] == "community"
+    await store.close()
