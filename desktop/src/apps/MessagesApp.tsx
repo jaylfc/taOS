@@ -1262,7 +1262,7 @@ export function MessagesApp({
       });
       if (res.ok) {
         const ch = await res.json();
-        setChannels((prev) => [...prev, ch]);
+        await fetchChannels();
         setSelectedChannel(ch.id);
         setShowCreate(false);
         setNewChannel({ name: "", type: "topic", description: "" });
@@ -1399,11 +1399,15 @@ export function MessagesApp({
   };
 
   /* ---- group channels by type ---- */
-  const isRoot = (c: Channel) => !c.project_id;
+  // Standalone Messages: root channels (no project_id) go in the DM/Topics/Groups
+  // sections; project channels nest under Projects. Project-scoped Messages shows
+  // only that project's channels in the type sections (Projects nest is hidden).
+  const inSidebarSection = (c: Channel) =>
+    scope?.projectId ? c.project_id === scope.projectId : !c.project_id;
   const grouped = {
-    dm: channels.filter((c) => c.type === "dm" && isRoot(c)),
-    topic: channels.filter((c) => c.type === "topic" && isRoot(c)),
-    group: channels.filter((c) => c.type === "group" && isRoot(c)),
+    dm: channels.filter((c) => c.type === "dm" && inSidebarSection(c)),
+    topic: channels.filter((c) => c.type === "topic" && inSidebarSection(c)),
+    group: channels.filter((c) => c.type === "group" && inSidebarSection(c)),
   };
 
   const allChannels = [...channels, ...archivedChannels];
