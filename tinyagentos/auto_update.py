@@ -200,7 +200,11 @@ async def resolve_tracked_branch(settings_store, project_dir: Path) -> str:
     return await update_tracking_branch(project_dir)
 
 
-_DOC_EXTENSIONS = (".md", ".markdown", ".rst", ".txt")
+# .txt is deliberately excluded: a root-level .txt is ambiguous (e.g.
+# requirements.txt / constraints.txt), and misclassifying it as docs would
+# silently suppress a real dependency update. A .txt under docs/ is still
+# treated as docs via the docs/ branch below.
+_DOC_EXTENSIONS = (".md", ".markdown", ".rst")
 _CODE_EXTENSIONS = (
     ".py", ".ts", ".tsx", ".js", ".jsx", ".json",
     ".yaml", ".yml", ".sh", ".toml", ".cfg", ".ini",
