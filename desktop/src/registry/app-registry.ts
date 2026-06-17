@@ -192,20 +192,31 @@ export function getOrRegisterServiceApp(
 }
 
 /**
- * Replace the full set of registered userspace app manifests in one atomic
- * operation. Removes every existing "userspace:*" entry then pushes all the
- * provided manifests. Call this after fetching /api/userspace-apps so that
- * getApp() resolves userspace ids for openWindow, Dock, and prefetch without
- * any additional lookups.
+ * Reconcile the registered userspace app manifests against a fresh list.
+ *
+ * Preserves the object identity of already-registered manifests so that open
+ * userspace windows are not remounted on every sync. Only removes entries no
+ * longer present in the incoming list and only appends genuinely new ids.
+ * When an id is removed its prefetch-cache entries are also cleared so a
+ * reinstall triggers a fresh prefetch.
  */
 export function syncUserspaceApps(manifests: AppManifest[]): void {
-  // Remove stale userspace entries in place (keeps the const binding intact)
+  const incoming = new Map(manifests.map((m) => [m.id, m]));
+  // Drop userspace entries no longer present, and clear their prefetch state
   for (let i = apps.length - 1; i >= 0; i--) {
-    if (apps[i]?.id.startsWith("userspace:")) {
+    const id = apps[i]?.id;
+    if (id?.startsWith("userspace:") && !incoming.has(id)) {
       apps.splice(i, 1);
+      prefetched.delete(id);
+      prefetchFailed.delete(id);
     }
   }
+  // Add only new ids, preserving the identity of already-registered manifests
+  // so open userspace windows are not remounted on every sync.
+  const present = new Set(
+    apps.filter((a) => a.id.startsWith("userspace:")).map((a) => a.id),
+  );
   for (const m of manifests) {
-    apps.push(m);
+    if (!present.has(m.id)) apps.push(m);
   }
 }

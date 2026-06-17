@@ -34,9 +34,19 @@ export function useInstalledUserspaceApps(): AppManifest[] {
     return refresh();
   }, [refresh]);
 
-  // Re-fetch when a userspace app is installed, updated, or removed
+  // Re-fetch when a userspace app is installed, updated, or removed.
+  // Cancel any in-flight fetch before starting a new one (and on unmount) so a
+  // slower, older response cannot overwrite newer data or setState after unmount.
   useEffect(() => {
-    return onAppEvent(USERSPACE_APPS_CHANGED, () => { refresh(); });
+    let cancel: () => void = () => {};
+    const off = onAppEvent(USERSPACE_APPS_CHANGED, () => {
+      cancel();
+      cancel = refresh();
+    });
+    return () => {
+      cancel();
+      off();
+    };
   }, [refresh]);
 
   return apps;
