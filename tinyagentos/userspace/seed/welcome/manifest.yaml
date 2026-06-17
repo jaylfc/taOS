@@ -1,0 +1,9 @@
+id: taos-welcome
+name: Welcome
+version: 1.0.0
+app_type: web
+entry: index.html
+icon: ""
+permissions:
+  - app.kv
+  - app.notify

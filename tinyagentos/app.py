@@ -424,6 +424,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.userspace_apps = userspace_apps
         await userspace_data.init()
         app.state.userspace_data = userspace_data
+        try:
+            from tinyagentos.userspace.seed import seed_bundled_apps
+            await seed_bundled_apps(userspace_apps, data_dir / "apps")
+        except Exception:
+            logger.warning("bundled app seeding failed", exc_info=True)
         await skills.init()
         await themes.init()
         app.state.themes = themes
