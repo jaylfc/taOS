@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -58,10 +59,16 @@ async def seed_bundled_apps(store, apps_root: Path, seed_dir: Path | None = None
             version = manifest["version"]
 
             existing = await store.get(app_id)
-            if existing is not None and existing.get("version") == version:
-                logger.debug("bundled app %s v%s already installed, skipping", app_id, version)
+            if (existing is not None
+                    and existing.get("version") == version
+                    and existing.get("trust") == "first-party"):
+                logger.debug("bundled app %s v%s already installed first-party, skipping", app_id, version)
                 continue
 
+            # Re-seed (new app, version bump, or a non-first-party row claiming
+            # this id): remove any previously extracted files first so a smaller
+            # new version cannot inherit stale files from the old one, then extract.
+            shutil.rmtree(apps_root / app_id, ignore_errors=True)
             zip_bytes = _build_zip_from_dir(app_dir)
             extract_package(zip_bytes, apps_root)
             await store.install(

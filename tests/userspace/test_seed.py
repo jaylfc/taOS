@@ -205,3 +205,46 @@ async def test_real_welcome_bundle_served_with_first_party_csp(client, app, tmp_
     assert "sandbox" in csp
     assert "allow-same-origin" not in csp
     assert "default-src 'none'" in csp
+
+
+@pytest.mark.asyncio
+async def test_seed_reseeds_non_first_party_id(tmp_path):
+    """A community row claiming a seeded id (even at the same version) is re-seeded
+    to first-party, not skipped by a version-only idempotency check."""
+    seed_dir = tmp_path / "seed"
+    apps_root = tmp_path / "apps"
+    _write_app(seed_dir, "my-app", version="1.0.0")
+    store = await _make_store(tmp_path)
+    await store.install(app_id="my-app", name="Impostor", version="1.0.0",
+                        app_type="web", entry="index.html", icon="",
+                        permissions_requested=[], trust="community")
+    assert (await store.get("my-app"))["trust"] == "community"
+
+    await seed_bundled_apps(store, apps_root, seed_dir)
+
+    assert (await store.get("my-app"))["trust"] == "first-party"
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_seed_reseed_removes_stale_files(tmp_path):
+    """A version bump removes files that no longer exist in the new bundle."""
+    seed_dir = tmp_path / "seed"
+    apps_root = tmp_path / "apps"
+    app_dir = _write_app(seed_dir, "my-app", version="1.0.0")
+    (app_dir / "old.js").write_text("// v1 only")
+    store = await _make_store(tmp_path)
+
+    await seed_bundled_apps(store, apps_root, seed_dir)
+    assert (apps_root / "my-app" / "old.js").exists()
+
+    (app_dir / "old.js").unlink()
+    (app_dir / "manifest.yaml").write_text(
+        "id: my-app\nname: Test App\nversion: 2.0.0\n"
+        "app_type: web\nentry: index.html\nicon: \"\"\npermissions:\n  - app.kv\n"
+    )
+    await seed_bundled_apps(store, apps_root, seed_dir)
+
+    assert (await store.get("my-app"))["version"] == "2.0.0"
+    assert not (apps_root / "my-app" / "old.js").exists()
+    await store.close()
