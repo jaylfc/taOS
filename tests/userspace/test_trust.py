@@ -216,9 +216,12 @@ async def test_broker_community_gated_cap_denied_without_grant(client):
 @pytest.mark.asyncio
 async def test_broker_community_gated_cap_with_grant(client):
     """Community app with explicit grant can reach a gated cap (existing behaviour preserved)."""
+    # The package must REQUEST app.memory: set_permissions only grants caps the
+    # manifest declared (an app cannot be escalated to caps it never requested).
+    manifest = WEB_MANIFEST.replace("permissions: []", "permissions: [app.memory]")
     await client.post(
         "/api/userspace-apps/install",
-        files={"package": ("studio.taosapp", _zip(), "application/zip")},
+        files={"package": ("studio.taosapp", _zip(manifest), "application/zip")},
     )
     await client.post(
         "/api/userspace-apps/studio/permissions",
