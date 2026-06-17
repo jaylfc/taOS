@@ -2658,7 +2658,7 @@ export function MessagesApp({
   /* ---------------------------------------------------------------- */
 
   return (
-    <div className="flex flex-col h-full bg-shell-base text-white overflow-hidden">
+    <div className="relative flex flex-col h-full bg-shell-base text-white overflow-hidden">
       {/* Toolbar — hidden on mobile when a channel is selected */}
       {showToolbar && (
         <div className="relative flex items-center px-3 py-2.5 border-b border-white/[0.06] shrink-0">

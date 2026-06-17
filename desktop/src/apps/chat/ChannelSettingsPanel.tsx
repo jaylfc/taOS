@@ -63,7 +63,7 @@ export function ChannelSettingsPanel({
     <aside
       role="complementary"
       aria-label="Channel settings"
-      className="fixed top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-white/10 shadow-xl flex flex-col z-40"
+      className="absolute top-0 right-0 h-full w-[360px] bg-shell-surface border-l border-white/10 shadow-xl flex flex-col z-40"
     >
       <header className="flex items-center justify-between px-4 py-3 border-b border-white/10">
         <h2 className="text-sm font-semibold">Channel settings</h2>
