@@ -5,6 +5,11 @@ import { projectsApi } from "@/lib/projects";
 type Mode = "new" | "existing";
 type AgentMode = "native" | "clone";
 
+interface ExternalAgentSummary {
+  handle: string;
+  display_name?: string;
+}
+
 export function AddAgentDialog({
   projectId,
   onClose,
@@ -18,6 +23,7 @@ export function AddAgentDialog({
   const [agentMode, setAgentMode] = useState<AgentMode>("native");
   const [agentId, setAgentId] = useState("");
   const [cloneMemory, setCloneMemory] = useState(true);
+  const [externalAgents, setExternalAgents] = useState<ExternalAgentSummary[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +31,45 @@ export function AddAgentDialog({
   useEffect(() => {
     if (mode === "new") setAgentMode("native");
   }, [mode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/agents/registry", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => {
+        if (cancelled || !Array.isArray(rows)) return;
+        const active = rows.filter(
+          (entry: { origin?: string; status?: string }) =>
+            entry.origin === "external-selfjoin" && entry.status === "active",
+        );
+        setExternalAgents(
+          active
+            .map((entry: { handle?: string; display_name?: string }) => ({
+              handle: entry.handle || "",
+              display_name: entry.display_name,
+            }))
+            .filter((entry) => entry.handle),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const addExternal = async (handle: string) => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await projectsApi.members.addNative(projectId, handle);
+      onAdded();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,6 +167,27 @@ export function AddAgentDialog({
             />
             Clone memory (uncheck for empty memory)
           </label>
+        )}
+
+        {externalAgents.length > 0 && (
+          <section className="border border-zinc-800 p-2 rounded" aria-label="External / Connected agents">
+            <h4 className="text-xs font-medium text-zinc-300 mb-2">External / Connected agents</h4>
+            <ul className="space-y-1">
+              {externalAgents.map((agent) => (
+                <li key={agent.handle}>
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => addExternal(agent.handle)}
+                    className="w-full text-left text-sm px-2 py-1 rounded hover:bg-zinc-800 disabled:opacity-50"
+                    title={agent.display_name && agent.display_name !== agent.handle ? agent.display_name : undefined}
+                  >
+                    {agent.handle}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
 
         {error && <div role="alert" className="text-red-400 text-xs">{error}</div>}
