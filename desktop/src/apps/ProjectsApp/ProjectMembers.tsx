@@ -99,7 +99,7 @@ function MemberRow({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
-        {(member.member_kind === "native" || member.member_kind === "clone") && (
+        {!isExternal && (member.member_kind === "native" || member.member_kind === "clone") && (
           <label
             style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
             title="When off, this agent can add new elements but cannot modify or delete existing ones."
@@ -116,7 +116,7 @@ function MemberRow({
             <span className="text-xs">Can edit canvas</span>
           </label>
         )}
-        {(member.member_kind === "native" || member.member_kind === "clone") && (
+        {!isExternal && (member.member_kind === "native" || member.member_kind === "clone") && (
           <label
             style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
             title="Lead agents see all messages in the project channel, even without being @mentioned."
@@ -155,6 +155,7 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [externalAgents, setExternalAgents] = useState<ExternalAgentSummary[]>([]);
+  const [externalRegistryLoaded, setExternalRegistryLoaded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const refresh = () =>
@@ -195,19 +196,24 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
     fetch("/api/agents/registry", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : []))
       .then((rows) => {
-        if (cancelled || !Array.isArray(rows)) return;
-        const active = rows.filter(
-          (entry: { origin?: string; status?: string }) =>
-            entry.origin === "external-selfjoin" && entry.status === "active",
-        );
-        setExternalAgents(
-          active.map((entry: { handle?: string; display_name?: string }) => ({
-            handle: entry.handle || "",
-            display_name: entry.display_name,
-          })),
-        );
+        if (cancelled) return;
+        if (Array.isArray(rows)) {
+          const active = rows.filter(
+            (entry: { origin?: string; status?: string }) =>
+              entry.origin === "external-selfjoin" && entry.status === "active",
+          );
+          setExternalAgents(
+            active.map((entry: { handle?: string; display_name?: string }) => ({
+              handle: entry.handle || "",
+              display_name: entry.display_name,
+            })),
+          );
+        }
+        setExternalRegistryLoaded(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setExternalRegistryLoaded(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -235,12 +241,12 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
         main.push(m);
       } else if (byHandle.has(m.member_id)) {
         external.push(m);
-      } else {
+      } else if (externalRegistryLoaded) {
         main.push(m);
       }
     }
     return { mainMembers: main, externalMembers: external };
-  }, [members, byId, byHandle]);
+  }, [members, byId, byHandle, externalRegistryLoaded]);
 
   return (
     <section>
