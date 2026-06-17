@@ -9,9 +9,11 @@ export interface UserspaceAppRow {
   enabled: number;
   permissions_requested: string[];
   permissions_granted: string[];
+  trust?: "community" | "first-party";
 }
 
 export function toAppManifest(row: UserspaceAppRow): AppManifest {
+  const trust = row.trust ?? "community";
   return {
     id: row.app_id,
     name: row.name,
@@ -20,7 +22,7 @@ export function toAppManifest(row: UserspaceAppRow): AppManifest {
     component: () =>
       import("@/apps/SandboxedAppWindow").then((m) => ({
         default: (props: { windowId: string }) =>
-          m.SandboxedAppWindow({ ...props, appId: row.app_id }),
+          m.SandboxedAppWindow({ ...props, appId: row.app_id, trust }),
       })),
     defaultSize: { w: 900, h: 600 },
     minSize: { w: 360, h: 280 },

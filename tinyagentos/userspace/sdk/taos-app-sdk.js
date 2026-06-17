@@ -4,14 +4,28 @@
     || (document.currentScript && document.currentScript.dataset.appId) || "";
   let seq = 0;
   const pending = new Map();
+
+  // --- Theme API state ---
+  let _themeTokens = {};
+  const _themeSubscribers = [];
+
   window.addEventListener("message", (e) => {
     const m = e.data;
+    // Broker replies
     if (m && m.taosAppReply != null && pending.has(m.taosAppReply)) {
       const { resolve } = pending.get(m.taosAppReply);
       pending.delete(m.taosAppReply);
       resolve(m);
     }
+    // Theme push from the shell (only first-party apps receive this)
+    if (m && m.taosTheme && typeof m.taosTheme === "object") {
+      _themeTokens = m.taosTheme;
+      for (const cb of _themeSubscribers) {
+        try { cb(_themeTokens); } catch (_) {}
+      }
+    }
   });
+
   function call(capability, args) {
     const id = ++seq;
     return new Promise((resolve) => {
@@ -19,6 +33,7 @@
       parent.postMessage({ taosApp: APP_ID, id, capability, args: args || {} }, "*");
     });
   }
+
   window.taos = {
     appId: APP_ID,
     kv: {
@@ -49,5 +64,22 @@
     },
     agent: { ask: (name, message) => call("app.agent", { name, message }).then((r) => r.result) },
     memory: { search: (q) => call("app.memory.search", { q }).then((r) => r.result) },
+    // Theme API -- populated only for first-party apps that receive taosTheme
+    // messages from the shell. Community apps never receive these messages.
+    theme: {
+      /** Returns the last set of CSS variable tokens received from the shell. */
+      get: () => ({ ..._themeTokens }),
+      /**
+       * Register a callback to be called whenever the shell posts new theme
+       * tokens. Returns an unsubscribe function.
+       */
+      subscribe: (cb) => {
+        _themeSubscribers.push(cb);
+        return () => {
+          const i = _themeSubscribers.indexOf(cb);
+          if (i !== -1) _themeSubscribers.splice(i, 1);
+        };
+      },
+    },
   };
 })();

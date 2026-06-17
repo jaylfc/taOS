@@ -1,9 +1,12 @@
 // desktop/src/apps/SandboxedAppWindow.tsx
 import { useEffect, useRef } from "react";
+import { useThemeStore } from "@/stores/theme-store";
+import { ALLOWED_TOKENS } from "@/theme/theme-config";
 
 interface Props {
   windowId: string;
   appId: string;
+  trust?: "community" | "first-party";
 }
 
 interface BrokerRequest {
@@ -13,8 +16,42 @@ interface BrokerRequest {
   args?: Record<string, unknown>;
 }
 
-export function SandboxedAppWindow({ appId }: Props) {
+/** Read all ALLOWED_TOKENS CSS variables off :root and return as a plain object. */
+function readThemeTokens(): Record<string, string> {
+  if (typeof document === "undefined") return {};
+  const style = getComputedStyle(document.documentElement);
+  const tokens: Record<string, string> = {};
+  for (const token of ALLOWED_TOKENS) {
+    const value = style.getPropertyValue(token).trim();
+    if (value) tokens[token] = value;
+  }
+  return tokens;
+}
+
+export function SandboxedAppWindow({ appId, trust = "community" }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const isFirstParty = trust === "first-party";
+  // Subscribe to scheme changes (which fire on any applyThemeConfig call) so we
+  // can push updated tokens when the theme changes. The selector is minimal to
+  // avoid re-renders on unrelated store updates.
+  const scheme = useThemeStore((s) => s.scheme);
+
+  // Post theme tokens into the iframe for first-party apps.
+  useEffect(() => {
+    if (!isFirstParty) return;
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow) return;
+    iframe.contentWindow.postMessage({ taosTheme: readThemeTokens() }, "*");
+  }, [isFirstParty, scheme]);
+
+  // Also post tokens once when the iframe loads (the scheme effect may fire
+  // before the frame is ready on the first render).
+  function handleLoad() {
+    if (!isFirstParty) return;
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow) return;
+    iframe.contentWindow.postMessage({ taosTheme: readThemeTokens() }, "*");
+  }
 
   useEffect(() => {
     async function onMessage(e: MessageEvent) {
@@ -59,6 +96,7 @@ export function SandboxedAppWindow({ appId }: Props) {
       src={`/api/userspace-apps/${encodeURIComponent(appId)}/bundle/index.html?app=${encodeURIComponent(appId)}`}
       sandbox="allow-scripts"
       className="w-full h-full border-0 bg-white"
+      onLoad={handleLoad}
     />
   );
 }

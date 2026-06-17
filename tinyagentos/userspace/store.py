@@ -31,21 +31,40 @@ class UserspaceAppStore(BaseStore):
     );
     """
 
+    async def _post_init(self) -> None:
+        """Add the trust column to databases created before it was introduced.
+
+        SQLite has no IF NOT EXISTS for ADD COLUMN prior to 3.37, so we check
+        PRAGMA table_info for broad compatibility (same pattern used by
+        knowledge_store and agent_registry_store).
+        """
+        existing_cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(userspace_apps)")
+            ).fetchall()
+        }
+        if "trust" not in existing_cols:
+            await self._db.execute(
+                "ALTER TABLE userspace_apps ADD COLUMN trust TEXT NOT NULL DEFAULT 'community'"
+            )
+            await self._db.commit()
+
     async def install(self, app_id, name, version, app_type, entry, icon,
-                      permissions_requested):
+                      permissions_requested, *, trust: str = "community"):
         assert self._db is not None
         await self._db.execute(
             """INSERT INTO userspace_apps
                (app_id, name, version, app_type, entry, icon,
-                permissions_requested, permissions_granted, enabled, installed_at)
-               VALUES (?,?,?,?,?,?,?,'[]',1,?)
+                permissions_requested, permissions_granted, enabled, installed_at, trust)
+               VALUES (?,?,?,?,?,?,?,'[]',1,?,?)
                ON CONFLICT(app_id) DO UPDATE SET
                  name=excluded.name, version=excluded.version,
                  app_type=excluded.app_type, entry=excluded.entry,
                  icon=excluded.icon,
                  permissions_requested=excluded.permissions_requested""",
             (app_id, name, version, app_type, entry, icon,
-             json.dumps(permissions_requested), int(time.time())),
+             json.dumps(permissions_requested), int(time.time()), trust),
         )
         await self._db.commit()
 
@@ -57,6 +76,7 @@ class UserspaceAppStore(BaseStore):
             "permissions_granted": json.loads(row[7]),
             "enabled": row[8], "installed_at": row[9],
             "container_host": row[10], "container_port": row[11],
+            "trust": row[12] if len(row) > 12 else "community",
         }
 
     async def get(self, app_id) -> dict | None:

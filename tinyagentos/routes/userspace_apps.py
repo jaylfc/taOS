@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, Response
 
-from tinyagentos.userspace.broker import handle_capability
+from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.package import extract_package, PackageError
 from tinyagentos.userspace.url_guard import is_safe_public_url
 
@@ -15,13 +15,33 @@ router = APIRouter()
 
 _SDK_PATH = Path(__file__).resolve().parent.parent / "userspace" / "sdk" / "taos-app-sdk.js"
 
-# Bundle CSP. The `sandbox allow-scripts` directive (no allow-same-origin)
-# forces the document into an OPAQUE origin even on a direct top-level
-# navigation -- so a userspace bundle can never execute on the core origin with
-# the session cookie (defends against stored XSS), while still letting the app
-# run its own scripts inside our sandboxed iframe. `default-src 'none'` plus
-# the explicit self/inline allowances keep it locked down.
+# Bundle CSP for community (untrusted) packages. The `sandbox allow-scripts`
+# directive (no allow-same-origin) forces the document into an OPAQUE origin
+# even on a direct top-level navigation -- so a userspace bundle can never
+# execute on the core origin with the session cookie (defends against stored
+# XSS), while still letting the app run its own scripts inside our sandboxed
+# iframe. `default-src 'none'` plus the explicit self/inline allowances keep
+# it locked down.
 _BUNDLE_CSP = (
+    "sandbox allow-scripts allow-forms allow-popups; "
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline' blob:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'self'; base-uri 'none'"
+)
+
+# Relaxed CSP for first-party packages (studios). Still sandboxed -- NEVER
+# add allow-same-origin; that would collapse the opaque-origin isolation and
+# let the frame access session cookies. The relaxations over community:
+#   - style-src allows 'unsafe-inline' (community already does, kept the same)
+#   - connect-src 'self' (same as community; lets the SDK reach the broker)
+# The intent is that P4 boot-seeding and P2 signature verification are the
+# ONLY paths that write trust='first-party'; this CSP is not itself a trust
+# grant, just a consequence of trust already verified out-of-band.
+_BUNDLE_CSP_FIRST_PARTY = (
     "sandbox allow-scripts allow-forms allow-popups; "
     "default-src 'none'; "
     "script-src 'self' 'unsafe-inline' blob:; "
@@ -103,10 +123,14 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
         p for p in manifest["permissions"]
         if existing and p not in existing["permissions_granted"]
     ]
+    # trust is always 'community' through this public endpoint -- no manifest
+    # field can elevate it. first-party trust is set only through the internal
+    # boot-seeding path (P4) or after package signature verification (P2).
     await store.install(
         app_id=manifest["id"], name=manifest["name"], version=manifest["version"],
         app_type=manifest["app_type"], entry=manifest["entry"], icon=manifest["icon"],
         permissions_requested=manifest["permissions"],
+        trust="community",
     )
     return {
         "app_id": manifest["id"],
@@ -163,8 +187,10 @@ async def serve_bundle(request: Request, app_id: str, path: str):
     target = (root / path).resolve()
     if not target.is_relative_to(root) or target == root or not target.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
+    app = await request.app.state.userspace_apps.get(app_id)
+    csp = _BUNDLE_CSP_FIRST_PARTY if (app and app.get("trust") == "first-party") else _BUNDLE_CSP
     resp = FileResponse(target)
-    resp.headers["Content-Security-Policy"] = _BUNDLE_CSP
+    resp.headers["Content-Security-Policy"] = csp
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
@@ -204,9 +230,15 @@ async def broker(request: Request, app_id: str):
     if app is None or not app["enabled"]:
         return JSONResponse({"error": "app not found or disabled"}, status_code=404)
     body = await request.json()
+    # First-party apps have all gated capabilities pre-authorised -- no per-cap
+    # consent step is needed. Community apps use only their explicitly granted set.
+    if app.get("trust") == "first-party":
+        granted = set(GATED_CAPS)
+    else:
+        granted = set(app["permissions_granted"])
     out = await handle_capability(
         app_id, body.get("capability", ""), body.get("args") or {},
-        granted=app["permissions_granted"],
+        granted=granted,
         data_store=request.app.state.userspace_data,
         app_dir=_apps_root(request) / app_id,
         services=_broker_services(request, app),
