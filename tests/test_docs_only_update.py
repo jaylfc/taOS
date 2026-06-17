@@ -49,8 +49,11 @@ def repo(tmp_path):
 def test_is_documentation_path():
     assert is_documentation_path("docs/STATUS.md") is True
     assert is_documentation_path("README.md") is True
+    assert is_documentation_path("notes.txt") is True
+    assert is_documentation_path("guide.rst") is True
     assert is_documentation_path("tinyagentos/foo.py") is False
-    assert is_documentation_path("notes.txt") is False
+    assert is_documentation_path("docs/scripts/foo.py") is False
+    assert is_documentation_path("docs/config.yaml") is False
 
 
 def test_changes_are_docs_only_true_for_docs_dir(repo):

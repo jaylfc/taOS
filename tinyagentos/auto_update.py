@@ -200,12 +200,30 @@ async def resolve_tracked_branch(settings_store, project_dir: Path) -> str:
     return await update_tracking_branch(project_dir)
 
 
+_DOC_EXTENSIONS = (".md", ".markdown", ".rst", ".txt")
+_CODE_EXTENSIONS = (
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".json",
+    ".yaml", ".yml", ".sh", ".toml", ".cfg", ".ini",
+)
+
+
 def is_documentation_path(path: str) -> bool:
-    """True when *path* is documentation-only (under docs/ or a .md file)."""
+    """True when *path* is documentation-only.
+
+    A path counts as documentation if it ends in a doc extension anywhere, or
+    lives under ``docs/`` without a code/config extension. When unsure, False.
+    """
     p = path.strip().replace("\\", "/")
     if not p:
         return False
-    return p.startswith("docs/") or p.endswith(".md")
+    lower = p.lower()
+    if any(lower.endswith(ext) for ext in _DOC_EXTENSIONS):
+        return True
+    if p.startswith("docs/"):
+        if any(lower.endswith(ext) for ext in _CODE_EXTENSIONS):
+            return False
+        return True
+    return False
 
 
 async def changes_are_docs_only(
