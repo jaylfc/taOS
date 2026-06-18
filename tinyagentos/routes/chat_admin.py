@@ -1,9 +1,30 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
+
+
+@router.get("/api/chat/channels")
+async def list_channels(request: Request, project_id: str | None = Query(default=None)):
+    ch_store = request.app.state.chat_channels
+    if project_id is not None and project_id.strip() == "":
+        project_id = None
+    channels = await ch_store.list_channels(project_id=project_id)
+    return channels
+
+
+@router.put("/api/chat/channels/{channel_id}/project")
+async def set_channel_project(request: Request, channel_id: str):
+    body = await request.json()
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(channel_id)
+    if not channel:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    project_id = body.get("project_id", "")
+    await ch_store.set_project(channel_id, project_id)
+    return {"status": "updated", "project_id": project_id}
 
 
 @router.post("/api/chat/channels")
