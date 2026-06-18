@@ -1,6 +1,6 @@
 taOS Sustainable Use License, Version 0.1
 
-Copyright (c) 2026 JAN LABS LTD. All rights reserved.
+Copyright (c) 2026 jaylfc. All rights reserved.
 
 This license governs use of the accompanying software, "taOS" (the "Software").
 By using the Software you agree to these terms. The Software is source-available,
@@ -8,7 +8,7 @@ not open source.
 
 1. Grant
 
-Subject to the conditions below, JAN LABS LTD grants you a non-exclusive,
+Subject to the conditions below, jaylfc grants you a non-exclusive,
 worldwide, royalty-free license to use, copy, and modify the Software, and to
 distribute your copies and modifications, free of charge.
 
@@ -27,7 +27,7 @@ this license with every copy you distribute.
 3. Commercial use requires a separate license
 
 You may not, without a separate commercial license granted in writing by
-JAN LABS LTD, use the Software (in whole or in part, modified or not) for a
+jaylfc, use the Software (in whole or in part, modified or not) for a
 Commercial Purpose.
 
 A "Commercial Purpose" means using the Software in, or to provide, any product or
@@ -49,17 +49,16 @@ free of charge and is not a Commercial Purpose, provided the Software (and
 anything built on it) is not offered, sold, hosted, or otherwise made available
 to any third party.
 
-To obtain a commercial license, contact JAN LABS LTD at info@taos.my.
+To obtain a commercial license, contact jaylfc at info@taos.my.
 
 4. Trademarks
 
-This license grants no rights to the "taOS" or "JAN LABS" names, logos, or
-trademarks.
+This license grants no rights to the "taOS" name, logo, or trademarks.
 
 5. Contributions
 
 Unless agreed otherwise in writing, any contribution you submit for inclusion in
-the Software is provided under this license, and you grant JAN LABS LTD a
+the Software is provided under this license, and you grant jaylfc a
 perpetual, irrevocable, worldwide right to use, modify, sublicense, and relicense
 that contribution on any terms.
 
@@ -71,7 +70,7 @@ FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 
 7. Limitation of liability
 
-TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL JAN LABS LTD BE LIABLE
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL jaylfc BE LIABLE
 FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR
 THE USE OR OTHER DEALINGS IN THE SOFTWARE.
