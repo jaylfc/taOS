@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,8 +12,8 @@ dependencies = [
     # Cap below 0.137: fastapi 0.137.0 regressed include_router so that a
     # mounted APIRouter contributes none of its routes to the app, leaving
     # create_app() with an empty API surface. 0.136.3 is the last good release.
-    "fastapi>=0.115.0,<0.137",
-    "uvicorn[standard]>=0.30.0",
+    "fastapi>=0.138.0,<0.139",
+    "uvicorn[standard]>=0.49.0",
     "httpx>=0.27.0",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
@@ -46,9 +46,9 @@ dependencies = [
 
 [project.optional-dependencies]
 worker = ["pystray>=0.19.0", "Pillow>=10.0"]
-proxy = ["litellm[proxy]>=1.50.0", "prisma>=0.11.0"]
+proxy = ["litellm[proxy]>=1.89.2", "prisma>=0.11.0"]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-asyncio>=0.23.0",
     "pytest-timeout>=2.3.0",
     "pytest-xdist>=3.5.0",
@@ -57,7 +57,7 @@ dev = [
     "websockets>=12.0",
 ]
 e2e = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-playwright>=0.5.0",
 ]
 
