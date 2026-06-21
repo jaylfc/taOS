@@ -152,7 +152,8 @@ class AuthManager:
 
         {
           "id", "username", "full_name", "email",
-          "password_hash", "created_at", "last_login_at", "is_admin"
+          "password_hash", "created_at", "last_login_at", "is_admin",
+          "remote_relay_pro"
         }
 
     Pending (invited) users lack ``password_hash`` and carry
@@ -230,6 +231,7 @@ class AuthManager:
             "last_login_at": record.get("last_login_at"),
             "created_at": record.get("created_at"),
             "capabilities": caps,
+            "remote_relay_pro": bool(record.get("remote_relay_pro", False)),
         }
 
     # ------------------------------------------------------------------ #
@@ -676,6 +678,26 @@ class AuthManager:
                 data["users"] = users
                 self._write_users(data)
                 return
+
+    def set_remote_relay_pro(self, username: str, enabled: bool) -> dict:
+        """Set the remote-relay Pro entitlement flag on a user."""
+        data = self._read_users()
+        users = data.get("users", [])
+        for i, u in enumerate(users):
+            if u.get("username") == username:
+                u["remote_relay_pro"] = bool(enabled)
+                users[i] = u
+                data["users"] = users
+                self._write_users(data)
+                return self._public_user(u)
+        raise ValueError(f"user '{username}' not found")
+
+    def check_remote_relay_pro(self, username: str) -> bool:
+        """Return True if the named account has the remote-relay Pro entitlement."""
+        record = self.find_user(username)
+        if record is None:
+            return False
+        return bool(record.get("remote_relay_pro", False))
 
 
 # ---------------------------------------------------------------------------

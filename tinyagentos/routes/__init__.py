@@ -305,6 +305,9 @@ def register_all_routers(app):
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router)
 
+    from tinyagentos.routes.relay import router as relay_router
+    app.include_router(relay_router)
+
     from tinyagentos.routes.office import router as office_router
     app.include_router(office_router)
     from tinyagentos.routes.coding import router as coding_router
