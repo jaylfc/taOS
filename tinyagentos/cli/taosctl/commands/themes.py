@@ -13,10 +13,6 @@ def register(subparsers) -> None:
     lp = verbs.add_parser("list", help="List installed themes")
     lp.set_defaults(func=_list)
 
-    gp = verbs.add_parser("get", help="Get one theme by id")
-    gp.add_argument("theme_id", help="Theme id")
-    gp.set_defaults(func=_get)
-
     # POST /api/themes/install skipped: requires file upload / multipart
     # GET /api/themes/{theme_id}/assets/{path} skipped: file download / streaming
 
@@ -27,10 +23,6 @@ def register(subparsers) -> None:
 
 def _list(args, client):
     return client.get("/api/themes")
-
-
-def _get(args, client):
-    return client.get(f"/api/themes/{quote(args.theme_id, safe='')}")
 
 
 def _delete(args, client):

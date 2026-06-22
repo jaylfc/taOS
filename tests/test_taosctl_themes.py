@@ -37,20 +37,6 @@ def test_themes_list_calls_endpoint(monkeypatch):
     assert ("GET", "/api/themes") in fake.calls
 
 
-def test_themes_get_calls_endpoint(monkeypatch):
-    fake = _FakeClient()
-    rc = _run(monkeypatch, ["--json", "themes", "get", "dark"], fake)
-    assert rc == 0
-    assert ("GET", "/api/themes/dark") in fake.calls
-
-
-def test_themes_get_url_encodes_id(monkeypatch):
-    fake = _FakeClient()
-    rc = _run(monkeypatch, ["--json", "themes", "get", "a/b c"], fake)
-    assert rc == 0
-    assert ("GET", "/api/themes/a%2Fb%20c") in fake.calls
-
-
 def test_themes_delete_calls_endpoint(monkeypatch):
     fake = _FakeClient()
     rc = _run(monkeypatch, ["themes", "delete", "dark"], fake)
@@ -68,7 +54,7 @@ def test_themes_delete_url_encodes_id(monkeypatch):
 def test_themes_api_error_maps_to_exit_2(monkeypatch, capsys):
     fake = _FakeClient()
     fake._raise = cli_client.ApiError(404, "not found")
-    rc = _run(monkeypatch, ["themes", "get", "ghost"], fake)
+    rc = _run(monkeypatch, ["themes", "delete", "ghost"], fake)
     assert rc == 2
     assert "not found" in capsys.readouterr().err
 
