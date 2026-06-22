@@ -88,12 +88,13 @@ async def list_decisions(
     request: Request,
     status: str | None = None,
     project_id: str | None = None,
+    limit: int = 200,
     user: CurrentUser = Depends(current_user),
 ):
     store = request.app.state.decision_store
     # Non-admins see only their own decisions; admins see all.
     uid = None if user.is_admin else user.user_id
-    items = await store.list(status=status, project_id=project_id, user_id=uid)
+    items = await store.list(status=status, project_id=project_id, user_id=uid, limit=limit)
     return {"items": items}
 
 
@@ -112,6 +113,25 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     existing = await store.get(decision_id)
     if existing is None or (not user.is_admin and existing["user_id"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
+
+    # For select types, the answer must reference the declared options so a
+    # stale or malformed client cannot record an arbitrary value.
+    dtype = existing.get("type")
+    if dtype in ("single_select", "multi_select"):
+        valid = {
+            o.get("value")
+            for o in (existing.get("options") or [])
+            if o.get("value") is not None
+        }
+        if valid:
+            if dtype == "single_select":
+                if body.value not in valid:
+                    return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
+            else:
+                vals = body.value if isinstance(body.value, list) else None
+                if vals is None or any(v not in valid for v in vals):
+                    return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+
     answered_by = body.answered_by or user.user_id or "user"
     updated = await store.answer(decision_id, body.value, answered_by)
     if updated is None:

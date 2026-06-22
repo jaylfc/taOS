@@ -107,6 +107,7 @@ class DecisionStore(BaseStore):
         status: str | None = None,
         project_id: str | None = None,
         user_id: str | None = None,
+        limit: int = 200,
     ) -> list[dict]:
         conds, params = [], []
         if status is not None:
@@ -116,8 +117,11 @@ class DecisionStore(BaseStore):
         if user_id is not None:
             conds.append("user_id = ?"); params.append(user_id)
         where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        # Bound the result set so a long-lived inbox cannot return everything.
+        limit = max(1, min(int(limit), 500))
         async with self._db.execute(
-            f"SELECT * FROM decisions{where} ORDER BY created_at DESC", params
+            f"SELECT * FROM decisions{where} ORDER BY created_at DESC LIMIT ?",
+            [*params, limit],
         ) as cur:
             rows = await cur.fetchall()
             desc = cur.description
@@ -125,7 +129,8 @@ class DecisionStore(BaseStore):
 
     async def answer(self, decision_id: str, value, answered_by: str) -> dict | None:
         """Record an answer. Returns the updated decision, or None if the
-        decision does not exist or is not pending (already answered/expired)."""
+        decision does not exist or is not pending (already answered or
+        superseded)."""
         now = time.time()
         ans = json.dumps({"value": value, "answered_by": answered_by, "answered_at": now})
         cur = await self._db.execute(

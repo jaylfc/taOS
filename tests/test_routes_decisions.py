@@ -59,3 +59,32 @@ async def test_invalid_type_400(client):
 async def test_get_unknown_404(client):
     resp = await client.get("/api/decisions/dec-missing")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_answer_must_match_options(client):
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "single_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    # A value outside the declared options is rejected.
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "zzz"})
+    assert resp.status_code == 400
+    # The decision is still answerable with a valid option.
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "a"})
+    assert resp.status_code == 200
+    assert resp.json()["answer"]["value"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_multi_select_answer_must_be_subset(client):
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "multi_select",
+        "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}],
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["a", "nope"]})
+    assert resp.status_code == 400
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["a", "b"]})
+    assert resp.status_code == 200
