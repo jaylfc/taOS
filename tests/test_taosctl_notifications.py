@@ -100,7 +100,7 @@ def test_set_pref_calls_endpoint(monkeypatch):
 def test_api_error_maps_to_exit_2(monkeypatch, capsys):
     fake = _FakeClient()
     fake._raise = cli_client.ApiError(404, "not found")
-    rc = _run(monkeypatch, ["notifications", "get", "999"], fake)
+    rc = _run(monkeypatch, ["notifications", "read", "999"], fake)
     assert rc == 2
     assert "not found" in capsys.readouterr().err
 
