@@ -71,20 +71,6 @@ def test_providers_list_calls_endpoint(monkeypatch, capsys):
 
 # ---- get ----------------------------------------------------------------------
 
-def test_providers_get_targets_named_provider(monkeypatch, capsys):
-    fake = _FakeClient()
-    rc = _run(monkeypatch, ["--json", "providers", "get", "openai"], fake)
-    assert rc == 0
-    assert ("GET", "/api/providers/openai", None) in fake.calls
-
-
-def test_providers_get_url_encodes_the_name(monkeypatch, capsys):
-    fake = _FakeClient()
-    rc = _run(monkeypatch, ["--json", "providers", "get", "a/b c"], fake)
-    assert rc == 0
-    assert ("GET", "/api/providers/a%2Fb%20c", None) in fake.calls
-
-
 # ---- create -------------------------------------------------------------------
 
 def test_providers_create_posts_body(monkeypatch, capsys):
@@ -200,7 +186,7 @@ def test_providers_stop_posts(monkeypatch, capsys):
 def test_api_error_maps_to_exit_2(monkeypatch, capsys):
     fake = _FakeClient()
     fake._raise = ApiError(404, "no such provider")
-    rc = _run(monkeypatch, ["providers", "get", "ghost"], fake)
+    rc = _run(monkeypatch, ["providers", "delete", "ghost"], fake)
     assert rc == 2
     assert "no such provider" in capsys.readouterr().err
 
@@ -211,3 +197,11 @@ def test_transport_error_maps_to_exit_1(monkeypatch, capsys):
     rc = _run(monkeypatch, ["providers", "list"], fake)
     assert rc == 1
     assert "cannot reach" in capsys.readouterr().err
+
+
+def test_providers_update_with_no_fields_errors(monkeypatch):
+    import pytest
+    fake = _FakeClient()
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["providers", "update", "openai"], fake)
+    assert not any(c[0] == "PATCH" for c in fake.calls)

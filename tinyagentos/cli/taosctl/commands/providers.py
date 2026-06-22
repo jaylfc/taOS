@@ -13,10 +13,6 @@ def register(subparsers) -> None:
     lp = verbs.add_parser("list", help="List all providers")
     lp.set_defaults(func=_list)
 
-    gp = verbs.add_parser("get", help="Get one provider by name")
-    gp.add_argument("name", help="Provider name")
-    gp.set_defaults(func=_get)
-
     cp = verbs.add_parser("create", help="Add a new provider")
     cp.add_argument("--name", required=True, help="Provider name")
     cp.add_argument("--type", required=True, help="Provider type (e.g. openai, ollama)")
@@ -56,10 +52,6 @@ def _list(args, client):
     return client.get("/api/providers")
 
 
-def _get(args, client):
-    return client.get(f"/api/providers/{quote(args.name, safe='')}")
-
-
 def _create(args, client):
     body = {"name": args.name, "type": args.type}
     if args.url:
@@ -83,6 +75,8 @@ def _update(args, client):
         body["auto_manage"] = args.auto_manage == "true"
     if args.keep_alive_minutes is not None:
         body["keep_alive_minutes"] = args.keep_alive_minutes
+    if not body:
+        raise SystemExit("providers update: nothing to change (pass at least one field to update)")
     return client.patch(f"/api/providers/{quote(args.name, safe='')}", body=body)
 
 
