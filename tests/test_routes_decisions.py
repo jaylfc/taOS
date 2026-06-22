@@ -88,3 +88,52 @@ async def test_multi_select_answer_must_be_subset(client):
     assert resp.status_code == 400
     resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["a", "b"]})
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_create_with_parent_supersedes_it(client):
+    # Original decision.
+    r = await client.post("/api/decisions", json={
+        "from_agent": "@taOS-dev", "question": "Canvas engine?", "type": "single_select",
+        "options": [{"label": "Konva", "value": "konva"}], "project_id": "prj-x",
+    })
+    old = r.json()
+    # A replacement that revisits it going forward.
+    r = await client.post("/api/decisions", json={
+        "from_agent": "@taOS-dev", "question": "Canvas engine (revisited)?", "type": "single_select",
+        "options": [{"label": "Excalidraw", "value": "excalidraw"}], "project_id": "prj-x",
+        "parent_decision_id": old["id"],
+    })
+    new = r.json()
+    assert r.status_code == 200
+    assert new["parent_decision_id"] == old["id"]
+    # The old decision is now superseded.
+    r = await client.get(f"/api/decisions/{old['id']}")
+    assert r.json()["status"] == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_create_with_unknown_parent_rejected(client):
+    r = await client.post("/api/decisions", json={
+        "from_agent": "@taOS-dev", "question": "q", "type": "free_text",
+        "parent_decision_id": "dec-missing",
+    })
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_history_returns_lineage_oldest_first(client):
+    ids = []
+    parent = None
+    for i in range(3):
+        body = {"from_agent": "@taOS-dev", "question": f"q{i}", "type": "free_text"}
+        if parent:
+            body["parent_decision_id"] = parent
+        r = await client.post("/api/decisions", json=body)
+        parent = r.json()["id"]
+        ids.append(parent)
+    # History of the newest walks back through both ancestors.
+    r = await client.get(f"/api/decisions/{ids[-1]}/history")
+    assert r.status_code == 200
+    chain = [d["id"] for d in r.json()["items"]]
+    assert chain == ids  # oldest first

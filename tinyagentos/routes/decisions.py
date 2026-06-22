@@ -53,6 +53,15 @@ async def create_decision(body: DecisionIn, request: Request, user: CurrentUser 
         return JSONResponse({"error": "select types require options"}, status_code=400)
 
     store = request.app.state.decision_store
+
+    # L1 revisit/supersede: a decision may replace an earlier one going forward.
+    # Validate the parent belongs to this user before we create + supersede it.
+    parent_id = body.parent_decision_id
+    if parent_id:
+        parent = await store.get(parent_id)
+        if parent is None or (not user.is_admin and parent["user_id"] != user.user_id):
+            return JSONResponse({"error": "parent_decision_id not found"}, status_code=400)
+
     decision = await store.create(
         from_agent=body.from_agent,
         question=body.question,
@@ -63,10 +72,14 @@ async def create_decision(body: DecisionIn, request: Request, user: CurrentUser 
         project_id=body.project_id,
         user_id=user.user_id,
         deadline=body.deadline,
-        parent_decision_id=body.parent_decision_id,
+        parent_decision_id=parent_id,
         checkpoint_ref=body.checkpoint_ref,
         timeline_id=body.timeline_id,
     )
+
+    # Mark the parent superseded only after the replacement is persisted.
+    if parent_id:
+        await store.supersede(parent_id)
 
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
@@ -105,6 +118,29 @@ async def get_decision(decision_id: str, request: Request, user: CurrentUser = D
     if d is None or (not user.is_admin and d["user_id"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
     return d
+
+
+@router.get("/api/decisions/{decision_id}/history")
+async def decision_history(decision_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+    """The supersession lineage for a decision, oldest first: walk the
+    parent_decision_id chain (L1). Cycle-guarded."""
+    store = request.app.state.decision_store
+    chain: list[dict] = []
+    seen: set[str] = set()
+    cur_id: str | None = decision_id
+    while cur_id and cur_id not in seen:
+        seen.add(cur_id)
+        d = await store.get(cur_id)
+        if d is None:
+            break
+        if not user.is_admin and d["user_id"] != user.user_id:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        chain.append(d)
+        cur_id = d.get("parent_decision_id")
+    if not chain:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    chain.reverse()
+    return {"items": chain}
 
 
 @router.post("/api/decisions/{decision_id}/answer")
