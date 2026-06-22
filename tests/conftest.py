@@ -313,6 +313,10 @@ async def client(app, tmp_data_dir):
     if project_task_store._db is not None:
         await project_task_store.close()
     await project_task_store.init()
+    decision_store = app.state.decision_store
+    if decision_store._db is not None:
+        await decision_store.close()
+    await decision_store.init()
     app.state.projects_root.mkdir(parents=True, exist_ok=True)
     canvas_store = app.state.canvas_store
     if canvas_store._db is not None:
