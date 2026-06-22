@@ -137,7 +137,7 @@ class ChatChannelStore(BaseStore):
             conditions.append("members LIKE ?")
             params.append(f'%"{member_id}"%')
 
-        if project_id is not None:
+        if project_id:
             conditions.append("project_id = ?")
             params.append(project_id)
 
@@ -182,6 +182,13 @@ class ChatChannelStore(BaseStore):
         params.append(channel_id)
         await self._db.execute(
             f"UPDATE chat_channels SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self._db.commit()
+
+    async def set_project(self, channel_id: str, project_id: str) -> None:
+        await self._db.execute(
+            "UPDATE chat_channels SET project_id = ? WHERE id = ?",
+            (project_id, channel_id),
         )
         await self._db.commit()
 
