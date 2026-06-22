@@ -39,7 +39,9 @@ MEMORY_TIERS: dict[str, dict] = {
     "standard": {
         "label": "Standard",
         "description": "Recommended balance for most users",
-        "models": ["bge-m3"],
+        # arctic-embed-s is taOSmd's recommended default embedder (F-010:
+        # +0.057 judged retrieval / +0.157 R@K over MiniLM, 384-dim, CPU-friendly).
+        "models": ["snowflake-arctic-embed-s"],
         "min_ram_mb": 4096,
         "needs_accel": False,
     },
