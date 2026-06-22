@@ -7,6 +7,9 @@ notification; everything else is a normal badge + notification.
 
 from __future__ import annotations
 
+import os
+
+import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -15,6 +18,45 @@ from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
 
 router = APIRouter()
+
+# Answer-routing: when a decision is answered, post the answer back to the
+# asking agent on the A2A bus so off-session agents (taOSmd-dev, owl lanes,
+# deployed agents) can pick it up. @taOS-dev polls the API instead.
+_DEFAULT_BUS_URL = "http://127.0.0.1:7900"
+_ANSWER_THREAD = "decisions"
+
+
+def _bus_url() -> str:
+    return os.environ.get("TAOS_A2A_BUS_URL", _DEFAULT_BUS_URL).rstrip("/")
+
+
+def _answer_text(decision: dict, value) -> str:
+    """Render a select answer using its option labels; pass others through."""
+    opts = {o.get("value"): o.get("label") for o in (decision.get("options") or [])}
+    vals = value if isinstance(value, list) else [value]
+    return ", ".join(str(opts.get(v, v)) for v in vals)
+
+
+async def _route_answer_to_agent(decision: dict, value) -> None:
+    """Best-effort: post the recorded answer back to the asking agent on the
+    A2A bus. Never raises; the answer is already persisted and the agent can
+    also poll GET /api/decisions/{id}."""
+    agent = (decision.get("from_agent") or "").strip()
+    if not agent.startswith("@"):
+        return
+    body = (
+        f"{agent} decision {decision.get('id')} answered: "
+        f"{decision.get('question', '')} -> {_answer_text(decision, value)}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{_bus_url()}/a2a/send",
+                json={"from": "@taOS-decisions", "thread": _ANSWER_THREAD, "body": body},
+            )
+    except Exception:
+        # Delivery is best-effort; do not fail the answer on a bus hiccup.
+        pass
 
 
 class OptionIn(BaseModel):
@@ -136,4 +178,5 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     updated = await store.answer(decision_id, body.value, answered_by)
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
+    await _route_answer_to_agent(updated, body.value)
     return updated

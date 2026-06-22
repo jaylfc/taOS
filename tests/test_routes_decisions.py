@@ -88,3 +88,100 @@ async def test_multi_select_answer_must_be_subset(client):
     assert resp.status_code == 400
     resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["a", "b"]})
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_answer_routes_back_to_bus_agent(client, monkeypatch):
+    import tinyagentos.routes.decisions as dmod
+
+    posted = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            posted["url"] = url
+            posted["json"] = json
+            return None
+
+    monkeypatch.setattr(dmod.httpx, "AsyncClient", _FakeClient)
+
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@taOSmd-dev", "question": "Use arctic?", "type": "approve_deny",
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "approve"})
+    assert resp.status_code == 200
+    # The answer was routed back to the asking agent on the 'decisions' thread.
+    assert posted["url"].endswith("/a2a/send")
+    assert posted["json"]["thread"] == "decisions"
+    assert "@taOSmd-dev" in posted["json"]["body"]
+    assert "approve" in posted["json"]["body"]
+
+
+@pytest.mark.asyncio
+async def test_answer_succeeds_when_bus_unreachable(client, monkeypatch):
+    import tinyagentos.routes.decisions as dmod
+
+    class _BrokenClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            raise RuntimeError("bus down")
+
+    monkeypatch.setattr(dmod.httpx, "AsyncClient", _BrokenClient)
+
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@taOSmd-dev", "question": "q", "type": "approve_deny",
+    })
+    d = resp.json()
+    # Best-effort delivery: a bus failure must not fail the answer.
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "deny"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "answered"
+
+
+@pytest.mark.asyncio
+async def test_answer_no_route_for_non_agent_sender(client, monkeypatch):
+    import tinyagentos.routes.decisions as dmod
+
+    calls = {"n": 0}
+
+    class _CountingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            calls["n"] += 1
+            return None
+
+    monkeypatch.setattr(dmod.httpx, "AsyncClient", _CountingClient)
+
+    # from_agent without a leading @ is not an agent handle -> no bus post.
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "system", "question": "q", "type": "free_text",
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": "ok"})
+    assert resp.status_code == 200
+    assert calls["n"] == 0
