@@ -315,6 +315,11 @@ apps:
     version: 1.0.0
     name: BGE M3 (Multilingual)
     description: "100+ language embedding — dense, sparse, multi-vector"
+  - id: snowflake-arctic-embed-s
+    type: model
+    version: 1.0.0
+    name: Snowflake Arctic Embed S
+    description: "33M English embedding, 384-dim, CPU-friendly — taOSmd recommended default"
   - id: mxbai-embed-large
     type: model
     version: 1.0.0

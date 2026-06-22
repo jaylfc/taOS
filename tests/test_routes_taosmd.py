@@ -28,7 +28,7 @@ class TestTiers:
         resp = await client.get("/api/taosmd/tiers")
         data = resp.json()
         assert "nomic-embed-text-v1.5" in data["lite"]["models"]
-        assert "bge-m3" in data["standard"]["models"]
+        assert "snowflake-arctic-embed-s" in data["standard"]["models"]
         assert "bge-m3" in data["heavy"]["models"]
         assert "qwen3-reranker-0.6b" in data["heavy"]["models"]
 
