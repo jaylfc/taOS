@@ -140,16 +140,23 @@ class TestListChannelsByProject:
         names = {c["name"] for c in channels}
         assert names == {"ch-1", "ch-2"}
 
-    async def test_empty_project_id_returns_all(self, client):
+    async def test_empty_project_id_returns_rootless_only(self, client):
+        # An empty project_id filters to rootless channels (no project), not all.
+        # Omitting the param entirely is what returns all channels.
         await client.post("/api/chat/channels", json={
             "name": "ch-assigned",
             "type": "topic",
             "created_by": "user",
             "project_id": "some-proj",
         })
+        await client.post("/api/chat/channels", json={
+            "name": "ch-rootless",
+            "type": "topic",
+            "created_by": "user",
+        })
 
         resp = await client.get("/api/chat/channels", params={"project_id": ""})
         assert resp.status_code == 200
         channels = resp.json()["channels"]
         assert len(channels) == 1
-        assert channels[0]["name"] == "ch-assigned"
+        assert channels[0]["name"] == "ch-rootless"

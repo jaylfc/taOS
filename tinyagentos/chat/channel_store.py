@@ -137,7 +137,7 @@ class ChatChannelStore(BaseStore):
             conditions.append("members LIKE ?")
             params.append(f'%"{member_id}"%')
 
-        if project_id:
+        if project_id is not None:
             conditions.append("project_id = ?")
             params.append(project_id)
 
