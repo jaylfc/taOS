@@ -2821,16 +2821,16 @@ wheels = [
 
 [[package]]
 name = "taosmd"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/01/efa3c65f84c127cf5f3463ba47c9da6672848a19cde7dc9dff19ae347d57/taosmd-0.3.0.tar.gz", hash = "sha256:9aa24fa99cc6b1f1a4e7081279a6cc519a0335b7772c7b8fc7fec82f838e520b", size = 368268, upload-time = "2026-06-09T15:57:18.724Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/1c/e1a6d682d93401b04795f7c3e5fc763450c510bb6481077495c4bb782a59/taosmd-0.4.0.tar.gz", hash = "sha256:06d825963b1f3c65bb3b45a66506b52d2f5b51ef3d4b0074f55e97af8e024743", size = 512415, upload-time = "2026-06-22T23:13:50.07Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/8d/09cb348c16c6455ed2cafaa18e72acc3f8fbcf12c3aa6573cd16cf6e398b/taosmd-0.3.0-py3-none-any.whl", hash = "sha256:6ef4b7b2503d16b7013df881f14a72593943505398cabdb88bd79d6a3441e1be", size = 288745, upload-time = "2026-06-09T15:57:17.402Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/b8/3f79484a1d4da236857861471c01c48ffcca55ce0b5eddf3943b984d1e38/taosmd-0.4.0-py3-none-any.whl", hash = "sha256:d990ece82bdc301fcb2602d55538aa6e4194a9e0e81b904b150544c8246d9a81", size = 381301, upload-time = "2026-06-22T23:13:48.354Z" },
 ]
 
 [[package]]
@@ -2960,7 +2960,7 @@ requires-dist = [
     { name = "readability-lxml", specifier = ">=0.8.1" },
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "sqlcipher3", specifier = ">=0.6.2" },
-    { name = "taosmd", specifier = "==0.3.0" },
+    { name = "taosmd", specifier = "==0.4.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.49.0" },
     { name = "websockets", specifier = ">=12.0" },
     { name = "websockets", marker = "extra == 'dev'", specifier = ">=12.0" },

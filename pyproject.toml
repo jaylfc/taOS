@@ -33,7 +33,7 @@ dependencies = [
     "lxml>=5.0.0",
     "readability-lxml>=0.8.1",
     # Memory system — published to PyPI
-    "taosmd==0.3.0",
+    "taosmd==0.4.0",
     # WebSocket client for dashboard proxy (shortcut_proxy.py)
     "websockets>=12.0",
     # Web Push VAPID signing — pulls in cryptography, http-ece, py-vapid
