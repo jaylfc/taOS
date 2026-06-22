@@ -80,16 +80,16 @@ async def sync_issues_to_board(
             )
             created += 1
             if state == "closed":
-                await task_store.close_task(new["id"], closed_by=created_by, reason="issue closed on GitHub")
-                closed += 1
+                if await task_store.close_task(new["id"], closed_by=created_by, reason="issue closed on GitHub"):
+                    closed += 1
             continue
 
         status = card.get("status")
         if state == "closed" and status != "closed":
-            await task_store.close_task(card["id"], closed_by=created_by, reason="issue closed on GitHub")
-            closed += 1
+            if await task_store.close_task(card["id"], closed_by=created_by, reason="issue closed on GitHub"):
+                closed += 1
         elif state == "open" and status == "closed":
-            await task_store.reopen_task(card["id"], reopened_by=created_by)
-            reopened += 1
+            if await task_store.reopen_task(card["id"], reopened_by=created_by):
+                reopened += 1
 
     return {"created": created, "closed": closed, "reopened": reopened, "skipped": skipped}

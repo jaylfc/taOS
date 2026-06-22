@@ -87,7 +87,7 @@ async def test_route_sync_creates_cards_and_persists_repo(client, monkeypatch):
 
     async def fake_fetch(repo, state, token):
         assert repo == "owner/name"
-        return [_issue(1, "open issue", "open"), _issue(2, "done", "closed"), _issue(3, pr=True)]
+        return [_issue(1, "open issue", "open"), _issue(2, "done", "closed"), _issue(3, pr=True)], False
 
     monkeypatch.setattr(gh, "_fetch_issues", fake_fetch)
     pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
@@ -96,6 +96,7 @@ async def test_route_sync_creates_cards_and_persists_repo(client, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["created"] == 2 and body["closed"] == 1 and body["skipped"] == 1
+    assert body["truncated"] is False
 
     # repo is remembered: a second call may omit it
     resp2 = await client.post(f"/api/projects/{pid}/github/sync", json={})
@@ -108,6 +109,28 @@ async def test_route_requires_repo(client):
     pid = (await client.post("/api/projects", json={"name": "B", "slug": "b"})).json()["id"]
     resp = await client.post(f"/api/projects/{pid}/github/sync", json={})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_route_rejects_malformed_repo(client):
+    pid = (await client.post("/api/projects", json={"name": "C", "slug": "c"})).json()["id"]
+    for bad in ["../escape", "owneronly", "a/b/c", "owner/na me"]:
+        resp = await client.post(f"/api/projects/{pid}/github/sync", json={"repo": bad})
+        assert resp.status_code == 400, bad
+
+
+@pytest.mark.asyncio
+async def test_route_reports_truncation(client, monkeypatch):
+    import tinyagentos.routes.github_sync as gh
+
+    async def fake_fetch(repo, state, token):
+        return [_issue(1, "x", "open")], True
+
+    monkeypatch.setattr(gh, "_fetch_issues", fake_fetch)
+    pid = (await client.post("/api/projects", json={"name": "D", "slug": "d"})).json()["id"]
+    resp = await client.post(f"/api/projects/{pid}/github/sync", json={"repo": "o/n"})
+    assert resp.status_code == 200
+    assert resp.json()["truncated"] is True
 
 
 @pytest.mark.asyncio
