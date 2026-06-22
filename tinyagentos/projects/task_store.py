@@ -231,13 +231,31 @@ class ProjectTaskStore(BaseStore):
         if existing is not None:
             await self._publish(existing["project_id"], "task.updated", {"id": task_id, "patch": patch})
 
+    async def held_task(self, claimer_id: str) -> str | None:
+        """Return the id of the active ('claimed') task this agent currently
+        holds, or None. Used to enforce one active claim per agent."""
+        async with self._db.execute(
+            "SELECT id FROM project_tasks WHERE claimed_by = ? AND status = 'claimed' LIMIT 1",
+            (claimer_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
     async def claim_task(self, task_id: str, claimer_id: str) -> bool:
         now = time.time()
+        # Flow protection: an agent must complete (close) or release a task
+        # before claiming another. The NOT EXISTS guard makes the one-active-
+        # claim rule atomic, so concurrent claims by the same agent can't race
+        # past it.
         cursor = await self._db.execute(
             """UPDATE project_tasks
                SET claimed_by = ?, claimed_at = ?, status = 'claimed', updated_at = ?
-               WHERE id = ? AND claimed_by IS NULL AND status = 'open'""",
-            (claimer_id, now, now, task_id),
+               WHERE id = ? AND claimed_by IS NULL AND status = 'open'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM project_tasks held
+                     WHERE held.claimed_by = ? AND held.status = 'claimed'
+                 )""",
+            (claimer_id, now, now, task_id, claimer_id),
         )
         await self._db.commit()
         changed = cursor.rowcount == 1

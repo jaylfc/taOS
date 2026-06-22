@@ -140,6 +140,25 @@ async def test_ready_endpoint(client):
 
 
 @pytest.mark.asyncio
+async def test_claim_blocked_while_agent_holds_active_task(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    a = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "A"})).json()
+    b = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "B"})).json()
+
+    assert (await client.post(f"/api/projects/{pid}/tasks/{a['id']}/claim", json={"claimer_id": "agent-1"})).status_code == 200
+
+    resp = await client.post(f"/api/projects/{pid}/tasks/{b['id']}/claim", json={"claimer_id": "agent-1"})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"] == "agent already holds an active task"
+    assert body["held_task"] == a["id"]
+
+    # releasing the first frees the agent to claim the second
+    await client.post(f"/api/projects/{pid}/tasks/{a['id']}/release", json={"releaser_id": "agent-1"})
+    assert (await client.post(f"/api/projects/{pid}/tasks/{b['id']}/claim", json={"claimer_id": "agent-1"})).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_claim_release_close(client):
     pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
     t = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "A"})).json()
