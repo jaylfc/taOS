@@ -162,6 +162,7 @@ function DecisionCard({
       await onAnswer(decision.id, value);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not record answer.");
+    } finally {
       setSubmitting(false);
     }
   }
@@ -299,6 +300,15 @@ function DecisionCard({
   );
 }
 
+// The list endpoint returns { items: [...] }; tolerate a bare array too.
+function asDecisionList(data: unknown): Decision[] {
+  if (Array.isArray(data)) return data as Decision[];
+  if (data && Array.isArray((data as { items?: unknown }).items)) {
+    return (data as { items: Decision[] }).items;
+  }
+  return [];
+}
+
 function answerLabel(decision: Decision): string {
   const value = decision.answer?.value;
   if (value == null) return "—";
@@ -345,19 +355,21 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
   const [answered, setAnswered] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
-      const [p, a] = await Promise.all([
-        fetch("/api/decisions?status=pending").then((r) => (r.ok ? r.json() : [])),
-        fetch("/api/decisions?status=answered").then((r) => (r.ok ? r.json() : [])),
+      const [pRes, aRes] = await Promise.all([
+        fetch("/api/decisions?status=pending"),
+        fetch("/api/decisions?status=answered"),
       ]);
-      setPending(Array.isArray(p) ? p : []);
-      setAnswered(Array.isArray(a) ? a : []);
+      // Only overwrite a list when its request actually succeeded; a transient
+      // failure must not blank out decisions the user can still act on.
+      if (pRes.ok) setPending(asDecisionList(await pRes.json()));
+      if (aRes.ok) setAnswered(asDecisionList(await aRes.json()));
     } catch {
-      // Non-critical: leave whatever was last loaded in place.
+      // Network error: keep whatever was last loaded in place.
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
@@ -379,7 +391,9 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
           typeof detail === "string" ? detail : "Could not record answer.",
         );
       }
-      await load();
+      // Silent refresh: avoid flashing the full-screen Loading state and the
+      // list re-mount on every answer.
+      await load({ silent: true });
     },
     [load],
   );
