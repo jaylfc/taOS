@@ -49,3 +49,31 @@ async def test_non_admin_cannot_pause(app, client):
         assert resp.status_code == 403
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_fleet_empty_when_no_claims(client):
+    resp = await client.get("/api/observatory/fleet")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["agents"] == []
+    assert data["paused"] == {"global": False, "lanes": {}}
+
+
+@pytest.mark.asyncio
+async def test_fleet_shows_working_agent_with_held_card(app, client):
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    proj = await pstore.create_project(name="Obs", slug="obs-fleet", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Build the thing", created_by="admin")
+    claimed = await tstore.claim_task(task["id"], "@taOS-dev-kilo-owl-alpha")
+    assert claimed is True
+
+    resp = await client.get("/api/observatory/fleet")
+    assert resp.status_code == 200
+    agents = resp.json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@taOS-dev-kilo-owl-alpha"]
+    assert len(mine) == 1
+    assert mine[0]["state"] == "working"
+    assert mine[0]["holds"]["task_id"] == task["id"]
+    assert mine[0]["holds"]["title"] == "Build the thing"

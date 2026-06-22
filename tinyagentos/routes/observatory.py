@@ -78,3 +78,41 @@ async def set_pause(body: PauseBody, request: Request, user: CurrentUser = Depen
         state["lanes"].pop(scope, None)
     _write_state(request, state)
     return state
+
+
+@router.get("/api/observatory/fleet")
+async def get_fleet(request: Request, user: CurrentUser = Depends(current_user)):
+    """The Observe half: which agents are working and what they hold right now.
+
+    Derives state from the board: an agent that holds a claimed task is
+    'working' on it. Admins see every project; other users see their own.
+    The current pause state is returned alongside so the UI can show both in
+    one read. Trace-timeline and PR-in-review enrichment are phase 2.
+    """
+    pstore = request.app.state.project_store
+    tstore = request.app.state.project_task_store
+    if user.is_admin:
+        projects = await pstore.list_projects(status=None)
+    else:
+        projects = await pstore.list_for_user(user.user_id, status=None)
+
+    agents: list[dict] = []
+    for proj in projects:
+        pid = proj.get("id")
+        if not pid:
+            continue
+        for t in await tstore.list_tasks(pid, status="claimed"):
+            handle = t.get("claimed_by")
+            if not handle:
+                continue
+            agents.append({
+                "handle": handle,
+                "state": "working",
+                "holds": {
+                    "task_id": t.get("id"),
+                    "project_id": pid,
+                    "title": t.get("title"),
+                },
+            })
+    agents.sort(key=lambda a: a["handle"])
+    return {"agents": agents, "paused": _read_state(request)}
