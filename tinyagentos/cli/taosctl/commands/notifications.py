@@ -15,10 +15,6 @@ def register(subparsers) -> None:
                     help="Show only unread notifications")
     lp.set_defaults(func=_list)
 
-    gp = verbs.add_parser("get", help="Get a single notification by id")
-    gp.add_argument("id", help="Notification id")
-    gp.set_defaults(func=_get)
-
     rp = verbs.add_parser("read", help="Mark a notification as read")
     rp.add_argument("notif_id", help="Notification id")
     rp.set_defaults(func=_read)
@@ -45,10 +41,6 @@ def register(subparsers) -> None:
 def _list(args, client):
     params = {"unread_only": args.unread_only} if args.unread_only else None
     return client.get("/api/notifications", params=params)
-
-
-def _get(args, client):
-    return client.get(f"/api/notifications/{quote(str(args.id), safe='')}")
 
 
 def _read(args, client):

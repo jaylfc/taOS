@@ -55,13 +55,6 @@ def test_list_unread_only_sends_param(monkeypatch):
                and c[2] == {"unread_only": True} for c in fake.calls)
 
 
-def test_get_calls_endpoint(monkeypatch):
-    fake = _FakeClient()
-    rc = _run(monkeypatch, ["notifications", "get", "42"], fake)
-    assert rc == 0
-    assert ("GET", "/api/notifications/42", None) in fake.calls
-
-
 def test_read_calls_endpoint(monkeypatch):
     fake = _FakeClient()
     rc = _run(monkeypatch, ["notifications", "read", "7"], fake)
