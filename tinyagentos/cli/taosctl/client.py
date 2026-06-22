@@ -97,6 +97,9 @@ class TaosClient:
         # `body` wins if both are given.
         return self.request("POST", path, params=params, body=body if body is not None else json)
 
+    def put(self, path: str, body: Optional[Any] = None, json: Optional[Any] = None) -> Any:
+        return self.request("PUT", path, body=body if body is not None else json)
+
     def patch(self, path: str, body: Optional[Any] = None, json: Optional[Any] = None) -> Any:
         return self.request("PATCH", path, body=body if body is not None else json)
 

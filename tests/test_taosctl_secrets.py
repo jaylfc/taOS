@@ -27,7 +27,7 @@ class _FakeClient:
             raise self._raise
         return {"id": "db-pass", "status": "created"}
 
-    def patch(self, path, body=None, json=None):
+    def put(self, path, body=None, json=None):
         self.calls.append(("PUT", path))
         if self._raise:
             raise self._raise

@@ -69,7 +69,7 @@ def _update(args, client):
         body["category"] = args.category
     if args.description is not None:
         body["description"] = args.description
-    return client.patch(f"/api/secrets/{quote(args.name, safe='')}", json=body)
+    return client.put(f"/api/secrets/{quote(args.name, safe='')}", json=body)
 
 
 def _delete(args, client):
