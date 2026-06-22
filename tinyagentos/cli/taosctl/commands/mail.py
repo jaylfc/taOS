@@ -5,6 +5,8 @@ that call the client and return data for the framework to render).
 """
 from __future__ import annotations
 
+import getpass
+import os
 from urllib.parse import quote
 
 NOUN = "mail"
@@ -24,7 +26,10 @@ def register(subparsers) -> None:
     cp.add_argument("--smtp-host", required=True, help="SMTP server hostname")
     cp.add_argument("--smtp-port", type=int, default=587, help="SMTP port")
     cp.add_argument("--username", required=True, help="Account username")
-    cp.add_argument("--password", required=True, help="Account password")
+    cp.add_argument("--password", default=None,
+                    help="Account password. Prefer the TAOS_MAIL_PASSWORD env var or the "
+                         "interactive prompt; a password on the command line is visible to "
+                         "other processes.")
     cp.add_argument("--display-name", default="", help="Display name")
     cp.set_defaults(func=_create)
 
@@ -63,6 +68,18 @@ def _list(args, client):
     return client.get("/api/mail/accounts")
 
 
+def _resolve_password(args):
+    """Resolve the account password without requiring it on the command line
+    (which would be visible in the process list). Precedence: explicit --password,
+    then the TAOS_MAIL_PASSWORD env var, then an interactive prompt."""
+    if args.password is not None:
+        return args.password
+    env = os.environ.get("TAOS_MAIL_PASSWORD")
+    if env:
+        return env
+    return getpass.getpass("Account password: ")
+
+
 def _create(args, client):
     return client.post("/api/mail/accounts", json={
         "display_name": args.display_name,
@@ -72,7 +89,7 @@ def _create(args, client):
         "smtp_host": args.smtp_host,
         "smtp_port": args.smtp_port,
         "username": args.username,
-        "password": args.password,
+        "password": _resolve_password(args),
     })
 
 

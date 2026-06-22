@@ -132,3 +132,23 @@ def test_mail_noun_is_discovered():
     from tinyagentos.cli.taosctl.commands import iter_noun_modules
     nouns = {m.NOUN for m in iter_noun_modules()}
     assert "mail" in nouns
+
+
+def test_resolve_password_precedence(monkeypatch):
+    from tinyagentos.cli.taosctl.commands.mail import _resolve_password
+    import argparse
+
+    # explicit arg wins
+    a = argparse.Namespace(password="from-arg")
+    monkeypatch.setenv("TAOS_MAIL_PASSWORD", "from-env")
+    assert _resolve_password(a) == "from-arg"
+
+    # env var used when no arg (no command-line exposure)
+    b = argparse.Namespace(password=None)
+    assert _resolve_password(b) == "from-env"
+
+    # falls through to prompt when neither present
+    c = argparse.Namespace(password=None)
+    monkeypatch.delenv("TAOS_MAIL_PASSWORD", raising=False)
+    monkeypatch.setattr("getpass.getpass", lambda *_: "from-prompt")
+    assert _resolve_password(c) == "from-prompt"
