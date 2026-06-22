@@ -65,6 +65,15 @@ async def apply_preset(request: Request, preset_id: int, body: PresetApply):
     return {"status": "applied", "tasks_created": count}
 
 
+@router.get("/api/tasks/{task_id}")
+async def get_task(request: Request, task_id: int):
+    scheduler = request.app.state.scheduler
+    task = await scheduler.get_task(task_id)
+    if task is None:
+        return JSONResponse({"error": "Task not found"}, status_code=404)
+    return task
+
+
 @router.put("/api/tasks/{task_id}")
 async def update_task(request: Request, task_id: int, body: TaskUpdate):
     scheduler = request.app.state.scheduler

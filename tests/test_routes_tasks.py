@@ -49,6 +49,23 @@ class TestTasksPage:
         resp = await client.put(f"/api/tasks/{task_id}", json={"name": "Updated"})
         assert resp.status_code == 200
 
+    async def test_get_task(self, client):
+        resp = await client.post("/api/tasks", json={
+            "name": "Fetch Me", "schedule": "0 * * * *", "command": "echo",
+        })
+        task_id = resp.json()["id"]
+        resp = await client.get(f"/api/tasks/{task_id}")
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Fetch Me"
+
+    async def test_get_nonexistent_task(self, client):
+        resp = await client.get("/api/tasks/9999")
+        assert resp.status_code == 404
+
+    async def test_get_task_does_not_shadow_presets(self, client):
+        resp = await client.get("/api/tasks/presets")
+        assert resp.status_code == 200
+
     async def test_delete_task(self, client):
         resp = await client.post("/api/tasks", json={
             "name": "To Delete", "schedule": "0 * * * *", "command": "rm",
