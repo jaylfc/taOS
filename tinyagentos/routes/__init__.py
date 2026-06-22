@@ -48,6 +48,9 @@ def register_all_routers(app):
     from tinyagentos.routes import projects as projects_routes
     app.include_router(projects_routes.router)
 
+    from tinyagentos.routes.github_sync import router as github_sync_router
+    app.include_router(github_sync_router)
+
     from tinyagentos.routes.store_install import router as store_install_router
     app.include_router(store_install_router)
 
