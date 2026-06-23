@@ -87,6 +87,41 @@ class TestAgentModelKeyStore:
         finally:
             await store.close()
 
+    async def test_expiry_normalizes_z_suffix(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            future_z = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            token, _ = await store.mint("u1", ["agent-a"], [], expires_at=future_z)
+            assert await store.resolve(token) is not None  # future -> still valid
+            past_z = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            t2, _ = await store.mint("u1", ["agent-a"], [], expires_at=past_z)
+            assert await store.resolve(t2) is None  # past -> expired
+        finally:
+            await store.close()
+
+    async def test_expiry_honours_real_utc_not_lexical_offset(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            # 12:00+05:00 is 07:00 UTC. If it is already past in UTC the key must
+            # NOT resolve, even though "12:00" lexically looks later than now.
+            past_utc_via_offset = (
+                (datetime.now(timezone.utc) - timedelta(hours=2))
+                .astimezone(timezone(timedelta(hours=5)))
+                .isoformat()
+            )
+            token, _ = await store.mint("u1", ["agent-a"], [], expires_at=past_utc_via_offset)
+            assert await store.resolve(token) is None
+        finally:
+            await store.close()
+
+    async def test_naive_expiry_is_rejected(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            with pytest.raises(ValueError, match="timezone-aware"):
+                await store.mint("u1", ["agent-a"], [], expires_at="2026-06-10T12:00:00")
+        finally:
+            await store.close()
+
     async def test_list_for_user_excludes_secrets(self, tmp_path):
         store = await self._store(tmp_path)
         try:

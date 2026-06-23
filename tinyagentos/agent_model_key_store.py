@@ -53,6 +53,21 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _normalize_ts(value: str) -> str:
+    """Canonicalise a caller-supplied expiry to a UTC isoformat string.
+
+    Expiry is enforced by comparing against datetime.now(timezone.utc).isoformat(),
+    a lexicographic compare that is only sound when both sides are the same UTC
+    format. A 'Z' suffix, a non-UTC offset, or a naive timestamp would otherwise
+    sort wrong and silently mis-honour a security-critical key expiry, so parse
+    the input, require it be timezone-aware, and store the canonical UTC form.
+    """
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError("expires_at must be timezone-aware (e.g. ...+00:00 or ...Z)")
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     d = {k: row[k] for k in row.keys()}
     for f in ("agent_ids", "scopes"):
@@ -92,9 +107,11 @@ class AgentModelKeyStore(BaseStore):
             raise RuntimeError("AgentModelKeyStore not initialised — call init() first")
         if not agent_ids:
             raise ValueError("a consent key must grant at least one agent")
+        if expires_at is not None:
+            expires_at = _normalize_ts(expires_at)
         token = _TOKEN_PREFIX + secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc).isoformat()
-        await self._db.execute(
+        cur = await self._db.execute(
             """
             INSERT INTO agent_model_keys
                 (key_hash, issuing_user, agent_ids, scopes, rate_cap, created_at, expires_at)
@@ -108,7 +125,7 @@ class AgentModelKeyStore(BaseStore):
         await self._db.commit()
         row = await (
             await self._db.execute(
-                "SELECT * FROM agent_model_keys WHERE key_hash = ?", (_hash(token),)
+                "SELECT * FROM agent_model_keys WHERE id = ?", (cur.lastrowid,)
             )
         ).fetchone()
         rec = _row_to_dict(row)  # type: ignore[arg-type]
