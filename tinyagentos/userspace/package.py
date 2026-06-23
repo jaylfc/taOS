@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from tinyagentos.userspace.capabilities import KNOWN_CAPS, is_known_capability
+from tinyagentos.userspace.capabilities import KNOWN_CAPS, NET_PREFIX, is_known_capability
 
 # A `network:<origin>` permission lets a granted app's bundle connect to that
 # external origin (it is added to the sandbox CSP connect-src). The origin is
@@ -89,8 +89,8 @@ def parse_manifest(text: str) -> dict:
             raise PackageError(
                 f"manifest permission must be a string, got {type(perm).__name__}"
             )
-        if perm.startswith("network:"):
-            origin = perm[len("network:"):]
+        if perm.startswith(NET_PREFIX):
+            origin = perm[len(NET_PREFIX):]
             if not _NET_ORIGIN_RE.match(origin):
                 raise PackageError(
                     f"invalid network permission origin {origin!r}: must be "
