@@ -55,6 +55,8 @@ export function sourceToTarget(
     case "app.installed":
     case "app.failed":
       return { action: "store" };
+    case "decisions":
+      return { action: "decisions" };
     default:
       return {};
   }
