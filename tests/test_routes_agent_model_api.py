@@ -122,3 +122,26 @@ async def test_chat_revoked_key_is_rejected(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_chat_auth_precedes_body_validation(client):
+    # An unauthenticated caller with a malformed body must get 401 (auth first),
+    # never a 422 that leaks the schema.
+    resp = await client.post("/v1/chat/completions", json={"bogus": True})
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "invalid_api_key"
+
+
+@pytest.mark.asyncio
+async def test_chat_missing_model_is_openai_shaped_400(client):
+    store = client._transport.app.state.agent_model_keys
+    token, _ = await store.mint("u1", ["agent-a"], [])
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    # OpenAI envelope, not FastAPI's default {"detail": [...]} 422.
+    assert resp.json()["error"]["type"] == "invalid_request_error"

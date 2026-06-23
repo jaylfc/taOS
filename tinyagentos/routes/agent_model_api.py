@@ -20,7 +20,6 @@ from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -76,42 +75,52 @@ async def list_models(request: Request):
     return {"object": "list", "data": data}
 
 
-class _Message(BaseModel):
-    role: str
-    content: object = ""
-
-
-class ChatCompletionIn(BaseModel):
-    model: str
-    messages: list[_Message] = []
-    stream: bool = False
-
-
 @router.post("/v1/chat/completions")
-async def chat_completions(body: ChatCompletionIn, request: Request):
+async def chat_completions(request: Request):
     """OpenAI /v1/chat/completions for an agent-as-a-model.
 
     Enforces the consent contract: a valid key is required, and the requested
     model must be one of the agents that key is consented for. Running the turn
     through the agent's harness is the next slice (pending the seam choice), so a
     contract-valid request returns 501 rather than a fabricated completion.
+
+    The body is parsed manually AFTER the auth check (not via a Pydantic
+    parameter) for two reasons: auth must take precedence so an unauthenticated
+    caller always gets 401 rather than schema feedback, and every error stays in
+    the OpenAI envelope rather than FastAPI's default 422 {"detail": ...}.
     """
     binding = await resolve_consent_key(request)
     if binding is None:
         return _unauthorized()
-    if not body.messages:
+
+    def _bad_request(message: str) -> JSONResponse:
         return _openai_error(
-            "'messages' must contain at least one message",
+            message,
             type="invalid_request_error",
             code="invalid_request_error",
             status=400,
         )
-    if body.model not in binding.get("agent_ids", []):
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _bad_request("request body must be valid JSON")
+    if not isinstance(body, dict):
+        return _bad_request("request body must be a JSON object")
+
+    model = body.get("model")
+    if not isinstance(model, str) or not model:
+        return _bad_request("you must provide a 'model' parameter")
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return _bad_request("'messages' must contain at least one message")
+
+    if model not in binding.get("agent_ids", []):
         # OpenAI returns 404 model_not_found for a model the key cannot address;
         # this doubles as scope enforcement (the key is only consented for its
         # agent_ids), without leaking whether the agent exists for another user.
         return _openai_error(
-            f"the model '{body.model}' does not exist or you do not have access to it",
+            f"the model '{model}' does not exist or you do not have access to it",
             type="invalid_request_error",
             code="model_not_found",
             status=404,
