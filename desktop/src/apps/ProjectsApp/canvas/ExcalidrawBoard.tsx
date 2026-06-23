@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import type { ComponentProps } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
@@ -58,12 +58,15 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
       return;
     }
     (async () => {
-      const next: Record<string, ExcalidrawElements> = {};
-      for (const el of diagramEls) {
-        const src = String((el.payload || {}).source ?? "");
-        next[el.id] = await mermaidToExcalidraw(src, el.x, el.y);
-      }
-      if (!cancelled) setDiagrams(next);
+      // Convert diagrams in parallel: each parse is independent, so the total
+      // wait is the slowest single diagram, not the sum.
+      const converted = await Promise.all(
+        diagramEls.map(async (el) => {
+          const src = String((el.payload || {}).source ?? "");
+          return [el.id, await mermaidToExcalidraw(src, el.x, el.y)] as const;
+        }),
+      );
+      if (!cancelled) setDiagrams(Object.fromEntries(converted));
     })();
     return () => {
       cancelled = true;
@@ -90,12 +93,16 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
   }, [elements, diagrams]);
 
   // Excalidraw reads initialData once at mount; push later scenes (async
-  // diagrams) through the imperative API. Fit the viewport to the content.
+  // diagrams) through the imperative API. Fit the viewport to the content only
+  // on the first non-empty scene -- refitting on every update would yank a
+  // user's pan/zoom back once interactions land.
+  const hasFit = useRef(false);
   useEffect(() => {
     if (!api) return;
     api.updateScene({ elements: sceneElements });
-    if (sceneElements.length > 0) {
+    if (!hasFit.current && sceneElements.length > 0) {
       api.scrollToContent(sceneElements, { fitToContent: true, animate: false });
+      hasFit.current = true;
     }
   }, [api, sceneElements]);
 

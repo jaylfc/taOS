@@ -23,7 +23,10 @@ export async function mermaidToExcalidraw(
     // Translate the diagram as a whole; bindings between nodes are relative, so
     // shifting every element by the same offset preserves them.
     return converted.map((el) => ({ ...el, x: el.x + offsetX, y: el.y + offsetY }));
-  } catch {
+  } catch (err) {
+    // Degrading to the placeholder is the intended UX, but a swallowed parse
+    // error gives no signal in dev; log it so a malformed source is debuggable.
+    console.warn("mermaid conversion failed; showing placeholder", err);
     return [];
   }
 }
