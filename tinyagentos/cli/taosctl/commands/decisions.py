@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from urllib.parse import quote
 
-from ..argtypes import json_array, positive_int
+from tinyagentos.cli.taosctl.argtypes import json_array, positive_int
 
 NOUN = "decisions"
 
