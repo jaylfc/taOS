@@ -184,6 +184,54 @@ describe("ObservatoryApp", () => {
     ).toBe(true);
   });
 
+  it("renders a per-lane concurrency cap loaded from the throttle state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+        "GET /api/observatory/throttle": {
+          ok: true,
+          body: { global: null, lanes: { "@taOS-dev-kilo-owl-alpha": 2 } },
+        },
+      }),
+    );
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(/@taOS-dev-kilo-owl-alpha limit value/i).textContent,
+      ).toBe("2"),
+    );
+  });
+
+  it("posts a per-lane cap scoped to the lane handle", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+      "GET /api/observatory/throttle": { ok: true, body: { global: null, lanes: {} } },
+      "POST /api/observatory/throttle": {
+        ok: true,
+        body: { global: null, lanes: { "@taOS-dev-kilo-owl-alpha": 1 } },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /raise @taOS-dev-kilo-owl-alpha limit/i }),
+    );
+    await flush();
+
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(post![0]).toBe("/api/observatory/throttle");
+    expect(JSON.parse((post![1] as RequestInit).body as string)).toEqual({
+      scope: "@taOS-dev-kilo-owl-alpha",
+      max_concurrent: 1,
+    });
+  });
+
   it("shows the idle empty state when no agents are working", async () => {
     vi.stubGlobal(
       "fetch",

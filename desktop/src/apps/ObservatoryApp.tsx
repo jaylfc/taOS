@@ -30,10 +30,68 @@ function coerceCap(v: unknown): number | null {
   return Math.min(MAX_CAP, Math.floor(v));
 }
 
+function coerceLaneCaps(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (v && typeof v === "object") {
+    for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+      const c = coerceCap(raw);
+      if (c != null) out[k] = c;
+    }
+  }
+  return out;
+}
+
+// Shared concurrency-cap stepper for the global steer and each lane. The lower
+// button floors at 1 and disables there (removal is the explicit Clear the
+// caller renders), and the raise button stops at MAX_CAP.
+function CapStepper({
+  value,
+  busy,
+  label,
+  onChange,
+}: {
+  value: number | null;
+  busy: boolean;
+  label: string;
+  onChange: (next: number | null) => void;
+}) {
+  const btn =
+    "flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40";
+  return (
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => value != null && value > 1 && onChange(value - 1)}
+        disabled={busy || value == null || value <= 1}
+        aria-label={`Lower ${label}`}
+        className={btn}
+      >
+        <Minus size={14} />
+      </button>
+      <span
+        className="min-w-[3.5rem] text-center text-sm font-medium text-shell-text tabular-nums"
+        aria-label={`${label} value`}
+      >
+        {value == null ? "No cap" : value}
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(Math.min(MAX_CAP, (value ?? 0) + 1))}
+        disabled={busy || (value != null && value >= MAX_CAP)}
+        aria-label={`Raise ${label}`}
+        className={btn}
+      >
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const [agents, setAgents] = useState<FleetAgent[]>([]);
   const [pause, setPause] = useState<PauseState>(EMPTY_PAUSE);
   const [cap, setCap] = useState<number | null>(null);
+  const [laneCaps, setLaneCaps] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -54,6 +112,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
       if (throttleRes.ok) {
         const data = await throttleRes.json();
         setCap(coerceCap(data?.global));
+        setLaneCaps(coerceLaneCaps(data?.lanes));
       }
     } catch {
       // Non-critical: keep the last-loaded view.
@@ -117,6 +176,31 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
     [load],
   );
 
+  const setLaneCap = useCallback(
+    async (handle: string, next: number | null) => {
+      setBusy(`cap:${handle}`);
+      setLaneCaps((prev) => {
+        const copy = { ...prev };
+        if (next == null) delete copy[handle];
+        else copy[handle] = next;
+        return copy;
+      });
+      try {
+        await fetch("/api/observatory/throttle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: handle, max_concurrent: next }),
+        });
+        await load({ silent: true });
+      } catch {
+        await load({ silent: true });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [load],
+  );
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-shell-bg">
       {/* Header + global steer */}
@@ -155,32 +239,12 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
         <span className="text-xs font-medium uppercase tracking-wide text-shell-text-tertiary">
           Concurrency cap
         </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => cap != null && cap > 1 && setGlobalCap(cap - 1)}
-            disabled={busy === "cap" || cap == null || cap <= 1}
-            aria-label="Lower concurrency cap"
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Minus size={14} />
-          </button>
-          <span
-            className="min-w-[3.5rem] text-center text-sm font-medium text-shell-text tabular-nums"
-            aria-label="Concurrency cap value"
-          >
-            {cap == null ? "No cap" : cap}
-          </span>
-          <button
-            type="button"
-            onClick={() => setGlobalCap(Math.min(MAX_CAP, (cap ?? 0) + 1))}
-            disabled={busy === "cap" || (cap != null && cap >= MAX_CAP)}
-            aria-label="Raise concurrency cap"
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
+        <CapStepper
+          value={cap}
+          busy={busy === "cap"}
+          label="concurrency cap"
+          onChange={setGlobalCap}
+        />
         {cap != null && (
           <button
             type="button"
@@ -238,15 +302,36 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
                       </span>
                     )}
                   </div>
-                  <label className="flex shrink-0 items-center gap-1.5 text-xs text-shell-text-tertiary">
-                    Pause
-                    <Switch
-                      checked={lanePaused}
-                      disabled={busy === a.handle}
-                      onCheckedChange={(v: boolean) => setScope(a.handle, v)}
-                      aria-label={`Pause lane ${a.handle}`}
-                    />
-                  </label>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
+                    <label className="flex items-center gap-1.5 text-xs text-shell-text-tertiary">
+                      Pause
+                      <Switch
+                        checked={lanePaused}
+                        disabled={busy === a.handle}
+                        onCheckedChange={(v: boolean) => setScope(a.handle, v)}
+                        aria-label={`Pause lane ${a.handle}`}
+                      />
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-shell-text-tertiary">Limit</span>
+                      <CapStepper
+                        value={laneCaps[a.handle] ?? null}
+                        busy={busy === `cap:${a.handle}`}
+                        label={`${a.handle} limit`}
+                        onChange={(n) => setLaneCap(a.handle, n)}
+                      />
+                      {laneCaps[a.handle] != null && (
+                        <button
+                          type="button"
+                          onClick={() => setLaneCap(a.handle, null)}
+                          disabled={busy === `cap:${a.handle}`}
+                          className="text-xs text-shell-text-tertiary transition-colors hover:text-shell-text"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </li>
               );
             })}
