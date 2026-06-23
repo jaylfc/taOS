@@ -25,8 +25,11 @@ def register(subparsers) -> None:
 
     rp = verbs.add_parser("restore", help="Restore a recycle item")
     rp.add_argument("name", help="Agent name")
-    rp.add_argument("--id", dest="item_id", default=None, help="Encoded item id")
-    rp.add_argument("--original-path", default=None, help="Original path to restore")
+    # Exactly one target is required: an empty restore body 400s server-side, so
+    # enforce the choice at the CLI instead of letting the request fail.
+    target = rp.add_mutually_exclusive_group(required=True)
+    target.add_argument("--id", dest="item_id", default=None, help="Encoded item id")
+    target.add_argument("--original-path", default=None, help="Original path to restore")
     rp.set_defaults(func=_restore)
 
     pp = verbs.add_parser("purge", help="Permanently delete a recycle item")

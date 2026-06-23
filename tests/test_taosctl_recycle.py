@@ -60,6 +60,17 @@ def test_restore_by_original_path(monkeypatch):
     assert body == {"original_path": "/x/y.txt"}
 
 
+def test_restore_requires_a_target(monkeypatch):
+    import pytest
+
+    fake = _FakeClient()
+    # No --id and no --original-path: the required mutex group rejects it at the
+    # CLI (exit 2) before any request, so the server never sees an empty body.
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["recycle", "restore", "alpha"], fake)
+    assert fake.calls == []
+
+
 def test_purge(monkeypatch):
     fake = _FakeClient()
     assert _run(monkeypatch, ["recycle", "purge", "alpha", "item7"], fake) == 0
