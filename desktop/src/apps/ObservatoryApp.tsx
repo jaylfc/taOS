@@ -47,6 +47,9 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
 
   useEffect(() => {
     load();
+    // Poll so the fleet + pause state stay live without a manual refresh.
+    const id = setInterval(() => load({ silent: true }), 5000);
+    return () => clearInterval(id);
   }, [load]);
 
   const setScope = useCallback(

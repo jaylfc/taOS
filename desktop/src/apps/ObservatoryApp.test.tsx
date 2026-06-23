@@ -107,3 +107,20 @@ describe("ObservatoryApp", () => {
     await waitFor(() => expect(screen.getByText(/all lanes idle/i)).toBeTruthy());
   });
 });
+
+describe("ObservatoryApp polling", () => {
+  it("re-fetches the fleet on an interval so status stays live", async () => {
+    vi.useFakeTimers();
+    const fetchMock = mockFetch({
+      "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await act(async () => { await Promise.resolve(); });
+    const initial = fetchMock.mock.calls.length;
+    expect(initial).toBeGreaterThanOrEqual(1);
+    await act(async () => { vi.advanceTimersByTime(5000); await Promise.resolve(); });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(initial);
+    vi.useRealTimers();
+  });
+});
