@@ -106,6 +106,15 @@ def test_update_sends_only_supplied(monkeypatch):
     assert "handle" not in body and "role" not in body
 
 
+def test_update_with_no_fields_errors_without_calling(monkeypatch):
+    fake = _FakeClient()
+    # No fields supplied: must not send an empty-body PATCH; exits non-zero so
+    # scripts can detect the mistake.
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["agent-registry", "update", "alpha"], fake)
+    assert fake.calls == []
+
+
 def test_revoke(monkeypatch):
     fake = _FakeClient()
     assert _run(monkeypatch, ["agent-registry", "revoke", "alpha"], fake) == 0

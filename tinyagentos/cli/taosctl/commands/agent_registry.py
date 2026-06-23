@@ -11,6 +11,7 @@ expects a cryptographically prepared payload, not a shell verb.
 """
 from __future__ import annotations
 
+import sys
 from urllib.parse import quote
 
 NOUN = "agent-registry"
@@ -113,6 +114,15 @@ def _update(args, client):
         body["role"] = args.role
     if args.capabilities is not None:
         body["capabilities"] = args.capabilities
+    if not body:
+        # No fields supplied: skip the no-op PATCH and exit non-zero so scripts
+        # can detect the mistake instead of getting a silent empty-body call.
+        print(
+            "no fields supplied; pass at least one of "
+            "--display-name/--handle/--role/--capability",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     return client.patch(f"/api/agents/registry/{_cid(args)}", body)
 
 
