@@ -94,6 +94,21 @@ async def test_canvas_add_mindmap_edge_links_endpoints(env):
     assert el["kind"] == "mindmap_edge"
     assert el["payload"]["from"] == a["element"]["id"]
     assert el["payload"]["to"] == b["element"]["id"]
+    # The edge bbox spans its endpoints (centers), not a 1x1 box at the origin.
+    assert el["w"] > 1
+
+
+@pytest.mark.asyncio
+async def test_canvas_add_mindmap_edge_rejects_unknown_endpoint(env):
+    p, ctx, _ = env
+    a = await ct.canvas_add_text(
+        ctx, project_id=p["id"], agent_id="agent-1", text="a", x=0, y=0,
+    )
+    res = await ct.canvas_add_mindmap_edge(
+        ctx, project_id=p["id"], agent_id="agent-1",
+        from_id=a["element"]["id"], to_id="cve-does-not-exist",
+    )
+    assert res.get("error") == "not_found"
 
 
 @pytest.mark.asyncio

@@ -133,14 +133,28 @@ async def canvas_add_mindmap_edge(
     ctx: CanvasToolContext, *, project_id: str, agent_id: str,
     from_id: str, to_id: str,
 ) -> dict:
-    # An edge connects two existing elements by id. Its own geometry is
-    # nominal: the renderer derives the line from the endpoints' anchors.
+    # An edge connects two existing elements by id. Reject dangling edges at
+    # creation rather than discovering them at render time, and span the edge's
+    # own bbox across the endpoints so it does not drag the snapshot bounds to
+    # the origin.
+    a = await ctx.canvas_store.get_element(from_id, project_id=project_id)
+    b = await ctx.canvas_store.get_element(to_id, project_id=project_id)
+    if a is None or b is None:
+        missing = from_id if a is None else to_id
+        return {
+            "error": "not_found",
+            "message": f"endpoint element {missing} not found in project {project_id}",
+        }
+    ax, ay = a["x"] + a["w"] / 2, a["y"] + a["h"] / 2
+    bx, by = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
     el = await ctx.canvas_store.add_element(
         project_id=project_id,
         author_kind="agent", author_id=agent_id,
         element={
-            "kind": "mindmap_edge", "x": 0.0, "y": 0.0,
-            "w": 1.0, "h": 1.0, "payload": {"from": from_id, "to": to_id},
+            "kind": "mindmap_edge",
+            "x": min(ax, bx), "y": min(ay, by),
+            "w": max(1.0, abs(ax - bx)), "h": max(1.0, abs(ay - by)),
+            "payload": {"from": from_id, "to": to_id},
         },
     )
     return {"element": el}
