@@ -159,3 +159,29 @@ async def test_notification_api_read_all(client):
     resp = await client.post("/api/notifications/read-all")
     assert resp.status_code == 200
     assert await store.unread_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_notification_api_archive(client):
+    store = client._transport.app.state.notifications
+    await store.add("Dismiss me", "bye")
+    notif_id = (await store.list())[0]["id"]
+    resp = await client.post(f"/api/notifications/{notif_id}/archive")
+    assert resp.status_code == 200
+    # Gone from the active feed, present in history.
+    assert (await store.list()) == []
+    history = await store.list_archived()
+    assert len(history) == 1
+    assert history[0]["id"] == notif_id
+
+
+@pytest.mark.asyncio
+async def test_notification_api_archived_history(client):
+    store = client._transport.app.state.notifications
+    await store.add("Kept", "k")
+    notif_id = (await store.list())[0]["id"]
+    await client.post(f"/api/notifications/{notif_id}/archive")
+    resp = await client.get("/api/notifications/archived")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [d["title"] for d in data] == ["Kept"]
