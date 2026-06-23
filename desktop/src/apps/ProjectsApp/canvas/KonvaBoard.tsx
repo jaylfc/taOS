@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Stage, Layer, Group, Rect, Text } from "react-konva";
 import type Konva from "konva";
 import { CanvasElement } from "./canvas-api";
@@ -123,32 +123,43 @@ export function KonvaBoard({
 }) {
   const [scale, setScale] = useState(1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
+  const stageRef = useRef<Konva.Stage>(null);
   // Map + sort only when the elements change, not on every pan/zoom render.
   const nodes = useMemo(() => elementsToNodes(elements), [elements]);
 
-  const onWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
-    e.evt.preventDefault();
-    const stage = e.target.getStage();
-    if (!stage) return;
-    const oldScale = stage.scaleX();
-    const pointer = stage.getPointerPosition();
-    if (!pointer) return;
-    // Zoom toward the cursor, clamped.
-    const mouseTo = {
-      x: (pointer.x - stage.x()) / oldScale,
-      y: (pointer.y - stage.y()) / oldScale,
+  // Cursor-anchored wheel zoom. React binds its synthetic onWheel as a passive
+  // listener, so calling preventDefault() there throws and the page still
+  // scrolls. Attach a native non-passive listener to the stage container
+  // instead, and read the live transform off the Konva node (the source of
+  // truth for what is currently rendered).
+  useEffect(() => {
+    const stage = stageRef.current;
+    const container = stage?.container();
+    if (!stage || !container) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+      const oldScale = stage.scaleX();
+      const mouseTo = {
+        x: (pointer.x - stage.x()) / oldScale,
+        y: (pointer.y - stage.y()) / oldScale,
+      };
+      const next = e.deltaY < 0 ? oldScale * ZOOM_STEP : oldScale / ZOOM_STEP;
+      const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next));
+      setScale(clamped);
+      setPos({
+        x: pointer.x - mouseTo.x * clamped,
+        y: pointer.y - mouseTo.y * clamped,
+      });
     };
-    const next = e.evt.deltaY < 0 ? oldScale * ZOOM_STEP : oldScale / ZOOM_STEP;
-    const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next));
-    setScale(clamped);
-    setPos({
-      x: pointer.x - mouseTo.x * clamped,
-      y: pointer.y - mouseTo.y * clamped,
-    });
+    container.addEventListener("wheel", handler, { passive: false });
+    return () => container.removeEventListener("wheel", handler);
   }, []);
 
   return (
     <Stage
+      ref={stageRef}
       width={width}
       height={height}
       scaleX={scale}
@@ -156,7 +167,6 @@ export function KonvaBoard({
       x={pos.x}
       y={pos.y}
       draggable
-      onWheel={onWheel}
       onDragEnd={(e) => setPos({ x: e.target.x(), y: e.target.y() })}
     >
       <Layer>
