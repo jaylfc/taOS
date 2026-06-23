@@ -85,9 +85,10 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
     """The Observe half: which agents are working and what they hold right now.
 
     Derives state from the board: an agent that holds a claimed task is
-    'working' on it. Admins see every project; other users see their own.
-    The current pause state is returned alongside so the UI can show both in
-    one read. Trace-timeline and PR-in-review enrichment are phase 2.
+    'working' on it, and a registered agent that holds none is 'idle'. Admins
+    see every project + agent; other users see their own. The current pause
+    state is returned alongside so the UI can show both in one read.
+    Trace-timeline and PR-in-review enrichment are phase 2.
     """
     pstore = request.app.state.project_store
     tstore = request.app.state.project_task_store
@@ -97,6 +98,7 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
         projects = await pstore.list_for_user(user.user_id, status=None)
 
     agents: list[dict] = []
+    working: set[str] = set()
     for proj in projects:
         pid = proj.get("id")
         if not pid:
@@ -105,6 +107,7 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
             handle = t.get("claimed_by")
             if not handle:
                 continue
+            working.add(handle)
             agents.append({
                 "handle": handle,
                 "state": "working",
@@ -114,5 +117,25 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
                     "title": t.get("title"),
                 },
             })
+
+    # Registered agents holding no card are idle; surface them so the fleet
+    # shows the full active roster, not just the busy lanes. Best-effort: a
+    # missing or erroring registry must not break the working view.
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is not None:
+        try:
+            if user.is_admin:
+                registered = await registry.list_all(status="active")
+            else:
+                registered = await registry.list_for_user(user.user_id, status="active")
+        except Exception:
+            registered = []
+        for rec in registered:
+            handle = (rec.get("handle") or "").strip()
+            if not handle or handle in working:
+                continue
+            working.add(handle)
+            agents.append({"handle": handle, "state": "idle", "holds": None})
+
     agents.sort(key=lambda a: a["handle"])
     return {"agents": agents, "paused": _read_state(request)}

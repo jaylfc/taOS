@@ -77,3 +77,39 @@ async def test_fleet_shows_working_agent_with_held_card(app, client):
     assert mine[0]["state"] == "working"
     assert mine[0]["holds"]["task_id"] == task["id"]
     assert mine[0]["holds"]["title"] == "Build the thing"
+
+
+@pytest.mark.asyncio
+async def test_fleet_includes_idle_registered_agents(app, client):
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    await reg.register(framework="opencode", display_name="Side Agent",
+                       handle="@side-agent", user_id="admin")
+    resp = await client.get("/api/observatory/fleet")
+    assert resp.status_code == 200
+    agents = resp.json()["agents"]
+    idle = [a for a in agents if a["handle"] == "@side-agent"]
+    assert len(idle) == 1
+    assert idle[0]["state"] == "idle"
+    assert idle[0]["holds"] is None
+
+
+@pytest.mark.asyncio
+async def test_registered_agent_with_a_claim_is_working_not_idle(app, client):
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    await reg.register(framework="opencode", display_name="Busy Agent",
+                       handle="@busy-agent", user_id="admin")
+    proj = await pstore.create_project(name="Obs2", slug="obs-idle", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Do work", created_by="admin")
+    await tstore.claim_task(task["id"], "@busy-agent")
+
+    resp = await client.get("/api/observatory/fleet")
+    rows = [a for a in resp.json()["agents"] if a["handle"] == "@busy-agent"]
+    # The agent appears once, as working (not duplicated as idle).
+    assert len(rows) == 1
+    assert rows[0]["state"] == "working"
