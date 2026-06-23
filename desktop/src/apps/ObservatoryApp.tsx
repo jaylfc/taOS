@@ -95,6 +95,10 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [steerError, setSteerError] = useState<string | null>(null);
+  // Count of steer writes in flight. The 5s background poll skips while this is
+  // non-zero so it cannot revert an optimistic value mid-request; the
+  // post-write reconcile updates authoritatively instead.
+  const inFlight = useRef(0);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -125,7 +129,11 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   useEffect(() => {
     load();
     // Poll so the fleet + pause state stay live without a manual refresh.
-    const id = setInterval(() => load({ silent: true }), 5000);
+    const id = setInterval(() => {
+      // Skip the poll while a steer write is in flight so it cannot revert an
+      // optimistic value mid-request; postSteer reconciles after the write.
+      if (inFlight.current === 0) load({ silent: true });
+    }, 5000);
     return () => clearInterval(id);
   }, [load]);
 
@@ -138,6 +146,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const steerSeq = useRef(0);
   const postSteer = useCallback(
     async (url: string, body: object, failMsg: string) => {
+      inFlight.current += 1;
       const seq = ++steerSeq.current;
       try {
         const res = await fetch(url, {
@@ -150,6 +159,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
         if (seq === steerSeq.current) setSteerError(failMsg);
       } finally {
         await load({ silent: true });
+        inFlight.current -= 1;
       }
     },
     [load],

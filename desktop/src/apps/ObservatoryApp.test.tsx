@@ -315,4 +315,54 @@ describe("ObservatoryApp polling", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(initial);
     vi.useRealTimers();
   });
+
+  it("skips the background poll while a steer write is in flight", async () => {
+    vi.useFakeTimers();
+    let resolvePost: (() => void) | null = null;
+    const fetchMock = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && input === "/api/observatory/pause") {
+        return new Promise((res) => {
+          resolvePost = () =>
+            res({ ok: true, status: 200, json: () => Promise.resolve({}) });
+        });
+      }
+      if (input === "/api/observatory/throttle") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ global: null, lanes: {} }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(fleetBody),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await act(async () => { await Promise.resolve(); });
+
+    // Start a pause write whose POST stays pending so inFlight stays non-zero.
+    fireEvent.click(screen.getByRole("button", { name: /pause queue/i }));
+    await act(async () => { await Promise.resolve(); });
+
+    const fleetCalls = () =>
+      fetchMock.mock.calls.filter((c) => c[0] === "/api/observatory/fleet").length;
+    const before = fleetCalls();
+
+    // The 5s tick must NOT background-fetch the fleet while the write is pending.
+    await act(async () => { vi.advanceTimersByTime(5000); await Promise.resolve(); });
+    expect(fleetCalls()).toBe(before);
+
+    // Once the write resolves, postSteer's reconcile fetches the fleet.
+    await act(async () => {
+      resolvePost?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fleetCalls()).toBeGreaterThan(before);
+    vi.useRealTimers();
+  });
 });
