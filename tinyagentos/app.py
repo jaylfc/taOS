@@ -258,6 +258,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     auth_requests_store = AuthRequestsStore(data_dir / "auth_requests.db")
     from tinyagentos.agent_grants_store import AgentGrantsStore
     agent_grants_store = AgentGrantsStore(data_dir / "agent_grants.db")
+    from tinyagentos.app_grants_store import AppGrantsStore
+    app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
     from tinyagentos.cluster.pairing_store import ClusterPairingStore
     cluster_pairing_store = ClusterPairingStore(data_dir / "cluster_pairing.db")
     from tinyagentos.cluster.capability_map import CapabilityMap
@@ -439,6 +441,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.auth_requests = auth_requests_store
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+        await app_grants_store.init()
+        app.state.app_grants = app_grants_store
         await cluster_pairing_store.init()
         app.state.cluster_pairing = cluster_pairing_store
         await capability_map_store.init()
@@ -1241,6 +1245,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await qmd_client.close()
         await http_client.aclose()
         await agent_grants_store.close()
+        await app_grants_store.close()
         await auth_requests_store.close()
         await cluster_pairing_store.close()
         await agent_registry_store.close()
@@ -1414,6 +1419,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.agent_registry_keypair = agent_registry_keypair
     app.state.auth_requests = auth_requests_store
     app.state.agent_grants = agent_grants_store
+    app.state.app_grants = app_grants_store
     app.state.cluster_pairing = cluster_pairing_store
     app.state.capability_map = capability_map_store
 

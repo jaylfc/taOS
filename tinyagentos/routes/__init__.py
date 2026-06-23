@@ -328,3 +328,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.manifest import router as manifest_router
     app.include_router(manifest_router)
+
+    from tinyagentos.routes.app_permissions import router as app_permissions_router
+    app.include_router(app_permissions_router)
