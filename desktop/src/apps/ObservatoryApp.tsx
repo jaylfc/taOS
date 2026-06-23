@@ -95,9 +95,11 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [steerError, setSteerError] = useState<string | null>(null);
-  // Count of steer writes in flight. The 5s background poll skips while this is
-  // non-zero so it cannot revert an optimistic value mid-request; the
-  // post-write reconcile updates authoritatively instead.
+  // Count of steer writes in flight. The fleet list always refreshes, but the
+  // server's steer-state (pause/caps) is adopted only when this is 0, so an
+  // optimistic value is never reverted by a concurrent read -- neither the 5s
+  // background poll nor another write's reconcile. The reconcile after the last
+  // write (inFlight back to 0) is the one that adopts.
   const inFlight = useRef(0);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
@@ -107,17 +109,23 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
         fetch("/api/observatory/fleet"),
         fetch("/api/observatory/throttle"),
       ]);
-      if (fleetRes.ok) {
-        const data = await fleetRes.json();
-        setAgents(Array.isArray(data.agents) ? data.agents : []);
-        setPause(
-          data.paused && typeof data.paused === "object" ? data.paused : EMPTY_PAUSE,
-        );
+      const fleetData = fleetRes.ok ? await fleetRes.json() : null;
+      const throttleData = throttleRes.ok ? await throttleRes.json() : null;
+      if (fleetData) {
+        setAgents(Array.isArray(fleetData.agents) ? fleetData.agents : []);
       }
-      if (throttleRes.ok) {
-        const data = await throttleRes.json();
-        setCap(coerceCap(data?.global));
-        setLaneCaps(coerceLaneCaps(data?.lanes));
+      if (inFlight.current === 0) {
+        if (fleetData) {
+          setPause(
+            fleetData.paused && typeof fleetData.paused === "object"
+              ? fleetData.paused
+              : EMPTY_PAUSE,
+          );
+        }
+        if (throttleData) {
+          setCap(coerceCap(throttleData?.global));
+          setLaneCaps(coerceLaneCaps(throttleData?.lanes));
+        }
       }
     } catch {
       // Non-critical: keep the last-loaded view.
@@ -158,8 +166,11 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
       } catch {
         if (seq === steerSeq.current) setSteerError(failMsg);
       } finally {
-        await load({ silent: true });
+        // Decrement first so this reconcile adopts the server steer-state only
+        // when it is the last write to finish; an earlier concurrent write's
+        // reconcile (inFlight still > 0) refreshes the fleet but not the caps.
         inFlight.current -= 1;
+        await load({ silent: true });
       }
     },
     [load],
