@@ -9,6 +9,7 @@ survives controller restarts and is not a local tmux concern.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -23,6 +24,12 @@ from tinyagentos.auth_context import CurrentUser, current_user
 router = APIRouter()
 
 _DEFAULT_STATE: dict = {"global": False, "lanes": {}}
+
+# Serialise read-modify-write of the pause/throttle state files so two
+# concurrent admin POSTs cannot lose an update (each reads the same prior
+# state and the second os.replace clobbers the first). The writes are
+# infrequent admin actions, so a single in-process lock is sufficient.
+_write_lock = asyncio.Lock()
 
 
 def _state_path(request: Request) -> Path:
@@ -87,14 +94,15 @@ async def set_pause(body: PauseBody, request: Request, user: CurrentUser = Depen
     scope = body.scope.strip()
     if not scope:
         return JSONResponse({"error": "scope required"}, status_code=400)
-    state = _read_state(request)
-    if scope == "global":
-        state["global"] = body.paused
-    elif body.paused:
-        state["lanes"][scope] = True
-    else:
-        state["lanes"].pop(scope, None)
-    _write_state(request, state)
+    async with _write_lock:
+        state = _read_state(request)
+        if scope == "global":
+            state["global"] = body.paused
+        elif body.paused:
+            state["lanes"][scope] = True
+        else:
+            state["lanes"].pop(scope, None)
+        _write_state(request, state)
     return state
 
 
@@ -153,14 +161,15 @@ async def set_throttle(body: ThrottleBody, request: Request, user: CurrentUser =
     if not scope:
         return JSONResponse({"error": "scope required"}, status_code=400)
     limit = _coerce_limit(body.max_concurrent)
-    state = _read_throttle(request)
-    if scope == "global":
-        state["global"] = limit
-    elif limit is not None:
-        state["lanes"][scope] = limit
-    else:
-        state["lanes"].pop(scope, None)
-    _atomic_write(_throttle_path(request), state)
+    async with _write_lock:
+        state = _read_throttle(request)
+        if scope == "global":
+            state["global"] = limit
+        elif limit is not None:
+            state["lanes"][scope] = limit
+        else:
+            state["lanes"].pop(scope, None)
+        _atomic_write(_throttle_path(request), state)
     return state
 
 
