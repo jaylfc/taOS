@@ -24,8 +24,10 @@ const EMPTY_PAUSE: PauseState = { global: false, lanes: {} };
 // Global concurrency cap: how many cards the fleet may hold in flight at once
 // (the dispatch loop reads it as MAX_OPEN_PRS). null = no override, the loop
 // default applies. Pause is the on/off switch; this is the volume knob.
+const MAX_CAP = 50; // sane ceiling so the stepper cannot post runaway values
 function coerceCap(v: unknown): number | null {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+  return Math.min(MAX_CAP, Math.floor(v));
 }
 
 export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
@@ -156,8 +158,8 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
         <div className="flex items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setGlobalCap(cap && cap > 1 ? cap - 1 : null)}
-            disabled={busy === "cap" || cap == null}
+            onClick={() => cap != null && cap > 1 && setGlobalCap(cap - 1)}
+            disabled={busy === "cap" || cap == null || cap <= 1}
             aria-label="Lower concurrency cap"
             className="flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -171,8 +173,8 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
           </span>
           <button
             type="button"
-            onClick={() => setGlobalCap((cap ?? 0) + 1)}
-            disabled={busy === "cap"}
+            onClick={() => setGlobalCap(Math.min(MAX_CAP, (cap ?? 0) + 1))}
+            disabled={busy === "cap" || (cap != null && cap >= MAX_CAP)}
             aria-label="Raise concurrency cap"
             className="flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40"
           >

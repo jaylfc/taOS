@@ -135,7 +135,7 @@ describe("ObservatoryApp", () => {
     });
   });
 
-  it("clears the cap to null from the lowest step", async () => {
+  it("clears the cap to null via the Clear button", async () => {
     const fetchMock = mockFetch({
       "GET /api/observatory/fleet": { ok: true, body: fleetBody },
       "GET /api/observatory/throttle": { ok: true, body: { global: 1, lanes: {} } },
@@ -148,7 +148,12 @@ describe("ObservatoryApp", () => {
       expect(screen.getByLabelText(/concurrency cap value/i).textContent).toBe("1"),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /lower concurrency cap/i }));
+    // The lower button floors at 1 (disabled there); removal is the explicit Clear.
+    expect(
+      (screen.getByRole("button", { name: /lower concurrency cap/i }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
     await flush();
 
     const post = fetchMock.mock.calls.find(
@@ -158,6 +163,25 @@ describe("ObservatoryApp", () => {
       scope: "global",
       max_concurrent: null,
     });
+  });
+
+  it("disables raising the cap at the ceiling", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+        "GET /api/observatory/throttle": { ok: true, body: { global: 50, lanes: {} } },
+      }),
+    );
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/concurrency cap value/i).textContent).toBe("50"),
+    );
+    expect(
+      (screen.getByRole("button", { name: /raise concurrency cap/i }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("shows the idle empty state when no agents are working", async () => {
