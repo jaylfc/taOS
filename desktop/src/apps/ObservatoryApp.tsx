@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Radar, Pause, Play, Loader2, CircleDot, Minus, Plus, AlertCircle } from "lucide-react";
 import { Switch } from "@/components/ui";
 
@@ -131,18 +131,23 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
 
   // Shared write path for every steer control. Posts the change, surfaces a
   // visible error if the server rejects it (so an optimistic value is not left
-  // standing silently), and always reconciles against the server.
+  // standing silently), and always reconciles against the server. A sequence
+  // guard ensures only the latest write controls the banner: steer controls are
+  // not fully serialized (pause and a cap change use different busy scopes), so
+  // an earlier slow response must not overwrite a newer one's result.
+  const steerSeq = useRef(0);
   const postSteer = useCallback(
     async (url: string, body: object, failMsg: string) => {
+      const seq = ++steerSeq.current;
       try {
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        setSteerError(res.ok ? null : failMsg);
+        if (seq === steerSeq.current) setSteerError(res.ok ? null : failMsg);
       } catch {
-        setSteerError(failMsg);
+        if (seq === steerSeq.current) setSteerError(failMsg);
       } finally {
         await load({ silent: true });
       }
