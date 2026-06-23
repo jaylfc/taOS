@@ -10,6 +10,8 @@ survives controller restarts and is not a local tmux concern.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,7 +47,20 @@ def _read_state(request: Request) -> dict:
 def _write_state(request: Request, state: dict) -> None:
     p = _state_path(request)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state))
+    # Write to a temp file in the same dir then atomically rename, so a crash
+    # mid-write or a concurrent writer can never leave a truncated/corrupt file
+    # (a reader always sees either the old or the new complete state).
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".observatory_pause.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(state))
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class PauseBody(BaseModel):
