@@ -45,24 +45,24 @@ describe("elementToNode", () => {
   });
 
   it("maps a text node with its content and defaults", () => {
-    const n = elementToNode(el({ kind: "text" as never, payload: { text: "an idea", font_size: 20 } }));
+    const n = elementToNode(el({ kind: "text", payload: { text: "an idea", font_size: 20 } }));
     expect(n).toMatchObject({ type: "text", text: "an idea", fontSize: 20, color: "#1e293b" });
   });
 
   it("maps mermaid and flowchart to their source", () => {
-    expect(elementToNode(el({ kind: "mermaid" as never, payload: { source: "graph TD; A-->B" } })))
+    expect(elementToNode(el({ kind: "mermaid", payload: { source: "graph TD; A-->B" } })))
       .toMatchObject({ type: "mermaid", source: "graph TD; A-->B" });
-    expect(elementToNode(el({ kind: "flowchart" as never, payload: { source: "flowchart LR; a-->b" } })))
+    expect(elementToNode(el({ kind: "flowchart", payload: { source: "flowchart LR; a-->b" } })))
       .toMatchObject({ type: "flowchart", source: "flowchart LR; a-->b" });
   });
 
   it("maps a mindmap_edge to its endpoints", () => {
-    const n = elementToNode(el({ kind: "mindmap_edge" as never, payload: { from: "cve-a", to: "cve-b" } }));
+    const n = elementToNode(el({ kind: "mindmap_edge", payload: { from: "cve-a", to: "cve-b" } }));
     expect(n).toMatchObject({ type: "mindmap_edge", from: "cve-a", to: "cve-b" });
   });
 
   it("coerces a missing diagram source to empty string", () => {
-    expect(elementToNode(el({ kind: "mermaid" as never, payload: {} })))
+    expect(elementToNode(el({ kind: "mermaid", payload: {} })))
       .toMatchObject({ type: "mermaid", source: "" });
   });
 

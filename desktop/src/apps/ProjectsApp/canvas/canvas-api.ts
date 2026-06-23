@@ -1,4 +1,13 @@
-export type CanvasElementKind = "note" | "link" | "image" | "user_shape";
+export type CanvasElementKind =
+  | "note"
+  | "link"
+  | "image"
+  | "user_shape"
+  // Ideas-board kinds (#68), matching the backend store + REST.
+  | "text"
+  | "mermaid"
+  | "flowchart"
+  | "mindmap_edge";
 
 export interface CanvasElement {
   id: string;
