@@ -130,13 +130,19 @@ export function elementToSkeleton(el: CanvasElement): ExcalidrawSkeleton {
       return { ...base, type: "rectangle", label: { text: firstLine(str(p.source), "mermaid") } };
     case "flowchart":
       return { ...base, type: "rectangle", label: { text: firstLine(str(p.source), "flowchart") } };
-    case "mindmap_edge":
+    case "mindmap_edge": {
+      // Only bind an endpoint when its id is present. An empty-string id is
+      // never a valid binding target, and an arrow with no bindings still
+      // renders as a free-floating line rather than misbehaving.
+      const from = str(p.from);
+      const to = str(p.to);
       return {
         ...base,
         type: "arrow",
-        start: { id: str(p.from) },
-        end: { id: str(p.to) },
+        ...(from ? { start: { id: from } } : {}),
+        ...(to ? { end: { id: to } } : {}),
       };
+    }
     default:
       // user_shape and any unknown kind render as a generic rectangle.
       return { ...base, type: "rectangle" };

@@ -75,6 +75,17 @@ describe("elementToSkeleton", () => {
     expect(s).toMatchObject({ type: "arrow", start: { id: "a" }, end: { id: "b" } });
   });
 
+  it("omits an arrow binding whose id is missing instead of binding to an empty id", () => {
+    const s = elementToSkeleton(el({ kind: "mindmap_edge", payload: { from: "a" } })) as {
+      type: string;
+      start?: unknown;
+      end?: unknown;
+    };
+    expect(s.type).toBe("arrow");
+    expect(s.start).toEqual({ id: "a" });
+    expect(s.end).toBeUndefined();
+  });
+
   it("maps an unknown kind to a generic rectangle", () => {
     const s = elementToSkeleton(el({ kind: "user_shape" as CanvasElement["kind"] }));
     expect(s.type).toBe("rectangle");
