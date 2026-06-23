@@ -72,6 +72,32 @@ class TestNotificationStore:
         unread = await notif_store.list(unread_only=True)
         assert len(unread) == 1
 
+    async def test_archive_hides_from_active_list(self, notif_store):
+        await notif_store.add("A", "a")
+        await notif_store.add("B", "b")
+        items = await notif_store.list()
+        await notif_store.archive(items[0]["id"])
+        active = await notif_store.list()
+        assert len(active) == 1
+        assert items[0]["id"] not in [i["id"] for i in active]
+
+    async def test_archived_appears_in_history(self, notif_store):
+        await notif_store.add("A", "a")
+        items = await notif_store.list()
+        await notif_store.archive(items[0]["id"])
+        history = await notif_store.list_archived()
+        assert len(history) == 1
+        assert history[0]["id"] == items[0]["id"]
+
+    async def test_archive_excluded_from_unread_count(self, notif_store):
+        await notif_store.add("A", "a")
+        await notif_store.add("B", "b")
+        assert await notif_store.unread_count() == 2
+        items = await notif_store.list()
+        await notif_store.archive(items[0]["id"])
+        # Dismissed notification no longer counts toward the badge.
+        assert await notif_store.unread_count() == 1
+
     async def test_list_limit(self, notif_store):
         for i in range(10):
             await notif_store.add(f"N{i}", f"msg{i}")
