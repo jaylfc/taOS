@@ -7,7 +7,12 @@ function mockFetch(
 ) {
   return vi.fn().mockImplementation((input: string, init?: RequestInit) => {
     const method = (init?.method ?? "GET").toUpperCase();
-    const hit = responses[`${method} ${input}`] ?? responses[input] ?? responses["*"];
+    let hit = responses[`${method} ${input}`] ?? responses[input] ?? responses["*"];
+    // The app loads the throttle state alongside the fleet; default it to
+    // "no cap" so tests that only care about the fleet need not mock it.
+    if (!hit && method === "GET" && input === "/api/observatory/throttle") {
+      hit = { ok: true, body: { global: null, lanes: {} } };
+    }
     if (!hit) throw new Error(`Unmocked fetch: ${method} ${input}`);
     return Promise.resolve({
       ok: hit.ok,
@@ -90,6 +95,69 @@ describe("ObservatoryApp", () => {
     );
     const sent = JSON.parse((post![1] as RequestInit).body as string);
     expect(sent).toEqual({ scope: "@taOS-dev-kilo-owl-alpha", paused: true });
+  });
+
+  it("renders the loaded global concurrency cap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+        "GET /api/observatory/throttle": { ok: true, body: { global: 4, lanes: {} } },
+      }),
+    );
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/concurrency cap value/i).textContent).toBe("4"),
+    );
+  });
+
+  it("raises the cap and posts the new value to the throttle endpoint", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+      "GET /api/observatory/throttle": { ok: true, body: { global: null, lanes: {} } },
+      "POST /api/observatory/throttle": { ok: true, body: { global: 1, lanes: {} } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: /raise concurrency cap/i }));
+    await flush();
+
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(post![0]).toBe("/api/observatory/throttle");
+    expect(JSON.parse((post![1] as RequestInit).body as string)).toEqual({
+      scope: "global",
+      max_concurrent: 1,
+    });
+  });
+
+  it("clears the cap to null from the lowest step", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+      "GET /api/observatory/throttle": { ok: true, body: { global: 1, lanes: {} } },
+      "POST /api/observatory/throttle": { ok: true, body: { global: null, lanes: {} } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByLabelText(/concurrency cap value/i).textContent).toBe("1"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /lower concurrency cap/i }));
+    await flush();
+
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(JSON.parse((post![1] as RequestInit).body as string)).toEqual({
+      scope: "global",
+      max_concurrent: null,
+    });
   });
 
   it("shows the idle empty state when no agents are working", async () => {

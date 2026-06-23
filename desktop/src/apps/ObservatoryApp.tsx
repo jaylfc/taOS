@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Radar, Pause, Play, Loader2, CircleDot } from "lucide-react";
+import { Radar, Pause, Play, Loader2, CircleDot, Minus, Plus } from "lucide-react";
 import { Switch } from "@/components/ui";
 
 interface HeldCard {
@@ -21,22 +21,37 @@ interface PauseState {
 
 const EMPTY_PAUSE: PauseState = { global: false, lanes: {} };
 
+// Global concurrency cap: how many cards the fleet may hold in flight at once
+// (the dispatch loop reads it as MAX_OPEN_PRS). null = no override, the loop
+// default applies. Pause is the on/off switch; this is the volume knob.
+function coerceCap(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+}
+
 export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const [agents, setAgents] = useState<FleetAgent[]>([]);
   const [pause, setPause] = useState<PauseState>(EMPTY_PAUSE);
+  const [cap, setCap] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      const res = await fetch("/api/observatory/fleet");
-      if (res.ok) {
-        const data = await res.json();
+      const [fleetRes, throttleRes] = await Promise.all([
+        fetch("/api/observatory/fleet"),
+        fetch("/api/observatory/throttle"),
+      ]);
+      if (fleetRes.ok) {
+        const data = await fleetRes.json();
         setAgents(Array.isArray(data.agents) ? data.agents : []);
         setPause(
           data.paused && typeof data.paused === "object" ? data.paused : EMPTY_PAUSE,
         );
+      }
+      if (throttleRes.ok) {
+        const data = await throttleRes.json();
+        setCap(coerceCap(data?.global));
       }
     } catch {
       // Non-critical: keep the last-loaded view.
@@ -80,6 +95,26 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
     [load],
   );
 
+  const setGlobalCap = useCallback(
+    async (next: number | null) => {
+      setBusy("cap");
+      setCap(next); // optimistic; reconciled on the next poll
+      try {
+        await fetch("/api/observatory/throttle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "global", max_concurrent: next }),
+        });
+        await load({ silent: true });
+      } catch {
+        await load({ silent: true });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [load],
+  );
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-shell-bg">
       {/* Header + global steer */}
@@ -112,6 +147,52 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
           Dispatch is paused. In-flight work finishes; no new cards are claimed.
         </div>
       )}
+
+      {/* Steer: global concurrency cap (volume knob alongside the pause switch) */}
+      <div className="flex items-center gap-3 border-b border-shell-border px-5 py-2.5">
+        <span className="text-xs font-medium uppercase tracking-wide text-shell-text-tertiary">
+          Concurrency cap
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setGlobalCap(cap && cap > 1 ? cap - 1 : null)}
+            disabled={busy === "cap" || cap == null}
+            aria-label="Lower concurrency cap"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Minus size={14} />
+          </button>
+          <span
+            className="min-w-[3.5rem] text-center text-sm font-medium text-shell-text tabular-nums"
+            aria-label="Concurrency cap value"
+          >
+            {cap == null ? "No cap" : cap}
+          </span>
+          <button
+            type="button"
+            onClick={() => setGlobalCap((cap ?? 0) + 1)}
+            disabled={busy === "cap"}
+            aria-label="Raise concurrency cap"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-shell-border text-shell-text-secondary transition-colors hover:text-shell-text hover:border-shell-border-strong disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+        {cap != null && (
+          <button
+            type="button"
+            onClick={() => setGlobalCap(null)}
+            disabled={busy === "cap"}
+            className="text-xs text-shell-text-tertiary transition-colors hover:text-shell-text"
+          >
+            Clear
+          </button>
+        )}
+        <span className="ml-auto text-xs text-shell-text-tertiary">
+          Max cards the fleet holds at once
+        </span>
+      </div>
 
       {/* Fleet (Observe) */}
       <div className="flex-1 overflow-y-auto px-5 py-4">
