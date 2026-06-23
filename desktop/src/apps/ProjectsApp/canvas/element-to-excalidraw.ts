@@ -85,8 +85,10 @@ const NOTE_BG: Record<string, string> = {
   grey: "#e9ecef",
 };
 
+const NOTE_BG_DEFAULT = "#ffec99"; // yellow
+
 function noteBackground(color: string): string {
-  return NOTE_BG[color.toLowerCase()] ?? NOTE_BG.yellow;
+  return NOTE_BG[color.toLowerCase()] ?? NOTE_BG_DEFAULT;
 }
 
 export function elementToSkeleton(el: CanvasElement): ExcalidrawSkeleton {
