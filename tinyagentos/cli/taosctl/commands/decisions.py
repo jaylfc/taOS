@@ -11,7 +11,6 @@ import json
 from urllib.parse import quote
 
 from ..argtypes import json_array, positive_int
-from ..client import TransportError
 
 NOUN = "decisions"
 
@@ -125,14 +124,18 @@ def _post(args, client):
 
 def _coerce_value(raw: str):
     """A multi_select answer is a JSON array; every other answer is the raw
-    string. Only a clearly-bracketed array ([...]) is parsed, so a free-text
-    answer that merely starts with a bracket (or is a JSON object) is left
-    untouched. A bracketed-but-malformed value is a usage error, surfaced
-    cleanly (exit 1) rather than silently forwarded to the server as a string."""
+    string. The value is coerced only when it parses as a JSON *list*: anything
+    that is not valid JSON (e.g. the free-text answer "[hello world]") or that
+    parses to a non-list (a JSON object, a number) is kept as the literal string.
+    The CLI cannot see the decision type, so a malformed multi_select array is
+    forwarded as a string and rejected server-side against the declared options
+    rather than guessed at here."""
     text = raw.strip()
-    if text[:1] == "[" and text[-1:] == "]":
+    if text[:1] == "[":
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise TransportError(f"--value looks like a JSON array but is invalid: {exc}")
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return raw
+        if isinstance(parsed, list):
+            return parsed
     return raw

@@ -85,20 +85,22 @@ def test_answer_json_array_is_parsed(monkeypatch):
 
 
 def test_answer_object_like_value_stays_string(monkeypatch):
-    # Only a clearly-bracketed array is coerced; a brace-prefixed answer is a
-    # literal string (multi_select is the only JSON-array case).
+    # Only a value that parses to a JSON list is coerced; a JSON object parses
+    # but is not a list, so it stays the literal string.
     fake = _FakeClient()
     rc = _run(monkeypatch, ["decisions", "answer", "d9", "--value", '{"x":1}'], fake)
     assert rc == 0
     assert ("POST", "/api/decisions/d9/answer", {"value": '{"x":1}'}) in fake.calls
 
 
-def test_answer_malformed_array_maps_to_exit_1(monkeypatch, capsys):
-    # A bracketed-but-invalid value is a usage error, surfaced cleanly.
+def test_answer_bracketed_free_text_stays_string(monkeypatch):
+    # A free-text answer that merely looks bracketed ("[hello world]") is not
+    # valid JSON, so it is forwarded as the literal string, not an error.
     fake = _FakeClient()
-    rc = _run(monkeypatch, ["decisions", "answer", "d9", "--value", '["a" "b"]'], fake)
-    assert rc == 1
-    assert "JSON array" in capsys.readouterr().err
+    rc = _run(monkeypatch, ["decisions", "answer", "d9", "--value", "[hello world]"], fake)
+    assert rc == 0
+    assert ("POST", "/api/decisions/d9/answer",
+            {"value": "[hello world]"}) in fake.calls
 
 
 def test_post_minimal_free_text(monkeypatch):
