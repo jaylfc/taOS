@@ -85,12 +85,20 @@ def test_throttle_set_max(monkeypatch):
             {"scope": "owl-lane-1", "max_concurrent": 3}) in fake.calls
 
 
-def test_throttle_clear_sends_null(monkeypatch):
+def test_throttle_clear_global_sends_null(monkeypatch):
     fake = _FakeClient()
     rc = _run(monkeypatch, ["observatory", "throttle", "--clear"], fake)
     assert rc == 0
     assert ("POST", "/api/observatory/throttle",
             {"scope": "global", "max_concurrent": None}) in fake.calls
+
+
+def test_throttle_clear_specific_lane_sends_null(monkeypatch):
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["observatory", "throttle", "owl-lane-1", "--clear"], fake)
+    assert rc == 0
+    assert ("POST", "/api/observatory/throttle",
+            {"scope": "owl-lane-1", "max_concurrent": None}) in fake.calls
 
 
 def test_throttle_requires_max_or_clear(monkeypatch):

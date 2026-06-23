@@ -8,7 +8,7 @@ side; reads are open to any authenticated caller.
 """
 from __future__ import annotations
 
-from ..argtypes import positive_int
+from tinyagentos.cli.taosctl.argtypes import positive_int
 
 NOUN = "observatory"
 
