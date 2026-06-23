@@ -3,15 +3,15 @@ from __future__ import annotations
 import httpx
 from pathlib import Path
 
+# The capability vocabulary lives in a shared leaf module so the manifest parser
+# validates against the exact same set the broker enforces. Re-exported here so
+# existing `from tinyagentos.userspace.broker import GATED_CAPS` callers keep working.
+from tinyagentos.userspace.capabilities import FREE_CAPS, GATED_CAPS
+
 # Headers an app may NOT set on a backend-proxy call -- these would let it
 # spoof identity/routing or exfiltrate the session.
 _BLOCKED_PROXY_HEADERS = {"host", "authorization", "cookie",
                           "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"}
-
-# Capability namespaces granted to every app without consent.
-FREE_CAPS = {"app.kv", "app.table", "app.files", "app.notify", "app.window"}
-# Capability namespaces that require an explicit granted permission.
-GATED_CAPS = {"app.net", "app.agent", "app.llm", "app.memory"}
 
 
 def _namespace(capability: str) -> str:
