@@ -10,15 +10,19 @@ from __future__ import annotations
 import json
 from urllib.parse import quote
 
-from ..argtypes import positive_int
+from ..argtypes import json_array, positive_int
+from ..client import TransportError
 
 NOUN = "decisions"
 
-# Mirrors tinyagentos.decisions.decision_store; kept inline so the CLI stays
-# free of server imports (matching the other command groups).
+# Same members as the server (tinyagentos.decisions.decision_store); order
+# differs for --help readability. Kept inline so the CLI stays free of server
+# imports (matching the other command groups). `_STATUSES` lists only what the
+# store actually writes -- `expired` is reserved in the spec but no sweeper sets
+# it yet, so exposing it as a filter would just return a silently-empty inbox.
 _TYPES = ("single_select", "multi_select", "free_text", "approve_deny")
 _PRIORITIES = ("normal", "blocking")
-_STATUSES = ("pending", "answered", "expired", "superseded")
+_STATUSES = ("pending", "answered", "superseded")
 
 
 def register(subparsers) -> None:
@@ -60,7 +64,7 @@ def register(subparsers) -> None:
     pp.add_argument("--deadline", type=float, help="Optional deadline (epoch seconds)")
     pp.add_argument("--parent", dest="parent_decision_id",
                     help="Parent decision id this one supersedes (L1)")
-    pp.add_argument("--options-json", dest="options_json",
+    pp.add_argument("--options-json", dest="options_json", type=json_array,
                     help="Options as a JSON array of "
                          "{label,value,recommended,rationale} (select types)")
     pp.add_argument("--checkpoint-ref", dest="checkpoint_ref",
@@ -97,7 +101,8 @@ def _answer(args, client):
 
 
 def _post(args, client):
-    options = json.loads(args.options_json) if args.options_json else []
+    # --options-json is parsed + validated to a list at argparse time (json_array).
+    options = args.options_json or []
     body = {
         "from_agent": args.from_agent,
         "question": args.question,
@@ -119,13 +124,15 @@ def _post(args, client):
 
 
 def _coerce_value(raw: str):
-    """A multi_select answer is a JSON array; everything else is the raw string.
-    Parse only when the value looks like JSON so a plain string answer that
-    happens to contain a bracket is not mangled."""
+    """A multi_select answer is a JSON array; every other answer is the raw
+    string. Only a clearly-bracketed array ([...]) is parsed, so a free-text
+    answer that merely starts with a bracket (or is a JSON object) is left
+    untouched. A bracketed-but-malformed value is a usage error, surfaced
+    cleanly (exit 1) rather than silently forwarded to the server as a string."""
     text = raw.strip()
-    if text[:1] in ("[", "{"):
+    if text[:1] == "[" and text[-1:] == "]":
         try:
             return json.loads(text)
-        except json.JSONDecodeError:
-            return raw
+        except json.JSONDecodeError as exc:
+            raise TransportError(f"--value looks like a JSON array but is invalid: {exc}")
     return raw

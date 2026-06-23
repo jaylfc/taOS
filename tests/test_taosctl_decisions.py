@@ -84,6 +84,23 @@ def test_answer_json_array_is_parsed(monkeypatch):
             {"value": ["a", "b"], "answered_by": "jay"}) in fake.calls
 
 
+def test_answer_object_like_value_stays_string(monkeypatch):
+    # Only a clearly-bracketed array is coerced; a brace-prefixed answer is a
+    # literal string (multi_select is the only JSON-array case).
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["decisions", "answer", "d9", "--value", '{"x":1}'], fake)
+    assert rc == 0
+    assert ("POST", "/api/decisions/d9/answer", {"value": '{"x":1}'}) in fake.calls
+
+
+def test_answer_malformed_array_maps_to_exit_1(monkeypatch, capsys):
+    # A bracketed-but-invalid value is a usage error, surfaced cleanly.
+    fake = _FakeClient()
+    rc = _run(monkeypatch, ["decisions", "answer", "d9", "--value", '["a" "b"]'], fake)
+    assert rc == 1
+    assert "JSON array" in capsys.readouterr().err
+
+
 def test_post_minimal_free_text(monkeypatch):
     fake = _FakeClient()
     rc = _run(monkeypatch, ["decisions", "post", "--from-agent", "@taOS-dev",
@@ -98,6 +115,30 @@ def test_post_minimal_free_text(monkeypatch):
     assert body["priority"] == "normal"
     # Unset optional fields are omitted, not sent as None.
     assert "project_id" not in body
+
+
+def test_post_rejects_malformed_options_json(monkeypatch):
+    # json_array argtype rejects bad JSON at parse time (clean error, no traceback).
+    fake = _FakeClient()
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["decisions", "post", "--from-agent", "@taOS-dev",
+                           "--question", "Pick", "--type", "single_select",
+                           "--options-json", '[{"label":"A"'], fake)
+
+
+def test_post_rejects_non_array_options_json(monkeypatch):
+    fake = _FakeClient()
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["decisions", "post", "--from-agent", "@taOS-dev",
+                           "--question", "Pick", "--type", "single_select",
+                           "--options-json", '{"label":"A"}'], fake)
+
+
+def test_list_rejects_unknown_status(monkeypatch):
+    # `expired` is not a status the store writes, so it is not an allowed filter.
+    fake = _FakeClient()
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["decisions", "list", "--status", "expired"], fake)
 
 
 def test_post_select_with_options_and_project(monkeypatch):
