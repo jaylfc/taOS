@@ -20,6 +20,13 @@ export type CanvasNode =
   | (BaseNode & { type: "note"; text: string; color: string; fontSize: number })
   | (BaseNode & { type: "link"; url: string; title: string; description: string })
   | (BaseNode & { type: "image"; fileId: string; alt: string; mime: string })
+  // Ideas-board kinds (#68). text is plain text without a card; mermaid and
+  // flowchart carry diagram source rendered client-side in a later slice;
+  // mindmap_edge connects two elements by id.
+  | (BaseNode & { type: "text"; text: string; fontSize: number; color: string })
+  | (BaseNode & { type: "mermaid"; source: string })
+  | (BaseNode & { type: "flowchart"; source: string })
+  | (BaseNode & { type: "mindmap_edge"; from: string; to: string })
   | (BaseNode & { type: "shape" });
 
 function num(v: unknown, fallback: number): number {
@@ -69,6 +76,20 @@ export function elementToNode(el: CanvasElement): CanvasNode {
         alt: str(p.alt),
         mime: str(p.mime, "image/png"),
       };
+    case "text":
+      return {
+        ...base,
+        type: "text",
+        text: str(p.text, ""),
+        fontSize: num(p.font_size, 16),
+        color: str(p.color, "#1e293b"),
+      };
+    case "mermaid":
+      return { ...base, type: "mermaid", source: str(p.source) };
+    case "flowchart":
+      return { ...base, type: "flowchart", source: str(p.source) };
+    case "mindmap_edge":
+      return { ...base, type: "mindmap_edge", from: str(p.from), to: str(p.to) };
     default:
       // user_shape and any unknown kind render as a generic box.
       return { ...base, type: "shape" };
