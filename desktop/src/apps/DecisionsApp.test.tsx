@@ -1,4 +1,11 @@
-import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  act,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DecisionsApp } from "./DecisionsApp";
 
@@ -184,12 +191,12 @@ describe("DecisionsApp", () => {
     expect(screen.queryByRole("button", { name: /view history/i })).toBeNull();
   });
 
-  it("loads and renders the supersession lineage on demand for a revision", async () => {
+  it("loads and renders the supersession lineage oldest first on demand", async () => {
     const revision = {
       ...singleSelect,
       id: "dec-2",
       status: "answered",
-      question: "Which canvas engine should replace tldraw? (revised)",
+      question: "Revised tldraw replacement pick",
       answer: { value: "excalidraw", answered_by: "jay" },
       parent_decision_id: "dec-1",
     };
@@ -197,7 +204,7 @@ describe("DecisionsApp", () => {
       ...singleSelect,
       id: "dec-1",
       status: "superseded",
-      question: "Which canvas engine should replace tldraw?",
+      question: "Original tldraw replacement pick",
     };
     const fetchMock = mockFetch({
       "GET /api/decisions?status=pending": { ok: true, body: [] },
@@ -219,11 +226,16 @@ describe("DecisionsApp", () => {
     fireEvent.click(historyBtn);
     await flush();
 
-    // The chain is fetched lazily on expand and rendered oldest first.
+    // The chain is fetched lazily only on expand.
     const historyCall = fetchMock.mock.calls.find(
       (c) => c[0] === "/api/decisions/dec-2/history",
     );
     expect(historyCall).toBeTruthy();
-    await waitFor(() => expect(screen.getByText(/superseded/i)).toBeTruthy());
+
+    // It must render oldest first: the original (superseded) before the revision.
+    const trail = await waitFor(() => screen.getByTestId("decision-history"));
+    const steps = within(trail).getAllByRole("listitem");
+    expect(steps[0].textContent).toContain("Original tldraw replacement pick");
+    expect(steps[1].textContent).toContain("Revised tldraw replacement pick");
   });
 });

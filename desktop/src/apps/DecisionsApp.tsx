@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Inbox,
   Sparkles,
@@ -333,6 +333,16 @@ function HistoryTrail({ decisionId }: { decisionId: string }) {
   const [chain, setChain] = useState<Decision[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Guard against a state update after the card unmounts mid-fetch (an archive
+  // card can unmount on a tab switch or list refresh while /history is still in
+  // flight).
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   async function toggle() {
     if (open) {
@@ -346,11 +356,14 @@ function HistoryTrail({ decisionId }: { decisionId: string }) {
     try {
       const res = await fetch(`/api/decisions/${decisionId}/history`);
       if (!res.ok) throw new Error("Could not load history.");
-      setChain(asDecisionList(await res.json()));
+      const items = asDecisionList(await res.json());
+      if (aliveRef.current) setChain(items);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load history.");
+      if (aliveRef.current) {
+        setError(e instanceof Error ? e.message : "Could not load history.");
+      }
     } finally {
-      setLoading(false);
+      if (aliveRef.current) setLoading(false);
     }
   }
 
@@ -376,7 +389,7 @@ function HistoryTrail({ decisionId }: { decisionId: string }) {
             </p>
           )}
           {chain && chain.length > 0 && (
-            <ol className="flex flex-col gap-1.5">
+            <ol className="flex flex-col gap-1.5" data-testid="decision-history">
               {chain.map((d, i) => (
                 <li key={d.id} className="flex flex-col gap-0.5 text-xs">
                   <span className="flex items-start gap-1.5 text-shell-text-secondary">
