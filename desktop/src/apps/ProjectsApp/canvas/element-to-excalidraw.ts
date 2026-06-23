@@ -2,8 +2,8 @@ import { CanvasElement } from "./canvas-api";
 
 // Engine-neutral mapping from a backend CanvasElement to an Excalidraw skeleton
 // element (the input shape `convertToExcalidrawElements` accepts). CanvasElement
-// stays canonical; this is the view-side projection. Mirrors element-to-konva,
-// but targets Excalidraw's schema so the board can render the same scene.
+// stays canonical; this is the view-side projection that targets Excalidraw's
+// schema so the board can render the scene.
 //
 // The skeleton types below are a faithful subset of Excalidraw's
 // `ExcalidrawElementSkeleton`. Keeping them local means this pure mapping (and
