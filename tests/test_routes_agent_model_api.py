@@ -57,3 +57,68 @@ async def test_models_revoked_key_is_rejected(client):
     await store.revoke(rec["id"])
     resp = await client.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401
+
+
+# --- POST /v1/chat/completions: the consent contract (turn execution pending) ---
+
+
+def _chat_body(model="agent-a"):
+    return {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+
+
+@pytest.mark.asyncio
+async def test_chat_requires_a_key(client):
+    resp = await client.post("/v1/chat/completions", json=_chat_body())
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "invalid_api_key"
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_model_not_in_scope(client):
+    store = client._transport.app.state.agent_model_keys
+    token, _ = await store.mint("u1", ["agent-a"], [])
+    resp = await client.post(
+        "/v1/chat/completions",
+        json=_chat_body(model="agent-z"),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "model_not_found"
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_empty_messages(client):
+    store = client._transport.app.state.agent_model_keys
+    token, _ = await store.mint("u1", ["agent-a"], [])
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={"model": "agent-a", "messages": []},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_chat_contract_valid_returns_501_until_turn_implemented(client):
+    store = client._transport.app.state.agent_model_keys
+    token, _ = await store.mint("u1", ["agent-a"], [])
+    resp = await client.post(
+        "/v1/chat/completions",
+        json=_chat_body(model="agent-a"),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 501
+    assert resp.json()["error"]["code"] == "not_implemented"
+
+
+@pytest.mark.asyncio
+async def test_chat_revoked_key_is_rejected(client):
+    store = client._transport.app.state.agent_model_keys
+    token, rec = await store.mint("u1", ["agent-a"], [])
+    await store.revoke(rec["id"])
+    resp = await client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 401

@@ -5,12 +5,14 @@ key (the bearer token IS the consent grant, minted only through the user
 consent flow) and gets THEIR agent(s) exposed as models. The key maps to
 {issuing_user, agent_ids, scopes, expiry, rate_cap} via AgentModelKeyStore.
 
-This slice is the AUTH-GATED surface: GET /v1/models lists the agents the
-caller's key is consented for, each as an OpenAI model entry. POST
-/v1/chat/completions (running a turn through the agent harness), scope
-enforcement, and rate limiting are later slices built on this binding. Per the
-spec, the endpoint must never resolve a model without a valid consent key, so
-the auth binding lands first.
+GET /v1/models lists the agents the caller's key is consented for, each as an
+OpenAI model entry. POST /v1/chat/completions enforces the same consent contract
+(valid key, requested model in the key's agent_ids) but does NOT yet run the
+agent turn: that step drives the agent's harness and is the next slice, pending
+the turn-seam choice (see ~/.taos-team/pending-decisions.md), so a valid request
+returns 501. Scope (per-capability) enforcement and rate limiting also build on
+this binding. Per the spec, the endpoint must never resolve a model without a
+valid consent key, so the auth + scope contract lands first.
 """
 from __future__ import annotations
 
@@ -18,19 +20,25 @@ from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 router = APIRouter()
 
 
-def _unauthorized() -> JSONResponse:
-    # OpenAI-shaped error so standard clients surface it correctly.
+def _openai_error(message: str, *, type: str, code: str, status: int) -> JSONResponse:
+    """OpenAI-shaped error envelope so standard clients surface it correctly."""
     return JSONResponse(
-        {"error": {
-            "message": "invalid or missing consent key",
-            "type": "invalid_request_error",
-            "code": "invalid_api_key",
-        }},
-        status_code=401,
+        {"error": {"message": message, "type": type, "code": code}},
+        status_code=status,
+    )
+
+
+def _unauthorized() -> JSONResponse:
+    return _openai_error(
+        "invalid or missing consent key",
+        type="invalid_request_error",
+        code="invalid_api_key",
+        status=401,
     )
 
 
@@ -66,3 +74,52 @@ async def list_models(request: Request):
         for agent_id in binding.get("agent_ids", [])
     ]
     return {"object": "list", "data": data}
+
+
+class _Message(BaseModel):
+    role: str
+    content: object = ""
+
+
+class ChatCompletionIn(BaseModel):
+    model: str
+    messages: list[_Message] = []
+    stream: bool = False
+
+
+@router.post("/v1/chat/completions")
+async def chat_completions(body: ChatCompletionIn, request: Request):
+    """OpenAI /v1/chat/completions for an agent-as-a-model.
+
+    Enforces the consent contract: a valid key is required, and the requested
+    model must be one of the agents that key is consented for. Running the turn
+    through the agent's harness is the next slice (pending the seam choice), so a
+    contract-valid request returns 501 rather than a fabricated completion.
+    """
+    binding = await resolve_consent_key(request)
+    if binding is None:
+        return _unauthorized()
+    if not body.messages:
+        return _openai_error(
+            "'messages' must contain at least one message",
+            type="invalid_request_error",
+            code="invalid_request_error",
+            status=400,
+        )
+    if body.model not in binding.get("agent_ids", []):
+        # OpenAI returns 404 model_not_found for a model the key cannot address;
+        # this doubles as scope enforcement (the key is only consented for its
+        # agent_ids), without leaking whether the agent exists for another user.
+        return _openai_error(
+            f"the model '{body.model}' does not exist or you do not have access to it",
+            type="invalid_request_error",
+            code="model_not_found",
+            status=404,
+        )
+    # Contract satisfied; the turn execution is the next slice.
+    return _openai_error(
+        "agent turn execution is not yet implemented for this surface",
+        type="server_error",
+        code="not_implemented",
+        status=501,
+    )
