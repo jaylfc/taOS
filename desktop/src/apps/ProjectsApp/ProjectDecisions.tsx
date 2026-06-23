@@ -33,7 +33,9 @@ function toMillis(ts: number | string): number {
 }
 
 function relativeTime(ts: number | string): string {
-  const diff = Date.now() - toMillis(ts);
+  // Clamp to 0 so a row a moment in the future (client/server clock skew) does
+  // not render as "-1m ago".
+  const diff = Math.max(0, Date.now() - toMillis(ts));
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
@@ -70,17 +72,27 @@ const STATUS_STYLE: Record<DecisionStatus, string> = {
 export function ProjectDecisions({ projectId }: { projectId: string }) {
   const [items, setItems] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    // Reset on project switch so the previous project's decisions never linger,
+    // and so a failure is shown as an error rather than a stale or empty list.
     setLoading(true);
+    setError(false);
+    setItems([]);
     fetch(`/api/decisions?project_id=${encodeURIComponent(projectId)}`)
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data) => {
-        if (!cancelled && data != null) setItems(asDecisionList(data));
+        if (!cancelled) setItems(asDecisionList(data));
       })
       .catch(() => {
-        // Network error: leave whatever was last loaded in place.
+        // A non-ok response or network error must read as a failure, not as an
+        // empty project.
+        if (!cancelled) setError(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -92,6 +104,14 @@ export function ProjectDecisions({ projectId }: { projectId: string }) {
 
   if (loading) {
     return <p className="text-sm text-shell-text-tertiary">Loading decisions...</p>;
+  }
+
+  if (error) {
+    return (
+      <p className="text-sm text-red-400" role="alert">
+        Could not load decisions for this project.
+      </p>
+    );
   }
 
   if (items.length === 0) {
@@ -108,7 +128,9 @@ export function ProjectDecisions({ projectId }: { projectId: string }) {
         const handle = d.from_agent.startsWith("@")
           ? d.from_agent
           : `@${d.from_agent}`;
-        const answer = d.status === "answered" ? answerText(d) : "";
+        // Show the recorded answer whenever there is one, including a
+        // superseded decision (it was answered before being replaced).
+        const answer = answerText(d);
         return (
           <li
             key={d.id}

@@ -94,6 +94,41 @@ describe("ProjectDecisions", () => {
     );
   });
 
+  it("shows an error (not the empty state) when the fetch fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "/api/decisions?project_id=prj-7": { ok: false, status: 500, body: {} },
+      }),
+    );
+    render(<ProjectDecisions projectId="prj-7" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByText(/could not load decisions/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/no decisions for this project/i)).toBeNull();
+  });
+
+  it("shows the recorded answer for a superseded decision too", async () => {
+    const superseded = {
+      ...answered,
+      id: "dec-3",
+      status: "superseded",
+      question: "Superseded engine pick",
+    };
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "/api/decisions?project_id=prj-7": { ok: true, body: { items: [superseded] } },
+      }),
+    );
+    render(<ProjectDecisions projectId="prj-7" />);
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByText(/answer: excalidraw/i)).toBeTruthy(),
+    );
+  });
+
   it("encodes the project id into the query", async () => {
     const fetchMock = mockFetch({
       "*": { ok: true, body: { items: [] } },
