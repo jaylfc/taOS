@@ -232,6 +232,58 @@ describe("ObservatoryApp", () => {
     });
   });
 
+  it("surfaces an error when a steer post is rejected by the server", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/observatory/fleet": { ok: true, body: fleetBody },
+      "GET /api/observatory/throttle": { ok: true, body: { global: null, lanes: {} } },
+      "POST /api/observatory/pause": { ok: false, status: 403, body: { detail: "forbidden" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: /pause queue/i }));
+    await flush();
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not update the pause state/i)).toBeTruthy(),
+    );
+  });
+
+  it("clears the steer error after a subsequent successful post", async () => {
+    let pauseOk = false;
+    const fetchMock = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (input === "/api/observatory/fleet") {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(fleetBody) });
+      }
+      if (input === "/api/observatory/throttle") {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ global: null, lanes: {} }) });
+      }
+      if (method === "POST" && input === "/api/observatory/pause") {
+        const ok = pauseOk;
+        pauseOk = true; // first attempt fails, the next succeeds
+        return Promise.resolve({ ok, status: ok ? 200 : 403, json: () => Promise.resolve({}) });
+      }
+      throw new Error(`Unmocked fetch: ${method} ${input}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ObservatoryApp windowId="w1" />);
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: /pause queue/i }));
+    await flush();
+    await waitFor(() =>
+      expect(screen.getByText(/could not update the pause state/i)).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /pause queue/i }));
+    await flush();
+    await waitFor(() =>
+      expect(screen.queryByText(/could not update the pause state/i)).toBeNull(),
+    );
+  });
+
   it("shows the idle empty state when no agents are working", async () => {
     vi.stubGlobal(
       "fetch",

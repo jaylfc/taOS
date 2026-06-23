@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Radar, Pause, Play, Loader2, CircleDot, Minus, Plus } from "lucide-react";
+import { Radar, Pause, Play, Loader2, CircleDot, Minus, Plus, AlertCircle } from "lucide-react";
 import { Switch } from "@/components/ui";
 
 interface HeldCard {
@@ -94,6 +94,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const [laneCaps, setLaneCaps] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [steerError, setSteerError] = useState<string | null>(null);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -128,6 +129,27 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
     return () => clearInterval(id);
   }, [load]);
 
+  // Shared write path for every steer control. Posts the change, surfaces a
+  // visible error if the server rejects it (so an optimistic value is not left
+  // standing silently), and always reconciles against the server.
+  const postSteer = useCallback(
+    async (url: string, body: object, failMsg: string) => {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        setSteerError(res.ok ? null : failMsg);
+      } catch {
+        setSteerError(failMsg);
+      } finally {
+        await load({ silent: true });
+      }
+    },
+    [load],
+  );
+
   const setScope = useCallback(
     async (scope: string, paused: boolean) => {
       setBusy(scope);
@@ -140,40 +162,28 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
               lanes: { ...prev.lanes, [scope]: paused },
             },
       );
-      try {
-        await fetch("/api/observatory/pause", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scope, paused }),
-        });
-        await load({ silent: true });
-      } catch {
-        await load({ silent: true });
-      } finally {
-        setBusy(null);
-      }
+      await postSteer(
+        "/api/observatory/pause",
+        { scope, paused },
+        "Could not update the pause state.",
+      );
+      setBusy(null);
     },
-    [load],
+    [postSteer],
   );
 
   const setGlobalCap = useCallback(
     async (next: number | null) => {
       setBusy("cap");
       setCap(next); // optimistic; reconciled on the next poll
-      try {
-        await fetch("/api/observatory/throttle", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scope: "global", max_concurrent: next }),
-        });
-        await load({ silent: true });
-      } catch {
-        await load({ silent: true });
-      } finally {
-        setBusy(null);
-      }
+      await postSteer(
+        "/api/observatory/throttle",
+        { scope: "global", max_concurrent: next },
+        "Could not update the concurrency cap.",
+      );
+      setBusy(null);
     },
-    [load],
+    [postSteer],
   );
 
   const setLaneCap = useCallback(
@@ -185,20 +195,14 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
         else copy[handle] = next;
         return copy;
       });
-      try {
-        await fetch("/api/observatory/throttle", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scope: handle, max_concurrent: next }),
-        });
-        await load({ silent: true });
-      } catch {
-        await load({ silent: true });
-      } finally {
-        setBusy(null);
-      }
+      await postSteer(
+        "/api/observatory/throttle",
+        { scope: handle, max_concurrent: next },
+        `Could not update the cap for ${handle}.`,
+      );
+      setBusy(null);
     },
-    [load],
+    [postSteer],
   );
 
   return (
@@ -231,6 +235,23 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
         >
           <Pause size={14} className="shrink-0" />
           Dispatch is paused. In-flight work finishes; no new cards are claimed.
+        </div>
+      )}
+
+      {steerError && (
+        <div
+          className="flex items-center gap-2 border-b border-red-500/20 bg-red-500/10 px-5 py-2 text-sm text-red-400"
+          role="alert"
+        >
+          <AlertCircle size={14} className="shrink-0" />
+          {steerError}
+          <button
+            type="button"
+            onClick={() => setSteerError(null)}
+            className="ml-auto text-xs text-red-400/80 transition-colors hover:text-red-400"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
