@@ -10,9 +10,17 @@ setup flow, not a shell verb).
 """
 from __future__ import annotations
 
+import argparse
 from urllib.parse import quote
 
 NOUN = "dashboard"
+
+
+def _positive_int(value: str) -> int:
+    iv = int(value)
+    if iv <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return iv
 
 
 def register(subparsers) -> None:
@@ -39,7 +47,7 @@ def register(subparsers) -> None:
     bp.set_defaults(func=_backends)
 
     ap = verbs.add_parser("activity", help="Recent dashboard activity")
-    ap.add_argument("--limit", type=int, default=15)
+    ap.add_argument("--limit", type=_positive_int, default=15)
     ap.set_defaults(func=_activity)
 
     mp = verbs.add_parser("metrics", help="Query a named time-series metric")

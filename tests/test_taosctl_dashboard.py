@@ -100,3 +100,12 @@ def test_metrics_default_range(monkeypatch):
     assert _run(monkeypatch, ["dashboard", "metrics", "cpu"], fake) == 0
     method, path, params = fake.calls[0]
     assert params == {"range": "24h"}
+
+
+def test_activity_rejects_non_positive_limit(monkeypatch):
+    fake = _FakeClient()
+    # argparse rejects 0/negative at parse time (exit 2) rather than forwarding
+    # an invalid limit to the server.
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["dashboard", "activity", "--limit", "0"], fake)
+    assert fake.calls == []
