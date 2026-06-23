@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Stage, Layer, Group, Rect, Text } from "react-konva";
 import type Konva from "konva";
 import { CanvasElement } from "./canvas-api";
@@ -18,6 +18,10 @@ const NOTE_FILL: Record<string, string> = {
   purple: "#e9d5ff",
   gray: "#e5e7eb",
 };
+
+// Text width/height subtract padding; clamp so a tiny node (w/h < pad) never
+// passes a negative dimension to Konva.
+const clamp0 = (v: number): number => (v > 0 ? v : 0);
 
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 4;
@@ -43,8 +47,8 @@ function NodeView({ node }: { node: CanvasNode }) {
             text={node.text}
             x={8}
             y={8}
-            width={node.w - 16}
-            height={node.h - 16}
+            width={clamp0(node.w - 16)}
+            height={clamp0(node.h - 16)}
             fontSize={node.fontSize}
             fill="#1f2937"
             wrap="word"
@@ -59,7 +63,7 @@ function NodeView({ node }: { node: CanvasNode }) {
             text={node.title || node.url}
             x={8}
             y={8}
-            width={node.w - 16}
+            width={clamp0(node.w - 16)}
             fontSize={13}
             fontStyle="bold"
             fill="#e2e8f0"
@@ -70,7 +74,7 @@ function NodeView({ node }: { node: CanvasNode }) {
             text={node.url}
             x={8}
             y={node.h - 20}
-            width={node.w - 16}
+            width={clamp0(node.w - 16)}
             fontSize={11}
             fill="#7dd3fc"
             ellipsis
@@ -86,7 +90,7 @@ function NodeView({ node }: { node: CanvasNode }) {
             text={node.alt || "image"}
             x={8}
             y={node.h / 2 - 8}
-            width={node.w - 16}
+            width={clamp0(node.w - 16)}
             fontSize={12}
             fill="#94a3b8"
             align="center"
@@ -119,7 +123,8 @@ export function KonvaBoard({
 }) {
   const [scale, setScale] = useState(1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const nodes = elementsToNodes(elements);
+  // Map + sort only when the elements change, not on every pan/zoom render.
+  const nodes = useMemo(() => elementsToNodes(elements), [elements]);
 
   const onWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
