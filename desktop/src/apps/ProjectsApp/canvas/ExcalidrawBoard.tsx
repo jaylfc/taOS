@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { CanvasElement } from "./canvas-api";
-import { elementsToSkeletons, elementToSkeleton } from "./element-to-excalidraw";
+import { elementToSkeleton } from "./element-to-excalidraw";
 import { mermaidToExcalidraw, type ExcalidrawElements } from "./mermaid-to-elements";
 
 // Read-only Excalidraw view over the canonical CanvasElement scene (tldraw ->
@@ -76,20 +76,18 @@ export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardPr
   }, [diagramKey]);
 
   const sceneElements = useMemo(() => {
-    const els = live(elements);
-    const regular = els.filter((el) => !DIAGRAM_KINDS.has(el.kind));
-    const regularScene = convertToExcalidrawElements(
-      elementsToSkeletons(regular) as unknown as SkeletonInput,
-    );
-    const diagramScene = els
-      .filter((el) => DIAGRAM_KINDS.has(el.kind))
-      .flatMap((el) => {
+    // Walk the elements in z_index order (live() sorts them) so cross-kind
+    // layering is preserved: a diagram is not forced above a regular element
+    // that has a higher z_index. A ready diagram contributes its converted
+    // elements; everything else (regular kinds, and a diagram still converting)
+    // maps through the base skeleton.
+    return live(elements).flatMap((el) => {
+      if (DIAGRAM_KINDS.has(el.kind)) {
         const ready = diagrams[el.id];
         if (ready && ready.length > 0) return ready;
-        // Fallback: the placeholder rectangle from the base mapping.
-        return convertToExcalidrawElements([elementToSkeleton(el)] as unknown as SkeletonInput);
-      });
-    return [...regularScene, ...diagramScene];
+      }
+      return convertToExcalidrawElements([elementToSkeleton(el)] as unknown as SkeletonInput);
+    });
   }, [elements, diagrams]);
 
   // Excalidraw reads initialData once at mount; push later scenes (async
