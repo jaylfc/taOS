@@ -146,17 +146,28 @@ describe("PageContextMenu", () => {
     });
 
     const menu = container.firstChild as HTMLElement;
-    // Initially Alpha should be focused (first item)
-    const items = screen.getAllByRole("menuitem");
-    expect(items[0].getAttribute("aria-current")).toBe("true");
+    // Initially Alpha should be focused (first item). Assert via waitFor so the
+    // focus-reset effect that fires when agents finish loading is fully flushed
+    // before we read aria-current (it would otherwise race the keydown below).
+    await waitFor(() => {
+      const items = screen.getAllByRole("menuitem");
+      expect(items[0].getAttribute("aria-current")).toBe("true");
+    });
 
-    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    // Wrap the keydown in act() so the setFocusedIdx update and any pending
+    // load effect settle deterministically before the assertion, rather than
+    // racing the 1s waitFor under loaded CI runners.
+    await act(async () => {
+      fireEvent.keyDown(menu, { key: "ArrowDown" });
+    });
     await waitFor(() => {
       const updated = screen.getAllByRole("menuitem");
       expect(updated[1].getAttribute("aria-current")).toBe("true");
     });
 
-    fireEvent.keyDown(menu, { key: "ArrowUp" });
+    await act(async () => {
+      fireEvent.keyDown(menu, { key: "ArrowUp" });
+    });
     await waitFor(() => {
       const updated = screen.getAllByRole("menuitem");
       expect(updated[0].getAttribute("aria-current")).toBe("true");
