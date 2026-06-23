@@ -8,6 +8,7 @@ import {
   X,
   CheckCircle2,
   AlertCircle,
+  History,
 } from "lucide-react";
 import { Button, Textarea } from "@/components/ui";
 
@@ -45,6 +46,10 @@ interface Decision {
   answer?: DecisionAnswer | null;
   created_at: number | string;
   deadline?: number | null;
+  // The decision this one supersedes (L1). Present on a revision; absent on an
+  // original. When set, the supersession lineage can be walked via the history
+  // endpoint.
+  parent_decision_id?: string | null;
 }
 
 // created_at is stored as an epoch-seconds REAL on the backend, but the API
@@ -320,6 +325,82 @@ function answerLabel(decision: Decision): string {
   return labels.join(", ");
 }
 
+/** Expandable supersession lineage for a revised decision. Fetches the chain
+ * lazily on first expand so the archive list does not issue a request per card.
+ * The endpoint returns the chain oldest first. */
+function HistoryTrail({ decisionId }: { decisionId: string }) {
+  const [open, setOpen] = useState(false);
+  const [chain, setChain] = useState<Decision[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (chain || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/decisions/${decisionId}/history`);
+      if (!res.ok) throw new Error("Could not load history.");
+      setChain(asDecisionList(await res.json()));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load history.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="flex items-center gap-1 self-start text-xs font-medium text-shell-text-secondary transition-colors hover:text-shell-text"
+      >
+        <History size={12} className="shrink-0" />
+        {open ? "Hide history" : "View history"}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1.5 border-l border-shell-border pl-3">
+          {loading && (
+            <p className="text-xs text-shell-text-tertiary">Loading history...</p>
+          )}
+          {error && (
+            <p className="text-xs text-red-400" role="alert">
+              {error}
+            </p>
+          )}
+          {chain && chain.length > 0 && (
+            <ol className="flex flex-col gap-1.5">
+              {chain.map((d, i) => (
+                <li key={d.id} className="flex flex-col gap-0.5 text-xs">
+                  <span className="flex items-start gap-1.5 text-shell-text-secondary">
+                    <span className="shrink-0 text-shell-text-tertiary">{i + 1}.</span>
+                    {d.question}
+                  </span>
+                  <span className="pl-4 text-shell-text-tertiary">
+                    {d.status === "superseded" ? "superseded" : answerLabel(d)}
+                    {" · "}
+                    {relativeTime(d.answer?.answered_at ?? d.created_at)}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+          {chain && chain.length === 0 && !loading && (
+            <p className="text-xs text-shell-text-tertiary">No earlier versions.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AnsweredCard({ decision }: { decision: Decision }) {
   return (
     <li className="flex flex-col gap-2 rounded-xl border border-shell-border bg-shell-surface p-4">
@@ -343,6 +424,7 @@ function AnsweredCard({ decision }: { decision: Decision }) {
           {decision.status === "superseded" ? "Superseded" : answerLabel(decision)}
         </span>
       </div>
+      {decision.parent_decision_id && <HistoryTrail decisionId={decision.id} />}
     </li>
   );
 }

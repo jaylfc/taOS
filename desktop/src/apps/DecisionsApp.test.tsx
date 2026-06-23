@@ -161,4 +161,69 @@ describe("DecisionsApp", () => {
 
     await waitFor(() => expect(screen.getByText("Excalidraw")).toBeTruthy());
   });
+
+  it("offers no history affordance for an original (no parent) decision", async () => {
+    const answered = {
+      ...singleSelect,
+      status: "answered",
+      answer: { value: "excalidraw", answered_by: "jay" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        "GET /api/decisions?status=pending": { ok: true, body: [] },
+        "GET /api/decisions?status=answered": { ok: true, body: [answered] },
+      }),
+    );
+    render(<DecisionsApp windowId="w1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /archive/i }));
+    await flush();
+
+    await waitFor(() => expect(screen.getByText("Excalidraw")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /view history/i })).toBeNull();
+  });
+
+  it("loads and renders the supersession lineage on demand for a revision", async () => {
+    const revision = {
+      ...singleSelect,
+      id: "dec-2",
+      status: "answered",
+      question: "Which canvas engine should replace tldraw? (revised)",
+      answer: { value: "excalidraw", answered_by: "jay" },
+      parent_decision_id: "dec-1",
+    };
+    const original = {
+      ...singleSelect,
+      id: "dec-1",
+      status: "superseded",
+      question: "Which canvas engine should replace tldraw?",
+    };
+    const fetchMock = mockFetch({
+      "GET /api/decisions?status=pending": { ok: true, body: [] },
+      "GET /api/decisions?status=answered": { ok: true, body: [revision] },
+      "GET /api/decisions/dec-2/history": {
+        ok: true,
+        body: { items: [original, revision] },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DecisionsApp windowId="w1" />);
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: /archive/i }));
+    await flush();
+
+    const historyBtn = await waitFor(() =>
+      screen.getByRole("button", { name: /view history/i }),
+    );
+    fireEvent.click(historyBtn);
+    await flush();
+
+    // The chain is fetched lazily on expand and rendered oldest first.
+    const historyCall = fetchMock.mock.calls.find(
+      (c) => c[0] === "/api/decisions/dec-2/history",
+    );
+    expect(historyCall).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/superseded/i)).toBeTruthy());
+  });
 });
