@@ -334,3 +334,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.agent_model_api import router as agent_model_api_router
     app.include_router(agent_model_api_router)
+
+    from tinyagentos.routes.agent_model_keys import router as agent_model_keys_router
+    app.include_router(agent_model_keys_router)
