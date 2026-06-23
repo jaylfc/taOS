@@ -52,6 +52,52 @@ async def test_non_admin_cannot_pause(app, client):
 
 
 @pytest.mark.asyncio
+async def test_throttle_defaults_to_no_caps(client):
+    resp = await client.get("/api/observatory/throttle")
+    assert resp.status_code == 200
+    assert resp.json() == {"global": None, "lanes": {}}
+
+
+@pytest.mark.asyncio
+async def test_global_throttle_round_trips(client):
+    resp = await client.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 2})
+    assert resp.status_code == 200
+    assert resp.json()["global"] == 2
+    resp = await client.get("/api/observatory/throttle")
+    assert resp.json()["global"] == 2
+    # max_concurrent <= 0 (or null) clears the cap.
+    resp = await client.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 0})
+    assert resp.json()["global"] is None
+
+
+@pytest.mark.asyncio
+async def test_per_lane_throttle_set_and_clear(client):
+    lane = "@taOS-dev-kilo-owl-alpha"
+    resp = await client.post("/api/observatory/throttle", json={"scope": lane, "max_concurrent": 3})
+    assert resp.json()["lanes"].get(lane) == 3
+    assert resp.json()["global"] is None
+    # Clearing (null) drops the lane entry rather than storing 0.
+    resp = await client.post("/api/observatory/throttle", json={"scope": lane, "max_concurrent": None})
+    assert lane not in resp.json()["lanes"]
+
+
+@pytest.mark.asyncio
+async def test_throttle_empty_scope_rejected(client):
+    resp = await client.post("/api/observatory/throttle", json={"scope": "  ", "max_concurrent": 2})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_throttle(app, client):
+    app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
+    try:
+        resp = await client.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 1})
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
 async def test_fleet_empty_when_no_claims(client):
     resp = await client.get("/api/observatory/fleet")
     assert resp.status_code == 200
