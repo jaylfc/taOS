@@ -4,10 +4,11 @@ The API surface over AppGrantsStore: a user reviews, grants/denies, and revokes
 the capabilities an installed app holds. Decision 6 (manifest declares + runtime
 grants via the Decisions/consent flow); this is the runtime-grant layer.
 
-Vocabulary-agnostic: capability names are passed through as strings. Validating
-them against the closed APP_CAPABILITIES vocabulary is a separate slice (pending
-Jay's v1 vocabulary, pending-decisions item 23), so this surface does not gate
-on that open question. Grants are scoped to the calling user.
+Grants are validated against the closed capability vocabulary in
+tinyagentos/userspace/capabilities.py (the same source of truth the broker
+enforces and the package parser validates manifests against), so a grant can
+never record a typo'd or made-up capability. Grants are scoped to the calling
+user.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.userspace.capabilities import is_known_capability
 
 router = APIRouter()
 
@@ -50,6 +52,10 @@ async def set_app_permission(
     cap = body.capability.strip()
     if not cap:
         return JSONResponse({"error": "capability required"}, status_code=400)
+    if not is_known_capability(cap):
+        return JSONResponse(
+            {"error": f"unknown capability: {cap}"}, status_code=400
+        )
     try:
         rec = await store.set_decision(user.user_id, app_id, cap, decision=body.decision)
     except ValueError as e:

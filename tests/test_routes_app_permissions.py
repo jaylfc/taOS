@@ -48,11 +48,12 @@ async def test_grant_then_listed_as_granted(client):
 
 @pytest.mark.asyncio
 async def test_denied_capability_not_in_granted(client):
+    cap = "network:https://example.com"
     await client.post(
-        "/api/apps/a/permissions", json={"capability": "network", "decision": "denied"}
+        "/api/apps/a/permissions", json={"capability": cap, "decision": "denied"}
     )
     data = (await client.get("/api/apps/a/permissions")).json()
-    assert "network" not in data["granted"]
+    assert cap not in data["granted"]
     assert len(data["grants"]) == 1
 
 
@@ -62,6 +63,31 @@ async def test_invalid_decision_returns_400(client):
         "/api/apps/a/permissions", json={"capability": "app.kv", "decision": "maybe"}
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_grant_unknown_capability_returns_400(client):
+    # The grant API now validates against the closed capability vocabulary, so a
+    # typo'd or made-up capability cannot be recorded in the ledger.
+    resp = await client.post(
+        "/api/apps/a/permissions",
+        json={"capability": "files.read", "decision": "granted"},
+    )
+    assert resp.status_code == 400
+    assert "unknown capability" in resp.json()["error"]
+    # Nothing was recorded.
+    data = (await client.get("/api/apps/a/permissions")).json()
+    assert data["grants"] == []
+
+
+@pytest.mark.asyncio
+async def test_grant_network_origin_capability_allowed(client):
+    # The parametrized network:<origin> form is a known capability.
+    resp = await client.post(
+        "/api/apps/a/permissions",
+        json={"capability": "network:https://api.example.com", "decision": "granted"},
+    )
+    assert resp.status_code == 200, resp.text
 
 
 @pytest.mark.asyncio
