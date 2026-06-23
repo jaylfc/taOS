@@ -10,9 +10,13 @@ the closed APP_CAPABILITIES vocabulary and its validation live at the
 manifest-validation / grant-request layer (a later slice, pending Jay's v1
 vocabulary in pending-decisions item 23), not here.
 
-A denial is recorded (decision='denied'), not dropped, and revoke flips a grant
-to 'denied' rather than deleting the row, so the grant history is durable
-(append-only, #103). The Permissions app (decision 20) reads + revokes here.
+This table holds the CURRENT decision per (user, app, capability), not a full
+history: re-deciding a capability overwrites the row (last-write-wins), and
+revoke flips a grant to 'denied' rather than deleting it, so the capability is
+no longer granted while the row persists as a denial. A true append-only log of
+every grant/revoke event (per the #103/#105 audit-trail direction) is a
+separate enhancement, not this MVP. The Permissions app (decision 20) reads +
+revokes here.
 """
 
 from datetime import datetime, timezone
@@ -88,9 +92,9 @@ class AppGrantsStore(BaseStore):
     async def revoke(self, user_id: str, app_id: str, capability: str) -> None:
         """Revoke a previously granted capability by recording a denial.
 
-        The row is kept (flipped to 'denied'), not deleted, so the grant
-        history stays durable (#103). A no-op if the capability was never
-        decided for this (user, app).
+        The row is kept (flipped to 'denied'), not deleted, so the capability
+        stops being granted without losing that a decision exists. A no-op if
+        the capability was never decided for this (user, app).
         """
         if self._db is None:
             raise RuntimeError("AppGrantsStore not initialised")
