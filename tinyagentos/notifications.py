@@ -126,8 +126,13 @@ class NotificationStore(BaseStore):
         return cursor.rowcount
 
     async def cleanup(self, max_age_days: int = 30) -> int:
+        # Age out only old UNdismissed notifications. Archived rows are the
+        # durable history a user explicitly dismissed (#62 / append-only #103),
+        # so they are never GC'd here.
         cutoff = int(time.time()) - (max_age_days * 86400)
-        cursor = await self._db.execute("DELETE FROM notifications WHERE timestamp < ?", (cutoff,))
+        cursor = await self._db.execute(
+            "DELETE FROM notifications WHERE timestamp < ? AND archived = 0", (cutoff,)
+        )
         await self._db.commit()
         return cursor.rowcount
 

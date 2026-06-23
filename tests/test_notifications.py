@@ -64,6 +64,21 @@ class TestNotificationStore:
         assert len(items) == 1
         assert items[0]["title"] == "New"
 
+    async def test_cleanup_preserves_archived(self, notif_store):
+        # An old but archived (dismissed) notification is durable history and
+        # must survive the age-based GC.
+        old_ts = int(time.time()) - (31 * 86400)
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, archived)"
+            " VALUES (?, ?, ?, ?, ?, 1)",
+            (old_ts, "info", "OldDismissed", "kept", "test"),
+        )
+        await notif_store._db.commit()
+        deleted = await notif_store.cleanup(max_age_days=30)
+        assert deleted == 0
+        history = await notif_store.list_archived()
+        assert [h["title"] for h in history] == ["OldDismissed"]
+
     async def test_list_unread_only(self, notif_store):
         await notif_store.add("A", "a")
         await notif_store.add("B", "b")
