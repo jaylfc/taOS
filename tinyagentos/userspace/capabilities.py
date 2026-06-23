@@ -18,6 +18,8 @@ Forms:
 """
 from __future__ import annotations
 
+import re
+
 # Granted to every app without consent.
 FREE_CAPS = frozenset({"app.kv", "app.table", "app.files", "app.notify", "app.window"})
 # Require an explicit granted permission (runtime consent via the Decisions flow).
@@ -28,13 +30,28 @@ KNOWN_CAPS = FREE_CAPS | GATED_CAPS
 # Parametrized capability prefix: `network:<origin>` allowlists a single origin.
 NET_PREFIX = "network:"
 
+# Strict origin format for a `network:<origin>` grant: scheme://host with an
+# optional leading "*." subdomain wildcard and an optional :port, nothing else
+# (no spaces, semicolons, quotes, paths, or newlines) so it can never inject
+# extra sandbox CSP directives. \A and \Z anchor the WHOLE string. This is the
+# single source of truth, reused by the package parser and the grant API.
+NET_ORIGIN_RE = re.compile(r"\A(?:wss|https)://(?:\*\.)?[A-Za-z0-9.-]+(?::\d+)?\Z")
+
+
+def is_valid_network_grant(perm: str) -> bool:
+    """True if `perm` is a `network:<origin>` grant with a well-formed origin."""
+    if not isinstance(perm, str) or not perm.startswith(NET_PREFIX):
+        return False
+    return bool(NET_ORIGIN_RE.match(perm[len(NET_PREFIX):]))
+
 
 def is_known_capability(perm: str) -> bool:
     """True if `perm` is a recognised capability the vocabulary permits.
 
-    Accepts a bare namespace in KNOWN_CAPS or a `network:<origin>` grant. The
-    <origin> portion's format is validated by the package parser, not here; this
-    only classifies whether the capability itself is one the system understands.
+    Accepts a bare namespace in KNOWN_CAPS or a `network:<origin>` grant. This
+    only classifies the capability namespace; callers that record or enforce a
+    grant should additionally check is_valid_network_grant for the parametrized
+    form so a malformed origin is not accepted.
     """
     if not isinstance(perm, str):
         return False

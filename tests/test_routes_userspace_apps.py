@@ -606,3 +606,32 @@ async def test_broker_gated_cap_denied_when_ledger_grant_absent(client):
     )
     assert resp.status_code == 200
     assert resp.json().get("error") == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_broker_ledger_error_falls_back_to_per_app_grants(client):
+    # Decision-24 merge is best-effort: if the app_grants ledger lookup raises
+    # (e.g. an uninitialised store or a query error), the broker must fall back
+    # to the per-app granted set rather than 500.
+    app = client._transport.app
+    await _init_userspace_stores(app, app.state.data_dir)
+    store = app.state.userspace_apps
+    await _install_test_app(store, permissions=["app.net"])
+    await store.set_permissions_granted("test-app", ["app.net"])
+
+    class _Boom:
+        async def granted_capabilities(self, *a, **k):
+            raise RuntimeError("ledger down")
+
+    original = app.state.app_grants
+    app.state.app_grants = _Boom()
+    try:
+        resp = await client.post(
+            "/api/userspace-apps/test-app/broker",
+            json={"capability": "app.net.fetch", "args": {"url": "http://example.com"}},
+        )
+    finally:
+        app.state.app_grants = original
+    # No 500; and the per-app grant still authorises the capability.
+    assert resp.status_code == 200
+    assert resp.json().get("error") != "permission_denied"

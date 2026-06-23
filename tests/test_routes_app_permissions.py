@@ -91,6 +91,20 @@ async def test_grant_network_origin_capability_allowed(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["network:", "network:not an origin", "network:ftp://x.com"])
+async def test_grant_malformed_network_origin_returns_400(client, bad):
+    # The bare network: prefix passes is_known_capability, but a grant must carry
+    # a well-formed origin, so a malformed one is rejected and not recorded.
+    resp = await client.post(
+        "/api/apps/a/permissions", json={"capability": bad, "decision": "granted"}
+    )
+    assert resp.status_code == 400
+    assert "invalid network origin" in resp.json()["error"]
+    data = (await client.get("/api/apps/a/permissions")).json()
+    assert data["grants"] == []
+
+
+@pytest.mark.asyncio
 async def test_empty_capability_returns_400(client):
     resp = await client.post(
         "/api/apps/a/permissions", json={"capability": "  ", "decision": "granted"}

@@ -17,7 +17,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
-from tinyagentos.userspace.capabilities import is_known_capability
+from tinyagentos.userspace.capabilities import (
+    NET_PREFIX,
+    is_known_capability,
+    is_valid_network_grant,
+)
 
 router = APIRouter()
 
@@ -55,6 +59,12 @@ async def set_app_permission(
     if not is_known_capability(cap):
         return JSONResponse(
             {"error": f"unknown capability: {cap}"}, status_code=400
+        )
+    # The parametrized network:<origin> form must carry a well-formed origin; the
+    # bare prefix is_known_capability accepts is not enough to record a grant.
+    if cap.startswith(NET_PREFIX) and not is_valid_network_grant(cap):
+        return JSONResponse(
+            {"error": f"invalid network origin: {cap}"}, status_code=400
         )
     try:
         rec = await store.set_decision(user.user_id, app_id, cap, decision=body.decision)

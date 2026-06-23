@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -11,6 +12,8 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.package import extract_package, PackageError
 from tinyagentos.userspace.url_guard import resolve_safe_public_ip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -256,7 +259,17 @@ async def broker(request: Request, app_id: str):
         uid = getattr(request.state, "user_id", None)
         grants_store = getattr(request.app.state, "app_grants", None)
         if uid and grants_store is not None:
-            granted |= await grants_store.granted_capabilities(uid, app_id)
+            try:
+                granted |= await grants_store.granted_capabilities(uid, app_id)
+            except Exception:
+                # Genuinely best-effort: an uninitialised store or a query error
+                # must not turn a previously-working broker call into a 500. Fall
+                # back to the per-app granted set.
+                logger.warning(
+                    "app_grants lookup failed for app %s; using per-app grants only",
+                    app_id,
+                    exc_info=True,
+                )
     out = await handle_capability(
         app_id, body.get("capability", ""), body.get("args") or {},
         granted=granted,
