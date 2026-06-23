@@ -34,7 +34,15 @@ CREATE INDEX IF NOT EXISTS idx_canvas_updated ON project_canvas_elements(project
 """
 
 _CANVAS_JSON_FIELDS = ("payload",)
-_VALID_KINDS = {"note", "link", "image", "user_shape"}
+# Ideas-board kinds (text, mermaid, flowchart, mindmap_edge) carry their
+# content in the free-form payload, so they need no schema change beyond being
+# accepted here. Agent emission of these stays gated until the agent canvas
+# tools for them land (a deliberate later slice), so they are NOT yet added to
+# _AGENT_ALLOWED_KINDS.
+_VALID_KINDS = {
+    "note", "link", "image", "user_shape",
+    "text", "mermaid", "flowchart", "mindmap_edge",
+}
 _AGENT_ALLOWED_KINDS = {"note", "link", "image"}
 
 

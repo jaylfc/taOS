@@ -29,7 +29,10 @@ def _user_id(request: Request) -> str:
 
 
 class CreateElementIn(BaseModel):
-    kind: Literal["note", "link", "image", "user_shape"]
+    kind: Literal[
+        "note", "link", "image", "user_shape",
+        "text", "mermaid", "flowchart", "mindmap_edge",
+    ]
     x: float
     y: float
     w: float
