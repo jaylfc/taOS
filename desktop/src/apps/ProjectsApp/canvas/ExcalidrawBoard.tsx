@@ -3,40 +3,98 @@ import type { ComponentProps } from "react";
 import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { CanvasElement } from "./canvas-api";
-import { elementsToSkeletons } from "./element-to-excalidraw";
+import { elementsToSkeletons, elementToSkeleton } from "./element-to-excalidraw";
+import { mermaidToExcalidraw, type ExcalidrawElements } from "./mermaid-to-elements";
 
-// Read-only Excalidraw view over the canonical CanvasElement scene. Slice 2 of
-// the tldraw -> Excalidraw migration: the board is built alongside the existing
-// tldraw board and not yet wired into CanvasView. Write-back interactions,
-// diagram rendering, and the swap that retires tldraw are later slices.
+// Read-only Excalidraw view over the canonical CanvasElement scene (tldraw ->
+// Excalidraw migration). Most kinds map synchronously; mermaid/flowchart kinds
+// render their real diagram via mermaid-to-excalidraw, falling back to the
+// placeholder rectangle while the (async) conversion runs or if it fails. The
+// board is not yet wired into CanvasView; write-back interactions and the swap
+// that retires tldraw are later slices.
+
+const DIAGRAM_KINDS = new Set(["mermaid", "flowchart"]);
 
 type ExcalidrawAPI = Parameters<
   NonNullable<ComponentProps<typeof Excalidraw>["excalidrawAPI"]>
 >[0];
+
+type SkeletonInput = Parameters<typeof convertToExcalidrawElements>[0];
 
 export interface ExcalidrawBoardProps {
   elements: CanvasElement[];
   theme?: "light" | "dark";
 }
 
+function live(elements: CanvasElement[]): CanvasElement[] {
+  return elements
+    .filter((el) => el.deleted_at == null)
+    .slice()
+    .sort((a, b) => (a.z_index || 0) - (b.z_index || 0));
+}
+
 export function ExcalidrawBoard({ elements, theme = "light" }: ExcalidrawBoardProps) {
   const [api, setApi] = useState<ExcalidrawAPI | null>(null);
+  // Converted diagram elements keyed by the CanvasElement id; absent until the
+  // async mermaid conversion resolves.
+  const [diagrams, setDiagrams] = useState<Record<string, ExcalidrawElements>>({});
 
-  const sceneElements = useMemo(
+  // Re-run conversion only when a diagram element's id/source/position changes.
+  const diagramKey = useMemo(
     () =>
-      convertToExcalidrawElements(
-        elementsToSkeletons(elements) as unknown as Parameters<
-          typeof convertToExcalidrawElements
-        >[0],
+      JSON.stringify(
+        live(elements)
+          .filter((el) => DIAGRAM_KINDS.has(el.kind))
+          .map((el) => [el.id, el.x, el.y, (el.payload || {}).source]),
       ),
     [elements],
   );
 
-  // Excalidraw opens at scroll origin, so a scene whose elements sit away from
-  // (0,0) renders off-screen. Fit the viewport to the content once the API is
-  // ready and whenever the scene changes.
   useEffect(() => {
-    if (api && sceneElements.length > 0) {
+    let cancelled = false;
+    const diagramEls = live(elements).filter((el) => DIAGRAM_KINDS.has(el.kind));
+    if (diagramEls.length === 0) {
+      setDiagrams({});
+      return;
+    }
+    (async () => {
+      const next: Record<string, ExcalidrawElements> = {};
+      for (const el of diagramEls) {
+        const src = String((el.payload || {}).source ?? "");
+        next[el.id] = await mermaidToExcalidraw(src, el.x, el.y);
+      }
+      if (!cancelled) setDiagrams(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // diagramKey captures the inputs that affect conversion.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diagramKey]);
+
+  const sceneElements = useMemo(() => {
+    const els = live(elements);
+    const regular = els.filter((el) => !DIAGRAM_KINDS.has(el.kind));
+    const regularScene = convertToExcalidrawElements(
+      elementsToSkeletons(regular) as unknown as SkeletonInput,
+    );
+    const diagramScene = els
+      .filter((el) => DIAGRAM_KINDS.has(el.kind))
+      .flatMap((el) => {
+        const ready = diagrams[el.id];
+        if (ready && ready.length > 0) return ready;
+        // Fallback: the placeholder rectangle from the base mapping.
+        return convertToExcalidrawElements([elementToSkeleton(el)] as unknown as SkeletonInput);
+      });
+    return [...regularScene, ...diagramScene];
+  }, [elements, diagrams]);
+
+  // Excalidraw reads initialData once at mount; push later scenes (async
+  // diagrams) through the imperative API. Fit the viewport to the content.
+  useEffect(() => {
+    if (!api) return;
+    api.updateScene({ elements: sceneElements });
+    if (sceneElements.length > 0) {
       api.scrollToContent(sceneElements, { fitToContent: true, animate: false });
     }
   }, [api, sceneElements]);

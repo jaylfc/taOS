@@ -25,6 +25,10 @@ vi.mock("@excalidraw/excalidraw", () => ({
   ),
 }));
 vi.mock("@excalidraw/excalidraw/index.css", () => ({}));
+// Keep the heavy mermaid parser out of jsdom; no test element is a diagram.
+vi.mock("@excalidraw/mermaid-to-excalidraw", () => ({
+  parseMermaidToExcalidraw: vi.fn(async () => ({ elements: [], files: {} })),
+}));
 
 import { ExcalidrawBoard } from "../canvas/ExcalidrawBoard";
 import type { CanvasElement } from "../canvas/canvas-api";
