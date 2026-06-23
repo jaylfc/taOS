@@ -247,7 +247,16 @@ async def broker(request: Request, app_id: str):
     if app.get("trust") == "first-party":
         granted = set(GATED_CAPS)
     else:
+        # The userspace broker stays the runtime enforcer; the app_grants ledger
+        # feeds it (decision 24). A capability the current user granted this app
+        # via the consent flow also authorises it, on top of the per-app granted
+        # set. Additive and best-effort: no auth session or no ledger falls back
+        # to the per-app set, so nothing that worked before changes.
         granted = set(app["permissions_granted"])
+        uid = getattr(request.state, "user_id", None)
+        grants_store = getattr(request.app.state, "app_grants", None)
+        if uid and grants_store is not None:
+            granted |= await grants_store.granted_capabilities(uid, app_id)
     out = await handle_capability(
         app_id, body.get("capability", ""), body.get("args") or {},
         granted=granted,

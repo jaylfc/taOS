@@ -330,6 +330,9 @@ async def client(app, tmp_data_dir):
     if office_docs._db is not None:
         await office_docs.close()
     await office_docs.init()
+    # app_grants ledger (per-app capability grants) is lifespan-owned; tests that
+    # bypass the lifespan must init it so the userspace broker can consult it.
+    await app.state.app_grants.init()
     feedback_store = app.state.feedback_store
     if feedback_store._db is not None:
         await feedback_store.close()
