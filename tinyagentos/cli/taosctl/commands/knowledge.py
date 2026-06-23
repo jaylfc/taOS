@@ -41,8 +41,8 @@ def register(subparsers) -> None:
     qp.add_argument("--limit", type=int, default=20)
     qp.set_defaults(func=_search)
 
-    ip = verbs.add_parser("ingest", help="Ingest a URL or text into the knowledge base")
-    ip.add_argument("--url", default=None)
+    ip = verbs.add_parser("ingest", help="Ingest a URL into the knowledge base")
+    ip.add_argument("--url", required=True, help="Source URL (required by the server)")
     ip.add_argument("--title", default=None)
     ip.add_argument("--text", default=None)
     ip.add_argument("--category", action="append", dest="categories", default=None,
@@ -60,7 +60,7 @@ def register(subparsers) -> None:
     arp.set_defaults(func=_add_rule)
 
     drp = verbs.add_parser("delete-rule", help="Delete a category rule")
-    drp.add_argument("rule_id", help="Rule id")
+    drp.add_argument("rule_id", type=int, help="Rule id (integer)")
     drp.set_defaults(func=_delete_rule)
 
     subp = verbs.add_parser("subscriptions", help="List agent category subscriptions")
@@ -102,16 +102,19 @@ def _search(args, client):
 
 
 def _ingest(args, client):
-    return client.post(
-        "/api/knowledge/ingest",
-        {
-            "url": args.url,
-            "title": args.title,
-            "text": args.text,
-            "categories": args.categories or [],
-            "source": args.source,
-        },
-    )
+    # Send only the fields the caller supplied. The server's IngestRequest types
+    # title/text/source as str (not optional), so sending None for an unset field
+    # fails validation; omitting it lets the server apply its default.
+    body = {"url": args.url}
+    if args.title is not None:
+        body["title"] = args.title
+    if args.text is not None:
+        body["text"] = args.text
+    if args.categories:
+        body["categories"] = args.categories
+    if args.source is not None:
+        body["source"] = args.source
+    return client.post("/api/knowledge/ingest", body)
 
 
 def _rules(args, client):
@@ -126,7 +129,7 @@ def _add_rule(args, client):
 
 
 def _delete_rule(args, client):
-    return client.delete(f"/api/knowledge/rules/{quote(args.rule_id, safe='')}")
+    return client.delete(f"/api/knowledge/rules/{args.rule_id}")
 
 
 def _subscriptions(args, client):

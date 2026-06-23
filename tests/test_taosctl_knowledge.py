@@ -78,6 +78,18 @@ def test_ingest_posts_body(monkeypatch):
     assert (method, path) == ("POST", "/api/knowledge/ingest")
     assert body["url"] == "https://e.com"
     assert body["categories"] == ["a", "b"]
+    # Unset optional str fields are omitted, not sent as None (the server types
+    # them as str and would 422 on None).
+    assert "title" not in body and "text" not in body and "source" not in body
+
+
+def test_ingest_requires_url(monkeypatch):
+    import pytest
+
+    fake = _FakeClient()
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["knowledge", "ingest", "--text", "hi"], fake)
+    assert fake.calls == []
 
 
 def test_rules_list(monkeypatch):
@@ -97,8 +109,19 @@ def test_add_rule_posts_fields(monkeypatch):
 
 def test_delete_rule(monkeypatch):
     fake = _FakeClient()
-    assert _run(monkeypatch, ["knowledge", "delete-rule", "r1"], fake) == 0
-    assert ("DELETE", "/api/knowledge/rules/r1") in _paths(fake)
+    assert _run(monkeypatch, ["knowledge", "delete-rule", "7"], fake) == 0
+    assert ("DELETE", "/api/knowledge/rules/7") in _paths(fake)
+
+
+def test_delete_rule_rejects_non_int(monkeypatch):
+    import pytest
+
+    fake = _FakeClient()
+    # The route declares rule_id: int; argparse type=int rejects a non-int at the
+    # CLI (exit 2) instead of round-tripping a guaranteed 422.
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, ["knowledge", "delete-rule", "abc"], fake)
+    assert fake.calls == []
 
 
 def test_subscriptions_list(monkeypatch):
