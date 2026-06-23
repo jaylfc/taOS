@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int
+
 NOUN = "benchmarks"
 
 
@@ -22,7 +24,7 @@ def register(subparsers) -> None:
 
     wp = verbs.add_parser("worker", help="Benchmark results for one worker")
     wp.add_argument("worker_id")
-    wp.add_argument("--limit", type=int, default=100)
+    wp.add_argument("--limit", type=positive_int, default=100)
     wp.set_defaults(func=_worker)
 
     lp = verbs.add_parser("leaderboard", help="Capability leaderboard across workers")

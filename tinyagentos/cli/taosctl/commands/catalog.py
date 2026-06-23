@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int
+
 NOUN = "catalog"
 
 
@@ -34,7 +36,7 @@ def register(subparsers) -> None:
 
     qp = verbs.add_parser("search", help="Search sessions by topic")
     qp.add_argument("query")
-    qp.add_argument("--limit", type=int, default=20)
+    qp.add_argument("--limit", type=positive_int, default=20)
     qp.set_defaults(func=_search)
 
     ses = verbs.add_parser("session", help="Get one indexed session by id")
@@ -46,7 +48,7 @@ def register(subparsers) -> None:
     ctx.set_defaults(func=_context)
 
     rc = verbs.add_parser("recent", help="Recently indexed sessions")
-    rc.add_argument("--limit", type=int, default=20)
+    rc.add_argument("--limit", type=positive_int, default=20)
     rc.set_defaults(func=_recent)
 
     ip = verbs.add_parser("index", help="Index sessions (a date or a date range)")

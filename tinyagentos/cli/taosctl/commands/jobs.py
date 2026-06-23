@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int
+
 NOUN = "jobs"
 
 
@@ -15,7 +17,7 @@ def register(subparsers) -> None:
 
     lp = verbs.add_parser("list", help="List recent jobs")
     lp.add_argument("--status", help="Filter by status", default=None)
-    lp.add_argument("--limit", help="Max results", type=int, default=50)
+    lp.add_argument("--limit", help="Max results", type=positive_int, default=50)
     lp.set_defaults(func=_list)
 
     gp = verbs.add_parser("get", help="Get one job by id")

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int
+
 NOUN = "knowledge"
 
 
@@ -38,7 +40,7 @@ def register(subparsers) -> None:
     qp = verbs.add_parser("search", help="Search the knowledge base")
     qp.add_argument("query", help="Search query")
     qp.add_argument("--mode", default="keyword", help="keyword (default) or semantic")
-    qp.add_argument("--limit", type=int, default=20)
+    qp.add_argument("--limit", type=positive_int, default=20)
     qp.set_defaults(func=_search)
 
     ip = verbs.add_parser("ingest", help="Ingest a URL or text into the knowledge base")

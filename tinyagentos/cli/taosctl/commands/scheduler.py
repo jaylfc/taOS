@@ -7,6 +7,8 @@ Skipped (not simple JSON body endpoints):
 """
 from __future__ import annotations
 
+from tinyagentos.cli.taosctl.argtypes import positive_int
+
 NOUN = "scheduler"
 
 
@@ -18,7 +20,7 @@ def register(subparsers) -> None:
     sp.set_defaults(func=_stats)
 
     tp = verbs.add_parser("tasks", help="Recent task history")
-    tp.add_argument("--limit", type=int, default=None, help="Max tasks (1-500)")
+    tp.add_argument("--limit", type=positive_int, default=None, help="Max tasks (1-500)")
     tp.set_defaults(func=_tasks)
 
     bp = verbs.add_parser("backends", help="Live backend catalog")

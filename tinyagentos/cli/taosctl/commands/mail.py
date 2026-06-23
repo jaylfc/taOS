@@ -9,6 +9,8 @@ import getpass
 import os
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int
+
 NOUN = "mail"
 
 
@@ -44,7 +46,7 @@ def register(subparsers) -> None:
     mp = verbs.add_parser("messages", help="List messages in an account folder")
     mp.add_argument("account_id", help="Account id")
     mp.add_argument("--folder", default="INBOX", help="Folder name")
-    mp.add_argument("--limit", type=int, default=50, help="Max messages")
+    mp.add_argument("--limit", type=positive_int, default=50, help="Max messages")
     mp.set_defaults(func=_messages)
 
     gp = verbs.add_parser("get", help="Get a single message by uid")

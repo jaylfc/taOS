@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int, nonneg_int
+
 NOUN = "templates"
 
 
@@ -13,8 +15,8 @@ def register(subparsers) -> None:
     lp = verbs.add_parser("list", help="List agent templates")
     lp.add_argument("--category", help="Filter by category")
     lp.add_argument("--source", help="Filter by source")
-    lp.add_argument("--limit", type=int, default=50, help="Page size (default 50)")
-    lp.add_argument("--offset", type=int, default=0, help="Page offset (default 0)")
+    lp.add_argument("--limit", type=positive_int, default=50, help="Page size (default 50)")
+    lp.add_argument("--offset", type=nonneg_int, default=0, help="Page offset (default 0)")
     lp.set_defaults(func=_list)
 
     gp = verbs.add_parser("get", help="Get one template by ID")
