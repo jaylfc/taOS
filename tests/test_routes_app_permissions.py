@@ -123,3 +123,43 @@ async def test_revoke_removes_from_granted(client):
     assert resp.status_code == 200
     data = (await client.get("/api/apps/a/permissions")).json()
     assert "files.write" not in data["granted"]
+
+
+@pytest.mark.asyncio
+async def test_request_consent_creates_decision_for_gated_caps(client):
+    resp = await client.post(
+        "/api/apps/stream-chat/request-consent",
+        json={"capabilities": ["app.kv", "app.net", "app.memory"]},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # Free caps (app.kv) are auto-granted, so only the gated caps need consent.
+    assert data["pending"] == ["app.net", "app.memory"]
+    dec = data["decision"]
+    assert dec["type"] == "multi_select"
+    assert dec["metadata"] == {
+        "kind": "app_grant", "app_id": "stream-chat",
+        "capabilities": ["app.net", "app.memory"],
+    }
+    # Answering the consent Decision writes the grants (the #1429 side-effect).
+    resp = await client.post(f"/api/decisions/{dec['id']}/answer", json={"value": ["app.net"]})
+    assert resp.status_code == 200
+    data = (await client.get("/api/apps/stream-chat/permissions")).json()
+    assert data["granted"] == ["app.net"]
+
+
+@pytest.mark.asyncio
+async def test_request_consent_noop_when_all_free_or_decided(client):
+    # All free caps: nothing to consent to.
+    resp = await client.post("/api/apps/a/request-consent", json={"capabilities": ["app.kv"]})
+    assert resp.json() == {"decision": None, "pending": []}
+    # Already-decided gated caps are not re-prompted.
+    await client.post("/api/apps/a/permissions", json={"capability": "app.net", "decision": "denied"})
+    resp = await client.post("/api/apps/a/request-consent", json={"capabilities": ["app.net"]})
+    assert resp.json() == {"decision": None, "pending": []}
+
+
+@pytest.mark.asyncio
+async def test_request_consent_rejects_unknown_capability(client):
+    resp = await client.post("/api/apps/a/request-consent", json={"capabilities": ["app.bogus"]})
+    assert resp.status_code == 400

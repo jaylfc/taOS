@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.userspace.capabilities import (
+    FREE_CAPS,
     NET_PREFIX,
     describe_capability,
     is_known_capability,
@@ -110,3 +111,55 @@ async def revoke_app_permission(
         return JSONResponse({"error": "capability required"}, status_code=400)
     await store.revoke(user.user_id, app_id, cap)
     return {"ok": True}
+
+
+class RequestConsentIn(BaseModel):
+    capabilities: list[str]
+
+
+@router.post("/api/apps/{app_id}/request-consent")
+async def request_app_consent(
+    app_id: str, body: RequestConsentIn, request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Raise an app-grant consent Decision for the capabilities that need it.
+
+    The shared entry point for both grant-on-install and lazy first-use:
+    validate the requested capabilities against the closed vocabulary, drop the
+    free caps (granted without consent) and any the user has already decided on
+    for this app, and if any remain create a multi_select consent Decision
+    routed to the app_grants ledger on answer (see _apply_app_grant). Returns
+    {decision, pending}; decision is null when nothing needs consent."""
+    grants = request.app.state.app_grants
+    caps: list[str] = []
+    for raw in body.capabilities or []:
+        cap = raw.strip()
+        if not cap or not is_known_capability(cap):
+            return JSONResponse({"error": f"unknown capability: {cap}"}, status_code=400)
+        if cap.startswith(NET_PREFIX) and not is_valid_network_grant(cap):
+            return JSONResponse({"error": f"invalid network origin: {cap}"}, status_code=400)
+        caps.append(cap)
+
+    # Free caps are granted without consent; caps the user already granted or
+    # denied for this app are not re-prompted (the Permissions app revisits).
+    decided = {g["capability"] for g in await grants.list_grants(user.user_id, app_id)}
+    pending = [c for c in caps if c not in FREE_CAPS and c not in decided]
+    if not pending:
+        return {"decision": None, "pending": []}
+
+    store = request.app.state.decision_store
+    decision = await store.create(user_id=user.user_id, **app_grant_decision_payload(app_id, pending))
+
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is not None:
+        # Best effort: a notification failure must not fail the queued decision.
+        try:
+            await notifs.add(
+                title="Permission needed",
+                message=f"{app_id} is requesting permissions",
+                level="warning",
+                source="decisions",
+            )
+        except Exception:
+            pass
+    return {"decision": decision, "pending": pending}
