@@ -118,6 +118,26 @@ async def test_select_options_without_value_default_to_label(client):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_labels_get_distinct_values(client):
+    # Two value-less options sharing a label must NOT collapse to one identity,
+    # otherwise the multi_select would check both at once again. Collisions are
+    # disambiguated with a suffix so every option keeps a distinct value.
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "pick", "type": "multi_select",
+        "options": [{"label": "Other"}, {"label": "Other"}, {"label": "Other"}],
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    values = [o["value"] for o in d["options"]]
+    assert len(set(values)) == 3, f"values must be distinct, got {values}"
+    # Selecting one colliding option does not implicitly select the others.
+    one = values[0]
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": [one]})
+    assert resp.status_code == 200
+    assert resp.json()["answer"]["value"] == [one]
+
+
+@pytest.mark.asyncio
 async def test_answer_routes_back_to_bus_agent(client, monkeypatch):
     import tinyagentos.routes.decisions as dmod
 

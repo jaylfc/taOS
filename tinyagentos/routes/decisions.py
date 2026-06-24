@@ -90,6 +90,25 @@ class DecisionIn(BaseModel):
     checkpoint_ref: str | None = None
     timeline_id: str | None = None
 
+    @model_validator(mode="after")
+    def _dedupe_option_values(self) -> "DecisionIn":
+        # Per-option defaulting makes value fall back to label, but two options
+        # sharing a label (e.g. both "Other") would then collide and the inbox
+        # would treat them as one identity again. Keep the first occurrence and
+        # suffix later collisions so every option's value stays distinct; labels
+        # are untouched (display) since value is the identity the stack keys on.
+        seen: set[str] = set()
+        for opt in self.options:
+            base = opt.value or ""
+            value = base
+            n = 2
+            while value in seen:
+                value = f"{base} ({n})"
+                n += 1
+            opt.value = value
+            seen.add(value)
+        return self
+
 
 class AnswerIn(BaseModel):
     value: object
