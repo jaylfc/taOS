@@ -12,7 +12,7 @@ import os
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
@@ -89,6 +89,7 @@ class DecisionIn(BaseModel):
     parent_decision_id: str | None = None
     checkpoint_ref: str | None = None
     timeline_id: str | None = None
+    metadata: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _dedupe_option_values(self) -> "DecisionIn":
@@ -147,6 +148,7 @@ async def create_decision(body: DecisionIn, request: Request, user: CurrentUser 
         parent_decision_id=parent_id,
         checkpoint_ref=body.checkpoint_ref,
         timeline_id=body.timeline_id,
+        metadata=body.metadata,
     )
 
     # Mark the parent superseded only after the replacement is persisted.
@@ -244,5 +246,33 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     updated = await store.answer(decision_id, body.value, answered_by)
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
+    await _apply_app_grant(request, updated, body.value)
     await _route_answer_to_agent(updated, body.value)
     return updated
+
+
+async def _apply_app_grant(request: Request, decision: dict, value) -> None:
+    """Side effect for an app-grant consent Decision: write the per-capability
+    grant decisions to the app_grants ledger. The decision's metadata carries
+    {kind: "app_grant", app_id, capabilities}; for the multi_select consent card
+    the answer is the list of granted capability values, so the rest are denied.
+    Best-effort: the answer is already persisted, so a grant-store hiccup must
+    not fail the answer."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "app_grant":
+        return
+    grants = getattr(request.app.state, "app_grants", None)
+    app_id = meta.get("app_id")
+    caps = meta.get("capabilities") or []
+    if grants is None or not app_id:
+        return
+    user_id = decision.get("user_id") or ""
+    granted = set(value if isinstance(value, list) else [value])
+    try:
+        for cap in caps:
+            await grants.set_decision(
+                user_id, app_id, cap,
+                decision="granted" if cap in granted else "denied",
+            )
+    except Exception:
+        pass

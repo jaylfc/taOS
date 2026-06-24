@@ -19,11 +19,36 @@ from pydantic import BaseModel
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.userspace.capabilities import (
     NET_PREFIX,
+    describe_capability,
     is_known_capability,
     is_valid_network_grant,
 )
 
 router = APIRouter()
+
+
+def app_grant_decision_payload(app_id: str, capabilities: list[str]) -> dict:
+    """Build the grant-on-install consent Decision for an app (#56, decision 6).
+
+    A multi_select card where each requested capability is an option the user
+    grants or leaves unchecked; metadata.kind == "app_grant" routes the answer
+    to the app_grants ledger (see _apply_app_grant in routes/decisions.py).
+    Returned as kwargs for DecisionStore.create / POST /api/decisions. The
+    install flow constructs and posts this; it is not wired into install yet."""
+    return {
+        "from_agent": "@taos-app-install",
+        "question": f"{app_id} would like these permissions",
+        "type": "multi_select",
+        "priority": "blocking",
+        "options": [
+            {"label": describe_capability(c), "value": c} for c in capabilities
+        ],
+        "metadata": {
+            "kind": "app_grant",
+            "app_id": app_id,
+            "capabilities": list(capabilities),
+        },
+    }
 
 
 class GrantIn(BaseModel):

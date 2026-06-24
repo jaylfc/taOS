@@ -34,6 +34,19 @@ async def test_invalid_type_rejected(store):
 
 
 @pytest.mark.asyncio
+async def test_metadata_round_trips(store):
+    meta = {"kind": "app_grant", "app_id": "stream-chat", "capabilities": ["app.net"]}
+    d = await store.create("@a", "grant?", "multi_select",
+                           options=[{"label": "Net", "value": "app.net"}], metadata=meta)
+    assert d["metadata"] == meta
+    got = await store.get(d["id"])
+    assert got["metadata"] == meta
+    # Omitted metadata defaults to an empty dict, not None.
+    d2 = await store.create("@a", "q", "free_text")
+    assert d2["metadata"] == {}
+
+
+@pytest.mark.asyncio
 async def test_list_filters(store):
     await store.create("@a", "q1", "approve_deny", project_id="p1", user_id="u1")
     b = await store.create("@a", "q2", "free_text", project_id="p2", user_id="u1")

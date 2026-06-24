@@ -138,6 +138,52 @@ async def test_duplicate_labels_get_distinct_values(client):
 
 
 @pytest.mark.asyncio
+async def test_metadata_echoed_on_create(client):
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "q", "type": "free_text",
+        "metadata": {"kind": "app_grant", "app_id": "x", "capabilities": ["app.net"]},
+    })
+    assert resp.status_code == 200
+    assert resp.json()["metadata"]["app_id"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_app_grant_answer_writes_grants(client):
+    # An app-grant consent Decision (metadata.kind == app_grant): answering the
+    # multi_select with a subset writes granted for the picked caps and denied
+    # for the rest to the app_grants ledger.
+    app = client._transport.app
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@taos-app-install", "question": "stream-chat permissions",
+        "type": "multi_select",
+        "options": [{"label": "Net", "value": "app.net"},
+                    {"label": "Memory", "value": "app.memory"}],
+        "metadata": {"kind": "app_grant", "app_id": "stream-chat",
+                     "capabilities": ["app.net", "app.memory"]},
+    })
+    d = resp.json()
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["app.net"]})
+    assert resp.status_code == 200
+    user_id = d["user_id"]
+    granted = await app.state.app_grants.granted_capabilities(user_id, "stream-chat")
+    assert granted == {"app.net"}
+    grants = {g["capability"]: g["decision"]
+              for g in await app.state.app_grants.list_grants(user_id, "stream-chat")}
+    assert grants == {"app.net": "granted", "app.memory": "denied"}
+
+
+@pytest.mark.asyncio
+async def test_app_grant_payload_builder():
+    from tinyagentos.routes.app_permissions import app_grant_decision_payload
+    payload = app_grant_decision_payload("stream-chat", ["app.net", "app.memory"])
+    assert payload["type"] == "multi_select"
+    assert payload["metadata"] == {"kind": "app_grant", "app_id": "stream-chat",
+                                   "capabilities": ["app.net", "app.memory"]}
+    assert [o["value"] for o in payload["options"]] == ["app.net", "app.memory"]
+    assert payload["options"][0]["label"]
+
+
+@pytest.mark.asyncio
 async def test_answer_routes_back_to_bus_agent(client, monkeypatch):
     import tinyagentos.routes.decisions as dmod
 

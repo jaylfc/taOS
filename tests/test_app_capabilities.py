@@ -2,9 +2,11 @@
 import pytest
 
 from tinyagentos.userspace.capabilities import (
+    CAPABILITY_DESCRIPTIONS,
     FREE_CAPS,
     GATED_CAPS,
     KNOWN_CAPS,
+    describe_capability,
     is_known_capability,
 )
 from tinyagentos.userspace.package import PackageError, parse_manifest
@@ -13,6 +15,20 @@ from tinyagentos.userspace.package import PackageError, parse_manifest
 def test_known_caps_is_free_plus_gated_and_disjoint():
     assert KNOWN_CAPS == FREE_CAPS | GATED_CAPS
     assert FREE_CAPS.isdisjoint(GATED_CAPS)
+
+
+def test_every_known_cap_has_a_description():
+    # The consent card renders one line per capability; a missing description
+    # would show an empty/raw row, so coverage is enforced.
+    for cap in KNOWN_CAPS:
+        assert CAPABILITY_DESCRIPTIONS.get(cap), f"no description for {cap}"
+
+
+def test_describe_capability_handles_bare_network_and_unknown():
+    assert describe_capability("app.net") == CAPABILITY_DESCRIPTIONS["app.net"]
+    assert describe_capability("network:https://x.com") == "Connect to https://x.com"
+    # Unknown tokens fall back to the raw string rather than an empty row.
+    assert describe_capability("app.bogus") == "app.bogus"
 
 
 def test_broker_reexports_the_same_sets():

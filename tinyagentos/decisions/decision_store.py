@@ -36,14 +36,15 @@ CREATE TABLE IF NOT EXISTS decisions (
     deadline           REAL,
     checkpoint_ref     TEXT,
     parent_decision_id TEXT,
-    timeline_id        TEXT
+    timeline_id        TEXT,
+    metadata           TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_decisions_user ON decisions(user_id, status);
 """
 
-_JSON_FIELDS = ("options", "answer")
+_JSON_FIELDS = ("options", "answer", "metadata")
 
 
 def _row_to_decision(row, description) -> dict:
@@ -56,6 +57,22 @@ def _row_to_decision(row, description) -> dict:
 
 class DecisionStore(BaseStore):
     SCHEMA = DECISIONS_SCHEMA
+
+    async def _post_init(self) -> None:
+        # `metadata` was added after the initial decisions ship. Guarded ALTER
+        # so existing databases gain it without a destructive migration (SQLite
+        # lacks ADD COLUMN IF NOT EXISTS before 3.37). Mirrors board_audit.py.
+        cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(decisions)")
+            ).fetchall()
+        }
+        if "metadata" not in cols:
+            await self._db.execute(
+                "ALTER TABLE decisions ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
+            await self._db.commit()
 
     async def create(
         self,
@@ -72,6 +89,7 @@ class DecisionStore(BaseStore):
         parent_decision_id: str | None = None,
         checkpoint_ref: str | None = None,
         timeline_id: str | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         if type not in DECISION_TYPES:
             raise ValueError(f"invalid decision type: {type!r}")
@@ -83,11 +101,12 @@ class DecisionStore(BaseStore):
             """INSERT INTO decisions
                (id, from_agent, project_id, user_id, question, type, options, context,
                 priority, status, created_at, deadline, parent_decision_id,
-                checkpoint_ref, timeline_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)""",
+                checkpoint_ref, timeline_id, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
             (did, from_agent, project_id, user_id, question, type,
              json.dumps(options or []), context, priority, now, deadline,
-             parent_decision_id, checkpoint_ref, timeline_id),
+             parent_decision_id, checkpoint_ref, timeline_id,
+             json.dumps(metadata or {})),
         )
         await self._db.commit()
         return await self.get(did)

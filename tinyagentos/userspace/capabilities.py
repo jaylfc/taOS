@@ -56,3 +56,32 @@ def is_known_capability(perm: str) -> bool:
     if not isinstance(perm, str):
         return False
     return perm in KNOWN_CAPS or perm.startswith(NET_PREFIX)
+
+
+# One-line, human, non-technical description per capability, for the consent
+# card (mirrors the agent SCOPE_DESCRIPTIONS). Every entry in KNOWN_CAPS has
+# one; the test_capabilities suite enforces full coverage. Copy is a draft to
+# be reworded by product.
+CAPABILITY_DESCRIPTIONS: dict[str, str] = {
+    "app.kv": "Store and read its own app data",
+    "app.table": "Store and read its own structured data",
+    "app.files": "Read and write files in its own app folder",
+    "app.notify": "Send you notifications",
+    "app.window": "Open and manage its own windows",
+    "app.net": "Connect to the internet",
+    "app.agent": "Ask your taOS agent for help",
+    "app.llm": "Use a language model",
+    "app.memory": "Read and write your memories",
+}
+
+
+def describe_capability(perm: str) -> str:
+    """A human one-liner for a capability, for the consent card.
+
+    Bare caps map through CAPABILITY_DESCRIPTIONS; a `network:<origin>` grant
+    renders as "Connect to <origin>"; anything unrecognised falls back to the
+    raw token so the card never shows an empty row.
+    """
+    if isinstance(perm, str) and perm.startswith(NET_PREFIX):
+        return f"Connect to {perm[len(NET_PREFIX):]}"
+    return CAPABILITY_DESCRIPTIONS.get(perm, perm)
