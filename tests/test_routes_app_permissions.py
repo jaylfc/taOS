@@ -178,3 +178,19 @@ async def test_request_consent_dedups_capabilities(client):
     assert data["pending"] == ["app.net", "app.memory"]
     values = [o["value"] for o in data["decision"]["options"]]
     assert values == ["app.net", "app.memory"]
+
+
+@pytest.mark.asyncio
+async def test_request_consent_skips_caps_with_pending_decision(client):
+    # First call raises a consent Decision for app.net.
+    r1 = await client.post("/api/apps/lazy-app/request-consent", json={"capabilities": ["app.net"]})
+    assert r1.json()["pending"] == ["app.net"]
+    dec_id = r1.json()["decision"]["id"]
+    # A second call (the lazy path re-firing before the user answers) must NOT
+    # create a duplicate pending consent card for the same app + cap.
+    r2 = await client.post("/api/apps/lazy-app/request-consent", json={"capabilities": ["app.net"]})
+    assert r2.json() == {"decision": None, "pending": []}
+    # Once answered, a later request for a DIFFERENT cap still raises its own card.
+    await client.post(f"/api/decisions/{dec_id}/answer", json={"value": ["app.net"]})
+    r3 = await client.post("/api/apps/lazy-app/request-consent", json={"capabilities": ["app.memory"]})
+    assert r3.json()["pending"] == ["app.memory"]

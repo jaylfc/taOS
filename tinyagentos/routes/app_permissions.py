@@ -142,18 +142,26 @@ async def request_app_consent(
 
     # Free caps are granted without consent; caps the user already granted or
     # denied for this app are not re-prompted (the Permissions app revisits).
+    decided = {g["capability"] for g in await grants.list_grants(user.user_id, app_id)}
+    # Caps that already have an unanswered app_grant Decision for this app: the
+    # lazy first-use path re-fires on every denied access until the user answers,
+    # so skip them or it would pile up duplicate pending consent cards.
+    store = request.app.state.decision_store
+    awaiting: set[str] = set()
+    for d in await store.list(status="pending", user_id=user.user_id):
+        meta = d.get("metadata") or {}
+        if meta.get("kind") == "app_grant" and meta.get("app_id") == app_id:
+            awaiting.update(meta.get("capabilities") or [])
     # De-duplicate while preserving order: a repeated cap would otherwise become
     # a colliding option whose value the dedup suffixer rewrites to a non-cap.
-    decided = {g["capability"] for g in await grants.list_grants(user.user_id, app_id)}
     pending: list[str] = []
     for c in caps:
-        if c in FREE_CAPS or c in decided or c in pending:
+        if c in FREE_CAPS or c in decided or c in awaiting or c in pending:
             continue
         pending.append(c)
     if not pending:
         return {"decision": None, "pending": []}
 
-    store = request.app.state.decision_store
     decision = await store.create(user_id=user.user_id, **app_grant_decision_payload(app_id, pending))
 
     notifs = getattr(request.app.state, "notifications", None)
