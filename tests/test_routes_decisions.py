@@ -91,6 +91,33 @@ async def test_multi_select_answer_must_be_subset(client):
 
 
 @pytest.mark.asyncio
+async def test_select_options_without_value_default_to_label(client):
+    # An agent may declare options with only a label (value is optional in the
+    # API). Every option must still get a distinct, non-null value, otherwise
+    # the inbox cannot tell them apart (a multi_select would check all at once)
+    # and answer validation silently no-ops on an empty valid set.
+    resp = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "pick apps", "type": "multi_select",
+        "options": [{"label": "Images"}, {"label": "Observatory"}, {"label": "Decisions"}],
+    })
+    assert resp.status_code == 200
+    d = resp.json()
+    values = [o["value"] for o in d["options"]]
+    assert values == ["Images", "Observatory", "Decisions"]
+    # Answer validation now has a populated valid set keyed on those values.
+    resp = await client.post(f"/api/decisions/{d['id']}/answer", json={"value": ["Images", "Decisions"]})
+    assert resp.status_code == 200
+    resp2 = await client.post("/api/decisions", json={
+        "from_agent": "@a", "question": "pick one", "type": "single_select",
+        "options": [{"label": "A"}, {"label": "B"}],
+    })
+    d2 = resp2.json()
+    # A label that was not declared is still rejected.
+    bad = await client.post(f"/api/decisions/{d2['id']}/answer", json={"value": "C"})
+    assert bad.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_answer_routes_back_to_bus_agent(client, monkeypatch):
     import tinyagentos.routes.decisions as dmod
 

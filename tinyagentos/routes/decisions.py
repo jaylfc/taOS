@@ -12,7 +12,7 @@ import os
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
@@ -64,6 +64,17 @@ class OptionIn(BaseModel):
     value: str | None = None
     recommended: bool = False
     rationale: str = ""
+
+    @model_validator(mode="after")
+    def _default_value_to_label(self) -> "OptionIn":
+        # value is optional for callers, but the whole stack keys on it: the
+        # inbox uses it as each option's identity (without it a multi_select
+        # checks every option at once) and answer validation builds its valid
+        # set from non-null values. Fall back to the label so every option has
+        # a distinct, non-null value.
+        if not (self.value and self.value.strip()):
+            self.value = self.label
+        return self
 
 
 class DecisionIn(BaseModel):
