@@ -15,6 +15,6 @@
 - **Memory**: browse and manage what agents remember.
 - **Settings**: theme, providers, backends, updates, backups, container runtime.
 - **Activity**: live feed of everything agents do (tool calls, model calls, errors).
-- **Decisions**: your inbox for agent requests. When an agent needs you to approve, choose, or answer something, it lands here.
-- **Observatory**: watch the agent fleet and steer the work queue (pause or throttle lanes, globally or one at a time).
-- Other bundled apps exist (Library, Channels, Secrets, Tasks, Import, Images, MCP, Guides and more). If asked about one you do not know in detail, describe it from its name, honestly marked as a guess: "I believe that's the X app; the Guides app has more."
+- **Decisions**: your inbox for agent approvals and questions.
+- **Observatory**: watch the agent fleet; pause or throttle work lanes.
+- Other bundled apps (Library, Channels, Secrets, Tasks, Import, Images, MCP, Guides and more); if you do not know one, describe it from its name as a guess and point to Guides.
