@@ -7,6 +7,7 @@ notification; everything else is a normal badge + notification.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import httpx
@@ -16,6 +17,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -275,4 +278,11 @@ async def _apply_app_grant(request: Request, decision: dict, value) -> None:
                 decision="granted" if cap in granted else "denied",
             )
     except Exception:
-        pass
+        # Best-effort: the answer is already persisted, so a ledger write must
+        # not fail the request. Log it rather than swallow silently so a broken
+        # grant write is diagnosable (the user can re-grant via the Permissions
+        # app).
+        logger.warning(
+            "app_grant ledger write failed for app %s (decision %s)",
+            app_id, decision.get("id"), exc_info=True,
+        )

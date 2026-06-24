@@ -142,8 +142,14 @@ async def request_app_consent(
 
     # Free caps are granted without consent; caps the user already granted or
     # denied for this app are not re-prompted (the Permissions app revisits).
+    # De-duplicate while preserving order: a repeated cap would otherwise become
+    # a colliding option whose value the dedup suffixer rewrites to a non-cap.
     decided = {g["capability"] for g in await grants.list_grants(user.user_id, app_id)}
-    pending = [c for c in caps if c not in FREE_CAPS and c not in decided]
+    pending: list[str] = []
+    for c in caps:
+        if c in FREE_CAPS or c in decided or c in pending:
+            continue
+        pending.append(c)
     if not pending:
         return {"decision": None, "pending": []}
 

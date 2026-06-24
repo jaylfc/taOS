@@ -163,3 +163,18 @@ async def test_request_consent_noop_when_all_free_or_decided(client):
 async def test_request_consent_rejects_unknown_capability(client):
     resp = await client.post("/api/apps/a/request-consent", json={"capabilities": ["app.bogus"]})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_request_consent_dedups_capabilities(client):
+    # A repeated capability must not create a colliding option (whose value the
+    # dedup suffixer would rewrite to a non-capability like "app.net (2)").
+    resp = await client.post(
+        "/api/apps/dup-app/request-consent",
+        json={"capabilities": ["app.net", "app.net", "app.memory"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["pending"] == ["app.net", "app.memory"]
+    values = [o["value"] for o in data["decision"]["options"]]
+    assert values == ["app.net", "app.memory"]
