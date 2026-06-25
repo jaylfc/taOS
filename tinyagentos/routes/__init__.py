@@ -314,6 +314,9 @@ def register_all_routers(app):
     from tinyagentos.routes.feedback import router as feedback_router
     app.include_router(feedback_router)
 
+    from tinyagentos.routes.client_logs import router as client_logs_router
+    app.include_router(client_logs_router)
+
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router)
 
