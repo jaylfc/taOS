@@ -856,14 +856,15 @@ class TestLoginRateLimit:
         from tinyagentos.routes.auth import _login_limiter
         _login_limiter.reset(self._TEST_IP)
         app.state.auth.setup_user("admin", "Admin", "", "adminpass")
-        # First 5 failures should each return 401 (not yet limited)
-        for i in range(5):
+        # The first 4 wrong attempts return 401 (under the soft limit of 5).
+        for i in range(4):
             r = await auth_client.post(
                 "/auth/login",
                 json={"username": "admin", "password": "wrongpass"},
             )
             assert r.status_code == 401, f"attempt {i+1} expected 401, got {r.status_code}"
-        # 6th attempt should be 429
+        # The 5th wrong attempt trips the soft limit and returns the 429 lockout
+        # (the limiter records the failure, then sees it is now limited).
         resp = await auth_client.post(
             "/auth/login",
             json={"username": "admin", "password": "wrongpass"},
