@@ -88,13 +88,14 @@ class ClientLogStore(BaseStore):
                 row["created_at"],
             ),
         )
-        # Ring-buffer prune: drop everything older than the newest MAX_ROWS.
+        # Ring-buffer prune: keep only the most recently inserted MAX_ROWS rows.
+        # Retain by rowid (monotonic insert order), not created_at: the timestamp
+        # is a coarse ISO string, so same-microsecond rows under a crash loop tie
+        # and make the prune non-deterministic. rowid is the indexed primary key,
+        # so this also avoids the per-insert full-table NOT IN scan.
         await self._db.execute(
-            """
-            DELETE FROM client_logs WHERE id NOT IN (
-                SELECT id FROM client_logs ORDER BY created_at DESC LIMIT ?
-            )
-            """,
+            "DELETE FROM client_logs WHERE rowid <= "
+            "(SELECT MAX(rowid) FROM client_logs) - ?",
             (MAX_ROWS,),
         )
         await self._db.commit()
@@ -110,12 +111,12 @@ class ClientLogStore(BaseStore):
         if level:
             cursor = await self._db.execute(
                 f"SELECT {cols} FROM client_logs WHERE level = ? "
-                "ORDER BY created_at DESC LIMIT ?",
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (level, limit),
             )
         else:
             cursor = await self._db.execute(
-                f"SELECT {cols} FROM client_logs ORDER BY created_at DESC LIMIT ?",
+                f"SELECT {cols} FROM client_logs ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (limit,),
             )
         rows = await cursor.fetchall()

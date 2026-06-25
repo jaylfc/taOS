@@ -57,3 +57,21 @@ async def test_ring_buffer_caps_total_rows(store, monkeypatch):
     msgs = [i["message"] for i in items]
     assert "m5" in msgs
     assert "m0" not in msgs
+
+
+@pytest.mark.asyncio
+async def test_prune_and_order_use_rowid_when_timestamps_tie(store, monkeypatch):
+    monkeypatch.setattr("tinyagentos.client_log_store.MAX_ROWS", 3)
+    for i in range(5):
+        await store.create(user_id="u1", level="debug", message=f"m{i}")
+    # Force m0..m4 to share one created_at so the timestamp cannot disambiguate
+    # them; only the rowid tie-breaker keeps the prune + ordering deterministic.
+    await store._db.execute(
+        "UPDATE client_logs SET created_at = '2026-01-01T00:00:00+00:00'")
+    await store._db.commit()
+    # This 6th insert triggers the prune; a rowid-based ring buffer must keep the
+    # last-inserted three (m3, m4, m5), not an arbitrary trio of the tied rows.
+    await store.create(user_id="u1", level="debug", message="m5")
+    msgs = [i["message"] for i in await store.list_recent(limit=100)]
+    assert len(msgs) == 3
+    assert msgs == ["m5", "m4", "m3"]
