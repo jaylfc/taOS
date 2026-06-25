@@ -12,8 +12,14 @@ from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.client_log_store import VALID_LEVELS
+from tinyagentos.rate_limit import RateLimiter
 
 router = APIRouter()
+
+# Per-user token bucket: a crash loop (or one user) must not be able to flood the
+# shared ring buffer and evict everyone else's recent errors. Allows a burst of
+# ~30 lines (a noisy crash) then ~1/sec sustained.
+_post_limiter = RateLimiter(capacity=30, refill_per_second=1.0)
 
 
 class ClientLogIn(BaseModel):
@@ -37,6 +43,10 @@ async def post_client_log(
     message = body.message.strip()
     if not message:
         return JSONResponse({"error": "message required"}, status_code=400)
+    # Only valid writes are rate-limited (malformed requests already 400 above
+    # and never reach the buffer), so a flood of real logs cannot evict others'.
+    if not _post_limiter.check(user.user_id):
+        return JSONResponse({"error": "rate limited, slow down"}, status_code=429)
     store = request.app.state.client_log_store
     rec = await store.create(
         user_id=user.user_id,

@@ -50,6 +50,24 @@ async def test_empty_message_rejected(client):
 
 
 @pytest.mark.asyncio
+async def test_post_is_rate_limited_per_user(client, monkeypatch):
+    from tinyagentos.rate_limit import RateLimiter
+
+    # Small, non-refilling bucket so a flood is deterministically capped: the
+    # 4th valid post past a capacity of 3 is rejected, protecting other users'
+    # entries in the shared ring buffer.
+    monkeypatch.setattr(
+        "tinyagentos.routes.client_logs._post_limiter",
+        RateLimiter(capacity=3, refill_per_second=0.0),
+    )
+    for _ in range(3):
+        ok = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
+        assert ok.status_code == 201
+    blocked = await client.post("/api/client-logs", json={"level": "error", "message": "flood"})
+    assert blocked.status_code == 429
+
+
+@pytest.mark.asyncio
 async def test_non_admin_can_post_but_not_read(app, client):
     app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
     try:
