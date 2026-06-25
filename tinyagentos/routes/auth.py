@@ -82,11 +82,15 @@ class _FailCounter:
 _login_limiter = _FailCounter(max_attempts=5, window_seconds=600)
 _complete_limiter = _FailCounter(max_attempts=5, window_seconds=600)
 
-# Hard ceiling: only above this do we reject BEFORE verifying the password, to
-# bound bcrypt cost under a flood. It is far above any legitimate retry burst, so
-# a real user typing their correct password is never blocked by earlier typos --
-# the soft limit (max_attempts) only gates further WRONG attempts.
-_LOGIN_HARD_MAX = 50
+# Hard ceiling: at/above this we reject BEFORE verifying the password, which
+# bounds BOTH brute-force guesses and the bcrypt cost per window+IP. Kept just
+# above the soft limit (5): a user who fat-fingers a few times then types the
+# right password still gets in (within the first ~10 attempts), while an attacker
+# is throttled to at most this many guesses+hashes per 10-minute window per IP.
+# Letting a correct password through inherently requires checking it, so a small
+# increase over the soft limit is the necessary cost of not locking out real
+# users -- keep this tight, not large.
+_LOGIN_HARD_MAX = 10
 _LOCKOUT_MSG = "Too many failed attempts. Wait a few minutes, then sign in with your correct password."
 
 # Self-contained HTML pages for the auth flow.
