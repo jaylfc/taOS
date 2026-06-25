@@ -159,3 +159,55 @@ async def test_registered_agent_with_a_claim_is_working_not_idle(app, client):
     # The agent appears once, as working (not duplicated as idle).
     assert len(rows) == 1
     assert rows[0]["state"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_fleet_fresh_claim_has_held_seconds_and_is_not_stale(app, client):
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    proj = await pstore.create_project(name="ObsFresh", slug="obs-fresh", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Fresh card", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-fresh")
+
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@lane-fresh"]
+    assert len(mine) == 1
+    assert mine[0]["held_seconds"] is not None and mine[0]["held_seconds"] >= 0
+    assert mine[0]["stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_fleet_flags_a_long_held_claim_as_stale(app, client):
+    from tinyagentos.routes.observatory import STALE_CLAIM_SECONDS
+    import time
+
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    proj = await pstore.create_project(name="ObsStale", slug="obs-stale", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Wedged card", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-stale")
+    # Backdate the claim well past the threshold to exercise the stale path.
+    old = time.time() - (STALE_CLAIM_SECONDS + 600)
+    await tstore._db.execute(
+        "UPDATE project_tasks SET claimed_at = ? WHERE id = ?", (old, task["id"]))
+    await tstore._db.commit()
+
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@lane-stale"]
+    assert len(mine) == 1
+    assert mine[0]["stale"] is True
+    assert mine[0]["held_seconds"] >= STALE_CLAIM_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_fleet_idle_agent_has_uniform_badge_shape(app, client):
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    await reg.register(framework="opencode", display_name="Idle One",
+                       handle="@lane-idle", user_id="admin")
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    idle = [a for a in agents if a["handle"] == "@lane-idle"]
+    assert len(idle) == 1
+    assert idle[0]["held_seconds"] is None
+    assert idle[0]["stale"] is False

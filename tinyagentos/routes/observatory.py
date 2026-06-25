@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,6 +25,12 @@ from tinyagentos.auth_context import CurrentUser, current_user
 router = APIRouter()
 
 _DEFAULT_STATE: dict = {"global": False, "lanes": {}}
+
+# A working agent that has held its claimed card longer than this (seconds) is
+# flagged ``stale`` in the fleet view: it catches a hung or wedged lane the pause
+# switch would otherwise hide. Board-only signal (claim age); a richer
+# no-trace-progress check is phase 2 once the lane->trace-slug mapping is wired.
+STALE_CLAIM_SECONDS = 1800
 
 # Serialise read-modify-write of the pause/throttle state files so two
 # concurrent admin POSTs cannot lose an update (each reads the same prior
@@ -190,6 +197,7 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
     else:
         projects = await pstore.list_for_user(user.user_id, status=None)
 
+    now = time.time()
     agents: list[dict] = []
     working: set[str] = set()
     for proj in projects:
@@ -201,6 +209,10 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
             if not handle:
                 continue
             working.add(handle)
+            # Claim age drives the stale badge. claimed_at is a Unix epoch set on
+            # claim; guard a missing/None value (it must not break the view).
+            claimed_at = t.get("claimed_at")
+            held_seconds = int(now - claimed_at) if claimed_at else None
             agents.append({
                 "handle": handle,
                 "state": "working",
@@ -209,6 +221,8 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
                     "project_id": pid,
                     "title": t.get("title"),
                 },
+                "held_seconds": held_seconds,
+                "stale": held_seconds is not None and held_seconds >= STALE_CLAIM_SECONDS,
             })
 
     # Registered agents holding no card are idle; surface them so the fleet
@@ -228,7 +242,11 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
             if not handle or handle in working:
                 continue
             working.add(handle)
-            agents.append({"handle": handle, "state": "idle", "holds": None})
+            # Idle agents hold no card, so no claim age; keep the shape uniform.
+            agents.append({
+                "handle": handle, "state": "idle", "holds": None,
+                "held_seconds": None, "stale": False,
+            })
 
     agents.sort(key=lambda a: a["handle"])
     return {"agents": agents, "paused": _read_state(request)}
