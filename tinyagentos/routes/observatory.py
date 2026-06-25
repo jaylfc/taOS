@@ -210,9 +210,13 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
                 continue
             working.add(handle)
             # Claim age drives the stale badge. claimed_at is a Unix epoch set on
-            # claim; guard a missing/None value (it must not break the view).
+            # claim. Use `is not None` so an epoch-0 timestamp is not mistaken for
+            # missing, and clamp to >= 0 so clock skew (claimed_at slightly in the
+            # future) cannot report a negative age.
             claimed_at = t.get("claimed_at")
-            held_seconds = int(now - claimed_at) if claimed_at else None
+            held_seconds = (
+                max(0, int(now - claimed_at)) if claimed_at is not None else None
+            )
             agents.append({
                 "handle": handle,
                 "state": "working",

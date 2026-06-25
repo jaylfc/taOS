@@ -211,3 +211,24 @@ async def test_fleet_idle_agent_has_uniform_badge_shape(app, client):
     assert len(idle) == 1
     assert idle[0]["held_seconds"] is None
     assert idle[0]["stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_fleet_clamps_held_seconds_under_clock_skew(app, client):
+    import time
+
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    proj = await pstore.create_project(name="ObsSkew", slug="obs-skew", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Future card", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-skew")
+    # Claim stamped slightly in the future (clock skew) must not yield a negative age.
+    await tstore._db.execute(
+        "UPDATE project_tasks SET claimed_at = ? WHERE id = ?", (time.time() + 600, task["id"]))
+    await tstore._db.commit()
+
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@lane-skew"]
+    assert len(mine) == 1
+    assert mine[0]["held_seconds"] == 0
+    assert mine[0]["stale"] is False
