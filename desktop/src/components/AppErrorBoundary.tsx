@@ -15,6 +15,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { BackendUnavailableError } from "@/lib/taos-fetch";
+import { reportClientLog } from "@/lib/client-log";
 
 type Mode = "ok" | "waiting" | "chunk" | "generic";
 
@@ -51,6 +52,14 @@ export class AppErrorBoundary extends Component<Props, State> {
     // Skip the "waiting"/"chunk" modes -- those are expected, handled states.
     if (this.state.mode === "generic") {
       console.error("[AppErrorBoundary]", error, info?.componentStack ?? "");
+      // Also ship it server-side: a PWA user has no console, so this is the only
+      // way the crash becomes visible to us (#106).
+      reportClientLog("fatal", error.message || error.name, {
+        source: "AppErrorBoundary",
+        stack: [error.stack, info?.componentStack]
+          .filter(Boolean)
+          .join("\n--- componentStack ---\n"),
+      });
     }
     if (this.state.mode === "chunk" && !this.reloadTimer) {
       this.reloadTimer = setTimeout(() => window.location.reload(), 5_000);
