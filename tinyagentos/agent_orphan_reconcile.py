@@ -22,6 +22,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _slug_from_container_name(name: str) -> str:
+    """Strip the taOS container prefix to recover the agent slug.
+
+    Returns an empty string when nothing survives -- a container named exactly
+    ``taos-`` or ``taos-agent-`` is not a valid agent container and callers must
+    skip it rather than build a malformed (empty-slug) archive row.
+    """
+    slug = name
+    for prefix in ("taos-agent-", "taos-"):
+        if slug.startswith(prefix):
+            slug = slug[len(prefix):]
+            break
+    return slug.strip()
+
+
 def _backed_container_names(config) -> set[str]:
     """Container names that DO belong to a known agent (live or archived).
 
@@ -100,6 +115,19 @@ async def reconcile_orphaned_agent_containers(
 
     for orphan in orphans:
         name = orphan["name"]
+        # A container named exactly ``taos-`` / ``taos-agent-`` strips to an
+        # empty slug: it is not a valid taOS agent container, so never archive
+        # it (an empty-slug row breaks the Archived UI + restore/purge).
+        slug = _slug_from_container_name(name)
+        if not slug:
+            logger.warning(
+                "orphan container reconcile: skipping bare-prefix container %s "
+                "(no slug after stripping taOS prefix)",
+                name,
+            )
+            results.append({**orphan, "action": "skipped_empty_slug"})
+            continue
+
         if not clean:
             logger.info("orphan container reconcile: found unbacked container %s", name)
             results.append({**orphan, "action": "found"})
@@ -127,12 +155,7 @@ async def reconcile_orphaned_agent_containers(
         import uuid
 
         archive_id = uuid.uuid4().hex[:12]
-        # Derive a best-effort slug from the container name for the archive row.
-        slug = name
-        for prefix in ("taos-agent-", "taos-"):
-            if slug.startswith(prefix):
-                slug = slug[len(prefix):]
-                break
+        # ``slug`` was derived (and validated non-empty) at the top of the loop.
         archive_entry = {
             "id": archive_id,
             "archived_at": ts,

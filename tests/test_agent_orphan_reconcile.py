@@ -122,6 +122,51 @@ class TestReconcileClean:
         )
         assert second == []
 
+    async def test_bare_prefix_container_is_ignored(self, client, app, monkeypatch):
+        """A container named exactly ``taos-`` / ``taos-agent-`` strips to an
+        empty slug -- it must be skipped (no archive row) while a normal
+        ``taos-agent-<slug>`` orphan is still archived."""
+        async def fake_list(*_a, **_k):
+            return [
+                {"name": "taos-agent-", "project": "default"},        # empty slug
+                {"name": "taos-", "project": "default"},              # empty slug
+                {"name": "taos-agent-ghost", "project": "default"},   # valid orphan
+            ]
+        monkeypatch.setattr(
+            "tinyagentos.containers.list_all_taos_containers", fake_list
+        )
+
+        snap_calls = []
+
+        async def fake_stop(name, force=False):
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot(name, snapshot_name):
+            snap_calls.append(name)
+            return {"success": True, "output": ""}
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot)
+
+        resp = await client.post(
+            "/api/agents/reconcile-orphan-containers?clean=true"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        by_name = {c["name"]: c["action"] for c in data["containers"]}
+        assert by_name["taos-agent-"] == "skipped_empty_slug"
+        assert by_name["taos-"] == "skipped_empty_slug"
+        assert by_name["taos-agent-ghost"] == "archived"
+
+        # Only the valid orphan was snapshotted/archived; the bare-prefix ones
+        # produced no archive row.
+        assert snap_calls == ["taos-agent-ghost"]
+        archived = (await client.get("/api/agents/archived")).json()
+        assert all(e.get("archived_slug") for e in archived)
+        assert not any(
+            e.get("container_name") in {"taos-agent-", "taos-"} for e in archived
+        )
+
     async def test_clean_leaves_orphan_when_snapshot_fails(
         self, client, app, monkeypatch
     ):
