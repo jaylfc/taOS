@@ -77,7 +77,7 @@ from tinyagentos.computer_use import ComputerUseManager
 from tinyagentos.webhook_notifier import WebhookNotifier
 from tinyagentos.llm_proxy import LLMProxy
 from tinyagentos.litellm_migrate import migrate as _litellm_migrate
-from tinyagentos.agent_image import ensure_image_present as _ensure_agent_image_present
+from tinyagentos.agent_image import ensure_all_base_images_present as _ensure_agent_images_present
 from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
 from tinyagentos.agent_image import register_prefetch_endpoint
 from tinyagentos.auto_update import AutoUpdateService
@@ -779,7 +779,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         try:
             if _is_prefetch_enabled():
                 _create_supervised_task(
-                    _ensure_agent_image_present(), app.state._background_tasks
+                    _ensure_agent_images_present(), app.state._background_tasks
                 )
             else:
                 logger.debug(

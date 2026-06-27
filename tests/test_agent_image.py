@@ -6,9 +6,12 @@ from tinyagentos.agent_image import (
     BASE_IMAGE_ALIAS,
     GENERIC_BASE_ALIAS,
     RELEASE_BASE_URL,
+    all_base_image_aliases,
     arch_suffix,
     base_image_alias,
     base_image_url,
+    base_image_url_for_alias,
+    ensure_all_base_images_present,
     ensure_image_present,
     is_image_present,
 )
@@ -54,6 +57,18 @@ class TestBaseImageAlias:
         assert "arm64" in hermes_url
         generic_url = base_image_url("x64", framework="smolagents")
         assert "taos-base-linux-x64" in generic_url
+
+    def test_url_for_alias_uses_alias_directly(self):
+        url = base_image_url_for_alias("taos-hermes-base", "arm64")
+        assert url == f"{RELEASE_BASE_URL}/taos-hermes-base-linux-arm64.tar.gz"
+
+    def test_all_base_image_aliases_covers_dedicated_and_generic(self):
+        aliases = all_base_image_aliases()
+        assert "taos-openclaw-base" in aliases
+        assert "taos-hermes-base" in aliases
+        assert GENERIC_BASE_ALIAS in aliases
+        # No duplicates.
+        assert len(aliases) == len(set(aliases))
 
 
 def _fake_proc(returncode: int = 0, stdout: bytes = b""):
@@ -156,3 +171,66 @@ class TestEnsureImagePresent:
         ), patch("asyncio.create_subprocess_exec", new=_launch):
             ok = await ensure_image_present(url="http://example.test/img.tar.gz")
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_default_url_derives_from_alias_not_openclaw(self):
+        # Regression: a non-openclaw alias with no explicit url must download
+        # that alias's tarball, not the openclaw one.
+        curl_proc = _fake_proc(0, b"")
+        incus_proc = _fake_proc(0, b"imported\n")
+        seen_urls = []
+
+        async def _launch(*args, **kwargs):
+            if args and args[0] == "curl":
+                seen_urls.append(args[-1])
+                return curl_proc
+            return incus_proc
+
+        with patch(
+            "tinyagentos.agent_image.is_image_present", new=AsyncMock(return_value=False)
+        ), patch("asyncio.create_subprocess_exec", new=_launch), \
+             patch("tinyagentos.agent_image._bake_scripts_into_image", new=AsyncMock()):
+            ok = await ensure_image_present("taos-hermes-base")
+        assert ok is True
+        assert seen_urls, "curl should have been invoked"
+        assert "taos-hermes-base" in seen_urls[0]
+        assert "taos-openclaw-base" not in seen_urls[0]
+
+
+class TestEnsureAllBaseImagesPresent:
+    @pytest.mark.asyncio
+    async def test_imports_every_alias(self):
+        imported = []
+
+        async def fake_ensure(alias):
+            imported.append(alias)
+            return True
+
+        with patch(
+            "tinyagentos.agent_image.ensure_image_present",
+            new=AsyncMock(side_effect=fake_ensure),
+        ):
+            results = await ensure_all_base_images_present()
+        assert set(imported) == set(all_base_image_aliases())
+        assert "taos-openclaw-base" in imported
+        assert "taos-hermes-base" in imported
+        assert GENERIC_BASE_ALIAS in imported
+        assert all(results.values())
+
+    @pytest.mark.asyncio
+    async def test_one_failure_does_not_abort_the_rest(self):
+        async def fake_ensure(alias):
+            if alias == "taos-hermes-base":
+                raise RuntimeError("network down")
+            return True
+
+        with patch(
+            "tinyagentos.agent_image.ensure_image_present",
+            new=AsyncMock(side_effect=fake_ensure),
+        ):
+            results = await ensure_all_base_images_present()
+        # Every alias was attempted; only the failing one is False.
+        assert set(results) == set(all_base_image_aliases())
+        assert results["taos-hermes-base"] is False
+        assert results["taos-openclaw-base"] is True
+        assert results[GENERIC_BASE_ALIAS] is True
