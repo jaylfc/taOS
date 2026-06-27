@@ -43,15 +43,30 @@ describe("bucketAgentChannels", () => {
     expect(result.suspended).toEqual([]);
   });
 
-  it("puts an orphaned DM (matches no agent in either list) under Archived", () => {
+  it("puts an orphaned DM (matches no loaded agent in either list) under Archived", () => {
     // This is the deleted-agent case: the agent is gone from /api/agents and
-    // /api/agents/archived, but its DM channel lingers. It must never appear
-    // as Live.
+    // /api/agents/archived, but its DM channel lingers. With a known agent
+    // present (lists loaded), the unmatched DM is a real orphan and must never
+    // appear as Live.
     const channels = [dm("ghost")];
-    const result = bucketAgentChannels(channels, [], []);
+    const live: AgentSectionLiveAgent[] = [{ name: "hermes", status: "running" }];
+    const result = bucketAgentChannels(channels, live, []);
     expect(result.archived.map((c) => c.name)).toEqual(["ghost"]);
-    expect(result.live).toEqual([]);
+    expect(result.live.map((c) => c.name)).toEqual([]);
     expect(result.suspended).toEqual([]);
+    expect(result.nonAgent).toEqual([]);
+  });
+
+  it("does NOT archive agent DMs while both lists are empty (not yet loaded)", () => {
+    // On first render /api/agents and /api/agents/archived have not resolved
+    // yet, so every agent DM matches nothing. These are almost certainly live
+    // agents and must not be dumped into Archived until the lists load -- they
+    // stay in their existing (nonAgent) Direct Messages placement.
+    const channels = [dm("hermes"), dm("scout")];
+    const result = bucketAgentChannels(channels, [], []);
+    expect(result.archived).toEqual([]);
+    expect(result.live).toEqual([]);
+    expect(result.nonAgent.map((c) => c.name)).toEqual(["hermes", "scout"]);
   });
 
   it("treats a non-running, non-paused live status (e.g. failed) as Archived", () => {

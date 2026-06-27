@@ -87,6 +87,12 @@ export function bucketAgentChannels<C extends AgentSectionChannel>(
     nonAgent: [],
   };
 
+  // Until at least one agent list has loaded we cannot tell a live agent DM
+  // from an orphaned one, so a member-without-match must NOT be archived yet.
+  // While both lists are empty, treat unmatched agent DMs as non-archived
+  // (they keep their Direct Messages placement) and re-bucket once data loads.
+  const listsLoaded = liveAgents.length > 0 || archivedAgents.length > 0;
+
   for (const ch of dmChannels) {
     // a2a coordination channels are not agent DMs -- leave them in place.
     if (ch.settings?.kind === "a2a") {
@@ -113,9 +119,11 @@ export function bucketAgentChannels<C extends AgentSectionChannel>(
     }
 
     // A DM with an agent member that matches no known agent is an orphaned /
-    // deleted-agent channel -- it belongs under Archived, never Live. A DM
-    // with no agent member is a plain user DM and keeps its placement.
-    if (hasAgentMember) sections.archived.push(ch);
+    // deleted-agent channel -- it belongs under Archived, never Live. But
+    // only once the agent lists have loaded; before that, an unmatched agent
+    // DM is almost certainly live and must stay non-archived. A DM with no
+    // agent member is a plain user DM and keeps its placement.
+    if (hasAgentMember && listsLoaded) sections.archived.push(ch);
     else sections.nonAgent.push(ch);
   }
 
