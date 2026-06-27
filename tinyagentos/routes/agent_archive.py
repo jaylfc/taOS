@@ -93,7 +93,26 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
         if not has_chat_history and not has_trace_history:
             # Hard-delete: drop the config row and return. No tombstone for
-            # orphan rows from a never-used failed deploy.
+            # orphan rows from a never-used failed deploy. A DM channel may
+            # still exist (created on a prior deploy) with no messages -- archive
+            # it with the agent linkage so it is never left as a live orphan.
+            if channel_id:
+                try:
+                    ch_store = request.app.state.chat_channels
+                    await ch_store.set_settings(
+                        channel_id,
+                        {
+                            "archived": True,
+                            "archived_at": ts,
+                            "archived_agent_id": agent_id,
+                            "archived_agent_slug": slug,
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "archive(orphan): channel flag failed for %s: %s",
+                        channel_id, exc,
+                    )
             config.agents = [a for a in config.agents if a["name"] != name]
             await save_config_locked(config, config.config_path)
             return {

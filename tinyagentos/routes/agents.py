@@ -881,6 +881,19 @@ async def purge_archived_agent(request: Request, archive_id: str):
     return await agent_archive.purge_archived(request, archive_id)
 
 
+@router.post("/api/agents/reconcile-orphan-channels")
+async def reconcile_orphan_channels(request: Request):
+    """Archive agent DM channels whose agent is in no list (active, failed,
+    or archived). Idempotent; never hard-deletes. Returns the channels
+    archived on this pass."""
+    from tinyagentos.chat.orphan_reconcile import reconcile_orphan_dm_channels
+
+    config = request.app.state.config
+    chat_channels = request.app.state.chat_channels
+    archived = await reconcile_orphan_dm_channels(config, chat_channels)
+    return {"status": "ok", "archived": archived, "count": len(archived)}
+
+
 @router.post("/api/agents/{name}/resume")
 async def resume_agent(request: Request, name: str):
     """Clear the paused flag on an agent, allowing it to accept new calls."""
