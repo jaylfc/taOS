@@ -939,6 +939,19 @@ async def reconcile_orphan_channels(request: Request):
     return {"status": "ok", "archived": archived, "count": len(archived)}
 
 
+@router.post("/api/agents/reconcile-orphan-containers")
+async def reconcile_orphan_containers(request: Request, clean: bool = False):
+    """Find taOS containers with no backing agent record (live or archived).
+
+    Report-only by default. Pass ``?clean=true`` to snapshot-then-archive each
+    orphan so it gets a restore point and shows in Archived. Idempotent; only
+    ever touches containers carrying the taOS naming prefix."""
+    from tinyagentos.agent_orphan_reconcile import reconcile_orphaned_agent_containers
+
+    results = await reconcile_orphaned_agent_containers(request, clean=clean)
+    return {"status": "ok", "containers": results, "count": len(results)}
+
+
 async def _registry_canonical_ids(state) -> list[str]:
     """Best-effort list of canonical agent ids from the registry, so the
     reconcile can recognise a former agent whose config row is gone."""

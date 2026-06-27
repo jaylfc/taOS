@@ -616,6 +616,26 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 )
         except Exception:
             logger.exception("orphan DM channel reconcile failed")
+
+        # Report (do NOT auto-clean) taOS containers with no backing agent
+        # record.  Cleaning destroys a live container, so startup only surfaces
+        # them; an operator cleans via POST /api/agents/reconcile-orphan-containers
+        # ?clean=true.  Idempotent; only inspects taOS-prefixed containers.
+        try:
+            from tinyagentos.agent_orphan_reconcile import (
+                find_orphaned_agent_containers,
+            )
+            _orphan_containers = await find_orphaned_agent_containers(config)
+            if _orphan_containers:
+                logger.warning(
+                    "orphan reconcile: %d taOS container(s) have no backing agent "
+                    "record: %s -- clean via POST "
+                    "/api/agents/reconcile-orphan-containers?clean=true",
+                    len(_orphan_containers),
+                    ", ".join(c["name"] for c in _orphan_containers),
+                )
+        except Exception:
+            logger.exception("orphan container reconcile (report) failed")
         # Probe installed framework versions in the BACKGROUND so the UI can
         # show whether each agent is up-to-date before any manual check is
         # triggered. Each probe does an `incus exec` into the agent container,

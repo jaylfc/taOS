@@ -74,6 +74,85 @@ async def container_exists(name: str) -> bool:
     return (await _resolve_container_project(name)) is not None
 
 
+# Prefix shared by every taOS-managed agent container. The current convention
+# is ``taos-agent-<slug>``; the legacy convention was ``taos-<slug>``. Both
+# share this prefix, which is how reconcile distinguishes taOS containers from
+# anything else on the host.
+TAOS_CONTAINER_PREFIX = "taos-"
+
+
+def candidate_agent_container_names(slug: str, display_name: str | None = None) -> list[str]:
+    """Return the container names an agent's slug could map to, newest
+    convention first.
+
+    Current deploys name containers ``taos-agent-<slug>``; legacy deploys used
+    ``taos-<slug>``. When the agent record lost its ``container_name`` link the
+    only way to find its container is to probe both conventions. A
+    ``display_name`` (if it slugifies differently from ``slug``) contributes its
+    own pair of candidates so a record whose slug drifted from the original
+    display name still resolves.
+    """
+    from tinyagentos.config import slugify_agent_name
+
+    slugs: list[str] = []
+    for s in (slug, slugify_agent_name(display_name) if display_name else None):
+        if s and s not in slugs:
+            slugs.append(s)
+    names: list[str] = []
+    for s in slugs:
+        for name in (f"taos-agent-{s}", f"taos-{s}"):
+            if name not in names:
+                names.append(name)
+    return names
+
+
+async def list_all_taos_containers() -> list[dict]:
+    """Return every taOS-managed container across ALL incus projects.
+
+    Each item is ``{"name": str, "project": str}``. Filters to names beginning
+    with :data:`TAOS_CONTAINER_PREFIX` so non-taOS containers are never
+    included. Errors (incus absent, daemon down, malformed output) return an
+    empty list.
+    """
+    try:
+        code, output = await _run(["incus", "list", "--all-projects", "-f", "json"])
+    except (FileNotFoundError, OSError):
+        # incus binary not present (dev hosts, CI). Treat as "no containers".
+        return []
+    if code != 0:
+        return []
+    try:
+        instances = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    results: list[dict] = []
+    for inst in instances:
+        if not isinstance(inst, dict):
+            continue
+        name = inst.get("name", "")
+        if not name.startswith(TAOS_CONTAINER_PREFIX):
+            continue
+        results.append({"name": name, "project": inst.get("project") or "default"})
+    return results
+
+
+async def resolve_agent_container(slug: str, display_name: str | None = None) -> str | None:
+    """Resolve the live container backing an agent slug, or None.
+
+    Probes both the current (``taos-agent-<slug>``) and legacy (``taos-<slug>``)
+    naming conventions, plus the display-name variants, across ALL incus
+    projects. Returns the first matching container name. Used by delete to
+    rescue a container whose agent record lost its ``container_name`` link
+    rather than orphaning a still-running container.
+    """
+    candidates = candidate_agent_container_names(slug, display_name)
+    existing = {c["name"] for c in await list_all_taos_containers()}
+    for name in candidates:
+        if name in existing:
+            return name
+    return None
+
+
 async def list_containers(prefix: str = "taos-agent-") -> list[ContainerInfo]:
     """List all agent containers."""
     code, output = await _run(["incus", "list", "-f", "json"])
@@ -322,6 +401,21 @@ async def get_container_logs(name: str, lines: int = 100) -> str:
     return output if code == 0 else f"Error getting logs: {output}"
 
 
+def _is_snapshot_forbidden(output: str) -> bool:
+    """True when an incus error means the container's project forbids snapshots.
+
+    Detects the restriction robustly by its wording rather than by a hard-coded
+    project name, so it fires for any per-user project (user-999, user-1001, …):
+    incus 6.x phrases it as ``Project "user-999" doesn't allow for snapshot
+    creation``. Matches both the curly and straight apostrophe and is
+    case-insensitive.
+    """
+    low = (output or "").lower().replace("’", "'")
+    return "snapshot creation" in low and (
+        "doesn't allow" in low or "does not allow" in low or "not allowed" in low
+    )
+
+
 async def snapshot_create(name: str, snapshot_name: str) -> dict:
     """Create a named snapshot of a container.
 
@@ -330,9 +424,43 @@ async def snapshot_create(name: str, snapshot_name: str) -> dict:
 
     Docker: ``docker commit <name> taos/<snapshot_name>:latest``.
 
+    Self-heals project snapshot restrictions: multi-user installs put agent
+    containers in a restricted incus project (e.g. user-999) provisioned
+    outside taOS, which can forbid snapshot creation. A snapshot is taOS's
+    point-in-time restore guarantee, so rather than fail the archive we set
+    ``restricted.snapshots=allow`` on the offending project (mirroring the
+    ``add_proxy_device`` self-heal for ``restricted.devices.proxy``) and retry
+    once. Only the trusted controller snapshots, never the agent inside the
+    container, so relaxing this one restriction is safe.
+
     Returns ``{"success": bool, "output": str}``.
     """
     code, output = await _run(["incus", "snapshot", "create", name, snapshot_name])
+    if code != 0 and _is_snapshot_forbidden(output):
+        # Find the project named in the error; fall back to resolving it from
+        # the container itself if the message did not quote one.
+        m = re.search(r'[Pp]roject "([^"]+)"', output or "")
+        project = m.group(1) if m else await _resolve_container_project(name)
+        if project:
+            allow_code, allow_out = await _run([
+                "incus", "project", "set", project,
+                "restricted.snapshots", "allow",
+            ])
+            if allow_code == 0:
+                logger.warning(
+                    "snapshot_create: project %r forbade snapshots; set "
+                    "restricted.snapshots=allow and retried %s/%s",
+                    project, name, snapshot_name,
+                )
+                code, output = await _run(
+                    ["incus", "snapshot", "create", name, snapshot_name]
+                )
+            else:
+                logger.warning(
+                    "snapshot_create: could not relax restricted.snapshots on "
+                    "project %r: %s",
+                    project, allow_out,
+                )
     return {"success": code == 0, "output": output}
 
 
@@ -680,6 +808,10 @@ __all__ = [
     "LXCBackend",
     "DockerBackend",
     "container_exists",
+    "TAOS_CONTAINER_PREFIX",
+    "candidate_agent_container_names",
+    "list_all_taos_containers",
+    "resolve_agent_container",
     "list_containers",
     "set_root_quota",
     "create_container",
