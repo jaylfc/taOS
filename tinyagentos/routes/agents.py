@@ -16,6 +16,7 @@ from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, unique_agent_slug
 from tinyagentos.routes import agent_archive
 from tinyagentos.routes import agent_deploy
+from tinyagentos.routes import agent_import
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
@@ -825,7 +826,48 @@ class AgentImport(BaseModel):
 
 
 @router.post("/api/agents/import")
-async def import_agent(request: Request, body: AgentImport):
+async def import_agent(request: Request):
+    """Import an agent.
+
+    Two content types share this path:
+
+    * ``multipart/form-data``: a Hermes profile EXPORT bundle upload
+      (framework + bundle file + name + model + secrets JSON). Deploys a
+      Hermes agent and restores the profile inside the container. Handled
+      by ``agent_import.import_hermes_agent``.
+    * ``application/json``: the existing portable JSON config import
+      (``AgentImport`` body) used by the export/import round-trip.
+
+    Dispatch on Content-Type so both clients keep working on one route.
+    """
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data") or content_type.startswith(
+        "application/x-www-form-urlencoded"
+    ):
+        form = await request.form()
+        bundle = form.get("bundle")
+        return await agent_import.import_hermes_agent(
+            request,
+            framework=str(form.get("framework", "")),
+            bundle=bundle if hasattr(bundle, "filename") else None,
+            name=str(form.get("name", "")),
+            model=(str(form["model"]) if form.get("model") else None),
+            secrets=(str(form["secrets"]) if form.get("secrets") else None),
+        )
+
+    # JSON config import.
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "request body must be JSON or multipart/form-data"}, status_code=400)
+    try:
+        body = AgentImport(**payload)
+    except Exception as e:
+        return JSONResponse({"error": f"invalid import payload: {e}"}, status_code=400)
+    return await _import_agent_json(request, body)
+
+
+async def _import_agent_json(request: Request, body: AgentImport):
     """Import an agent from an exported JSON config."""
     config = request.app.state.config
 
