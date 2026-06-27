@@ -58,16 +58,28 @@ class TestDestroyArchivesChannel:
 
 @pytest.mark.asyncio
 class TestReconcileOrphanChannels:
-    async def test_archives_orphan_leaves_others(self, client, app):
-        """An orphan DM channel is archived; a live-agent DM, an a2a group,
-        a project channel, and a human DM are all left untouched."""
+    async def test_archives_orphans_leaves_others(self, client, app):
+        """Orphan agent DMs are archived; a live-agent DM, an a2a group, a
+        project channel, a human<->human DM, and a user<->human DM are all
+        left untouched.
+
+        Two orphan shapes are archived: a former agent recognised via the
+        registry (plain slug, like the live-Pi 'hermes-confirm') and a
+        canonical-id-shaped member with no registry/config backing at all.
+        """
         config = app.state.config
         chat_channels = app.state.chat_channels
 
-        # Orphan: DM for an agent in no list.
-        orphan = await chat_channels.create_channel(
+        # Orphan 1: plain-slug former agent, recognised via the registry.
+        registry_ids = ["hermes-confirm-20260601-120000"]
+        orphan_slug = await chat_channels.create_channel(
             name="hermes-confirm", type="dm", created_by="user",
             members=["user", "hermes-confirm"],
+        )
+        # Orphan 2: canonical-id-shaped member, no backing anywhere.
+        orphan_canonical = await chat_channels.create_channel(
+            name="Old Agent", type="dm", created_by="user",
+            members=["user", "old-agent-20251201-093000"],
         )
         # Live agent DM (test-agent exists in the default config).
         live = await chat_channels.create_channel(
@@ -90,21 +102,43 @@ class TestReconcileOrphanChannels:
             name="Alice & Bob", type="dm", created_by="alice",
             members=["alice", "bob"],
         )
+        # user<->human DM: same ["user", X] shape as an agent DM, but X is a
+        # human handle backing no known/never-known agent. Must NOT be archived.
+        user_human = await chat_channels.create_channel(
+            name="Bob", type="dm", created_by="user",
+            members=["user", "bob"],
+        )
 
-        archived = await reconcile_orphan_dm_channels(config, chat_channels)
+        archived = await reconcile_orphan_dm_channels(
+            config, chat_channels, registry_ids=registry_ids
+        )
 
-        assert [r["channel_id"] for r in archived] == [orphan["id"]]
-        assert archived[0]["slug"] == "hermes-confirm"
+        archived_set = {r["channel_id"] for r in archived}
+        assert archived_set == {orphan_slug["id"], orphan_canonical["id"]}
 
         archived_ids = await _archived_ids(chat_channels)
-        assert orphan["id"] in archived_ids
-        for other in (live["id"], a2a["id"], proj["id"], human["id"]):
+        assert orphan_slug["id"] in archived_ids
+        assert orphan_canonical["id"] in archived_ids
+        for other in (live["id"], a2a["id"], proj["id"], human["id"], user_human["id"]):
             assert other not in archived_ids
 
-        # The orphan carries the archive linkage.
-        ch = await chat_channels.get_channel(orphan["id"])
+        # An orphan carries the archive linkage.
+        ch = await chat_channels.get_channel(orphan_slug["id"])
         assert ch["settings"]["archived_agent_slug"] == "hermes-confirm"
         assert ch["settings"].get("archived_agent_id")
+
+    async def test_user_human_dm_left_untouched(self, client, app):
+        """A user<->human DM is never archived, even with no registry hints."""
+        config = app.state.config
+        chat_channels = app.state.chat_channels
+        ch = await chat_channels.create_channel(
+            name="Carol", type="dm", created_by="user",
+            members=["user", "carol"],
+        )
+
+        archived = await reconcile_orphan_dm_channels(config, chat_channels)
+        assert archived == []
+        assert ch["id"] not in await _archived_ids(chat_channels)
 
     async def test_skips_channel_backed_by_archived_agent(self, client, app):
         """A DM channel whose agent is in the ARCHIVED list is not re-touched."""
@@ -128,7 +162,7 @@ class TestReconcileOrphanChannels:
         chat_channels = app.state.chat_channels
         await chat_channels.create_channel(
             name="deerflow-test", type="dm", created_by="user",
-            members=["user", "deerflow-test"],
+            members=["user", "deerflow-test-20260101-000000"],
         )
 
         first = await reconcile_orphan_dm_channels(config, chat_channels)
@@ -138,11 +172,16 @@ class TestReconcileOrphanChannels:
         assert second == []
 
     async def test_via_route(self, client, app):
-        """POST /api/agents/reconcile-orphan-channels archives the orphan."""
+        """POST /api/agents/reconcile-orphan-channels archives a canonical-id
+        orphan and leaves a user<->human DM untouched."""
         chat_channels = app.state.chat_channels
         orphan = await chat_channels.create_channel(
             name="stray", type="dm", created_by="user",
-            members=["user", "stray-agent"],
+            members=["user", "stray-agent-20260301-101010"],
+        )
+        human = await chat_channels.create_channel(
+            name="Dave", type="dm", created_by="user",
+            members=["user", "dave"],
         )
 
         resp = await client.post("/api/agents/reconcile-orphan-channels")
@@ -150,4 +189,6 @@ class TestReconcileOrphanChannels:
         body = resp.json()
         assert body["count"] == 1
         assert body["archived"][0]["channel_id"] == orphan["id"]
-        assert orphan["id"] in await _archived_ids(chat_channels)
+        archived_ids = await _archived_ids(chat_channels)
+        assert orphan["id"] in archived_ids
+        assert human["id"] not in archived_ids
