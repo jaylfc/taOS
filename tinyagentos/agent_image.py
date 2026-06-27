@@ -40,6 +40,31 @@ RELEASE_BASE_URL = (
     "https://github.com/jaylfc/tinyagentos-images/releases/download/rolling-images"
 )
 
+# Generic base alias usable by any framework. It bakes the common deps
+# (python3/node/npm/build-essential/git/curl/etc) without any single
+# framework's package, so a deploy from it still skips the cold apt run.
+GENERIC_BASE_ALIAS = "taos-base"
+
+# Frameworks that have a dedicated prebuilt base image (alias
+# "taos-<framework>-base"). openclaw keeps its historical alias for
+# back-compat. Hermes' base additionally bakes the NousResearch
+# hermes-agent prerequisites so a hermes deploy needs only config.
+FRAMEWORKS_WITH_DEDICATED_BASE = frozenset({"openclaw", "hermes"})
+
+
+def base_image_alias(framework: str) -> str:
+    """Return the prebuilt base-image alias for ``framework``.
+
+    Frameworks listed in :data:`FRAMEWORKS_WITH_DEDICATED_BASE` get a
+    dedicated ``taos-<framework>-base`` alias (openclaw keeps its
+    historical ``taos-openclaw-base``). Everything else maps to the
+    generic ``taos-base``. The deployer tries the dedicated alias first
+    and falls back to the generic one, then to a cold image.
+    """
+    if framework in FRAMEWORKS_WITH_DEDICATED_BASE:
+        return f"taos-{framework}-base"
+    return GENERIC_BASE_ALIAS
+
 
 def is_prefetch_enabled() -> bool:
     """Return True if the user has opted in to base image prefetching.
@@ -88,9 +113,16 @@ def arch_suffix() -> str:
     return machine or "unknown"
 
 
-def base_image_url(arch: str | None = None) -> str:
-    """URL of the published image tarball for ``arch`` (defaults to host arch)."""
-    return f"{RELEASE_BASE_URL}/{BASE_IMAGE_ALIAS}-linux-{arch or arch_suffix()}.tar.gz"
+def base_image_url(arch: str | None = None, framework: str | None = None) -> str:
+    """URL of the published image tarball for ``arch`` (defaults to host arch).
+
+    ``framework`` selects which base alias the URL points at. When omitted
+    the historical ``taos-openclaw-base`` alias is used so existing callers
+    (which only pass ``arch``) keep their behaviour. Pass a framework name to
+    get that framework's dedicated base, or the generic ``taos-base`` fallback.
+    """
+    alias = base_image_alias(framework) if framework is not None else BASE_IMAGE_ALIAS
+    return f"{RELEASE_BASE_URL}/{alias}-linux-{arch or arch_suffix()}.tar.gz"
 
 
 async def is_image_present(alias: str = BASE_IMAGE_ALIAS) -> bool:
@@ -270,6 +302,9 @@ async def ensure_image_present(
 
 __all__ = [
     "BASE_IMAGE_ALIAS",
+    "GENERIC_BASE_ALIAS",
+    "FRAMEWORKS_WITH_DEDICATED_BASE",
+    "base_image_alias",
     "RELEASE_BASE_URL",
     "is_prefetch_enabled",
     "get_prefetch_state",

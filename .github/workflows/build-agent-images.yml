@@ -5,6 +5,7 @@ on:
     branches: [master, fix/agent-creation-flow]
     paths:
       - 'app-catalog/agents/openclaw/**'
+      - 'tinyagentos/scripts/install_hermes.sh'
       - '.github/workflows/build-agent-images.yml'
   repository_dispatch:
     types: [openclaw-fork-published]
@@ -21,14 +22,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Two list dimensions form the cross-product (3 bases x 2 arches = 6
+        # jobs). base: which framework prerequisites to bake on top of the
+        # common deps. "openclaw" keeps its historical alias for back-compat;
+        # "generic" is taos-base (common deps only) for any framework;
+        # "hermes" adds the NousResearch hermes-agent prerequisites.
+        base: [openclaw, generic, hermes]
+        arch: [x64, arm64]
+        # include maps each arch to its runner without adding extra jobs
+        # (the keys here already exist as a matrix dimension).
         include:
-          - runner: ubuntu-latest
-            arch: x64
+          - arch: x64
+            runner: ubuntu-latest
             debarch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
             debarch: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      # Map the "openclaw"/"generic"/"hermes" base label to its published alias.
+      ALIAS: ${{ matrix.base == 'openclaw' && 'taos-openclaw-base' || (matrix.base == 'generic' && 'taos-base' || 'taos-hermes-base') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -76,11 +89,9 @@ jobs:
           sudo incus exec build-base -- ip route || true
           sudo iptables -L FORWARD -n -v | head -20 || true
 
-      - name: Install dependencies + openclaw inside the base container
-        env:
-          ARCH: ${{ matrix.arch }}
+      - name: Install common dependencies inside the base container
         run: |
-          sudo incus exec build-base --env ARCH="$ARCH" -- bash -eux <<'BASH'
+          sudo incus exec build-base -- bash -eux <<'BASH'
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
@@ -92,6 +103,16 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
           apt-get install -y -qq --no-install-recommends nodejs
 
+          # Recycle-bin scaffolding (install.sh Layer 1).
+          mkdir -p /var/recycle-bin/files /var/recycle-bin/info
+          chmod 1777 /var/recycle-bin /var/recycle-bin/files /var/recycle-bin/info
+          BASH
+
+      - name: Bake openclaw into the base container
+        if: matrix.base == 'openclaw'
+        run: |
+          sudo incus exec build-base -- bash -eux <<'BASH'
+          export DEBIAN_FRONTEND=noninteractive
           # Upstream OpenClaw from npm (latest) — no fork. The deploy-time
           # install.sh also installs openclaw@latest, so this just warms the
           # base image with a current build.
@@ -100,12 +121,47 @@ jobs:
           # Sanity check
           test -f /usr/lib/node_modules/openclaw/dist/entry.js \
             || test -f /usr/lib/node_modules/openclaw/dist/entry.mjs
+          BASH
 
-          # Recycle-bin scaffolding (install.sh Layer 1).
-          mkdir -p /var/recycle-bin/files /var/recycle-bin/info
-          chmod 1777 /var/recycle-bin /var/recycle-bin/files /var/recycle-bin/info
+      - name: Bake Hermes prerequisites into the base container
+        if: matrix.base == 'hermes'
+        run: |
+          # Mirrors the heavy, agent-independent steps in
+          # tinyagentos/scripts/install_hermes.sh (uv, the NousResearch
+          # hermes-agent installer with --skip-setup, and the pyyaml/httpx
+          # deps the config patch needs). Per-agent config (.env, config.yaml,
+          # systemd unit, bridge) stays at deploy time -- only prerequisites
+          # are baked so a hermes deploy from this image needs no live install.
+          sudo incus exec build-base -- bash -eux <<'BASH'
+          export DEBIAN_FRONTEND=noninteractive
+          export PATH="/root/.local/bin:$PATH"
 
-          # Shrink the image footprint.
+          # uv (idempotent), matching install_hermes.sh.
+          if ! command -v uv >/dev/null 2>&1 && [ ! -x /root/.local/bin/uv ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
+
+          # NousResearch hermes-agent prerequisites (no setup; config is per-agent).
+          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \
+            | bash -s -- --skip-setup
+
+          # Deps the deploy-time config patch step relies on.
+          pip3 install --break-system-packages --quiet pyyaml httpx
+
+          # Sanity check: the hermes binary must be resolvable.
+          HERMES_BIN=""
+          for c in /root/.local/bin/hermes /root/.hermes/hermes-agent/.venv/bin/hermes /root/.hermes/hermes-agent/venv/bin/hermes; do
+            [ -L "$c" -o -x "$c" ] && HERMES_BIN="$c" && break
+          done
+          [ -z "$HERMES_BIN" ] && HERMES_BIN=$(command -v hermes || true)
+          [ -z "$HERMES_BIN" ] && { echo "ERROR: hermes binary not found after bake"; exit 2; }
+          echo "hermes baked at $HERMES_BIN"
+          BASH
+
+      - name: Shrink the image footprint
+        run: |
+          sudo incus exec build-base -- bash -eux <<'BASH'
           apt-get clean
           rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /tmp/* /root/.npm
           BASH
@@ -115,15 +171,15 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           sudo incus stop build-base
-          sudo incus publish build-base --alias taos-openclaw-base \
-            description="taOS openclaw base image ($ARCH)"
-          sudo incus image export taos-openclaw-base "./taos-openclaw-base-linux-$ARCH"
-          ls -la "./taos-openclaw-base-linux-$ARCH"*
+          sudo incus publish build-base --alias "$ALIAS" \
+            description="taOS $ALIAS image ($ARCH)"
+          sudo incus image export "$ALIAS" "./$ALIAS-linux-$ARCH"
+          ls -la "./$ALIAS-linux-$ARCH"*
 
       - uses: actions/upload-artifact@v7
         with:
-          name: taos-openclaw-base-${{ matrix.arch }}
-          path: taos-openclaw-base-linux-${{ matrix.arch }}.tar.gz
+          name: ${{ env.ALIAS }}-${{ matrix.arch }}
+          path: ${{ env.ALIAS }}-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -134,11 +190,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: taos-openclaw-base-*
+          pattern: taos-*-base-*
           merge-multiple: true
 
       - name: List downloaded assets
-        run: ls -la taos-openclaw-base-linux-*.tar.gz
+        run: ls -la taos-*-base-linux-*.tar.gz
 
       - name: Compute build identifier
         id: id
@@ -156,20 +212,25 @@ jobs:
           repository: jaylfc/tinyagentos-images
           token: ${{ secrets.ADD_TO_PROJECT_PAT }}
           tag_name: rolling-images
-          name: "taOS openclaw base image (${{ steps.id.outputs.ts }} - ${{ steps.id.outputs.sha }})"
+          name: "taOS agent base images (${{ steps.id.outputs.ts }} - ${{ steps.id.outputs.sha }})"
           body: |
-            Pre-built LXC base image for openclaw agents.
+            Pre-built LXC base images for taOS agents.
 
             Consumers (taOS deployer): import once with
-            `curl -fsSL <url> | incus image import - --alias taos-openclaw-base`.
+            `curl -fsSL <url> | incus image import - --alias <alias>`.
 
             Assets:
-            - `taos-openclaw-base-linux-arm64.tar.gz`
-            - `taos-openclaw-base-linux-x64.tar.gz`
+            - `taos-openclaw-base-linux-{arm64,x64}.tar.gz` -- openclaw warmed
+            - `taos-base-linux-{arm64,x64}.tar.gz` -- generic common deps
+            - `taos-hermes-base-linux-{arm64,x64}.tar.gz` -- Hermes prerequisites
 
             Source commit: ${{ github.sha }}
           files: |
             taos-openclaw-base-linux-arm64.tar.gz
             taos-openclaw-base-linux-x64.tar.gz
+            taos-base-linux-arm64.tar.gz
+            taos-base-linux-x64.tar.gz
+            taos-hermes-base-linux-arm64.tar.gz
+            taos-hermes-base-linux-x64.tar.gz
           make_latest: true
           prerelease: false

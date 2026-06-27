@@ -1233,3 +1233,89 @@ class TestMasterKeyFallback:
             result = await deploy_agent(req)
         assert result["success"] is False
         assert "fallback is disabled" in result["error"]
+
+
+class TestFrameworkAwareBaseImage:
+    """Framework-aware prebuilt base image selection (Hermes fast-path)."""
+
+    @staticmethod
+    async def _run(framework, present_aliases, tmp_path):
+        """Deploy *framework* with is_image_present True only for the aliases
+        in *present_aliases*. Return (launch_image, env, recorded_exec_cmds)."""
+        req = _req(name="fwbase", framework=framework, data_dir=tmp_path)
+        recorded = []
+
+        async def mock_exec(name, cmd, **kwargs):
+            cmd_str = " ".join(cmd)
+            recorded.append(cmd_str)
+            if "hostname -I" in cmd_str:
+                return (0, "10.0.0.7")
+            return (0, "ok")
+
+        async def fake_present(alias):
+            return alias in present_aliases
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.is_image_present", side_effect=fake_present), \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+            mock_create.return_value = {"success": True, "name": "taos-agent-fwbase"}
+            await deploy_agent(req)
+            launch_image = mock_create.call_args.kwargs["image"]
+            env = mock_create.call_args.kwargs["env"]
+        return launch_image, env, recorded
+
+    @pytest.mark.asyncio
+    async def test_openclaw_uses_its_dedicated_base(self, tmp_path):
+        launch, env, recorded = await self._run(
+            "openclaw", {"taos-openclaw-base"}, tmp_path
+        )
+        assert launch == "taos-openclaw-base"
+        assert env.get("TAOS_BASE_IMAGE_PRESENT") == "1"
+        assert not any("apt-get install" in c for c in recorded)
+
+    @pytest.mark.asyncio
+    async def test_hermes_uses_its_dedicated_base(self, tmp_path):
+        launch, env, recorded = await self._run(
+            "hermes", {"taos-hermes-base"}, tmp_path
+        )
+        assert launch == "taos-hermes-base"
+        assert env.get("TAOS_BASE_IMAGE_PRESENT") == "1"
+        assert not any("apt-get install" in c for c in recorded)
+
+    @pytest.mark.asyncio
+    async def test_hermes_falls_back_to_generic_base(self, tmp_path):
+        # No dedicated hermes base on this host, but the generic one is present.
+        launch, env, recorded = await self._run(
+            "hermes", {"taos-base"}, tmp_path
+        )
+        assert launch == "taos-base"
+        assert env.get("TAOS_BASE_IMAGE_PRESENT") == "1"
+        # Generic base already has the common deps -- apt is skipped.
+        assert not any("apt-get install" in c for c in recorded)
+
+    @pytest.mark.asyncio
+    async def test_unknown_framework_uses_generic_base(self, tmp_path):
+        launch, env, recorded = await self._run(
+            "smolagents", {"taos-base"}, tmp_path
+        )
+        assert launch == "taos-base"
+        assert env.get("TAOS_BASE_IMAGE_PRESENT") == "1"
+        assert not any("apt-get install" in c for c in recorded)
+
+    @pytest.mark.asyncio
+    async def test_cold_fallback_when_no_base_present(self, tmp_path):
+        launch, env, recorded = await self._run("hermes", set(), tmp_path)
+        assert launch == "images:debian/bookworm"
+        assert "TAOS_BASE_IMAGE_PRESENT" not in env
+        # Cold host still runs the full apt install.
+        assert any("apt-get install" in c for c in recorded)
+
+    @pytest.mark.asyncio
+    async def test_dedicated_base_preferred_over_generic(self, tmp_path):
+        # Both present -- the framework-specific alias must win.
+        launch, _env, _recorded = await self._run(
+            "hermes", {"taos-hermes-base", "taos-base"}, tmp_path
+        )
+        assert launch == "taos-hermes-base"

@@ -25,7 +25,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tinyagentos.secrets import SecretsStore
 
-from tinyagentos.agent_image import BASE_IMAGE_ALIAS, is_image_present
+from tinyagentos.agent_image import (
+    GENERIC_BASE_ALIAS,
+    base_image_alias,
+    is_image_present,
+)
 from tinyagentos.containers import (
     create_container, exec_in_container, push_file,
     start_container, stop_container, destroy_container,
@@ -370,19 +374,33 @@ async def deploy_agent(req: DeployRequest) -> dict:
             )
 
     # Pre-built base image fast-path — see tinyagentos/agent_image.py.
-    # When the cached image is imported locally we launch from it and
-    # install.sh skips the openclaw/apt steps; on a cold host we fall
-    # back to images:debian/bookworm and install.sh does the full run.
+    # Framework-aware selection: prefer the framework's dedicated base
+    # (taos-<framework>-base), then the generic taos-base, then a cold
+    # images:debian/bookworm. Any base (specific or generic) already has
+    # the common deps baked in, so we skip the slow apt run below. This is
+    # what lets non-openclaw agents (especially Hermes on ARM/Pi) avoid the
+    # ~900s cold install. openclaw still resolves to taos-openclaw-base.
     base_image_ready = False
-    if req.framework == "openclaw":
-        try:
-            base_image_ready = await is_image_present(BASE_IMAGE_ALIAS)
-        except Exception:
-            base_image_ready = False
-    launch_image = BASE_IMAGE_ALIAS if base_image_ready else "images:debian/bookworm"
+    launch_image = "images:debian/bookworm"
+    if req.framework and req.framework != "none":
+        # Build the candidate list, de-duplicating when the framework has no
+        # dedicated base (base_image_alias already returns GENERIC_BASE_ALIAS).
+        specific_alias = base_image_alias(req.framework)
+        candidates = [specific_alias]
+        if specific_alias != GENERIC_BASE_ALIAS:
+            candidates.append(GENERIC_BASE_ALIAS)
+        for alias in candidates:
+            try:
+                present = await is_image_present(alias)
+            except Exception:
+                present = False
+            if present:
+                base_image_ready = True
+                launch_image = alias
+                break
     if base_image_ready:
         env["TAOS_BASE_IMAGE_PRESENT"] = "1"
-        logger.info(f"Deploy {req.name}: using cached base image {BASE_IMAGE_ALIAS}")
+        logger.info(f"Deploy {req.name}: using cached base image {launch_image}")
     else:
         logger.info(f"Deploy {req.name}: cached base image not present, using {launch_image}")
 

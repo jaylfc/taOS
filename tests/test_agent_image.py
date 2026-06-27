@@ -4,8 +4,10 @@ import pytest
 
 from tinyagentos.agent_image import (
     BASE_IMAGE_ALIAS,
+    GENERIC_BASE_ALIAS,
     RELEASE_BASE_URL,
     arch_suffix,
+    base_image_alias,
     base_image_url,
     ensure_image_present,
     is_image_present,
@@ -25,6 +27,33 @@ class TestArch:
             assert arch_suffix() == "arm64"
         with patch("tinyagentos.agent_image.platform.machine", return_value="x86_64"):
             assert arch_suffix() == "x64"
+
+
+class TestBaseImageAlias:
+    def test_openclaw_keeps_historical_alias(self):
+        # Back-compat: openclaw must still resolve to the published alias.
+        assert base_image_alias("openclaw") == "taos-openclaw-base"
+        assert base_image_alias("openclaw") == BASE_IMAGE_ALIAS
+
+    def test_hermes_has_dedicated_alias(self):
+        assert base_image_alias("hermes") == "taos-hermes-base"
+
+    def test_unknown_framework_falls_back_to_generic(self):
+        assert base_image_alias("smolagents") == GENERIC_BASE_ALIAS
+        assert base_image_alias("smolagents") == "taos-base"
+        assert base_image_alias("anything-else") == "taos-base"
+
+    def test_url_default_framework_keeps_openclaw_alias(self):
+        # Existing arch-only callers must be unaffected by the new param.
+        assert base_image_url("arm64") == base_image_url("arm64", framework=None)
+        assert BASE_IMAGE_ALIAS in base_image_url("arm64")
+
+    def test_url_framework_selects_alias(self):
+        hermes_url = base_image_url("arm64", framework="hermes")
+        assert "taos-hermes-base" in hermes_url
+        assert "arm64" in hermes_url
+        generic_url = base_image_url("x64", framework="smolagents")
+        assert "taos-base-linux-x64" in generic_url
 
 
 def _fake_proc(returncode: int = 0, stdout: bytes = b""):
