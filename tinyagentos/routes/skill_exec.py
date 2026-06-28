@@ -50,7 +50,14 @@ def _resolve_agent_workspace(request: Request, args: dict) -> Path:
         or request.query_params.get("agent_name")
         or "default"
     )
-    base = Path(request.app.state.agent_workspaces_dir) / agent_name
+    # agent_name feeds a filesystem path, so a value like "../../etc" would
+    # escape the workspaces base and let a caller read or enumerate arbitrary
+    # host directories through file_read / file_write / list_files. Resolve and
+    # require the result to stay within the workspaces root before creating it.
+    root = Path(request.app.state.agent_workspaces_dir).resolve()
+    base = (root / agent_name).resolve()
+    if base != root and root not in base.parents:
+        raise ValueError("invalid agent_name (escapes the workspaces directory)")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -58,9 +65,9 @@ def _resolve_agent_workspace(request: Request, args: dict) -> Path:
 async def _skill_file_read(args: dict, request: Request) -> dict:
     """Read a file from the calling agent's workspace."""
     path = args.get("path", "")
-    workspace = _resolve_agent_workspace(request, args)
-    target = (workspace / path).resolve()
     try:
+        workspace = _resolve_agent_workspace(request, args)
+        target = (workspace / path).resolve()
         if workspace not in target.parents and target != workspace:
             return {"error": "Path outside workspace"}
         if not target.is_file():
@@ -74,9 +81,9 @@ async def _skill_file_write(args: dict, request: Request) -> dict:
     """Write a file to the calling agent's workspace."""
     path = args.get("path", "")
     content = args.get("content", "")
-    workspace = _resolve_agent_workspace(request, args)
-    target = (workspace / path).resolve()
     try:
+        workspace = _resolve_agent_workspace(request, args)
+        target = (workspace / path).resolve()
         if workspace not in target.parents and target != workspace:
             return {"error": "Path outside workspace"}
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -90,9 +97,9 @@ async def _skill_list_files(args: dict, request: Request) -> dict:
     """List a directory in the calling agent's workspace (read complement to
     file_read / file_write). Sandboxed to the workspace, same as file_read."""
     path = args.get("path", "") or ""
-    workspace = _resolve_agent_workspace(request, args)
-    target = (workspace / path).resolve()
     try:
+        workspace = _resolve_agent_workspace(request, args)
+        target = (workspace / path).resolve()
         if workspace not in target.parents and target != workspace:
             return {"error": "Path outside workspace"}
         if not target.is_dir():

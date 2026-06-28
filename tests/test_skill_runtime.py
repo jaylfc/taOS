@@ -132,6 +132,22 @@ async def test_list_files_lists_workspace(app_with_store):
 
 
 @pytest.mark.asyncio
+async def test_agent_name_traversal_rejected(app_with_store):
+    """A traversal agent_name must not escape the workspaces base via any file
+    skill (it feeds the workspace path before the per-call path check)."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_store), base_url="http://test"
+    ) as client:
+        for skill in ("file_read", "list_files"):
+            resp = await client.post(
+                f"/api/skill-exec/{skill}/call",
+                json={"args": {"agent_name": "../../../../etc", "path": ""}},
+            )
+            body = resp.json()
+            assert "error" in body and "agent_name" in body["error"], (skill, body)
+
+
+@pytest.mark.asyncio
 async def test_list_files_rejects_path_outside_workspace(app_with_store):
     async with AsyncClient(
         transport=ASGITransport(app=app_with_store), base_url="http://test"
