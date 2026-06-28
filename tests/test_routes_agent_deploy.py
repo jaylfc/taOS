@@ -225,8 +225,11 @@ class TestResolveDeployRouting:
         assert "worker-b" in body["available_on"]
 
     @pytest.mark.asyncio
-    async def test_model_routed_to_pinned_worker_returns_202(self, client):
-        """A model on a worker with a valid pin returns 202."""
+    async def test_pinned_worker_falls_through_to_remote_deploy(self, client):
+        """An explicit, non-conflicting pin no longer 202-stubs; it attempts a
+        remote deploy. When the pinned worker is not a registered online cluster
+        worker (as here), configure_remote_deploy returns 409 'not registered'
+        rather than the old routed-stub 202."""
         with patch(
             "tinyagentos.cluster.model_resolver.resolve_model_location",
             return_value=ModelLocation(
@@ -243,10 +246,8 @@ class TestResolveDeployRouting:
                     "target_worker": "worker-b",
                 },
             )
-        assert r.status_code == 202
-        body = r.json()
-        assert body["status"] == "routed"
-        assert body["worker"] == "worker-b"
+        assert r.status_code == 409
+        assert "not registered" in r.json()["error"]
 
     @pytest.mark.asyncio
     async def test_pinned_worker_without_model_returns_409(self, client):
@@ -401,3 +402,59 @@ class TestArchiveSmokeCheck:
             if r.status_code == 200:
                 body = r.json()
                 assert body.get("archive_smoke_ok") is False
+
+
+@pytest.mark.asyncio
+class TestConfigureRemoteDeploy:
+    """Direct unit tests for agent_deploy.configure_remote_deploy."""
+
+    @staticmethod
+    def _req(worker=None):
+        from types import SimpleNamespace
+        cm = SimpleNamespace(get_worker=lambda name: worker)
+        return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cluster_manager=cm)))
+
+    @staticmethod
+    def _body(**kw):
+        from types import SimpleNamespace
+        defaults = dict(target_worker=None, framework="none", name="a")
+        defaults.update(kw)
+        return SimpleNamespace(**defaults)
+
+    async def test_no_pin_is_local(self):
+        from tinyagentos.routes import agent_deploy
+        remote, host, err = await agent_deploy.configure_remote_deploy(
+            self._req(), self._body()
+        )
+        assert remote is None and host == "127.0.0.1" and err is None
+
+    async def test_unknown_worker_409(self):
+        from tinyagentos.routes import agent_deploy
+        remote, host, err = await agent_deploy.configure_remote_deploy(
+            self._req(worker=None), self._body(target_worker="ghost")
+        )
+        assert remote is None and err is not None and err.status_code == 409
+
+    async def test_offline_worker_409(self):
+        from types import SimpleNamespace
+        from tinyagentos.routes import agent_deploy
+        worker = SimpleNamespace(status="offline", hardware={"arch": "x86_64"})
+        remote, host, err = await agent_deploy.configure_remote_deploy(
+            self._req(worker=worker), self._body(target_worker="w")
+        )
+        assert remote is None and err.status_code == 409
+
+    async def test_online_worker_returns_remote_and_prefetches(self):
+        from types import SimpleNamespace
+        from tinyagentos.routes import agent_deploy
+        worker = SimpleNamespace(status="online", hardware={"arch": "x86_64"})
+        with patch.object(agent_deploy, "controller_callback_host", return_value="100.78.225.80"), \
+             patch("tinyagentos.agent_image.ensure_image_present", new=AsyncMock(return_value=True)) as mock_prefetch:
+            remote, host, err = await agent_deploy.configure_remote_deploy(
+                self._req(worker=worker), self._body(target_worker="fedora-worker", framework="hermes")
+            )
+        assert err is None
+        assert remote == "fedora-worker"
+        assert host == "100.78.225.80"
+        # The x64 base was prefetched onto the worker.
+        assert mock_prefetch.await_args.kwargs.get("remote") == "fedora-worker"

@@ -490,6 +490,15 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 idempotency_cache.set(scoped_key, json.loads(routed.body))
             return routed
 
+        # Explicit target_worker pin: create the agent container ON that
+        # worker's nested incus (remote deploy) rather than locally. Resolves
+        # the controller callback host (Tailscale IP) and prefetches the base.
+        deploy_remote, deploy_taos_host, remote_err = await agent_deploy.configure_remote_deploy(request, body)
+        if remote_err is not None:
+            if scoped_key and idempotency_cache is not None:
+                idempotency_cache.set(scoped_key, json.loads(remote_err.body))
+            return remote_err
+
         # Register the agent with taosmd BEFORE mutating config so a failure
         # here aborts cleanly with no half-state.
         try:
@@ -575,6 +584,8 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     },
                     can_read_user_memory=body.can_read_user_memory,
                     secrets_store=secrets_store,
+                    remote=deploy_remote,
+                    taos_host=deploy_taos_host,
                 ))
                 agent = find_agent(config, body.name)
                 if result.get("success"):
