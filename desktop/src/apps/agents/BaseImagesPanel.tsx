@@ -7,7 +7,7 @@ import {
   Trash2,
   HardDrive,
 } from "lucide-react";
-import { Button, Card, Switch, Label } from "@/components/ui";
+import { Button, Card } from "@/components/ui";
 import {
   parseBaseImagesResponse,
   formatBytes,
@@ -250,16 +250,19 @@ export function BaseImagesPanel() {
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <Label htmlFor="base-image-prefetch" className="text-[11px] text-shell-text-secondary">
-              Prefetch on boot
-            </Label>
-            <Switch
-              id="base-image-prefetch"
-              checked={view.prefetchEnabled}
-              onCheckedChange={handlePrefetchToggle}
-              disabled={prefetchBusy}
+            <span className="text-[11px] text-shell-text-secondary">Prefetch on boot</span>
+            <Button
+              variant="outline"
+              size="sm"
+              role="switch"
+              aria-checked={view.prefetchEnabled}
               aria-label="Prefetch base images on boot"
-            />
+              onClick={() => handlePrefetchToggle(!view.prefetchEnabled)}
+              disabled={prefetchBusy}
+              className={view.prefetchEnabled ? "border-accent/40 text-accent" : ""}
+            >
+              {view.prefetchEnabled ? "On" : "Off"}
+            </Button>
           </div>
         </Card>
 
