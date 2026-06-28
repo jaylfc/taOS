@@ -448,6 +448,25 @@ async def test_stop_kills_tmux_and_records_status(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stop_does_not_resurrect_archived_session(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    app.state.coding_launcher = _FakeLauncher()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
+        await c.post(f"/api/coding-sessions/{sid}/archive")
+        resp = await c.post(f"/api/coding-sessions/{sid}/stop")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "archived"
+        assert sid not in app.state.coding_launcher.stopped
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
 async def test_start_missing_session_returns_404(tmp_path):
     app = create_app(data_dir=tmp_path / "data")
     uid, token = await _make_client(app)

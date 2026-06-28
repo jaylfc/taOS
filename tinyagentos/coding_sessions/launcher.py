@@ -28,7 +28,13 @@ CLI_COMMANDS = {
 
 
 def _subprocess_runner(argv: list[str]) -> tuple[int, str, str]:
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    # errors="replace": capture-pane of a TUI app can emit bytes that are not
+    # valid in the locale encoding; the default errors="strict" would raise
+    # UnicodeDecodeError and crash capture(), so decode leniently instead.
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, timeout=30,
+        encoding="utf-8", errors="replace",
+    )
     return proc.returncode, proc.stdout, proc.stderr
 
 

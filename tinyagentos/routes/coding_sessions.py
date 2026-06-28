@@ -254,6 +254,9 @@ async def stop_coding_session(
     session = await store.get_session(session_id)
     if session is None or (not user.is_admin and session["created_by"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
+    # archived is terminal: never resurrect it back to stopped.
+    if session["status"] == "archived":
+        return session
     # Best-effort: kill the tmux session, then record the stop regardless.
     try:
         _launcher(request).stop(session_id)
