@@ -269,7 +269,12 @@ async def create_container(
     if code != 0:
         return {"success": False, "error": output}
 
-    if host_uid is not None:
+    # raw.idmap maps container-root to a host UID so the trace bind-mount is
+    # writable. It is meaningless for a remote create (the host_uid is the
+    # CONTROLLER's, not the worker's, and the bind-mount is skipped anyway); a
+    # cross-host UID with no subuid mapping on the worker stops the container
+    # from starting. Skip it for remote.
+    if host_uid is not None and not remote:
         await _run([
             "incus", "config", "set", target, "raw.idmap",
             f"both {host_uid} 0",

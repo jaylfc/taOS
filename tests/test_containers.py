@@ -113,6 +113,8 @@ class TestCreateContainer:
         assert env_calls and env_calls[0][3] == "fedora-worker:taos-agent-bob"
         # No bind-mount device was added (host paths don't exist on the worker).
         assert not [c for c in calls if "disk" in c and "taos-mount-0" in c]
+        # raw.idmap (a local trace-mount concern) must NOT be set for a remote create.
+        assert not [c for c in calls if "raw.idmap" in c]
 
     @pytest.mark.asyncio
     async def test_remote_does_not_double_qualify_image_server_ref(self):
