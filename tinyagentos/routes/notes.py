@@ -16,10 +16,20 @@ from pydantic import BaseModel
 
 from tinyagentos.agent_db import find_agent
 from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.notes.shared_docs_store import VALID_ACTIONS, VALID_PERMISSIONS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Action directives used in agent trigger messages.
+_ACTION_DIRECTIVE = {
+    "research": "Research this:",
+    "plan": "Plan this:",
+    "critique": "Critique this:",
+    "build": "Start building:",
+    "discuss": "Discuss this with the user, ask clarifying questions to develop it:",
+}
 
 
 # --------------------------------------------------------------------- models
@@ -50,6 +60,8 @@ class AddMemberIn(BaseModel):
     member_type: str
     member_id: str
     standing_instruction: str = ""
+    permission: str = "contributor"
+    action: str | None = None
 
 
 # -------------------------------------------------------------------- helpers
@@ -59,23 +71,14 @@ def _get_store(request: Request):
 
 
 def _check_owner(doc: dict, user: CurrentUser):
-    """Return a 403 JSONResponse if the caller does not own the doc, else None.
-
-    Used for writes and doc/member management, which stay owner-only in this
-    foundation. Member and agent writes land with the revisions work.
-    """
+    """Return a 403 JSONResponse if the caller does not own the doc, else None."""
     if not user.is_admin and doc["owner_user_id"] != user.user_id:
         return JSONResponse({"error": "forbidden"}, status_code=403)
     return None
 
 
 async def _check_read_access(store, doc: dict, user: CurrentUser):
-    """Allow the owner, an admin, or a user-type member to read the doc.
-
-    Consistent with list_docs, which surfaces a doc to the users it is shared
-    with as a user-type member; without this they would see the doc in their
-    listing and then get a 403 opening it.
-    """
+    """Allow the owner, an admin, or any user-type member to read the doc."""
     if user.is_admin or doc["owner_user_id"] == user.user_id:
         return None
     for m in await store.list_members(doc["id"]):
@@ -84,14 +87,24 @@ async def _check_read_access(store, doc: dict, user: CurrentUser):
     return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
-async def _check_write_access(store, doc: dict, user: CurrentUser):
-    """Any member (owner, admin, or a user-type member) may write entries.
+async def _check_add_access(store, doc: dict, user: CurrentUser):
+    """Owner/admin can always add. User members need contributor or editor."""
+    if user.is_admin or doc["owner_user_id"] == user.user_id:
+        return None
+    perm = await store.member_permission(doc["id"], "user", user.user_id, doc["owner_user_id"])
+    if perm in ("contributor", "editor"):
+        return None
+    return JSONResponse({"error": "forbidden"}, status_code=403)
 
-    Entry writes require membership, the same bar as reading the doc; doc and
-    member management stay owner-only (see _check_owner). Agent members write
-    through an agent tool rather than this human-session API.
-    """
-    return await _check_read_access(store, doc, user)
+
+async def _check_edit_access(store, doc: dict, user: CurrentUser):
+    """Owner/admin can always edit/delete/toggle. User members need editor."""
+    if user.is_admin or doc["owner_user_id"] == user.user_id:
+        return None
+    perm = await store.member_permission(doc["id"], "user", user.user_id, doc["owner_user_id"])
+    if perm == "editor":
+        return None
+    return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
 # ------------------------------------------------------------------ doc routes
@@ -168,8 +181,7 @@ async def _trigger_agent_notifications(
     """Post a message to each agent member's DM channel. Never raises.
 
     skip_agent names the agent that authored this change, if any, so an agent
-    writing to a shared doc does not get notified about its own entry (the
-    self-notify loop guard).
+    writing to a shared doc does not get notified about its own entry.
     """
     store = _get_store(request)
     agents = await store.agent_members(doc["id"])
@@ -187,8 +199,14 @@ async def _trigger_agent_notifications(
         agent_name = am["agent"]
         if skip_agent is not None and agent_name == skip_agent:
             continue
+        action = am.get("action")
         instruction = am["standing_instruction"]
-        if instruction:
+        if action:
+            directive = _ACTION_DIRECTIVE.get(action, "New entry:")
+            content = f"[{doc_title}] {directive} {entry_text}"
+            if instruction:
+                content += f" ({instruction})"
+        elif instruction:
             content = f"[{doc_title}] {instruction}: {entry_text}"
         else:
             content = f"[{doc_title}] New entry: {entry_text}"
@@ -221,7 +239,7 @@ async def add_entry(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = await _check_write_access(store, doc, user)
+    err = await _check_add_access(store, doc, user)
     if err:
         return err
     entry = await store.add_entry(doc_id, body.text, author=user.user_id)
@@ -245,7 +263,7 @@ async def patch_entry(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = await _check_write_access(store, doc, user)
+    err = await _check_edit_access(store, doc, user)
     if err:
         return err
     await store.set_entry_done(entry_id, body.done)
@@ -263,7 +281,7 @@ async def delete_entry(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = await _check_write_access(store, doc, user)
+    err = await _check_edit_access(store, doc, user)
     if err:
         return err
     await store.delete_entry(entry_id)
@@ -282,7 +300,7 @@ async def edit_entry_text(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = await _check_write_access(store, doc, user)
+    err = await _check_edit_access(store, doc, user)
     if err:
         return err
     try:
@@ -366,12 +384,24 @@ async def add_member(
     err = _check_owner(doc, user)
     if err:
         return err
+    if body.permission not in VALID_PERMISSIONS:
+        return JSONResponse(
+            {"error": f"invalid permission {body.permission!r}; expected one of {VALID_PERMISSIONS}"},
+            status_code=400,
+        )
+    if body.action is not None and body.action not in VALID_ACTIONS:
+        return JSONResponse(
+            {"error": f"invalid action {body.action!r}; expected one of {VALID_ACTIONS} or null"},
+            status_code=400,
+        )
     try:
         await store.add_member(
             doc_id,
             body.member_type,
             body.member_id,
             body.standing_instruction,
+            permission=body.permission,
+            action=body.action,
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)

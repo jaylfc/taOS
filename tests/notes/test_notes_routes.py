@@ -1,7 +1,7 @@
-"""Tests for /api/notes routes -- CRUD, ownership, and agent trigger."""
+"""Tests for /api/notes routes -- CRUD, ownership, permissions, and agent trigger."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -225,24 +225,31 @@ async def test_user_member_can_read_shared_doc(two_user_clients):
     )
     assert r.status_code == 200
 
-    # Bob can now read the doc and its members, but writes/management stay
-    # owner-only in this foundation.
+    # Bob can now read the doc and its members.
     assert (await bob.get(f"/api/notes/{doc_id}")).status_code == 200
     assert (await bob.get(f"/api/notes/{doc_id}/members")).status_code == 200
-    # Option C: a member can write entries; doc/member management stays owner-only.
+    # Default permission is 'contributor': can add entries but not edit/delete them.
     assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "hi"})).status_code == 200
+    # Contributor cannot edit existing entries or manage the doc.
+    entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "alice entry"})).json()
+    eid = entry["id"]
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "x"})).status_code == 403
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 403
+    assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 403
     assert (await bob.patch(f"/api/notes/{doc_id}", json={"title": "x"})).status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_member_can_edit_and_remove_entries(two_user_clients):
+async def test_editor_member_can_edit_and_remove_entries(two_user_clients):
+    """A member shared with permission='editor' can add, edit, toggle-done, and delete."""
     alice, bob, app = two_user_clients
     bob_id = app.state.auth.find_user("bob")["id"]
     doc = (await alice.post("/api/notes", json={"kind": "list", "title": "Groceries"})).json()
     doc_id = doc["id"]
+    # Share with editor permission so bob can edit/delete.
     await alice.post(
         f"/api/notes/{doc_id}/members",
-        json={"member_type": "user", "member_id": bob_id},
+        json={"member_type": "user", "member_id": bob_id, "permission": "editor"},
     )
 
     entry = (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "milk"})).json()
@@ -292,6 +299,177 @@ async def test_invalid_member_type_returns_400(client):
         json={"member_type": "robot", "member_id": "r2d2"},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_invalid_permission_returns_400(client):
+    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    resp = await client.post(
+        f"/api/notes/{doc['id']}/members",
+        json={"member_type": "user", "member_id": "bob", "permission": "superuser"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_invalid_action_returns_400(client):
+    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    resp = await client.post(
+        f"/api/notes/{doc['id']}/members",
+        json={"member_type": "agent", "member_id": "atlas", "action": "sleep"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_viewer_cannot_add_or_edit(two_user_clients):
+    """A viewer member can read but not add, edit, or delete entries."""
+    alice, bob, app = two_user_clients
+    bob_id = app.state.auth.find_user("bob")["id"]
+    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "ViewOnly"})).json()
+    doc_id = doc["id"]
+    await alice.post(
+        f"/api/notes/{doc_id}/members",
+        json={"member_type": "user", "member_id": bob_id, "permission": "viewer"},
+    )
+
+    assert (await bob.get(f"/api/notes/{doc_id}")).status_code == 200
+    assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "try"})).status_code == 403
+
+    entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "alice entry"})).json()
+    eid = entry["id"]
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "x"})).status_code == 403
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 403
+    assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_contributor_can_add_but_not_edit(two_user_clients):
+    """A contributor member can add new entries but cannot edit or delete existing ones."""
+    alice, bob, app = two_user_clients
+    bob_id = app.state.auth.find_user("bob")["id"]
+    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "ContribOnly"})).json()
+    doc_id = doc["id"]
+    await alice.post(
+        f"/api/notes/{doc_id}/members",
+        json={"member_type": "user", "member_id": bob_id, "permission": "contributor"},
+    )
+
+    assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "new"})).status_code == 200
+
+    entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "alice entry"})).json()
+    eid = entry["id"]
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 403
+    assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_owner_always_has_full_access(two_user_clients):
+    """The owner can add, edit, and delete regardless of any member permission rules."""
+    alice, bob, _ = two_user_clients
+    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "Mine"})).json()
+    doc_id = doc["id"]
+    entry = (await alice.post(f"/api/notes/{doc_id}/entries", json={"text": "item"})).json()
+    eid = entry["id"]
+    assert (await alice.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "updated"})).status_code == 200
+    assert (await alice.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 200
+    assert (await alice.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_member_default_permission_is_contributor(client):
+    """When no permission is passed, the member gets 'contributor' by default."""
+    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc_id = doc["id"]
+    await client.post(
+        f"/api/notes/{doc_id}/members",
+        json={"member_type": "agent", "member_id": "atlas"},
+    )
+    members = (await client.get(f"/api/notes/{doc_id}/members")).json()
+    atlas = next(m for m in members if m["member_id"] == "atlas")
+    assert atlas["permission"] == "contributor"
+    assert atlas["action"] is None
+
+
+@pytest.mark.asyncio
+async def test_add_member_stores_permission_and_action(client):
+    """The permission and action fields are persisted and returned via list_members."""
+    doc = (await client.post("/api/notes", json={"kind": "note", "title": "x"})).json()
+    doc_id = doc["id"]
+    await client.post(
+        f"/api/notes/{doc_id}/members",
+        json={"member_type": "agent", "member_id": "nova", "permission": "editor", "action": "critique"},
+    )
+    members = (await client.get(f"/api/notes/{doc_id}/members")).json()
+    nova = next(m for m in members if m["member_id"] == "nova")
+    assert nova["permission"] == "editor"
+    assert nova["action"] == "critique"
+
+
+# ------------------------------------------------- agent tool permission tests
+
+@pytest.mark.asyncio
+async def test_agent_tool_viewer_cannot_add(tmp_path):
+    """An agent with viewer permission is rejected by execute_notes_add_entry."""
+    import yaml
+    from types import SimpleNamespace
+
+    from tinyagentos.tools.notes_tools import execute_notes_add_entry
+
+    config_data = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data))
+    (tmp_path / ".setup_complete").touch()
+
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+
+    doc = await store.create_doc("owner", "note", "Ideas")
+    await store.add_member(doc["id"], "agent", "atlas", permission="viewer")
+
+    req = SimpleNamespace(
+        app=SimpleNamespace(state=app.state),
+        state=SimpleNamespace(agent_name="atlas"),
+    )
+    result = await execute_notes_add_entry(
+        {"agent_name": "atlas", "doc_id": doc["id"], "text": "hi"}, req
+    )
+    assert "error" in result
+    assert "permission" in result["error"]
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_contributor_can_add(tmp_path):
+    """An agent with contributor permission can append via execute_notes_add_entry."""
+    import yaml
+    from types import SimpleNamespace
+
+    from tinyagentos.tools.notes_tools import execute_notes_add_entry
+
+    config_data = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data))
+    (tmp_path / ".setup_complete").touch()
+
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+
+    doc = await store.create_doc("owner", "note", "Ideas")
+    await store.add_member(doc["id"], "agent", "atlas", permission="contributor")
+
+    req = SimpleNamespace(
+        app=SimpleNamespace(state=app.state),
+        state=SimpleNamespace(agent_name="atlas"),
+    )
+    result = await execute_notes_add_entry(
+        {"agent_name": "atlas", "doc_id": doc["id"], "text": "a new idea"}, req
+    )
+    assert result.get("ok") is True
+    assert "entry_id" in result
+    await store.close()
 
 
 # ----------------------------------------------------------- agent trigger test
@@ -402,6 +580,44 @@ async def test_add_entry_no_agent_members_no_send(tmp_path):
 
     assert sent == [], "no message should be sent when there are no agent members"
     await shared_docs_store.close()
+
+
+@pytest.mark.asyncio
+async def test_trigger_message_reflects_action(tmp_path):
+    """When an agent member has an action, the trigger message contains the directive."""
+    import yaml
+    from types import SimpleNamespace
+
+    from tinyagentos.routes.notes import _trigger_agent_notifications
+
+    config_data = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data))
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+
+    doc = await store.create_doc("owner", "note", "Plans")
+    await store.add_member(doc["id"], "agent", "atlas", action="plan")
+    app.state.config.agents.append({"name": "atlas", "chat_channel_id": "ch-atlas"})
+
+    sent: list[dict] = []
+
+    async def _fake_send(channel_id, author_id, author_type, content, **kwargs):
+        sent.append({"channel_id": channel_id, "content": content})
+        return {}
+
+    msg = MagicMock()
+    msg.send_message = _fake_send
+    app.state.chat_messages = msg
+
+    req = SimpleNamespace(app=SimpleNamespace(state=app.state))
+    await _trigger_agent_notifications(req, doc, "build a login page")
+
+    assert len(sent) == 1
+    assert "Plan this:" in sent[0]["content"]
+    assert "build a login page" in sent[0]["content"]
+    await store.close()
 
 
 @pytest.mark.asyncio

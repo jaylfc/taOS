@@ -29,7 +29,11 @@ async def execute_notes_list_shared_docs(args: dict, request: Request) -> dict:
 
 
 async def execute_notes_add_entry(args: dict, request: Request) -> dict:
-    """Append an entry to a shared doc the calling agent is a member of."""
+    """Append an entry to a shared doc the calling agent is a member of.
+
+    The agent must have 'contributor' or 'editor' permission on the doc.
+    'viewer' agents are rejected.
+    """
     args = args or {}
     agent_name = args.get("agent_name")
     doc_id = args.get("doc_id")
@@ -46,8 +50,13 @@ async def execute_notes_add_entry(args: dict, request: Request) -> dict:
         store = request.app.state.shared_docs_store
 
         members = await store.agent_members(doc_id)
-        if not any(m["agent"] == agent_name for m in members):
-            return {"error": "agent is not a member of this doc"}
+        agent_member = next((m for m in members if m["agent"] == agent_name), None)
+        if agent_member is None:
+            return {"error": "agent does not have write permission on this doc"}
+
+        perm = agent_member.get("permission", "contributor")
+        if perm not in ("contributor", "editor"):
+            return {"error": "agent does not have write permission on this doc"}
 
         doc = await store.get_doc(doc_id)
         if doc is None:

@@ -100,7 +100,7 @@ async def test_non_member_agent_rejected(store):
         req,
     )
     assert "error" in res
-    assert "member" in res["error"]
+    assert "permission" in res["error"]
 
     entries = await store.list_entries(doc["id"])
     assert entries == []
