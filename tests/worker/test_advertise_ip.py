@@ -7,6 +7,7 @@ instead, or the controller stores an unreachable URL and the incus
 host-match (enrollment) fails.
 """
 import json
+from typing import ClassVar
 
 import pytest
 
@@ -24,7 +25,7 @@ class _CaptureResponse:
 class _CaptureClient:
     """Minimal async httpx.AsyncClient stand-in that records the POST body."""
 
-    captured = {}
+    captured: ClassVar[dict] = {}
 
     def __init__(self, *a, **k):
         pass

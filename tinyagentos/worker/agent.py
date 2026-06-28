@@ -405,9 +405,14 @@ class WorkerAgent:
         # (DNAT'd to the LXC), so honour it for both the advertised URL and the
         # host_lan_ip used to match the incus remote to this worker.
         adv_ip = os.environ.get("TAOS_ADVERTISE_IP", "").strip()
+        # Mirror get_worker_url's port handling: include the worker_port when set
+        # so the controller stores a reachable host:port (not a bare host).
+        adv_url = None
+        if adv_ip:
+            adv_url = f"http://{adv_ip}:{self.worker_port}" if self.worker_port else f"http://{adv_ip}"
         worker_url = (
             self.advertise_url
-            or (f"http://{adv_ip}" if adv_ip else None)
+            or adv_url
             or (backends[0]["url"] if backends else self.get_worker_url())
         )
 

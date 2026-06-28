@@ -485,10 +485,10 @@ install_and_enroll_incus() {
     TOKEN="$(echo "$token_output" | awk 'NF{last=$0} END{print last}')"
     if [[ -z "$TOKEN" ]]; then
         warn "failed to generate incus trust token — LXC enrollment skipped"
-        warn "  to enroll manually: incus config trust add controller-enroll"
-        warn "  then: curl -X POST $CONTROLLER_URL/api/cluster/workers/$WORKER_NAME/incus-enroll \\"
-        warn "      -H 'Content-Type: application/json' \\"
-        warn "      -d '{\"incus_url\": \"https://<LAN_IP>:8443\", \"token\": \"<TOKEN>\"}'"
+        warn "  to enroll manually: TOKEN=\$(incus config trust add controller-enroll 2>&1 | tail -1)"
+        warn "  then: $INSTALL_DIR/.venv/bin/python -m tinyagentos.worker.enroll $CONTROLLER_URL \\"
+        warn "      --name $WORKER_NAME --incus-url https://<LAN_IP>:8443 --token \"\$TOKEN\" \\"
+        warn "      --state-dir $INSTALL_DIR/.taos-worker-state"
         return 0
     fi
 
@@ -521,9 +521,9 @@ install_and_enroll_incus() {
     fi
     if [[ -z "$LAN_IP" ]]; then
         warn "could not detect LAN IP — LXC enrollment skipped"
-        warn "  to enroll manually: curl -X POST $CONTROLLER_URL/api/cluster/workers/$WORKER_NAME/incus-enroll \\"
-        warn "      -H 'Content-Type: application/json' \\"
-        warn "      -d '{\"incus_url\": \"https://<LAN_IP>:8443\", \"token\": \"$TOKEN\"}'"
+        warn "  to enroll manually: $INSTALL_DIR/.venv/bin/python -m tinyagentos.worker.enroll $CONTROLLER_URL \\"
+        warn "      --name $WORKER_NAME --incus-url https://<LAN_IP>:8443 --token \"$TOKEN\" \\"
+        warn "      --state-dir $INSTALL_DIR/.taos-worker-state"
         return 0
     fi
 
