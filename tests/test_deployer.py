@@ -47,6 +47,40 @@ class TestDeployAgent:
             assert env["TAOS_SKILLS_URL"].endswith("/api/skill-exec")
 
     @pytest.mark.asyncio
+    async def test_remote_deploy_targets_worker_and_skips_proxy(self, tmp_path):
+        """remote= creates on the worker, qualifies downstream incus ops with
+        <remote>:, skips the localhost proxy devices, and keeps the record name
+        unqualified."""
+        req = _req(data_dir=tmp_path, remote="fedora-worker", taos_host="100.78.225.80")
+        exec_names = []
+
+        async def mock_exec(name, cmd, **kwargs):
+            exec_names.append(name)
+            if "hostname -I" in " ".join(cmd):
+                return (0, "10.228.0.9")
+            return (0, "ok")
+
+        with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+             patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec), \
+             patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+             patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock) as mock_proxy:
+            mock_create.return_value = {"success": True, "name": "taos-agent-test"}
+
+            result = await deploy_agent(req)
+            assert result["success"] is True
+            # Record name stays unqualified.
+            assert result["container"] == "taos-agent-test"
+            # create_container was told to target the remote.
+            assert mock_create.call_args.kwargs["remote"] == "fedora-worker"
+            # Proxy devices are localhost-only; never attached for a remote deploy.
+            mock_proxy.assert_not_awaited()
+            # Downstream incus ops are qualified with the remote.
+            assert exec_names and all(n.startswith("fedora-worker:") for n in exec_names)
+            # The agent's callback host is the controller's Tailscale IP.
+            env = mock_create.call_args.kwargs["env"]
+            assert "100.78.225.80" in env["TAOS_BRIDGE_URL"]
+
+    @pytest.mark.asyncio
     async def test_one_trace_bind_mount(self, tmp_path):
         """After deploy, create_container receives exactly one mount: the trace dir."""
         req = _req(data_dir=tmp_path)
@@ -1252,7 +1286,7 @@ class TestFrameworkAwareBaseImage:
                 return (0, "10.0.0.7")
             return (0, "ok")
 
-        async def fake_present(alias):
+        async def fake_present(alias, remote=None):
             return alias in present_aliases
 
         with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \

@@ -150,6 +150,12 @@ class DeployRequest:
     # 127.0.0.1 on the host.
     taos_host: str = "127.0.0.1"
     taos_port: int = 6969
+    # When set (e.g. "fedora-worker"), the agent container is created on that
+    # enrolled incus remote's nested incus instead of locally. The caller must
+    # also set taos_host to an address the worker can reach the controller on
+    # (its Tailscale IP), since the localhost proxy devices are not used for a
+    # remote deploy.
+    remote: str | None = None
     # Per §10.10: default 40 GiB rootfs quota. Overridable per-agent at
     # deploy time. None disables quota (unlimited, e.g. for dev/test).
     root_size_gib: int = 40
@@ -391,7 +397,7 @@ async def deploy_agent(req: DeployRequest) -> dict:
             candidates.append(GENERIC_BASE_ALIAS)
         for alias in candidates:
             try:
-                present = await is_image_present(alias)
+                present = await is_image_present(alias, remote=req.remote)
             except Exception:
                 present = False
             if present:
@@ -419,10 +425,18 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # this host UID so the trace bind-mount is writable by the container.
         host_uid=os.getuid(),
         root_size_gib=req.root_size_gib,
+        remote=req.remote,
     )
     if not result["success"]:
         return {"success": False, "error": _explain_container_failure(result.get("error")), "steps": steps}
     steps.append("container_created")
+
+    # Keep the bare name for the agent record, then qualify container_name with
+    # the remote so every downstream incus op (exec/push/destroy) targets the
+    # worker's nested incus. Local deploys leave it unchanged.
+    record_container = container_name
+    if req.remote:
+        container_name = f"{req.remote}:{container_name}"
 
     try:
         # Incus proxy devices: let the container reach host services via
@@ -435,25 +449,30 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # The connect side tracks the live proxy port so the tunnel reaches the
         # right host process regardless of whether the operator kept the legacy
         # 4000 or migrated to 7834.
-        llm_proxy_ref = (req.extra_config or {}).get("llm_proxy")
-        litellm_host_port = getattr(llm_proxy_ref, "port", None) or 7834
-        proxy_devices = [
-            ("taos-proxy-litellm", 4000, litellm_host_port),
-            ("taos-proxy-taos", req.taos_port, req.taos_port),
-        ]
-        for dev_name, listen_port, connect_port in proxy_devices:
-            res = await add_proxy_device(
-                container_name,
-                dev_name,
-                listen=f"tcp:127.0.0.1:{listen_port}",
-                connect=f"tcp:127.0.0.1:{connect_port}",
-                bind_mode="instance",
-            )
-            if not res.get("success"):
-                raise RuntimeError(
-                    f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
+        # Proxy devices map the container's 127.0.0.1 to host services. They
+        # only work for a LOCAL deploy; a remote worker reaches the controller
+        # directly over the network (taos_host is the controller's Tailscale IP
+        # for a remote deploy), so skip them.
+        if not req.remote:
+            llm_proxy_ref = (req.extra_config or {}).get("llm_proxy")
+            litellm_host_port = getattr(llm_proxy_ref, "port", None) or 7834
+            proxy_devices = [
+                ("taos-proxy-litellm", 4000, litellm_host_port),
+                ("taos-proxy-taos", req.taos_port, req.taos_port),
+            ]
+            for dev_name, listen_port, connect_port in proxy_devices:
+                res = await add_proxy_device(
+                    container_name,
+                    dev_name,
+                    listen=f"tcp:127.0.0.1:{listen_port}",
+                    connect=f"tcp:127.0.0.1:{connect_port}",
+                    bind_mode="instance",
                 )
-        steps.append("proxy_devices_attached")
+                if not res.get("success"):
+                    raise RuntimeError(
+                        f"failed to attach proxy device {dev_name}: {res.get('output', '')}"
+                    )
+            steps.append("proxy_devices_attached")
 
         # Step 2: Wait for network
         for _ in range(10):
@@ -604,7 +623,7 @@ async def deploy_agent(req: DeployRequest) -> dict:
         return {
             "success": True,
             "name": req.name,
-            "container": container_name,
+            "container": record_container,
             "ip": container_ip,
             "llm_key": llm_key,
             "steps": steps,
