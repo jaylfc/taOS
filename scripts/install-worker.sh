@@ -541,10 +541,15 @@ install_and_enroll_incus() {
         _pair_manual_flag=(--manual)
         log "  TAOS_PAIR_MANUAL set — using free-tier manual pairing (enter IP + PIN in Add worker)"
     fi
+    # Save the signing key where the worker daemon reads it. The systemd unit
+    # sets TAOS_WORKER_STATE_DIR=$INSTALL_DIR/.taos-worker-state; pair.py's
+    # default state-dir differs, so pass it explicitly or the daemon starts up
+    # "not paired" despite a successful pairing.
     if ! "$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.pair \
             "$CONTROLLER_URL" \
             --name "$WORKER_NAME" \
             --url "https://${LAN_IP}:8443" \
+            --state-dir "$INSTALL_DIR/.taos-worker-state" \
             "${_pair_manual_flag[@]}" \
             --register-after; then
         warn "pairing requires admin approval in taOS > Cluster."
