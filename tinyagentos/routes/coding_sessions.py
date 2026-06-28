@@ -36,6 +36,37 @@ class CodingSessionIn(BaseModel):
     project_id: str | None = None
 
 
+class RenameCodingSessionIn(BaseModel):
+    alias: str
+
+
+async def _sync_registry_alias(
+    request: Request, session_id: str, alias: str, user: CurrentUser
+) -> None:
+    """Reflect a renamed session alias in its agent-registry entry. Never raises.
+
+    The session registered itself with handle=session_id and
+    display_name=alias, so the rename updates the matching registry row's
+    display name to keep the Agents/Registry app in sync.
+    """
+    registry = getattr(request.app.state, "agent_registry", None)
+    if registry is None:
+        return
+    try:
+        rows = (
+            await registry.list_all()
+            if user.is_admin
+            else await registry.list_for_user(user.user_id)
+        )
+        match = next((r for r in rows if r.get("handle") == session_id), None)
+        if match and match.get("canonical_id"):
+            await registry.update(match["canonical_id"], display_name=alias)
+    except Exception:
+        logger.warning(
+            "registry alias sync failed for coding session %s", session_id, exc_info=True
+        )
+
+
 @router.post("/api/coding-sessions")
 async def create_coding_session(
     body: CodingSessionIn,
@@ -124,6 +155,26 @@ async def get_coding_session(
     if session is None or (not user.is_admin and session["created_by"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
     return session
+
+
+@router.patch("/api/coding-sessions/{session_id}")
+async def rename_coding_session(
+    session_id: str,
+    body: RenameCodingSessionIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Rename a session's alias (Jay: the launch alias is user-editable)."""
+    store = request.app.state.coding_session_store
+    session = await store.get_session(session_id)
+    if session is None or (not user.is_admin and session["created_by"] != user.user_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    alias = body.alias.strip()
+    if not alias:
+        return JSONResponse({"error": "alias must be non-empty"}, status_code=400)
+    updated = await store.set_alias(session_id, alias)
+    await _sync_registry_alias(request, session_id, alias, user)
+    return updated
 
 
 @router.post("/api/coding-sessions/{session_id}/stop")

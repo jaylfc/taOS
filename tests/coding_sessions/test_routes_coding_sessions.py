@@ -307,3 +307,54 @@ async def test_create_succeeds_even_if_registry_unavailable(tmp_path):
         assert resp.json()["status"] == "starting"
     await app.state.coding_session_store.close()
     await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_rename_updates_alias_and_registry(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        create_resp = await c.post("/api/coding-sessions", json=_make_body(alias="old-name"))
+        sid = create_resp.json()["id"]
+        resp = await c.patch(f"/api/coding-sessions/{sid}", json={"alias": "new-name"})
+        assert resp.status_code == 200
+        assert resp.json()["alias"] == "new-name"
+        # The registry entry (handle == session id) reflects the new alias.
+        rows = await app.state.agent_registry.list_for_user(uid)
+        match = next((r for r in rows if r.get("handle") == sid), None)
+        assert match is not None
+        assert match["display_name"] == "new-name"
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_rename_empty_alias_returns_400(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
+        resp = await c.patch(f"/api/coding-sessions/{sid}", json={"alias": "   "})
+        assert resp.status_code == 400
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_rename_missing_session_returns_404(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        resp = await c.patch("/api/coding-sessions/cs-does-not-exist", json={"alias": "x"})
+        assert resp.status_code == 404
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
