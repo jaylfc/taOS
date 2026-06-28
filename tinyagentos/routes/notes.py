@@ -55,10 +55,29 @@ def _get_store(request: Request):
 
 
 def _check_owner(doc: dict, user: CurrentUser):
-    """Return a 403 JSONResponse if the caller does not own the doc, else None."""
+    """Return a 403 JSONResponse if the caller does not own the doc, else None.
+
+    Used for writes and doc/member management, which stay owner-only in this
+    foundation. Member and agent writes land with the revisions work.
+    """
     if not user.is_admin and doc["owner_user_id"] != user.user_id:
         return JSONResponse({"error": "forbidden"}, status_code=403)
     return None
+
+
+async def _check_read_access(store, doc: dict, user: CurrentUser):
+    """Allow the owner, an admin, or a user-type member to read the doc.
+
+    Consistent with list_docs, which surfaces a doc to the users it is shared
+    with as a user-type member; without this they would see the doc in their
+    listing and then get a 403 opening it.
+    """
+    if user.is_admin or doc["owner_user_id"] == user.user_id:
+        return None
+    for m in await store.list_members(doc["id"]):
+        if m.get("member_type") == "user" and m.get("member_id") == user.user_id:
+            return None
+    return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
 # ------------------------------------------------------------------ doc routes
@@ -97,7 +116,7 @@ async def get_doc(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = _check_owner(doc, user)
+    err = await _check_read_access(store, doc, user)
     if err:
         return err
     return doc
@@ -241,7 +260,7 @@ async def list_members(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = _check_owner(doc, user)
+    err = await _check_read_access(store, doc, user)
     if err:
         return err
     return await store.list_members(doc_id)

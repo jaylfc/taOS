@@ -207,6 +207,32 @@ async def test_other_user_cannot_access_doc(two_user_clients):
     assert resp.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_user_member_can_read_shared_doc(two_user_clients):
+    alice, bob, app = two_user_clients
+    bob_id = app.state.auth.find_user("bob")["id"]
+
+    doc = (await alice.post("/api/notes", json={"kind": "note", "title": "Shared"})).json()
+    doc_id = doc["id"]
+
+    # Before sharing, bob cannot read it (consistent with list_docs).
+    assert (await bob.get(f"/api/notes/{doc_id}")).status_code == 403
+
+    # Alice shares the doc with bob as a user member.
+    r = await alice.post(
+        f"/api/notes/{doc_id}/members",
+        json={"member_type": "user", "member_id": bob_id},
+    )
+    assert r.status_code == 200
+
+    # Bob can now read the doc and its members, but writes/management stay
+    # owner-only in this foundation.
+    assert (await bob.get(f"/api/notes/{doc_id}")).status_code == 200
+    assert (await bob.get(f"/api/notes/{doc_id}/members")).status_code == 200
+    assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "hi"})).status_code == 403
+    assert (await bob.patch(f"/api/notes/{doc_id}", json={"title": "x"})).status_code == 403
+
+
 # ------------------------------------------------------------ member tests
 
 @pytest.mark.asyncio
