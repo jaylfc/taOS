@@ -205,6 +205,16 @@ async def _skill_read_layout(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_request_decision(args: dict, request: Request) -> dict:
+    """Ask the user a question via the Decisions inbox (human-in-the-loop)."""
+    try:
+        from tinyagentos.tools.decision_tools import execute_request_decision
+
+        return await execute_request_decision(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_create_project(args: dict, request: Request) -> dict:
     """Create a project the user can see."""
     try:
@@ -267,6 +277,7 @@ SKILL_IMPLEMENTATIONS = {
     "open_app": _skill_open_app,
     "arrange_windows": _skill_arrange_windows,
     "read_layout": _skill_read_layout,
+    "request_decision": _skill_request_decision,
     "create_project": _skill_create_project,
     "add_task": _skill_add_task,
     "canvas_add_image": _skill_canvas_add_image,

@@ -360,6 +360,35 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.project_tools",
             },
             {
+                "id": "request_decision",
+                "name": "Request Decision",
+                "category": "agent",
+                "description": "Ask the user a question via the Decisions inbox (human-in-the-loop)",
+                "tool_schema": {
+                    "name": "request_decision",
+                    "description": "Ask the user a question (single_select/multi_select need options; approve_deny; free_text) that queues in their Decisions inbox until answered. Returns a decision_id; the answer arrives later.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "The question to ask."},
+                            "type": {"type": "string", "enum": ["single_select", "multi_select", "approve_deny", "free_text"], "description": "Decision type."},
+                            "options": {"type": "array", "items": {"type": "string"}, "description": "Choices (required for select types)."},
+                            "context": {"type": "string", "description": "Optional background to help the user decide."},
+                            "priority": {"type": "string", "enum": ["normal", "blocking"], "description": "'blocking' only if you cannot proceed without it."},
+                            "from_agent": {"type": "string", "description": "Your agent name, shown as the asker."},
+                        },
+                        "required": ["question", "type"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.decision_tools",
+            },
+            {
                 "id": "canvas_add_image",
                 "name": "Add Image to Canvas",
                 "category": "projects",
