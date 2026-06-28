@@ -399,12 +399,22 @@ class WorkerAgent:
         kv_quant = self.detect_kv_quant_support(backends)
 
         # Use pinned advertise_url if provided; otherwise infer from backends or LAN IP.
-        worker_url = self.advertise_url or (backends[0]["url"] if backends else self.get_worker_url())
+        # TAOS_ADVERTISE_IP is set by the worker-LXC installer: inside the LXC the
+        # only locally-detectable address is the NAT'd incusbr0 IP, which the
+        # controller cannot reach. The reachable address is the bare host's LAN IP
+        # (DNAT'd to the LXC), so honour it for both the advertised URL and the
+        # host_lan_ip used to match the incus remote to this worker.
+        adv_ip = os.environ.get("TAOS_ADVERTISE_IP", "").strip()
+        worker_url = (
+            self.advertise_url
+            or (f"http://{adv_ip}" if adv_ip else None)
+            or (backends[0]["url"] if backends else self.get_worker_url())
+        )
 
         payload = {
             "name": self.name,
             "url": worker_url,
-            "host_lan_ip": _detect_lan_ip(self.controller_url),
+            "host_lan_ip": adv_ip or _detect_lan_ip(self.controller_url),
             "hardware": asdict(hw),
             "backends": backends,
             "capabilities": caps,

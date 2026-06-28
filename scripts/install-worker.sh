@@ -558,25 +558,25 @@ install_and_enroll_incus() {
         return 1
     fi
 
-    # ── 8. POST to controller ───────────────────────────────────────────
+    # ── 8. Enrol the worker's incus with the controller ─────────────────
+    # The endpoint is HMAC-gated like register/heartbeat, so the request is
+    # signed with the pairing key. Crypto lives in Python (tinyagentos.worker.enroll),
+    # not shell. --state-dir matches the pairing step above so the key is found.
     log "enrolling incus remote with controller at $CONTROLLER_URL"
-    local http_code
-    http_code="$(curl -sS -o /tmp/taos-incus-enroll.out -w "%{http_code}" \
-        -X POST "$CONTROLLER_URL/api/cluster/workers/$WORKER_NAME/incus-enroll" \
-        -H "Content-Type: application/json" \
-        -d "{\"incus_url\": \"https://${LAN_IP}:8443\", \"token\": \"${TOKEN}\"}" \
-        2>/tmp/taos-incus-enroll.err || true)"
-
-    if [[ "$http_code" == 2* ]]; then
-        log "incus remote enrolled successfully (HTTP $http_code)"
+    if "$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.enroll \
+            "$CONTROLLER_URL" \
+            --name "$WORKER_NAME" \
+            --incus-url "https://${LAN_IP}:8443" \
+            --token "$TOKEN" \
+            --state-dir "$INSTALL_DIR/.taos-worker-state"; then
+        log "incus remote enrolled successfully"
     else
-        warn "incus enrollment returned HTTP $http_code"
-        warn "  response: $(cat /tmp/taos-incus-enroll.out 2>/dev/null)"
-        warn "  to retry manually:"
+        warn "incus enrollment failed (see message above)"
+        warn "  to retry manually from inside the worker LXC:"
         warn "    TOKEN=\$(incus config trust add controller-enroll 2>&1 | tail -1)"
-        warn "    curl -X POST $CONTROLLER_URL/api/cluster/workers/$WORKER_NAME/incus-enroll \\"
-        warn "        -H 'Content-Type: application/json' \\"
-        warn "        -d \"{\\\"incus_url\\\": \\\"https://$LAN_IP:8443\\\", \\\"token\\\": \\\"\$TOKEN\\\"}\" "
+        warn "    $INSTALL_DIR/.venv/bin/python -m tinyagentos.worker.enroll $CONTROLLER_URL \\"
+        warn "        --name $WORKER_NAME --incus-url https://$LAN_IP:8443 --token \"\$TOKEN\" \\"
+        warn "        --state-dir $INSTALL_DIR/.taos-worker-state"
         warn "  set TAOS_SKIP_INCUS=1 to skip this block entirely on re-runs"
     fi
 }
@@ -664,6 +664,7 @@ Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=TAOS_WORKER_STATE_DIR=$INSTALL_DIR/.taos-worker-state
+Environment=TAOS_ADVERTISE_IP=${TAOS_ADVERTISE_IP:-}
 
 [Install]
 WantedBy=multi-user.target
