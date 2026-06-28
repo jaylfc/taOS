@@ -636,7 +636,7 @@ install_worker_service_root() {
     local unit="/etc/systemd/system/tinyagentos-worker.service"
 
     # Deploy helper so the controller can manage backends in the nested incus.
-    local helper_src="$INSTALL_DIR/tinyagentos/scripts/taos-deploy-helper.sh"
+    local helper_src="$INSTALL_DIR/scripts/taos-deploy-helper.sh"
     if [[ -f "$helper_src" ]]; then
         cp "$helper_src" /usr/local/bin/taos-deploy-helper
         chmod 755 /usr/local/bin/taos-deploy-helper
@@ -1266,7 +1266,7 @@ install_deploy_helper() {
     local sudo_cmd=""
     if [[ "$(id -u)" != "0" ]]; then sudo_cmd="sudo"; fi
 
-    local helper_src="$INSTALL_DIR/tinyagentos/scripts/taos-deploy-helper.sh"
+    local helper_src="$INSTALL_DIR/scripts/taos-deploy-helper.sh"
     local helper_dst="/usr/local/bin/taos-deploy-helper"
 
     if [[ -f "$helper_src" ]]; then
