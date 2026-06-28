@@ -101,6 +101,12 @@ async def _default_runner(argv: list[str]) -> tuple[int, str, str]:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT)
     except asyncio.TimeoutError:
         proc.kill()
+        # Reap the killed child and drain its pipes so it does not linger as a
+        # zombie; communicate() after kill returns promptly.
+        try:
+            await proc.communicate()
+        except Exception:  # noqa: BLE001
+            pass
         raise
     return (
         proc.returncode,
