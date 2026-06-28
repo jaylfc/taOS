@@ -551,14 +551,105 @@ install_and_enroll_incus() {
     fi
 }
 
+# --- repo clone + python runtime (shared: macOS legacy body + phase 2) -----
+#
+# Defined here, above the phase entry-points, so phase2_inside_lxc() (which
+# runs inside the worker LXC and exits before the fall-through body) can reuse
+# the exact same clone + venv logic the macOS / non-phased path uses.
+
+clone_or_update_repo() {
+    if [[ ! -d "$INSTALL_DIR/.git" ]]; then
+        log "cloning $REPO into $INSTALL_DIR"
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        # If INSTALL_DIR already exists but isn't a git repo (e.g. a previous
+        # partial install), move it aside so the clone can proceed.
+        if [[ -d "$INSTALL_DIR" ]]; then
+            mv "$INSTALL_DIR" "${INSTALL_DIR}.old.$(date +%s)"
+        fi
+        git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
+    else
+        log "updating existing checkout"
+        (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+    fi
+    cd "$INSTALL_DIR"
+}
+
+setup_python_venv() {
+    cd "$INSTALL_DIR"
+    if [[ ! -d .venv ]]; then
+        log "creating venv"
+        python3 -m venv .venv
+    fi
+
+    log "installing worker python deps into .venv"
+    ./.venv/bin/pip install --quiet --upgrade pip
+    ./.venv/bin/pip install --quiet \
+        httpx \
+        pydantic \
+        psutil \
+        fastapi \
+        uvicorn \
+        pyyaml \
+        pillow
+
+    # libtorrent is optional (only used for model torrent mesh). It isn't on
+    # PyPI as a wheel for most platforms — it ships as the distro's
+    # libtorrent-rasterbar package. Try pip in case a wheel is available;
+    # silently skip if not. Worker still functions without it.
+    ./.venv/bin/pip install --quiet libtorrent 2>/dev/null || \
+        warn "libtorrent python bindings not available — torrent model mesh disabled (worker still functional)"
+}
+
+# Install the worker daemon as a system service INSIDE the worker LXC, where
+# we always run as root (so no sudo / no $USER gymnastics — unlike
+# install_linux_systemd_system which targets the bare-host legacy path).
+install_worker_service_root() {
+    local unit="/etc/systemd/system/tinyagentos-worker.service"
+
+    # Deploy helper so the controller can manage backends in the nested incus.
+    local helper_src="$INSTALL_DIR/tinyagentos/scripts/taos-deploy-helper.sh"
+    if [[ -f "$helper_src" ]]; then
+        cp "$helper_src" /usr/local/bin/taos-deploy-helper
+        chmod 755 /usr/local/bin/taos-deploy-helper
+        log "installed /usr/local/bin/taos-deploy-helper"
+    else
+        warn "deploy helper not found at $helper_src — remote backend deployment will not work"
+    fi
+
+    cat > "$unit" <<EOF
+[Unit]
+Description=TinyAgentOS Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/.venv/bin/python -m tinyagentos.worker $CONTROLLER_URL --name $WORKER_NAME
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=TAOS_WORKER_STATE_DIR=$INSTALL_DIR/.taos-worker-state
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    log "installed $unit (worker LXC system unit, runs as root)"
+    systemctl daemon-reload
+    systemctl enable --now tinyagentos-worker
+    log "worker daemon running inside LXC as system service"
+    log "logs: incus exec taos-worker -- journalctl -u tinyagentos-worker -f"
+}
+
 # --- phase 2: nested incus + bees + register (runs inside worker LXC) -----
 
 phase2_inside_lxc() {
     log "phase 2: nested incus + bees + register"
 
-    # 1. Nested incus + bees
+    # 1. Nested incus + bees + worker runtime deps (the LXC is a fresh,
+    #    minimal Ubuntu image, so python3/venv/git are not present yet).
     apt update -y
-    apt install -y incus curl
+    apt install -y incus curl python3 python3-venv python3-pip git
     # bees is not packaged in Ubuntu 24.04; install if available, otherwise
     # the bees service setup below is skipped (TAOS_NO_DEDUP behaviour).
     local bees_installed=0
@@ -619,9 +710,20 @@ BEESEOF
     fi
     export TAOS_HOST_LAN_IP="$host_lan_ip"
 
-    # 4. Register with controller (reuse existing function from the rest of
+    # 4. Clone the repo + build the python venv INSIDE the LXC. The shared
+    #    clone/venv block at the foot of this script only runs on the macOS /
+    #    non-phased path, so the worker-LXC phase needs its own runtime: both
+    #    pairing (install_and_enroll_incus, below) and the worker daemon
+    #    invoke $INSTALL_DIR/.venv/bin/python.
+    clone_or_update_repo
+    setup_python_venv
+
+    # 5. Register with controller (reuse existing function from the rest of
     #    install-worker.sh; it does POST /api/cluster/workers + /incus-enroll).
     install_and_enroll_incus
+
+    # 6. Install + start the worker daemon as a system service inside the LXC.
+    install_worker_service_root
 }
 
 # --- phase 1 entry-point --------------------------------------------------
@@ -1075,48 +1177,13 @@ EOF
 # directory to work with. install_taos_ollama then drops its bundled
 # Ollama into $INSTALL_DIR/backends/ollama inside the cloned repo.
 
-if [[ ! -d "$INSTALL_DIR/.git" ]]; then
-    log "cloning $REPO into $INSTALL_DIR"
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    # If INSTALL_DIR already exists but isn't a git repo (e.g. a previous
-    # partial install), move it aside so the clone can proceed.
-    if [[ -d "$INSTALL_DIR" ]]; then
-        mv "$INSTALL_DIR" "${INSTALL_DIR}.old.$(date +%s)"
-    fi
-    git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
-else
-    log "updating existing checkout"
-    (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
-fi
-
-cd "$INSTALL_DIR"
+clone_or_update_repo
 
 install_taos_ollama
 
 # --- python venv + worker-only deps --------------------------------------
 
-if [[ ! -d .venv ]]; then
-    log "creating venv"
-    python3 -m venv .venv
-fi
-
-log "installing worker python deps into .venv"
-./.venv/bin/pip install --quiet --upgrade pip
-./.venv/bin/pip install --quiet \
-    httpx \
-    pydantic \
-    psutil \
-    fastapi \
-    uvicorn \
-    pyyaml \
-    pillow
-
-# libtorrent is optional (only used for model torrent mesh). It isn't on
-# PyPI as a wheel for most platforms — it ships as the distro's
-# libtorrent-rasterbar package. Try pip in case a wheel is available;
-# silently skip if not. Worker still functions without it.
-./.venv/bin/pip install --quiet libtorrent 2>/dev/null || \
-    warn "libtorrent python bindings not available — torrent model mesh disabled (worker still functional)"
+setup_python_venv
 
 # --- first-boot benchmark -----------------------------------------------
 
