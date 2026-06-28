@@ -435,6 +435,30 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.framework_tools",
             },
             {
+                "id": "list_store_apps",
+                "name": "List Store Apps",
+                "category": "agent",
+                "description": "List installable Store apps/backends so the agent can offer to install one",
+                "tool_schema": {
+                    "name": "list_store_apps",
+                    "description": "List installable things in the taOS Store (apps, models, services, backends, plugins) with whether each is installed, so you can offer to install what the user needs. Optional 'type' filter and 'query' search. Read-only; the user installs from the Store app.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "description": "Optional type filter (app, model, service, backend, plugin)."},
+                            "query": {"type": "string", "description": "Optional search over name and description."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.store_tools",
+            },
+            {
                 "id": "notify_user",
                 "name": "Notify User",
                 "category": "agent",
