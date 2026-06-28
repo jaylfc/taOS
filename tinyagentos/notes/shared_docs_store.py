@@ -10,17 +10,25 @@ notify after an entry is added.
 
 Append-only-friendly: archiving sets ``archived_at`` rather than deleting, so
 nothing is truly lost (#103).
+
+Every text change to an entry is recorded as an immutable revision row. The
+revision log stores a diff per edit plus a full-text snapshot every
+CHECKPOINT_EVERY revisions so that rewinding to any past state requires at
+most one checkpoint load plus a short diff replay.
 """
 
 from __future__ import annotations
 
-import json
 import time
+
+from diff_match_patch import diff_match_patch
 
 from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
 
 DOC_KINDS = ("note", "list")
+
+CHECKPOINT_EVERY = 20
 
 SHARED_DOCS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS shared_docs (
@@ -54,6 +62,20 @@ CREATE TABLE IF NOT EXISTS shared_doc_members (
 );
 CREATE INDEX IF NOT EXISTS idx_shared_doc_members_doc ON shared_doc_members(doc_id);
 CREATE INDEX IF NOT EXISTS idx_shared_doc_members_agent ON shared_doc_members(member_type, member_id);
+
+CREATE TABLE IF NOT EXISTS shared_doc_entry_revisions (
+    id          TEXT PRIMARY KEY,
+    entry_id    TEXT NOT NULL,
+    rev_index   INTEGER NOT NULL,
+    editor_id   TEXT NOT NULL DEFAULT '',
+    editor_type TEXT NOT NULL DEFAULT 'user',
+    op          TEXT NOT NULL,
+    diff        TEXT,
+    snapshot    TEXT,
+    created_at  REAL NOT NULL,
+    UNIQUE (entry_id, rev_index)
+);
+CREATE INDEX IF NOT EXISTS idx_entry_revisions_entry ON shared_doc_entry_revisions(entry_id, rev_index);
 """
 
 
@@ -134,6 +156,56 @@ class SharedDocsStore(BaseStore):
         await self._db.execute(
             "UPDATE shared_docs SET updated_at = ? WHERE id = ?", (now, doc_id)
         )
+        rev_id = new_id("rev")
+        await self._db.execute(
+            "INSERT INTO shared_doc_entry_revisions "
+            "(id, entry_id, rev_index, editor_id, editor_type, op, diff, snapshot, created_at) "
+            "VALUES (?, ?, 0, ?, 'user', 'create', NULL, ?, ?)",
+            (rev_id, entry_id, author, text, now),
+        )
+        await self._db.commit()
+        cur = await self._db.execute("SELECT * FROM shared_doc_entries WHERE id = ?", (entry_id,))
+        return _row(cur.description, await cur.fetchone())
+
+    async def edit_entry(
+        self,
+        entry_id: str,
+        new_text: str,
+        editor_id: str = "",
+        editor_type: str = "user",
+    ) -> dict:
+        cur = await self._db.execute(
+            "SELECT text FROM shared_doc_entries WHERE id = ?", (entry_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise KeyError(f"entry not found: {entry_id}")
+        old_text = row[0]
+
+        dmp = diff_match_patch()
+        patches = dmp.patch_make(old_text, new_text)
+        diff_text = dmp.patch_toText(patches)
+
+        cur = await self._db.execute(
+            "SELECT MAX(rev_index) FROM shared_doc_entry_revisions WHERE entry_id = ?",
+            (entry_id,),
+        )
+        row_max = await cur.fetchone()
+        next_index = (row_max[0] or 0) + 1
+
+        snapshot = new_text if next_index % CHECKPOINT_EVERY == 0 else None
+
+        rev_id = new_id("rev")
+        now = time.time()
+        await self._db.execute(
+            "INSERT INTO shared_doc_entry_revisions "
+            "(id, entry_id, rev_index, editor_id, editor_type, op, diff, snapshot, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'edit', ?, ?, ?)",
+            (rev_id, entry_id, next_index, editor_id, editor_type, diff_text, snapshot, now),
+        )
+        await self._db.execute(
+            "UPDATE shared_doc_entries SET text = ? WHERE id = ?", (new_text, entry_id)
+        )
         await self._db.commit()
         cur = await self._db.execute("SELECT * FROM shared_doc_entries WHERE id = ?", (entry_id,))
         return _row(cur.description, await cur.fetchone())
@@ -159,6 +231,86 @@ class SharedDocsStore(BaseStore):
     async def delete_entry(self, entry_id: str) -> None:
         await self._db.execute("DELETE FROM shared_doc_entries WHERE id = ?", (entry_id,))
         await self._db.commit()
+
+    # ------------------------------------------------------------ revision reads
+
+    async def list_revisions(self, entry_id: str) -> list[dict]:
+        """Return all revisions for an entry, ascending by rev_index.
+
+        Each dict contains: rev_index, editor_id, editor_type, op, created_at.
+        The diff and snapshot columns are intentionally omitted here; use
+        revision_diff / entry_text_at for those.
+        """
+        cur = await self._db.execute(
+            "SELECT rev_index, editor_id, editor_type, op, created_at "
+            "FROM shared_doc_entry_revisions WHERE entry_id = ? ORDER BY rev_index",
+            (entry_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(zip([c[0] for c in cur.description], r)) for r in rows]
+
+    async def revision_diff(self, entry_id: str, rev_index: int) -> str | None:
+        """Return the stored diff text for the given revision (None for create rows)."""
+        cur = await self._db.execute(
+            "SELECT diff FROM shared_doc_entry_revisions WHERE entry_id = ? AND rev_index = ?",
+            (entry_id, rev_index),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise KeyError(f"revision not found: entry={entry_id} rev={rev_index}")
+        return row[0]
+
+    async def entry_text_at(self, entry_id: str, rev_index: int) -> str:
+        """Reconstruct the entry text as it was after revision rev_index.
+
+        Strategy: find the highest revision <= rev_index whose snapshot is set,
+        then apply each subsequent revision's diff up to rev_index. Raises
+        KeyError if entry or revision is missing, ValueError if a diff fails.
+        """
+        cur = await self._db.execute(
+            "SELECT rev_index, snapshot, diff FROM shared_doc_entry_revisions "
+            "WHERE entry_id = ? AND rev_index <= ? ORDER BY rev_index",
+            (entry_id, rev_index),
+        )
+        rows = await cur.fetchall()
+        if not rows:
+            raise KeyError(f"no revisions found: entry={entry_id} rev<={rev_index}")
+
+        # Find the last checkpoint at or before rev_index.
+        base_text = None
+        base_rev = -1
+        for r in rows:
+            r_idx, r_snapshot, _ = r
+            if r_snapshot is not None:
+                base_text = r_snapshot
+                base_rev = r_idx
+
+        if base_text is None:
+            raise ValueError(
+                f"no snapshot/checkpoint found for entry={entry_id} up to rev={rev_index}; "
+                "revision log may be corrupt"
+            )
+
+        if base_rev == rev_index:
+            return base_text
+
+        # Replay diffs from base_rev+1 up to rev_index.
+        dmp = diff_match_patch()
+        text = base_text
+        for r in rows:
+            r_idx, _, r_diff = r
+            if r_idx <= base_rev:
+                continue
+            if r_diff is None:
+                continue
+            patches = dmp.patch_fromText(r_diff)
+            text, results = dmp.patch_apply(patches, text)
+            if not all(results):
+                raise ValueError(
+                    f"diff application failed at rev={r_idx} for entry={entry_id}; "
+                    "revision log may be corrupt"
+                )
+        return text
 
     # --------------------------------------------------------------- members
     async def add_member(

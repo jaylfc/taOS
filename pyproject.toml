@@ -42,6 +42,9 @@ dependencies = [
     # http://taos.local:<port>/ on the LAN without users knowing its IP
     # (tinyagentos/services/mdns_publisher.py).
     "zeroconf>=0.150.0",
+    # Diff/patch for the notes revision log: computes and applies text diffs
+    # for the Time Machine history layer (tinyagentos/notes/shared_docs_store.py).
+    "diff-match-patch>=20230430",
 ]
 
 [project.optional-dependencies]

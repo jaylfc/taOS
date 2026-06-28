@@ -42,6 +42,10 @@ class PatchEntryIn(BaseModel):
     done: bool
 
 
+class EditEntryTextIn(BaseModel):
+    text: str
+
+
 class AddMemberIn(BaseModel):
     member_type: str
     member_id: str
@@ -246,6 +250,70 @@ async def delete_entry(
         return err
     await store.delete_entry(entry_id)
     return JSONResponse({"ok": True})
+
+
+@router.patch("/api/notes/{doc_id}/entries/{entry_id}/text")
+async def edit_entry_text(
+    doc_id: str,
+    entry_id: str,
+    body: EditEntryTextIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = _get_store(request)
+    doc = await store.get_doc(doc_id)
+    if doc is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    err = _check_owner(doc, user)
+    if err:
+        return err
+    try:
+        entry = await store.edit_entry(entry_id, body.text, editor_id=user.user_id, editor_type="user")
+    except KeyError:
+        return JSONResponse({"error": "entry not found"}, status_code=404)
+    return entry
+
+
+@router.get("/api/notes/{doc_id}/entries/{entry_id}/history")
+async def entry_history(
+    doc_id: str,
+    entry_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = _get_store(request)
+    doc = await store.get_doc(doc_id)
+    if doc is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    err = await _check_read_access(store, doc, user)
+    if err:
+        return err
+    return await store.list_revisions(entry_id)
+
+
+@router.get("/api/notes/{doc_id}/entries/{entry_id}/at/{rev_index}")
+async def entry_at_revision(
+    doc_id: str,
+    entry_id: str,
+    rev_index: int,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = _get_store(request)
+    doc = await store.get_doc(doc_id)
+    if doc is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    err = await _check_read_access(store, doc, user)
+    if err:
+        return err
+    try:
+        text = await store.entry_text_at(entry_id, rev_index)
+        diff = await store.revision_diff(entry_id, rev_index)
+    except KeyError:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return {"text": text, "diff": diff}
 
 
 # -------------------------------------------------------------- member routes
