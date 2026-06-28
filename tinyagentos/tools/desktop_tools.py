@@ -47,6 +47,17 @@ OPEN_APP_TOOL = {
     },
 }
 
+READ_LAYOUT_TOOL = {
+    "name": "read_layout",
+    "description": (
+        "Read the user's current desktop layout: the screen size and every open "
+        "window's position, size, and state (minimized/maximized/snapped/focused). "
+        "Use this to be screen-aware before arranging or moving windows, e.g. to "
+        "see which apps are open and where, then place a new window in free space."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
 ARRANGE_WINDOWS_TOOL = {
     "name": "arrange_windows",
     "description": (
@@ -104,3 +115,35 @@ async def execute_arrange_windows(args: dict, request: Request) -> dict:
         DesktopCommand(kind="window", payload={"action": "arrange", "preset": preset}),
     )
     return {"ok": True, "preset": preset, "delivered": delivered}
+
+
+async def execute_read_layout(args: dict, request: Request) -> dict:
+    """Round-trip the user's desktop layout: emit a `layout` command and wait for
+    the desktop to report back its getLayout() (screen + window bounds). This is
+    the screen-aware READ half of the window-management API; arrange/move/etc are
+    the drive half. Returns {"error": ...} if no desktop is connected or it does
+    not answer in time, so the agent can fall back gracefully."""
+    import asyncio
+    import uuid
+
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user desktop to read"}
+    broker = request.app.state.desktop_command_broker
+    request_id = uuid.uuid4().hex
+    fut = broker.register_result(request_id, user_id)
+    try:
+        delivered = await broker.emit(
+            user_id, DesktopCommand(kind="layout", payload={"request_id": request_id})
+        )
+        if delivered == 0:
+            return {"error": "no desktop connected"}
+        try:
+            result = await asyncio.wait_for(fut, timeout=10.0)
+        except asyncio.TimeoutError:
+            return {"error": "desktop did not respond in time"}
+    finally:
+        broker.discard_result(request_id)
+    if isinstance(result, dict) and result.get("error"):
+        return {"error": result["error"]}
+    return {"ok": True, "layout": result.get("layout", {}) if isinstance(result, dict) else {}}

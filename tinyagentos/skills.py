@@ -264,6 +264,24 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.desktop_tools",
             },
             {
+                "id": "read_layout",
+                "name": "Read Desktop Layout",
+                "category": "desktop",
+                "description": "Read the user's screen size and open-window bounds (screen-aware control)",
+                "tool_schema": {
+                    "name": "read_layout",
+                    "description": "Read the desktop layout: screen size + every open window's bounds and state.",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.desktop_tools",
+            },
+            {
                 "id": "arrange_windows",
                 "name": "Arrange Windows",
                 "category": "desktop",

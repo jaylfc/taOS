@@ -63,6 +63,33 @@ async function captureAndReport(requestId: string): Promise<void> {
   }
 }
 
+/**
+ * Read the live desktop layout (screen size + every window's bounds and state)
+ * and POST it back to resolve an agent layout request. This is the read half of
+ * the agent window-management API: the agent fetches the layout to decide
+ * placement, then drives windows via taos:window ops. getLayout is exposed by
+ * use-desktop-control on window.taosDesktop.
+ */
+async function reportLayout(requestId: string): Promise<void> {
+  let body: { request_id: string; layout?: unknown; error?: string };
+  try {
+    const layout = window.taosDesktop?.getLayout();
+    if (!layout) throw new Error("desktop control not ready");
+    body = { request_id: requestId, layout };
+  } catch (e) {
+    body = { request_id: requestId, error: e instanceof Error ? e.message : "layout read failed" };
+  }
+  try {
+    await fetch("/api/desktop/layout-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    /* the agent side will time out and report it */
+  }
+}
+
 export function useDesktopCommandStream(): void {
   useEffect(() => {
     const es = new EventSource("/api/desktop/stream");
@@ -83,6 +110,9 @@ export function useDesktopCommandStream(): void {
       } else if (cmd.kind === "screenshot") {
         const requestId = (cmd.payload?.request_id as string) ?? "";
         if (requestId) void captureAndReport(requestId);
+      } else if (cmd.kind === "layout") {
+        const requestId = (cmd.payload?.request_id as string) ?? "";
+        if (requestId) void reportLayout(requestId);
       }
     };
     es.onerror = () => {

@@ -195,6 +195,16 @@ async def _skill_arrange_windows(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_read_layout(args: dict, request: Request) -> dict:
+    """Read the user's desktop layout: screen + window bounds (agent OS control)."""
+    try:
+        from tinyagentos.tools.desktop_tools import execute_read_layout
+
+        return await execute_read_layout(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_create_project(args: dict, request: Request) -> dict:
     """Create a project the user can see."""
     try:
@@ -256,6 +266,7 @@ SKILL_IMPLEMENTATIONS = {
     "list_image_models": _skill_list_image_models,
     "open_app": _skill_open_app,
     "arrange_windows": _skill_arrange_windows,
+    "read_layout": _skill_read_layout,
     "create_project": _skill_create_project,
     "add_task": _skill_add_task,
     "canvas_add_image": _skill_canvas_add_image,
