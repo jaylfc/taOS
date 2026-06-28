@@ -343,3 +343,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.agent_images import router as agent_images_router
     app.include_router(agent_images_router)
+
+    from tinyagentos.routes.notes import router as notes_router
+    app.include_router(notes_router)
