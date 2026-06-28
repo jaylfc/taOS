@@ -153,3 +153,47 @@ async def test_add_entry_missing_fields_returns_error(store):
 
     res = await execute_notes_add_entry({"doc_id": "doc-x", "text": "hi"}, req)
     assert "error" in res
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_write_archived_doc(store):
+    doc = await store.create_doc("user-1", "list", "Old List")
+    await store.add_member(doc["id"], "agent", "atlas")
+    await store.archive_doc(doc["id"])
+
+    req = _make_request(store)
+    res = await execute_notes_add_entry(
+        {"agent_name": "atlas", "doc_id": doc["id"], "text": "late entry"},
+        req,
+    )
+    assert "error" in res
+    assert "archived" in res["error"]
+    assert await store.list_entries(doc["id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_agent_write_attributed_to_agent(store):
+    doc = await store.create_doc("user-1", "note", "Ideas")
+    await store.add_member(doc["id"], "agent", "atlas")
+
+    req = _make_request(store)
+    res = await execute_notes_add_entry(
+        {"agent_name": "atlas", "doc_id": doc["id"], "text": "an idea"},
+        req,
+    )
+    revs = await store.list_revisions(res["entry_id"])
+    assert revs[0]["editor_type"] == "agent"
+    assert revs[0]["editor_id"] == "atlas"
+
+
+@pytest.mark.asyncio
+async def test_list_shared_docs_excludes_internal_fields(store):
+    doc = await store.create_doc("user-1", "note", "Shared")
+    await store.add_member(doc["id"], "agent", "atlas")
+
+    req = _make_request(store)
+    res = await execute_notes_list_shared_docs({"agent_name": "atlas"}, req)
+    assert res["docs"]
+    keys = set(res["docs"][0].keys())
+    assert "owner_user_id" not in keys
+    assert keys <= {"id", "kind", "title", "updated_at"}

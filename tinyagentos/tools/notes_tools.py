@@ -7,7 +7,11 @@ being notified about its own write.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import Request
+
+logger = logging.getLogger(__name__)
 
 
 async def execute_notes_list_shared_docs(args: dict, request: Request) -> dict:
@@ -45,16 +49,20 @@ async def execute_notes_add_entry(args: dict, request: Request) -> dict:
         if not any(m["agent"] == agent_name for m in members):
             return {"error": "agent is not a member of this doc"}
 
-        entry = await store.add_entry(doc_id, text, author=agent_name)
-
         doc = await store.get_doc(doc_id)
-        if doc is not None:
-            from tinyagentos.routes.notes import _trigger_agent_notifications
+        if doc is None:
+            return {"error": "doc not found"}
+        if doc.get("archived_at") is not None:
+            return {"error": "doc is archived"}
 
-            try:
-                await _trigger_agent_notifications(request, doc, text, skip_agent=agent_name)
-            except Exception:
-                pass
+        entry = await store.add_entry(doc_id, text, author=agent_name, editor_type="agent")
+
+        from tinyagentos.routes.notes import _trigger_agent_notifications
+
+        try:
+            await _trigger_agent_notifications(request, doc, text, skip_agent=agent_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("notes_add_entry: agent trigger failed: %s", exc)
 
         return {"ok": True, "entry_id": entry["id"]}
     except Exception as exc:
