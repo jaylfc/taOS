@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   StickyNote,
+  ListChecks,
   Plus,
   Clock,
   Users,
@@ -10,8 +11,11 @@ import {
   Trash2,
   Check,
   X,
+  Square,
+  CheckSquare,
   AlertCircle,
   ChevronLeft,
+  type LucideIcon,
 } from "lucide-react";
 import { Button, Textarea } from "@/components/ui";
 
@@ -83,6 +87,50 @@ const ACTION_OPTIONS = [
   { value: "build", label: "Build" },
   { value: "discuss", label: "Discuss" },
 ] as const;
+
+// ---- Kind config ----
+// Notes and lists share one component, one store, and one API; they differ only
+// in copy, icon, and whether entries carry a done checkbox. A config object
+// keeps both variants in sync instead of forking ~1000 lines.
+
+interface DocKindConfig {
+  kind: "note" | "list";
+  appName: string; // header + listing aria
+  icon: LucideIcon;
+  noun: string; // doc-level aria: New {noun}, Create {noun}, Share {noun}
+  titlePlaceholder: string;
+  addPlaceholder: string;
+  emptyDocs: string;
+  emptyEntries: string;
+  selectPrompt: string;
+  showDone: boolean;
+}
+
+const NOTES_CONFIG: DocKindConfig = {
+  kind: "note",
+  appName: "Notes",
+  icon: StickyNote,
+  noun: "note",
+  titlePlaceholder: "Note title...",
+  addPlaceholder: "Add a note...",
+  emptyDocs: "No notes yet.",
+  emptyEntries: "Nothing here yet. Add your first note above.",
+  selectPrompt: "Select a note to get started.",
+  showDone: false,
+};
+
+const TODO_CONFIG: DocKindConfig = {
+  kind: "list",
+  appName: "Todo",
+  icon: ListChecks,
+  noun: "list",
+  titlePlaceholder: "List title...",
+  addPlaceholder: "Add a task...",
+  emptyDocs: "No lists yet.",
+  emptyEntries: "Nothing here yet. Add your first task above.",
+  selectPrompt: "Select a list to get started.",
+  showDone: true,
+};
 
 // ---- Sub-components ----
 
@@ -286,7 +334,7 @@ function SharePanel({ doc, onClose }: { doc: NoteDetail; onClose: () => void }) 
     <div
       className="flex flex-col gap-4 rounded-xl border border-shell-border bg-shell-bg-deep p-4"
       role="dialog"
-      aria-label="Share note"
+      aria-label={`Share ${doc.kind === "list" ? "list" : "note"}`}
     >
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1.5 text-sm font-semibold text-shell-text">
@@ -471,13 +519,17 @@ function SharePanel({ doc, onClose }: { doc: NoteDetail; onClose: () => void }) 
 function EntryRow({
   entry,
   docId,
+  showDone,
   onDelete,
   onEditSave,
+  onToggleDone,
 }: {
   entry: NoteEntry;
   docId: string;
+  showDone: boolean;
   onDelete: (id: string) => void;
   onEditSave: (id: string, text: string) => Promise<void>;
+  onToggleDone: (id: string, done: boolean) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(entry.text);
@@ -546,7 +598,29 @@ function EntryRow({
           </div>
         ) : (
           <>
-            <p className="min-w-0 flex-1 whitespace-pre-wrap text-sm text-shell-text">
+            {showDone && (
+              <button
+                type="button"
+                onClick={() => onToggleDone(entry.id, !entry.done)}
+                aria-label={entry.done ? "Mark task not done" : "Mark task done"}
+                aria-pressed={entry.done}
+                className="mt-0.5 shrink-0 text-shell-text-tertiary transition-colors hover:text-accent"
+              >
+                {entry.done ? (
+                  <CheckSquare size={16} className="text-accent" />
+                ) : (
+                  <Square size={16} />
+                )}
+              </button>
+            )}
+            <p
+              className={[
+                "min-w-0 flex-1 whitespace-pre-wrap text-sm",
+                showDone && entry.done
+                  ? "text-shell-text-tertiary line-through"
+                  : "text-shell-text",
+              ].join(" ")}
+            >
               {entry.text}
             </p>
             <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -598,9 +672,11 @@ function EntryRow({
 // Detail pane for a selected note
 function NoteDetailPane({
   docId,
+  config,
   onBack,
 }: {
   docId: string;
+  config: DocKindConfig;
   onBack: () => void;
 }) {
   const [doc, setDoc] = useState<NoteDetail | null>(null);
@@ -681,6 +757,36 @@ function NoteDetailPane({
     );
   }
 
+  async function toggleDone(entryId: string, done: boolean) {
+    if (!doc) return;
+    // Optimistic: flip immediately, revert on failure.
+    setDoc((prev) =>
+      prev
+        ? { ...prev, entries: prev.entries.map((e) => (e.id === entryId ? { ...e, done } : e)) }
+        : prev,
+    );
+    try {
+      const r = await fetch(`/api/notes/${doc.id}/entries/${entryId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ done }),
+      });
+      if (!r.ok) throw new Error("Could not update task.");
+    } catch (e) {
+      setDoc((prev) =>
+        prev
+          ? {
+              ...prev,
+              entries: prev.entries.map((el) =>
+                el.id === entryId ? { ...el, done: !done } : el,
+              ),
+            }
+          : prev,
+      );
+      setError(e instanceof Error ? e.message : "Could not update task.");
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -700,6 +806,7 @@ function NoteDetailPane({
   const members = doc.members ?? [];
   const hasMembers = members.length > 0;
   const hasAgentMembers = members.some((m) => m.member_type === "agent");
+  const Icon = config.icon;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -741,7 +848,7 @@ function NoteDetailPane({
             variant="outline"
             size="sm"
             onClick={() => setShowShare((v) => !v)}
-            aria-label="Share note"
+            aria-label={`Share ${config.noun}`}
             aria-expanded={showShare}
           >
             <Users size={13} />
@@ -769,7 +876,7 @@ function NoteDetailPane({
             <Textarea
               value={newText}
               onChange={(e) => setNewText(e.target.value)}
-              placeholder="Add a note..."
+              placeholder={config.addPlaceholder}
               rows={2}
               maxLength={20000}
               aria-label="New entry text"
@@ -803,15 +910,17 @@ function NoteDetailPane({
                   key={entry.id}
                   entry={entry}
                   docId={doc.id}
+                  showDone={config.showDone}
                   onDelete={deleteEntry}
                   onEditSave={editEntry}
+                  onToggleDone={toggleDone}
                 />
               ))}
             </ul>
           ) : (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
-              <StickyNote size={28} className="text-shell-text-tertiary" />
-              <p className="text-sm text-shell-text-secondary">Nothing here yet. Add your first note above.</p>
+              <Icon size={28} className="text-shell-text-tertiary" />
+              <p className="text-sm text-shell-text-secondary">{config.emptyEntries}</p>
             </div>
           )}
 
@@ -862,7 +971,8 @@ function NoteListItem({
 }
 
 // Create note modal/inline form
-function CreateNoteForm({ onCreated, onCancel }: {
+function CreateNoteForm({ config, onCreated, onCancel }: {
+  config: DocKindConfig;
   onCreated: (note: NoteDoc) => void;
   onCancel: () => void;
 }) {
@@ -883,9 +993,9 @@ function CreateNoteForm({ onCreated, onCancel }: {
       const r = await fetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "note", title: title.trim() }),
+        body: JSON.stringify({ kind: config.kind, title: title.trim() }),
       });
-      if (!r.ok) throw new Error("Could not create note.");
+      if (!r.ok) throw new Error(`Could not create ${config.noun}.`);
       const doc: NoteDoc = await r.json();
       onCreated(doc);
     } catch (e) {
@@ -901,8 +1011,8 @@ function CreateNoteForm({ onCreated, onCancel }: {
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Note title..."
-        aria-label="New note title"
+        placeholder={config.titlePlaceholder}
+        aria-label={`New ${config.noun} title`}
         maxLength={255}
         onKeyDown={(e) => {
           if (e.key === "Enter") { e.preventDefault(); void create(); }
@@ -917,7 +1027,7 @@ function CreateNoteForm({ onCreated, onCancel }: {
         <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={creating} aria-label="Cancel">
           Cancel
         </Button>
-        <Button type="button" size="sm" onClick={create} disabled={creating || !title.trim()} aria-label="Create note">
+        <Button type="button" size="sm" onClick={create} disabled={creating || !title.trim()} aria-label={`Create ${config.noun}`}>
           {creating ? "Creating..." : "Create"}
         </Button>
       </div>
@@ -927,7 +1037,7 @@ function CreateNoteForm({ onCreated, onCancel }: {
 
 // ---- Main app ----
 
-export function NotesApp({ windowId: _windowId }: { windowId: string }) {
+function DocsApp({ config }: { config: DocKindConfig }) {
   const [notes, setNotes] = useState<NoteDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -938,14 +1048,16 @@ export function NotesApp({ windowId: _windowId }: { windowId: string }) {
       const r = await fetch("/api/notes");
       if (r.ok) {
         const data: unknown = await r.json();
-        setNotes(Array.isArray(data) ? (data as NoteDoc[]) : []);
+        const all = Array.isArray(data) ? (data as NoteDoc[]) : [];
+        // Notes and lists share one API; each app shows only its own kind.
+        setNotes(all.filter((d) => d.kind === config.kind));
       }
     } catch {
       // Keep whatever was loaded.
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [config.kind]);
 
   useEffect(() => {
     loadNotes();
@@ -957,24 +1069,26 @@ export function NotesApp({ windowId: _windowId }: { windowId: string }) {
     setShowCreate(false);
   }
 
+  const Icon = config.icon;
+
   return (
     <div className="flex h-full overflow-hidden bg-shell-bg">
-      {/* Left pane: note list */}
+      {/* Left pane: doc list */}
       <div
         className={[
           "flex flex-col border-r border-shell-border",
-          // On mobile, hide the list pane when a note is selected
+          // On mobile, hide the list pane when a doc is selected
           selectedId ? "hidden md:flex md:w-72 lg:w-80" : "flex w-full md:w-72 lg:w-80",
         ].join(" ")}
       >
         {/* List header */}
         <div className="flex items-center gap-2 border-b border-shell-border px-4 py-4">
-          <StickyNote size={17} className="text-accent" />
-          <h1 className="flex-1 text-base font-semibold text-shell-text">Notes</h1>
+          <Icon size={17} className="text-accent" />
+          <h1 className="flex-1 text-base font-semibold text-shell-text">{config.appName}</h1>
           <button
             type="button"
             onClick={() => setShowCreate((v) => !v)}
-            aria-label="New note"
+            aria-label={`New ${config.noun}`}
             aria-expanded={showCreate}
             className={[
               "flex h-8 w-8 items-center justify-center rounded-lg border transition-colors",
@@ -991,6 +1105,7 @@ export function NotesApp({ windowId: _windowId }: { windowId: string }) {
         {showCreate && (
           <div className="border-b border-shell-border px-3 py-3">
             <CreateNoteForm
+              config={config}
               onCreated={handleCreated}
               onCancel={() => setShowCreate(false)}
             />
@@ -1003,8 +1118,8 @@ export function NotesApp({ windowId: _windowId }: { windowId: string }) {
             <p className="text-sm text-shell-text-tertiary">Loading...</p>
           ) : notes.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-16 text-center">
-              <StickyNote size={28} className="text-shell-text-tertiary" />
-              <p className="text-sm text-shell-text-secondary">No notes yet.</p>
+              <Icon size={28} className="text-shell-text-tertiary" />
+              <p className="text-sm text-shell-text-secondary">{config.emptyDocs}</p>
               <button
                 type="button"
                 onClick={() => setShowCreate(true)}
@@ -1014,7 +1129,7 @@ export function NotesApp({ windowId: _windowId }: { windowId: string }) {
               </button>
             </div>
           ) : (
-            <ul className="flex flex-col gap-2" aria-label="Notes">
+            <ul className="flex flex-col gap-2" aria-label={config.appName}>
               {notes.map((note) => (
                 <NoteListItem
                   key={note.id}
@@ -1039,15 +1154,24 @@ export function NotesApp({ windowId: _windowId }: { windowId: string }) {
           <NoteDetailPane
             key={selectedId}
             docId={selectedId}
+            config={config}
             onBack={() => setSelectedId(null)}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-            <StickyNote size={32} className="text-shell-text-tertiary" />
-            <p className="text-sm text-shell-text-secondary">Select a note to get started.</p>
+            <Icon size={32} className="text-shell-text-tertiary" />
+            <p className="text-sm text-shell-text-secondary">{config.selectPrompt}</p>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+export function NotesApp({ windowId: _windowId }: { windowId: string }) {
+  return <DocsApp config={NOTES_CONFIG} />;
+}
+
+export function TodoApp({ windowId: _windowId }: { windowId: string }) {
+  return <DocsApp config={TODO_CONFIG} />;
 }

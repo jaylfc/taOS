@@ -23,7 +23,7 @@ vi.mock("@/components/ui", () => ({
   ),
 }));
 
-import { NotesApp } from "../NotesApp";
+import { NotesApp, TodoApp } from "../NotesApp";
 
 const NOTE_LIST = [
   { id: "note-1", kind: "note", title: "My First Note", updated_at: new Date().toISOString(), archived_at: null },
@@ -203,6 +203,82 @@ describe("NotesApp", () => {
       expect(body.permission).toBe("contributor");
       expect(body.action).toBe("research");
       expect(body.standing_instruction).toBe("Focus on recent papers");
+    });
+  });
+});
+
+// ---- Todo (list) variant ----
+
+const MIXED_LIST = [
+  { id: "note-1", kind: "note", title: "My First Note", updated_at: new Date().toISOString(), archived_at: null },
+  { id: "list-1", kind: "list", title: "Groceries", updated_at: new Date().toISOString(), archived_at: null },
+];
+
+const LIST_DETAIL = {
+  id: "list-1",
+  kind: "list",
+  title: "Groceries",
+  updated_at: new Date().toISOString(),
+  entries: [
+    { id: "task-1", text: "Buy milk", done: false, author: null, created_at: new Date().toISOString() },
+  ],
+  members: [],
+};
+
+function makeListFetch() {
+  return vi.fn(async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    if (u === "/api/notes" && method === "GET") {
+      return { ok: true, json: async () => MIXED_LIST };
+    }
+    if (u === "/api/notes/list-1" && method === "GET") {
+      return { ok: true, json: async () => LIST_DETAIL };
+    }
+    if (u.startsWith("/api/notes/list-1/entries/task-1") && method === "PATCH") {
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  });
+}
+
+describe("TodoApp", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows the Todo header and only list-kind docs", async () => {
+    global.fetch = makeListFetch() as typeof fetch;
+    render(<TodoApp windowId="w1" />);
+
+    await waitFor(() => expect(screen.getByText("Todo")).toBeDefined());
+    // A list doc shows; a note doc is filtered out.
+    await waitFor(() => expect(screen.getByText("Groceries")).toBeDefined());
+    expect(screen.queryByText("My First Note")).toBeNull();
+    expect(screen.getByLabelText("New list")).toBeDefined();
+  });
+
+  it("toggles a task done via PATCH /entries/{id}", async () => {
+    const fetchMock = makeListFetch();
+    global.fetch = fetchMock as typeof fetch;
+    render(<TodoApp windowId="w1" />);
+
+    await waitFor(() => expect(screen.getByText("Groceries")).toBeDefined());
+    fireEvent.click(screen.getByText("Groceries"));
+
+    await waitFor(() => expect(screen.getByText("Buy milk")).toBeDefined());
+    fireEvent.click(screen.getByLabelText("Mark task done"));
+
+    await waitFor(() => {
+      const patch = (fetchMock.mock.calls as [string, RequestInit?][]).filter(
+        ([u, init]) =>
+          String(u) === "/api/notes/list-1/entries/task-1" &&
+          (init?.method ?? "GET").toUpperCase() === "PATCH",
+      );
+      expect(patch.length).toBeGreaterThan(0);
+      const body = JSON.parse(patch[0]![1]!.body as string);
+      expect(body.done).toBe(true);
     });
   });
 });
