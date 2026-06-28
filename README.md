@@ -226,7 +226,7 @@ One-click install for agent frameworks, AI models, and services. Hardware-aware,
 ### Channel Hub (Framework-Agnostic Messaging)
 Most agent frameworks force you to wire up Telegram, Discord, or Slack directly into their code. If you switch frameworks, you rebuild all those integrations from scratch. taOS flips this: the platform owns the messaging connections and routes messages to whichever framework the agent currently uses. Switch an agent from SmolAgents to LangChain and it keeps every channel, every conversation, every connection. The framework never touches the bot tokens.
 
-- **6 connectors**. Telegram, Discord, Slack, Email (IMAP/SMTP), Web Chat (WebSocket), Webhooks
+- **7 connectors**. Telegram, Discord, Slack, Matrix (beta), Email (IMAP/SMTP), Web Chat (WebSocket), Webhooks
 - **15 framework adapters.** Thin HTTP bridges (~25 lines each) that translate the universal message format to framework-specific APIs
 - **Rich responses.** Buttons, images, cards via universal format with inline hint fallback for any framework
 - **Per-agent or shared bots.** Each agent gets its own bot, or share one across a group
@@ -294,7 +294,7 @@ Click on any agent to enter their "virtual computer", a tablet-like interface wi
 Create shared file spaces for agents, groups, and departments. The design team shares mockups, the research team shares documents. Per-agent access control.
 
 ### Agent Management
-- **Communication Channels**. Telegram, Discord, Slack, web chat, email, webhooks (Easy/Advanced setup)
+- **Communication Channels**. Telegram, Discord, Slack, Matrix, web chat, email, webhooks (Easy/Advanced setup)
 - **Secrets Manager.** Encrypted storage with per-agent access control
 - **Inter-Agent Relationships.** Groups, departments, lead agents, permissions matrix
 - **Scheduled Tasks.** Cron jobs with presets, per-agent or group assignment
@@ -394,7 +394,7 @@ taOS Controller (FastAPI + htmx + React Desktop Shell)
 ├── User Memory (taosmd proxy: /ingest/batch + /search?mode=bm25, SQLite FTS5 fallback, auto-capture, global search)
 ├── Web Dashboard (77 route modules, React SPA frontend)
 ├── Channel Hub (6 connectors, 15 framework adapters)
-│   ├── Telegram, Discord, Slack, Email, Web Chat, Webhooks
+│   ├── Telegram, Discord, Slack, Matrix, Email, Web Chat, Webhooks
 │   └── Universal message format → framework-specific translation
 ├── LLM Proxy (LiteLLM, per-agent virtual keys)
 ├── Cluster Manager (worker registration, task routing)
