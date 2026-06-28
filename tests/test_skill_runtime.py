@@ -138,7 +138,7 @@ async def test_agent_name_traversal_rejected(app_with_store):
     async with AsyncClient(
         transport=ASGITransport(app=app_with_store), base_url="http://test"
     ) as client:
-        for skill in ("file_read", "list_files"):
+        for skill in ("file_read", "file_write", "list_files"):
             resp = await client.post(
                 f"/api/skill-exec/{skill}/call",
                 json={"args": {"agent_name": "../../../../etc", "path": ""}},
