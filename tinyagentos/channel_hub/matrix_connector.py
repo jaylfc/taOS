@@ -42,6 +42,20 @@ class MatrixConnector:
         except Exception as exc:
             logger.warning("Matrix whoami failed: %s", exc)
 
+        if not self._own_user_id:
+            # Without our own user_id we cannot filter our own messages and
+            # would echo-loop on every reply, so refuse to start rather than
+            # spam the room. A failed whoami usually means an invalid token.
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+            self._client = None
+            raise RuntimeError(
+                "Matrix connector could not resolve its own user_id "
+                "(whoami failed; is the access token valid?)"
+            )
+
         self._client.add_event_callback(self._handle_room_message, None)
         self._task = asyncio.create_task(self._sync_loop())
         logger.info("Matrix connector started for agent '%s'", self.agent_name)
@@ -70,15 +84,18 @@ class MatrixConnector:
             logger.error("Matrix sync error: %s", exc)
 
     async def _handle_room_message(self, room, event):
-        # Only handle text messages and ignore our own events.
+        # Only handle text messages and ignore our own events. If matrix-nio is
+        # somehow unavailable we cannot classify the event, so do not process it
+        # (rather than swallowing the import error and treating it as text).
         try:
             import nio
-            if not isinstance(event, nio.RoomMessageText):
-                return
-        except Exception:
-            pass
-
-        if self._own_user_id and event.sender == self._own_user_id:
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Matrix: matrix-nio unavailable, dropping event: %s", exc)
+            return
+        if not isinstance(event, nio.RoomMessageText):
+            return
+        # start() guarantees _own_user_id is set, so this reliably drops echoes.
+        if event.sender == self._own_user_id:
             return
 
         room_id = room.room_id

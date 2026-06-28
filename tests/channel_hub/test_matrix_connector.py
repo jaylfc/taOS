@@ -105,6 +105,23 @@ class TestMatrixConnectorStart:
         finally:
             await connector.stop()
 
+    @pytest.mark.asyncio
+    async def test_start_raises_when_whoami_has_no_user_id(self):
+        """Without a resolvable own user_id the bot would echo-loop, so start
+        must refuse rather than register the callback and sync."""
+        connector, client, _ = make_connector()
+
+        async def _no_user_id():
+            return FakeWhoamiResponse(user_id=None)
+
+        client.whoami = _no_user_id
+        with pytest.raises(RuntimeError):
+            await connector.start()
+        # It must not have left a running sync task or a callback behind.
+        assert connector._task is None
+        assert client._callbacks == []
+        assert client.close.await_count == 1
+
 
 class TestMatrixInboundRouting:
     @pytest.mark.asyncio
