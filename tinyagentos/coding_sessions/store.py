@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS coding_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_cs_created_by ON coding_sessions(created_by, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cs_status ON coding_sessions(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS coding_session_transcript (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    captured_at REAL NOT NULL,
+    text        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cst_session ON coding_session_transcript(session_id, id);
 """
 
 _JSON_FIELDS = ("repo_source",)
@@ -155,3 +163,27 @@ class CodingSessionStore(BaseStore):
         )
         await self._db.commit()
         return await self.get_session(session_id)
+
+    # ----------------------------------------------------------- transcript
+    async def append_transcript(self, session_id: str, text: str) -> None:
+        """Append a captured chunk of terminal output (append-only, never edited)."""
+        if not text:
+            return
+        await self._db.execute(
+            "INSERT INTO coding_session_transcript (session_id, captured_at, text) "
+            "VALUES (?, ?, ?)",
+            (session_id, time.time(), text),
+        )
+        await self._db.commit()
+
+    async def get_transcript(self, session_id: str, *, limit: int = 500) -> list[dict]:
+        """Return transcript chunks oldest-first (most recent ``limit`` entries)."""
+        cur = await self._db.execute(
+            "SELECT id, captured_at, text FROM ("
+            "  SELECT id, captured_at, text FROM coding_session_transcript "
+            "  WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+            ") ORDER BY id ASC",
+            (session_id, limit),
+        )
+        rows = await cur.fetchall()
+        return [{"id": r[0], "captured_at": r[1], "text": r[2]} for r in rows]

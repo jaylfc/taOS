@@ -331,6 +331,33 @@ async def test_rename_updates_alias_and_registry(tmp_path):
     await app.state.metrics.close()
 
 
+class _FakeLauncher:
+    """In-memory launcher for route tests: no real tmux."""
+
+    def __init__(self):
+        self.started = []
+        self.stopped = []
+        self._running = set()
+
+    def is_running(self, sid):
+        return sid in self._running
+
+    def start_host_folder(self, sid, workdir, cli):
+        self.started.append((sid, workdir, cli))
+        self._running.add(sid)
+        return f"taos-cs-{sid}"
+
+    def stop(self, sid):
+        self.stopped.append(sid)
+        self._running.discard(sid)
+
+    def capture(self, sid):
+        return f"output for {sid}\n"
+
+    def send_input(self, sid, text):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_rename_empty_alias_returns_400(tmp_path):
     app = create_app(data_dir=tmp_path / "data")
@@ -347,6 +374,30 @@ async def test_rename_empty_alias_returns_400(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_host_folder_runs_and_captures(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    app.state.coding_launcher = _FakeLauncher()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
+        resp = await c.post(f"/api/coding-sessions/{sid}/start")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "running"
+        assert data["tmux_session"] == f"taos-cs-{sid}"
+        assert (sid, "/home/jay/myrepo", "claude") in app.state.coding_launcher.started
+        # The transcript captured the initial output.
+        tr = await c.get(f"/api/coding-sessions/{sid}/transcript")
+        assert tr.status_code == 200
+        assert any(f"output for {sid}" in e["text"] for e in tr.json()["entries"])
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
 async def test_rename_missing_session_returns_404(tmp_path):
     app = create_app(data_dir=tmp_path / "data")
     uid, token = await _make_client(app)
@@ -354,6 +405,57 @@ async def test_rename_missing_session_returns_404(tmp_path):
     async with AsyncClient(transport=transport, base_url="http://test",
                            cookies={"taos_session": token}) as c:
         resp = await c.patch("/api/coding-sessions/cs-does-not-exist", json={"alias": "x"})
+        assert resp.status_code == 404
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_start_non_host_folder_returns_501(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    app.state.coding_launcher = _FakeLauncher()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        body = _make_body(launch_target="worker-lxc", worker="linstation")
+        sid = (await c.post("/api/coding-sessions", json=body)).json()["id"]
+        resp = await c.post(f"/api/coding-sessions/{sid}/start")
+        assert resp.status_code == 501
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_kills_tmux_and_records_status(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    app.state.coding_launcher = _FakeLauncher()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        sid = (await c.post("/api/coding-sessions", json=_make_body())).json()["id"]
+        await c.post(f"/api/coding-sessions/{sid}/start")
+        resp = await c.post(f"/api/coding-sessions/{sid}/stop")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "stopped"
+        assert sid in app.state.coding_launcher.stopped
+    await app.state.coding_session_store.close()
+    await app.state.agent_registry.close()
+    await app.state.metrics.close()
+
+
+@pytest.mark.asyncio
+async def test_start_missing_session_returns_404(tmp_path):
+    app = create_app(data_dir=tmp_path / "data")
+    uid, token = await _make_client(app)
+    app.state.coding_launcher = _FakeLauncher()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           cookies={"taos_session": token}) as c:
+        resp = await c.post("/api/coding-sessions/cs-nope/start")
         assert resp.status_code == 404
     await app.state.coding_session_store.close()
     await app.state.agent_registry.close()

@@ -177,6 +177,73 @@ async def rename_coding_session(
     return updated
 
 
+def _launcher(request: Request):
+    from tinyagentos.coding_sessions.launcher import CodingSessionLauncher
+
+    return getattr(request.app.state, "coding_launcher", None) or CodingSessionLauncher()
+
+
+@router.post("/api/coding-sessions/{session_id}/start")
+async def start_coding_session(
+    session_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Launch the CLI in a tmux session and stream its output to the transcript.
+
+    Slice 2a supports the host-folder target only; other targets return 501
+    until their launcher path lands.
+    """
+    store = request.app.state.coding_session_store
+    session = await store.get_session(session_id)
+    if session is None or (not user.is_admin and session["created_by"] != user.user_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if session["launch_target"] != "host-folder":
+        return JSONResponse(
+            {"error": f"launch_target {session['launch_target']!r} not yet supported"},
+            status_code=501,
+        )
+    launcher = _launcher(request)
+    if launcher.is_running(session_id):
+        return await store.set_status(session_id, "running")
+    try:
+        name = launcher.start_host_folder(session_id, session["workdir"], session["cli"])
+    except (ValueError, FileNotFoundError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("coding session %s failed to start: %s", session_id, exc)
+        await store.set_status(session_id, "stopped")
+        return JSONResponse({"error": f"could not start session: {exc}"}, status_code=502)
+    await store.set_tmux_session(session_id, name)
+    updated = await store.set_status(session_id, "running")
+    # Best-effort: a transcript capture failure must not fail the start.
+    try:
+        await store.append_transcript(session_id, launcher.capture(session_id))
+    except Exception:  # noqa: BLE001
+        logger.warning("transcript capture failed for %s", session_id, exc_info=True)
+    return updated
+
+
+@router.get("/api/coding-sessions/{session_id}/transcript")
+async def get_coding_session_transcript(
+    session_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    store = request.app.state.coding_session_store
+    session = await store.get_session(session_id)
+    if session is None or (not user.is_admin and session["created_by"] != user.user_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # If the session is live, append a fresh capture before returning.
+    launcher = _launcher(request)
+    if launcher.is_running(session_id):
+        try:
+            await store.append_transcript(session_id, launcher.capture(session_id))
+        except Exception:  # noqa: BLE001
+            logger.warning("transcript capture failed for %s", session_id, exc_info=True)
+    return {"entries": await store.get_transcript(session_id)}
+
+
 @router.post("/api/coding-sessions/{session_id}/stop")
 async def stop_coding_session(
     session_id: str,
@@ -187,6 +254,11 @@ async def stop_coding_session(
     session = await store.get_session(session_id)
     if session is None or (not user.is_admin and session["created_by"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
+    # Best-effort: kill the tmux session, then record the stop regardless.
+    try:
+        _launcher(request).stop(session_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("tmux stop failed for %s", session_id, exc_info=True)
     updated = await store.set_status(session_id, "stopped")
     return updated
 
