@@ -82,6 +82,38 @@ class TestCreateContainer:
             result = await create_container("taos-agent-test")
             assert result["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_remote_qualifies_image_and_target_and_skips_mounts(self):
+        """remote= creates on the worker: image + instance name are
+        <remote>:-qualified and host bind mounts are skipped."""
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            return (0, "")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            result = await create_container(
+                "taos-agent-bob",
+                image="taos-hermes-base",
+                env={"FOO": "bar"},
+                mounts=[("/host/path", "/ctr/path")],
+                root_size_gib=None,
+                remote="fedora-worker",
+            )
+        assert result["success"] is True
+        assert result["remote"] == "fedora-worker"
+        # launch references the remote-qualified image + instance.
+        launch = calls[0]
+        assert launch[:2] == ["incus", "launch"]
+        assert launch[2] == "fedora-worker:taos-hermes-base"
+        assert launch[3] == "fedora-worker:taos-agent-bob"
+        # env is set against the remote-qualified target.
+        env_calls = [c for c in calls if "environment.FOO=bar" in c]
+        assert env_calls and env_calls[0][3] == "fedora-worker:taos-agent-bob"
+        # No bind-mount device was added (host paths don't exist on the worker).
+        assert not [c for c in calls if "disk" in c and "taos-mount-0" in c]
+
 
 class TestSetRootQuota:
     @pytest.mark.asyncio

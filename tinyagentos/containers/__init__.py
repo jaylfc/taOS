@@ -228,6 +228,7 @@ async def create_container(
     env: dict[str, str] | None = None,
     host_uid: int | None = None,
     root_size_gib: int | None = None,
+    remote: str | None = None,
 ) -> dict:
     """Create and start a new LXC container with mounts and env injected.
 
@@ -241,51 +242,68 @@ async def create_container(
     ``root_size_gib``: when provided, apply a rootfs disk quota via
     ``set_root_quota`` after launch. Enforced on btrfs/ZFS pools;
     accounting-only on dir-backed pools.
+
+    ``remote``: when set (e.g. ``"fedora-worker"``), the container is created
+    on that enrolled incus remote's nested incus instead of locally. The base
+    image must already exist on the remote (prefetched there); both the image
+    ref and the instance name are qualified with ``<remote>:``. Bind mounts are
+    skipped for a remote create — the host paths do not exist on the worker;
+    the agent reaches the controller over the network (Tailscale) instead.
     """
     import asyncio as _asyncio
+    # Qualify image + instance name for the target remote. The prefetched base
+    # alias lives on the remote, so the image ref is also remote-qualified.
+    target = f"{remote}:{name}" if remote else name
+    image_ref = f"{remote}:{image}" if remote else image
+
     code, output = await _run(
-        ["incus", "launch", image, name], timeout=300,
+        ["incus", "launch", image_ref, target], timeout=300,
     )
     if code != 0:
         return {"success": False, "error": output}
 
     if host_uid is not None:
         await _run([
-            "incus", "config", "set", name, "raw.idmap",
+            "incus", "config", "set", target, "raw.idmap",
             f"both {host_uid} 0",
         ])
-        await _run(["incus", "stop", name, "--force"])
-        await _run(["incus", "start", name])
+        await _run(["incus", "stop", target, "--force"])
+        await _run(["incus", "start", target])
         await _asyncio.sleep(3)
 
     # Root quota — set before mounts/env so subsequent writes are subject to limit.
     if root_size_gib is not None:
-        quota_result = await set_root_quota(name, root_size_gib)
+        quota_result = await set_root_quota(target, root_size_gib)
         if not quota_result["success"]:
             logger.warning(
                 "create_container: root quota not applied for %s: %s",
-                name, quota_result.get("note", ""),
+                target, quota_result.get("note", ""),
             )
 
     if memory_limit is not None:
-        await _run(["incus", "config", "set", name, "limits.memory", memory_limit])
+        await _run(["incus", "config", "set", target, "limits.memory", memory_limit])
     if cpu_limit is not None:
-        await _run(["incus", "config", "set", name, "limits.cpu", str(cpu_limit)])
-    for idx, (host_path, container_path) in enumerate(mounts or []):
-        device_name = f"taos-mount-{idx}"
-        mcode, mout = await _run([
-            "incus", "config", "device", "add", name, device_name, "disk",
-            f"source={host_path}", f"path={container_path}",
-        ])
-        if mcode != 0:
-            logger.error(f"incus mount {host_path}->{container_path} failed: {mout}")
+        await _run(["incus", "config", "set", target, "limits.cpu", str(cpu_limit)])
+    # Bind mounts map host paths into the container; they only make sense for a
+    # local create. A remote worker has no access to the controller's filesystem.
+    if remote and mounts:
+        logger.info("create_container: skipping %d bind mount(s) for remote %s", len(mounts), remote)
+    elif not remote:
+        for idx, (host_path, container_path) in enumerate(mounts or []):
+            device_name = f"taos-mount-{idx}"
+            mcode, mout = await _run([
+                "incus", "config", "device", "add", target, device_name, "disk",
+                f"source={host_path}", f"path={container_path}",
+            ])
+            if mcode != 0:
+                logger.error(f"incus mount {host_path}->{container_path} failed: {mout}")
     for key, value in (env or {}).items():
         ecode, eout = await _run([
-            "incus", "config", "set", name, f"environment.{key}={value}",
+            "incus", "config", "set", target, f"environment.{key}={value}",
         ])
         if ecode != 0:
             logger.error(f"incus env set {key} failed: {eout}")
-    return {"success": True, "name": name}
+    return {"success": True, "name": name, "remote": remote}
 
 
 async def exec_in_container(name: str, cmd: list[str], timeout: int = 300) -> tuple[int, str]:
