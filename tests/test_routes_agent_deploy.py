@@ -444,17 +444,44 @@ class TestConfigureRemoteDeploy:
         )
         assert remote is None and err.status_code == 409
 
-    async def test_online_worker_returns_remote_and_prefetches(self):
+    async def test_online_worker_returns_remote_and_callback_host(self):
         from types import SimpleNamespace
         from tinyagentos.routes import agent_deploy
         worker = SimpleNamespace(status="online", hardware={"arch": "x86_64"})
-        with patch.object(agent_deploy, "controller_callback_host", return_value="100.78.225.80"), \
-             patch("tinyagentos.agent_image.ensure_image_present", new=AsyncMock(return_value=True)) as mock_prefetch:
+        with patch.object(
+            agent_deploy, "controller_callback_host",
+            new=AsyncMock(return_value="100.78.225.80"),
+        ):
             remote, host, err = await agent_deploy.configure_remote_deploy(
                 self._req(worker=worker), self._body(target_worker="fedora-worker", framework="hermes")
             )
         assert err is None
         assert remote == "fedora-worker"
         assert host == "100.78.225.80"
-        # The x64 base was prefetched onto the worker.
+
+    async def test_online_worker_no_callback_host_500(self):
+        """A remote deploy with no reachable controller address must hard-fail,
+        not silently start an unreachable agent on 127.0.0.1."""
+        from types import SimpleNamespace
+        from tinyagentos.routes import agent_deploy
+        worker = SimpleNamespace(status="online", hardware={"arch": "x86_64"})
+        with patch.object(
+            agent_deploy, "controller_callback_host", new=AsyncMock(return_value=None),
+        ):
+            remote, host, err = await agent_deploy.configure_remote_deploy(
+                self._req(worker=worker), self._body(target_worker="fedora-worker", framework="hermes")
+            )
+        assert remote is None
+        assert err is not None and err.status_code == 500
+
+    async def test_prefetch_base_onto_worker_imports_correct_arch(self):
+        from types import SimpleNamespace
+        from tinyagentos.routes import agent_deploy
+        worker = SimpleNamespace(status="online", hardware={"arch": "x86_64"})
+        with patch("tinyagentos.agent_image.ensure_image_present", new=AsyncMock(return_value=True)) as mock_prefetch:
+            await agent_deploy.prefetch_base_onto_worker(
+                self._req(worker=worker), self._body(target_worker="fedora-worker", framework="hermes")
+            )
         assert mock_prefetch.await_args.kwargs.get("remote") == "fedora-worker"
+        # x86_64 maps to the x64 base tarball.
+        assert "x64" in mock_prefetch.await_args.kwargs.get("url", "")

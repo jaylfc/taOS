@@ -114,6 +114,27 @@ class TestCreateContainer:
         # No bind-mount device was added (host paths don't exist on the worker).
         assert not [c for c in calls if "disk" in c and "taos-mount-0" in c]
 
+    @pytest.mark.asyncio
+    async def test_remote_does_not_double_qualify_image_server_ref(self):
+        """A remote-image-server ref (cold fallback) keeps its own remote and is
+        NOT prefixed with the worker remote, else incus rejects it."""
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            return (0, "")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            await create_container(
+                "taos-agent-bob",
+                image="images:debian/bookworm",
+                root_size_gib=None,
+                remote="fedora-worker",
+            )
+        launch = calls[0]
+        assert launch[2] == "images:debian/bookworm"
+        assert launch[3] == "fedora-worker:taos-agent-bob"
+
 
 class TestSetRootQuota:
     @pytest.mark.asyncio

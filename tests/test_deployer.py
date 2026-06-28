@@ -79,6 +79,10 @@ class TestDeployAgent:
             # The agent's callback host is the controller's Tailscale IP.
             env = mock_create.call_args.kwargs["env"]
             assert "100.78.225.80" in env["TAOS_BRIDGE_URL"]
+            # The LiteLLM base must target the controller over the network for a
+            # remote deploy, never the container's own loopback (no proxy device).
+            assert "100.78.225.80" in env["OPENAI_BASE_URL"]
+            assert "127.0.0.1" not in env["OPENAI_BASE_URL"]
 
     @pytest.mark.asyncio
     async def test_one_trace_bind_mount(self, tmp_path):

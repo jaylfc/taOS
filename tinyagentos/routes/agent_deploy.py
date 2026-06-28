@@ -105,8 +105,6 @@ def resolve_deploy_routing(request: Request, body: "DeployAgentRequest") -> "JSO
                     status_code=409,
                 )
 
-            # Cases 3 + 4: route to the worker that holds the model.
-            # Phase 1.5 will actually instruct the worker to launch; for
             # Explicit, non-conflicting worker pin: fall through to the deploy
             # path, which now actually creates the agent container ON that
             # worker's nested incus (see configure_remote_deploy + the deployer
@@ -140,29 +138,36 @@ def resolve_deploy_routing(request: Request, body: "DeployAgentRequest") -> "JSO
     return None
 
 
-def controller_callback_host(request: Request) -> str:
+async def controller_callback_host(request: Request) -> str | None:
     """Return the address a remote worker should use to reach this controller.
 
     Per the cluster networking model (manual Tailscale, headscale not yet
     configured for taOSgo), the agent container on a worker reaches the
-    controller over the tailnet, so prefer the controller's Tailscale IP.
-    Falls back to the host LAN IP, then 127.0.0.1 (which only works for a
-    local deploy).
+    controller over the tailnet, so prefer the controller's Tailscale IP, then
+    the configured host LAN IP. Returns None when neither is available -- a
+    remote deploy must NOT silently fall back to 127.0.0.1 (the worker's own
+    loopback, where the controller is not listening).
     """
+    import asyncio
     import subprocess
 
     try:
-        out = subprocess.run(
-            ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5
+        # Shell out off the event loop so a cold/hanging tailscale never stalls
+        # the FastAPI worker for other requests.
+        out = await asyncio.to_thread(
+            subprocess.run,
+            ["tailscale", "ip", "-4"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         ip = (out.stdout or "").strip().splitlines()
         if out.returncode == 0 and ip and ip[0].strip():
             return ip[0].strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         pass
     # Fall back to the LAN address the controller advertises, if known.
-    lan = getattr(request.app.state, "controller_lan_ip", None)
-    return lan or "127.0.0.1"
+    return getattr(request.app.state, "controller_lan_ip", None)
 
 
 def _worker_arch_suffix(worker) -> str:
@@ -185,12 +190,13 @@ async def configure_remote_deploy(request: Request, body: "DeployAgentRequest"):
       - remote: the worker name to create the container on, or None for a
         normal controller-local deploy.
       - taos_host: the address the agent uses to call back to the controller.
-      - error_response: a JSONResponse to short-circuit on (e.g. the pinned
-        worker is unknown or offline), or None.
+      - error_response: a JSONResponse to short-circuit on (the pinned worker
+        is unknown/offline, or the controller has no address the worker could
+        reach it on), or None.
 
-    When a valid online worker is pinned, this also best-effort prefetches the
-    correct-arch base image onto that worker's nested incus so the deploy can
-    clone instead of cold-installing.
+    The base-image prefetch is NOT done here -- it would block the deploy
+    request on a ~300-500MB download. Call prefetch_base_onto_worker from the
+    background deploy task instead.
     """
     if not body.target_worker:
         return None, "127.0.0.1", None
@@ -208,29 +214,54 @@ async def configure_remote_deploy(request: Request, body: "DeployAgentRequest"):
             status_code=409,
         )
 
-    taos_host = controller_callback_host(request)
-
-    # Best-effort: prefetch the framework's base image onto the worker so the
-    # deploy clones it instead of running the slow apt path. A failure here is
-    # non-fatal -- the deployer falls back to the cold install.
-    if body.framework and body.framework != "none":
-        try:
-            from tinyagentos.agent_image import (
-                base_image_alias,
-                base_image_url_for_alias,
-                ensure_image_present,
-            )
-
-            alias = base_image_alias(body.framework)
-            url = base_image_url_for_alias(alias, _worker_arch_suffix(worker))
-            await ensure_image_present(alias, url=url, remote=body.target_worker)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "remote prefetch of base image for %s onto %s failed (non-fatal)",
-                body.framework, body.target_worker,
-            )
+    taos_host = await controller_callback_host(request)
+    if not taos_host:
+        # A remote agent that can't reach the controller would install and then
+        # silently fail to phone home (bridge, skills, traces, memory). Refuse
+        # rather than start an unreachable agent.
+        return None, "127.0.0.1", JSONResponse(
+            {
+                "error": (
+                    "cannot derive a controller address the worker can reach "
+                    "(no Tailscale IP and no controller_lan_ip configured); "
+                    "remote deploy aborted"
+                )
+            },
+            status_code=500,
+        )
 
     return body.target_worker, taos_host, None
+
+
+async def prefetch_base_onto_worker(request: Request, body: "DeployAgentRequest") -> None:
+    """Best-effort: import the framework's correct-arch base image onto the
+    pinned worker's nested incus so the deploy clones it instead of cold-installing.
+
+    Call this from the BACKGROUND deploy task -- it can download ~300-500MB and
+    must never block the deploy HTTP request. Any failure is non-fatal: the
+    deployer falls back to the cold apt path when the alias is absent.
+    """
+    if not body.target_worker or not body.framework or body.framework == "none":
+        return
+    cm = getattr(request.app.state, "cluster_manager", None)
+    worker = cm.get_worker(body.target_worker) if cm is not None else None
+    if worker is None:
+        return
+    try:
+        from tinyagentos.agent_image import (
+            base_image_alias,
+            base_image_url_for_alias,
+            ensure_image_present,
+        )
+
+        alias = base_image_alias(body.framework)
+        url = base_image_url_for_alias(alias, _worker_arch_suffix(worker))
+        await ensure_image_present(alias, url=url, remote=body.target_worker)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "remote prefetch of base image for %s onto %s failed (non-fatal)",
+            body.framework, body.target_worker,
+        )
 
 
 async def archive_smoke_check(request: Request, unique_slug: str, framework: str) -> bool:

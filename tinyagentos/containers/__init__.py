@@ -254,7 +254,14 @@ async def create_container(
     # Qualify image + instance name for the target remote. The prefetched base
     # alias lives on the remote, so the image ref is also remote-qualified.
     target = f"{remote}:{name}" if remote else name
-    image_ref = f"{remote}:{image}" if remote else image
+    # A bare local alias (e.g. "taos-hermes-base", prefetched onto the remote)
+    # is remote-qualified; a remote-image-server ref (e.g.
+    # "images:debian/bookworm", the cold fallback) already names its own source
+    # and must NOT be prefixed, or incus rejects "<remote>:images:debian/...".
+    if remote and ":" not in image:
+        image_ref = f"{remote}:{image}"
+    else:
+        image_ref = image
 
     code, output = await _run(
         ["incus", "launch", image_ref, target], timeout=300,

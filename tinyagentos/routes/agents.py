@@ -569,6 +569,10 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
 
         async def _background_deploy():
             try:
+                # Prefetch the base onto the worker here (not in the request
+                # path) so a cold ~300-500MB import never blocks POST /deploy.
+                if deploy_remote:
+                    await agent_deploy.prefetch_base_onto_worker(request, body)
                 result = await deploy_agent(DeployRequest(
                     name=body.name,
                     framework=body.framework,
