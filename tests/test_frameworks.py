@@ -367,8 +367,9 @@ def test_openclaw_dashboard_port():
 
 EXPECTED_FRAMEWORKS = {
     "openclaw", "smolagents", "generic", "pocketflow", "langroid",
-    "openai-agents-sdk", "hermes", "agent_zero", "ironclaw", "microclaw",
-    "moltis", "nanoclaw", "nullclaw", "picoclaw", "shibaclaw", "zeroclaw",
+    "openai-agents-sdk", "hermes", "opencrabs", "agent_zero", "ironclaw",
+    "microclaw", "moltis", "nanoclaw", "nullclaw", "picoclaw", "shibaclaw",
+    "zeroclaw",
 }
 
 

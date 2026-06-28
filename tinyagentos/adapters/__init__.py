@@ -56,6 +56,12 @@ _REGISTRY: list[dict] = [
         "verification_status": "beta",
     },
     {
+        "id": "opencrabs",
+        "name": "OpenCrabs",
+        "description": "Autonomous single-binary Rust agent (OpenClaw-inspired) driven via `opencrabs run`",
+        "verification_status": "beta",
+    },
+    {
         "id": "deer-flow",
         "name": "DeerFlow",
         "description": "DeerFlow LangGraph SuperAgent harness (runs API bridge)",

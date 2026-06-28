@@ -129,6 +129,29 @@ FRAMEWORKS: dict[str, dict] = {
              "icon": "diagnostic", "requires_capability": "agent.terminal"},
         ],
     },
+    "opencrabs": {
+        "id": "opencrabs",
+        "name": "OpenCrabs",
+        "description": "Autonomous single-binary Rust agent inspired by OpenClaw, driven non-interactively via `opencrabs run` (adolfousier/opencrabs)",
+        "verification_status": "beta",
+        # Distributed as a per-arch GitHub release binary and self-updates via
+        # `opencrabs evolve`, so there is no taos-framework-update release probe
+        # to track here (mirrors openclaw omitting release_source).
+        "service_name": "opencrabs",
+        "slash_commands": [
+            {"name": "help", "description": "List OpenCrabs commands"},
+        ],
+        "shortcuts": [
+            {"kind": "container-terminal", "label": "Container shell",
+             "icon": "terminal", "requires_capability": "agent.shell"},
+            {"kind": "tui", "label": "OpenCrabs TUI",
+             "command": "opencrabs chat",
+             "icon": "tui", "requires_capability": "agent.terminal"},
+            {"kind": "tui", "label": "OpenCrabs doctor",
+             "command": "opencrabs doctor",
+             "icon": "diagnostic", "requires_capability": "agent.terminal"},
+        ],
+    },
     "agent_zero": {
         "id": "agent_zero",
         "name": "Agent Zero",
