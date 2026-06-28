@@ -8,7 +8,11 @@ import pytest
 import pytest_asyncio
 
 from tinyagentos.notes.shared_docs_store import SharedDocsStore
-from tinyagentos.tools.notes_tools import execute_notes_add_entry, execute_notes_list_shared_docs
+from tinyagentos.tools.notes_tools import (
+    execute_notes_add_entry,
+    execute_notes_list_shared_docs,
+    execute_notes_set_done,
+)
 
 
 # --------------------------------------------------------------------- helpers
@@ -197,3 +201,118 @@ async def test_list_shared_docs_excludes_internal_fields(store):
     keys = set(res["docs"][0].keys())
     assert "owner_user_id" not in keys
     assert keys <= {"id", "kind", "title", "updated_at"}
+
+
+# -------------------------------------------------------------- set_done tests
+
+@pytest.mark.asyncio
+async def test_agent_member_can_mark_task_done(store):
+    doc = await store.create_doc("user-1", "list", "Build List")
+    await store.add_member(doc["id"], "agent", "atlas")
+    entry = await store.add_entry(doc["id"], "Ship the feature", author="user-1")
+
+    req = _make_request(store)
+    res = await execute_notes_set_done(
+        {"agent_name": "atlas", "doc_id": doc["id"], "entry_id": entry["id"], "done": True},
+        req,
+    )
+    assert res.get("ok") is True
+    assert res["done"] is True
+
+    entries = await store.list_entries(doc["id"])
+    target = next(e for e in entries if e["id"] == entry["id"])
+    assert target["done"] is True
+
+    # And it can be reopened.
+    res = await execute_notes_set_done(
+        {"agent_name": "atlas", "doc_id": doc["id"], "entry_id": entry["id"], "done": False},
+        req,
+    )
+    assert res.get("ok") is True
+    entries = await store.list_entries(doc["id"])
+    target = next(e for e in entries if e["id"] == entry["id"])
+    assert target["done"] is False
+
+
+@pytest.mark.asyncio
+async def test_viewer_agent_cannot_mark_done(store):
+    doc = await store.create_doc("user-1", "list", "Read Only")
+    await store.add_member(doc["id"], "agent", "atlas", permission="viewer")
+    entry = await store.add_entry(doc["id"], "A task", author="user-1")
+
+    req = _make_request(store)
+    res = await execute_notes_set_done(
+        {"agent_name": "atlas", "doc_id": doc["id"], "entry_id": entry["id"], "done": True},
+        req,
+    )
+    assert "error" in res
+    assert "permission" in res["error"]
+
+    entries = await store.list_entries(doc["id"])
+    assert entries[0]["done"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_member_agent_cannot_mark_done(store):
+    doc = await store.create_doc("user-1", "list", "Private")
+    entry = await store.add_entry(doc["id"], "A task", author="user-1")
+
+    req = _make_request(store)
+    res = await execute_notes_set_done(
+        {"agent_name": "intruder", "doc_id": doc["id"], "entry_id": entry["id"], "done": True},
+        req,
+    )
+    assert "error" in res
+    assert "permission" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_set_done_rejects_entry_from_another_doc(store):
+    doc_a = await store.create_doc("user-1", "list", "List A")
+    await store.add_member(doc_a["id"], "agent", "atlas")
+    doc_b = await store.create_doc("user-1", "list", "List B")
+    foreign = await store.add_entry(doc_b["id"], "Not yours", author="user-1")
+
+    req = _make_request(store)
+    res = await execute_notes_set_done(
+        {"agent_name": "atlas", "doc_id": doc_a["id"], "entry_id": foreign["id"], "done": True},
+        req,
+    )
+    assert "error" in res
+    assert "not found" in res["error"]
+
+    entries = await store.list_entries(doc_b["id"])
+    assert entries[0]["done"] is False
+
+
+@pytest.mark.asyncio
+async def test_set_done_on_archived_doc_rejected(store):
+    doc = await store.create_doc("user-1", "list", "Old List")
+    await store.add_member(doc["id"], "agent", "atlas")
+    entry = await store.add_entry(doc["id"], "A task", author="user-1")
+    await store.archive_doc(doc["id"])
+
+    req = _make_request(store)
+    res = await execute_notes_set_done(
+        {"agent_name": "atlas", "doc_id": doc["id"], "entry_id": entry["id"], "done": True},
+        req,
+    )
+    assert "error" in res
+    assert "archived" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_set_done_missing_or_bad_fields_returns_error(store):
+    req = _make_request(store)
+
+    # missing done
+    res = await execute_notes_set_done({"agent_name": "atlas", "doc_id": "d", "entry_id": "e"}, req)
+    assert "error" in res
+    # non-boolean done
+    res = await execute_notes_set_done(
+        {"agent_name": "atlas", "doc_id": "d", "entry_id": "e", "done": "yes"}, req
+    )
+    assert "error" in res
+    # missing entry_id
+    res = await execute_notes_set_done({"agent_name": "atlas", "doc_id": "d", "done": True}, req)
+    assert "error" in res

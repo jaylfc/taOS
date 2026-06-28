@@ -76,3 +76,54 @@ async def execute_notes_add_entry(args: dict, request: Request) -> dict:
         return {"ok": True, "entry_id": entry["id"]}
     except Exception as exc:
         return {"error": str(exc)}
+
+
+async def execute_notes_set_done(args: dict, request: Request) -> dict:
+    """Mark a list task done (or not done) on a shared doc the agent belongs to.
+
+    Completes the Todo surface for agents: an agent told to work a shared list
+    can check tasks off as it finishes them. The agent must have 'contributor'
+    or 'editor' permission, the entry must belong to the named doc, and the doc
+    must not be archived.
+    """
+    args = args or {}
+    agent_name = args.get("agent_name")
+    doc_id = args.get("doc_id")
+    entry_id = args.get("entry_id")
+    done = args.get("done")
+
+    if not agent_name or not isinstance(agent_name, str):
+        return {"error": "notes_set_done requires an 'agent_name' string"}
+    if not doc_id or not isinstance(doc_id, str):
+        return {"error": "notes_set_done requires a 'doc_id' string"}
+    if not entry_id or not isinstance(entry_id, str):
+        return {"error": "notes_set_done requires an 'entry_id' string"}
+    if not isinstance(done, bool):
+        return {"error": "notes_set_done requires a boolean 'done'"}
+
+    try:
+        store = request.app.state.shared_docs_store
+
+        members = await store.agent_members(doc_id)
+        agent_member = next((m for m in members if m["agent"] == agent_name), None)
+        if agent_member is None:
+            return {"error": "agent does not have write permission on this doc"}
+
+        perm = agent_member.get("permission", "contributor")
+        if perm not in ("contributor", "editor"):
+            return {"error": "agent does not have write permission on this doc"}
+
+        doc = await store.get_doc(doc_id)
+        if doc is None:
+            return {"error": "doc not found"}
+        if doc.get("archived_at") is not None:
+            return {"error": "doc is archived"}
+
+        # Confine the agent to entries of the doc it actually belongs to.
+        if not any(e.get("id") == entry_id for e in doc.get("entries", [])):
+            return {"error": "entry not found in this doc"}
+
+        await store.set_entry_done(entry_id, done)
+        return {"ok": True, "entry_id": entry_id, "done": done}
+    except Exception as exc:
+        return {"error": str(exc)}

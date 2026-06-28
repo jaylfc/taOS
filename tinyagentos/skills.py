@@ -684,6 +684,32 @@ class SkillStore(BaseStore):
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.notes_tools",
             },
+            {
+                "id": "notes_set_done",
+                "name": "Set Notes Task Done",
+                "category": "notes",
+                "description": "Mark a task done or not done on a shared list the agent is a member of",
+                "tool_schema": {
+                    "name": "notes_set_done",
+                    "description": "Mark a task on a shared list done or not done. Use notes_list_shared_docs to find the doc_id and read the entry ids. The agent needs contributor or editor permission.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "doc_id": {"type": "string", "description": "Id of the shared list (from notes_list_shared_docs)."},
+                            "entry_id": {"type": "string", "description": "Id of the task entry to mark."},
+                            "done": {"type": "boolean", "description": "True to mark done, false to reopen."},
+                        },
+                        "required": ["doc_id", "entry_id", "done"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.notes_tools",
+            },
 
         ]
 

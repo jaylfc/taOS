@@ -377,6 +377,16 @@ async def _skill_notes_add_entry(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_notes_set_done(args: dict, request: Request) -> dict:
+    """Mark a list task done/not-done on a shared doc the agent belongs to."""
+    try:
+        from tinyagentos.tools.notes_tools import execute_notes_set_done
+
+        return await execute_notes_set_done(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 SKILL_IMPLEMENTATIONS = {
     "memory_search": _skill_memory_search,
     "file_read": _skill_file_read,
@@ -404,6 +414,7 @@ SKILL_IMPLEMENTATIONS = {
     "export_storybook": _skill_export_storybook,
     "notes_list_shared_docs": _skill_notes_list_shared_docs,
     "notes_add_entry": _skill_notes_add_entry,
+    "notes_set_done": _skill_notes_set_done,
 }
 
 
