@@ -232,3 +232,54 @@ async def test_fleet_clamps_held_seconds_under_clock_skew(app, client):
     assert len(mine) == 1
     assert mine[0]["held_seconds"] == 0
     assert mine[0]["stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_fleet_health_empty_is_idle(client):
+    health = (await client.get("/api/observatory/fleet")).json()["health"]
+    assert health == {
+        "total": 0, "working": 0, "idle": 0, "stale": 0,
+        "stale_handles": [], "status": "idle",
+    }
+
+
+@pytest.mark.asyncio
+async def test_fleet_health_counts_working_and_idle(app, client):
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    proj = await pstore.create_project(name="ObsH", slug="obs-health", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="A card", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-busy")
+    await reg.register(framework="opencode", display_name="Idle H",
+                       handle="@lane-free", user_id="admin")
+
+    health = (await client.get("/api/observatory/fleet")).json()["health"]
+    assert health["total"] == 2
+    assert health["working"] == 1
+    assert health["idle"] == 1
+    assert health["stale"] == 0
+    assert health["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_fleet_health_degraded_when_stale(app, client):
+    from tinyagentos.routes.observatory import STALE_CLAIM_SECONDS
+    import time
+
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    proj = await pstore.create_project(name="ObsHD", slug="obs-health-degraded", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Wedged", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-wedged")
+    old = time.time() - (STALE_CLAIM_SECONDS + 600)
+    await tstore._db.execute(
+        "UPDATE project_tasks SET claimed_at = ? WHERE id = ?", (old, task["id"]))
+    await tstore._db.commit()
+
+    health = (await client.get("/api/observatory/fleet")).json()["health"]
+    assert health["stale"] == 1
+    assert health["stale_handles"] == ["@lane-wedged"]
+    assert health["status"] == "degraded"

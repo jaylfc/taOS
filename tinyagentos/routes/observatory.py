@@ -253,4 +253,20 @@ async def get_fleet(request: Request, user: CurrentUser = Depends(current_user))
             })
 
     agents.sort(key=lambda a: a["handle"])
-    return {"agents": agents, "paused": _read_state(request)}
+
+    # Fleet health summary: a single-glance roll-up for the Observatory header so
+    # the UI does not have to recompute counts. `status` is degraded when any
+    # lane is stale (a wedged claim the pause switch would hide), else active if
+    # anything is working, else idle.
+    stale_handles = [a["handle"] for a in agents if a.get("stale")]
+    working_count = sum(1 for a in agents if a["state"] == "working")
+    idle_count = sum(1 for a in agents if a["state"] == "idle")
+    health = {
+        "total": len(agents),
+        "working": working_count,
+        "idle": idle_count,
+        "stale": len(stale_handles),
+        "stale_handles": stale_handles,
+        "status": "degraded" if stale_handles else ("active" if working_count else "idle"),
+    }
+    return {"agents": agents, "paused": _read_state(request), "health": health}
