@@ -375,6 +375,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     decision_store = DecisionStore(data_dir / "decisions.db")
     from tinyagentos.notes.shared_docs_store import SharedDocsStore
     shared_docs_store = SharedDocsStore(data_dir / "shared_docs.db")
+    from tinyagentos.coding_sessions.store import CodingSessionStore
+    coding_session_store = CodingSessionStore(data_dir / "coding_sessions.db")
     projects_root = data_dir / "projects"
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
@@ -483,6 +485,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.decision_store = decision_store
         await shared_docs_store.init()
         app.state.shared_docs_store = shared_docs_store
+        await coding_session_store.init()
+        app.state.coding_session_store = coding_session_store
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
@@ -784,6 +788,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.project_canvas_store = project_canvas_store
         app.state.decision_store = decision_store
         app.state.shared_docs_store = shared_docs_store
+        app.state.coding_session_store = coding_session_store
         app.state.projects_root = projects_root
         app.state.chat_hub = chat_hub
         from tinyagentos.chat.group_policy import GroupPolicy
@@ -1430,6 +1435,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_canvas_store = project_canvas_store
     app.state.decision_store = decision_store
     app.state.shared_docs_store = shared_docs_store
+    app.state.coding_session_store = coding_session_store
     app.state.beads_bridge = None
     app.state.canvas_snapshotter = None
     projects_root.mkdir(parents=True, exist_ok=True)

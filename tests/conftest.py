@@ -317,6 +317,10 @@ async def client(app, tmp_data_dir):
     if decision_store._db is not None:
         await decision_store.close()
     await decision_store.init()
+    coding_session_store = app.state.coding_session_store
+    if coding_session_store._db is not None:
+        await coding_session_store.close()
+    await coding_session_store.init()
     app.state.projects_root.mkdir(parents=True, exist_ok=True)
     canvas_store = app.state.canvas_store
     if canvas_store._db is not None:
@@ -394,6 +398,7 @@ async def client(app, tmp_data_dir):
     await notif_store.close()
     await store.close()
     await office_docs.close()
+    await coding_session_store.close()
     await feedback_store.close()
     await client_log_store.close()
     await app.state.qmd_client.close()

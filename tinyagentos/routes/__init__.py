@@ -346,3 +346,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.notes import router as notes_router
     app.include_router(notes_router)
+
+    from tinyagentos.routes.coding_sessions import router as coding_sessions_router
+    app.include_router(coding_sessions_router)
