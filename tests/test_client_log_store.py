@@ -75,3 +75,29 @@ async def test_prune_and_order_use_rowid_when_timestamps_tie(store, monkeypatch)
     msgs = [i["message"] for i in await store.list_recent(limit=100)]
     assert len(msgs) == 3
     assert msgs == ["m5", "m4", "m3"]
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_full_buffer_when_rowids_have_gaps(store, monkeypatch):
+    # Regression: an out-of-band delete (per-user eviction, rolled-back insert)
+    # leaves a rowid gap. A value-threshold prune (rowid <= MAX(rowid) - MAX_ROWS)
+    # would then retain FEWER than MAX_ROWS rows; the rank-based prune must keep
+    # exactly the newest MAX_ROWS regardless of gaps.
+    monkeypatch.setattr("tinyagentos.client_log_store.MAX_ROWS", 3)
+    for i in range(5):
+        await store.create(user_id="u1", level="debug", message=f"m{i}")
+    # Steady state holds 3 rows; punch a gap in the retained window by deleting the
+    # middle retained rowid directly (simulating an out-of-band delete).
+    async with store._db.execute(
+        "SELECT rowid FROM client_logs ORDER BY rowid"
+    ) as cur:
+        rowids = [r[0] for r in await cur.fetchall()]
+    assert len(rowids) == 3
+    await store._db.execute(
+        "DELETE FROM client_logs WHERE rowid = ?", (rowids[1],))
+    await store._db.commit()
+    # One more insert triggers the prune; the buffer must refill to MAX_ROWS, not
+    # collapse to 2 because of the gap.
+    await store.create(user_id="u1", level="debug", message="m5")
+    items = await store.list_recent(limit=100)
+    assert len(items) == 3

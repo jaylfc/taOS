@@ -91,11 +91,16 @@ class ClientLogStore(BaseStore):
         # Ring-buffer prune: keep only the most recently inserted MAX_ROWS rows.
         # Retain by rowid (monotonic insert order), not created_at: the timestamp
         # is a coarse ISO string, so same-microsecond rows under a crash loop tie
-        # and make the prune non-deterministic. rowid is the indexed primary key,
-        # so this also avoids the per-insert full-table NOT IN scan.
+        # and make the prune non-deterministic. rowid is the indexed primary key.
+        # Keep by RANK (the newest MAX_ROWS rowids), not a value threshold of
+        # MAX(rowid) - MAX_ROWS: rowids are not contiguous once any row is deleted
+        # out of band (per-user eviction, rolled-back inserts), so a value
+        # threshold would retain FEWER than MAX_ROWS rows whenever gaps exist. The
+        # subquery is index-ordered + capped, and the table itself stays bounded
+        # near MAX_ROWS, so the NOT IN check is cheap.
         await self._db.execute(
-            "DELETE FROM client_logs WHERE rowid <= "
-            "(SELECT MAX(rowid) FROM client_logs) - ?",
+            "DELETE FROM client_logs WHERE rowid NOT IN "
+            "(SELECT rowid FROM client_logs ORDER BY rowid DESC LIMIT ?)",
             (MAX_ROWS,),
         )
         await self._db.commit()
