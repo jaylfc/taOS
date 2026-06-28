@@ -173,7 +173,7 @@ async def controller_callback_host(request: Request) -> str | None:
         if out.returncode == 0 and ip and ip[0].strip():
             return ip[0].strip()
     except Exception:  # noqa: BLE001
-        pass
+        logger.debug("tailscale ip lookup failed; falling back to controller_lan_ip", exc_info=True)
     # Fall back to the LAN address the controller advertises, if known.
     return getattr(request.app.state, "controller_lan_ip", None)
 
