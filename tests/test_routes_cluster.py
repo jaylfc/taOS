@@ -392,7 +392,7 @@ async def test_incus_enroll_success(client, app):
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
     mock_remote_add.assert_awaited_once_with(
-        "pi-worker", "https://10.0.0.5:8443", "tok-xyz"
+        "pi-worker", "https://10.0.0.5:8443", token="tok-xyz"
     )
     await app.state.cluster_pairing.close()
 

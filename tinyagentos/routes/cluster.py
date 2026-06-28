@@ -792,7 +792,7 @@ async def incus_enroll(request: Request, name: str, body: IncusEnrollRequest):
         return JSONResponse({"error": f"invalid incus_url: {exc}"}, status_code=400)
 
     try:
-        result = await containers.remote_add(name, body.incus_url, body.token)
+        result = await containers.remote_add(name, body.incus_url, token=body.token)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
