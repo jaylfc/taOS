@@ -174,6 +174,48 @@ class TestHermesImportHappyPath:
         names = {s["name"] for s in granted}
         assert f"{slug}-OPENROUTER_API_KEY" in names
 
+    async def test_gateway_restart_nonzero_still_succeeds(self, client, app, monkeypatch):
+        """A non-zero `hermes gateway restart` must NOT fail an otherwise good
+        import (the profile is imported + set sticky); it is logged, not fatal."""
+        async def fake_deploy(req):
+            return {"success": True, "name": req.name, "ip": "10.0.0.90",
+                    "llm_key": "sk-x", "steps": ["deployment_complete"],
+                    "container": f"taos-agent-{req.name}"}
+        monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+
+        async def fake_push_file(container, src, dst):
+            return 0, ""
+        monkeypatch.setattr("tinyagentos.containers.push_file", fake_push_file)
+
+        async def fake_exec(container, cmd, timeout=None):
+            if cmd[:1] == ["test"]:
+                return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
+            if "profile" in cmd and "import" in cmd:
+                return 0, "ok"
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if "gateway" in cmd and "restart" in cmd:
+                return 1, "gateway restart failed"  # non-zero, but not fatal
+            if cmd[:1] == ["cat"]:
+                return 1, ""
+            return 1, ""
+        monkeypatch.setattr("tinyagentos.containers.exec_in_container", fake_exec)
+
+        resp = await client.post(
+            "/api/agents/import",
+            data={"framework": "hermes", "name": "restart-flaky"},
+            files=_bundle(),
+        )
+        assert resp.status_code == 202
+        slug = resp.json()["name"]
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            task = app.state.deploy_tasks.get(slug)
+            if task and task["status"] in ("success", "failed"):
+                break
+        task = app.state.deploy_tasks.get(slug)
+        assert task["status"] == "success", task
+
     async def test_failed_profile_import_surfaces_error(self, client, app, monkeypatch):
         async def fake_deploy(req):
             return {

@@ -299,14 +299,26 @@ async def _run_profile_import(request: Request, slug: str, agent: dict | None) -
     if use_code != 0:
         raise RuntimeError(f"hermes profile use failed ({use_code}): {use_out[-500:]}")
 
-    # Restart the gateway so the now-default imported profile is the one serving
-    # (`use` sets the sticky default but does not move the already-running
-    # gateway). Best-effort: a restart hiccup must not fail an otherwise
-    # successful import; the next agent start picks up the sticky default.
+    # Restart the gateway so the now-default imported profile is the one
+    # serving. `use` sets the sticky default but does not move the already-
+    # running gateway, and the agent is already started + marked running by
+    # this task, so without an explicit restart it keeps serving the empty
+    # built-in `default`. Best-effort: a restart failure must not undo an
+    # otherwise successful import, but a non-zero exit is logged loudly (not
+    # swallowed) since exec_in_container only RAISES on transport errors -- the
+    # agent would otherwise look healthy while serving the wrong profile. The
+    # slug is already a validated agent slug (alphanumeric + dashes), a valid
+    # hermes profile name, so `use <slug>` cannot be a bad-name case.
     try:
-        await exec_in_container(
+        restart_code, restart_out = await exec_in_container(
             container_name, [hermes_bin, "gateway", "restart"], timeout=120
         )
+        if restart_code != 0:
+            logger.warning(
+                "import %s: hermes gateway restart exited %s; the agent may serve "
+                "the empty default profile until its gateway is restarted: %s",
+                slug, restart_code, (restart_out or "")[-300:],
+            )
     except Exception:
         logger.exception("import %s: hermes gateway restart after profile use failed", slug)
 
