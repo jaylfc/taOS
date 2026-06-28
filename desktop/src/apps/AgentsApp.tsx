@@ -16,6 +16,7 @@ import { DeployWizard } from "./agents/DeployWizard";
 import { ImportWizard } from "./agents/ImportWizard";
 import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
 import { RegistryPanel } from "./agents/RegistryPanel";
+import { BaseImagesPanel } from "./agents/BaseImagesPanel";
 import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
 
 /* ------------------------------------------------------------------ */
@@ -570,6 +571,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onPurge={handlePurge}
             />
             <RegistryPanel />
+            <BaseImagesPanel />
           </div>
         ) : (
           <div className="p-4">
@@ -657,6 +659,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onPurge={handlePurge}
             />
             <RegistryPanel />
+            <BaseImagesPanel />
           </div>
         )}
       </div>
