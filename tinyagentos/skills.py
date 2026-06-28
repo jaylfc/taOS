@@ -389,6 +389,32 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.decision_tools",
             },
             {
+                "id": "notify_user",
+                "name": "Notify User",
+                "category": "agent",
+                "description": "Send the user a short notification in their bell (async heads-up)",
+                "tool_schema": {
+                    "name": "notify_user",
+                    "description": "Send the user a brief notification that appears in their bell, for an async heads-up they should see even when not in your chat. For a question that needs an answer, use request_decision instead.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "description": "The notification body (keep it short)."},
+                            "title": {"type": "string", "description": "Optional short title; defaults to 'Agent update'."},
+                            "level": {"type": "string", "enum": ["info", "success", "warning", "error"], "description": "Severity (default info)."},
+                        },
+                        "required": ["message"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.notify_tools",
+            },
+            {
                 "id": "canvas_add_image",
                 "name": "Add Image to Canvas",
                 "category": "projects",
