@@ -229,8 +229,31 @@ async def test_user_member_can_read_shared_doc(two_user_clients):
     # owner-only in this foundation.
     assert (await bob.get(f"/api/notes/{doc_id}")).status_code == 200
     assert (await bob.get(f"/api/notes/{doc_id}/members")).status_code == 200
-    assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "hi"})).status_code == 403
+    # Option C: a member can write entries; doc/member management stays owner-only.
+    assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "hi"})).status_code == 200
     assert (await bob.patch(f"/api/notes/{doc_id}", json={"title": "x"})).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_member_can_edit_and_remove_entries(two_user_clients):
+    alice, bob, app = two_user_clients
+    bob_id = app.state.auth.find_user("bob")["id"]
+    doc = (await alice.post("/api/notes", json={"kind": "list", "title": "Groceries"})).json()
+    doc_id = doc["id"]
+    await alice.post(
+        f"/api/notes/{doc_id}/members",
+        json={"member_type": "user", "member_id": bob_id},
+    )
+
+    entry = (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "milk"})).json()
+    eid = entry["id"]
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}/text", json={"text": "oat milk"})).status_code == 200
+    assert (await bob.patch(f"/api/notes/{doc_id}/entries/{eid}", json={"done": True})).status_code == 200
+    assert (await bob.delete(f"/api/notes/{doc_id}/entries/{eid}")).status_code == 200
+
+    # Once unshared, the former member can no longer write.
+    await alice.delete(f"/api/notes/{doc_id}/members/user/{bob_id}")
+    assert (await bob.post(f"/api/notes/{doc_id}/entries", json={"text": "x"})).status_code == 403
 
 
 # ------------------------------------------------------------ member tests
@@ -379,3 +402,41 @@ async def test_add_entry_no_agent_members_no_send(tmp_path):
 
     assert sent == [], "no message should be sent when there are no agent members"
     await shared_docs_store.close()
+
+
+@pytest.mark.asyncio
+async def test_trigger_skips_authoring_agent(tmp_path):
+    """Loop guard: skip_agent is not notified about its own write, others are."""
+    from types import SimpleNamespace
+
+    from tinyagentos.routes.notes import _trigger_agent_notifications
+
+    config_data = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data))
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+
+    doc = await store.create_doc("owner", "note", "Ideas")
+    await store.add_member(doc["id"], "agent", "atlas", "research")
+    await store.add_member(doc["id"], "agent", "nova", "critique")
+    app.state.config.agents.append({"name": "atlas", "chat_channel_id": "ch-atlas"})
+    app.state.config.agents.append({"name": "nova", "chat_channel_id": "ch-nova"})
+
+    sent: list[str] = []
+
+    async def _fake_send(channel_id, author_id, author_type, content, **kwargs):
+        sent.append(channel_id)
+        return {}
+
+    msg = MagicMock()
+    msg.send_message = _fake_send
+    app.state.chat_messages = msg
+
+    req = SimpleNamespace(app=SimpleNamespace(state=app.state))
+    await _trigger_agent_notifications(req, doc, "a new idea", skip_agent="atlas")
+
+    assert "ch-nova" in sent
+    assert "ch-atlas" not in sent
+    await store.close()

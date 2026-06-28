@@ -84,6 +84,16 @@ async def _check_read_access(store, doc: dict, user: CurrentUser):
     return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
+async def _check_write_access(store, doc: dict, user: CurrentUser):
+    """Any member (owner, admin, or a user-type member) may write entries.
+
+    Entry writes require membership, the same bar as reading the doc; doc and
+    member management stay owner-only (see _check_owner). Agent members write
+    through an agent tool rather than this human-session API.
+    """
+    return await _check_read_access(store, doc, user)
+
+
 # ------------------------------------------------------------------ doc routes
 
 @router.get("/api/notes")
@@ -153,8 +163,14 @@ async def _trigger_agent_notifications(
     request: Request,
     doc: dict,
     entry_text: str,
+    skip_agent: str | None = None,
 ) -> None:
-    """Post a message to each agent member's DM channel. Never raises."""
+    """Post a message to each agent member's DM channel. Never raises.
+
+    skip_agent names the agent that authored this change, if any, so an agent
+    writing to a shared doc does not get notified about its own entry (the
+    self-notify loop guard).
+    """
     store = _get_store(request)
     agents = await store.agent_members(doc["id"])
     if not agents:
@@ -169,6 +185,8 @@ async def _trigger_agent_notifications(
 
     for am in agents:
         agent_name = am["agent"]
+        if skip_agent is not None and agent_name == skip_agent:
+            continue
         instruction = am["standing_instruction"]
         if instruction:
             content = f"[{doc_title}] {instruction}: {entry_text}"
@@ -203,7 +221,7 @@ async def add_entry(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = _check_owner(doc, user)
+    err = await _check_write_access(store, doc, user)
     if err:
         return err
     entry = await store.add_entry(doc_id, body.text, author=user.user_id)
@@ -227,7 +245,7 @@ async def patch_entry(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = _check_owner(doc, user)
+    err = await _check_write_access(store, doc, user)
     if err:
         return err
     await store.set_entry_done(entry_id, body.done)
@@ -245,7 +263,7 @@ async def delete_entry(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = _check_owner(doc, user)
+    err = await _check_write_access(store, doc, user)
     if err:
         return err
     await store.delete_entry(entry_id)
@@ -264,7 +282,7 @@ async def edit_entry_text(
     doc = await store.get_doc(doc_id)
     if doc is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    err = _check_owner(doc, user)
+    err = await _check_write_access(store, doc, user)
     if err:
         return err
     try:
