@@ -154,19 +154,22 @@ def all_base_image_aliases() -> list[str]:
     return aliases
 
 
-async def is_image_present(alias: str = BASE_IMAGE_ALIAS) -> bool:
-    """Return True iff incus already has an image with this alias locally.
+async def is_image_present(alias: str = BASE_IMAGE_ALIAS, remote: str | None = None) -> bool:
+    """Return True iff incus already has an image with this alias.
 
-    Uses ``incus image list --format=csv -c f --filter=alias=<alias>`` and
-    checks the output has any non-empty row. Any failure (incus not
-    installed, daemon down) returns False — the caller will fall back to
-    the uncached deploy path.
+    Uses ``incus image list --format=csv -c f <alias>`` and checks the output
+    has any non-empty row. ``remote`` (e.g. ``"fedora-worker"``) checks an
+    enrolled remote's nested incus instead of the local one. Any failure
+    (incus not installed, daemon down) returns False -- the caller will fall
+    back to the uncached deploy path.
     """
+    args = ["incus", "image", "list", "--format=csv", "-c", "f"]
+    if remote:
+        args.append(f"{remote}:")
+    args.append(alias)
     try:
         proc = await asyncio.create_subprocess_exec(
-            "incus", "image", "list",
-            "--format=csv", "-c", "f",
-            alias,
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -241,6 +244,7 @@ async def _bake_scripts_into_image(alias: str) -> None:
 async def ensure_image_present(
     alias: str = BASE_IMAGE_ALIAS,
     url: str | None = None,
+    remote: str | None = None,
 ) -> bool:
     """Import the base image from ``url`` if not already present.
 
@@ -259,7 +263,7 @@ async def ensure_image_present(
     temp dir so it lands on the same filesystem as /var/tmp and can be
     imported without extra copying.
     """
-    if await is_image_present(alias):
+    if await is_image_present(alias, remote=remote):
         return True
     # Derive the URL from the alias so a non-openclaw alias never imports the
     # openclaw tarball (an explicit url still wins for tests / overrides).
@@ -298,9 +302,13 @@ async def ensure_image_present(
             _prefetch_state["status"] = "failed"
             return False
         _prefetch_state["status"] = "importing"
+        import_args = ["incus", "image", "import", tmp_path]
+        if remote:
+            import_args.append(f"{remote}:")
+        import_args += ["--alias", alias]
         try:
             incus = await asyncio.create_subprocess_exec(
-                "incus", "image", "import", tmp_path, "--alias", alias,
+                *import_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -316,8 +324,13 @@ async def ensure_image_present(
             )
             _prefetch_state["status"] = "failed"
             return False
-        logger.info("agent_image: %s imported OK", alias)
-        await _bake_scripts_into_image(alias)
+        logger.info("agent_image: %s imported OK%s", alias, f" on {remote}" if remote else "")
+        # The bake launches a temp container on the LOCAL incus to inject the
+        # taos-framework-update helper, so it only applies to local imports.
+        # On a remote the prefetched base is used as-is (the helper is
+        # non-essential and can be baked on the worker separately if needed).
+        if not remote:
+            await _bake_scripts_into_image(alias)
         _prefetch_state["status"] = "done"
         return True
     except Exception as exc:  # pragma: no cover - defensive

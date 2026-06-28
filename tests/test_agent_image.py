@@ -141,6 +141,39 @@ class TestEnsureImagePresent:
         incus_proc.communicate.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_imports_to_remote_qualifies_target_and_skips_bake(self):
+        """remote= imports onto the worker's nested incus and skips the
+        local-only script bake."""
+        curl_proc = _fake_proc(0, b"")
+        incus_proc = _fake_proc(0, b"Image imported with fingerprint abc\n")
+        launched = []
+
+        async def _launch(*args, **kwargs):
+            launched.append(args)
+            if args and args[0] == "curl":
+                return curl_proc
+            return incus_proc
+
+        baked = []
+        with patch(
+            "tinyagentos.agent_image.is_image_present", new=AsyncMock(return_value=False)
+        ), patch("asyncio.create_subprocess_exec", new=_launch), patch(
+            "tinyagentos.agent_image._bake_scripts_into_image",
+            new=AsyncMock(side_effect=lambda *a, **k: baked.append(a)),
+        ):
+            ok = await ensure_image_present(
+                alias="taos-hermes-base",
+                url="http://example.test/img.tar.gz",
+                remote="fedora-worker",
+            )
+        assert ok is True
+        incus_args = [a for a in launched if a and a[0] == "incus"][0]
+        assert "fedora-worker:" in incus_args
+        assert "--alias" in incus_args and "taos-hermes-base" in incus_args
+        # The bake is a local-incus operation; it must NOT run for a remote import.
+        assert baked == []
+
+    @pytest.mark.asyncio
     async def test_returns_false_when_incus_import_fails(self):
         curl_proc = _fake_proc(0, b"")
         incus_proc = _fake_proc(1, b"import failed")
