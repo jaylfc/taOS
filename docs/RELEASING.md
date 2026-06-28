@@ -6,11 +6,12 @@ taOS uses semver beta: `1.0.0-beta.N`, incremented on every dev->master promotio
 
 ### 1. Bump version
 
-Update the version string to the next `1.0.0-beta.N` in exactly these three files (keep them identical):
+Update the version string to the next `1.0.0-beta.N` in exactly these files (keep them identical):
 
 - `pyproject.toml` line `version = "..."`
 - `desktop/package.json` line `"version": "..."`
 - `tinyagentos/__init__.py` line `__version__ = "..."`
+- `uv.lock` -- the `tinyagentos` package entry's `version = "..."` (uv normalises `1.0.0-beta.N` to `1.0.0bN`). `test_version_lock_sync.py` fails the build if this drifts from `pyproject.toml`.
 
 ### 2. Update CHANGELOG.md
 
