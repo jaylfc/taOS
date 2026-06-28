@@ -63,6 +63,24 @@ async def execute_create_project(args: dict, request: Request) -> dict:
     return {"ok": True, "project_id": project["id"], "name": project["name"]}
 
 
+async def execute_list_projects(args: dict, request: Request) -> dict:
+    """List the user's projects so the agent can pick one before adding tasks or
+    images, instead of guessing a project_id. Read-only; scoped to the caller."""
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user"}
+    status = (args or {}).get("status", "active")
+    if status not in ("active", "archived", "all"):
+        return {"error": "status must be 'active', 'archived', or 'all'"}
+    store = request.app.state.project_store
+    rows = await store.list_for_user(user_id, status=None if status == "all" else status)
+    projects = [
+        {"project_id": p.get("id"), "name": p.get("name"), "status": p.get("status")}
+        for p in rows
+    ]
+    return {"ok": True, "projects": projects, "count": len(projects)}
+
+
 async def execute_add_task(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
     title = (args or {}).get("title")

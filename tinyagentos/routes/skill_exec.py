@@ -225,6 +225,16 @@ async def _skill_notify_user(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_list_projects(args: dict, request: Request) -> dict:
+    """List the user's projects so the agent can pick one."""
+    try:
+        from tinyagentos.tools.project_tools import execute_list_projects
+
+        return await execute_list_projects(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_create_project(args: dict, request: Request) -> dict:
     """Create a project the user can see."""
     try:
@@ -290,6 +300,7 @@ SKILL_IMPLEMENTATIONS = {
     "request_decision": _skill_request_decision,
     "notify_user": _skill_notify_user,
     "create_project": _skill_create_project,
+    "list_projects": _skill_list_projects,
     "add_task": _skill_add_task,
     "canvas_add_image": _skill_canvas_add_image,
     "describe_image_capabilities": _skill_describe_image_capabilities,

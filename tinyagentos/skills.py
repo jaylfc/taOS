@@ -335,6 +335,29 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.project_tools",
             },
             {
+                "id": "list_projects",
+                "name": "List Projects",
+                "category": "projects",
+                "description": "List the user's projects so the agent can pick one",
+                "tool_schema": {
+                    "name": "list_projects",
+                    "description": "List the user's projects (id, name, status) so you can pick the right project_id before adding tasks or images. Optional status filter: active (default), archived, all.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string", "enum": ["active", "archived", "all"], "description": "Which projects to list (default active)."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
                 "id": "add_task",
                 "name": "Add Task",
                 "category": "projects",
