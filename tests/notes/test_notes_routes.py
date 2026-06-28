@@ -656,3 +656,100 @@ async def test_trigger_skips_authoring_agent(tmp_path):
     assert "ch-nova" in sent
     assert "ch-atlas" not in sent
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_discuss_action_creates_and_reuses_topic_channel(tmp_path):
+    """A 'discuss' agent gets a dedicated topic channel (not its DM), threaded across entries."""
+    import yaml
+    from types import SimpleNamespace
+
+    from tinyagentos.chat.channel_store import ChatChannelStore
+    from tinyagentos.routes.notes import _trigger_agent_notifications
+
+    config_data = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data))
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+
+    channels = ChatChannelStore(tmp_path / "chat.db")
+    await channels.init()
+    app.state.chat_channels = channels
+
+    doc = await store.create_doc("owner", "note", "Big Idea")
+    await store.add_member(doc["id"], "agent", "atlas", action="discuss")
+    app.state.config.agents.append({"name": "atlas", "chat_channel_id": "ch-atlas"})
+
+    sent: list[dict] = []
+
+    async def _fake_send(channel_id, author_id, author_type, content, **kwargs):
+        sent.append({"channel_id": channel_id, "content": content})
+        return {}
+
+    msg = MagicMock()
+    msg.send_message = _fake_send
+    app.state.chat_messages = msg
+
+    req = SimpleNamespace(app=SimpleNamespace(state=app.state))
+    await _trigger_agent_notifications(req, doc, "an idea to develop")
+
+    # Posted to a fresh topic channel, NOT the agent DM, with the discuss directive.
+    assert len(sent) == 1
+    ch_id = sent[0]["channel_id"]
+    assert ch_id != "ch-atlas"
+    assert "clarifying questions" in sent[0]["content"]
+
+    ch = await channels.get_channel(ch_id)
+    assert ch is not None
+    assert ch["type"] == "topic"
+    assert "atlas" in (ch.get("members") or [])
+    assert "atlas" in (ch.get("settings") or {}).get("leads", [])
+
+    # Persisted and reused on the next entry (no second channel).
+    assert await store.discuss_channel_for(doc["id"], "atlas") == ch_id
+    await _trigger_agent_notifications(req, doc, "a second idea")
+    assert sent[1]["channel_id"] == ch_id
+    all_channels = await channels.list_channels()
+    discuss = [c for c in all_channels if (c.get("settings") or {}).get("kind") == "notes-discuss"]
+    assert len(discuss) == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_discuss_action_falls_back_to_dm_without_channel_store(tmp_path):
+    """If no chat-channel store is available, a discuss agent still gets its DM."""
+    import yaml
+    from types import SimpleNamespace
+
+    from tinyagentos.routes.notes import _trigger_agent_notifications
+
+    config_data = _make_config(tmp_path)
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data))
+    app = create_app(data_dir=tmp_path)
+    store = SharedDocsStore(tmp_path / "shared_docs.db")
+    await store.init()
+    app.state.shared_docs_store = store
+    app.state.chat_channels = None  # no channel store
+
+    doc = await store.create_doc("owner", "note", "Big Idea")
+    await store.add_member(doc["id"], "agent", "atlas", action="discuss")
+    app.state.config.agents.append({"name": "atlas", "chat_channel_id": "ch-atlas"})
+
+    sent: list[str] = []
+
+    async def _fake_send(channel_id, author_id, author_type, content, **kwargs):
+        sent.append(channel_id)
+        return {}
+
+    msg = MagicMock()
+    msg.send_message = _fake_send
+    app.state.chat_messages = msg
+
+    req = SimpleNamespace(app=SimpleNamespace(state=app.state))
+    await _trigger_agent_notifications(req, doc, "an idea")
+
+    # Fell back to the DM channel rather than dropping the notification.
+    assert sent == ["ch-atlas"]
+    await store.close()

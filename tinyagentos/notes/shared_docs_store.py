@@ -105,6 +105,13 @@ class SharedDocsStore(BaseStore):
             await self._db.execute(
                 "ALTER TABLE shared_doc_members ADD COLUMN action TEXT"
             )
+        # `discuss_channel_id` caches the topic channel an agent's "discuss"
+        # action spun up for this doc, so the discussion stays threaded across
+        # entries instead of forking a new channel each time.
+        if "discuss_channel_id" not in cols:
+            await self._db.execute(
+                "ALTER TABLE shared_doc_members ADD COLUMN discuss_channel_id TEXT"
+            )
         await self._db.commit()
 
     # ------------------------------------------------------------------ docs
@@ -415,6 +422,25 @@ class SharedDocsStore(BaseStore):
         if row is None:
             return None
         return row[0]
+
+    async def discuss_channel_for(self, doc_id: str, agent_name: str) -> str | None:
+        """Return the cached discuss-topic channel id for an agent member, if any."""
+        cur = await self._db.execute(
+            "SELECT discuss_channel_id FROM shared_doc_members "
+            "WHERE doc_id = ? AND member_type = 'agent' AND member_id = ?",
+            (doc_id, agent_name),
+        )
+        row = await cur.fetchone()
+        return row[0] if row and row[0] else None
+
+    async def set_discuss_channel(self, doc_id: str, agent_name: str, channel_id: str) -> None:
+        """Persist the topic channel an agent's discuss action created for this doc."""
+        await self._db.execute(
+            "UPDATE shared_doc_members SET discuss_channel_id = ? "
+            "WHERE doc_id = ? AND member_type = 'agent' AND member_id = ?",
+            (channel_id, doc_id, agent_name),
+        )
+        await self._db.commit()
 
     async def docs_for_agent(self, agent_name: str) -> list[dict]:
         """Non-archived docs where the given agent is an agent-type member."""

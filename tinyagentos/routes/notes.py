@@ -172,16 +172,53 @@ async def patch_doc(
 
 # --------------------------------------------------------------- entry routes
 
+async def _ensure_discuss_channel(request: Request, doc: dict, agent_name: str) -> str | None:
+    """Create or reuse the topic channel an agent's "discuss" action threads in.
+
+    Returns the channel id, or None if the chat channel store is unavailable.
+    The discussion stays threaded per (doc, agent): repeated entries land in one
+    channel instead of forking a new one each time. The agent is set as a lead so
+    it actively asks the user clarifying questions rather than staying quiet.
+    """
+    store = _get_store(request)
+    channels = getattr(request.app.state, "chat_channels", None)
+    if channels is None:
+        return None
+    existing = await store.discuss_channel_for(doc["id"], agent_name)
+    if existing:
+        ch = await channels.get_channel(existing)
+        if ch is not None:
+            return existing
+    owner = doc.get("owner_user_id") or "system"
+    title = doc.get("title", "") or "shared doc"
+    created = await channels.create_channel(
+        name=f"Discuss: {title}",
+        type="topic",
+        created_by=owner,
+        members=sorted({owner, agent_name}),
+        description=f"Idea discussion for a shared doc with {agent_name}.",
+        settings={"kind": "notes-discuss", "leads": [agent_name], "response_mode": "lively"},
+    )
+    ch_id = created.get("id") if isinstance(created, dict) else None
+    if ch_id:
+        await store.set_discuss_channel(doc["id"], agent_name, ch_id)
+    return ch_id
+
+
 async def _trigger_agent_notifications(
     request: Request,
     doc: dict,
     entry_text: str,
     skip_agent: str | None = None,
 ) -> None:
-    """Post a message to each agent member's DM channel. Never raises.
+    """Notify each agent member on a new entry. Never raises.
 
-    skip_agent names the agent that authored this change, if any, so an agent
-    writing to a shared doc does not get notified about its own entry.
+    Most agents are pinged on their DM channel. An agent whose action is
+    "discuss" instead gets a dedicated topic channel (created or reused) so it
+    can develop the idea with the user there; if that fails it falls back to the
+    DM so the agent is never silently skipped. skip_agent names the agent that
+    authored this change, if any, so an agent does not get notified about its
+    own entry.
     """
     store = _get_store(request)
     agents = await store.agent_members(doc["id"])
@@ -210,6 +247,23 @@ async def _trigger_agent_notifications(
             content = f"[{doc_title}] {instruction}: {entry_text}"
         else:
             content = f"[{doc_title}] New entry: {entry_text}"
+        if action == "discuss":
+            try:
+                ch_id = await _ensure_discuss_channel(request, doc, agent_name)
+                if ch_id:
+                    await message_store.send_message(
+                        channel_id=ch_id,
+                        author_id="system",
+                        author_type="system",
+                        content=content,
+                    )
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "notes: discuss channel failed for %r, falling back to DM: %s",
+                    agent_name,
+                    exc,
+                )
         try:
             agent_cfg = find_agent(config, agent_name)
             channel_id = (agent_cfg or {}).get("chat_channel_id")
