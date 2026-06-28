@@ -283,3 +283,52 @@ async def test_fleet_health_degraded_when_stale(app, client):
     assert health["stale"] == 1
     assert health["stale_handles"] == ["@lane-wedged"]
     assert health["status"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_fleet_idle_agent_carries_its_framework(app, client):
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    await reg.register(framework="hermes", display_name="Idle Fw",
+                       handle="@lane-fw-idle", user_id="admin")
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@lane-fw-idle"]
+    assert len(mine) == 1
+    assert mine[0]["framework"] == "hermes"
+
+
+@pytest.mark.asyncio
+async def test_fleet_working_agent_backfills_framework_from_registry(app, client):
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    reg = app.state.agent_registry
+    if reg._db is None:
+        await reg.init()
+    # A registered agent that also holds a claimed card: it is 'working', and its
+    # framework is backfilled from the registry by handle.
+    await reg.register(framework="kilo", display_name="Busy Fw",
+                       handle="@lane-fw-busy", user_id="admin")
+    proj = await pstore.create_project(name="ObsFw", slug="obs-fw", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Card", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-fw-busy")
+
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@lane-fw-busy"]
+    assert len(mine) == 1
+    assert mine[0]["state"] == "working"
+    assert mine[0]["framework"] == "kilo"
+
+
+@pytest.mark.asyncio
+async def test_fleet_unregistered_working_agent_has_empty_framework(app, client):
+    pstore = app.state.project_store
+    tstore = app.state.project_task_store
+    proj = await pstore.create_project(name="ObsNoFw", slug="obs-no-fw", created_by="admin", user_id="admin")
+    task = await tstore.create_task(proj["id"], title="Card", created_by="admin")
+    await tstore.claim_task(task["id"], "@lane-unregistered")
+
+    agents = (await client.get("/api/observatory/fleet")).json()["agents"]
+    mine = [a for a in agents if a["handle"] == "@lane-unregistered"]
+    assert len(mine) == 1
+    assert mine[0]["framework"] == ""
