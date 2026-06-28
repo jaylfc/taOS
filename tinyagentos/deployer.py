@@ -393,6 +393,16 @@ async def deploy_agent(req: DeployRequest) -> dict:
                 req.name, len(injected), ", ".join(injected),
             )
 
+    # SSH key secrets to materialize as files after container start.
+    # Collected here (before container creation) so the post-start loop has
+    # them. Secrets with category "ssh-keys" land at ~/.ssh/<name> with 0600.
+    _ssh_key_secrets: list[dict] = []
+    if req.secrets_store is not None:
+        _ssh_key_secrets = [
+            s for s in agent_secrets  # type: ignore[possibly-undefined]
+            if s.get("category") == "ssh-keys"
+        ]
+
     # Pre-built base image fast-path — see tinyagentos/agent_image.py.
     # Framework-aware selection: prefer the framework's dedicated base
     # (taos-<framework>-base), then the generic taos-base, then a cold
@@ -495,6 +505,54 @@ async def deploy_agent(req: DeployRequest) -> dict:
                 break
             await asyncio.sleep(2)
         steps.append("network_ready")
+
+        # Step 2b: Materialize SSH key secrets as ~/.ssh/<name> inside the container.
+        # Secrets with category "ssh-keys" are written verbatim to files so tools
+        # like git/ssh can use them directly. The value is written via push_file
+        # (same path used for AGENTS.md and install scripts above); perms are set
+        # with chmod/chown via exec_in_container. An SSH key stored as an env var
+        # alone would not be usable by the ssh binary.
+        if _ssh_key_secrets:
+            import tempfile
+            import os as _os
+            # Ensure ~/.ssh exists and has the right permissions.
+            code, output = await exec_in_container(
+                container_name,
+                ["bash", "-c", "mkdir -p /root/.ssh && chmod 700 /root/.ssh"],
+            )
+            if code != 0:
+                logger.warning("Deploy %s: failed to create ~/.ssh: %s", req.name, output)
+            for _sk in _ssh_key_secrets:
+                _sk_name = _sk["name"]
+                _sk_value = _sk["value"]
+                # Ensure the value ends with a newline — SSH clients require it.
+                if not _sk_value.endswith("\n"):
+                    _sk_value += "\n"
+                _dest = f"/root/.ssh/{_sk_name}"
+                with tempfile.NamedTemporaryFile("w", suffix=".key", delete=False) as _tf:
+                    _tf.write(_sk_value)
+                    _tmp_key_path = _tf.name
+                try:
+                    _push_rc, _push_out = await push_file(container_name, _tmp_key_path, _dest)
+                finally:
+                    _os.unlink(_tmp_key_path)
+                if _push_rc != 0:
+                    logger.warning(
+                        "Deploy %s: failed to push SSH key %r (rc=%s): %s",
+                        req.name, _sk_name, _push_rc, _push_out[-200:],
+                    )
+                    continue
+                code, output = await exec_in_container(
+                    container_name, ["chmod", "600", _dest]
+                )
+                if code != 0:
+                    logger.warning(
+                        "Deploy %s: failed to chmod 600 on %s: %s",
+                        req.name, _dest, output,
+                    )
+                else:
+                    logger.info("Deploy %s: materialized SSH key %r at %s", req.name, _sk_name, _dest)
+            steps.append("ssh_keys_materialized")
 
         # Step 3: Install base dependencies (framework needs these).
         # Skipped entirely when the pre-built openclaw base image is in

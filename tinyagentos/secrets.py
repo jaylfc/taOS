@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS secret_categories (
 );
 """
 
-DEFAULT_CATEGORIES = ["api-keys", "tokens", "credentials", "webhooks", "general"]
+DEFAULT_CATEGORIES = ["api-keys", "tokens", "credentials", "webhooks", "general", "ssh-keys"]
 
 # Prefix written into every Fernet-encrypted value so decrypt can distinguish
 # new (Fernet) from old (XOR) ciphertext and migrate transparently.
