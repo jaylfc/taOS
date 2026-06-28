@@ -699,11 +699,15 @@ phase2_inside_lxc() {
         warn "  to enable later: apt install bees && systemctl enable --now bees.service"
     fi
 
-    # Gate init on a storage pool existing, NOT on `incus list` succeeding:
-    # `incus list` returns 0 even on a fresh daemon with no storage pool and an
-    # empty default profile, which would skip init and leave the nested incus
-    # unable to create agent containers ("No root device could be found").
-    if incus storage list --format csv 2>/dev/null | grep -q .; then
+    # Gate init on the default storage pool existing, NOT on `incus list`
+    # succeeding: `incus list` returns 0 even on a fresh daemon with no storage
+    # pool and an empty default profile, which would skip init and leave the
+    # nested incus unable to create agent containers ("No root device could be
+    # found"). Match the pool name exactly, as create_btrfs_loopback does at the
+    # host level: `--format=csv` still emits a header row on some incus builds,
+    # so a bare `grep -q .` matches the header and wrongly skips init on a fresh
+    # daemon. `incus admin init --minimal` creates a pool named `default`.
+    if incus storage list --format=csv 2>/dev/null | awk -F',' '{print $1}' | grep -q '^default$'; then
         log "nested incus already initialised"
     else
         incus admin init --minimal < /dev/null
