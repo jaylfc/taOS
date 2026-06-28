@@ -324,6 +324,22 @@ setup_port_forward() {
 
 reexec_into_worker_lxc() {
     log "re-execing install-worker.sh inside taos-worker for phase 2"
+
+    # The advertised incus URL the controller enrols MUST be an address the
+    # controller can reach. Inside the LXC the only detectable source address
+    # toward the controller is the NAT'd incusbr0 IP (e.g. 10.x), which is
+    # private to this host. The reachable address is the bare host's own LAN
+    # IP — the nftables rule in setup_port_forward DNATs <host>:8443 to the
+    # LXC. That IP is only knowable here on the host, so detect it and pass it
+    # into phase 2 as TAOS_ADVERTISE_IP.
+    local advertise_ip _ctrl_host
+    _ctrl_host="$(printf '%s' "$CONTROLLER_URL" | sed 's|^[^/]*/*/||; s|[:/].*||')"
+    if [[ -n "$_ctrl_host" ]] && command -v ip >/dev/null 2>&1; then
+        advertise_ip="$(ip -4 route get "$_ctrl_host" 2>/dev/null \
+            | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
+    fi
+    [[ -z "$advertise_ip" ]] && advertise_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
     # </dev/null on `incus exec` so the inner bash doesn't pull from
     # the outer curl pipe — same root cause as the storage/launch fixes
     # in this file.
@@ -332,6 +348,8 @@ reexec_into_worker_lxc() {
         export TAOS_INSIDE_WORKER=1
         export TAOS_CONTROLLER_URL='${CONTROLLER_URL}'
         export TAOS_WORKER_NAME='${WORKER_NAME}'
+        export TAOS_BRANCH='${BRANCH}'
+        export TAOS_ADVERTISE_IP='${advertise_ip}'
         curl -sL '${REPO}/raw/${BRANCH}/scripts/install-worker.sh' | bash -s -- '${CONTROLLER_URL}'
     " </dev/null
 }
@@ -479,9 +497,16 @@ install_and_enroll_incus() {
     # controller, so we don't accidentally pick up docker0 / incusbr0 /
     # Tailscale addresses that the controller can't reach back on.
     local LAN_IP=""
+    # Inside the worker LXC, the kernel's source address toward the controller
+    # is the NAT'd incusbr0 IP, which the controller cannot reach. Phase 1
+    # passes the bare host's reachable LAN IP as TAOS_ADVERTISE_IP (DNAT'd to
+    # this LXC by setup_port_forward), so prefer it when present.
+    if [[ -n "${TAOS_ADVERTISE_IP:-}" ]]; then
+        LAN_IP="$TAOS_ADVERTISE_IP"
+    fi
     local _ctrl_host
     _ctrl_host="$(printf '%s' "$CONTROLLER_URL" | sed 's|^[^/]*/*/||; s|[:/].*||')"
-    if [[ -n "$_ctrl_host" ]] && command -v ip >/dev/null 2>&1; then
+    if [[ -z "$LAN_IP" && -n "$_ctrl_host" ]] && command -v ip >/dev/null 2>&1; then
         LAN_IP="$(ip -4 route get "$_ctrl_host" 2>/dev/null \
             | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
     fi
