@@ -105,9 +105,14 @@ class TestHermesImportHappyPath:
             # binary probe
             if cmd[:1] == ["test"]:
                 return (0, "") if cmd[-1] == "/usr/local/bin/hermes" else (1, "")
-            # `hermes profile import <path>`
+            # `hermes profile import <path> --name <slug>`
             if "profile" in cmd and "import" in cmd:
                 return 0, "imported profile ok"
+            # `hermes profile use <slug>` + `hermes gateway restart`
+            if "profile" in cmd and "use" in cmd:
+                return 0, "switched"
+            if "gateway" in cmd and "restart" in cmd:
+                return 0, "restarted"
             # persona readback: SOUL.md
             if cmd[:1] == ["cat"] and cmd[-1].endswith("SOUL.md"):
                 return 0, "You are an imported soul."
@@ -143,10 +148,18 @@ class TestHermesImportHappyPath:
         assert task is not None, "background import task should have recorded a result"
         assert task["status"] == "success", task
 
-        # `hermes profile import <pushed-path>` was invoked with the pushed path.
+        # `hermes profile import <pushed-path> --name <slug>` was invoked: the
+        # pushed path AND an explicit --name (never the bundle's own, possibly
+        # `default`, name which hermes refuses to import).
         import_calls = [c for c in calls if "profile" in c and "import" in c]
         assert import_calls, "hermes profile import should have run"
         assert pushed["dst"] in import_calls[0], "import should target the pushed bundle path"
+        assert "--name" in import_calls[0], "import must pass --name to avoid the forbidden 'default' name"
+        assert slug in import_calls[0], "import should name the profile after the agent slug"
+        # The imported profile is made the sticky default so the agent runs it.
+        assert any("profile" in c and "use" in c and slug in c for c in calls), (
+            "import should `hermes profile use <slug>` to activate the imported profile"
+        )
 
         # Persona readback populated soul_md + model on the agent record.
         detail = await client.get(f"/api/agents/{slug}")
