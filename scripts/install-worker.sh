@@ -594,7 +594,11 @@ clone_or_update_repo() {
         git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
     else
         log "updating existing checkout"
-        (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard "origin/$BRANCH")
+        # A shallow single-branch fetch only moves FETCH_HEAD; it does not
+        # create/update an origin/<branch> ref, so reset to FETCH_HEAD (the
+        # just-fetched tip) rather than a remote-tracking name that may not
+        # exist. This is what makes a re-run ("re-run to resume") idempotent.
+        (cd "$INSTALL_DIR" && git fetch --depth 1 origin "$BRANCH" && git reset --hard FETCH_HEAD)
     fi
     cd "$INSTALL_DIR"
 }
