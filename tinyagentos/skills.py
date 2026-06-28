@@ -638,6 +638,53 @@ class SkillStore(BaseStore):
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.project_tools",
             },
+            {
+                "id": "notes_list_shared_docs",
+                "name": "List Shared Docs",
+                "category": "notes",
+                "description": "List the non-archived shared notes and lists the agent is a member of",
+                "tool_schema": {
+                    "name": "notes_list_shared_docs",
+                    "description": "List the non-archived shared notes and lists this agent is a member of. Returns id, kind, title, and updated_at for each doc.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.notes_tools",
+            },
+            {
+                "id": "notes_add_entry",
+                "name": "Add Notes Entry",
+                "category": "notes",
+                "description": "Append a new entry to a shared note or list the agent is a member of",
+                "tool_schema": {
+                    "name": "notes_add_entry",
+                    "description": "Append a new entry to a shared note or list this agent is a member of. Use notes_list_shared_docs first to get the doc_id.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "doc_id": {"type": "string", "description": "Id of the shared doc (from notes_list_shared_docs)."},
+                            "text": {"type": "string", "description": "The entry text to append."},
+                        },
+                        "required": ["doc_id", "text"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.notes_tools",
+            },
+
         ]
 
         for skill in defaults:

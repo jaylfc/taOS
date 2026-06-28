@@ -1,0 +1,61 @@
+"""Agent-side tools for shared notes and lists.
+
+Lets an agent list the docs it is a member of, and append a new entry to any
+doc it belongs to. The loop guard (skip_agent) prevents the writing agent from
+being notified about its own write.
+"""
+
+from __future__ import annotations
+
+from fastapi import Request
+
+
+async def execute_notes_list_shared_docs(args: dict, request: Request) -> dict:
+    """List non-archived shared docs the calling agent is a member of."""
+    args = args or {}
+    agent_name = args.get("agent_name")
+    if not agent_name or not isinstance(agent_name, str):
+        return {"error": "notes_list_shared_docs requires an 'agent_name' string"}
+    try:
+        store = request.app.state.shared_docs_store
+        docs = await store.docs_for_agent(agent_name)
+        return {"docs": docs}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def execute_notes_add_entry(args: dict, request: Request) -> dict:
+    """Append an entry to a shared doc the calling agent is a member of."""
+    args = args or {}
+    agent_name = args.get("agent_name")
+    doc_id = args.get("doc_id")
+    text = args.get("text")
+
+    if not agent_name or not isinstance(agent_name, str):
+        return {"error": "notes_add_entry requires an 'agent_name' string"}
+    if not doc_id or not isinstance(doc_id, str):
+        return {"error": "notes_add_entry requires a 'doc_id' string"}
+    if not isinstance(text, str) or not text:
+        return {"error": "notes_add_entry requires a 'text' string"}
+
+    try:
+        store = request.app.state.shared_docs_store
+
+        members = await store.agent_members(doc_id)
+        if not any(m["agent"] == agent_name for m in members):
+            return {"error": "agent is not a member of this doc"}
+
+        entry = await store.add_entry(doc_id, text, author=agent_name)
+
+        doc = await store.get_doc(doc_id)
+        if doc is not None:
+            from tinyagentos.routes.notes import _trigger_agent_notifications
+
+            try:
+                await _trigger_agent_notifications(request, doc, text, skip_agent=agent_name)
+            except Exception:
+                pass
+
+        return {"ok": True, "entry_id": entry["id"]}
+    except Exception as exc:
+        return {"error": str(exc)}

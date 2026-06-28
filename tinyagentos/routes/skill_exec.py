@@ -356,6 +356,27 @@ async def _skill_export_storybook(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+
+async def _skill_notes_list_shared_docs(args: dict, request: Request) -> dict:
+    """List non-archived shared docs the calling agent is a member of."""
+    try:
+        from tinyagentos.tools.notes_tools import execute_notes_list_shared_docs
+
+        return await execute_notes_list_shared_docs(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_notes_add_entry(args: dict, request: Request) -> dict:
+    """Append an entry to a shared doc the agent is a member of."""
+    try:
+        from tinyagentos.tools.notes_tools import execute_notes_add_entry
+
+        return await execute_notes_add_entry(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 SKILL_IMPLEMENTATIONS = {
     "memory_search": _skill_memory_search,
     "file_read": _skill_file_read,
@@ -381,6 +402,8 @@ SKILL_IMPLEMENTATIONS = {
     "canvas_add_image": _skill_canvas_add_image,
     "describe_image_capabilities": _skill_describe_image_capabilities,
     "export_storybook": _skill_export_storybook,
+    "notes_list_shared_docs": _skill_notes_list_shared_docs,
+    "notes_add_entry": _skill_notes_add_entry,
 }
 
 

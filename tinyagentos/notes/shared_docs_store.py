@@ -354,3 +354,16 @@ class SharedDocsStore(BaseStore):
         )
         rows = await cur.fetchall()
         return [{"agent": r[0], "standing_instruction": r[1]} for r in rows]
+
+    async def docs_for_agent(self, agent_name: str) -> list[dict]:
+        """Non-archived docs where the given agent is an agent-type member."""
+        cur = await self._db.execute(
+            "SELECT DISTINCT d.* FROM shared_docs d "
+            "JOIN shared_doc_members m ON m.doc_id = d.id "
+            "WHERE m.member_type = 'agent' AND m.member_id = ? "
+            "AND d.archived_at IS NULL "
+            "ORDER BY d.updated_at DESC",
+            (agent_name,),
+        )
+        rows = await cur.fetchall()
+        return [_row(cur.description, r) for r in rows]
