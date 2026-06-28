@@ -58,3 +58,40 @@ describe("ObservatoryApp fleet health pill", () => {
     expect(screen.queryByText(/stale$/)).toBeNull();
   });
 });
+
+function makeFleetFetch(agents: unknown[]) {
+  return vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u === "/api/observatory/fleet") {
+      return { ok: true, json: async () => ({ agents, paused: { global: false, lanes: {} } }) };
+    }
+    if (u === "/api/observatory/throttle") {
+      return { ok: true, json: async () => ({ global: null, lanes: {} }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  });
+}
+
+describe("ObservatoryApp lane framework badge", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("renders the framework badge for an agent that has one", async () => {
+    global.fetch = makeFleetFetch([
+      { handle: "@lane-kilo", state: "idle", framework: "kilo", holds: null },
+    ]) as typeof fetch;
+    render(<ObservatoryApp windowId="w1" />);
+    await waitFor(() => expect(screen.getByText("@lane-kilo")).toBeDefined());
+    expect(screen.getByText("kilo")).toBeDefined();
+  });
+
+  it("renders no badge for an agent without a framework (graceful)", async () => {
+    global.fetch = makeFleetFetch([
+      { handle: "@lane-bare", state: "idle", framework: "", holds: null },
+    ]) as typeof fetch;
+    render(<ObservatoryApp windowId="w1" />);
+    await waitFor(() => expect(screen.getByText("@lane-bare")).toBeDefined());
+    // Only the handle renders, no empty badge node next to it.
+    expect(screen.queryByText("kilo")).toBeNull();
+  });
+});

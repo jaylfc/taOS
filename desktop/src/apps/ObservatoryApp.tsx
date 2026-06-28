@@ -11,6 +11,7 @@ interface HeldCard {
 interface FleetAgent {
   handle: string;
   state: string;
+  framework?: string;
   holds: HeldCard | null;
 }
 
@@ -371,8 +372,15 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
                     className={lanePaused ? "shrink-0 text-amber-400" : "shrink-0 text-green-400"}
                   />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-sm font-medium text-shell-text">
-                      {a.handle}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-sm font-medium text-shell-text">
+                        {a.handle}
+                      </span>
+                      {a.framework && (
+                        <span className="shrink-0 rounded bg-shell-bg-deep px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-shell-text-tertiary">
+                          {a.framework}
+                        </span>
+                      )}
                     </span>
                     {a.holds ? (
                       <span className="truncate text-xs text-shell-text-secondary">
