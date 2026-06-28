@@ -133,6 +133,22 @@ async def connect_bot(request: Request):
         connectors[connector_key] = connector
         request.app.state.channel_hub_connectors = connectors
         return {"status": "connected", "platform": platform, "agent_name": agent_name}
+    elif platform == "matrix":
+        homeserver = body.get("homeserver", "")
+        if not homeserver:
+            return JSONResponse({"error": "homeserver is required for matrix"}, status_code=400)
+        from tinyagentos.channel_hub.matrix_connector import MatrixConnector
+        connector = MatrixConnector(
+            homeserver=homeserver,
+            access_token=bot_token,
+            agent_name=agent_name,
+            router=router_obj,
+        )
+        router_obj.assign_channel(platform, bot_token_secret, agent_name)
+        await connector.start()
+        connectors[connector_key] = connector
+        request.app.state.channel_hub_connectors = connectors
+        return {"status": "connected", "platform": platform, "agent_name": agent_name}
     else:
         return JSONResponse({"error": f"Platform '{platform}' not yet supported"}, status_code=400)
 
