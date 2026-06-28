@@ -117,6 +117,10 @@ describe("server-notifications", () => {
       expect(sourceToTarget("app.failed")).toEqual({ action: "store" });
     });
 
+    it("routes decision notifications to the Decisions app", () => {
+      expect(sourceToTarget("decisions")).toEqual({ action: "decisions" });
+    });
+
     it("returns no action for unknown sources", () => {
       expect(sourceToTarget("something.else")).toEqual({});
       expect(sourceToTarget("")).toEqual({});

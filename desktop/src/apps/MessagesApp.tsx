@@ -16,6 +16,8 @@ import {
   ChevronDown,
   PanelRight,
   Archive,
+  CircleDot,
+  PauseCircle,
   Trash2,
   RotateCcw,
   MessagesSquare,
@@ -72,6 +74,7 @@ import {
   readLastChannel,
   writeLastChannel,
 } from "./MessagesApp.a2aSelection";
+import { bucketAgentChannels } from "./MessagesApp.agentSections";
 import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
@@ -1410,6 +1413,11 @@ export function MessagesApp({
     group: channels.filter((c) => c.type === "group" && inSidebarSection(c)),
   };
 
+  // Split DM channels into agent lifecycle buckets (Live / Suspended /
+  // Archived) so deleted-agent DMs no longer mix in with live ones. Plain
+  // user DMs and a2a channels stay under nonAgent (their original placement).
+  const dmSections = bucketAgentChannels(grouped.dm, liveAgents, archivedAgents);
+
   const allChannels = [...channels, ...archivedChannels];
   const currentChannel = allChannels.find((c) => c.id === selectedChannel);
   const isCurrentArchived = currentChannel?.settings?.archived === true;
@@ -1477,11 +1485,18 @@ export function MessagesApp({
   /*  Sections definition (shared between mobile + desktop lists)     */
   /* ---------------------------------------------------------------- */
 
+  // Agent DMs are grouped by lifecycle so live, suspended, and
+  // archived/deleted agents are visually separated. Empty buckets are
+  // omitted so the list stays compact. Plain user DMs and a2a channels
+  // (nonAgent) keep their original "Direct Messages" placement.
   const SECTIONS = [
-    { label: "Direct Messages", icon: <AtSign size={13} />, items: grouped.dm },
+    { label: "Live", icon: <CircleDot size={13} />, items: dmSections.live },
+    { label: "Suspended", icon: <PauseCircle size={13} />, items: dmSections.suspended },
+    { label: "Archived Agents", icon: <Archive size={13} />, items: dmSections.archived },
+    { label: "Direct Messages", icon: <AtSign size={13} />, items: dmSections.nonAgent },
     { label: "Topics", icon: <Hash size={13} />, items: grouped.topic },
     { label: "Groups", icon: <Users size={13} />, items: grouped.group },
-  ];
+  ].filter((s) => s.items.length > 0 || s.label === "Topics" || s.label === "Groups");
 
   const allEmpty =
     channelsLoaded &&

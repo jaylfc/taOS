@@ -63,6 +63,48 @@ async def execute_create_project(args: dict, request: Request) -> dict:
     return {"ok": True, "project_id": project["id"], "name": project["name"]}
 
 
+async def execute_list_projects(args: dict, request: Request) -> dict:
+    """List the user's projects so the agent can pick one before adding tasks or
+    images, instead of guessing a project_id. Read-only; scoped to the caller."""
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user"}
+    status = (args or {}).get("status", "active")
+    if status not in ("active", "archived", "all"):
+        return {"error": "status must be 'active', 'archived', or 'all'"}
+    store = request.app.state.project_store
+    rows = await store.list_for_user(user_id, status=None if status == "all" else status)
+    projects = [
+        {"project_id": p.get("id"), "name": p.get("name"), "status": p.get("status")}
+        for p in rows
+    ]
+    return {"ok": True, "projects": projects, "count": len(projects)}
+
+
+async def execute_list_tasks(args: dict, request: Request) -> dict:
+    """List a project's tasks so the agent can review progress or pick the next
+    one, instead of guessing. Read-only; scoped to a project the caller owns."""
+    project_id = (args or {}).get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        return {"error": "list_tasks requires a 'project_id' string"}
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user"}
+    _, err = await _owned_project(request, project_id, user_id)
+    if err:
+        return err
+    status = (args or {}).get("status")
+    if status is not None and not isinstance(status, str):
+        return {"error": "status must be a string"}
+    store = request.app.state.project_task_store
+    rows = await store.list_tasks(project_id, status=status or None)
+    tasks = [
+        {"task_id": t.get("id"), "title": t.get("title"), "status": t.get("status")}
+        for t in rows
+    ]
+    return {"ok": True, "tasks": tasks, "count": len(tasks)}
+
+
 async def execute_add_task(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
     title = (args or {}).get("title")

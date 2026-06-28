@@ -253,6 +253,10 @@ async def client(app, tmp_data_dir):
     if secrets_store._db is not None:
         await secrets_store.close()
     await secrets_store.init()
+    broker_store = app.state.broker_store
+    if broker_store._db is not None:
+        await broker_store.close()
+    await broker_store.init()
     scheduler = app.state.scheduler
     if scheduler._db is not None:
         await scheduler.close()
@@ -309,6 +313,10 @@ async def client(app, tmp_data_dir):
     if project_task_store._db is not None:
         await project_task_store.close()
     await project_task_store.init()
+    decision_store = app.state.decision_store
+    if decision_store._db is not None:
+        await decision_store.close()
+    await decision_store.init()
     app.state.projects_root.mkdir(parents=True, exist_ok=True)
     canvas_store = app.state.canvas_store
     if canvas_store._db is not None:
@@ -322,10 +330,17 @@ async def client(app, tmp_data_dir):
     if office_docs._db is not None:
         await office_docs.close()
     await office_docs.init()
+    # app_grants ledger (per-app capability grants) is lifespan-owned; tests that
+    # bypass the lifespan must init it so the userspace broker can consult it.
+    await app.state.app_grants.init()
     feedback_store = app.state.feedback_store
     if feedback_store._db is not None:
         await feedback_store.close()
     await feedback_store.init()
+    client_log_store = app.state.client_log_store
+    if client_log_store._db is not None:
+        await client_log_store.close()
+    await client_log_store.init()
     # BrowserApp v2 stores
     from tinyagentos.routes.desktop_browser.store import BrowserStore, BrowserCookieStore
     _browser_store = BrowserStore(tmp_data_dir / "browser.sqlite3")
@@ -375,10 +390,12 @@ async def client(app, tmp_data_dir):
     await channel_store.close()
     await scheduler.close()
     await secrets_store.close()
+    await broker_store.close()
     await notif_store.close()
     await store.close()
     await office_docs.close()
     await feedback_store.close()
+    await client_log_store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
     await _browser_store.close()

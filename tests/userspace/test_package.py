@@ -108,10 +108,11 @@ def test_network_permission_origins_validated():
         with pytest.raises(PackageError):
             parse_manifest(base + "permissions: ['" + bad + "']\n")
     # gitar finding: `$` would match before a trailing newline; \Z must not.
-    from tinyagentos.userspace.package import _NET_ORIGIN_RE
-    assert _NET_ORIGIN_RE.match("wss://irc-ws.chat.twitch.tv")
-    assert not _NET_ORIGIN_RE.match("wss://evil.com\n")
-    assert not _NET_ORIGIN_RE.match("wss://evil.com\n; script-src 'unsafe-inline'")
+    # NET_ORIGIN_RE is the canonical pattern in capabilities.py, reused here.
+    from tinyagentos.userspace.capabilities import NET_ORIGIN_RE
+    assert NET_ORIGIN_RE.match("wss://irc-ws.chat.twitch.tv")
+    assert not NET_ORIGIN_RE.match("wss://evil.com\n")
+    assert not NET_ORIGIN_RE.match("wss://evil.com\n; script-src 'unsafe-inline'")
 
 
 def test_parse_valid_tui_manifest():

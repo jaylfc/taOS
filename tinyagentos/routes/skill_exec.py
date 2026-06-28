@@ -50,7 +50,14 @@ def _resolve_agent_workspace(request: Request, args: dict) -> Path:
         or request.query_params.get("agent_name")
         or "default"
     )
-    base = Path(request.app.state.agent_workspaces_dir) / agent_name
+    # agent_name feeds a filesystem path, so a value like "../../etc" would
+    # escape the workspaces base and let a caller read or enumerate arbitrary
+    # host directories through file_read / file_write / list_files. Resolve and
+    # require the result to stay within the workspaces root before creating it.
+    root = Path(request.app.state.agent_workspaces_dir).resolve()
+    base = (root / agent_name).resolve()
+    if base != root and root not in base.parents:
+        raise ValueError("invalid agent_name (escapes the workspaces directory)")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -58,9 +65,9 @@ def _resolve_agent_workspace(request: Request, args: dict) -> Path:
 async def _skill_file_read(args: dict, request: Request) -> dict:
     """Read a file from the calling agent's workspace."""
     path = args.get("path", "")
-    workspace = _resolve_agent_workspace(request, args)
-    target = (workspace / path).resolve()
     try:
+        workspace = _resolve_agent_workspace(request, args)
+        target = (workspace / path).resolve()
         if workspace not in target.parents and target != workspace:
             return {"error": "Path outside workspace"}
         if not target.is_file():
@@ -74,14 +81,38 @@ async def _skill_file_write(args: dict, request: Request) -> dict:
     """Write a file to the calling agent's workspace."""
     path = args.get("path", "")
     content = args.get("content", "")
-    workspace = _resolve_agent_workspace(request, args)
-    target = (workspace / path).resolve()
     try:
+        workspace = _resolve_agent_workspace(request, args)
+        target = (workspace / path).resolve()
         if workspace not in target.parents and target != workspace:
             return {"error": "Path outside workspace"}
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         return {"status": "written", "bytes": len(content)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_list_files(args: dict, request: Request) -> dict:
+    """List a directory in the calling agent's workspace (read complement to
+    file_read / file_write). Sandboxed to the workspace, same as file_read."""
+    path = args.get("path", "") or ""
+    try:
+        workspace = _resolve_agent_workspace(request, args)
+        target = (workspace / path).resolve()
+        if workspace not in target.parents and target != workspace:
+            return {"error": "Path outside workspace"}
+        if not target.is_dir():
+            return {"error": "Directory not found"}
+        entries = []
+        for child in sorted(target.iterdir(), key=lambda c: c.name):
+            is_dir = child.is_dir()
+            entries.append({
+                "name": child.name,
+                "type": "dir" if is_dir else "file",
+                "size": (child.stat().st_size if child.is_file() else None),
+            })
+        return {"entries": entries, "count": len(entries)}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -195,6 +226,86 @@ async def _skill_arrange_windows(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_read_layout(args: dict, request: Request) -> dict:
+    """Read the user's desktop layout: screen + window bounds (agent OS control)."""
+    try:
+        from tinyagentos.tools.desktop_tools import execute_read_layout
+
+        return await execute_read_layout(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_request_decision(args: dict, request: Request) -> dict:
+    """Ask the user a question via the Decisions inbox (human-in-the-loop)."""
+    try:
+        from tinyagentos.tools.decision_tools import execute_request_decision
+
+        return await execute_request_decision(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_notify_user(args: dict, request: Request) -> dict:
+    """Send the user a notification in their bell (async heads-up)."""
+    try:
+        from tinyagentos.tools.notify_tools import execute_notify_user
+
+        return await execute_notify_user(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_list_frameworks(args: dict, request: Request) -> dict:
+    """List the agent frameworks taOS can deploy (so the agent can offer one)."""
+    try:
+        from tinyagentos.tools.framework_tools import execute_list_frameworks
+
+        return await execute_list_frameworks(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_list_store_apps(args: dict, request: Request) -> dict:
+    """List installable Store apps/backends so the agent can offer to install one."""
+    try:
+        from tinyagentos.tools.store_tools import execute_list_store_apps
+
+        return await execute_list_store_apps(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_get_capabilities(args: dict, request: Request) -> dict:
+    """Report hardware-aware capabilities so the agent gives accurate advice."""
+    try:
+        from tinyagentos.tools.capability_tools import execute_get_capabilities
+
+        return await execute_get_capabilities(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_list_projects(args: dict, request: Request) -> dict:
+    """List the user's projects so the agent can pick one."""
+    try:
+        from tinyagentos.tools.project_tools import execute_list_projects
+
+        return await execute_list_projects(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _skill_list_tasks(args: dict, request: Request) -> dict:
+    """List a project's tasks so the agent can review progress or pick next."""
+    try:
+        from tinyagentos.tools.project_tools import execute_list_tasks
+
+        return await execute_list_tasks(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_create_project(args: dict, request: Request) -> dict:
     """Create a project the user can see."""
     try:
@@ -249,6 +360,7 @@ SKILL_IMPLEMENTATIONS = {
     "memory_search": _skill_memory_search,
     "file_read": _skill_file_read,
     "file_write": _skill_file_write,
+    "list_files": _skill_list_files,
     "web_search": _skill_web_search,
     "code_exec": _skill_code_exec,
     "http_request": _skill_http_request,
@@ -256,7 +368,15 @@ SKILL_IMPLEMENTATIONS = {
     "list_image_models": _skill_list_image_models,
     "open_app": _skill_open_app,
     "arrange_windows": _skill_arrange_windows,
+    "read_layout": _skill_read_layout,
+    "request_decision": _skill_request_decision,
+    "notify_user": _skill_notify_user,
+    "list_frameworks": _skill_list_frameworks,
+    "list_store_apps": _skill_list_store_apps,
+    "get_capabilities": _skill_get_capabilities,
     "create_project": _skill_create_project,
+    "list_projects": _skill_list_projects,
+    "list_tasks": _skill_list_tasks,
     "add_task": _skill_add_task,
     "canvas_add_image": _skill_canvas_add_image,
     "describe_image_capabilities": _skill_describe_image_capabilities,

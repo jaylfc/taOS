@@ -118,6 +118,29 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.file_write",
             },
             {
+                "id": "list_files",
+                "name": "List Files",
+                "category": "files",
+                "description": "List a directory in the agent workspace",
+                "tool_schema": {
+                    "name": "list_files",
+                    "description": "List the files and folders in a workspace directory (name, type, size) so you can see what exists before reading. Optional relative path; defaults to the workspace root.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative directory path (default: workspace root)."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "native", "pocketflow": "adapter",
+                    "langroid": "adapter", "openai-agents-sdk": "adapter", "hermes": "adapter",
+                    "agent-zero": "native", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.file_read",
+            },
+            {
                 "id": "web_search",
                 "name": "Web Search",
                 "category": "search",
@@ -264,6 +287,24 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.desktop_tools",
             },
             {
+                "id": "read_layout",
+                "name": "Read Desktop Layout",
+                "category": "desktop",
+                "description": "Read the user's screen size and open-window bounds (screen-aware control)",
+                "tool_schema": {
+                    "name": "read_layout",
+                    "description": "Read the desktop layout: screen size + every open window's bounds and state.",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.desktop_tools",
+            },
+            {
                 "id": "arrange_windows",
                 "name": "Arrange Windows",
                 "category": "desktop",
@@ -317,6 +358,54 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.project_tools",
             },
             {
+                "id": "list_projects",
+                "name": "List Projects",
+                "category": "projects",
+                "description": "List the user's projects so the agent can pick one",
+                "tool_schema": {
+                    "name": "list_projects",
+                    "description": "List the user's projects (id, name, status) so you can pick the right project_id before adding tasks or images. Optional status filter: active (default), archived, all.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string", "enum": ["active", "archived", "all"], "description": "Which projects to list (default active)."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
+                "id": "list_tasks",
+                "name": "List Tasks",
+                "category": "projects",
+                "description": "List a project's tasks so the agent can review progress or pick next",
+                "tool_schema": {
+                    "name": "list_tasks",
+                    "description": "List a project's tasks (id, title, status) so you can review progress or pick the next one. Requires project_id (from list_projects/create_project); optional status filter (e.g. open, in_progress, done).",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string", "description": "Id from list_projects/create_project."},
+                            "status": {"type": "string", "description": "Optional status filter (e.g. open, in_progress, done)."},
+                        },
+                        "required": ["project_id"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
                 "id": "add_task",
                 "name": "Add Task",
                 "category": "projects",
@@ -340,6 +429,131 @@ class SkillStore(BaseStore):
                 },
                 "install_method": "builtin",
                 "install_target": "tinyagentos.tools.project_tools",
+            },
+            {
+                "id": "request_decision",
+                "name": "Request Decision",
+                "category": "agent",
+                "description": "Ask the user a question via the Decisions inbox (human-in-the-loop)",
+                "tool_schema": {
+                    "name": "request_decision",
+                    "description": "Ask the user a question (single_select/multi_select need options; approve_deny; free_text) that queues in their Decisions inbox until answered. Returns a decision_id; the answer arrives later.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "The question to ask."},
+                            "type": {"type": "string", "enum": ["single_select", "multi_select", "approve_deny", "free_text"], "description": "Decision type."},
+                            "options": {"type": "array", "items": {"type": "string"}, "description": "Choices (required for select types)."},
+                            "context": {"type": "string", "description": "Optional background to help the user decide."},
+                            "priority": {"type": "string", "enum": ["normal", "blocking"], "description": "'blocking' only if you cannot proceed without it."},
+                            "from_agent": {"type": "string", "description": "Your agent name, shown as the asker."},
+                        },
+                        "required": ["question", "type"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.decision_tools",
+            },
+            {
+                "id": "list_frameworks",
+                "name": "List Agent Frameworks",
+                "category": "agent",
+                "description": "List the agent frameworks taOS can deploy, so the agent can offer one",
+                "tool_schema": {
+                    "name": "list_frameworks",
+                    "description": "List the agent frameworks taOS can deploy (id, name, description, verification_status; beta = recommended). Use before offering to deploy/set up an agent so you name a real framework and prefer a beta one. Optional verified_only=true returns beta only.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "verified_only": {"type": "boolean", "description": "Only beta (recommended) frameworks. Default false."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.framework_tools",
+            },
+            {
+                "id": "get_capabilities",
+                "name": "Get Capabilities",
+                "category": "agent",
+                "description": "Report what this taOS install can do on its hardware/cluster (with unlock hints)",
+                "tool_schema": {
+                    "name": "get_capabilities",
+                    "description": "Check what this taOS install can do on its current hardware + cluster (chat-small, chat-large, image-generation-gpu, embedding, tts, lora-training, ...) with availability + unlock hints. Use before promising a hardware-bound action. Optional available_only=true.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "available_only": {"type": "boolean", "description": "Only currently-available capabilities. Default false."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.capability_tools",
+            },
+            {
+                "id": "list_store_apps",
+                "name": "List Store Apps",
+                "category": "agent",
+                "description": "List installable Store apps/backends so the agent can offer to install one",
+                "tool_schema": {
+                    "name": "list_store_apps",
+                    "description": "List installable things in the taOS Store (apps, models, services, backends, plugins) with whether each is installed, so you can offer to install what the user needs. Optional 'type' filter and 'query' search. Read-only; the user installs from the Store app.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "description": "Optional type filter (app, model, service, backend, plugin)."},
+                            "query": {"type": "string", "description": "Optional search over name and description."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.store_tools",
+            },
+            {
+                "id": "notify_user",
+                "name": "Notify User",
+                "category": "agent",
+                "description": "Send the user a short notification in their bell (async heads-up)",
+                "tool_schema": {
+                    "name": "notify_user",
+                    "description": "Send the user a brief notification that appears in their bell, for an async heads-up they should see even when not in your chat. For a question that needs an answer, use request_decision instead.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "description": "The notification body (keep it short)."},
+                            "title": {"type": "string", "description": "Optional short title; defaults to 'Agent update'."},
+                            "level": {"type": "string", "enum": ["info", "success", "warning", "error"], "description": "Severity (default info)."},
+                        },
+                        "required": ["message"],
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.notify_tools",
             },
             {
                 "id": "canvas_add_image",

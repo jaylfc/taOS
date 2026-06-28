@@ -15,6 +15,7 @@ import {
   Users,
   Palette,
   UserCircle,
+  ScrollText,
 } from "lucide-react";
 import {
   Button,
@@ -29,12 +30,13 @@ import { safeFetch, ProgressBar, RestartProgressModal } from "@/apps/SettingsApp
 import { UpdatesSection } from "@/apps/SettingsApp/UpdatesPanel";
 import { UsersSection } from "@/apps/SettingsApp/UsersPanel";
 import { AccountSection } from "@/apps/SettingsApp/AccountPanel";
+import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs";
 
 interface SectionDef {
   id: Section;
@@ -75,6 +77,7 @@ const SECTIONS: SectionDef[] = [
   { id: "desktop", label: "Desktop & Dock", icon: Monitor },
   { id: "users", label: "Users", icon: Users },
   { id: "themes", label: "Themes", icon: Palette },
+  { id: "logs", label: "Logs", icon: ScrollText },
 ];
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
@@ -770,6 +773,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     desktop: <DesktopDockSection />,
     users: <UsersSection />,
     themes: <ThemesPanel />,
+    logs: <LogsSection />,
   };
 
   const handleSelectSection = (id: Section) => {

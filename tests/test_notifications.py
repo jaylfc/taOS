@@ -64,6 +64,21 @@ class TestNotificationStore:
         assert len(items) == 1
         assert items[0]["title"] == "New"
 
+    async def test_cleanup_preserves_archived(self, notif_store):
+        # An old but archived (dismissed) notification is durable history and
+        # must survive the age-based GC.
+        old_ts = int(time.time()) - (31 * 86400)
+        await notif_store._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, archived)"
+            " VALUES (?, ?, ?, ?, ?, 1)",
+            (old_ts, "info", "OldDismissed", "kept", "test"),
+        )
+        await notif_store._db.commit()
+        deleted = await notif_store.cleanup(max_age_days=30)
+        assert deleted == 0
+        history = await notif_store.list_archived()
+        assert [h["title"] for h in history] == ["OldDismissed"]
+
     async def test_list_unread_only(self, notif_store):
         await notif_store.add("A", "a")
         await notif_store.add("B", "b")
@@ -71,6 +86,32 @@ class TestNotificationStore:
         await notif_store.mark_read(items[0]["id"])
         unread = await notif_store.list(unread_only=True)
         assert len(unread) == 1
+
+    async def test_archive_hides_from_active_list(self, notif_store):
+        await notif_store.add("A", "a")
+        await notif_store.add("B", "b")
+        items = await notif_store.list()
+        await notif_store.archive(items[0]["id"])
+        active = await notif_store.list()
+        assert len(active) == 1
+        assert items[0]["id"] not in [i["id"] for i in active]
+
+    async def test_archived_appears_in_history(self, notif_store):
+        await notif_store.add("A", "a")
+        items = await notif_store.list()
+        await notif_store.archive(items[0]["id"])
+        history = await notif_store.list_archived()
+        assert len(history) == 1
+        assert history[0]["id"] == items[0]["id"]
+
+    async def test_archive_excluded_from_unread_count(self, notif_store):
+        await notif_store.add("A", "a")
+        await notif_store.add("B", "b")
+        assert await notif_store.unread_count() == 2
+        items = await notif_store.list()
+        await notif_store.archive(items[0]["id"])
+        # Dismissed notification no longer counts toward the badge.
+        assert await notif_store.unread_count() == 1
 
     async def test_list_limit(self, notif_store):
         for i in range(10):
@@ -118,3 +159,29 @@ async def test_notification_api_read_all(client):
     resp = await client.post("/api/notifications/read-all")
     assert resp.status_code == 200
     assert await store.unread_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_notification_api_archive(client):
+    store = client._transport.app.state.notifications
+    await store.add("Dismiss me", "bye")
+    notif_id = (await store.list())[0]["id"]
+    resp = await client.post(f"/api/notifications/{notif_id}/archive")
+    assert resp.status_code == 200
+    # Gone from the active feed, present in history.
+    assert (await store.list()) == []
+    history = await store.list_archived()
+    assert len(history) == 1
+    assert history[0]["id"] == notif_id
+
+
+@pytest.mark.asyncio
+async def test_notification_api_archived_history(client):
+    store = client._transport.app.state.notifications
+    await store.add("Kept", "k")
+    notif_id = (await store.list())[0]["id"]
+    await client.post(f"/api/notifications/{notif_id}/archive")
+    resp = await client.get("/api/notifications/archived")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [d["title"] for d in data] == ["Kept"]

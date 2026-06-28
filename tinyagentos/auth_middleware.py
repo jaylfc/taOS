@@ -99,6 +99,7 @@ def _is_exempt(method: str, path: str) -> bool:
       POST /api/cluster/pairing/claim         — unauthenticated, code is proof
       GET  /api/cluster/workers               — public worker list
       POST /api/cluster/workers               — session-exempt, HMAC gate at route level
+      POST /api/cluster/workers/{n}/incus-enroll — session-exempt, HMAC gate at route level
       POST /api/cluster/heartbeat             — session-exempt, HMAC gate at route level
     """
     if path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PREFIXES):
@@ -125,6 +126,14 @@ def _is_exempt(method: str, path: str) -> bool:
     if method == "POST" and path == _CLUSTER_WORKERS:
         return True
     if method == "POST" and path == _CLUSTER_HEARTBEAT:
+        return True
+    # POST /api/cluster/workers/<name>/incus-enroll — session-exempt; the route
+    # verifies the worker's HMAC signature (see tinyagentos.worker.enroll).
+    if (
+        method == "POST"
+        and path.startswith(_CLUSTER_WORKERS + "/")
+        and path.endswith("/incus-enroll")
+    ):
         return True
     return False
 

@@ -62,6 +62,8 @@ from tinyagentos.scheduler.discovery import build_scheduler as build_resource_sc
 from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
 from tinyagentos.github_identities import GitHubIdentitiesStore
+from tinyagentos.broker import BrokerService, BrokerStore
+from tinyagentos.broker.store import default_broker_path
 from tinyagentos.secrets import SecretsStore
 from tinyagentos.mail_store import MailAccountStore
 from tinyagentos.training import TrainingManager
@@ -75,7 +77,7 @@ from tinyagentos.computer_use import ComputerUseManager
 from tinyagentos.webhook_notifier import WebhookNotifier
 from tinyagentos.llm_proxy import LLMProxy
 from tinyagentos.litellm_migrate import migrate as _litellm_migrate
-from tinyagentos.agent_image import ensure_image_present as _ensure_agent_image_present
+from tinyagentos.agent_image import ensure_all_base_images_present as _ensure_agent_images_present
 from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
 from tinyagentos.agent_image import register_prefetch_endpoint
 from tinyagentos.auto_update import AutoUpdateService
@@ -88,6 +90,7 @@ from tinyagentos.chat.hub import ChatHub
 from tinyagentos.chat.canvas import CanvasStore
 from tinyagentos.desktop_settings import DesktopSettingsStore
 from tinyagentos.feedback_store import FeedbackStore
+from tinyagentos.client_log_store import ClientLogStore
 from tinyagentos.user_memory import UserMemoryStore
 from tinyagentos.user_personas import UserPersonaStore
 from tinyagentos.installed_apps import InstalledAppsStore
@@ -256,6 +259,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     auth_requests_store = AuthRequestsStore(data_dir / "auth_requests.db")
     from tinyagentos.agent_grants_store import AgentGrantsStore
     agent_grants_store = AgentGrantsStore(data_dir / "agent_grants.db")
+    from tinyagentos.app_grants_store import AppGrantsStore
+    app_grants_store = AppGrantsStore(data_dir / "app_grants.db")
+    from tinyagentos.agent_model_key_store import AgentModelKeyStore
+    agent_model_key_store = AgentModelKeyStore(data_dir / "agent_model_keys.db")
     from tinyagentos.cluster.pairing_store import ClusterPairingStore
     cluster_pairing_store = ClusterPairingStore(data_dir / "cluster_pairing.db")
     from tinyagentos.cluster.capability_map import CapabilityMap
@@ -269,6 +276,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     torrent_settings_store = TorrentSettingsStore(data_dir / "torrent_settings.json")
     download_manager = DownloadManager(torrent_settings_store=torrent_settings_store)
     secrets_store = SecretsStore(data_dir / "secrets.db")
+    broker_store = BrokerStore(default_broker_path(data_dir))
+    broker_service = BrokerService(broker_store)
     mail_store = MailAccountStore(data_dir / "mail.db")
     github_identities_store = GitHubIdentitiesStore(data_dir / "github_identities.db")
     relationship_mgr = RelationshipManager(data_dir / "relationships.db")
@@ -308,6 +317,23 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # docs/design/framework-agnostic-runtime.md.
     db_url_path = data_dir / ".litellm_db_url"
     db_url = db_url_path.read_text().strip() if db_url_path.exists() else None
+    # Authorize per-agent virtual keys against taOS's own SQLite key store via
+    # LiteLLM's custom_auth hook, instead of its Postgres/prisma virtual-key
+    # table. Lets per-agent keys work with NO DATABASE_URL and no prisma (the
+    # ARM / no-Postgres fix) and gives every install real per-agent isolation.
+    # Default ON whenever there is NO Postgres configured (the common case,
+    # incl. every ARM install). A Postgres-backed install already has per-agent
+    # keys via LiteLLM's native table, so defer to it rather than silently
+    # switching on upgrade (which would orphan its already-minted keys and 401
+    # running agents). Force in-house even with Postgres via a
+    # ``.litellm_force_inhouse_keys`` marker; disable entirely via
+    # ``.litellm_disable_inhouse_keys``.
+    if (data_dir / ".litellm_disable_inhouse_keys").exists():
+        inhouse_keys = False
+    elif (data_dir / ".litellm_force_inhouse_keys").exists():
+        inhouse_keys = True
+    else:
+        inhouse_keys = db_url is None
     # Read the local auth token so LLMProxy can forward it to LiteLLM's
     # subprocess — otherwise the taOS callback can't POST llm_call events
     # back to /api/trace and the 401s fill the log instead of trace rows.
@@ -324,6 +350,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # at the proxy because no alias exists for that model_name.
         registry=registry,
         data_dir=data_dir,
+        inhouse_keys=inhouse_keys,
     )
     channel_hub_router = MessageRouter()
     adapter_manager = AdapterManager(channel_hub_router)
@@ -344,6 +371,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         data_dir / "projects.db", broker=project_event_broker, audit=board_audit_store
     )
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
+    from tinyagentos.decisions.decision_store import DecisionStore
+    decision_store = DecisionStore(data_dir / "decisions.db")
     projects_root = data_dir / "projects"
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
@@ -352,6 +381,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     feedback_store = FeedbackStore(data_dir / "feedback.db")
+    client_log_store = ClientLogStore(data_dir / "client_logs.db")
     from tinyagentos.userspace.store import UserspaceAppStore
     from tinyagentos.userspace.data_store import UserspaceDataStore
     userspace_apps = UserspaceAppStore(data_dir / "userspace_apps.db")
@@ -415,6 +445,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.auth_requests = auth_requests_store
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+        await app_grants_store.init()
+        app.state.app_grants = app_grants_store
+        await agent_model_key_store.init()
+        app.state.agent_model_keys = agent_model_key_store
         await cluster_pairing_store.init()
         app.state.cluster_pairing = cluster_pairing_store
         await capability_map_store.init()
@@ -423,6 +457,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await notif_store.init()
         await qmd_client.init()
         await secrets_store.init()
+        await broker_store.init()
         await mail_store.init()
         app.state.mail_store = mail_store
         await github_identities_store.init()
@@ -442,6 +477,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.board_audit = board_audit_store
         await project_task_store.init()
         await project_canvas_store.init()
+        await decision_store.init()
+        app.state.decision_store = decision_store
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
@@ -449,6 +486,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await installed_apps.init()
         await feedback_store.init()
         app.state.feedback_store = feedback_store
+        await client_log_store.init()
+        app.state.client_log_store = client_log_store
         await userspace_apps.init()
         app.state.userspace_apps = userspace_apps
         await userspace_data.init()
@@ -552,6 +591,51 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await save_config_locked(config, config.config_path)
         except Exception:
             logger.exception("persona_v2 startup migration failed")
+
+        # Archive any agent DM channels left live by a removal path that
+        # bypassed archive (a cleaned-up failed deploy, a hard-delete of a
+        # never-used config row).  Idempotent -- safe on every startup.
+        try:
+            from tinyagentos.chat.orphan_reconcile import (
+                reconcile_orphan_dm_channels,
+            )
+            try:
+                _reg_rows = await agent_registry_store.list_all()
+                _registry_ids = [
+                    r.get("canonical_id") for r in _reg_rows if r.get("canonical_id")
+                ]
+            except Exception:  # noqa: BLE001
+                _registry_ids = []
+            reconciled = await reconcile_orphan_dm_channels(
+                config, chat_channels, registry_ids=_registry_ids
+            )
+            if reconciled:
+                logger.info(
+                    "orphan reconcile: archived %d orphan DM channel(s) at startup",
+                    len(reconciled),
+                )
+        except Exception:
+            logger.exception("orphan DM channel reconcile failed")
+
+        # Report (do NOT auto-clean) taOS containers with no backing agent
+        # record.  Cleaning destroys a live container, so startup only surfaces
+        # them; an operator cleans via POST /api/agents/reconcile-orphan-containers
+        # ?clean=true.  Idempotent; only inspects taOS-prefixed containers.
+        try:
+            from tinyagentos.agent_orphan_reconcile import (
+                find_orphaned_agent_containers,
+            )
+            _orphan_containers = await find_orphaned_agent_containers(config)
+            if _orphan_containers:
+                logger.warning(
+                    "orphan reconcile: %d taOS container(s) have no backing agent "
+                    "record: %s -- clean via POST "
+                    "/api/agents/reconcile-orphan-containers?clean=true",
+                    len(_orphan_containers),
+                    ", ".join(c["name"] for c in _orphan_containers),
+                )
+        except Exception:
+            logger.exception("orphan container reconcile (report) failed")
         # Probe installed framework versions in the BACKGROUND so the UI can
         # show whether each agent is up-to-date before any manual check is
         # triggered. Each probe does an `incus exec` into the agent container,
@@ -654,6 +738,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.download_manager = download_manager
         app.state.torrent_settings_store = torrent_settings_store
         app.state.secrets = secrets_store
+        app.state.broker = broker_service
+        app.state.broker_store = broker_store
         app.state.github_identities = github_identities_store
         app.state.relationships = relationship_mgr
         app.state.channels = channel_store
@@ -692,6 +778,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.project_event_broker = project_event_broker
         app.state.desktop_command_broker = desktop_command_broker
         app.state.project_canvas_store = project_canvas_store
+        app.state.decision_store = decision_store
         app.state.projects_root = projects_root
         app.state.chat_hub = chat_hub
         from tinyagentos.chat.group_policy import GroupPolicy
@@ -737,7 +824,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         try:
             if _is_prefetch_enabled():
                 _create_supervised_task(
-                    _ensure_agent_image_present(), app.state._background_tasks
+                    _ensure_agent_images_present(), app.state._background_tasks
                 )
             else:
                 logger.debug(
@@ -1166,6 +1253,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await archive.close()
         await installed_apps.close()
         await feedback_store.close()
+        await client_log_store.close()
         await userspace_apps.close()
         await userspace_data.close()
         await office_docs.close()
@@ -1203,6 +1291,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_cookie_store.close()
         await browser_store.close()
         await secrets_store.close()
+        await broker_store.close()
         await mail_store.close()
         await notif_store.close()
         await app.state.system_events.close()
@@ -1210,6 +1299,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await qmd_client.close()
         await http_client.aclose()
         await agent_grants_store.close()
+        await app_grants_store.close()
+        await agent_model_key_store.close()
         await auth_requests_store.close()
         await cluster_pairing_store.close()
         await agent_registry_store.close()
@@ -1295,6 +1386,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.http_client = http_client
     app.state.download_manager = download_manager
     app.state.secrets = secrets_store
+    app.state.broker = broker_service
+    app.state.broker_store = broker_store
     app.state.github_identities = github_identities_store
     app.state.relationships = relationship_mgr
     app.state.channels = channel_store
@@ -1330,6 +1423,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker
     app.state.project_canvas_store = project_canvas_store
+    app.state.decision_store = decision_store
     app.state.beads_bridge = None
     app.state.canvas_snapshotter = None
     projects_root.mkdir(parents=True, exist_ok=True)
@@ -1345,6 +1439,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.user_personas = user_personas
     app.state.installed_apps = installed_apps
     app.state.feedback_store = feedback_store
+    app.state.client_log_store = client_log_store
     app.state.userspace_apps = userspace_apps
     app.state.userspace_data = userspace_data
     app.state.office_docs = office_docs
@@ -1378,8 +1473,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # ensures attribute-existence checks work during the pre-startup window.
     app.state.agent_registry = agent_registry_store
     app.state.agent_registry_keypair = agent_registry_keypair
+    app.state.agent_model_keys = agent_model_key_store
     app.state.auth_requests = auth_requests_store
     app.state.agent_grants = agent_grants_store
+    app.state.app_grants = app_grants_store
     app.state.cluster_pairing = cluster_pairing_store
     app.state.capability_map = capability_map_store
 

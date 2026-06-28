@@ -477,3 +477,63 @@ class TestLLMProxyOwnership:
         key = await p.create_agent_key("routing-only")
         assert key is None
         assert called is False
+
+
+class TestInhouseKeys:
+    """In-house key mode: per-agent keys minted in a local SQLite store via
+    the custom_auth hook, so virtual keys work with no DATABASE_URL (the ARM /
+    no-Postgres fix). Opt-in; default behavior is unchanged."""
+
+    def test_config_emits_custom_auth_when_inhouse(self):
+        result = generate_litellm_config([], inhouse_keys=True)
+        gs = result["general_settings"]
+        assert gs["custom_auth"] == "taos_auth.user_api_key_auth"
+        assert gs["custom_auth_run_common_checks"] is False
+
+    def test_config_no_custom_auth_by_default(self):
+        result = generate_litellm_config([])
+        assert "custom_auth" not in result["general_settings"]
+
+    @pytest.mark.asyncio
+    async def test_write_config_writes_auth_shim_when_inhouse(self, tmp_path):
+        proxy = LLMProxy(port=14002, config_dir=tmp_path, inhouse_keys=True)
+        await proxy.write_config([])
+        shim = tmp_path / "taos_auth.py"
+        assert shim.exists()
+        assert "from tinyagentos.litellm_auth import user_api_key_auth" in shim.read_text()
+
+    @pytest.mark.asyncio
+    async def test_write_config_no_auth_shim_by_default(self, tmp_path):
+        proxy = LLMProxy(port=14003, config_dir=tmp_path)
+        await proxy.write_config([])
+        assert not (tmp_path / "taos_auth.py").exists()
+
+    @pytest.mark.asyncio
+    async def test_create_key_mints_locally_without_db(self, tmp_path):
+        """Minting works with no DB and no running proxy in in-house mode."""
+        proxy = LLMProxy(port=14004, config_dir=tmp_path, data_dir=tmp_path,
+                         inhouse_keys=True)
+        key = await proxy.create_agent_key("agent-a", ["gpt-4o"])
+        assert key and key.startswith("sk-taos-")
+        # the same key authorizes via the shared store
+        assert proxy._keystore().lookup(key)["agent"] == "agent-a"
+
+    @pytest.mark.asyncio
+    async def test_create_key_no_models_scopes_to_default(self, tmp_path):
+        """Parity with the Postgres path's ``models or ["default"]``: an agent
+        deployed without an explicit model is scoped to the default alias, not
+        an empty allowlist (which the auth hook deny-alls)."""
+        proxy = LLMProxy(port=14006, config_dir=tmp_path, data_dir=tmp_path,
+                         inhouse_keys=True)
+        key = await proxy.create_agent_key("agent-a", None)
+        assert proxy._keystore().lookup(key)["allowed_models"] == ["default"]
+
+    @pytest.mark.asyncio
+    async def test_update_and_delete_key_inhouse(self, tmp_path):
+        proxy = LLMProxy(port=14005, config_dir=tmp_path, data_dir=tmp_path,
+                         inhouse_keys=True)
+        key = await proxy.create_agent_key("agent-a", ["a"])
+        assert await proxy.update_agent_key(key, ["b", "c"]) is True
+        assert proxy._keystore().lookup(key)["allowed_models"] == ["b", "c"]
+        assert await proxy.delete_agent_key(key) is True
+        assert proxy._keystore().lookup(key) is None

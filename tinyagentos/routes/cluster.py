@@ -749,7 +749,22 @@ async def incus_enroll(request: Request, name: str, body: IncusEnrollRequest):
 
     Returns ``{"ok": true}`` on success or ``{"ok": false, "error": "..."}`` on
     failure. 404 when the worker is not yet registered.
+
+    HMAC-gated like register/heartbeat: the worker signs the request with its
+    pairing key (see tinyagentos.worker.enroll), so an unauthenticated caller
+    cannot enrol an arbitrary incus remote.
     """
+    # HMAC gate — only the paired worker may enrol its own incus daemon.
+    try:
+        await require_worker_hmac(request)
+    except _HMACError as exc:
+        return exc.response
+    if getattr(request.state, "hmac_worker_name", None) != name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match path"},
+            status_code=403,
+        )
+
     from urllib.parse import urlparse
     import tinyagentos.containers as containers
 
@@ -777,7 +792,7 @@ async def incus_enroll(request: Request, name: str, body: IncusEnrollRequest):
         return JSONResponse({"error": f"invalid incus_url: {exc}"}, status_code=400)
 
     try:
-        result = await containers.remote_add(name, body.incus_url, body.token)
+        result = await containers.remote_add(name, body.incus_url, token=body.token)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 

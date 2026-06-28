@@ -325,20 +325,58 @@ async def test_kv_quant_options_mixed_cluster(client, app):
 # incus-enroll endpoint
 # ---------------------------------------------------------------------------
 
+async def _signed_enroll(client, key, name, incus_url, token):
+    """POST a HMAC-signed incus-enroll request the way the worker does."""
+    import json as _json
+    path = f"/api/cluster/workers/{name}/incus-enroll"
+    body = _json.dumps({"incus_url": incus_url, "token": token}).encode()
+    headers = {
+        **sign_worker_request(key, name, "POST", path, body),
+        "content-type": "application/json",
+    }
+    return await client.post(path, content=body, headers=headers)
+
+
 @pytest.mark.asyncio
-async def test_incus_enroll_worker_not_registered(client):
-    """404 when the worker has never registered."""
+async def test_incus_enroll_unsigned_rejected(client):
+    """No HMAC headers -> 401 before the worker is even looked up."""
     resp = await client.post(
         "/api/cluster/workers/ghost-worker/incus-enroll",
         json={"incus_url": "https://10.0.0.5:8443", "token": "abc123"},
     )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_incus_enroll_worker_not_registered(client, app):
+    """404 when the worker is paired (so the request is signable) but never registered."""
+    key = await pair_worker(client, app, "ghost-worker", "https://10.0.0.5:9000")
+    resp = await _signed_enroll(client, key, "ghost-worker", "https://10.0.0.5:8443", "abc123")
     assert resp.status_code == 404
     assert "not registered" in resp.json()["error"]
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_incus_enroll_name_mismatch_rejected(client, app):
+    """A worker signing for a different worker's name -> 403."""
+    key = await pair_worker(client, app, "worker-a", "https://10.0.0.7:9000")
+    # Sign for worker-a but POST to worker-b's enroll path.
+    import json as _json
+    path = "/api/cluster/workers/worker-b/incus-enroll"
+    body = _json.dumps({"incus_url": "https://10.0.0.7:8443", "token": "t"}).encode()
+    headers = {
+        **sign_worker_request(key, "worker-a", "POST", path, body),
+        "content-type": "application/json",
+    }
+    resp = await client.post(path, content=body, headers=headers)
+    assert resp.status_code == 403
+    await app.state.cluster_pairing.close()
 
 
 @pytest.mark.asyncio
 async def test_incus_enroll_success(client, app):
-    """Happy path: worker registered then incus-enroll called with right args -> 200."""
+    """Happy path: paired + registered worker signs the enroll -> 200."""
     import json as _json
     key = await pair_worker(client, app, "pi-worker", "http://10.0.0.5:9000")
     reg_body = _json.dumps({"name": "pi-worker", "url": "http://10.0.0.5:9000"}).encode()
@@ -349,15 +387,12 @@ async def test_incus_enroll_success(client, app):
 
     mock_remote_add = AsyncMock(return_value={"success": True, "output": ""})
     with patch("tinyagentos.containers.remote_add", mock_remote_add):
-        resp = await client.post(
-            "/api/cluster/workers/pi-worker/incus-enroll",
-            json={"incus_url": "https://10.0.0.5:8443", "token": "tok-xyz"},
-        )
+        resp = await _signed_enroll(client, key, "pi-worker", "https://10.0.0.5:8443", "tok-xyz")
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
     mock_remote_add.assert_awaited_once_with(
-        "pi-worker", "https://10.0.0.5:8443", "tok-xyz"
+        "pi-worker", "https://10.0.0.5:8443", token="tok-xyz"
     )
     await app.state.cluster_pairing.close()
 
@@ -378,10 +413,7 @@ async def test_incus_enroll_remote_add_failure(client, app):
         "output": "certificate rejected",
     })
     with patch("tinyagentos.containers.remote_add", mock_remote_add):
-        resp = await client.post(
-            "/api/cluster/workers/flaky-worker/incus-enroll",
-            json={"incus_url": "https://10.0.0.6:8443", "token": "bad-tok"},
-        )
+        resp = await _signed_enroll(client, key, "flaky-worker", "https://10.0.0.6:8443", "bad-tok")
 
     assert resp.status_code == 500
     data = resp.json()

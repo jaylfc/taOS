@@ -215,6 +215,7 @@ def generate_litellm_config(
     registry=None,
     master_key: str | None = None,
     discovered: dict[str, list[str]] | None = None,
+    inhouse_keys: bool = False,
 ) -> dict:
     """Generate LiteLLM config from TinyAgentOS backend list.
 
@@ -389,6 +390,19 @@ def generate_litellm_config(
                     aliased_embedding_claimed = True
 
     resolved_master_key = master_key if master_key is not None else get_litellm_master_key()
+    general_settings = {
+        "master_key": resolved_master_key,
+        "background_health_checks": False,
+        "disable_spend_logs": True,
+    }
+    if inhouse_keys:
+        # Authorize per-agent keys against taOS's SQLite key store via the
+        # custom_auth hook instead of LiteLLM's Postgres virtual-key table.
+        # The loader resolves this dotted path relative to the config dir, so
+        # write_config writes a sibling ``taos_auth.py`` re-exporting the hook.
+        # No DATABASE_URL is needed (the ARM / no-Postgres fix).
+        general_settings["custom_auth"] = "taos_auth.user_api_key_auth"
+        general_settings["custom_auth_run_common_checks"] = False
     return {
         "model_list": model_list,
         "router_settings": {
@@ -397,11 +411,7 @@ def generate_litellm_config(
             "timeout": 120,
             "enable_pre_call_checks": False,
         },
-        "general_settings": {
-            "master_key": resolved_master_key,
-            "background_health_checks": False,
-            "disable_spend_logs": True,
-        },
+        "general_settings": general_settings,
         # LiteLLM's proxy reads custom logger classes from
         # ``litellm_settings.callbacks``. The loader (get_instance_fn) resolves
         # the dotted path relative to the config file's directory — so the

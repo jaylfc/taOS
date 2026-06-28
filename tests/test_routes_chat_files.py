@@ -1,230 +1,254 @@
 """Endpoint tests for tinyagentos/routes/chat_files.py."""
-
 from __future__ import annotations
 
-import io
-import os
-from pathlib import Path
+import pytest
 from unittest.mock import patch
 
-import pytest
 
+class TestAttachmentFromPath:
+    """Tests for POST /api/chat/attachments/from-path."""
 
-# ---------------------------------------------------------------------------
-# POST /api/chat/upload
-# ---------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_happy_path_workspace(self, client):
+        app = client._transport.app
+        data_dir = app.state.data_dir
+        ws_dir = data_dir / "agent-workspaces" / "user"
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        test_file = ws_dir / "notes.txt"
+        test_file.write_text("# hello")
 
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/user/notes.txt",
+            "source": "workspace",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["filename"] == "notes.txt"
+        assert body["source"] == "workspace"
+        assert body["mime_type"] == "text/plain"
+        assert body["size"] == len("# hello")
+        assert body["url"].startswith("/api/chat/files/")
 
-@pytest.mark.asyncio
-async def test_upload_file_happy(client):
-    resp = await client.post(
-        "/api/chat/upload",
-        files={"file": ("hello.txt", io.BytesIO(b"hello world"), "text/plain")},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["filename"] == "hello.txt"
-    assert data["content_type"] == "text/plain"
-    assert data["size"] == 11
-    assert data["id"]
-    assert data["url"].startswith("/api/chat/files/")
+    @pytest.mark.asyncio
+    async def test_happy_path_agent_workspace(self, client):
+        app = client._transport.app
+        data_dir = app.state.data_dir
+        ws_dir = data_dir / "agent-workspaces" / "agent1"
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        test_file = ws_dir / "report.txt"
+        test_file.write_text("agent report content")
 
-
-@pytest.mark.asyncio
-async def test_upload_file_with_channel_id(client):
-    resp = await client.post(
-        "/api/chat/upload",
-        params={"channel_id": "ch-123"},
-        files={"file": ("report.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["filename"] == "report.pdf"
-    assert data["size"] == 13
-
-
-@pytest.mark.asyncio
-async def test_upload_file_too_large(client):
-    big = b"x" * (100 * 1024 * 1024 + 1)
-    resp = await client.post(
-        "/api/chat/upload",
-        files={"file": ("big.bin", io.BytesIO(big), "application/octet-stream")},
-    )
-    assert resp.status_code == 413
-    assert "too large" in resp.json()["error"]
-
-
-@pytest.mark.asyncio
-async def test_upload_file_empty_body_rejected(client):
-    """FastAPI rejects an empty body for a multipart upload field."""
-    resp = await client.post(
-        "/api/chat/upload",
-        content=b"",
-        headers={"content-type": "multipart/form-data; boundary=----fake"},
-    )
-    assert resp.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# GET /api/chat/files/{filename}
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_serve_file_happy(client):
-    upload = await client.post(
-        "/api/chat/upload",
-        files={"file": ("serve_me.txt", io.BytesIO(b"serve content"), "text/plain")},
-    )
-    assert upload.status_code == 200
-    url = upload.json()["url"]
-    resp = await client.get(url)
-    assert resp.status_code == 200
-    assert resp.content == b"serve content"
-
-
-@pytest.mark.asyncio
-async def test_serve_file_not_found(client):
-    resp = await client.get("/api/chat/files/nonexistent-file-abc123.txt")
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "File not found"
-
-
-@pytest.mark.asyncio
-async def test_serve_file_traversal_rejected(client):
-    resp = await client.get("/api/chat/files/../../../etc/passwd")
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# POST /api/chat/attachments/from-path
-# ---------------------------------------------------------------------------
-
-
-def _make_workspace_file(data_dir: Path, slug: str, rel_path: str, content: bytes) -> Path:
-    """Create a file under data_dir/agent-workspaces/{slug}/ and return its path."""
-    base = data_dir / "agent-workspaces" / slug
-    dest = base / rel_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(content)
-    return dest
-
-
-@pytest.mark.asyncio
-async def test_attachment_from_path_workspace_happy(client, tmp_path):
-    app = client._transport.app
-    data_dir = app.state.data_dir
-    _make_workspace_file(data_dir, "user", "notes.md", b"# My Notes")
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"path": "/workspaces/user/notes.md", "source": "workspace"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["filename"] == "notes.md"
-    assert data["mime_type"] in ("text/markdown", "application/octet-stream")
-    assert data["size"] == 10
-    assert data["source"] == "workspace"
-    assert data["url"].startswith("/api/chat/files/")
-
-
-@pytest.mark.asyncio
-async def test_attachment_from_path_agent_workspace_happy(client, tmp_path):
-    app = client._transport.app
-    data_dir = app.state.data_dir
-    slug = "agent-1"
-    _make_workspace_file(data_dir, slug, "output.csv", b"a,b,c\n1,2,3\n")
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={
-            "path": f"/workspaces/{slug}/output.csv",
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/agent1/report.txt",
             "source": "agent-workspace",
-            "slug": slug,
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["filename"] == "output.csv"
-    assert data["size"] == 12
-    assert data["source"] == "agent-workspace"
+            "slug": "agent1",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["filename"] == "report.txt"
+        assert body["source"] == "agent-workspace"
 
+    @pytest.mark.asyncio
+    async def test_missing_path_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "source": "workspace",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
 
-@pytest.mark.asyncio
-async def test_attachment_from_path_missing_path(client):
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"source": "workspace"},
-    )
-    assert resp.status_code == 400
-    assert "path" in resp.json()["error"]
+    @pytest.mark.asyncio
+    async def test_invalid_source_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/user/foo.md",
+            "source": "invalid-source",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
 
+    @pytest.mark.asyncio
+    async def test_file_not_found_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/user/nonexistent.md",
+            "source": "workspace",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
 
-@pytest.mark.asyncio
-async def test_attachment_from_path_invalid_source(client):
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"path": "/workspaces/user/foo.md", "source": "invalid"},
-    )
-    assert resp.status_code == 400
-    assert "source" in resp.json()["error"]
+    @pytest.mark.asyncio
+    async def test_path_traversal_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/user/../../etc/passwd",
+            "source": "workspace",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
 
+    @pytest.mark.asyncio
+    async def test_workspace_source_requires_user_owner(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/other/file.md",
+            "source": "workspace",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
 
-@pytest.mark.asyncio
-async def test_attachment_from_path_file_not_found(client, tmp_path):
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"path": "/workspaces/user/does-not-exist.md", "source": "workspace"},
-    )
-    assert resp.status_code == 400
-    assert "not found" in resp.json()["error"]
-
-
-@pytest.mark.asyncio
-async def test_attachment_from_path_traversal_rejected(client, tmp_path):
-    app = client._transport.app
-    data_dir = app.state.data_dir
-    _make_workspace_file(data_dir, "user", "secret.txt", b"leaked")
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"path": "/workspaces/user/../admin/secret.txt", "source": "workspace"},
-    )
-    assert resp.status_code == 400
-    assert "traversal" in resp.json()["error"]
-
-
-@pytest.mark.asyncio
-async def test_attachment_from_path_workspace_wrong_owner(client, tmp_path):
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"path": "/workspaces/other/foo.md", "source": "workspace"},
-    )
-    assert resp.status_code == 400
-    assert "user" in resp.json()["error"]
-
-
-@pytest.mark.asyncio
-async def test_attachment_from_path_agent_workspace_slug_mismatch(client, tmp_path):
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={
-            "path": "/workspaces/agent-x/file.txt",
+    @pytest.mark.asyncio
+    async def test_agent_workspace_slug_mismatch_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/agent1/file.md",
             "source": "agent-workspace",
-            "slug": "agent-y",
-        },
-    )
-    assert resp.status_code == 400
-    assert "slug" in resp.json()["error"]
+            "slug": "different-agent",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_agent_workspace_missing_slug_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/workspaces/agent1/file.md",
+            "source": "agent-workspace",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_file_too_large_returns_413(self, client):
+        app = client._transport.app
+        data_dir = app.state.data_dir
+        ws_dir = data_dir / "agent-workspaces" / "user"
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        test_file = ws_dir / "big.bin"
+        test_file.write_bytes(b"x" * 1024)
+
+        with patch(
+            "tinyagentos.routes.chat_files._MAX_ATTACHMENT_BYTES", 100
+        ):
+            r = await client.post("/api/chat/attachments/from-path", json={
+                "path": "/workspaces/user/big.bin",
+                "source": "workspace",
+            })
+        assert r.status_code == 413
+        assert "error" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_empty_body_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={})
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_path_not_starting_with_workspaces_returns_400(self, client):
+        r = await client.post("/api/chat/attachments/from-path", json={
+            "path": "/etc/passwd",
+            "source": "workspace",
+        })
+        assert r.status_code == 400
+        assert "error" in r.json()
 
 
-@pytest.mark.asyncio
-async def test_attachment_from_path_too_large(client, tmp_path):
-    app = client._transport.app
-    data_dir = app.state.data_dir
-    big = b"x" * (100 * 1024 * 1024 + 1)
-    _make_workspace_file(data_dir, "user", "huge.bin", big)
-    resp = await client.post(
-        "/api/chat/attachments/from-path",
-        json={"path": "/workspaces/user/huge.bin", "source": "workspace"},
-    )
-    assert resp.status_code == 413
-    assert "too large" in resp.json()["error"]
+class TestUploadFile:
+    """Tests for POST /api/chat/upload."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, client):
+        content = b"file content here"
+        r = await client.post(
+            "/api/chat/upload",
+            files={"file": ("test.txt", content, "text/plain")},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["filename"] == "test.txt"
+        assert body["content_type"] == "text/plain"
+        assert body["size"] == len(content)
+        assert body["url"].startswith("/api/chat/files/")
+        assert "id" in body
+
+    @pytest.mark.asyncio
+    async def test_happy_path_with_channel_id(self, client):
+        content = b"some data"
+        r = await client.post(
+            "/api/chat/upload",
+            files={"file": ("data.csv", content, "text/csv")},
+            data={"channel_id": "chan-123"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["filename"] == "data.csv"
+        assert body["size"] == len(content)
+
+    @pytest.mark.asyncio
+    async def test_file_too_large_returns_413(self, client):
+        content = b"x" * 1024
+        with patch(
+            "tinyagentos.routes.chat_files._MAX_ATTACHMENT_BYTES", 100
+        ):
+            r = await client.post(
+                "/api/chat/upload",
+                files={"file": ("big.bin", content, "application/octet-stream")},
+            )
+        assert r.status_code == 413
+        assert "error" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_no_filename_returns_422(self, client):
+        content = b"no name content"
+        r = await client.post(
+            "/api/chat/upload",
+            files={"file": ("", content, "application/octet-stream")},
+        )
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_file_is_stored_on_disk(self, client):
+        content = b"stored content check"
+        r = await client.post(
+            "/api/chat/upload",
+            files={"file": ("stored.txt", content, "text/plain")},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        app = client._transport.app
+        file_path = app.state.data_dir / "chat-files" / body["url"].split("/")[-1]
+        assert file_path.exists()
+        assert file_path.read_bytes() == content
+
+
+class TestServeFile:
+    """Tests for GET /api/chat/files/{filename}."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, client):
+        app = client._transport.app
+        chat_files = app.state.data_dir / "chat-files"
+        chat_files.mkdir(parents=True, exist_ok=True)
+        stored = chat_files / "testfile.txt"
+        stored.write_text("served content")
+
+        r = await client.get("/api/chat/files/testfile.txt")
+        assert r.status_code == 200
+        assert r.text == "served content"
+
+    @pytest.mark.asyncio
+    async def test_file_not_found_returns_404(self, client):
+        r = await client.get("/api/chat/files/nonexistent.txt")
+        assert r.status_code == 404
+        assert "error" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_returns_404(self, client):
+        r = await client.get("/api/chat/files/..%2F..%2Fetc%2Fpasswd")
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_binary_file_served(self, client):
+        app = client._transport.app
+        chat_files = app.state.data_dir / "chat-files"
+        chat_files.mkdir(parents=True, exist_ok=True)
+        binary_data = bytes(range(256))
+        stored = chat_files / "image.png"
+        stored.write_bytes(binary_data)
+
+        r = await client.get("/api/chat/files/image.png")
+        assert r.status_code == 200
+        assert r.content == binary_data

@@ -185,6 +185,13 @@ class ChatChannelStore(BaseStore):
         )
         await self._db.commit()
 
+    async def set_project(self, channel_id: str, project_id: str) -> None:
+        await self._db.execute(
+            "UPDATE chat_channels SET project_id = ? WHERE id = ?",
+            (project_id, channel_id),
+        )
+        await self._db.commit()
+
     async def set_settings(self, channel_id: str, updates: dict) -> None:
         """Merge ``updates`` into the channel's settings dict, then persist.
 

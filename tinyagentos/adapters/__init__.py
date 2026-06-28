@@ -52,7 +52,13 @@ _REGISTRY: list[dict] = [
     {
         "id": "hermes",
         "name": "Hermes",
-        "description": "Hermes OpenAI-compatible API bridge (bridge wiring not yet complete)",
+        "description": "Hermes Agent Gateway (NousResearch) bridge over the OpenAI-compatible API",
+        "verification_status": "beta",
+    },
+    {
+        "id": "deer-flow",
+        "name": "DeerFlow",
+        "description": "DeerFlow LangGraph SuperAgent harness (runs API bridge)",
         "verification_status": "alpha",
     },
     {

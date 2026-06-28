@@ -4,6 +4,8 @@ import pytest
 
 from tinyagentos.tools.project_tools import (
     execute_create_project,
+    execute_list_projects,
+    execute_list_tasks,
     execute_add_task,
     execute_canvas_add_image,
     _slugify,
@@ -24,6 +26,18 @@ class _FakeProjectStore:
             return None
         return {"id": project_id, "user_id": self._owner, "slug": "luna"}
 
+    async def list_for_user(self, user_id, status="active"):
+        self.calls.append({"list_for_user": user_id, "status": status})
+        if not user_id:
+            return []
+        rows = [
+            {"id": "proj_1", "name": "Active One", "status": "active"},
+            {"id": "proj_2", "name": "Archived One", "status": "archived"},
+        ]
+        if status is None:
+            return rows
+        return [r for r in rows if r["status"] == status]
+
 
 class _FakeTaskStore:
     def __init__(self):
@@ -32,6 +46,15 @@ class _FakeTaskStore:
     async def create_task(self, **kw):
         self.calls.append(kw)
         return {"id": "task_1", "title": kw["title"]}
+
+    async def list_tasks(self, project_id, status=None):
+        rows = [
+            {"id": "task_1", "title": "Outline", "status": "open", "project_id": project_id},
+            {"id": "task_2", "title": "Draft", "status": "done", "project_id": project_id},
+        ]
+        if status is not None:
+            return [r for r in rows if r["status"] == status]
+        return rows
 
 
 class _FakeCanvasStore:
@@ -210,3 +233,63 @@ async def test_export_storybook_rejects_other_users_project(tmp_path):
         {"project_id": "proj_1", "title": "X", "pages": [{"text": "hi"}]}, req
     )
     assert res.get("error") == "not your project"
+
+
+@pytest.mark.asyncio
+async def test_list_projects_active_default():
+    req = _req()
+    res = await execute_list_projects({}, req)
+    assert res["ok"] is True
+    assert res["count"] == 1
+    assert res["projects"] == [{"project_id": "proj_1", "name": "Active One", "status": "active"}]
+
+
+@pytest.mark.asyncio
+async def test_list_projects_all():
+    req = _req()
+    res = await execute_list_projects({"status": "all"}, req)
+    assert res["count"] == 2
+    assert {p["project_id"] for p in res["projects"]} == {"proj_1", "proj_2"}
+
+
+@pytest.mark.asyncio
+async def test_list_projects_rejects_bad_status():
+    res = await execute_list_projects({"status": "bogus"}, _req())
+    assert "error" in res
+
+
+@pytest.mark.asyncio
+async def test_list_projects_requires_user():
+    res = await execute_list_projects({}, _req(user_id=None))
+    assert res["error"] == "no authenticated user"
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_returns_board():
+    req = _req()
+    res = await execute_list_tasks({"project_id": "proj_1"}, req)
+    assert res["ok"] is True and res["count"] == 2
+    assert res["tasks"][0] == {"task_id": "task_1", "title": "Outline", "status": "open"}
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_status_filter():
+    res = await execute_list_tasks({"project_id": "proj_1", "status": "done"}, _req())
+    assert res["count"] == 1 and res["tasks"][0]["task_id"] == "task_2"
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_requires_project_id():
+    assert "error" in await execute_list_tasks({}, _req())
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_denied_on_other_users_project():
+    res = await execute_list_tasks({"project_id": "proj_1"}, _req(user_id="attacker", owner="victim"))
+    assert res.get("error") == "not your project"
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_missing_project():
+    res = await execute_list_tasks({"project_id": "missing"}, _req())
+    assert res.get("error") == "project not found"

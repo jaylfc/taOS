@@ -16,6 +16,7 @@ from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.config import save_config_locked, validate_agent_name, unique_agent_slug
 from tinyagentos.routes import agent_archive
 from tinyagentos.routes import agent_deploy
+from tinyagentos.routes import agent_import
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
@@ -825,7 +826,48 @@ class AgentImport(BaseModel):
 
 
 @router.post("/api/agents/import")
-async def import_agent(request: Request, body: AgentImport):
+async def import_agent(request: Request):
+    """Import an agent.
+
+    Two content types share this path:
+
+    * ``multipart/form-data``: a Hermes profile EXPORT bundle upload
+      (framework + bundle file + name + model + secrets JSON). Deploys a
+      Hermes agent and restores the profile inside the container. Handled
+      by ``agent_import.import_hermes_agent``.
+    * ``application/json``: the existing portable JSON config import
+      (``AgentImport`` body) used by the export/import round-trip.
+
+    Dispatch on Content-Type so both clients keep working on one route.
+    """
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data") or content_type.startswith(
+        "application/x-www-form-urlencoded"
+    ):
+        form = await request.form()
+        bundle = form.get("bundle")
+        return await agent_import.import_hermes_agent(
+            request,
+            framework=str(form.get("framework", "")),
+            bundle=bundle if hasattr(bundle, "filename") else None,
+            name=str(form.get("name", "")),
+            model=(str(form["model"]) if form.get("model") else None),
+            secrets=(str(form["secrets"]) if form.get("secrets") else None),
+        )
+
+    # JSON config import.
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "request body must be JSON or multipart/form-data"}, status_code=400)
+    try:
+        body = AgentImport(**payload)
+    except Exception as e:
+        return JSONResponse({"error": f"invalid import payload: {e}"}, status_code=400)
+    return await _import_agent_json(request, body)
+
+
+async def _import_agent_json(request: Request, body: AgentImport):
     """Import an agent from an exported JSON config."""
     config = request.app.state.config
 
@@ -879,6 +921,48 @@ async def restore_archived_agent(request: Request, archive_id: str):
 @router.delete("/api/agents/archived/{archive_id}")
 async def purge_archived_agent(request: Request, archive_id: str):
     return await agent_archive.purge_archived(request, archive_id)
+
+
+@router.post("/api/agents/reconcile-orphan-channels")
+async def reconcile_orphan_channels(request: Request):
+    """Archive agent DM channels whose agent is in no list (active, failed,
+    or archived). Idempotent; never hard-deletes. Returns the channels
+    archived on this pass."""
+    from tinyagentos.chat.orphan_reconcile import reconcile_orphan_dm_channels
+
+    config = request.app.state.config
+    chat_channels = request.app.state.chat_channels
+    registry_ids = await _registry_canonical_ids(request.app.state)
+    archived = await reconcile_orphan_dm_channels(
+        config, chat_channels, registry_ids=registry_ids
+    )
+    return {"status": "ok", "archived": archived, "count": len(archived)}
+
+
+@router.post("/api/agents/reconcile-orphan-containers")
+async def reconcile_orphan_containers(request: Request, clean: bool = False):
+    """Find taOS containers with no backing agent record (live or archived).
+
+    Report-only by default. Pass ``?clean=true`` to snapshot-then-archive each
+    orphan so it gets a restore point and shows in Archived. Idempotent; only
+    ever touches containers carrying the taOS naming prefix."""
+    from tinyagentos.agent_orphan_reconcile import reconcile_orphaned_agent_containers
+
+    results = await reconcile_orphaned_agent_containers(request, clean=clean)
+    return {"status": "ok", "containers": results, "count": len(results)}
+
+
+async def _registry_canonical_ids(state) -> list[str]:
+    """Best-effort list of canonical agent ids from the registry, so the
+    reconcile can recognise a former agent whose config row is gone."""
+    registry = getattr(state, "agent_registry", None)
+    if registry is None:
+        return []
+    try:
+        rows = await registry.list_all()
+    except Exception:  # noqa: BLE001
+        return []
+    return [r.get("canonical_id") for r in rows if r.get("canonical_id")]
 
 
 @router.post("/api/agents/{name}/resume")

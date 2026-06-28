@@ -80,6 +80,17 @@ class TaskScheduler(BaseStore):
                      "command": r[4], "description": r[5], "enabled": bool(r[6]),
                      "last_run": r[7], "next_run": r[8]} for r in await cursor.fetchall()]
 
+    async def get_task(self, task_id: int) -> dict | None:
+        sql = ("SELECT id, name, agent_name, schedule, command, description, enabled, last_run, next_run "
+               "FROM scheduled_tasks WHERE id = ?")
+        async with self._db.execute(sql, (task_id,)) as cursor:
+            r = await cursor.fetchone()
+        if r is None:
+            return None
+        return {"id": r[0], "name": r[1], "agent_name": r[2], "schedule": r[3],
+                "command": r[4], "description": r[5], "enabled": bool(r[6]),
+                "last_run": r[7], "next_run": r[8]}
+
     async def update_task(self, task_id: int, **kwargs):
         for field in ["name", "schedule", "command", "description"]:
             if field in kwargs:

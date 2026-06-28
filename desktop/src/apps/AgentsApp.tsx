@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-is-mobile";
-import { Bot, Plus, HardDrive, MessageSquare } from "lucide-react";
+import { Bot, Plus, HardDrive, MessageSquare, Upload } from "lucide-react";
 import { fetchLatestFrameworks, LatestVersion } from "@/lib/framework-api";
 import type { AgentShortcut } from "@/hooks/use-agent-shortcuts";
 import { useProcessStore } from "@/stores/process-store";
@@ -13,8 +13,10 @@ import { AgentRow } from "./agents/AgentRow";
 import { AgentDetailPanel, type DetailTab } from "./agents/AgentDetailPanel";
 import { TaosAgentDetailPanel } from "./agents/TaosAgentDetailPanel";
 import { DeployWizard } from "./agents/DeployWizard";
+import { ImportWizard } from "./agents/ImportWizard";
 import { ArchivedAgentsPanel } from "./agents/ArchivedAgents";
 import { RegistryPanel } from "./agents/RegistryPanel";
+import { BaseImagesPanel } from "./agents/BaseImagesPanel";
 import { fetchTaosAgentConfig } from "@/lib/taos-agent-api";
 
 /* ------------------------------------------------------------------ */
@@ -59,6 +61,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
   const [archived, setArchived] = useState<ArchivedAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [importWizardOpen, setImportWizardOpen] = useState(false);
   const [detail, setDetail] = useState<{ name: string; tab: DetailTab } | null>(null);
   const [taosDetailOpen, setTaosDetailOpen] = useState(false);
   const [diskStates, setDiskStates] = useState<Record<string, DiskState>>({});
@@ -401,6 +404,14 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
     }
   }
 
+  function handleImportWizardClose(imported?: boolean) {
+    setImportWizardOpen(false);
+    if (imported) {
+      fetchAgents();
+      fetchArchived();
+    }
+  }
+
   // Full-window detail view for a regular agent
   if (detail) {
     const agent = agents.find((a) => a.name === detail.name);
@@ -432,6 +443,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             />
           </div>
           <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
+          <ImportWizard open={importWizardOpen} onClose={handleImportWizardClose} />
         </div>
       );
     }
@@ -459,6 +471,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           <TaosAgentDetailPanel onClose={() => setTaosDetailOpen(false)} fullHeight />
         </div>
         <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
+        <ImportWizard open={importWizardOpen} onClose={handleImportWizardClose} />
       </div>
     );
   }
@@ -474,16 +487,27 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             {agents.length} deployed
           </span>
         </div>
-        <Button
-          onClick={() => setWizardOpen(true)}
-          size="sm"
-          className="text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0 shrink-0"
-          style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
-          aria-label="Deploy new agent"
-        >
-          <Plus size={14} />
-          Deploy Agent
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            onClick={() => setImportWizardOpen(true)}
+            size="sm"
+            variant="outline"
+            aria-label="Import an existing agent"
+          >
+            <Upload size={14} />
+            Import Agent
+          </Button>
+          <Button
+            onClick={() => setWizardOpen(true)}
+            size="sm"
+            className="text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0"
+            style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
+            aria-label="Deploy new agent"
+          >
+            <Plus size={14} />
+            Deploy Agent
+          </Button>
+        </div>
       </div>
 
       {/* Content */}
@@ -547,6 +571,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onPurge={handlePurge}
             />
             <RegistryPanel />
+            <BaseImagesPanel />
           </div>
         ) : (
           <div className="p-4">
@@ -634,12 +659,14 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
               onPurge={handlePurge}
             />
             <RegistryPanel />
+            <BaseImagesPanel />
           </div>
         )}
       </div>
 
       {/* Deploy wizard overlay */}
       <DeployWizard open={wizardOpen} onClose={handleWizardClose} />
+      <ImportWizard open={importWizardOpen} onClose={handleImportWizardClose} />
     </div>
   );
 }

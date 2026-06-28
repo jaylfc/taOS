@@ -67,6 +67,38 @@ async def test_atomic_claim_only_one_winner(store):
 
 
 @pytest.mark.asyncio
+async def test_agent_cannot_hold_two_active_claims(store):
+    a = await store.create_task(project_id="p", title="A", created_by="u")
+    b = await store.create_task(project_id="p", title="B", created_by="u")
+    first = await store.claim_task(a["id"], claimer_id="agent-1")
+    second = await store.claim_task(b["id"], claimer_id="agent-1")
+    assert first is True
+    assert second is False
+    assert (await store.get_task(b["id"]))["status"] == "open"
+    assert await store.held_task("agent-1") == a["id"]
+
+
+@pytest.mark.asyncio
+async def test_can_claim_again_after_release(store):
+    a = await store.create_task(project_id="p", title="A", created_by="u")
+    b = await store.create_task(project_id="p", title="B", created_by="u")
+    await store.claim_task(a["id"], claimer_id="agent-1")
+    await store.release_task(a["id"], releaser_id="agent-1")
+    assert await store.held_task("agent-1") is None
+    assert await store.claim_task(b["id"], claimer_id="agent-1") is True
+
+
+@pytest.mark.asyncio
+async def test_can_claim_again_after_close(store):
+    a = await store.create_task(project_id="p", title="A", created_by="u")
+    b = await store.create_task(project_id="p", title="B", created_by="u")
+    await store.claim_task(a["id"], claimer_id="agent-1")
+    await store.close_task(a["id"], closed_by="agent-1", reason="done")
+    assert await store.held_task("agent-1") is None
+    assert await store.claim_task(b["id"], claimer_id="agent-1") is True
+
+
+@pytest.mark.asyncio
 async def test_release_task(store):
     t = await store.create_task(project_id="p", title="A", created_by="u")
     await store.claim_task(t["id"], claimer_id="agent-1")

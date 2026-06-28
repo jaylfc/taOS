@@ -556,6 +556,18 @@ async def claim_task(
         return JSONResponse({"error": "not found"}, status_code=404)
     ok = await store.claim_task(task_id, payload.claimer_id)
     if not ok:
+        # Distinguish "task taken by someone else" from "you already hold an
+        # active task" so the agent knows to finish or release it first.
+        held = await store.held_task(payload.claimer_id)
+        if held is not None and held != task_id:
+            return JSONResponse(
+                {
+                    "error": "agent already holds an active task",
+                    "held_task": held,
+                    "detail": "complete or release your current task before claiming another",
+                },
+                status_code=409,
+            )
         return JSONResponse({"error": "already claimed"}, status_code=409)
     _beads_mark_dirty(request, project_id)
     await pstore.log_activity(project_id, payload.claimer_id, "task.claimed", {"task_id": task_id})

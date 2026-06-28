@@ -56,6 +56,24 @@ describe("AppErrorBoundary", () => {
     expect(screen.getByText("Something went wrong.")).toBeInTheDocument();
   });
 
+  it("reports a generic crash to the server (#106)", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 201 }));
+    render(
+      <AppErrorBoundary>
+        <ThrowOnRender error={new Error("crash-report-unique-xyz")} />
+      </AppErrorBoundary>,
+    );
+    const posted = fetchSpy.mock.calls.find(([url]) => url === "/api/client-logs");
+    expect(posted).toBeTruthy();
+    const body = JSON.parse(String((posted![1] as RequestInit)?.body));
+    expect(body.level).toBe("fatal");
+    expect(body.message).toBe("crash-report-unique-xyz");
+    expect(body.source).toBe("AppErrorBoundary");
+  });
+
   it("does not render children after an error is caught", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     render(

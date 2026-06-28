@@ -5,30 +5,158 @@ on:
     branches: [master, fix/agent-creation-flow]
     paths:
       - 'app-catalog/agents/openclaw/**'
+      - 'tinyagentos/scripts/install_hermes.sh'
       - '.github/workflows/build-agent-images.yml'
   repository_dispatch:
     types: [openclaw-fork-published]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild every base regardless of change detection'
+        type: boolean
+        required: false
+        default: false
   schedule:
-    # Weekly refresh for security updates - Mondays 03:00 UTC.
-    - cron: '0 3 * * 1'
+    # Weekly refresh - Mondays 04:17 UTC (off-peak, non-:00 to dodge the
+    # top-of-hour scheduler congestion that delays cron-triggered runs).
+    - cron: '17 4 * * 1'
 
 permissions:
   contents: write
 
 jobs:
+  # Change detection: decide which framework bases actually need a rebuild so a
+  # scheduled run does not burn CI on unchanged bases. The published images live
+  # under a rolling `rolling-images` tag in jaylfc/tinyagentos-images; the release
+  # job stamps a base-versions.json asset recording the upstream version baked
+  # into each base. Here we read that prior manifest and compare it against the
+  # CURRENT upstream versions. Anything that moved (or is missing from the prior
+  # manifest) gets rebuilt.
+  #
+  # Gating only applies to scheduled runs. push / repository_dispatch always
+  # rebuild everything (preserving the historical behaviour), and a manual
+  # workflow_dispatch with force=true rebuilds everything too.
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      openclaw: ${{ steps.decide.outputs.openclaw }}
+      generic: ${{ steps.decide.outputs.generic }}
+      hermes: ${{ steps.decide.outputs.hermes }}
+      cur_openclaw: ${{ steps.upstream.outputs.openclaw }}
+      cur_hermes: ${{ steps.upstream.outputs.hermes }}
+    steps:
+      - name: Resolve current upstream versions
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # openclaw: latest published npm version (the base bakes openclaw@latest).
+          OPENCLAW=$(npm view openclaw version)
+          # hermes: NousResearch hermes-agent default-branch commit (the base bakes
+          # the installer from main); the commit sha is the freshness signal.
+          HERMES=$(gh api repos/NousResearch/hermes-agent/commits/main --jq '.sha')
+          echo "openclaw=$OPENCLAW" >> "$GITHUB_OUTPUT"
+          echo "hermes=$HERMES" >> "$GITHUB_OUTPUT"
+          echo "current openclaw=$OPENCLAW hermes=$HERMES"
+
+      - name: Read previously published base versions
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+        run: |
+          set -euo pipefail
+          # Best-effort: a missing tag/asset (first run) leaves the file absent,
+          # which the decision step treats as "rebuild everything".
+          gh release download rolling-images \
+            --repo jaylfc/tinyagentos-images \
+            --pattern base-versions.json \
+            --output prev-base-versions.json --clobber || true
+          if [ -f prev-base-versions.json ]; then
+            cat prev-base-versions.json
+          else
+            echo "no prior base-versions.json (first run or never stamped)"
+          fi
+
+      - name: Decide which bases to rebuild
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE: ${{ github.event.inputs.force }}
+          CUR_OPENCLAW: ${{ steps.upstream.outputs.openclaw }}
+          CUR_HERMES: ${{ steps.upstream.outputs.hermes }}
+        run: |
+          set -euo pipefail
+          prev_field() {
+            # Echo a field from the prior manifest, or empty if absent. The
+            # field name is passed via argv (sys.argv[1]) so it is never spliced
+            # into the Python source.
+            [ -f prev-base-versions.json ] || { echo ""; return; }
+            python3 -c "import json,sys; print(json.load(open('prev-base-versions.json')).get(sys.argv[1],''))" "$1" 2>/dev/null || echo ""
+          }
+
+          # Non-scheduled events keep the historical "build everything" behaviour.
+          # schedule is the only change-gated trigger; force overrides the gate.
+          if [ "$EVENT" != "schedule" ] || [ "$FORCE" = "true" ]; then
+            echo "openclaw=true" >> "$GITHUB_OUTPUT"
+            echo "generic=true"  >> "$GITHUB_OUTPUT"
+            echo "hermes=true"   >> "$GITHUB_OUTPUT"
+            echo "event=$EVENT force=$FORCE -> rebuilding all bases"
+            exit 0
+          fi
+
+          PREV_OPENCLAW=$(prev_field openclaw)
+          PREV_HERMES=$(prev_field hermes)
+
+          [ "$CUR_OPENCLAW" != "$PREV_OPENCLAW" ] && OC=true || OC=false
+          [ "$CUR_HERMES"   != "$PREV_HERMES"   ] && HM=true || HM=false
+
+          # generic = common deps only (node/python/build tools). These move
+          # rarely, so on the weekly schedule we refresh them only when forced
+          # (above) or on a monthly cadence: rebuild on the first Monday of the
+          # month so security/base-package updates still land without weekly cost.
+          DOM=$(date -u +%d)
+          if [ "$DOM" -le 07 ]; then GN=true; else GN=false; fi
+
+          echo "openclaw=$OC" >> "$GITHUB_OUTPUT"
+          echo "generic=$GN"  >> "$GITHUB_OUTPUT"
+          echo "hermes=$HM"   >> "$GITHUB_OUTPUT"
+          echo "openclaw cur=$CUR_OPENCLAW prev=$PREV_OPENCLAW -> $OC"
+          echo "hermes cur=$CUR_HERMES prev=$PREV_HERMES -> $HM"
+          echo "generic (day-of-month $DOM, monthly cadence) -> $GN"
+
   build:
+    needs: detect
     strategy:
       fail-fast: false
       matrix:
+        # Two list dimensions form the cross-product (3 bases x 2 arches = 6
+        # jobs). base: which framework prerequisites to bake on top of the
+        # common deps. "openclaw" keeps its historical alias for back-compat;
+        # "generic" is taos-base (common deps only) for any framework;
+        # "hermes" adds the NousResearch hermes-agent prerequisites.
+        base: [openclaw, generic, hermes]
+        arch: [x64, arm64]
+        # include maps each arch to its runner without adding extra jobs
+        # (the keys here already exist as a matrix dimension).
         include:
-          - runner: ubuntu-latest
-            arch: x64
+          - arch: x64
+            runner: ubuntu-latest
             debarch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
             debarch: arm64
     runs-on: ${{ matrix.runner }}
+    # Skip matrix legs whose base did not change (detect gates them per base).
+    # A skipped leg is not a failure, so the release job still proceeds and
+    # keeps the unchanged base's existing published asset.
+    if: >-
+      (matrix.base == 'openclaw' && needs.detect.outputs.openclaw == 'true') ||
+      (matrix.base == 'generic'  && needs.detect.outputs.generic  == 'true') ||
+      (matrix.base == 'hermes'   && needs.detect.outputs.hermes   == 'true')
+    env:
+      # Map the "openclaw"/"generic"/"hermes" base label to its published alias.
+      ALIAS: ${{ matrix.base == 'openclaw' && 'taos-openclaw-base' || (matrix.base == 'generic' && 'taos-base' || 'taos-hermes-base') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -76,11 +204,9 @@ jobs:
           sudo incus exec build-base -- ip route || true
           sudo iptables -L FORWARD -n -v | head -20 || true
 
-      - name: Install dependencies + openclaw inside the base container
-        env:
-          ARCH: ${{ matrix.arch }}
+      - name: Install common dependencies inside the base container
         run: |
-          sudo incus exec build-base --env ARCH="$ARCH" -- bash -eux <<'BASH'
+          sudo incus exec build-base -- bash -eux <<'BASH'
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
@@ -92,6 +218,16 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
           apt-get install -y -qq --no-install-recommends nodejs
 
+          # Recycle-bin scaffolding (install.sh Layer 1).
+          mkdir -p /var/recycle-bin/files /var/recycle-bin/info
+          chmod 1777 /var/recycle-bin /var/recycle-bin/files /var/recycle-bin/info
+          BASH
+
+      - name: Bake openclaw into the base container
+        if: matrix.base == 'openclaw'
+        run: |
+          sudo incus exec build-base -- bash -eux <<'BASH'
+          export DEBIAN_FRONTEND=noninteractive
           # Upstream OpenClaw from npm (latest) — no fork. The deploy-time
           # install.sh also installs openclaw@latest, so this just warms the
           # base image with a current build.
@@ -100,12 +236,47 @@ jobs:
           # Sanity check
           test -f /usr/lib/node_modules/openclaw/dist/entry.js \
             || test -f /usr/lib/node_modules/openclaw/dist/entry.mjs
+          BASH
 
-          # Recycle-bin scaffolding (install.sh Layer 1).
-          mkdir -p /var/recycle-bin/files /var/recycle-bin/info
-          chmod 1777 /var/recycle-bin /var/recycle-bin/files /var/recycle-bin/info
+      - name: Bake Hermes prerequisites into the base container
+        if: matrix.base == 'hermes'
+        run: |
+          # Mirrors the heavy, agent-independent steps in
+          # tinyagentos/scripts/install_hermes.sh (uv, the NousResearch
+          # hermes-agent installer with --skip-setup, and the pyyaml/httpx
+          # deps the config patch needs). Per-agent config (.env, config.yaml,
+          # systemd unit, bridge) stays at deploy time -- only prerequisites
+          # are baked so a hermes deploy from this image needs no live install.
+          sudo incus exec build-base -- bash -eux <<'BASH'
+          export DEBIAN_FRONTEND=noninteractive
+          export PATH="/root/.local/bin:$PATH"
 
-          # Shrink the image footprint.
+          # uv (idempotent), matching install_hermes.sh.
+          if ! command -v uv >/dev/null 2>&1 && [ ! -x /root/.local/bin/uv ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
+
+          # NousResearch hermes-agent prerequisites (no setup; config is per-agent).
+          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \
+            | bash -s -- --skip-setup
+
+          # Deps the deploy-time config patch step relies on.
+          pip3 install --break-system-packages --quiet pyyaml httpx
+
+          # Sanity check: the hermes binary must be resolvable.
+          HERMES_BIN=""
+          for c in /root/.local/bin/hermes /root/.hermes/hermes-agent/.venv/bin/hermes /root/.hermes/hermes-agent/venv/bin/hermes; do
+            [ -L "$c" -o -x "$c" ] && HERMES_BIN="$c" && break
+          done
+          [ -z "$HERMES_BIN" ] && HERMES_BIN=$(command -v hermes || true)
+          [ -z "$HERMES_BIN" ] && { echo "ERROR: hermes binary not found after bake"; exit 2; }
+          echo "hermes baked at $HERMES_BIN"
+          BASH
+
+      - name: Shrink the image footprint
+        run: |
+          sudo incus exec build-base -- bash -eux <<'BASH'
           apt-get clean
           rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /tmp/* /root/.npm
           BASH
@@ -115,36 +286,57 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           sudo incus stop build-base
-          sudo incus publish build-base --alias taos-openclaw-base \
-            description="taOS openclaw base image ($ARCH)"
-          sudo incus image export taos-openclaw-base "./taos-openclaw-base-linux-$ARCH"
-          ls -la "./taos-openclaw-base-linux-$ARCH"*
+          sudo incus publish build-base --alias "$ALIAS" \
+            description="taOS $ALIAS image ($ARCH)"
+          sudo incus image export "$ALIAS" "./$ALIAS-linux-$ARCH"
+          ls -la "./$ALIAS-linux-$ARCH"*
 
       - uses: actions/upload-artifact@v7
         with:
-          name: taos-openclaw-base-${{ matrix.arch }}
-          path: taos-openclaw-base-linux-${{ matrix.arch }}.tar.gz
+          name: ${{ env.ALIAS }}-${{ matrix.arch }}
+          path: ${{ env.ALIAS }}-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [detect, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: taos-openclaw-base-*
+          pattern: taos-*-base-*
           merge-multiple: true
 
       - name: List downloaded assets
-        run: ls -la taos-openclaw-base-linux-*.tar.gz
+        run: ls -la taos-*-base-linux-*.tar.gz
 
       - name: Compute build identifier
         id: id
         run: |
           echo "ts=$(date -u +%Y%m%dT%H%M%S)" >> "$GITHUB_OUTPUT"
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Stamp the upstream versions baked into this publish so the next run's
+      # detect job can tell what moved. On a partial rebuild we still record the
+      # full current set (unchanged bases keep their current upstream value),
+      # which keeps the comparison honest across runs.
+      - name: Stamp base versions manifest
+        env:
+          CUR_OPENCLAW: ${{ needs.detect.outputs.cur_openclaw }}
+          CUR_HERMES: ${{ needs.detect.outputs.cur_hermes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          json.dump(
+              {"openclaw": os.environ["CUR_OPENCLAW"],
+               "hermes": os.environ["CUR_HERMES"]},
+              open("base-versions.json", "w"),
+              indent=2,
+          )
+          PY
+          cat base-versions.json
 
       # Images are published to the separate jaylfc/tinyagentos-images repo so
       # the main tinyagentos Releases page stays reserved for user-facing taOS
@@ -156,20 +348,31 @@ jobs:
           repository: jaylfc/tinyagentos-images
           token: ${{ secrets.ADD_TO_PROJECT_PAT }}
           tag_name: rolling-images
-          name: "taOS openclaw base image (${{ steps.id.outputs.ts }} - ${{ steps.id.outputs.sha }})"
+          name: "taOS agent base images (${{ steps.id.outputs.ts }} - ${{ steps.id.outputs.sha }})"
           body: |
-            Pre-built LXC base image for openclaw agents.
+            Pre-built LXC base images for taOS agents.
 
             Consumers (taOS deployer): import once with
-            `curl -fsSL <url> | incus image import - --alias taos-openclaw-base`.
+            `curl -fsSL <url> | incus image import - --alias <alias>`.
 
             Assets:
-            - `taos-openclaw-base-linux-arm64.tar.gz`
-            - `taos-openclaw-base-linux-x64.tar.gz`
+            - `taos-openclaw-base-linux-{arm64,x64}.tar.gz` -- openclaw warmed
+            - `taos-base-linux-{arm64,x64}.tar.gz` -- generic common deps
+            - `taos-hermes-base-linux-{arm64,x64}.tar.gz` -- Hermes prerequisites
 
             Source commit: ${{ github.sha }}
+          # A scheduled change-detected run may rebuild only some bases, so not
+          # every tarball is present. action-gh-release keeps prior assets that
+          # are not re-supplied; fail_on_unmatched_files lets the missing ones
+          # pass through instead of failing the publish.
+          fail_on_unmatched_files: false
           files: |
             taos-openclaw-base-linux-arm64.tar.gz
             taos-openclaw-base-linux-x64.tar.gz
+            taos-base-linux-arm64.tar.gz
+            taos-base-linux-x64.tar.gz
+            taos-hermes-base-linux-arm64.tar.gz
+            taos-hermes-base-linux-x64.tar.gz
+            base-versions.json
           make_latest: true
           prerelease: false

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import io
-import re
 import zipfile
 from pathlib import Path
 
 import yaml
 
+from tinyagentos.userspace.capabilities import (
+    KNOWN_CAPS,
+    NET_ORIGIN_RE,
+    NET_PREFIX,
+    is_known_capability,
+)
+
 # A `network:<origin>` permission lets a granted app's bundle connect to that
 # external origin (it is added to the sandbox CSP connect-src). The origin is
-# strictly validated so it can never inject extra CSP directives: scheme://host
-# with an optional leading "*." subdomain wildcard and an optional :port, and
-# nothing else (no spaces, semicolons, quotes, paths, or newlines). \A and \Z
-# anchor the WHOLE string -- `$` would also match just before a trailing
-# newline, which would let "wss://host\n; ..." slip a newline into the value.
-_NET_ORIGIN_RE = re.compile(r"\A(?:wss|https)://(?:\*\.)?[A-Za-z0-9.-]+(?::\d+)?\Z")
+# strictly validated by NET_ORIGIN_RE (the canonical pattern in
+# capabilities.py) so it can never inject extra CSP directives.
 
 _ALLOWED_TYPES = {"web", "container", "tui"}
 _REQUIRED = ("id", "name", "version", "app_type")
@@ -83,14 +85,23 @@ def parse_manifest(text: str) -> dict:
     if not isinstance(data["permissions"], list):
         raise PackageError("manifest 'permissions' must be a list")
     for perm in data["permissions"]:
-        if isinstance(perm, str) and perm.startswith("network:"):
-            origin = perm[len("network:"):]
-            if not _NET_ORIGIN_RE.match(origin):
+        if not isinstance(perm, str):
+            raise PackageError(
+                f"manifest permission must be a string, got {type(perm).__name__}"
+            )
+        if perm.startswith(NET_PREFIX):
+            origin = perm[len(NET_PREFIX):]
+            if not NET_ORIGIN_RE.match(origin):
                 raise PackageError(
                     f"invalid network permission origin {origin!r}: must be "
                     "wss://host or https://host with an optional *. subdomain "
                     "wildcard and an optional :port, nothing else"
                 )
+        elif not is_known_capability(perm):
+            raise PackageError(
+                f"unknown capability {perm!r}: allowed capabilities are "
+                f"{sorted(KNOWN_CAPS)} or a network:<origin> grant"
+            )
     return data
 
 

@@ -54,6 +54,17 @@ async def remove_channel_member(request: Request, channel_id: str, member_id: st
     return {"status": "removed"}
 
 
+@router.put("/api/chat/channels/{channel_id}/project")
+async def set_channel_project(request: Request, channel_id: str):
+    body = await request.json()
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(channel_id)
+    if not channel:
+        return JSONResponse({"error": "Channel not found"}, status_code=404)
+    await ch_store.set_project(channel_id, body.get("project_id", ""))
+    return {"status": "updated"}
+
+
 @router.patch("/api/chat/channels/{channel_id}")
 async def update_channel_settings(channel_id: str, body: dict, request: Request):
     """Update channel settings. Body may include: response_mode, max_hops,

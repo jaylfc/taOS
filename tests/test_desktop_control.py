@@ -161,3 +161,63 @@ async def test_stream_receives_emitted_command():
     evt = json.loads(lines[0][5:].strip())
     assert evt["kind"] == "open-app"
     assert evt["payload"]["app"] == "projects"
+
+
+# --------------------------------------------------------------------------- #
+# Layout read round-trip (screen-aware window-management API)                  #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_layout_no_desktop_returns_409():
+    app = _make_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/api/desktop/layout")
+        assert r.status_code == 409
+        assert r.json()["error"] == "no desktop connected"
+
+
+@pytest.mark.asyncio
+async def test_layout_result_resolves_pending_request():
+    """The layout endpoint emits a `layout` command and returns whatever the
+    desktop reports to /api/desktop/layout-result for that request_id."""
+    app = _make_app()
+    broker = app.state.desktop_command_broker
+    # A connected desktop: subscribe so the layout command is delivered.
+    q = await broker.subscribe("system")
+    sample = {"screen": {"width": 1920, "height": 1080, "ratio": 1.778}, "windows": []}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        async def respond():
+            cmd = await asyncio.wait_for(q.get(), timeout=2.0)
+            assert cmd.kind == "layout"
+            rid = cmd.payload["request_id"]
+            r = await c.post(
+                "/api/desktop/layout-result",
+                json={"request_id": rid, "layout": sample},
+            )
+            assert r.json()["resolved"] is True
+
+        responder = asyncio.create_task(respond())
+        r = await c.post("/api/desktop/layout")
+        await responder
+    assert r.status_code == 200
+    assert r.json() == sample
+
+
+@pytest.mark.asyncio
+async def test_layout_result_error_propagates_502():
+    app = _make_app()
+    broker = app.state.desktop_command_broker
+    q = await broker.subscribe("system")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        async def respond():
+            cmd = await asyncio.wait_for(q.get(), timeout=2.0)
+            rid = cmd.payload["request_id"]
+            await c.post(
+                "/api/desktop/layout-result",
+                json={"request_id": rid, "error": "layout read failed"},
+            )
+
+        responder = asyncio.create_task(respond())
+        r = await c.post("/api/desktop/layout")
+        await responder
+    assert r.status_code == 502
+    assert r.json()["error"] == "layout read failed"

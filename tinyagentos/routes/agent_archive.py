@@ -38,7 +38,12 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     can re-raise as JSONResponse.
     """
     import json as _json
-    from tinyagentos.containers import container_exists, stop_container, snapshot_create
+    from tinyagentos.containers import (
+        container_exists,
+        resolve_agent_container,
+        stop_container,
+        snapshot_create,
+    )
 
     config = request.app.state.config
     agent = find_agent(config, name)
@@ -64,6 +69,18 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     #    entirely and decide between hard-delete and tombstone based on
     #    whether there is any history worth preserving.
     has_container = await container_exists(container)
+
+    # 0a) Record lost its container link, or the standard name is gone: probe
+    #     the legacy ``taos-<slug>`` convention and display-name variants across
+    #     ALL projects before treating this as an orphan row. A record whose
+    #     container_name drifted (e.g. an old "test" agent backed by a live
+    #     ``taos-test`` container) must NOT be hard-deleted while its container
+    #     keeps running -- resolve it and archive it through the snapshot path.
+    if not has_container:
+        resolved = await resolve_agent_container(slug, agent.get("display_name"))
+        if resolved:
+            container = resolved
+            has_container = True
 
     if not has_container:
         # Hard-delete when the agent has no chat history and no trace dir —
@@ -93,7 +110,26 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
         if not has_chat_history and not has_trace_history:
             # Hard-delete: drop the config row and return. No tombstone for
-            # orphan rows from a never-used failed deploy.
+            # orphan rows from a never-used failed deploy. A DM channel may
+            # still exist (created on a prior deploy) with no messages -- archive
+            # it with the agent linkage so it is never left as a live orphan.
+            if channel_id:
+                try:
+                    ch_store = request.app.state.chat_channels
+                    await ch_store.set_settings(
+                        channel_id,
+                        {
+                            "archived": True,
+                            "archived_at": ts,
+                            "archived_agent_id": agent_id,
+                            "archived_agent_slug": slug,
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "archive(orphan): channel flag failed for %s: %s",
+                        channel_id, exc,
+                    )
             config.agents = [a for a in config.agents if a["name"] != name]
             await save_config_locked(config, config.config_path)
             return {
@@ -234,12 +270,16 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         except Exception:
             pass
 
-    # 6) Move config entry out of agents into archived_agents.
+    # 6) Move config entry out of agents into archived_agents. Record the
+    #    actual container name (which may be the legacy ``taos-<slug>`` form when
+    #    resolved in step 0a) so restore/purge act on the real container rather
+    #    than the derived ``taos-agent-<slug>`` name.
     original_snapshot = dict(agent)
     archive_entry = {
         "id": agent_id,
         "archived_at": ts,
         "archived_slug": slug,
+        "container_name": container,
         "snapshot_name": snapshot_name,
         "export_path": export_path,
         "archive_dir": f"archive/{archive_subdir}",
@@ -285,9 +325,11 @@ async def restore_archived(request: Request, archive_id: str):
             status_code=500,
         )
 
-    # The container name is derived from the original slug (unchanged since
-    # archive; we snapshot in-place, not rename).
-    container = f"taos-agent-{desired_slug}"
+    # The container name is whatever was archived. Prefer the recorded
+    # ``container_name`` (set by the archive path, and may be the legacy
+    # ``taos-<slug>`` form); fall back to the derived name for entries written
+    # before that field existed.
+    container = entry.get("container_name") or f"taos-agent-{desired_slug}"
 
     # Resolve slug collisions with currently-live agents.
     try:
@@ -448,7 +490,9 @@ async def purge_archived(request: Request, archive_id: str):
         return JSONResponse({"error": f"Archived agent '{archive_id}' not found"}, status_code=404)
 
     archived_slug = entry.get("archived_slug") or (entry.get("original") or {}).get("name") or ""
-    container_name = f"taos-agent-{archived_slug}" if archived_slug else ""
+    container_name = entry.get("container_name") or (
+        f"taos-agent-{archived_slug}" if archived_slug else ""
+    )
     data_dir = request.app.state.data_dir
     archive_base = data_dir / entry.get("archive_dir", "")
 

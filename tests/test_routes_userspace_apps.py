@@ -565,3 +565,73 @@ async def test_broker_gated_cap_with_permission_allowed(client):
     # The result may be an error (e.g. network unreachable), but it must NOT
     # be permission_denied since we granted the capability.
     assert data.get("error") != "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_broker_gated_cap_allowed_via_app_grants_ledger(client):
+    # Decision 24: the broker stays the enforcer, but a per-user grant in the
+    # app_grants ledger feeds it -- even when the per-app permissions_granted set
+    # is empty. This proves the ledger authorises a gated capability.
+    app = client._transport.app
+    await _init_userspace_stores(app, app.state.data_dir)
+    store = app.state.userspace_apps
+    await _install_test_app(store, permissions=["app.net"])
+    # Intentionally do NOT call set_permissions_granted; the only authorisation
+    # comes from the ledger below.
+    uid = app.state.auth.find_user("admin")["id"]
+    await app.state.app_grants.set_decision(uid, "test-app", "app.net")
+    resp = await client.post(
+        "/api/userspace-apps/test-app/broker",
+        json={"capability": "app.net.fetch", "args": {"url": "http://example.com"}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("error") != "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_broker_gated_cap_denied_when_ledger_grant_absent(client):
+    # The ledger only authorises what the user actually granted: a different
+    # capability stays denied.
+    app = client._transport.app
+    await _init_userspace_stores(app, app.state.data_dir)
+    store = app.state.userspace_apps
+    await _install_test_app(store, permissions=["app.net", "app.memory"])
+    uid = app.state.auth.find_user("admin")["id"]
+    await app.state.app_grants.set_decision(uid, "test-app", "app.net")
+    # app.memory was requested but neither per-app-granted nor ledger-granted.
+    resp = await client.post(
+        "/api/userspace-apps/test-app/broker",
+        json={"capability": "app.memory.search", "args": {"query": "x"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("error") == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_broker_ledger_error_falls_back_to_per_app_grants(client):
+    # Decision-24 merge is best-effort: if the app_grants ledger lookup raises
+    # (e.g. an uninitialised store or a query error), the broker must fall back
+    # to the per-app granted set rather than 500.
+    app = client._transport.app
+    await _init_userspace_stores(app, app.state.data_dir)
+    store = app.state.userspace_apps
+    await _install_test_app(store, permissions=["app.net"])
+    await store.set_permissions_granted("test-app", ["app.net"])
+
+    class _Boom:
+        async def granted_capabilities(self, *a, **k):
+            raise RuntimeError("ledger down")
+
+    original = app.state.app_grants
+    app.state.app_grants = _Boom()
+    try:
+        resp = await client.post(
+            "/api/userspace-apps/test-app/broker",
+            json={"capability": "app.net.fetch", "args": {"url": "http://example.com"}},
+        )
+    finally:
+        app.state.app_grants = original
+    # No 500; and the per-app grant still authorises the capability.
+    assert resp.status_code == 200
+    assert resp.json().get("error") != "permission_denied"

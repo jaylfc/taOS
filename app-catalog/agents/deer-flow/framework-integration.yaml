@@ -1,0 +1,107 @@
+# DeerFlow SuperAgent — framework integration manifest
+# See docs/superpowers/specs/2026-04-11-taos-framework-integration-bridge-design.md
+#
+# NOTE: This is a *design specification*, not machine-processed runtime config.
+# ${VAR} tokens (e.g. ${TAOS_HOST}) are documentation placeholders indicating
+# values resolved by the TAOS deployer at provision time. They mirror the same
+# env vars the deployer injects into the container after install.sh.
+
+framework: deer-flow
+display_name: DeerFlow SuperAgent
+version: "2.1.0"
+
+# -- Protocol endpoints the adapter speaks -----------------------------------
+endpoints:
+  llm: openai-chat              # DeerFlow calls the taOS LiteLLM proxy (OpenAI-compatible)
+  memory: none                  # DeerFlow uses its own SQLite-backed persistence
+  skills: none                  # DeerFlow has built-in tools via its LangGraph nodes
+  channels: sse-bridge          # Connects to TAOS channels via the adapter bridge
+  approval: none                # Not implemented yet
+  sandbox: host-enforced        # Container-level sandbox (default LocalSandboxProvider)
+
+# -- Persistence contract -----------------------------------------------------
+persistence:
+  memory:
+    kind: sqlite-volume
+    mount: /opt/deer-flow/backend
+    host_subdir: agent-memory/{name}/deer-flow/
+    writable: true
+    note: DeerFlow persists run state to SQLite by default
+  workspace:
+    mount: /workspace
+    host_subdir: agent-workspaces/{name}/
+    writable: true
+  sessions:
+    mount: /sessions
+    host_subdir: agent-sessions/{name}/
+    writable: true
+
+# -- Capabilities matrix ------------------------------------------------------
+capabilities:
+  multi_model: true             # DeerFlow supports multiple model entries in config.yaml
+  hot_reload:
+    kind: restart-only          # DeerFlow requires restart for config changes
+    interval_seconds: null
+    push_supported: false
+    fallback: restart
+  metrics:
+    format: none                # DeerFlow has no built-in metrics endpoint
+  observability:
+    structured_logs: true       # DeerFlow backend logs are structured
+    trace_format: none
+
+# -- Installation -------------------------------------------------------------
+install:
+  base_image: debian:bookworm-slim
+  steps:
+    - apt: [python3, python3-venv, git, curl, ca-certificates, build-essential]
+    - run: "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    - run: "git clone --depth 1 https://github.com/bytedance/deer-flow /opt/deer-flow"
+    - run: "cd /opt/deer-flow/backend && uv sync"
+    - mkdir: [/var/log/deer-flow]
+  install_script: scripts/install.sh
+
+# -- Runtime ------------------------------------------------------------------
+runtime:
+  command: ["uv", "run", "uvicorn", "app.gateway.app:app", "--host", "127.0.0.1", "--port", "8001"]
+  working_dir: /opt/deer-flow/backend
+  env:
+    DEER_FLOW_CONFIG_PATH: /opt/deer-flow/config.yaml
+    PYTHONPATH: "."
+    OPENAI_BASE_URL: "http://${TAOS_HOST}:4000/v1"
+    OPENAI_API_KEY: "${AGENT_API_KEY}"
+    TAOS_MODEL: "${TAOS_MODEL}"
+  ports: [8001]
+
+# -- Health check -------------------------------------------------------------
+health:
+  kind: http
+  url: "http://localhost:8001/"
+  initial_delay_seconds: 10
+  interval_seconds: 15
+  failure_threshold: 3
+
+# -- Config reload ------------------------------------------------------------
+reload:
+  kind: restart-only            # DeerFlow requires restart for config changes
+  interval_seconds: null
+  push_supported: false
+  fallback: restart
+
+# -- Tier B escape hatches — none needed, adapter translates the runs API -----
+hooks: {}
+
+# -- Data migration — not applicable (DeerFlow uses its own persistence) ------
+data_migration: {}
+
+# -- Tests --------------------------------------------------------------------
+tests:
+  smoke:
+    - name: "adapter responds to /message with valid DeerFlow response"
+      input: {text: "Hello from TAOS", from_name: "Test User"}
+      expect_status: 200
+    - name: "adapter /health returns ok"
+      input: {}
+      expect_status: 200
+      expect_body: {status: ok, framework: deer-flow}
+  golden: []

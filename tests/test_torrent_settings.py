@@ -138,3 +138,44 @@ class TestTorrentSettingsStoreSaveThenReloadReturnTrip:
         loaded = store.load()
         assert loaded.seed_enabled is False
         assert loaded.upload_rate_limit_kbps == 100
+
+
+class TestTorrentSettingsStoreEdgeCases:
+    def test_load_truncated_json_returns_defaults(self, tmp_path):
+        p = tmp_path / "settings.json"
+        p.write_text('{"seed_enabled": true, "upload_rate_limit_kbps":')
+        store = TorrentSettingsStore(p)
+        s = store.load()
+        assert s == TorrentSettings()
+
+    def test_load_coerces_numeric_strings(self, tmp_path):
+        p = tmp_path / "settings.json"
+        p.write_text(json.dumps({
+            "seed_enabled": 0,
+            "upload_rate_limit_kbps": "3000",
+            "max_active_seeds": "10",
+        }))
+        store = TorrentSettingsStore(p)
+        s = store.load()
+        assert s.seed_enabled is False
+        assert s.upload_rate_limit_kbps == 3000
+        assert s.max_active_seeds == 10
+
+    def test_init_converts_string_path_to_pathlib(self, tmp_path):
+        path_str = str(tmp_path / "settings.json")
+        store = TorrentSettingsStore(path_str)
+        assert isinstance(store.path, Path)
+
+    def test_init_accepts_pathlib_path(self, tmp_path):
+        path = tmp_path / "settings.json"
+        store = TorrentSettingsStore(path)
+        assert store.path == path
+
+    def test_save_writes_indented_json(self, tmp_path):
+        p = tmp_path / "settings.json"
+        store = TorrentSettingsStore(p)
+        store.save(TorrentSettings(seed_enabled=True, upload_rate_limit_kbps=8000, max_active_seeds=50))
+        raw = p.read_text()
+        parsed = json.loads(raw)
+        assert parsed == {"seed_enabled": True, "upload_rate_limit_kbps": 8000, "max_active_seeds": 50}
+        assert "  " in raw  # indent=2 produces indentation

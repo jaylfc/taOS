@@ -714,6 +714,33 @@ async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int,
     return 0, ""
 
 
+async def _stash_local_source_changes(project_dir) -> bool:
+    """Stash any remaining tracked modifications so `git pull --ff-only` cannot
+    refuse the update. Build-artifact churn is restored by the caller before
+    this runs, so anything left is a real local source edit. We stash it (never
+    discard) and report it, instead of failing with a cryptic git error and
+    leaving the user stuck on the old version. Untracked files (data/, config)
+    are deliberately NOT stashed.
+
+    Returns True if something was stashed.
+    """
+    status_proc = await asyncio.create_subprocess_exec(
+        "git", "status", "--porcelain", "--untracked-files=no",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    status_out, _ = await status_proc.communicate()
+    if not (status_out and status_out.strip()):
+        return False
+    stash_proc = await asyncio.create_subprocess_exec(
+        "git", "stash", "push", "-m", "taOS auto-update: local source changes (recover with: git stash pop)",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await stash_proc.communicate()
+    return True
+
+
 @router.post("/api/settings/update")
 async def apply_update(request: Request):
     """Pull latest TinyAgentOS code from GitHub."""
@@ -742,6 +769,11 @@ async def apply_update(request: Request):
         cwd=str(project_dir),
     )
     await clean_proc.communicate()
+
+    # Any tracked source edits left after the build-artifact restore would make
+    # the ff-only pull below refuse (HTTP 500, user stuck). Stash them first so
+    # the update applies; the change is recoverable via `git stash pop`.
+    stashed_local = await _stash_local_source_changes(project_dir)
 
     # Git pull — pull the branch this install tracks (master on stable, dev on
     # a dev/test box). Pulling a hard-coded master onto a dev box fails ff-only
@@ -788,7 +820,12 @@ async def apply_update(request: Request):
     return {
         "status": "restarting",
         "output": output.strip(),
-        "message": "Update applied. Restarting now…",
+        "stashed_local_changes": stashed_local,
+        "message": (
+            "Update applied. Local source changes were stashed (recover with `git stash pop`). Restarting now…"
+            if stashed_local
+            else "Update applied. Restarting now…"
+        ),
     }
 
 

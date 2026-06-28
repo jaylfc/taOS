@@ -172,8 +172,10 @@ describe("MemoryWizardStep", () => {
     const deployBtn = await screen.findByRole("button", { name: /new agent/i });
     fireEvent.click(deployBtn);
 
+    // The compact step rail renders every step as a labelled dot (title +
+    // aria-label) but only shows the active step's text, so query the dot.
     await waitFor(() => {
-      expect(screen.getByText("Memory")).toBeDefined();
+      expect(screen.getByTitle("Memory")).toBeDefined();
     });
   });
 
@@ -195,7 +197,7 @@ describe("MemoryWizardStep", () => {
     await waitFor(() => {
       const steps = ["Persona", "Name & Color", "Framework", "Model", "Memory", "Permissions", "Failure Policy", "Review"];
       for (const s of steps) {
-        expect(screen.getByText(s)).toBeDefined();
+        expect(screen.getByTitle(s)).toBeDefined();
       }
     });
   });

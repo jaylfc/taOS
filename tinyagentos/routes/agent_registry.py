@@ -380,6 +380,7 @@ async def patch_registry_entry(
     if record is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     require_owner_or_admin(user, record["user_id"])
+    old_name = record.get("display_name") or ""
     updated = await store.update(
         canonical_id,
         display_name=body.display_name,
@@ -387,6 +388,25 @@ async def patch_registry_entry(
         role=body.role,
         capabilities=body.capabilities,
     )
+    if updated is None:
+        # The entry was revoked/removed between the get and the update; do not
+        # emit a rename notification for a row that no longer exists.
+        return JSONResponse({"error": "not found"}, status_code=404)
+    new_name = body.display_name
+    if new_name is not None and new_name != old_name:
+        notif_store = getattr(request.app.state, "notifications", None)
+        if notif_store is not None:
+            # Best effort: the rename has already persisted, so a notification
+            # failure must not turn a successful update into a 500.
+            try:
+                await notif_store.add(
+                    title="Agent renamed",
+                    message=f"Agent {canonical_id} renamed from {old_name!r} to {new_name!r}",
+                    level="info",
+                    source="agent_registry",
+                )
+            except Exception:
+                logger.warning("rename notification failed for %s", canonical_id, exc_info=True)
     return updated
 
 

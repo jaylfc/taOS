@@ -59,6 +59,42 @@ async def test_add_element_rejects_agent_user_shape(store):
         )
 
 
+@pytest.mark.parametrize("kind", ["text", "mermaid", "flowchart", "mindmap_edge"])
+@pytest.mark.asyncio
+async def test_user_can_add_ideas_board_kind(store, kind):
+    e = await store.add_element(
+        project_id="p",
+        element={"kind": kind, "x": 0, "y": 0, "w": 10, "h": 10, "payload": {"v": 1}},
+        author_kind="user", author_id="u",
+    )
+    assert e["kind"] == kind
+    assert e["payload"] == {"v": 1}
+
+
+@pytest.mark.parametrize("kind", ["text", "mermaid", "flowchart", "mindmap_edge"])
+@pytest.mark.asyncio
+async def test_agent_can_emit_ideas_board_kind(store, kind):
+    # Agents may paint the ideas-board kinds via the canvas tools (#68).
+    e = await store.add_element(
+        project_id="p",
+        element={"kind": kind, "x": 0, "y": 0, "w": 1, "h": 1, "payload": {}},
+        author_kind="agent", author_id="agent-1",
+    )
+    assert e["kind"] == kind
+    assert e["author_kind"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_agent_still_cannot_emit_user_shape(store):
+    # user_shape stays user-only even though the ideas-board kinds opened up.
+    with pytest.raises(ValueError, match="agents may not emit"):
+        await store.add_element(
+            project_id="p",
+            element={"kind": "user_shape", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {}},
+            author_kind="agent", author_id="agent-1",
+        )
+
+
 @pytest.mark.asyncio
 async def test_list_elements_excludes_other_projects(store):
     a = await store.add_element(

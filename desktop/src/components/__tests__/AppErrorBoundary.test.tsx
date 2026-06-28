@@ -84,4 +84,30 @@ describe("<AppErrorBoundary />", () => {
     expect(screen.queryByText(/taOS was updated/i)).toBeNull();
     expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
   });
+
+  it("logs the real error + component stack for a generic crash (diagnosable)", () => {
+    render(
+      <AppErrorBoundary>
+        <Thrower err={new ReferenceError("boom")} />
+      </AppErrorBoundary>
+    );
+    // The boundary surfaces the underlying error rather than swallowing it.
+    const logged = consoleErr.mock.calls.some(
+      (args) =>
+        args[0] === "[AppErrorBoundary]" &&
+        args[1] instanceof Error &&
+        (args[1] as Error).message === "boom",
+    );
+    expect(logged).toBe(true);
+  });
+
+  it("does not log for the expected waiting state", () => {
+    render(
+      <AppErrorBoundary>
+        <Thrower err={new BackendUnavailableError()} />
+      </AppErrorBoundary>
+    );
+    const loggedOurs = consoleErr.mock.calls.some((args) => args[0] === "[AppErrorBoundary]");
+    expect(loggedOurs).toBe(false);
+  });
 });

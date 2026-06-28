@@ -40,6 +40,31 @@ RELEASE_BASE_URL = (
     "https://github.com/jaylfc/tinyagentos-images/releases/download/rolling-images"
 )
 
+# Generic base alias usable by any framework. It bakes the common deps
+# (python3/node/npm/build-essential/git/curl/etc) without any single
+# framework's package, so a deploy from it still skips the cold apt run.
+GENERIC_BASE_ALIAS = "taos-base"
+
+# Frameworks that have a dedicated prebuilt base image (alias
+# "taos-<framework>-base"). openclaw keeps its historical alias for
+# back-compat. Hermes' base additionally bakes the NousResearch
+# hermes-agent prerequisites so a hermes deploy needs only config.
+FRAMEWORKS_WITH_DEDICATED_BASE = frozenset({"openclaw", "hermes"})
+
+
+def base_image_alias(framework: str) -> str:
+    """Return the prebuilt base-image alias for ``framework``.
+
+    Frameworks listed in :data:`FRAMEWORKS_WITH_DEDICATED_BASE` get a
+    dedicated ``taos-<framework>-base`` alias (openclaw keeps its
+    historical ``taos-openclaw-base``). Everything else maps to the
+    generic ``taos-base``. The deployer tries the dedicated alias first
+    and falls back to the generic one, then to a cold image.
+    """
+    if framework in FRAMEWORKS_WITH_DEDICATED_BASE:
+        return f"taos-{framework}-base"
+    return GENERIC_BASE_ALIAS
+
 
 def is_prefetch_enabled() -> bool:
     """Return True if the user has opted in to base image prefetching.
@@ -88,9 +113,45 @@ def arch_suffix() -> str:
     return machine or "unknown"
 
 
-def base_image_url(arch: str | None = None) -> str:
-    """URL of the published image tarball for ``arch`` (defaults to host arch)."""
-    return f"{RELEASE_BASE_URL}/{BASE_IMAGE_ALIAS}-linux-{arch or arch_suffix()}.tar.gz"
+def base_image_url(arch: str | None = None, framework: str | None = None) -> str:
+    """URL of the published image tarball for ``arch`` (defaults to host arch).
+
+    ``framework`` selects which base alias the URL points at. When omitted
+    the historical ``taos-openclaw-base`` alias is used so existing callers
+    (which only pass ``arch``) keep their behaviour. Pass a framework name to
+    get that framework's dedicated base, or the generic ``taos-base`` fallback.
+    """
+    alias = base_image_alias(framework) if framework is not None else BASE_IMAGE_ALIAS
+    return base_image_url_for_alias(alias, arch)
+
+
+def base_image_url_for_alias(alias: str, arch: str | None = None) -> str:
+    """URL of the published tarball for a base-image ``alias`` directly.
+
+    Aliases map 1:1 onto asset names in the images release, so this is the
+    single source of truth the alias-keyed prefetch path uses to avoid
+    importing the wrong tarball under an alias (e.g. the openclaw tarball
+    under ``taos-hermes-base``).
+    """
+    return f"{RELEASE_BASE_URL}/{alias}-linux-{arch or arch_suffix()}.tar.gz"
+
+
+def all_base_image_aliases() -> list[str]:
+    """Aliases that prefetch should import: every dedicated-base framework's
+    alias plus the generic ``taos-base``.
+
+    Ordered, de-duplicated, deterministic. The deployer's fast-path tries a
+    framework's dedicated base then the generic one, so both must be present
+    on a fresh host for the fast-path to trigger for any framework.
+    """
+    aliases: list[str] = []
+    for framework in sorted(FRAMEWORKS_WITH_DEDICATED_BASE):
+        alias = base_image_alias(framework)
+        if alias not in aliases:
+            aliases.append(alias)
+    if GENERIC_BASE_ALIAS not in aliases:
+        aliases.append(GENERIC_BASE_ALIAS)
+    return aliases
 
 
 async def is_image_present(alias: str = BASE_IMAGE_ALIAS) -> bool:
@@ -200,7 +261,9 @@ async def ensure_image_present(
     """
     if await is_image_present(alias):
         return True
-    import_url = url or base_image_url()
+    # Derive the URL from the alias so a non-openclaw alias never imports the
+    # openclaw tarball (an explicit url still wins for tests / overrides).
+    import_url = url or base_image_url_for_alias(alias)
     _prefetch_state.update(
         status="downloading",
         started_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
@@ -268,14 +331,41 @@ async def ensure_image_present(
             pass
 
 
+async def ensure_all_base_images_present() -> dict[str, bool]:
+    """Import every base image the deployer fast-path can use.
+
+    Imports each alias from :func:`all_base_image_aliases` (the dedicated-base
+    frameworks plus the generic ``taos-base``) so the fast-path can trigger
+    for any framework on a fresh host -- not just openclaw. Each import is
+    independent and non-fatal: a failure on one alias is logged and the rest
+    still run. Returns an ``{alias: ok}`` map.
+
+    Intended as the one-time boot bootstrap (called when prefetch is enabled).
+    """
+    results: dict[str, bool] = {}
+    for alias in all_base_image_aliases():
+        try:
+            results[alias] = await ensure_image_present(alias)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("agent_image: ensure %s failed: %s", alias, exc)
+            results[alias] = False
+    return results
+
+
 __all__ = [
     "BASE_IMAGE_ALIAS",
+    "GENERIC_BASE_ALIAS",
+    "FRAMEWORKS_WITH_DEDICATED_BASE",
+    "base_image_alias",
     "RELEASE_BASE_URL",
     "is_prefetch_enabled",
     "get_prefetch_state",
     "register_prefetch_endpoint",
     "arch_suffix",
     "base_image_url",
+    "base_image_url_for_alias",
+    "all_base_image_aliases",
     "is_image_present",
     "ensure_image_present",
+    "ensure_all_base_images_present",
 ]

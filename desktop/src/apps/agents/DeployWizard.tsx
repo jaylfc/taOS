@@ -188,7 +188,7 @@ export function MemoryWizardStep({
             <button
               type="button"
               onClick={() => setMemoryPickerMode("picker")}
-              className="text-xs text-blue-400 hover:underline"
+              className="text-xs text-accent hover:underline"
             >
               Change
             </button>
@@ -219,7 +219,7 @@ export function MemoryWizardStep({
         <button
           type="button"
           onClick={() => setMemoryPlugin("taosmd")}
-          className="text-xs text-blue-400 hover:underline"
+          className="text-xs text-accent hover:underline"
         >
           Enable memory
         </button>
@@ -919,6 +919,9 @@ export function DeployWizard({
           {STEPS.map((label, i) => (
             <div key={label} className="flex items-center gap-1">
               <div
+                title={label}
+                aria-label={label}
+                aria-current={i === step ? "step" : undefined}
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium transition-colors ${
                   i < step
                     ? "bg-accent/20 text-accent"
@@ -929,15 +932,15 @@ export function DeployWizard({
               >
                 {i < step ? <Check size={12} /> : i + 1}
               </div>
-              <span
-                className={`text-[11px] hidden sm:inline ${
-                  i === step ? "text-shell-text" : "text-shell-text-tertiary"
-                }`}
-              >
-                {label}
-              </span>
+              {/* Only the active step shows its label, so the rail never
+                  wraps. Completed/upcoming steps are compact numbered dots. */}
+              {i === step && (
+                <span className="text-[11px] font-medium text-shell-text whitespace-nowrap ml-0.5">
+                  {label}
+                </span>
+              )}
               {i < STEPS.length - 1 && (
-                <div className="w-4 h-px bg-white/10 mx-0.5" />
+                <div className={`w-4 h-px mx-1 ${i < step ? "bg-accent/30" : "bg-white/10"}`} />
               )}
             </div>
           ))}
@@ -986,7 +989,7 @@ export function DeployWizard({
                             setCustomSlug(customSlug ?? derivedSlug);
                             setEditingSlug(true);
                           }}
-                          className="text-blue-400 hover:underline"
+                          className="text-accent hover:underline"
                         >
                           edit
                         </button>
@@ -1069,37 +1072,55 @@ export function DeployWizard({
                 .map((fw) => {
                   const isAlpha = fw.verification_status === "alpha";
                   const selectable = !isAlpha || showExperimental;
+                  const isSelected = selectedFramework === fw.id;
                   return (
                     <button
                       key={fw.id}
                       onClick={() => selectable ? setSelectedFramework(fw.id) : undefined}
                       disabled={!selectable}
                       aria-disabled={!selectable}
-                      className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+                      className={`group w-full text-left px-3.5 py-3 rounded-lg border transition-colors ${
                         !selectable
                           ? "border-white/5 bg-shell-bg-deep opacity-40 cursor-not-allowed"
-                          : selectedFramework === fw.id
+                          : isSelected
                             ? "border-accent bg-accent/10"
-                            : "border-white/5 bg-shell-bg-deep hover:bg-white/5"
+                            : "border-white/10 bg-shell-bg-deep hover:bg-white/5"
                       }`}
                     >
-                      <div className="flex items-center gap-2">
-                        <span className={`text-sm font-medium ${isAlpha ? "text-shell-text-tertiary" : ""}`}>
-                          {fw.name}
-                        </span>
-                        {fw.verification_status === "beta" && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 leading-none">
-                            Beta
-                          </span>
-                        )}
-                        {fw.verification_status === "alpha" && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-500/20 text-zinc-400 leading-none">
-                            Alpha · Testing
-                          </span>
-                        )}
-                      </div>
-                      <div className={`text-xs mt-0.5 ${isAlpha ? "text-shell-text-tertiary" : "text-shell-text-secondary"}`}>
-                        {fw.description}
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={`shrink-0 mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-semibold uppercase ${
+                            isSelected
+                              ? "border-accent/40 bg-accent/10 text-accent"
+                              : "border-white/10 bg-shell-bg text-shell-text-secondary"
+                          }`}
+                          aria-hidden="true"
+                        >
+                          {fw.name.charAt(0)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-medium ${isAlpha ? "text-shell-text-tertiary" : ""}`}>
+                              {fw.name}
+                            </span>
+                            {fw.verification_status === "beta" && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 leading-none">
+                                Beta
+                              </span>
+                            )}
+                            {fw.verification_status === "alpha" && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-500/20 text-zinc-400 leading-none">
+                                Alpha · Testing
+                              </span>
+                            )}
+                            {isSelected && (
+                              <Check size={14} className="ml-auto shrink-0 text-accent" aria-hidden="true" />
+                            )}
+                          </div>
+                          <div className={`text-xs mt-0.5 ${isAlpha ? "text-shell-text-tertiary" : "text-shell-text-secondary"}`}>
+                            {fw.description}
+                          </div>
+                        </div>
                       </div>
                     </button>
                   );
@@ -1230,7 +1251,7 @@ export function DeployWizard({
                 className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
                   canReadUserMemory
                     ? "border-accent bg-accent/10"
-                    : "border-white/5 bg-shell-bg-deep hover:bg-white/5"
+                    : "border-white/10 bg-shell-bg-deep hover:bg-white/5"
                 }`}
               >
                 <input
@@ -1242,7 +1263,12 @@ export function DeployWizard({
                   aria-describedby="agent-user-memory-desc"
                 />
                 <div className="flex-1">
-                  <div className="text-sm font-medium">Allow this agent to read your memory</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">Allow this agent to read your memory</span>
+                    {canReadUserMemory && (
+                      <Check size={14} className="ml-auto shrink-0 text-accent" aria-hidden="true" />
+                    )}
+                  </div>
                   <div
                     id="agent-user-memory-desc"
                     className="text-xs text-shell-text-secondary mt-0.5"
@@ -1286,7 +1312,7 @@ export function DeployWizard({
                 </Label>
                 <div className="space-y-1.5">
                   {fallbackModels.filter(Boolean).map((m, i) => (
-                    <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-white/5 bg-shell-bg-deep">
+                    <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-white/10 bg-shell-bg-deep">
                       <span className="flex-1 text-sm truncate">
                         {models.find(mo => mo.id === m)?.name ?? m}
                       </span>

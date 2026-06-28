@@ -66,6 +66,13 @@ class ScreenshotResultIn(BaseModel):
     error: str = ""
 
 
+class LayoutResultIn(BaseModel):
+    request_id: str
+    # The desktop's window.taosDesktop.getLayout() result: {screen, windows}.
+    layout: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
 @router.post("/api/desktop/screenshot")
 async def take_screenshot(request: Request):
     """Capture the calling user's live desktop and return a PNG.
@@ -122,6 +129,57 @@ async def screenshot_result(body: ScreenshotResultIn, request: Request):
         return JSONResponse({"error": "screenshot too large"}, status_code=413)
     broker = request.app.state.desktop_command_broker
     payload = {"error": body.error} if body.error else {"image": body.image}
+    resolved = broker.resolve_result(
+        body.request_id, payload, user_id=_user_id(request),
+    )
+    return {"resolved": resolved}
+
+
+@router.post("/api/desktop/layout")
+async def get_layout(request: Request):
+    """Read the calling user's live desktop layout: screen size + every window's
+    bounds and state. This is the "screen-aware" read half of the agent window-
+    management API -- the agent fetches the layout to decide placement, then
+    drives windows via POST /api/desktop/command kind="window" (move/resize/snap/
+    arrange). Mirrors the screenshot round-trip: emit a `layout` command, the
+    first desktop to answer POSTs its getLayout() to /api/desktop/layout-result.
+    409 if no desktop is connected, 504 if none responds in time.
+    """
+    broker = request.app.state.desktop_command_broker
+    user_id = _user_id(request)
+    request_id = uuid.uuid4().hex
+    fut = broker.register_result(request_id, user_id)
+    try:
+        delivered = await broker.emit(
+            user_id,
+            DesktopCommand(kind="layout", payload={"request_id": request_id}),
+        )
+        if delivered == 0:
+            return JSONResponse({"error": "no desktop connected"}, status_code=409)
+        try:
+            result = await asyncio.wait_for(fut, timeout=10.0)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                {"error": "desktop did not respond in time"}, status_code=504,
+            )
+    finally:
+        broker.discard_result(request_id)
+
+    if isinstance(result, dict) and result.get("error"):
+        return JSONResponse({"error": result["error"]}, status_code=502)
+    layout = result.get("layout", {}) if isinstance(result, dict) else {}
+    return JSONResponse(layout)
+
+
+@router.post("/api/desktop/layout-result")
+async def layout_result(body: LayoutResultIn, request: Request):
+    """A desktop reports its getLayout() result, resolving the waiting request.
+
+    Scoped like the screenshot result: only this user's desktops receive the
+    layout command (which carries the request_id), and resolve_result re-checks
+    the calling user owns the request before resolving."""
+    broker = request.app.state.desktop_command_broker
+    payload = {"error": body.error} if body.error else {"layout": body.layout}
     resolved = broker.resolve_result(
         body.request_id, payload, user_id=_user_id(request),
     )

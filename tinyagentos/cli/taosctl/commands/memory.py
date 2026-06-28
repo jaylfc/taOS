@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from tinyagentos.cli.taosctl.argtypes import positive_int, nonneg_int
+
 NOUN = "memory"
 
 
@@ -20,15 +22,15 @@ def register(subparsers) -> None:
     lp = verbs.add_parser("list", help="List memory chunks (browse)")
     lp.add_argument("--agent", help="Agent name (omit for user scope)")
     lp.add_argument("--collection", help="Collection filter")
-    lp.add_argument("--limit", type=int, default=20, help="Max results")
-    lp.add_argument("--offset", type=int, default=0, help="Offset")
+    lp.add_argument("--limit", type=positive_int, default=20, help="Max results")
+    lp.add_argument("--offset", type=nonneg_int, default=0, help="Offset")
     lp.set_defaults(func=_list)
 
     sp = verbs.add_parser("search", help="Search memory (keyword or semantic)")
     sp.add_argument("query", help="Search query")
     sp.add_argument("--agent", help="Agent name (omit for user scope)")
     sp.add_argument("--collection", help="Collection filter")
-    sp.add_argument("--limit", type=int, default=20, help="Max results")
+    sp.add_argument("--limit", type=positive_int, default=20, help="Max results")
     sp.add_argument("--mode", choices=["keyword", "semantic"], default="keyword",
                     help="Search mode (default: keyword)")
     sp.add_argument("--conversation-id", help="W3C trace conversation id")

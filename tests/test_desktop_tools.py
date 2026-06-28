@@ -79,3 +79,32 @@ async def test_refuses_when_no_authenticated_user():
     assert "error" in res
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(sub.get(), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_read_layout_no_desktop_returns_error():
+    from tinyagentos.tools.desktop_tools import execute_read_layout
+    broker = DesktopCommandBroker()
+    res = await execute_read_layout({}, _fake_request(broker))
+    assert res.get("error") == "no desktop connected"
+
+
+@pytest.mark.asyncio
+async def test_read_layout_round_trips_desktop_report():
+    import asyncio
+    from tinyagentos.tools.desktop_tools import execute_read_layout
+    broker = DesktopCommandBroker()
+    req = _fake_request(broker)
+    user_id = req.state.user_id
+    q = await broker.subscribe(user_id)
+    sample = {"screen": {"width": 1440, "height": 900, "ratio": 1.6}, "windows": []}
+
+    async def respond():
+        cmd = await asyncio.wait_for(q.get(), timeout=2.0)
+        assert cmd.kind == "layout"
+        broker.resolve_result(cmd.payload["request_id"], {"layout": sample}, user_id=user_id)
+
+    responder = asyncio.create_task(respond())
+    res = await execute_read_layout({}, req)
+    await responder
+    assert res == {"ok": True, "layout": sample}

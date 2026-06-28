@@ -166,13 +166,17 @@ class TestPortAllocator:
 
     def test_allocate_skips_in_use_port(self):
         import socket
-        # Bind a port in the pool so the allocator is forced to skip it.
+        # Hold an OS-assigned free port so the allocator is forced to skip it.
+        # A fixed port collides across workers under `pytest -n auto` (EADDRINUSE
+        # flakiness); an ephemeral port (bind to 0) is unique per run. Bind
+        # 0.0.0.0 to match the allocator's _is_port_free check and listen() so the
+        # port is unambiguously in use (no SO_REUSEADDR, which could let the
+        # allocator's own bind succeed and break the assertion).
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Use a fixed port outside the reserved set to make this predictable.
-            blocked = 35000
-            s.bind(("0.0.0.0", blocked))
-            # Temporarily stub allocate_host_port's start to land on `blocked`.
+            s.bind(("0.0.0.0", 0))
+            s.listen(1)
+            blocked = s.getsockname()[1]
+            # Temporarily stub allocate_host_port's pool to surround `blocked`.
             from tinyagentos.installers import port_allocator
             original_start = port_allocator._POOL_START
             original_end = port_allocator._POOL_END

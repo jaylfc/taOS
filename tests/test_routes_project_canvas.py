@@ -154,6 +154,44 @@ async def test_create_user_shape_element_returns_201(client):
 
 
 # ---------------------------------------------------------------------------
+# Ideas-board kinds (#68): text, mermaid, flowchart, mindmap_edge.
+# Content travels in the free-form payload, so each just needs to round-trip.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kind,payload",
+    [
+        ("text", {"text": "an idea", "font_size": 18}),
+        ("mermaid", {"source": "graph TD; A-->B"}),
+        ("flowchart", {"source": "flowchart LR; start-->end"}),
+        ("mindmap_edge", {"from": "cve-a", "to": "cve-b"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_ideas_board_kind_round_trips(client, kind, payload):
+    body = {"kind": kind, "x": 5, "y": 5, "w": 120, "h": 60, "payload": payload}
+    resp = await client.post("/api/projects/proj-1/canvas/elements", json=body)
+    assert resp.status_code == 201, resp.text
+    el = resp.json()["element"]
+    assert el["kind"] == kind
+    assert el["payload"] == payload
+
+
+@pytest.mark.asyncio
+async def test_ideas_board_kind_appears_in_list(client):
+    body = {
+        "kind": "mermaid",
+        "x": 0, "y": 0, "w": 200, "h": 120,
+        "payload": {"source": "graph TD; X-->Y"},
+    }
+    await client.post("/api/projects/proj-1/canvas/elements", json=body)
+    data = (await client.get("/api/projects/proj-1/canvas/elements")).json()
+    kinds = [e["kind"] for e in data["elements"]]
+    assert "mermaid" in kinds
+
+
+# ---------------------------------------------------------------------------
 # Update element
 # ---------------------------------------------------------------------------
 

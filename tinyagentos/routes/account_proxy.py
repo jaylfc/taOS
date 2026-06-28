@@ -5,8 +5,9 @@ The taOS client (Settings > Account, the off-network screen) calls same-origin
 We forward to {TAOS_ACCOUNT_BASE_URL}/api/auth/* with cookie pass-through both
 ways, so the taos.my session cookie round-trips through this host origin.
 
-If TAOS_ACCOUNT_BASE_URL is unset the proxy returns 503 and the Account pane
-renders its 'service unavailable' state, so the client ships ahead of taos.my.
+The taOS online account is a core feature for every instance, so the base URL
+defaults to https://taos.my; TAOS_ACCOUNT_BASE_URL stays an override for local or
+staging testing. (A blank override still yields a 503 'service unavailable'.)
 """
 from __future__ import annotations
 
@@ -31,9 +32,20 @@ _ACTIONS: dict[str, tuple[str, str]] = {
 _TIMEOUT = httpx.Timeout(15.0)
 
 
+# The taOS online account lives at taos.my for every instance; it is a core
+# product feature, not per-deployment config. Default to it; the env var is an
+# override for local/staging only.
+_DEFAULT_ACCOUNT_BASE_URL = "https://taos.my"
+
+
 def _base_url() -> str | None:
-    base = os.environ.get("TAOS_ACCOUNT_BASE_URL", "").strip()
-    return base.rstrip("/") or None
+    raw = os.environ.get("TAOS_ACCOUNT_BASE_URL")
+    if raw is None:
+        # Unset: use the production account service. This is the normal path.
+        return _DEFAULT_ACCOUNT_BASE_URL
+    # An explicit (possibly blank) override: blank disables the proxy (503),
+    # which dev/test use to exercise the unavailable state.
+    return raw.strip().rstrip("/") or None
 
 
 def _trust_forwarded_proto() -> bool:

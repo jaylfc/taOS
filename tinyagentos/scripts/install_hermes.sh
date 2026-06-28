@@ -20,16 +20,30 @@ fi
 export PATH="/root/.local/bin:$PATH"
 echo 'export PATH="/root/.local/bin:$PATH"' >> /root/.bashrc
 
-if [ ! -d /root/.hermes/hermes-agent ]; then
-    log "running Hermes installer (--skip-setup)"
-    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup
-fi
+# Detect an existing hermes install first so a prebaked base image (which
+# already has the binary, e.g. taos-hermes-base) skips the slow installer.
+# /root/.hermes/hermes-agent does not exist in this installer layout, so we
+# probe the real binary paths instead. On a cold container nothing matches
+# and the installer runs as before.
+find_hermes() {
+    local c
+    for c in /root/.local/bin/hermes /usr/local/bin/hermes \
+             /root/.hermes/hermes-agent/.venv/bin/hermes \
+             /root/.hermes/hermes-agent/venv/bin/hermes; do
+        [ -L "$c" -o -x "$c" ] && { echo "$c"; return 0; }
+    done
+    command -v hermes 2>/dev/null && return 0
+    return 1
+}
 
-HERMES_BIN=""
-for c in /root/.local/bin/hermes /root/.hermes/hermes-agent/.venv/bin/hermes /root/.hermes/hermes-agent/venv/bin/hermes; do
-    [ -L "$c" -o -x "$c" ] && HERMES_BIN="$c" && break
-done
-[ -z "$HERMES_BIN" ] && HERMES_BIN=$(command -v hermes || true)
+HERMES_BIN="$(find_hermes || true)"
+if [ -z "$HERMES_BIN" ]; then
+    log "hermes not present -- running Hermes installer (--skip-setup)"
+    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup
+    HERMES_BIN="$(find_hermes || true)"
+else
+    log "hermes already installed (base image) -- skipping installer"
+fi
 [ -z "$HERMES_BIN" ] && { log "ERROR: hermes binary not found"; exit 2; }
 log "hermes at $HERMES_BIN"
 

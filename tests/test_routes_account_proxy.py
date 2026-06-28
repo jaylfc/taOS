@@ -26,11 +26,24 @@ class _FakeResp:
 
 
 @pytest.mark.asyncio
-async def test_account_me_503_when_unconfigured(client, monkeypatch):
-    monkeypatch.delenv("TAOS_ACCOUNT_BASE_URL", raising=False)
+async def test_account_me_503_when_explicitly_blanked(client, monkeypatch):
+    # An explicit blank override disables the proxy (the dev/off-taos.my state).
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
     r = await client.get("/api/account/me")
     assert r.status_code == 503
     assert "not configured" in r.json().get("error", "")
+
+
+def test_base_url_defaults_to_taos_my(monkeypatch):
+    from tinyagentos.routes.account_proxy import _base_url
+    # Unset (the normal instance) uses the production account service.
+    monkeypatch.delenv("TAOS_ACCOUNT_BASE_URL", raising=False)
+    assert _base_url() == "https://taos.my"
+    # An explicit blank disables it; a real override is honored (trailing / trimmed).
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    assert _base_url() is None
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://staging.taos.my/")
+    assert _base_url() == "https://staging.taos.my"
 
 
 @pytest.mark.asyncio
@@ -215,7 +228,8 @@ async def test_cluster_join_rejects_bad_request_id(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cluster_join_503_when_unconfigured(client, monkeypatch):
-    monkeypatch.delenv("TAOS_ACCOUNT_BASE_URL", raising=False)
+async def test_cluster_join_503_when_explicitly_blanked(client, monkeypatch):
+    # Unset now defaults to taos.my; an explicit blank disables the proxy (503).
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
     r = await client.get("/api/account/cluster/join/requests")
     assert r.status_code == 503

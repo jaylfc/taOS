@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch, call
 from tinyagentos.containers import (
     list_containers, create_container, set_root_quota, set_env,
     start_container, stop_container, destroy_container,
+    container_exists,
     _parse_memory, ContainerInfo,
 )
 
@@ -221,11 +222,140 @@ class TestContainerLifecycle:
     @pytest.mark.asyncio
     async def test_destroy(self):
         with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = (0, "")
+            # 1st call resolves the project (empty list -> ambient fallback),
+            # then stop --force, then delete --force.
+            mock_run.side_effect = [(0, "[]"), (0, ""), (0, "")]
             result = await destroy_container("taos-agent-test")
             assert result["success"] is True
-            # Should have called stop --force then delete --force
-            assert mock_run.call_count == 2
+            assert mock_run.call_count == 3
+            # No --project flag when the container is not found in any project.
+            stop_cmd = mock_run.call_args_list[1].args[0]
+            assert "--project" not in stop_cmd
+
+
+class TestSnapshotCreateSelfHeal:
+    """snapshot_create must succeed in restricted projects (BUG A)."""
+
+    @pytest.mark.asyncio
+    async def test_self_heals_project_snapshot_restriction(self):
+        from tinyagentos.containers import snapshot_create
+
+        forbidden = (
+            'Error: Failed to create instance snapshot: Project "user-999" '
+            "doesn't allow for snapshot creation"
+        )
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            # 1) snapshot create -> forbidden
+            # 2) project set restricted.snapshots allow -> ok
+            # 3) snapshot create retry -> ok
+            if cmd[:3] == ["incus", "snapshot", "create"] and len(calls) == 1:
+                return (1, forbidden)
+            if cmd[:3] == ["incus", "project", "set"]:
+                return (0, "")
+            return (0, "")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            result = await snapshot_create("taos-agent-x", "taos-archive-1")
+
+        assert result["success"] is True
+        # The project named in the error was relaxed before the retry.
+        set_cmd = next(c for c in calls if c[:3] == ["incus", "project", "set"])
+        assert set_cmd == [
+            "incus", "project", "set", "user-999",
+            "restricted.snapshots", "allow",
+        ]
+        # Two snapshot-create attempts: original + retry.
+        snap_attempts = [c for c in calls if c[:3] == ["incus", "snapshot", "create"]]
+        assert len(snap_attempts) == 2
+
+    @pytest.mark.asyncio
+    async def test_non_restriction_failure_does_not_retry(self):
+        from tinyagentos.containers import snapshot_create
+
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            return (1, "Error: storage pool is offline")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            result = await snapshot_create("taos-agent-x", "taos-archive-1")
+
+        assert result["success"] is False
+        # A non-restriction failure must NOT touch project config nor retry.
+        assert all(c[:3] != ["incus", "project", "set"] for c in calls)
+        assert len(calls) == 1
+
+
+class TestResolveAgentContainer:
+    """resolve_agent_container probes both naming conventions across projects."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_legacy_name_across_projects(self):
+        from tinyagentos.containers import resolve_agent_container
+
+        listing = json.dumps([
+            {"name": "taos-test", "project": "user-999"},
+            {"name": "some-other-vm", "project": "default"},
+        ])
+        with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (0, listing)
+            # Derived ``taos-agent-test`` is absent; legacy ``taos-test`` is found.
+            name = await resolve_agent_container("test")
+        assert name == "taos-test"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_taos_container_matches(self):
+        from tinyagentos.containers import resolve_agent_container
+
+        listing = json.dumps([{"name": "unrelated", "project": "default"}])
+        with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (0, listing)
+            assert await resolve_agent_container("test") is None
+
+    @pytest.mark.asyncio
+    async def test_list_all_taos_containers_filters_non_taos(self):
+        from tinyagentos.containers import list_all_taos_containers
+
+        listing = json.dumps([
+            {"name": "taos-agent-a", "project": "default"},
+            {"name": "taos-b", "project": "user-1"},
+            {"name": "postgres", "project": "default"},
+        ])
+        with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (0, listing)
+            out = await list_all_taos_containers()
+        names = {c["name"] for c in out}
+        assert names == {"taos-agent-a", "taos-b"}
+
+    @pytest.mark.asyncio
+    async def test_destroy_targets_restricted_project(self):
+        """A container living in a restricted project (user-999) must be
+        destroyed there, not left orphaned because the ambient project is
+        'default'."""
+        listing = json.dumps([{"name": "taos-agent-x", "project": "user-999"}])
+        with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [(0, listing), (0, ""), (0, "")]
+            result = await destroy_container("taos-agent-x")
+            assert result["success"] is True
+            stop_cmd = mock_run.call_args_list[1].args[0]
+            del_cmd = mock_run.call_args_list[2].args[0]
+            assert stop_cmd[:4] == ["incus", "stop", "--project", "user-999"]
+            assert del_cmd[:4] == ["incus", "delete", "--project", "user-999"]
+
+    @pytest.mark.asyncio
+    async def test_container_exists_finds_in_any_project(self):
+        listing = json.dumps([
+            {"name": "taos-agent-a", "project": "default"},
+            {"name": "taos-agent-b", "project": "user-999"},
+        ])
+        with patch("tinyagentos.containers._run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (0, listing)
+            assert await container_exists("taos-agent-b") is True
+            assert await container_exists("taos-agent-missing") is False
 
 
 class TestAddProxyDeviceSelfHeal:

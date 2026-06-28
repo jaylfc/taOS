@@ -1,0 +1,51 @@
+id: deer-flow
+name: DeerFlow SuperAgent
+type: agent-framework
+verification_status: alpha
+version: 2.1.0
+description: "ByteDance DeerFlow long-horizon LangGraph SuperAgent harness — multi-step research and tool-use agent runtime served via its native runs API"
+homepage: https://github.com/bytedance/deer-flow
+license: MIT
+
+requires:
+  ram_mb: 2048
+  disk_mb: 4000
+  python: ">=3.12"
+
+install:
+  method: script
+  script: scripts/install.sh
+  note: |
+    Clones bytedance/deer-flow into /opt/deer-flow and provisions the backend
+    with uv (Python 3.12). Writes a config.yaml pointing DeerFlow at the taOS
+    LiteLLM proxy and a systemd unit that serves the backend runs API on 8001.
+    The bridge adapter (deer_flow_adapter.py) lives in the taOS controller.
+
+config_schema:
+  - name: model
+    type: model-select
+    label: LLM Model
+    required: true
+    description: Primary chat model for the DeerFlow agent
+
+compliance:
+  # DeerFlow is NOT OpenAI-compatible on its chat surface — it exposes a custom
+  # LangGraph runs API. The adapter translates taOS /message into a POST to
+  # /api/runs/wait, so this is a plain "verified" entry with no fork_url.
+  tier: verified
+  adapter: deer_flow_adapter.py
+  bridge_protocol: langgraph-runs
+  notes: |
+    DeerFlow speaks a custom LangGraph runs API, not OpenAI chat completions.
+    The adapter translates taOS /message calls into POST /api/runs/wait and
+    extracts the final assistant reply from the serialized channel-values.
+    DeerFlow itself calls the taOS LiteLLM proxy (OpenAI-compatible) for LLM
+    inference via its config.yaml. No fork required — the bridge adapter
+    (deer_flow_adapter.py) lives in the taOS controller, not in a fork.
+
+hardware_tiers:
+  arm-npu-16gb: full
+  arm-npu-32gb: full
+  x86-cuda-12gb: full
+  x86-vulkan-8gb: full
+  cpu-only: full

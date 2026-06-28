@@ -85,10 +85,17 @@ class LLMProxy:
         local_token: str | None = None,
         registry=None,
         data_dir: Path | None = None,
+        inhouse_keys: bool = False,
     ):
         self.port = port
         self.config_dir = config_dir or Path("/tmp/taos-litellm")
         self.database_url = database_url
+        # In-house key mode: mint/scope per-agent keys in a local SQLite store
+        # and authorize them via the custom_auth hook, instead of LiteLLM's
+        # Postgres/prisma virtual-key table. Lets virtual keys work with NO
+        # DATABASE_URL (the ARM / no-Postgres fix). Opt-in; the router,
+        # streaming, master key, and usage callback are unaffected.
+        self.inhouse_keys = inhouse_keys
         # Local auth token for taOS callbacks (POST /api/trace). Exported
         # to the LiteLLM subprocess as ``TAOS_LOCAL_TOKEN`` so the custom
         # logger in ``tinyagentos.litellm_callback`` can authenticate to
@@ -105,6 +112,18 @@ class LLMProxy:
         # When None, an in-memory key is used (acceptable in tests / routing-only mode).
         self._data_dir = data_dir
         self._process: subprocess.Popen | None = None
+        self._keystore_cache = None
+
+    def _keystore(self):
+        """Lazily open the in-house key store (controller side)."""
+        if self._keystore_cache is None:
+            from tinyagentos.litellm_keystore import (
+                LiteLLMKeyStore,
+                default_keystore_path,
+            )
+            base = self._data_dir or self.config_dir
+            self._keystore_cache = LiteLLMKeyStore(default_keystore_path(base))
+        return self._keystore_cache
 
     @property
     def url(self) -> str:
@@ -140,6 +159,7 @@ class LLMProxy:
             registry=self._registry,
             master_key=get_litellm_master_key(self._data_dir),
             discovered=discovered,
+            inhouse_keys=self.inhouse_keys,
         )
         config_path = self.config_dir / "litellm_config.yaml"
 
@@ -151,6 +171,12 @@ class LLMProxy:
             "from tinyagentos.litellm_callback import taos_callback "
             "as proxy_handler_instance\n"
         )
+        if self.inhouse_keys:
+            # Sibling shim so LiteLLM's config-dir-relative importer can load
+            # the custom_auth hook (general_settings.custom_auth: taos_auth...).
+            (self.config_dir / "taos_auth.py").write_text(
+                "from tinyagentos.litellm_auth import user_api_key_auth\n"
+            )
         return config_path
 
     async def start(
@@ -254,10 +280,18 @@ class LLMProxy:
         existing_path = env.get("PATH", "")
         if venv_bin not in existing_path.split(os.pathsep):
             env["PATH"] = venv_bin + os.pathsep + existing_path if existing_path else venv_bin
-        # DATABASE_URL enables Postgres-backed virtual keys. Without it
-        # LiteLLM still routes chat/embeddings fine but /key/generate
-        # returns a server error.
-        if self.database_url:
+        if self.inhouse_keys:
+            # In-house key mode: the custom_auth hook authorizes per-agent
+            # tokens from this SQLite store. Point the subprocess at it and do
+            # NOT export DATABASE_URL, so LiteLLM never starts prisma (the ARM
+            # fix). The router still works fully without a DB.
+            from tinyagentos.litellm_keystore import default_keystore_path
+            base = self._data_dir or self.config_dir
+            env["TAOS_LITELLM_KEYSTORE"] = str(default_keystore_path(base))
+        elif self.database_url:
+            # DATABASE_URL enables Postgres-backed virtual keys. Without it
+            # LiteLLM still routes chat/embeddings fine but /key/generate
+            # returns a server error.
             env["DATABASE_URL"] = self.database_url
         # Resolve every api_key_secret into a real env var so the
         # os.environ/<name> markers in the generated config resolve to
@@ -339,7 +373,21 @@ class LLMProxy:
 
     async def create_agent_key(self, agent_name: str, models: list[str] | None = None,
                                 max_budget: float | None = None) -> str | None:
-        """Create a per-agent virtual key via LiteLLM API."""
+        """Create a per-agent virtual key.
+
+        In-house mode mints a token in the local key store (no DB, works on
+        ARM). Otherwise it calls LiteLLM's Postgres-backed /key/generate.
+        """
+        if getattr(self, "inhouse_keys", False):
+            try:
+                # Mirror the Postgres path's ``models or ["default"]`` so an
+                # agent deployed without an explicit model is scoped to the
+                # default chat alias (still usable), not minted with an empty
+                # allowlist that the auth hook would then deny-all.
+                return self._keystore().mint(agent_name, models or ["default"])
+            except Exception as e:
+                logger.warning("inhouse key mint failed for %s: %s", agent_name, e)
+                return None
         if not self.is_running():
             return None
         # LiteLLM virtual keys require a Postgres DB. Without one,
@@ -380,6 +428,15 @@ class LLMProxy:
         use. Returns True on success. No-op (False) in routing-only mode (no DB)
         — there are no per-agent keys to scope there.
         """
+        if getattr(self, "inhouse_keys", False):
+            if not key or not models:
+                logger.warning("update_agent_key (inhouse) needs key + models; refusing")
+                return False
+            try:
+                return self._keystore().set_models(key, models)
+            except Exception as e:
+                logger.warning("inhouse key re-scope failed: %s", e)
+                return False
         if not self.is_running() or not self.database_url or not key:
             return False
         if not models:
@@ -407,6 +464,14 @@ class LLMProxy:
 
     async def delete_agent_key(self, key: str) -> bool:
         """Delete a per-agent virtual key."""
+        if getattr(self, "inhouse_keys", False):
+            if not key:
+                return False
+            try:
+                return self._keystore().delete(key)
+            except Exception as e:
+                logger.warning("inhouse key delete failed: %s", e)
+                return False
         if not self.is_running():
             return False
         try:

@@ -51,6 +51,9 @@ async def client(app, tmp_path):
     await userspace_data.init()
     app.state.userspace_data = userspace_data
 
+    # app_grants ledger is lifespan-owned; init it so the broker can consult it.
+    await app.state.app_grants.init()
+
     # Auth setup.
     app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
     record = app.state.auth.find_user("admin")

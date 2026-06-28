@@ -1155,6 +1155,90 @@ class TestOrphanAgentDeletion:
 
 
 @pytest.mark.asyncio
+class TestDeleteResolvesOrphanedContainer:
+    """DELETE must not orphan a real container when the record lost its link.
+
+    Reproduces Jay's live bug: a 'test' agent whose container_name was null but
+    whose legacy ``taos-test`` container was still running. Delete must resolve
+    and archive that container instead of hard-deleting the bare row.
+    """
+
+    async def test_null_link_resolves_and_archives_legacy_container(
+        self, client, tmp_data_dir, monkeypatch
+    ):
+        # The derived ``taos-agent-test-agent`` does not exist...
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        # ...but a legacy ``taos-test-agent`` container is live in some project.
+        async def fake_list_all(*_a, **_k):
+            return [{"name": "taos-test-agent", "project": "user-999"}]
+        monkeypatch.setattr(
+            "tinyagentos.containers.list_all_taos_containers", fake_list_all
+        )
+
+        stop_calls = []
+        snap_calls = []
+
+        async def fake_stop(name, force=False):
+            stop_calls.append(name)
+            return {"success": True, "output": ""}
+
+        async def fake_snapshot_create(name, snapshot_name):
+            snap_calls.append((name, snapshot_name))
+            return {"success": True, "output": ""}
+
+        monkeypatch.setattr("tinyagentos.containers.stop_container", fake_stop)
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "archived"
+        # The resolved legacy container is the one snapshotted, not the derived name.
+        assert stop_calls == ["taos-test-agent"]
+        assert snap_calls and snap_calls[0][0] == "taos-test-agent"
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        entry = next(
+            a for a in config.archived_agents if a.get("archived_slug") == "test-agent"
+        )
+        # container_name records the REAL (legacy) container so restore/purge act on it.
+        assert entry["container_name"] == "taos-test-agent"
+        assert entry["snapshot_name"] is not None
+
+    async def test_truly_container_less_row_still_hard_deletes(
+        self, client, tmp_data_dir, monkeypatch
+    ):
+        """When NO container exists anywhere, the bare row is hard-deleted."""
+        async def _no_container(name):
+            return False
+        monkeypatch.setattr("tinyagentos.containers.container_exists", _no_container)
+
+        async def fake_list_all(*_a, **_k):
+            return []  # nothing on the host
+        monkeypatch.setattr(
+            "tinyagentos.containers.list_all_taos_containers", fake_list_all
+        )
+
+        async def fake_snapshot_create(name, snapshot_name):
+            raise AssertionError("no container -> snapshot must not run")
+        monkeypatch.setattr("tinyagentos.containers.snapshot_create", fake_snapshot_create)
+
+        resp = await client.delete("/api/agents/test-agent")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+
+        config = load_config(tmp_data_dir / "config.yaml")
+        assert not any(a["name"] == "test-agent" for a in config.agents)
+        assert not any(
+            a.get("archived_slug") == "test-agent" for a in config.archived_agents
+        )
+
+
+@pytest.mark.asyncio
 class TestDeployMemoryConfig:
     """Deploy endpoint should accept and persist memory_plugin + memory_config."""
 

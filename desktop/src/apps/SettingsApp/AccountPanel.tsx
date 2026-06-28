@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
-import { LogOut, AlertCircle, ShieldCheck, Plane } from "lucide-react";
+import { LogOut, AlertCircle, ShieldCheck, Plane, UserCircle } from "lucide-react";
 import { Button, Card, Input, Label } from "@/components/ui";
 import {
   fetchAccount,
@@ -25,6 +25,59 @@ function formatDate(iso?: string | null): string | null {
   return Number.isNaN(d.getTime())
     ? null
     : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/* ------------------------------------------------------------------ */
+/*  This-device (local) identity                                      */
+/* ------------------------------------------------------------------ */
+
+interface LocalUser {
+  username?: string;
+  full_name?: string;
+  email?: string;
+  is_admin?: boolean;
+}
+
+/** The account you are signed into on THIS device (the controller's own user),
+ *  read from /auth/status. Distinct from the taos.my cloud account below, and
+ *  shown even when the cloud account is unreachable so you always know who you
+ *  are signed in as. Renders nothing when signed out or the host is unreachable
+ *  (the cloud card already surfaces connectivity). */
+function LocalAccountCard() {
+  const [user, setUser] = useState<LocalUser | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/auth/status", { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (mounted.current && data?.authenticated && data?.user) setUser(data.user);
+      } catch {
+        // Host unreachable; the cloud card surfaces connectivity, so stay quiet.
+      }
+    })();
+  }, []);
+
+  if (!user) return null;
+  const name = user.full_name?.trim() || user.username || "Signed in";
+  const meta = [
+    user.username ? `@${user.username}` : null,
+    user.email || null,
+    user.is_admin ? "Admin" : null,
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <Card className="p-4 mb-3 flex items-center gap-3">
+      <UserCircle size={20} className="text-shell-text-secondary shrink-0" />
+      <div className="min-w-0">
+        <p className="text-sm font-medium truncate">{name}</p>
+        {meta && <p className="text-xs text-shell-text-tertiary mt-0.5 truncate">{meta}</p>}
+        <p className="text-xs text-shell-text-tertiary mt-0.5">Signed in on this device</p>
+      </div>
+    </Card>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,8 +262,11 @@ export function AccountSection() {
   return (
     <section aria-label="Account">
       <h2 className="text-lg font-semibold mb-2">Account</h2>
+
+      <LocalAccountCard />
+
       <p className="text-sm text-shell-text-tertiary mb-5">
-        Sign in to your taOS account to manage taOSgo and sync settings across your devices.
+        Sign in to your taOS cloud account to manage taOSgo and sync settings across your devices.
       </p>
 
       {state.kind === "loading" && (

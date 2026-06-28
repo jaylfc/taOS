@@ -55,6 +55,25 @@ describe("useDesktopCommandStream", () => {
     expect(seen).toEqual([{ action: "arrange", preset: "tile-2" }]);
   });
 
+  it("reports the desktop layout for a layout command", async () => {
+    const layout = { screen: { width: 1920, height: 1080, ratio: 1.778 }, windows: [] };
+    const getLayout = vi.fn(() => layout);
+    (window as unknown as { taosDesktop?: unknown }).taosDesktop = { getLayout, run: vi.fn() };
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => useDesktopCommandStream());
+    FakeEventSource.last!.push(JSON.stringify({ kind: "layout", payload: { request_id: "req-1" } }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(getLayout).toHaveBeenCalled();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("/api/desktop/layout-result");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      request_id: "req-1",
+      layout,
+    });
+    delete (window as unknown as { taosDesktop?: unknown }).taosDesktop;
+  });
+
   it("ignores malformed payloads without throwing", () => {
     renderHook(() => useDesktopCommandStream());
     expect(() => FakeEventSource.last!.push("not json")).not.toThrow();

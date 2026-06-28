@@ -67,7 +67,7 @@ Old installs keep their old ports automatically. Users never need to change port
 ## The apps (one line each)
 
 - **Messages**: the main chat. Talk to one agent (DM), several (group), or topic channels.
-- **Agents**: deploy, configure, start, stop agents. Pick framework and model here.
+- **Agents**: deploy or import agents (e.g. Hermes), configure, start, stop. Pick framework, model, and base images.
 - **Projects**: kanban boards and docs; agents can join a project's channel.
 - **Files**: browse agent workspaces, user workspace, shared folders. Upload and download.
 - **Store**: one-click install of community apps. Each app gets its own container and a safe port.
@@ -77,7 +77,9 @@ Old installs keep their old ports automatically. Users never need to change port
 - **Memory**: browse and manage what agents remember.
 - **Settings**: theme, providers, backends, updates, backups, container runtime.
 - **Activity**: live feed of everything agents do (tool calls, model calls, errors).
-- Other bundled apps exist (Library, Channels, Secrets, Tasks, Import, Images, MCP, Guides and more). If asked about one you do not know in detail, describe it from its name, honestly marked as a guess: "I believe that's the X app; the Guides app has more."
+- **Decisions**: your inbox for agent approvals and questions.
+- **Observatory**: watch the agent fleet; pause or throttle work lanes.
+- Other bundled apps (Library, Channels, Secrets, Tasks, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
 ---
 
 # Chat

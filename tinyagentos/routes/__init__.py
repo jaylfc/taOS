@@ -48,6 +48,15 @@ def register_all_routers(app):
     from tinyagentos.routes import projects as projects_routes
     app.include_router(projects_routes.router)
 
+    from tinyagentos.routes.github_sync import router as github_sync_router
+    app.include_router(github_sync_router)
+
+    from tinyagentos.routes.decisions import router as decisions_router
+    app.include_router(decisions_router)
+
+    from tinyagentos.routes.observatory import router as observatory_router
+    app.include_router(observatory_router)
+
     from tinyagentos.routes.store_install import router as store_install_router
     app.include_router(store_install_router)
 
@@ -89,6 +98,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.secrets import router as secrets_router
     app.include_router(secrets_router)
+
+    from tinyagentos.routes.broker import router as broker_router
+    app.include_router(broker_router)
 
     from tinyagentos.routes.mail import router as mail_router
     app.include_router(mail_router)
@@ -302,6 +314,9 @@ def register_all_routers(app):
     from tinyagentos.routes.feedback import router as feedback_router
     app.include_router(feedback_router)
 
+    from tinyagentos.routes.client_logs import router as client_logs_router
+    app.include_router(client_logs_router)
+
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router)
 
@@ -316,3 +331,15 @@ def register_all_routers(app):
 
     from tinyagentos.routes.manifest import router as manifest_router
     app.include_router(manifest_router)
+
+    from tinyagentos.routes.app_permissions import router as app_permissions_router
+    app.include_router(app_permissions_router)
+
+    from tinyagentos.routes.agent_model_api import router as agent_model_api_router
+    app.include_router(agent_model_api_router)
+
+    from tinyagentos.routes.agent_model_keys import router as agent_model_keys_router
+    app.include_router(agent_model_keys_router)
+
+    from tinyagentos.routes.agent_images import router as agent_images_router
+    app.include_router(agent_images_router)

@@ -72,9 +72,26 @@ class _FailCounter:
         with self._lock:
             self._log.pop(key, None)
 
+    def count(self, key: str) -> int:
+        """Current failure count for the key within the window."""
+        with self._lock:
+            self._prune(key)
+            return len(self._log.get(key, []))
+
 
 _login_limiter = _FailCounter(max_attempts=5, window_seconds=600)
 _complete_limiter = _FailCounter(max_attempts=5, window_seconds=600)
+
+# Hard ceiling: at/above this we reject BEFORE verifying the password, which
+# bounds BOTH brute-force guesses and the bcrypt cost per window+IP. Kept just
+# above the soft limit (5): a user who fat-fingers a few times then types the
+# right password still gets in (within the first ~10 attempts), while an attacker
+# is throttled to at most this many guesses+hashes per 10-minute window per IP.
+# Letting a correct password through inherently requires checking it, so a small
+# increase over the soft limit is the necessary cost of not locking out real
+# users -- keep this tight, not large.
+_LOGIN_HARD_MAX = 10
+_LOCKOUT_MSG = "Too many failed attempts. Wait a few minutes, then sign in with your correct password."
 
 # Self-contained HTML pages for the auth flow.
 #
@@ -311,7 +328,7 @@ async def login_page(request: Request, error: str = "", next: str = ""):
     if not auth_mgr.is_configured():
         return RedirectResponse("/auth/setup", status_code=303)
     if error == "rate_limit":
-        err_text = "Too many failed attempts. Please try again later."
+        err_text = _LOCKOUT_MSG
     elif error:
         err_text = "Incorrect username or password."
     else:
@@ -355,12 +372,14 @@ async def login(request: Request):
 
     content_type = request.headers.get("content-type", "")
 
-    if _login_limiter.is_limited(client_ip):
+    # Only the HARD ceiling rejects before we verify the password. Below it we
+    # always check, so a correct password succeeds even after earlier typos --
+    # the soft lockout (applied on failure below) gates further WRONG attempts,
+    # not the legitimate user. This is the footgun that funneled a locked-out
+    # user into creating a duplicate account.
+    if _login_limiter.count(client_ip) >= _LOGIN_HARD_MAX:
         if "application/json" in content_type:
-            return JSONResponse(
-                {"error": "too many failed login attempts, try again later"},
-                status_code=429,
-            )
+            return JSONResponse({"error": _LOCKOUT_MSG}, status_code=429)
         return RedirectResponse("/auth/login?error=rate_limit", status_code=303)
     if "application/json" in content_type:
         try:
@@ -373,6 +392,8 @@ async def login(request: Request):
         ok, user_record = auth_mgr.check_password(password, username=username)
         if not ok:
             _login_limiter.record_failure(client_ip)
+            if _login_limiter.is_limited(client_ip):
+                return JSONResponse({"error": _LOCKOUT_MSG}, status_code=429)
             return JSONResponse({"error": "invalid credentials"}, status_code=401)
 
         _login_limiter.reset(client_ip)
@@ -430,7 +451,8 @@ async def login(request: Request):
     if not ok:
         _login_limiter.record_failure(client_ip)
         next_qs = f"&next={next_url}" if next_url else ""
-        return RedirectResponse(f"/auth/login?error=1{next_qs}", status_code=303)
+        err = "rate_limit" if _login_limiter.is_limited(client_ip) else "1"
+        return RedirectResponse(f"/auth/login?error={err}{next_qs}", status_code=303)
 
     _login_limiter.reset(client_ip)
 

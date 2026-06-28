@@ -50,10 +50,25 @@ async def notification_count(request: Request):
     return f"<span class='notif-badge' data-count='{count}'>{count if count else ''}</span>"
 
 
+@router.get("/api/notifications/archived")
+async def list_archived_notifications(request: Request):
+    """History view: dismissed notifications, newest first (nothing deleted)."""
+    store = request.app.state.notifications
+    return await store.list_archived()
+
+
 @router.post("/api/notifications/{notif_id}/read")
 async def mark_read(request: Request, notif_id: int):
     store = request.app.state.notifications
     await store.mark_read(notif_id)
+    return {"ok": True}
+
+
+@router.post("/api/notifications/{notif_id}/archive")
+async def archive_notification(request: Request, notif_id: int):
+    """Dismiss a notification by archiving it; it stays in the History view."""
+    store = request.app.state.notifications
+    await store.archive(notif_id)
     return {"ok": True}
 
 

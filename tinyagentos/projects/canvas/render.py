@@ -21,12 +21,22 @@ _KIND_FILL = {
     "link":   (190, 215, 255, 255),
     "image":  (220, 220, 220, 255),
     "user_shape": (245, 245, 245, 255),
+    # Ideas-board kinds, each a distinct hue so a vision agent can tell them
+    # apart in the low-fidelity snapshot.
+    "text":         (215, 240, 205, 255),
+    "mermaid":      (255, 224, 178, 255),
+    "flowchart":    (200, 232, 240, 255),
+    "mindmap_edge": (245, 215, 225, 255),
 }
 _KIND_OUTLINE = {
     "note":   (200, 180, 60, 255),
     "link":   (90, 130, 220, 255),
     "image":  (140, 140, 140, 255),
     "user_shape": (180, 180, 180, 255),
+    "text":         (120, 180, 90, 255),
+    "mermaid":      (220, 150, 60, 255),
+    "flowchart":    (70, 160, 185, 255),
+    "mindmap_edge": (200, 110, 140, 255),
 }
 
 
@@ -49,6 +59,15 @@ def _label_for(el: dict) -> str:
         return str(payload.get("title") or payload.get("url") or "")[:60]
     if kind == "image":
         return str(payload.get("alt", "image"))[:40]
+    if kind == "text":
+        return str(payload.get("text", ""))[:60]
+    if kind in ("mermaid", "flowchart"):
+        source = str(payload.get("source", "")).strip().splitlines()
+        return (source[0] if source else kind)[:60]
+    if kind == "mindmap_edge":
+        src = payload.get("from")
+        dst = payload.get("to")
+        return f"{src} -> {dst}" if src and dst else kind
     return kind
 
 
