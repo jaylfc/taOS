@@ -7,6 +7,38 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Added
+- Decisions app: the human-in-the-loop inbox. Store + API backend, desktop app, notification routing, answers routed back to the asking agent on the A2A bus, L1 supersede with history lineage, per-project Decisions archive tab, and a `request_decision` agent tool.
+- Observatory app: fleet view of which agents are working on what, idle-agent surfacing, queue-control pause (global and per-lane), steer v1 (global and per-lane concurrency caps with server-rejection surfacing), and a stale-claim badge.
+- Agent-native tools: `list_projects`, `list_tasks`, `list_files`, `list_frameworks`, `list_store_apps`, `get_capabilities` (hardware-aware advice), `notify_user`, and `request_decision`, plus a screen-aware desktop layout-read API for window management.
+- Projects canvas: migration onto an MIT renderer (Konva foundation, Excalidraw read-only board with CanvasElement mapping), real mermaid/flowchart diagram rendering, GitHub issue to board-card sync, and channel project tagging with filter.
+- Agent deploy: framework-aware prebuilt base image for a Hermes fast-path, Base Images management (API plus desktop pane: list/import/prune/prefetch), and an Import Agent wizard that uploads a Hermes profile bundle.
+- App permissions: a closed capability vocabulary with manifest validation, an `app_grants` ledger feeding the capability broker, and a request-consent endpoint that raises an app-grant Decision.
+- Secrets broker: grant ledger and lifecycle (P0) plus routes and service wiring with request notifications (P1).
+- Agent-model API: owner key-management (mint/list/revoke) and a `/v1/chat/completions` consent contract.
+- Account pane shows the local signed-in identity and defaults the account base URL to taos.my.
+- Logging: server-side and front-end crash capture with an in-OS Logs viewer.
+- Messages groups agent DMs into Live / Suspended / Archived sections.
+- Memory: arctic-embed-s as the recommended embedder default.
+- taosctl gained command groups for decisions, observatory, agent-registry, dashboard, benchmarks, recycle, office, catalog, knowledge, templates, mail, store, settings, providers, secrets, themes, and notifications.
+- Frameworks: added DeerFlow support.
+
+### Changed
+- Deploy Agent wizard shows Hermes as beta.
+- Desktop app error boundary logs the real underlying error.
+
+### Fixed
+- Worker-LXC bring-up completed on Linux so workers are deploy-capable.
+- Security: the skill workspace resolver rejects a traversal `agent_name`.
+- Hermes profile import passes `--name` so the default profile is no longer rejected.
+- Client-log ring buffer prunes correctly across rowid gaps and uses a rowid tie-breaker.
+- Agent archive fails soft on snapshot-restricted projects and resolves or cleans orphaned containers on delete; an agent DM channel is archived on every removal path rather than orphaned.
+- Auth: a correct password is no longer refused during lockout.
+- Consent: request-consent skips capabilities with a pending Decision, de-dupes capabilities, and logs ledger failures; Decisions de-duplicate colliding option values and default an option value to its label.
+- Observatory writes pause state atomically and no longer reverts an optimistic steer value mid-write.
+- Update: dirty tracked source is stashed before pull instead of returning a 500.
+- Dependencies: cryptography bumped to 48.0.1 for a vulnerable OpenSSL.
+
 ## [1.0.0-beta.11] - 2026-06-21
 
 ### Fixed
