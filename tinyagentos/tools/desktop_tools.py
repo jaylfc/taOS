@@ -19,8 +19,9 @@ from tinyagentos.desktop_control.broker import DesktopCommand
 # Known desktop app ids the agent can open. The browser resolves aliases/names
 # too, but listing the common ones in the schema steers the model.
 KNOWN_APPS = [
-    "chat", "messages", "projects", "agents", "files", "store", "settings",
-    "images", "terminal", "browser", "memory", "models",
+    "chat", "messages", "mail", "projects", "agents", "files", "store",
+    "settings", "images", "notes", "todo", "decisions", "observatory",
+    "terminal", "browser", "memory", "models",
 ]
 
 OPEN_APP_TOOL = {

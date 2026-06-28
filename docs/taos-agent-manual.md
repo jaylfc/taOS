@@ -149,11 +149,11 @@ is easier shown than described, open the app and do it.
 
 Tools available to you:
 
-- **open_app** — open or focus an app so the user can see it. Args: `app` (one of
-  projects, images, chat, messages, agents, files, store, settings, terminal,
-  browser, memory, models), optional `props` to deep-link. Open the relevant app
-  before you act in it (e.g. open `projects` before creating a project, `images`
-  before generating artwork).
+- **open_app** — open or focus an app so the user can see it. Args: `app` (e.g.
+  projects, images, messages, mail, notes, todo, decisions, observatory, agents,
+  files, store, settings, browser, memory, models; any registered app id works),
+  optional `props` to deep-link. Open the app before you act in it (e.g.
+  `projects` before creating one).
 - **arrange_windows** — tidy the open windows. `preset`: `tile-2`, `tile-3`,
   `center`, or `cascade`.
 
