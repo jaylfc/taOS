@@ -97,6 +97,11 @@ def _secret_env_name(name: str) -> str:
 _TAOSMD_BEGIN = "<!-- taosmd:rules-begin -->"
 _TAOSMD_END = "<!-- taosmd:rules-end -->"
 
+# An SSH-key secret name becomes a filename under ~/.ssh on deploy, so it must
+# be a plain safe filename: no path separators, no "..", no traversal. Names
+# that do not match are skipped rather than written outside ~/.ssh.
+_SAFE_SSH_KEY_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
 # Per-framework AGENTS.md path inside the agent's container.
 # Frameworks read this file on every turn to pick up agent rules
 # (per the taosmd contract — see issue #378).
@@ -525,10 +530,22 @@ async def deploy_agent(req: DeployRequest) -> dict:
             for _sk in _ssh_key_secrets:
                 _sk_name = _sk["name"]
                 _sk_value = _sk["value"]
+                # Guard against path traversal: the secret name becomes a file
+                # name under ~/.ssh, so reject anything that is not a plain safe
+                # filename (no slashes, no "..", no leading-dot escapes). A name
+                # like "../authorized_keys" must never write outside ~/.ssh.
+                if not _SAFE_SSH_KEY_NAME.match(_sk_name) or _sk_name in (".", ".."):
+                    logger.warning(
+                        "Deploy %s: skipping SSH key with unsafe name %r",
+                        req.name, _sk_name,
+                    )
+                    continue
                 # Ensure the value ends with a newline — SSH clients require it.
                 if not _sk_value.endswith("\n"):
                     _sk_value += "\n"
                 _dest = f"/root/.ssh/{_sk_name}"
+                # NamedTemporaryFile creates the host-side temp file with 0600
+                # (via mkstemp), so the plaintext key is never world-readable.
                 with tempfile.NamedTemporaryFile("w", suffix=".key", delete=False) as _tf:
                     _tf.write(_sk_value)
                     _tmp_key_path = _tf.name

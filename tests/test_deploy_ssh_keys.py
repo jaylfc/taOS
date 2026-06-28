@@ -88,6 +88,29 @@ class TestSshKeyMaterialization:
         assert ssh_pushes[0]["content"] == key_value
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_name", [
+        "../authorized_keys",
+        "../../etc/cron.d/evil",
+        "foo/bar",
+        "..",
+        ".",
+        "a b",
+    ])
+    async def test_ssh_key_unsafe_name_is_skipped(self, tmp_path, bad_name):
+        """A traversal/unsafe secret name must never be written outside ~/.ssh."""
+        store = FakeSecretsStore([
+            {"name": bad_name, "category": "ssh-keys", "value": "key\n"},
+        ])
+        req = _req(data_dir=tmp_path, secrets_store=store)
+
+        result, push_calls, exec_calls = await _run_deploy(req, tmp_path)
+
+        assert result["success"] is True
+        # Nothing should be pushed under /root/.ssh for an unsafe name.
+        ssh_pushes = [p for p in push_calls if "/root/.ssh/" in p["dst"]]
+        assert not ssh_pushes, f"unsafe name {bad_name!r} produced a push: {[p['dst'] for p in ssh_pushes]}"
+
+    @pytest.mark.asyncio
     async def test_ssh_key_trailing_newline_added_when_missing(self, tmp_path):
         """If the stored value has no trailing newline, the deployer adds one."""
         key_value = "-----BEGIN OPENSSH PRIVATE KEY-----\nfakekey\n-----END OPENSSH PRIVATE KEY-----"
