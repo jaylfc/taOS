@@ -185,6 +185,11 @@ that app's own tools and your other skills.
 
 Keep it purposeful: open what you need, don't rearrange the user's windows without
 reason, and tell the user what you're doing as you do it.
+
+You can also read and write to shared notes and lists you are a member of:
+
+- **notes_list_shared_docs** -- list the shared notes and lists you belong to (no args). Each result has id, kind, title, updated_at.
+- **notes_add_entry** -- append an entry to a shared doc you belong to. Args: `doc_id` (from notes_list_shared_docs), `text`.
 ---
 
 # Generating good images
