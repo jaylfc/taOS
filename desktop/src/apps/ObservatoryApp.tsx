@@ -19,6 +19,15 @@ interface PauseState {
   lanes: Record<string, boolean>;
 }
 
+interface FleetHealth {
+  total: number;
+  working: number;
+  idle: number;
+  stale: number;
+  stale_handles: string[];
+  status: "active" | "degraded" | "idle";
+}
+
 const EMPTY_PAUSE: PauseState = { global: false, lanes: {} };
 
 // Global concurrency cap: how many cards the fleet may hold in flight at once
@@ -89,6 +98,7 @@ function CapStepper({
 
 export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   const [agents, setAgents] = useState<FleetAgent[]>([]);
+  const [health, setHealth] = useState<FleetHealth | null>(null);
   const [pause, setPause] = useState<PauseState>(EMPTY_PAUSE);
   const [cap, setCap] = useState<number | null>(null);
   const [laneCaps, setLaneCaps] = useState<Record<string, number>>({});
@@ -113,6 +123,12 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
       const throttleData = throttleRes.ok ? await throttleRes.json() : null;
       if (fleetData) {
         setAgents(Array.isArray(fleetData.agents) ? fleetData.agents : []);
+        // health is optional: older controllers omit it, so degrade gracefully.
+        setHealth(
+          fleetData.health && typeof fleetData.health === "object"
+            ? fleetData.health
+            : null,
+        );
       }
       if (inFlight.current === 0) {
         if (fleetData) {
@@ -237,6 +253,25 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
       <div className="flex items-center gap-2 border-b border-shell-border px-5 py-4">
         <Radar size={18} className="text-accent" />
         <h1 className="text-base font-semibold text-shell-text">Observatory</h1>
+        {health && health.total > 0 && (
+          <span
+            className={[
+              "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+              health.status === "degraded"
+                ? "bg-red-500/10 text-red-400"
+                : health.status === "active"
+                  ? "bg-accent/10 text-accent"
+                  : "bg-shell-surface text-shell-text-secondary",
+            ].join(" ")}
+            aria-label={`Fleet ${health.status}: ${health.working} working, ${health.idle} idle, ${health.stale} stale`}
+            title={`${health.working} working, ${health.idle} idle, ${health.stale} stale`}
+          >
+            <CircleDot size={11} className="shrink-0" />
+            {health.status === "degraded"
+              ? `${health.stale} stale`
+              : `${health.working}/${health.total} active`}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => setScope("global", !pause.global)}
