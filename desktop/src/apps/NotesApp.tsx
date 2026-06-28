@@ -130,14 +130,17 @@ function EntryHistoryPanel({ docId, entryId, onClose }: {
     return () => { alive = false; };
   }, [docId, entryId]);
 
+  const viewReqRef = useRef(0);
   async function viewAt(index: number) {
+    const myReq = ++viewReqRef.current;
     try {
       const r = await fetch(`/api/notes/${docId}/entries/${entryId}/history/at/${index}`);
       if (!r.ok) throw new Error("Could not load revision.");
       const data: EntryRevision = await r.json();
-      setViewingRev({ index, text: data.text });
+      if (viewReqRef.current === myReq) setViewingRev({ index, text: data.text });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error loading revision.");
+      if (viewReqRef.current === myReq)
+        setError(e instanceof Error ? e.message : "Error loading revision.");
     }
   }
 
@@ -479,6 +482,7 @@ function EntryRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(entry.text);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
 
   async function save() {
@@ -487,9 +491,13 @@ function EntryRow({
       return;
     }
     setSaving(true);
+    setSaveError(null);
     try {
       await onEditSave(entry.id, draft.trim());
       setEditing(false);
+    } catch (e) {
+      // Keep the editor open with the draft so the user can retry.
+      setSaveError(e instanceof Error ? e.message : "Could not save the edit.");
     } finally {
       setSaving(false);
     }
@@ -514,7 +522,7 @@ function EntryRow({
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={() => { setDraft(entry.text); setEditing(false); }}
+                onClick={() => { setDraft(entry.text); setSaveError(null); setEditing(false); }}
                 disabled={saving}
                 aria-label="Cancel edit"
               >
@@ -532,6 +540,9 @@ function EntryRow({
                 {saving ? "Saving..." : "Save"}
               </Button>
             </div>
+            {saveError && (
+              <p className="text-xs text-red-400" role="alert">{saveError}</p>
+            )}
           </div>
         ) : (
           <>
@@ -599,15 +610,19 @@ function NoteDetailPane({
   const [adding, setAdding] = useState(false);
   const [showShare, setShowShare] = useState(false);
 
+  const loadReqRef = useRef(0);
   const loadDoc = useCallback(async () => {
+    const myReq = ++loadReqRef.current;
     try {
       const r = await fetch(`/api/notes/${docId}`);
       if (!r.ok) throw new Error("Could not load note.");
-      setDoc(await r.json());
+      const data = await r.json();
+      if (loadReqRef.current === myReq) setDoc(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load note.");
+      if (loadReqRef.current === myReq)
+        setError(e instanceof Error ? e.message : "Could not load note.");
     } finally {
-      setLoading(false);
+      if (loadReqRef.current === myReq) setLoading(false);
     }
   }, [docId]);
 
