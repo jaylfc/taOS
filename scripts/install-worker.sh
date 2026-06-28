@@ -671,7 +671,11 @@ WantedBy=multi-user.target
 EOF
     log "installed $unit (worker LXC system unit, runs as root)"
     systemctl daemon-reload
-    systemctl enable --now tinyagentos-worker
+    systemctl enable tinyagentos-worker
+    # restart (not just enable --now): on a re-run the service is already
+    # active, and enable --now will not reload a rewritten unit — so a changed
+    # ExecStart/Environment (e.g. TAOS_ADVERTISE_IP) would never take effect.
+    systemctl restart tinyagentos-worker
     log "worker daemon running inside LXC as system service"
     log "logs: incus exec taos-worker -- journalctl -u tinyagentos-worker -f"
 }
