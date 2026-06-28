@@ -245,6 +245,16 @@ async def _skill_list_store_apps(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_get_capabilities(args: dict, request: Request) -> dict:
+    """Report hardware-aware capabilities so the agent gives accurate advice."""
+    try:
+        from tinyagentos.tools.capability_tools import execute_get_capabilities
+
+        return await execute_get_capabilities(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_list_projects(args: dict, request: Request) -> dict:
     """List the user's projects so the agent can pick one."""
     try:
@@ -331,6 +341,7 @@ SKILL_IMPLEMENTATIONS = {
     "notify_user": _skill_notify_user,
     "list_frameworks": _skill_list_frameworks,
     "list_store_apps": _skill_list_store_apps,
+    "get_capabilities": _skill_get_capabilities,
     "create_project": _skill_create_project,
     "list_projects": _skill_list_projects,
     "list_tasks": _skill_list_tasks,

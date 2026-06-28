@@ -460,6 +460,29 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.framework_tools",
             },
             {
+                "id": "get_capabilities",
+                "name": "Get Capabilities",
+                "category": "agent",
+                "description": "Report what this taOS install can do on its hardware/cluster (with unlock hints)",
+                "tool_schema": {
+                    "name": "get_capabilities",
+                    "description": "Check what this taOS install can do on its current hardware + cluster (chat-small, chat-large, image-generation-gpu, embedding, tts, lora-training, ...) with availability + unlock hints. Use before promising a hardware-bound action. Optional available_only=true.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "available_only": {"type": "boolean", "description": "Only currently-available capabilities. Default false."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.capability_tools",
+            },
+            {
                 "id": "list_store_apps",
                 "name": "List Store Apps",
                 "category": "agent",
