@@ -26,7 +26,7 @@
 
 Self-hosted AI agent platform that runs on whatever hardware you have. An old laptop, a Raspberry Pi, a gaming PC, an SBC gathering dust, or all of them at once. taOS turns your spare hardware into a distributed AI compute cluster.
 
-A full web desktop environment with 36 bundled apps, 108 catalog apps, 47 MCP plugins, 16 agent frameworks, a curated local model catalog of 112 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
+A full web desktop environment with 36 bundled apps, 108 catalog apps, 47 MCP plugins, 17 agent frameworks, a curated local model catalog of 112 manifests covering LLMs, vision, embeddings, audio, and image generation (including RK3588 NPU variants via c01zaut/happyme531), plus 167k+ searchable models from HuggingFace, agent deployment, training, image/video/audio generation, and full system monitoring, all from a single web dashboard. Supports Apple Silicon (MLX), NVIDIA, AMD, Rockchip NPU, Raspberry Pi, Android phones, and more.
 
 **Framework-agnostic by design.** taOS owns everything that matters: your agent's memory, files, communication channels, model access, and configuration. The agent framework is just a replaceable execution engine. Switch from SmolAgents to LangChain to OpenClaw and your agent keeps its entire history, all its Telegram/Discord/Slack connections, its trained LoRA adapters, its files, and its API keys. No migration, no data loss, no reconfiguration. This is possible because taOS manages the full agent lifecycle outside the framework.
 
@@ -150,7 +150,7 @@ Personal memory powered by [taOSmd](https://github.com/jaylfc/taosmd), think Pie
 User memory is unified through taosmd (issue #25): `tinyagentos/routes/user_memory.py` proxies writes to taosmd `POST /ingest/batch` and reads to `GET /search?mode=bm25` (sub-300ms keyword search), with idempotent migration via `POST /api/user-memory/migrate`. A local SQLite FTS5 store is kept as a fallback for when taosmd is unreachable. taOS reaches taosmd at the URL configured in the `TAOS_USER_MEMORY_URL` environment variable.
 
 ### Skills & Plugins Registry
-Framework-agnostic skill system with 8 default skills, memory_search, file_read, file_write, web_search, code_exec, image_generation, list_image_models, http_request, categorised by search, files, code, media, browser, data, comms, system. Each skill declares compatibility per framework (native/adapter/unsupported) and works across all 16 supported frameworks via adapter translation. Assign or remove skills per agent from the Skills tab with compatibility badges.
+Framework-agnostic skill system with 8 default skills, memory_search, file_read, file_write, web_search, code_exec, image_generation, list_image_models, http_request, categorised by search, files, code, media, browser, data, comms, system. Each skill declares compatibility per framework (native/adapter/unsupported) and works across all 17 supported frameworks via adapter translation. Assign or remove skills per agent from the Skills tab with compatibility badges.
 
 ### Distributed Compute Cluster
 Combine ANY device into one AI compute mesh, desktops, laptops, SBCs, even phones and tablets. A gaming PC handles large models, a Mac runs MLX inference, a Pi handles embeddings, an old Android phone contributes from a drawer. Cross-platform worker apps connect from the system tray (Windows, macOS, Linux) or via Termux (Android).
@@ -354,7 +354,7 @@ Search across agents, apps, messages, and files from a single endpoint. Finds an
 
 | Category | Apps |
 |----------|------|
-| **Agent Frameworks (15)** | SmolAgents, PocketFlow, OpenClaw, nanoclaw, PicoClaw, ZeroClaw, MicroClaw, IronClaw, NullClaw, Moltis, Hermes, Agent Zero, OpenAI Agents SDK, Langroid, ShibaClaw |
+| **Agent Frameworks (17)** | SmolAgents, PocketFlow, OpenClaw, nanoclaw, PicoClaw, ZeroClaw, MicroClaw, IronClaw, NullClaw, Moltis, Hermes, Agent Zero, OpenAI Agents SDK, Langroid, ShibaClaw, DeerFlow, OpenCrabs (beta) |
 | **Streaming Apps (13)** | Blender, LibreOffice, Code Server, GIMP, Krita, FreeCAD, Obsidian, Excalidraw, JupyterLab, Grafana, n8n, Terminal, Neko Browser |
 | **LLM Models** | 112-manifest local catalog: Qwen3 0.6B-32B, Qwen2.5 0.5B-72B (+ RKLLM 1.5B-14B for RK3588), Llama 3.1/3.2/3.3, Gemma 2/3, Phi-3.5/4/4-mini, Mistral/Nemo/Mixtral, DeepSeek, Granite, Command-R, SmolLM2, TinyLlama, plus 167k+ searchable from HuggingFace |
 | **Vision Models** | Qwen2-VL, Qwen2.5-VL, MiniCPM-V 2.6, Moondream2, Florence-2, LLaVA 1.6 / LLaVA-Phi-3 |
