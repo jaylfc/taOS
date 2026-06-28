@@ -134,7 +134,12 @@ class TestDeployRouting:
         config = app.state.config
         assert not any(a["name"] == "routed-agent" for a in config.agents)
 
-    async def test_worker_hosted_model_pinned_to_holder_routes(self, client, app):
+    async def test_worker_hosted_model_pinned_to_holder_deploys_remote(self, client, app):
+        # Pin-wins: a pin to the worker that holds the model now falls through
+        # routing and schedules a remote deploy on that worker, rather than
+        # returning a 202 routing stub. With a reachable controller callback
+        # host configured, configure_remote_deploy accepts the request.
+        app.state.controller_lan_ip = "10.0.0.5"
         _seed_worker(app, "fedora", ["qwen2.5-7b"])
         _seed_worker(app, "arch-box", ["phi3"])
         resp = await client.post("/api/agents/deploy", json={
@@ -143,9 +148,10 @@ class TestDeployRouting:
             "model": "qwen2.5-7b",
             "target_worker": "fedora",
         })
-        assert resp.status_code == 202
+        assert resp.status_code == 200
         data = resp.json()
-        assert data["worker"] == "fedora"
+        assert data["status"] == "deploying"
+        assert data["name"] == "pinned-ok"
 
     async def test_worker_hosted_model_pinned_to_wrong_worker_rejects_409(self, client, app):
         _seed_worker(app, "fedora", ["qwen2.5-7b"])
