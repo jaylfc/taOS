@@ -118,6 +118,29 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.file_write",
             },
             {
+                "id": "list_files",
+                "name": "List Files",
+                "category": "files",
+                "description": "List a directory in the agent workspace",
+                "tool_schema": {
+                    "name": "list_files",
+                    "description": "List the files and folders in a workspace directory (name, type, size) so you can see what exists before reading. Optional relative path; defaults to the workspace root.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative directory path (default: workspace root)."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "native", "pocketflow": "adapter",
+                    "langroid": "adapter", "openai-agents-sdk": "adapter", "hermes": "adapter",
+                    "agent-zero": "native", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.file_read",
+            },
+            {
                 "id": "web_search",
                 "name": "Web Search",
                 "category": "search",

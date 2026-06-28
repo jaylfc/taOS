@@ -86,6 +86,30 @@ async def _skill_file_write(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_list_files(args: dict, request: Request) -> dict:
+    """List a directory in the calling agent's workspace (read complement to
+    file_read / file_write). Sandboxed to the workspace, same as file_read."""
+    path = args.get("path", "") or ""
+    workspace = _resolve_agent_workspace(request, args)
+    target = (workspace / path).resolve()
+    try:
+        if workspace not in target.parents and target != workspace:
+            return {"error": "Path outside workspace"}
+        if not target.is_dir():
+            return {"error": "Directory not found"}
+        entries = []
+        for child in sorted(target.iterdir(), key=lambda c: c.name):
+            is_dir = child.is_dir()
+            entries.append({
+                "name": child.name,
+                "type": "dir" if is_dir else "file",
+                "size": (child.stat().st_size if child.is_file() else None),
+            })
+        return {"entries": entries, "count": len(entries)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_web_search(args: dict, request: Request) -> dict:
     """Search the web via SearXNG (if available)."""
     import httpx
@@ -329,6 +353,7 @@ SKILL_IMPLEMENTATIONS = {
     "memory_search": _skill_memory_search,
     "file_read": _skill_file_read,
     "file_write": _skill_file_write,
+    "list_files": _skill_list_files,
     "web_search": _skill_web_search,
     "code_exec": _skill_code_exec,
     "http_request": _skill_http_request,

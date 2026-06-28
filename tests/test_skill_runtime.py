@@ -108,6 +108,41 @@ async def test_file_write_and_read(app_with_store):
 
 
 @pytest.mark.asyncio
+async def test_list_files_lists_workspace(app_with_store):
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_store), base_url="http://test"
+    ) as client:
+        await client.post(
+            "/api/skill-exec/file_write/call",
+            json={"args": {"path": "a.txt", "content": "hello"}},
+        )
+        await client.post(
+            "/api/skill-exec/file_write/call",
+            json={"args": {"path": "sub/b.txt", "content": "x"}},
+        )
+        resp = await client.post("/api/skill-exec/list_files/call", json={"args": {}})
+        assert resp.status_code == 200
+        by_name = {e["name"]: e for e in resp.json()["entries"]}
+        assert by_name["a.txt"]["type"] == "file" and by_name["a.txt"]["size"] == 5
+        assert by_name["sub"]["type"] == "dir"
+        sub = await client.post(
+            "/api/skill-exec/list_files/call", json={"args": {"path": "sub"}}
+        )
+        assert {e["name"] for e in sub.json()["entries"]} == {"b.txt"}
+
+
+@pytest.mark.asyncio
+async def test_list_files_rejects_path_outside_workspace(app_with_store):
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_store), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/skill-exec/list_files/call", json={"args": {"path": "../.."}}
+        )
+        assert resp.json().get("error") == "Path outside workspace"
+
+
+@pytest.mark.asyncio
 async def test_skill_exec_list_image_models(app_with_store):
     """list_image_models skill returns a list of models via skill-exec."""
     store = app_with_store.state.skills
