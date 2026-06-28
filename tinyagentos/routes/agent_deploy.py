@@ -141,15 +141,23 @@ def resolve_deploy_routing(request: Request, body: "DeployAgentRequest") -> "JSO
 async def controller_callback_host(request: Request) -> str | None:
     """Return the address a remote worker should use to reach this controller.
 
-    Per the cluster networking model (manual Tailscale, headscale not yet
-    configured for taOSgo), the agent container on a worker reaches the
-    controller over the tailnet, so prefer the controller's Tailscale IP, then
-    the configured host LAN IP. Returns None when neither is available -- a
-    remote deploy must NOT silently fall back to 127.0.0.1 (the worker's own
-    loopback, where the controller is not listening).
+    Resolution order:
+      1. TAOS_CONTROLLER_CALLBACK_HOST -- explicit operator override. Set this
+         when the worker reaches the controller on a specific address, e.g. the
+         controller's LAN IP for a bridged worker on the same LAN.
+      2. The controller's Tailscale IP (the manual-Tailscale worker path).
+      3. The configured host LAN IP (request.app.state.controller_lan_ip).
+    Returns None when none is available -- a remote deploy must NOT silently
+    fall back to 127.0.0.1 (the worker's own loopback, where the controller is
+    not listening).
     """
     import asyncio
+    import os
     import subprocess
+
+    override = os.environ.get("TAOS_CONTROLLER_CALLBACK_HOST", "").strip()
+    if override:
+        return override
 
     try:
         # Shell out off the event loop so a cold/hanging tailscale never stalls

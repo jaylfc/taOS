@@ -485,3 +485,14 @@ class TestConfigureRemoteDeploy:
         assert mock_prefetch.await_args.kwargs.get("remote") == "fedora-worker"
         # x86_64 maps to the x64 base tarball.
         assert "x64" in mock_prefetch.await_args.kwargs.get("url", "")
+
+
+@pytest.mark.asyncio
+async def test_controller_callback_host_env_override(monkeypatch):
+    """TAOS_CONTROLLER_CALLBACK_HOST takes precedence over tailscale/LAN."""
+    from types import SimpleNamespace
+    from tinyagentos.routes import agent_deploy
+    monkeypatch.setenv("TAOS_CONTROLLER_CALLBACK_HOST", "192.168.6.123")
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    host = await agent_deploy.controller_callback_host(req)
+    assert host == "192.168.6.123"
