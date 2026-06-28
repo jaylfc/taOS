@@ -255,6 +255,16 @@ async def _skill_list_projects(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_list_tasks(args: dict, request: Request) -> dict:
+    """List a project's tasks so the agent can review progress or pick next."""
+    try:
+        from tinyagentos.tools.project_tools import execute_list_tasks
+
+        return await execute_list_tasks(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_create_project(args: dict, request: Request) -> dict:
     """Create a project the user can see."""
     try:
@@ -323,6 +333,7 @@ SKILL_IMPLEMENTATIONS = {
     "list_store_apps": _skill_list_store_apps,
     "create_project": _skill_create_project,
     "list_projects": _skill_list_projects,
+    "list_tasks": _skill_list_tasks,
     "add_task": _skill_add_task,
     "canvas_add_image": _skill_canvas_add_image,
     "describe_image_capabilities": _skill_describe_image_capabilities,

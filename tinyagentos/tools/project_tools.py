@@ -81,6 +81,30 @@ async def execute_list_projects(args: dict, request: Request) -> dict:
     return {"ok": True, "projects": projects, "count": len(projects)}
 
 
+async def execute_list_tasks(args: dict, request: Request) -> dict:
+    """List a project's tasks so the agent can review progress or pick the next
+    one, instead of guessing. Read-only; scoped to a project the caller owns."""
+    project_id = (args or {}).get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        return {"error": "list_tasks requires a 'project_id' string"}
+    user_id = _user_id(request)
+    if not user_id:
+        return {"error": "no authenticated user"}
+    _, err = await _owned_project(request, project_id, user_id)
+    if err:
+        return err
+    status = (args or {}).get("status")
+    if status is not None and not isinstance(status, str):
+        return {"error": "status must be a string"}
+    store = request.app.state.project_task_store
+    rows = await store.list_tasks(project_id, status=status or None)
+    tasks = [
+        {"task_id": t.get("id"), "title": t.get("title"), "status": t.get("status")}
+        for t in rows
+    ]
+    return {"ok": True, "tasks": tasks, "count": len(tasks)}
+
+
 async def execute_add_task(args: dict, request: Request) -> dict:
     project_id = (args or {}).get("project_id")
     title = (args or {}).get("title")
