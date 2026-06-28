@@ -412,6 +412,29 @@ class SkillStore(BaseStore):
                 "install_target": "tinyagentos.tools.decision_tools",
             },
             {
+                "id": "list_frameworks",
+                "name": "List Agent Frameworks",
+                "category": "agent",
+                "description": "List the agent frameworks taOS can deploy, so the agent can offer one",
+                "tool_schema": {
+                    "name": "list_frameworks",
+                    "description": "List the agent frameworks taOS can deploy (id, name, description, verification_status; beta = recommended). Use before offering to deploy/set up an agent so you name a real framework and prefer a beta one. Optional verified_only=true returns beta only.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "verified_only": {"type": "boolean", "description": "Only beta (recommended) frameworks. Default false."},
+                        },
+                    },
+                },
+                "frameworks": {
+                    "smolagents": "adapter", "openclaw": "adapter", "pocketflow": "adapter",
+                    "langroid": "adapter", "hermes": "adapter", "agent-zero": "adapter",
+                    "openai-agents-sdk": "adapter", "generic": "adapter",
+                },
+                "install_method": "builtin",
+                "install_target": "tinyagentos.tools.framework_tools",
+            },
+            {
                 "id": "notify_user",
                 "name": "Notify User",
                 "category": "agent",

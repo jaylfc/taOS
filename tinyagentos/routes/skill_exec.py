@@ -225,6 +225,16 @@ async def _skill_notify_user(args: dict, request: Request) -> dict:
         return {"error": str(exc)}
 
 
+async def _skill_list_frameworks(args: dict, request: Request) -> dict:
+    """List the agent frameworks taOS can deploy (so the agent can offer one)."""
+    try:
+        from tinyagentos.tools.framework_tools import execute_list_frameworks
+
+        return await execute_list_frameworks(args, request)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def _skill_list_projects(args: dict, request: Request) -> dict:
     """List the user's projects so the agent can pick one."""
     try:
@@ -299,6 +309,7 @@ SKILL_IMPLEMENTATIONS = {
     "read_layout": _skill_read_layout,
     "request_decision": _skill_request_decision,
     "notify_user": _skill_notify_user,
+    "list_frameworks": _skill_list_frameworks,
     "create_project": _skill_create_project,
     "list_projects": _skill_list_projects,
     "add_task": _skill_add_task,
