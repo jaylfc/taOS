@@ -347,7 +347,7 @@ Search across agents, apps, messages, and shared folders from a single endpoint.
 - **Notifications.** Health alerts, backend up/down, worker join/leave, webhook forwarding (Slack/Discord/Telegram). Toast notifications appear top-right. The welcome notification is gated on a `localStorage` flag so it fires once per install, not on every page load.
 - **Agent Logs.** Real-time log viewer with auto-refresh
 - **Backup & Restore.** Downloadable config backup, one-click restore, scheduled auto-backup (daily/weekly)
-- **System Updates.** Pull latest from GitHub via Settings page. taOS periodically checks for updates and reports an anonymous install count (a daily aggregate estimate, no identifiers); disable with `TAOS_NO_UPDATE_PING=1` or in Settings.
+- **System Updates.** Pull latest from GitHub via Settings page. taOS periodically checks for updates and sends an install ping carrying the version, platform, and a stable random per-install id (a UUID stored in the data dir, no personal data) so the project keeps an exact install count; disable with `TAOS_NO_UPDATE_PING=1` or in Settings.
 - **Provider Management.** Add/test/remove inference providers with live connectivity checks. The Providers desktop app manages cloud LLM credentials; the model browser reflects configured providers automatically.
 
 ## App Catalog (109 Catalog Apps + 49 Desktop Apps + 47 MCP Plugins)
@@ -589,7 +589,7 @@ taOS integrates [exo](https://github.com/exo-explore/exo) for running models tha
 
 **What exo enables:** Run 70B+ parameter models by pooling VRAM across multiple machines. A 70B model that needs ~40 GB can be split across a 12 GB desktop GPU + a 16 GB laptop + a 24 GB Mac, with exo handling the shard placement and inter-device communication automatically.
 
-**How it works with TAOS:** exo runs as a backend on participating workers, discovered automatically on port 52415. The TAOS worker probe detects it and advertises `llm-chat` capability. The deploy wizard can offer "Distributed (exo)" as a deployment option when a model exceeds any single worker's VRAM. Peer discovery is automatic via mDNS on the local network.
+**How it works with TAOS:** exo runs as a backend on participating workers, discovered automatically on port 52415. The TAOS worker probe detects it and advertises `llm-chat` capability. When an exo backend is running, its models appear in the deploy wizard alongside the other backends; an explicit "Distributed (exo)" mode for models that exceed a single worker's VRAM is in progress. exo handles its own peer discovery via mDNS on the local network.
 
 **Supported hardware:**
 
@@ -710,17 +710,18 @@ CI runs automatically on every push (Python 3.12 and 3.13 on every PR; Python 3.
 - [x] Decisions app (human-in-the-loop inbox: multiple-choice, approve/reject, and free-text request types)
 - [x] Notes app (tracked-edit history, markdown rendering, agent-writable)
 - [x] Todo app (agent-callable checklist with completion tracking and priority)
+- [x] Exo backend detection and task-parallel routing (worker probe on :52415, llm-chat capability, install-exo deploy command)
 
 ### In Progress
 - [ ] Unified streamed browser (#603), one WebRTC-streamed Chromium app that runs locally on the host including the Pi, replaces the URL-rewriting proxy, presents a native touch-friendly mobile layout on phones, surfaces agents' browser sessions, and migrates sessions between host and worker
 - [ ] Fresh install test on clean hardware (#2)
 - [ ] Containerised app streaming (#22), all 5 plans complete: session store, streaming pages, user workspace, agent-bridge, expert agents, 13 app manifests (Blender/LibreOffice/GIMP/Code Server/Neko Browser + 8 Phase 2), app orchestrator, computer-use with escalation, companion launcher API
+- [ ] Exo deploy-wizard option, an explicit Distributed (exo) mode for models that exceed a single worker's VRAM
 
 ### Planned
 - [ ] Local assistant LLM / Setup Agent (#4)
 - [ ] Pre-built Armbian images (#7)
 - [ ] Automated Playwright tests (#8)
-- [ ] Exo integration for pipeline-parallel inference
 
 ### Future Vision
 - [ ] Cloud services, tinyagentos.com (#5)

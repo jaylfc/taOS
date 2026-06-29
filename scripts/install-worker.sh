@@ -5,10 +5,10 @@
 # scheduler.
 #
 # Usage:
-#     curl -sL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-worker.sh | bash -s -- http://controller:6969
+#     curl -sL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-worker.sh | bash -s -- http://controller:6969
 #
 # or download + inspect + run:
-#     curl -O https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-worker.sh
+#     curl -O https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-worker.sh
 #     chmod +x install-worker.sh
 #     ./install-worker.sh http://controller:6969
 #
@@ -17,7 +17,7 @@
 #     TAOS_WORKER_NAME        worker display name (default: hostname)
 #     TAOS_INSTALL_DIR        where to install (default: ~/.local/share/tinyagentos-worker)
 #     TAOS_BRANCH             git branch or tag (default: master)
-#     TAOS_REPO               git remote (default: https://github.com/jaylfc/tinyagentos)
+#     TAOS_REPO               git remote (default: https://github.com/jaylfc/taOS)
 #     TAOS_SKIP_BENCHMARK     if set, skip the on-join benchmark run
 #     TAOS_SERVICE            install as system service: auto (default), user, skip
 #     TAOS_PAIR_MANUAL        if set, use free-tier manual pairing: the worker
@@ -68,7 +68,7 @@ _default_worker_name() {
 WORKER_NAME="${TAOS_WORKER_NAME:-$(_default_worker_name)}"
 INSTALL_DIR="${TAOS_INSTALL_DIR:-$HOME/.local/share/tinyagentos-worker}"
 BRANCH="${TAOS_BRANCH:-master}"
-REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
+REPO="${TAOS_REPO:-https://github.com/jaylfc/taOS}"
 SERVICE_MODE="${TAOS_SERVICE:-auto}"
 
 os_name="$(uname -s)"

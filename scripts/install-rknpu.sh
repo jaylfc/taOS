@@ -18,7 +18,7 @@
 #     sudo bash scripts/install-rknpu.sh --yes
 #
 #     # one-liner
-#     curl -sSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-rknpu.sh \
+#     curl -sSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-rknpu.sh \
 #       | TAOS_RKNPU_SETUP=1 sudo bash
 #
 # Environment overrides:

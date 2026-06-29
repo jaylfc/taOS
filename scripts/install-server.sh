@@ -6,17 +6,17 @@
 # http://<host>:6969 immediately after the script exits.
 #
 # Usage:
-#     curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-server.sh | sudo bash
+#     curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash
 #
 # or download + inspect + run:
-#     curl -O https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-server.sh
+#     curl -O https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh
 #     chmod +x install-server.sh
 #     sudo ./install-server.sh
 #
 # Environment overrides:
 #     TAOS_INSTALL_DIR    where to install (default: ~/tinyagentos)
 #     TAOS_BRANCH         git branch or tag (default: master)
-#     TAOS_REPO           git remote (default: https://github.com/jaylfc/tinyagentos)
+#     TAOS_REPO           git remote (default: https://github.com/jaylfc/taOS)
 #     TAOS_PORT                 controller listen port (default: 6969)
 #     TAOS_BROWSER_PROXY_PORT   browser-proxy second-origin port (default: 6970); set to 0 to disable
 #     TAOS_QMD_PORT             qmd model service port (default: 7832)
@@ -43,7 +43,7 @@ fi
 [[ -z "$_existing_install" && -d /opt/tinyagentos/.git ]] && _existing_install=/opt/tinyagentos
 INSTALL_DIR="${TAOS_INSTALL_DIR:-${_existing_install:-$HOME/tinyagentos}}"
 BRANCH="${TAOS_BRANCH:-master}"
-REPO="${TAOS_REPO:-https://github.com/jaylfc/tinyagentos}"
+REPO="${TAOS_REPO:-https://github.com/jaylfc/taOS}"
 TAOS_PORT="${TAOS_PORT:-6969}"
 TAOS_BROWSER_PROXY_PORT="${TAOS_BROWSER_PROXY_PORT:-6970}"
 TAOS_QMD_PORT="${TAOS_QMD_PORT:-7832}"
@@ -2129,5 +2129,5 @@ else
 fi
 log ""
 log "  Now install workers on other machines with:"
-log "    curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-worker.sh | sudo bash -s -- http://$host_ip:$TAOS_PORT"
+log "    curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-worker.sh | sudo bash -s -- http://$host_ip:$TAOS_PORT"
 log ""
