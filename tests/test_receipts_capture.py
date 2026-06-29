@@ -67,6 +67,13 @@ def test_derive_io_byte_count_is_utf8_not_char_count():
     assert fc[0]["bytes"] != len(content)
 
 
+def test_derive_io_byte_count_handles_bytes_content():
+    # bytes/bytearray content must count actual bytes, not len(str(b"...")) repr.
+    content = b"h\xc3\xa9llo"  # UTF-8 for h-e-acute-llo: 6 bytes
+    _, fc = derive_io("file_write", {"path": "a.bin", "content": content}, {"status": "written"})
+    assert fc[0]["bytes"] == len(content) == 6
+
+
 def test_hash_text_is_stable_and_prefixed():
     h = hash_text("hello")
     assert h.startswith("sha256:") and h == hash_text("hello")

@@ -50,7 +50,11 @@ def derive_io(tool_name: str, args: dict, result) -> tuple[list[dict], list[dict
             # recomputed count. Fall back to the UTF-8 byte length of content.
             byte_count = result.get("bytes")
             if byte_count is None:
-                byte_count = len(str(content).encode("utf-8", "replace"))
+                # Mirror hash_text: count bytes as-is, everything else as UTF-8.
+                byte_count = len(
+                    content if isinstance(content, (bytes, bytearray))
+                    else str(content).encode("utf-8", "replace")
+                )
             files_changed.append(
                 {"path": args.get("path", ""), "hash_after": h, "bytes": byte_count}
             )
