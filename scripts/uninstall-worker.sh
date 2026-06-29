@@ -71,10 +71,11 @@ case "$os_name" in
             # block from the saved file, leaving every other table intact.
             if [[ -f "$NFT_CONF" ]] && sudo grep -qE '^table ip taos[ {]' "$NFT_CONF" 2>/dev/null; then
                 log "removing persisted 'table ip taos' from $NFT_CONF"
-                nft_tmp="$(mktemp)"
-                # sudo only needs to READ the (possibly root-owned) conf; the
-                # redirect is intentionally user-level into the mktemp file.
-                # shellcheck disable=SC2024
+                # Write the cleaned ruleset to a sibling temp, then atomically
+                # rename it into place: a crash mid-write leaves $NFT_CONF intact
+                # (either the old file or the fully-written new one, never a
+                # half-written ruleset). sudo tee writes the root-owned temp.
+                nft_tmp="${NFT_CONF}.taos-uninstall.$$"
                 if sudo awk '
                     skip==0 && /^table ip taos \{/ {skip=1; depth=1; next}
                     skip==1 {
@@ -84,15 +85,15 @@ case "$os_name" in
                         next
                     }
                     {print}
-                ' "$NFT_CONF" >"$nft_tmp" && sudo cp "$nft_tmp" "$NFT_CONF"; then
+                ' "$NFT_CONF" | sudo tee "$nft_tmp" >/dev/null && sudo mv "$nft_tmp" "$NFT_CONF"; then
                     :
                 else
                     warn "failed to rewrite $NFT_CONF; 'table ip taos' may persist across reboot"
+                    sudo rm -f "$nft_tmp" 2>/dev/null || true
                 fi
-                rm -f "$nft_tmp"
             fi
         fi
-        [[ "$FAILED" == "0" ]] && log "worker LXC + port-forwards removed"
+        [[ "$FAILED" -eq 0 ]] && log "worker LXC + port-forwards removed"
         ;;
     Darwin)
         launchctl unload "$HOME/Library/LaunchAgents/com.tinyagentos.worker.plist" 2>/dev/null || true
@@ -106,7 +107,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
     rm -rf "$INSTALL_DIR"
 fi
 
-if [[ "$FAILED" == "1" ]]; then
+if [[ "$FAILED" -eq 1 ]]; then
     log "uninstall finished WITH ERRORS (see warnings above); host may be partly torn down"
     exit 1
 fi
