@@ -98,6 +98,57 @@ async def test_non_admin_cannot_throttle(app, client):
 
 
 @pytest.mark.asyncio
+async def test_approval_mode_defaults_to_default(client):
+    resp = await client.get("/api/observatory/approval-mode")
+    assert resp.status_code == 200
+    assert resp.json() == {"global": "default", "lanes": {}}
+
+
+@pytest.mark.asyncio
+async def test_global_approval_mode_round_trips(client):
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "accept_edits"})
+    assert resp.status_code == 200
+    assert resp.json()["global"] == "accept_edits"
+    resp = await client.get("/api/observatory/approval-mode")
+    assert resp.json()["global"] == "accept_edits"
+    # Resetting to default restores the baseline.
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "default"})
+    assert resp.json()["global"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_per_lane_approval_mode_set_and_clear(client):
+    lane = "@taOS-dev-kilo-owl-alpha"
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": lane, "mode": "dont_ask"})
+    assert resp.json()["lanes"] == {lane: "dont_ask"}
+    # mode=default clears the per-lane override (falls back to global).
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": lane, "mode": "default"})
+    assert resp.json()["lanes"] == {}
+
+
+@pytest.mark.asyncio
+async def test_approval_mode_invalid_mode_rejected(client):
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "yolo"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_approval_mode_empty_scope_rejected(client):
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": "  ", "mode": "accept_edits"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_set_approval_mode(app, client):
+    app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
+    try:
+        resp = await client.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "dont_ask"})
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
 async def test_fleet_empty_when_no_claims(client):
     resp = await client.get("/api/observatory/fleet")
     assert resp.status_code == 200
