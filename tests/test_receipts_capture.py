@@ -34,6 +34,24 @@ def test_redact_leaves_benign_values_untouched():
     assert redactions == []
 
 
+def test_redact_masks_non_string_secret_values():
+    # A secret passed as a non-string (int, list, ...) under a secret-named key
+    # must still be masked, not slip through the string-only guard.
+    red, redactions = redact_args({"api_key": 12345, "token": ["a", "b"]})
+    assert red == {"api_key": "[REDACTED]", "token": "[REDACTED]"}
+    assert {r["field"] for r in redactions} == {"api_key", "token"}
+
+
+def test_redact_does_not_over_mask_long_benign_strings():
+    # Long but benign values (paths, hex digests, base64) must survive: an audit
+    # ledger that corrupts legitimate data is worse than useless.
+    digest = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4"  # 48-char hex
+    red, redactions = redact_args({"sha": digest, "path": "/very/long/" + "x" * 60 + "/file.py"})
+    assert red["sha"] == digest
+    assert red["path"].endswith("/file.py")
+    assert redactions == []
+
+
 def test_summarize_result_variants():
     assert summarize_result({"error": "boom"})[3] == "error"
     _, _, fc, stop = summarize_result({"status": "written", "bytes": 12})

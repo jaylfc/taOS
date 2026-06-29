@@ -24,25 +24,30 @@ logger = logging.getLogger(__name__)
 # long tokens than to leak a real key into a portable receipt. The user policy
 # layer (later slice) refines this; it is never allowed to disable the baseline.
 _SECRET_KEY_HINT = re.compile(r"(secret|token|api[_-]?key|password|passwd|bearer|auth)", re.I)
+# Only well-known token SHAPES, not a generic "long string" catch-all: the broad
+# rule masked benign data (file paths, hashes, base64 payloads) and corrupted the
+# ledger. Secrets passed under non-obvious keys are caught by the user policy +
+# secrets-store value masking in a later slice; the catch-all did more harm here.
 _TOKEN_VALUE = re.compile(
-    r"\b("
-    r"sk-[A-Za-z0-9]{16,}"          # OpenAI-style
+    r"("
+    r"sk-[A-Za-z0-9]{16,}"           # OpenAI-style
     r"|gh[pousr]_[A-Za-z0-9]{20,}"   # GitHub tokens
     r"|xox[baprs]-[A-Za-z0-9-]{10,}" # Slack
-    r"|[A-Za-z0-9_\-]{40,}"          # long opaque tokens (jwt halves, hex, base64)
-    r")\b"
+    r"|AKIA[0-9A-Z]{16}"             # AWS access key id
+    r")"
 )
 _REDACTED = "[REDACTED]"
 
 
 def redact_args(args: dict) -> tuple[dict, list[dict]]:
-    """Return (redacted_copy, redactions). Masks values whose KEY looks secret,
-    or whose VALUE matches a token pattern. Non-destructive: the original dict is
-    untouched. Records what was masked (field + reason) for the receipt."""
+    """Return (redacted_copy, redactions). Masks ANY value whose KEY looks secret
+    (regardless of type, so a non-string secret cannot slip through) and masks
+    token-shaped substrings in string values. Non-destructive: the original dict
+    is untouched. Records what was masked (field + reason) for the receipt."""
     redactions: list[dict] = []
     out: dict = {}
     for k, v in (args or {}).items():
-        if isinstance(v, str) and _SECRET_KEY_HINT.search(str(k)):
+        if _SECRET_KEY_HINT.search(str(k)):
             out[k] = _REDACTED
             redactions.append({"field": str(k), "reason": "secret-key-name"})
         elif isinstance(v, str) and _TOKEN_VALUE.search(v):
