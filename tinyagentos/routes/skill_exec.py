@@ -457,6 +457,35 @@ async def list_tools(request: Request, agent_name: str):
     return JSONResponse({"tools": tools})
 
 
+def _capture_tool_receipt(request: Request, skill_id: str, args: dict, result) -> None:
+    """Schedule a fire-and-forget action receipt for this tool call (#155).
+
+    Fail-soft and off the response path: extracts the plain values it needs, then
+    schedules the write on the loop so the tool response returns first. Any error
+    here is swallowed; a receipt must never disrupt or slow a tool call.
+    """
+    try:
+        import asyncio
+
+        from tinyagentos.receipts import emit_tool_receipt
+
+        store = getattr(request.app.state, "receipt_store", None)
+        agent = (args.get("agent_name") or "").strip()
+        if store is None or not agent:
+            return
+        files_changed = None
+        if skill_id == "file_write" and isinstance(result, dict) and not result.get("error"):
+            files_changed = [{"path": args.get("path", ""), "bytes": result.get("bytes")}]
+        # agent_name is identity, not a tool argument; keep it out of tool_args.
+        tool_args = {k: v for k, v in args.items() if k != "agent_name"}
+        asyncio.create_task(emit_tool_receipt(
+            store, agent=agent, tool_name=skill_id, args=tool_args,
+            result=result, files_changed=files_changed,
+        ))
+    except Exception:  # noqa: BLE001 - never let receipt capture touch the tool path
+        pass
+
+
 @router.post("/api/skill-exec/{skill_id}/call")
 async def execute_skill(skill_id: str, request: Request):
     """Execute a skill with the given arguments."""
@@ -482,6 +511,7 @@ async def execute_skill(skill_id: str, request: Request):
 
     try:
         result = await impl(args, request)
+        _capture_tool_receipt(request, skill_id, args, result)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
