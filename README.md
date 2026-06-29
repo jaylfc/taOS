@@ -184,8 +184,8 @@ iwr -useb https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-w
 
 **Sudo and freshness.** The Linux/macOS worker installer is designed to run on **either a fresh Debian install or your existing system.** No clean slate required. It installs cleanly on Debian, Ubuntu, Fedora, Arch, Alpine, and macOS.
 
-- **Run with `sudo`** (the recommended path) and the worker is installed as a **system-level systemd unit** at `/etc/systemd/system/tinyagentos-worker.service`. The service runs as your user (via `User=` in the unit), survives logout, auto-starts at boot, and survives container / SBC reboots without an active login session.
-- **Run without sudo** and the script falls back to a **user-mode systemd unit** under `~/.config/systemd/user/`. Linger is enabled automatically so the user manager keeps the worker running across logouts. This path is for environments where sudo is genuinely unavailable (corporate machines, shared hosts).
+- **Linux (recommended path):** the installer runs in two phases. Phase 1 runs on the bare host: it installs incus, nftables, and btrfs-progs, creates a privileged LXC named `taos-worker` backed by a btrfs storage pool (`taos-worker-pool`), adds an nftables DNAT rule that forwards bare-host port `:8443` to the LXC, then re-executes the script inside the container. Phase 2 runs inside the `taos-worker` LXC: it installs the Python runtime, clones the repo, builds the worker venv at `~/.local/share/tinyagentos-worker/`, and installs `/etc/systemd/system/tinyagentos-worker.service` as a root-run system unit inside the container. The worker daemon itself is outbound-only to the controller.
+- **macOS:** the two-phase LXC flow is skipped (incus is Linux-only). The script installs directly on the host and registers the worker as a launchd agent (`~/Library/LaunchAgents/com.tinyagentos.worker.plist`), auto-started at login.
 
 A truly clean Debian install is the smoothest experience because nothing else is competing for ports or sysfs paths, but the script is hardened against common existing-system gotchas: it detects headless environments and skips the desktop tray, it gracefully handles unreadable `/sys/kernel/debug` paths on hosts that mount debugfs but restrict it, and it scopes its writes to `~/.local/share/tinyagentos-worker/` plus the systemd unit.
 
@@ -453,15 +453,19 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 
 ### Worker install (`scripts/install-worker.sh`)
 
+Linux uses a two-phase install. Phase 1 runs on the bare host; phase 2 runs inside the `taos-worker` LXC.
+
 | Where | What |
 |---|---|
-| `/etc/systemd/system/tinyagentos-worker.service` | Worker systemd unit (when run with sudo). Connects to the controller URL you passed and registers this machine as a cluster node. Runs as your user via `User=`, not root. |
-| `~/.config/systemd/user/tinyagentos-worker.service` | Same unit as above, but in user-mode (when run without sudo). Linger is enabled automatically. |
-| `~/.local/share/tinyagentos-worker/` | Worker repo checkout. ~150 MB on disk after install. Self-contained venv inside. |
+| `taos-worker` LXC | Privileged incus container created on the bare host during phase 1. All worker software lives inside it. |
+| `taos-worker-pool` | btrfs incus storage pool (loopback image, sized to 90% of free space on `/var/lib`) created on the bare host during phase 1. Backs the `taos-worker` container. |
+| `/etc/systemd/system/tinyagentos-worker.service` | Worker systemd unit installed inside the `taos-worker` LXC (phase 2). Runs as root inside the container. Connects to the controller URL and registers this machine as a cluster node. |
+| `~/.local/share/tinyagentos-worker/` | Repo checkout and venv, cloned inside the `taos-worker` LXC during phase 2. ~150 MB on disk after install. |
 | `~/.local/share/tinyagentos-worker/.venv/` | Python venv with worker-only deps: httpx, pydantic, psutil, fastapi, uvicorn, pyyaml, pillow, libtorrent. **Does NOT install controller-side deps** (no aiosqlite, no LiteLLM, no scheduler engine). |
-| Ports listened on | None. Workers are pure outbound, they connect TO the controller. |
-| OS packages added | python3, venv, pip, git, curl, ca-certificates, libtorrent (Debian/Ubuntu only, Arch/Fedora/Alpine equivalents on those distros). |
-| User accounts created | None. The worker runs as the user who ran the installer. |
+| Ports | `:8443` (incus HTTPS listener inside the LXC, DNAT'd from the bare-host port `:8443` via nftables -- used by the controller for LXC-based service deployment); `:21434` (TAOS-namespaced Ollama, localhost-only inside the LXC by default). The worker daemon itself is outbound-only to the controller. |
+| OS packages added (bare host, phase 1) | incus, nftables, btrfs-progs, curl |
+| OS packages added (inside LXC, phase 2) | incus, curl, python3, python3-venv, python3-pip, git, bees (if available in apt) |
+| User accounts created | None. All processes inside the LXC run as root (the container is privileged). macOS installs run as the invoking user via launchd. |
 
 ### Verify what's installed
 
@@ -472,8 +476,9 @@ ls /etc/systemd/system/tinyagentos*.service /etc/systemd/system/qmd.service
 ls ~/tinyagentos/data/
 
 # Worker side (after running install-worker.sh)
-systemctl status tinyagentos-worker
-ls ~/.local/share/tinyagentos-worker/
+sudo incus list                                                        # shows taos-worker container
+sudo incus exec taos-worker -- systemctl status tinyagentos-worker    # service status inside LXC
+sudo incus exec taos-worker -- ls ~/.local/share/tinyagentos-worker/  # repo + venv inside LXC
 ```
 
 ### Uninstall
@@ -487,13 +492,15 @@ sudo rm /etc/systemd/system/tinyagentos*.service /etc/systemd/system/qmd.service
 sudo systemctl daemon-reload
 # Repo + data are still at ~/tinyagentos, delete with: rm -rf ~/tinyagentos
 
-# Worker
+# Worker (two-phase LXC teardown -- bare host)
 scripts/uninstall-worker.sh
 # Or manually:
-sudo systemctl disable --now tinyagentos-worker
-sudo rm /etc/systemd/system/tinyagentos-worker.service
-sudo systemctl daemon-reload
-rm -rf ~/.local/share/tinyagentos-worker
+sudo incus stop taos-worker
+sudo incus delete taos-worker
+sudo incus storage delete taos-worker-pool
+# Remove the nftables DNAT rule (port :8443 forward) and persist:
+sudo nft delete table ip taos
+sudo bash -c 'nft list ruleset > /etc/nftables.conf.tmp && mv /etc/nftables.conf.tmp /etc/nftables.conf'
 ```
 
 ### Upgrading a long-running install
@@ -523,13 +530,10 @@ You do not build the UI on every machine. `install-server.sh` and the in-app upd
 **Worker:**
 
 ```bash
-cd ~/.local/share/tinyagentos-worker
-git pull
-find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-sudo systemctl restart tinyagentos-worker
+sudo incus exec taos-worker -- bash -c "cd ~/.local/share/tinyagentos-worker && git pull && find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true && systemctl restart tinyagentos-worker"
 ```
 
-The bytecode cleanup line is belt-and-braces; Python's mtime-based invalidation usually works, but on long-running boxes that have survived many upgrades it occasionally doesn't, and a stale `.pyc` is easy to mistake for a code bug.
+The bytecode cleanup step is belt-and-braces; Python's mtime-based invalidation usually works, but on long-running boxes that have survived many upgrades it occasionally doesn't, and a stale `.pyc` is easy to mistake for a code bug.
 
 ## Service Management
 
