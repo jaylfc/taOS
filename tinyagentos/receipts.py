@@ -42,9 +42,17 @@ def derive_io(tool_name: str, args: dict, result) -> tuple[list[dict], list[dict
         content = args.get("content", "")
         h = hash_text(content)
         input_refs.append({"name": "content", "hash": h})
-        if not is_error:
+        # Only record a file change once the tool CONFIRMS the write (status ==
+        # "written"). A non-error-but-malformed result is not proof a write
+        # landed, so recording one would put a false change in the ledger.
+        if isinstance(result, dict) and result.get("status") == "written":
+            # The tool reports the bytes it actually wrote; trust that over a
+            # recomputed count. Fall back to the UTF-8 byte length of content.
+            byte_count = result.get("bytes")
+            if byte_count is None:
+                byte_count = len(str(content).encode("utf-8", "replace"))
             files_changed.append(
-                {"path": args.get("path", ""), "hash_after": h, "bytes": len(str(content).encode("utf-8", "replace"))}
+                {"path": args.get("path", ""), "hash_after": h, "bytes": byte_count}
             )
     elif tool_name == "code_exec":
         input_refs.append({"name": "code", "hash": hash_text(args.get("code", ""))})

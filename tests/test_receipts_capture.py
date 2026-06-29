@@ -84,6 +84,21 @@ def test_derive_io_file_write_error_has_no_files_changed():
     assert refs and fc == []  # input recorded, but nothing was actually written
 
 
+def test_derive_io_file_write_unconfirmed_result_records_no_change():
+    # A non-error result that does NOT confirm the write (no status="written")
+    # must not put a false file change in the ledger.
+    refs, fc = derive_io("file_write", {"path": "a.py", "content": "x"}, {"queued": True})
+    assert refs and fc == []
+    refs2, fc2 = derive_io("file_write", {"path": "a.py", "content": "x"}, "weird-non-dict")
+    assert refs2 and fc2 == []
+
+
+def test_derive_io_file_write_prefers_tool_reported_bytes():
+    # When the tool reports the bytes it wrote, trust that over recomputing.
+    _, fc = derive_io("file_write", {"path": "a.py", "content": "hello"}, {"status": "written", "bytes": 99})
+    assert fc[0]["bytes"] == 99
+
+
 def test_derive_io_code_and_read():
     refs, _ = derive_io("code_exec", {"code": "print(1)"}, {"returncode": 0})
     assert refs[0]["name"] == "code" and refs[0]["hash"] == hash_text("print(1)")
