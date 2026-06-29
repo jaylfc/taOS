@@ -53,10 +53,18 @@ def test_redact_does_not_over_mask_long_benign_strings():
 
 
 def test_summarize_result_variants():
-    assert summarize_result({"error": "boom"})[3] == "error"
-    _, _, fc, stop = summarize_result({"status": "written", "bytes": 12})
-    assert stop == "completed" and fc == [{"bytes": 12}]
-    assert summarize_result("plain string")[3] == "completed"
+    assert summarize_result({"error": "boom"})[2] == "error"
+    out, _summary, stop = summarize_result({"status": "written", "bytes": 12})
+    assert stop == "completed" and out == ""
+    assert summarize_result("plain string")[2] == "completed"
+
+
+def test_derive_io_byte_count_is_utf8_not_char_count():
+    # Non-ASCII content: bytes must be the UTF-8 byte length, not the char count.
+    content = "h\u00e9llo"  # e-acute is 2 bytes in UTF-8: 6 bytes, 5 chars
+    _, fc = derive_io("file_write", {"path": "a.py", "content": content}, {"status": "written"})
+    assert fc[0]["bytes"] == len(content.encode("utf-8")) == 6
+    assert fc[0]["bytes"] != len(content)
 
 
 def test_hash_text_is_stable_and_prefixed():

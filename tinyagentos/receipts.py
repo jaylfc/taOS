@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 def hash_text(s) -> str:
     """Content fingerprint for a receipt. Safe to store even when the content was
     secret: the hash does not reveal it, but lets another person verify a replay
-    produced the same bytes."""
-    return "sha256:" + hashlib.sha256(str(s).encode("utf-8", "replace")).hexdigest()
+    produced the same bytes. Hashes bytes as-is; everything else as UTF-8."""
+    data = s if isinstance(s, (bytes, bytearray)) else str(s).encode("utf-8", "replace")
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def derive_io(tool_name: str, args: dict, result) -> tuple[list[dict], list[dict]]:
@@ -43,7 +44,7 @@ def derive_io(tool_name: str, args: dict, result) -> tuple[list[dict], list[dict
         input_refs.append({"name": "content", "hash": h})
         if not is_error:
             files_changed.append(
-                {"path": args.get("path", ""), "hash_after": h, "bytes": len(str(content))}
+                {"path": args.get("path", ""), "hash_after": h, "bytes": len(str(content).encode("utf-8", "replace"))}
             )
     elif tool_name == "code_exec":
         input_refs.append({"name": "code", "hash": hash_text(args.get("code", ""))})
@@ -91,23 +92,18 @@ def redact_args(args: dict) -> tuple[dict, list[dict]]:
     return out, redactions
 
 
-def summarize_result(result) -> tuple[str, str, list[dict], str]:
-    """Derive (output_ref, result_summary, files_changed, stop_reason) from a
-    skill result dict. Kept small: full payloads live in the trace store, the
-    receipt only needs a pointer + a human summary."""
+def summarize_result(result) -> tuple[str, str, str]:
+    """Derive (output_ref, result_summary, stop_reason) from a skill result.
+    Kept small: full payloads live in the trace store, the receipt needs only a
+    pointer + a human summary. files_changed is owned by derive_io (which has the
+    args + content hashes), so it is intentionally not produced here."""
     if not isinstance(result, dict):
-        return "", str(result)[:200], [], "completed"
+        return "", str(result)[:200], "completed"
     if result.get("error"):
-        return "", str(result.get("error"))[:200], [], "error"
-    files_changed: list[dict] = []
-    # file_write returns {"status": "written", "bytes": N}; the path is in args,
-    # threaded in by the caller, so files_changed is enriched there. Here we only
-    # surface the byte count if present.
-    if result.get("status") == "written" and "bytes" in result:
-        files_changed = [{"bytes": result.get("bytes")}]
+        return "", str(result.get("error"))[:200], "error"
     # Short, lossy summary; the trace store holds the full result.
     summary = ", ".join(f"{k}={str(v)[:60]}" for k, v in result.items() if k != "content")[:200]
-    return "", summary, files_changed, "completed"
+    return "", summary, "completed"
 
 
 async def emit_tool_receipt(
@@ -127,7 +123,7 @@ async def emit_tool_receipt(
         return
     try:
         red_args, redactions = redact_args(args)
-        output_ref, summary, _fc, stop_reason = summarize_result(result)
+        output_ref, summary, stop_reason = summarize_result(result)
         input_refs, files_changed = derive_io(tool_name, args, result)
         await store.record(
             agent,
