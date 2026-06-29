@@ -498,8 +498,10 @@ scripts/uninstall-worker.sh
 sudo incus stop taos-worker
 sudo incus delete taos-worker
 sudo incus storage delete taos-worker-pool
-# Remove the nftables DNAT rule (port :8443 forward) and persist:
+# Remove the nftables DNAT rule (port :8443 forward):
 sudo nft delete table ip taos
+# Persist (optional). This snapshots the FULL live ruleset over /etc/nftables.conf,
+# so if you hand-maintain that file, edit it by hand instead of running this:
 sudo bash -c 'nft list ruleset > /etc/nftables.conf.tmp && mv /etc/nftables.conf.tmp /etc/nftables.conf'
 ```
 
