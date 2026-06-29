@@ -497,6 +497,7 @@ scripts/uninstall-worker.sh
 # Or manually:
 sudo incus stop taos-worker
 sudo incus delete taos-worker
+# Optional, DESTROYS worker data (the script keeps this unless you pass --purge); skip to keep it:
 sudo incus storage delete taos-worker-pool
 # Remove the nftables DNAT rule (port :8443 forward):
 sudo nft delete table ip taos
