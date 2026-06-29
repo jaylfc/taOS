@@ -193,6 +193,52 @@ class TestMintInternalRoute:
         grants = await mint_client._app.state.agent_grants.list_grants(ext["canonical_id"])
         assert grants == []
 
+    async def test_mint_adopt_vouches_for_preexisting_agent(self, mint_client):
+        """With adopt=true the admin vouches for a pre-existing non-internal
+        agent (e.g. a driver that self-joined): it reuses that identity, grants
+        the scopes, and mints a token -- no new row, origin left untouched."""
+        rec = await mint_client._app.state.agent_registry.register(
+            framework="claude-code", display_name="taos-dev",
+            origin="external-selfjoin", handle="@taOS-dev",
+        )
+        # external-selfjoin starts 'pending'; the real @taOS-dev was approved -> active.
+        await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOS-dev", "slug": "taos-dev",
+                  "scopes": ["a2a_send", "a2a_receive"], "adopt": True},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["canonical_id"] == rec["canonical_id"]   # reused, not a new row
+        assert data["created"] is False and data["adopted"] is True
+        assert data["token"]
+        grants = await mint_client._app.state.agent_grants.list_grants(rec["canonical_id"])
+        assert {g["scope"] for g in grants} == {"a2a_send", "a2a_receive"}
+        # Origin is preserved (not silently rewritten to internal).
+        got = await mint_client._app.state.agent_registry.get(rec["canonical_id"])
+        assert got["origin"] == "external-selfjoin"
+        # Exactly one row for the handle.
+        rows = await mint_client._app.state.agent_registry.list_all()
+        assert sum(1 for r in rows if r["handle"] == "@taOS-dev") == 1
+
+    async def test_seed_internal_adopt_handles_preexisting(self, mint_client):
+        """seed-internal?adopt=true vouches for a pre-existing driver handle and
+        still seeds the rest."""
+        rec = await mint_client._app.state.agent_registry.register(
+            framework="claude-code", display_name="taos-dev",
+            origin="external-selfjoin", handle="@taOS-dev",
+        )
+        await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
+        resp = await mint_client.post("/api/agents/registry/seed-internal?adopt=true")
+        assert resp.status_code == 200, resp.text
+        seeded = {s["handle"]: s for s in resp.json()["seeded"]}
+        assert seeded["@taOS-dev"]["adopted"] is True and seeded["@taOS-dev"]["created"] is False
+        assert seeded["@Hermes"]["created"] is True and seeded["@Hermes"]["adopted"] is False
+        # Without adopt it would have 409d on @taOS-dev:
+        resp2 = await mint_client.post("/api/agents/registry/seed-internal")
+        assert resp2.status_code == 409
+
     async def test_mint_requires_auth(self, mint_client):
         """An unauthenticated caller cannot mint (route is admin-only and not on
         the agent-token allowlist)."""
