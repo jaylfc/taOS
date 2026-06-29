@@ -215,8 +215,16 @@ def _read_approval(request: Request) -> dict:
         data = json.loads(p.read_text())
     except (OSError, ValueError):
         return {"global": "default", "sessions": {}}
+    # A hand-edited file could be valid JSON but not the expected shape (a scalar,
+    # a list, or a non-dict "sessions"). Guard both so a malformed file degrades
+    # to the safe default instead of 500ing the GET.
+    if not isinstance(data, dict):
+        return {"global": "default", "sessions": {}}
+    raw_sessions = data.get("sessions")
+    if not isinstance(raw_sessions, dict):
+        raw_sessions = {}
     sessions = {}
-    for k, v in (data.get("sessions") or {}).items():
+    for k, v in raw_sessions.items():
         mode = _coerce_mode(v)
         if mode is not None and mode != "default":
             sessions[str(k)] = mode

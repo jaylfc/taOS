@@ -127,6 +127,23 @@ async def test_per_session_approval_mode_set_and_clear(client):
 
 
 @pytest.mark.asyncio
+async def test_approval_mode_tolerates_malformed_file(app, client):
+    # Valid JSON but the wrong shape must degrade to the safe default, not 500.
+    from pathlib import Path
+    p = Path(app.state.data_dir) / "observatory_approval_mode.json"
+    p.write_text('"not a dict"')
+    r = await client.get("/api/observatory/approval-mode")
+    assert r.status_code == 200
+    assert r.json() == {"global": "default", "sessions": {}}
+    # A non-dict "sessions" is ignored, not crashed on.
+    p.write_text('{"global": "accept_edits", "sessions": "oops"}')
+    r = await client.get("/api/observatory/approval-mode")
+    assert r.status_code == 200
+    assert r.json()["global"] == "accept_edits"
+    assert r.json()["sessions"] == {}
+
+
+@pytest.mark.asyncio
 async def test_approval_mode_invalid_mode_rejected(client):
     resp = await client.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "yolo"})
     assert resp.status_code == 400
