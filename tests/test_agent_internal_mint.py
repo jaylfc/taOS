@@ -16,6 +16,13 @@ from httpx import ASGITransport, AsyncClient
 from tinyagentos.agent_registry_store import AgentRegistryStore
 
 
+def test_allowed_scopes_matches_canonical_valid_scopes():
+    """The mint allowlist must not drift from the consent-flow VALID_SCOPES."""
+    from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
+    from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
+    assert set(_ALLOWED_SCOPES) == set(VALID_SCOPES)
+
+
 # ---------------------------------------------------------------------------
 # Store: get_by_handle
 # ---------------------------------------------------------------------------
@@ -55,27 +62,6 @@ class TestGetByHandle:
         finally:
             await s.close()
 
-    async def test_unique_active_handle_blocks_duplicate(self, tmp_path):
-        """The partial unique index stops a check-then-register race from
-        creating two active rows for one non-empty handle."""
-        from sqlite3 import IntegrityError
-        s = await self._store(tmp_path / "reg.db")
-        try:
-            await s.register(framework="taos-internal", display_name="a", handle="@dup")
-            with pytest.raises(IntegrityError):
-                await s.register(framework="taos-internal", display_name="b", handle="@dup")
-        finally:
-            await s.close()
-
-    async def test_empty_handles_are_not_unique(self, tmp_path):
-        """Handle-less deployed agents (default '') must coexist -- the unique
-        index is scoped to non-empty handles."""
-        s = await self._store(tmp_path / "reg.db")
-        try:
-            await s.register(framework="claude", display_name="a")
-            await s.register(framework="claude", display_name="b")
-        finally:
-            await s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +128,20 @@ class TestMintInternalRoute:
         assert rec["status"] == "active"
         grants = await mint_client._app.state.agent_grants.list_grants(data["canonical_id"])
         assert {g["scope"] for g in grants} == {"a2a_send", "a2a_receive"}
+
+    async def test_concurrent_mint_same_handle_makes_one_row(self, mint_client):
+        """The mint lock makes concurrent check-then-register atomic: two
+        in-flight mints for the same handle yield one row + one canonical_id."""
+        import asyncio
+        body = {"handle": "@taOS-dev", "slug": "taos-dev", "scopes": ["a2a_receive"]}
+        r1, r2 = await asyncio.gather(
+            mint_client.post("/api/agents/registry/mint-internal", json=body),
+            mint_client.post("/api/agents/registry/mint-internal", json=body),
+        )
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r1.json()["canonical_id"] == r2.json()["canonical_id"]
+        rows = await mint_client._app.state.agent_registry.list_all()
+        assert sum(1 for r in rows if r["handle"] == "@taOS-dev") == 1
 
     async def test_mint_is_idempotent_by_handle(self, mint_client):
         first = await mint_client.post(

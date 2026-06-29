@@ -20,8 +20,8 @@ Route ordering matters: /pubkey, /revoked, and /inactive are declared before
 /{canonical_id} so the literal strings are not captured as a path parameter.
 """
 
+import asyncio
 import logging
-from sqlite3 import IntegrityError
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -132,6 +132,13 @@ def _get_keypair(request: Request) -> tuple[bytes, bytes]:
 
 
 _FEED_SCOPE = "registry_feeds_read"
+
+# Serializes internal-identity minting so a concurrent check-then-register for
+# the same handle cannot create two rows. The controller is a single process, so
+# an in-process lock is sufficient -- and is preferable to a DB-wide unique
+# index on handle, which would make unrelated active-handle writes (set_status,
+# update) raise on collision and 500.
+_mint_lock = asyncio.Lock()
 
 # Origin marker for the built-in driver agents seeded by the operator.  register()
 # treats any origin other than "external-selfjoin" as immediately active, so these
@@ -248,20 +255,22 @@ async def _mint_internal_identity(
     grants_store = _get_grants_store(request)
     private_pem, _public_pem = _get_keypair(request)
 
-    existing = await store.get_by_handle(handle)
-    if existing is not None:
-        # Never hand internal scopes + a fresh token to an agent that already
-        # owns this handle under a different origin (e.g. an external self-join
-        # that claimed "@Hermes"). Only a taos-internal row may be reused.
-        if existing.get("origin") != _INTERNAL_ORIGIN:
-            raise HTTPException(
-                status_code=409,
-                detail="handle is already owned by a non-internal agent",
-            )
-        record = existing
-        created = False
-    else:
-        try:
+    # The lock makes the check-then-register atomic: a concurrent mint of the
+    # same handle waits, then sees the row the first one created and reuses it.
+    async with _mint_lock:
+        existing = await store.get_by_handle(handle)
+        if existing is not None:
+            # Never hand internal scopes + a fresh token to an agent that already
+            # owns this handle under a different origin (e.g. an external
+            # self-join that claimed "@Hermes"). Only a taos-internal row reuses.
+            if existing.get("origin") != _INTERNAL_ORIGIN:
+                raise HTTPException(
+                    status_code=409,
+                    detail="handle is already owned by a non-internal agent",
+                )
+            record = existing
+            created = False
+        else:
             record = await store.register(
                 framework=_INTERNAL_ORIGIN,
                 display_name=slug,
@@ -271,14 +280,6 @@ async def _mint_internal_identity(
                 capabilities=[],
             )
             created = True
-        except IntegrityError:
-            # Lost a check-then-register race against a concurrent mint of the
-            # same handle (the partial unique index rejected the duplicate).
-            # Re-read and reuse the row the winner created -- idempotent.
-            record = await store.get_by_handle(handle)
-            if record is None or record.get("origin") != _INTERNAL_ORIGIN:
-                raise
-            created = False
 
     canonical_id = record["canonical_id"]
     for scope in scopes:
