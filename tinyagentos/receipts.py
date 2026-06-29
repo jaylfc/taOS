@@ -15,10 +15,43 @@ secrets-store value masking layer on in a later slice.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+
+def hash_text(s) -> str:
+    """Content fingerprint for a receipt. Safe to store even when the content was
+    secret: the hash does not reveal it, but lets another person verify a replay
+    produced the same bytes."""
+    return "sha256:" + hashlib.sha256(str(s).encode("utf-8", "replace")).hexdigest()
+
+
+def derive_io(tool_name: str, args: dict, result) -> tuple[list[dict], list[dict]]:
+    """Return (input_refs, files_changed) with content hashes for the tool call,
+    so the receipt records exactly what went in and what changed. Tool-specific;
+    unknown tools get empty lists (the receipt still carries tool_name + args)."""
+    args = args or {}
+    is_error = isinstance(result, dict) and bool(result.get("error"))
+    input_refs: list[dict] = []
+    files_changed: list[dict] = []
+    if tool_name == "file_write":
+        content = args.get("content", "")
+        h = hash_text(content)
+        input_refs.append({"name": "content", "hash": h})
+        if not is_error:
+            files_changed.append(
+                {"path": args.get("path", ""), "hash_after": h, "bytes": len(str(content))}
+            )
+    elif tool_name == "code_exec":
+        input_refs.append({"name": "code", "hash": hash_text(args.get("code", ""))})
+    elif tool_name == "file_read":
+        input_refs.append({"name": "path", "value": args.get("path", "")})
+        if not is_error and isinstance(result, dict) and "content" in result:
+            input_refs.append({"name": "content_read", "hash": hash_text(result.get("content", ""))})
+    return input_refs, files_changed
 
 # Baseline secret patterns. Conservative on purpose: better to mask a few benign
 # long tokens than to leak a real key into a portable receipt. The user policy
@@ -85,23 +118,25 @@ async def emit_tool_receipt(
     args: dict,
     result,
     project_id: str = "",
-    files_changed: list | None = None,
 ) -> None:
     """Write one receipt for a tool call. Fail-soft: any error is logged and
     swallowed so a receipt write can never disrupt the agent. Intended to be
-    scheduled fire-and-forget by the route."""
+    scheduled fire-and-forget by the route. input_refs + files_changed (with
+    content hashes) are derived from the tool name, args, and result."""
     if store is None or not agent:
         return
     try:
         red_args, redactions = redact_args(args)
-        output_ref, summary, fc_from_result, stop_reason = summarize_result(result)
+        output_ref, summary, _fc, stop_reason = summarize_result(result)
+        input_refs, files_changed = derive_io(tool_name, args, result)
         await store.record(
             agent,
             tool_name=tool_name,
             tool_args=red_args,
             result_summary=summary,
             output_ref=output_ref,
-            files_changed=files_changed if files_changed is not None else fc_from_result,
+            input_refs=input_refs,
+            files_changed=files_changed,
             stop_reason=stop_reason,
             redactions=redactions,
             project_id=project_id,

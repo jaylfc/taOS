@@ -479,14 +479,11 @@ def _capture_tool_receipt(request: Request, skill_id: str, args: dict, result) -
         agent = (args.get("agent_name") or "").strip()
         if store is None or not agent:
             return
-        files_changed = None
-        if skill_id == "file_write" and isinstance(result, dict) and not result.get("error"):
-            files_changed = [{"path": args.get("path", ""), "bytes": result.get("bytes")}]
         # agent_name is identity, not a tool argument; keep it out of tool_args.
+        # input_refs + files_changed (with content hashes) are derived in receipts.
         tool_args = {k: v for k, v in args.items() if k != "agent_name"}
         task = asyncio.create_task(emit_tool_receipt(
-            store, agent=agent, tool_name=skill_id, args=tool_args,
-            result=result, files_changed=files_changed,
+            store, agent=agent, tool_name=skill_id, args=tool_args, result=result,
         ))
         # Keep a strong reference until the task finishes, else it can be GC'd.
         _bg_receipt_tasks.add(task)
