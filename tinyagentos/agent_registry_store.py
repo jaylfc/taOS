@@ -383,6 +383,29 @@ class AgentRegistryStore(BaseStore):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
+        """Return the oldest entry with *handle* and *status*, or ``None``.
+
+        Used to make internal-identity minting idempotent by handle: when an
+        active agent already owns the handle its canonical_id is reused instead
+        of registering a duplicate row.  Pass ``status=None`` to match any
+        status.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if status is None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE handle = ? ORDER BY id LIMIT 1",
+                (handle,),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE handle = ? AND status = ? ORDER BY id LIMIT 1",
+                (handle, status),
+            )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
     async def list_all(self, *, status: Optional[str] = None) -> list[dict]:
         """Return all registry records, optionally filtered by *status*."""
         if self._db is None:

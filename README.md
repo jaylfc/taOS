@@ -305,6 +305,10 @@ Create shared file spaces for agents, groups, and departments. The design team s
 ### Authentication
 Password-protected dashboard with persistent sessions. Per-agent API keys. Exempt paths for cluster workers and health checks.
 
+**Agents authenticate with their own identity, not the owner password.** Each registered agent has an Ed25519 registry identity (canonical id + signed JWT). The owner password is human-only and is never handed to an agent. An agent calls scoped endpoints by presenting `Authorization: Bearer <registry-jwt>`; the route verifies the signature against the registry public key and checks the agent is active and holds the required scope grant. Today this covers the registry feed endpoints (scope `registry_feeds_read`) and the read-only A2A bus proxy `/api/a2a/bus/channels` + `/api/a2a/bus/messages` (scope `a2a_receive`). The Bearer allowlist is exact: a registry JWT authenticates only those agent paths, never an arbitrary route.
+
+Onboarding an internal driver agent: an admin mints its identity once with `taosctl agents mint --handle @taOS-dev --slug taos-dev --scopes a2a_send,a2a_receive` (or `taosctl agents seed-internal` to mint the four built-in driver agents idempotently). Minting prints the registry JWT; store it on the agent host in a gitignored per-host file (for example `~/.config/taos/agent-token`) and have the agent send it as `Authorization: Bearer <jwt>`. Re-running mint/seed for an existing handle reuses the same canonical id and re-asserts the grants, so it is safe to run again.
+
 ### Model Conversion
 Convert models between formats (GGUF→RKLLM, HF→GGUF, GGUF→MLX). Capability-gated, "Convert for NPU" button appears when an x86 worker joins the cluster.
 

@@ -1,0 +1,197 @@
+"""Internal driver-agent identity minting (taosctl agents mint / seed-internal).
+
+Covers the store-level get_by_handle helper and the admin-only mint-internal /
+seed-internal routes: idempotency by handle (no duplicate rows), grant assertion,
+token issuance, the admin gate, and a full end-to-end check that a minted token
+reads the A2A bus.
+"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from tinyagentos.agent_registry_store import AgentRegistryStore
+
+
+# ---------------------------------------------------------------------------
+# Store: get_by_handle
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestGetByHandle:
+
+    async def _store(self, db_path):
+        s = AgentRegistryStore(db_path)
+        await s.init()
+        return s
+
+    async def test_returns_active_match(self, tmp_path):
+        s = await self._store(tmp_path / "reg.db")
+        try:
+            rec = await s.register(framework="taos-internal", display_name="taos-dev", handle="@taOS-dev")
+            got = await s.get_by_handle("@taOS-dev")
+            assert got is not None
+            assert got["canonical_id"] == rec["canonical_id"]
+        finally:
+            await s.close()
+
+    async def test_returns_none_for_unknown_handle(self, tmp_path):
+        s = await self._store(tmp_path / "reg.db")
+        try:
+            assert await s.get_by_handle("@nobody") is None
+        finally:
+            await s.close()
+
+    async def test_ignores_non_active_when_status_active(self, tmp_path):
+        s = await self._store(tmp_path / "reg.db")
+        try:
+            rec = await s.register(framework="taos-internal", display_name="x", handle="@gone")
+            await s.revoke(rec["canonical_id"])
+            assert await s.get_by_handle("@gone") is None
+            assert await s.get_by_handle("@gone", status=None) is not None
+        finally:
+            await s.close()
+
+
+# ---------------------------------------------------------------------------
+# Routes: mint-internal / seed-internal
+# ---------------------------------------------------------------------------
+
+def _mock_bus_client(json_payload: dict):
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = json_payload
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    return mock_ctx
+
+
+@pytest_asyncio.fixture
+async def mint_client(app, tmp_data_dir):
+    for attr in ("agent_registry", "agent_grants", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is None:
+            await store.init()
+
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    record = app.state.auth.find_user("admin")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+    app.state._startup_complete = True
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as c:
+        c._app = app
+        yield c
+
+    for attr in ("agent_registry", "agent_grants", "metrics"):
+        store = getattr(app.state, attr)
+        if store._db is not None:
+            await store.close()
+
+
+@pytest.mark.asyncio
+class TestMintInternalRoute:
+
+    async def test_mint_creates_agent_grants_and_token(self, mint_client):
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOS-dev", "slug": "taos-dev", "scopes": ["a2a_send", "a2a_receive"]},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["handle"] == "@taOS-dev"
+        assert data["created"] is True
+        assert data["canonical_id"].startswith("taos-dev-")
+        assert data["token"]
+
+        # The agent is active and holds both grants.
+        rec = await mint_client._app.state.agent_registry.get(data["canonical_id"])
+        assert rec["status"] == "active"
+        grants = await mint_client._app.state.agent_grants.list_grants(data["canonical_id"])
+        assert {g["scope"] for g in grants} == {"a2a_send", "a2a_receive"}
+
+    async def test_mint_is_idempotent_by_handle(self, mint_client):
+        first = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOS-dev", "slug": "taos-dev", "scopes": ["a2a_receive"]},
+        )
+        second = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOS-dev", "slug": "taos-dev", "scopes": ["a2a_receive"]},
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["canonical_id"] == second.json()["canonical_id"]
+        assert first.json()["created"] is True
+        assert second.json()["created"] is False
+        # Exactly one registry row for the handle.
+        rows = await mint_client._app.state.agent_registry.list_all()
+        assert sum(1 for r in rows if r["handle"] == "@taOS-dev") == 1
+
+    async def test_mint_rejects_empty_handle(self, mint_client):
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "  ", "slug": "x", "scopes": []},
+        )
+        assert resp.status_code == 422
+
+    async def test_mint_requires_auth(self, mint_client):
+        """An unauthenticated caller cannot mint (route is admin-only and not on
+        the agent-token allowlist)."""
+        async with AsyncClient(
+            transport=ASGITransport(app=mint_client._app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                "/api/agents/registry/mint-internal",
+                json={"handle": "@x", "slug": "x", "scopes": []},
+            )
+        assert resp.status_code in (401, 403)
+
+    async def test_seed_internal_seeds_four_idempotently(self, mint_client):
+        r1 = await mint_client.post("/api/agents/registry/seed-internal")
+        assert r1.status_code == 200, r1.text
+        seeded = r1.json()["seeded"]
+        assert len(seeded) == 4
+        handles = {s["handle"] for s in seeded}
+        assert handles == {"@taOS-dev", "@taOS-website-dev", "@taOSmd-dev", "@Hermes"}
+        for s in seeded:
+            assert s["created"] is True
+            assert s["token"]
+            assert set(s["scopes"]) == {"a2a_send", "a2a_receive"}
+
+        # Re-run: no duplicate rows, all created=False.
+        r2 = await mint_client.post("/api/agents/registry/seed-internal")
+        assert r2.status_code == 200
+        assert all(s["created"] is False for s in r2.json()["seeded"])
+        rows = await mint_client._app.state.agent_registry.list_all()
+        internal = [r for r in rows if r["origin"] == "taos-internal"]
+        assert len(internal) == 4
+
+    async def test_minted_token_reads_the_bus(self, mint_client):
+        """End to end: a token from seed-internal reads the A2A bus (a2a_receive)."""
+        seeded = (await mint_client.post("/api/agents/registry/seed-internal")).json()["seeded"]
+        token = next(s["token"] for s in seeded if s["handle"] == "@Hermes")
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=_mock_bus_client({"channels": []}),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=mint_client._app), base_url="http://test"
+            ) as bare:
+                resp = await bare.get(
+                    "/api/a2a/bus/channels",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert resp.json()["available"] is True

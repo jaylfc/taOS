@@ -16,6 +16,17 @@ _REGISTRY_FEED_PATHS = frozenset({
     "/api/agents/registry/revoked",
     "/api/agents/registry/grants",
 })
+# Read-only A2A bus proxy paths an agent may reach with its own registry JWT
+# (scope a2a_receive, verified by the route).  Same passthrough contract as the
+# feed paths: only a Bearer that is NOT the admin local token reaches the route.
+_A2A_BUS_READ_PATHS = frozenset({
+    "/api/a2a/bus/channels",
+    "/api/a2a/bus/messages",
+})
+# Every path that accepts a registry JWT in place of the admin session.  The
+# passthrough is allowlisted to exactly these paths -- a registry JWT must never
+# authenticate an arbitrary route (no skeleton key).
+_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -195,13 +206,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.via = "local_token"
                 return await call_next(request)
 
-        # Registry feed endpoints (revoked + grants) accept a registry JWT as an
-        # alternative to the admin session.  This branch sits AFTER the
-        # local-token check on purpose: a local token is admin-equivalent and
-        # must keep its admin semantics on these paths (taOSmd polls the feeds
-        # with it today).  Only a Bearer that is NOT the local token falls
-        # through to here and is verified as a registry JWT by the route.
-        if path in _REGISTRY_FEED_PATHS and auth_header.lower().startswith("bearer "):
+        # Agent-token endpoints (registry feeds + read-only A2A bus proxy) accept
+        # a registry JWT as an alternative to the admin session.  This branch
+        # sits AFTER the local-token check on purpose: a local token is
+        # admin-equivalent and must keep its admin semantics on these paths
+        # (taOSmd polls the feeds with it today).  Only a Bearer that is NOT the
+        # local token falls through to here; it is PASSED THROUGH and the route
+        # verifies the registry JWT + scope grant.  The allowlist is exact so a
+        # registry JWT can never authenticate any other route (no skeleton key).
+        if path in _AGENT_TOKEN_PATHS and auth_header.lower().startswith("bearer "):
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "registry_jwt_candidate"

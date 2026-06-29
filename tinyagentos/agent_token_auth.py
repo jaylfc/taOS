@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+"""Shared registry-JWT scope check for agent-authenticated routes.
+
+A registered agent authenticates to taOS with its OWN Ed25519 registry JWT
+(minted by ``mint_registry_token`` / verified by ``verify_registry_token``),
+never the owner password.  ``check_agent_scope`` is the single verify path used
+by every route that accepts an agent token:
+
+  - routes/agent_registry.py  -> required_scope "registry_feeds_read"
+  - routes/a2a_bus.py         -> required_scope "a2a_receive"
+
+Semantics (fail closed):
+  - No Authorization Bearer header -> return None (the caller decides what to do,
+    typically reject; the admin session/local-token path is handled before this).
+  - Bearer present but malformed / bad signature / missing sub -> 401.
+  - Valid signature but the agent is not active in the registry, the sub is
+    unknown, or the required scope grant is missing/expired -> 403.
+
+The registry JWT itself carries no exp claim; revocation is achieved by
+suspending the agent (status != 'active') or by setting expires_at on the grant.
+"""
+
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import HTTPException, Request
+
+from tinyagentos.agent_registry_store import verify_registry_token
+
+
+def _get_store(request: Request):
+    store = getattr(request.app.state, "agent_registry", None)
+    if store is None:
+        raise RuntimeError("agent_registry store not on app.state")
+    return store
+
+
+def _get_grants_store(request: Request):
+    store = getattr(request.app.state, "agent_grants", None)
+    if store is None:
+        raise RuntimeError("agent_grants store not on app.state")
+    return store
+
+
+def _get_keypair(request: Request) -> tuple[bytes, bytes]:
+    kp = getattr(request.app.state, "agent_registry_keypair", None)
+    if kp is None:
+        raise RuntimeError("agent_registry_keypair not on app.state")
+    return kp
+
+
+async def check_agent_scope(request: Request, required_scope: str) -> Optional[str]:
+    """Return the canonical_id from a valid Bearer registry JWT that holds an
+    active *required_scope* grant, or raise an HTTPException.
+
+    Returns None when no Authorization header is present (the caller falls
+    through to its own admin/session handling).
+
+    Raises:
+      401 -- Authorization header present but the token is malformed, has a bad
+             signature, or is missing the sub claim.
+      403 -- Token is valid but the agent is not active in the registry, the
+             sub is unknown, or the grant is missing/expired.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+
+    raw_token = auth_header[7:].strip()
+
+    # Verify the EdDSA signature using the registry public key.
+    _private_pem, public_pem = _get_keypair(request)
+    try:
+        payload = verify_registry_token(raw_token, public_pem)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
+
+    canonical_id: str = payload.get("sub", "")
+    if not canonical_id:
+        raise HTTPException(status_code=401, detail="token missing sub claim")
+
+    # Agent must be active in the registry.
+    registry = _get_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    # Must hold an active grant for the required scope.
+    grants_store = _get_grants_store(request)
+    grants = await grants_store.list_grants(canonical_id)
+
+    now = datetime.now(timezone.utc).isoformat()
+    has_scope = any(
+        g["scope"] == required_scope
+        and (g.get("expires_at") is None or g["expires_at"] > now)
+        for g in grants
+    )
+    if not has_scope:
+        raise HTTPException(
+            status_code=403,
+            detail=f"token does not hold an active {required_scope!r} grant",
+        )
+
+    return canonical_id

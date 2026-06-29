@@ -27,7 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from tinyagentos.agent_registry_store import mint_registry_token, verify_registry_token
+from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,23 @@ class PatchRegistryRequest(BaseModel):
     capabilities: Optional[list[str]] = None
 
 
+class MintInternalRequest(BaseModel):
+    """Body for minting an internal driver-agent identity (admin only)."""
+
+    handle: str
+    slug: str
+    scopes: list[str] = []
+    project_id: Optional[str] = None
+
+    @field_validator("handle", "slug")
+    @classmethod
+    def _require_non_empty(cls, v: str) -> str:
+        val = (v or "").strip()
+        if not val:
+            raise ValueError("must not be empty")
+        return val
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -95,66 +113,32 @@ def _get_keypair(request: Request) -> tuple[bytes, bytes]:
 
 _FEED_SCOPE = "registry_feeds_read"
 
+# Origin marker for the built-in driver agents seeded by the operator.  register()
+# treats any origin other than "external-selfjoin" as immediately active, so these
+# come up active without a consent round-trip.
+_INTERNAL_ORIGIN = "taos-internal"
+
+# The four internal driver agents and the scopes they need to read/write the
+# coordination bus.  seed-internal mints all four idempotently by handle.
+_INTERNAL_AGENT_SCOPES = ["a2a_send", "a2a_receive"]
+_INTERNAL_AGENTS = (
+    {"handle": "@taOS-dev", "slug": "taos-dev"},
+    {"handle": "@taOS-website-dev", "slug": "taos-website-dev"},
+    {"handle": "@taOSmd-dev", "slug": "taosmd-dev"},
+    {"handle": "@Hermes", "slug": "hermes"},
+)
+
 
 async def _check_feed_token(request: Request) -> Optional[str]:
     """Return the canonical_id from a valid Bearer token that holds an active
     ``registry_feeds_read`` grant, or raise an HTTPException.
 
+    Thin wrapper over the shared ``check_agent_scope`` helper so the feed routes
+    and the A2A bus routes use one verify path with identical 401/403 semantics.
     Returns None when no Authorization header is present (caller falls through
     to the standard admin session check).
-
-    Raises:
-      401 -- Authorization header present but token is malformed or signature invalid.
-      403 -- Token is valid but the agent lacks the scope, is not active in the
-             registry, or the grant has expired.
-
-    Note: registry JWTs themselves carry no expiry claim -- revocation is
-    achieved by suspending the agent (sets status != 'active') or by setting
-    expires_at on the grant row.  The grant expiry checked here is the only
-    time-based gate.
     """
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.lower().startswith("bearer "):
-        return None
-
-    raw_token = auth_header[7:].strip()
-
-    # Verify the EdDSA signature using the registry public key.
-    _private_pem, public_pem = _get_keypair(request)
-    try:
-        payload = verify_registry_token(raw_token, public_pem)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
-
-    canonical_id: str = payload.get("sub", "")
-    if not canonical_id:
-        raise HTTPException(status_code=401, detail="token missing sub claim")
-
-    # Agent must be active in the registry.
-    registry = _get_store(request)
-    record = await registry.get(canonical_id)
-    if record is None or record.get("status") != "active":
-        raise HTTPException(status_code=403, detail="agent is not active in the registry")
-
-    # Must hold an active registry_feeds_read grant.
-    grants_store = _get_grants_store(request)
-    grants = await grants_store.list_grants(canonical_id)
-
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-
-    has_scope = any(
-        g["scope"] == _FEED_SCOPE
-        and (g.get("expires_at") is None or g["expires_at"] > now)
-        for g in grants
-    )
-    if not has_scope:
-        raise HTTPException(
-            status_code=403,
-            detail=f"token does not hold an active {_FEED_SCOPE!r} grant",
-        )
-
-    return canonical_id
+    return await check_agent_scope(request, _FEED_SCOPE)
 
 
 async def _audit_governance(
@@ -225,6 +209,112 @@ async def register_agent(
         "token": token,
         "record": record,
     }
+
+
+async def _mint_internal_identity(
+    request: Request,
+    user: CurrentUser,
+    *,
+    handle: str,
+    slug: str,
+    scopes: list[str],
+    project_id: Optional[str] = None,
+) -> dict:
+    """Register-or-reuse an internal agent by handle, ensure its grants, and mint
+    a registry JWT.  Idempotent: a second call with the same handle reuses the
+    existing active canonical_id and re-asserts the (idempotent) grants.
+    """
+    store = _get_store(request)
+    grants_store = _get_grants_store(request)
+    private_pem, _public_pem = _get_keypair(request)
+
+    existing = await store.get_by_handle(handle)
+    if existing is not None:
+        record = existing
+        created = False
+    else:
+        record = await store.register(
+            framework=_INTERNAL_ORIGIN,
+            display_name=slug,
+            user_id=user.user_id,
+            origin=_INTERNAL_ORIGIN,
+            handle=handle,
+            capabilities=[],
+        )
+        created = True
+
+    canonical_id = record["canonical_id"]
+    for scope in scopes:
+        await grants_store.add_grant(canonical_id, scope, project_id=project_id)
+
+    token = mint_registry_token(
+        canonical_id,
+        private_pem,
+        user_id=user.user_id,
+        framework=record.get("framework", ""),
+        project_id=project_id,
+    )
+    return {
+        "handle": handle,
+        "canonical_id": canonical_id,
+        "created": created,
+        "scopes": scopes,
+        "token": token,
+    }
+
+
+@router.post("/api/agents/registry/mint-internal")
+async def mint_internal_agent(
+    request: Request,
+    body: MintInternalRequest,
+    user: CurrentUser = Depends(current_user),
+):
+    """Mint (or reuse) an internal driver-agent identity and return its token.
+
+    Admin only.  Idempotent by handle: re-running reuses the existing active
+    canonical_id instead of creating a duplicate row, and re-asserts the
+    requested scope grants (add_grant is idempotent).  The token is returned so
+    the operator can store it on the agent host -- it is never written to disk
+    here.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return await _mint_internal_identity(
+        request,
+        user,
+        handle=body.handle,
+        slug=body.slug,
+        scopes=body.scopes,
+        project_id=body.project_id,
+    )
+
+
+@router.post("/api/agents/registry/seed-internal")
+async def seed_internal_agents(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Idempotently mint the four internal driver agents and return their tokens.
+
+    Admin only.  Each of @taOS-dev, @taOS-website-dev, @taOSmd-dev, @Hermes is
+    minted with the a2a_send + a2a_receive scopes.  Re-running creates no
+    duplicate rows.  Response: {"seeded": [{handle, canonical_id, created,
+    scopes, token}, ...]}.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    seeded = []
+    for spec in _INTERNAL_AGENTS:
+        seeded.append(
+            await _mint_internal_identity(
+                request,
+                user,
+                handle=spec["handle"],
+                slug=spec["slug"],
+                scopes=list(_INTERNAL_AGENT_SCOPES),
+            )
+        )
+    return {"seeded": seeded}
 
 
 @router.get("/api/agents/registry/pubkey")

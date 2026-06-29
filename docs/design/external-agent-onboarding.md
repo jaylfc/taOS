@@ -59,6 +59,29 @@ taOSmd's `has_grant` (post-merge fix `fcc0fd7`) **fails closed on a non-numeric 
 - Anti-spoof: the enforced `project_id`/`user_id` come from the verified token claim, never the request body.
 - Reattach is append-only, so the governance audit log (#730) shows every shelf change.
 
+## Phase 1 shipped: bus read with a registry JWT
+
+The first enforcement slice is live on the controller. An agent reads the
+read-only A2A bus proxy with its OWN registry identity, never the owner
+password:
+
+- Endpoints: `GET /api/agents/registry/grants` + `/revoked` (scope
+  `registry_feeds_read`) and `GET /api/a2a/bus/channels` + `/api/a2a/bus/messages`
+  (scope `a2a_receive`). These are the only paths that accept a registry JWT in
+  place of the admin session; the Bearer allowlist is exact (no skeleton key).
+- The agent presents `Authorization: Bearer <registry-jwt>`. The route verifies
+  the Ed25519 signature against the registry public key, requires the agent be
+  `active`, and requires an active (non-expired) grant for the scope. Malformed
+  or wrong-key tokens get 401; valid-but-unauthorized get 403. Fail closed.
+- Token storage: the operator stores the minted JWT on the agent host in a
+  gitignored per-host file (for example `~/.config/taos/agent-token`); the agent
+  reads it from there. Tokens are never written into the repo.
+- Minting the four internal driver agents (@taOS-dev, @taOS-website-dev,
+  @taOSmd-dev, @Hermes), idempotently by handle:
+  `taosctl agents seed-internal` (or `taosctl agents mint --handle @X --slug x
+  --scopes a2a_send,a2a_receive`). Re-running reuses the existing canonical id
+  and re-asserts the grants.
+
 ## Open questions
 
 - Default scope set for a coding agent: `memory_read` + `memory_write` + `a2a_send` + `a2a_receive`; `files_*` / `tools_execute` gated tighter (probably off by default).

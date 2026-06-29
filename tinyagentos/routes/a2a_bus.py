@@ -22,8 +22,10 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+from tinyagentos.agent_token_auth import check_agent_scope
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +39,35 @@ def _bus_url() -> str:
     return os.environ.get("TAOS_A2A_BUS_URL", _DEFAULT_BUS_URL).rstrip("/")
 
 
+async def _authorize_bus_read(request: Request) -> None:
+    """Gate a bus-read request.
+
+    Admin (session cookie or local token) is allowed unconditionally -- the
+    middleware has already set request.state.is_admin for those.  Otherwise the
+    caller must present a registry JWT holding an active ``a2a_receive`` grant;
+    check_agent_scope raises 401 (bad/malformed token) or 403 (valid token but
+    not active / missing scope) and returns None only when no Bearer header is
+    present, which is rejected here as 403 (fail closed).
+    """
+    if getattr(request.state, "is_admin", False):
+        return
+    caller = await check_agent_scope(request, "a2a_receive")
+    if caller is None:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
 @router.get("/api/a2a/bus/channels")
-async def bus_channels():
+async def bus_channels(request: Request):
     """List coordination-bus channels, sorted by last activity (newest first).
+
+    Authorized readers: an admin session, the host local token, or an active
+    agent registry JWT holding the ``a2a_receive`` scope.
 
     On any bus error (timeout / connection refused / non-200) this returns an
     empty list with ``available: false`` and HTTP 200, so the frontend can show
     a clean offline state rather than crashing.
     """
+    await _authorize_bus_read(request)
     bus = _bus_url()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -65,13 +88,17 @@ async def bus_channels():
 
 
 @router.get("/api/a2a/bus/messages")
-async def bus_messages(channel: str = "", limit: int = 100):
+async def bus_messages(request: Request, channel: str = "", limit: int = 100):
     """Read messages from one bus channel, oldest-first as the bus returns them.
+
+    Authorized readers: an admin session, the host local token, or an active
+    agent registry JWT holding the ``a2a_receive`` scope.
 
     ``channel`` is required and maps to the bus ``thread`` query param. ``limit``
     is clamped to 1..500. On a bus error this returns an empty list with
     ``available: false`` and HTTP 200.
     """
+    await _authorize_bus_read(request)
     if not channel:
         return JSONResponse({"error": "channel required"}, status_code=400)
 
