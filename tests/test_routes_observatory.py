@@ -101,7 +101,7 @@ async def test_non_admin_cannot_throttle(app, client):
 async def test_approval_mode_defaults_to_default(client):
     resp = await client.get("/api/observatory/approval-mode")
     assert resp.status_code == 200
-    assert resp.json() == {"global": "default", "lanes": {}}
+    assert resp.json() == {"global": "default", "sessions": {}}
 
 
 @pytest.mark.asyncio
@@ -117,13 +117,13 @@ async def test_global_approval_mode_round_trips(client):
 
 
 @pytest.mark.asyncio
-async def test_per_lane_approval_mode_set_and_clear(client):
-    lane = "@taOS-dev-kilo-owl-alpha"
-    resp = await client.post("/api/observatory/approval-mode", json={"scope": lane, "mode": "dont_ask"})
-    assert resp.json()["lanes"] == {lane: "dont_ask"}
-    # mode=default clears the per-lane override (falls back to global).
-    resp = await client.post("/api/observatory/approval-mode", json={"scope": lane, "mode": "default"})
-    assert resp.json()["lanes"] == {}
+async def test_per_session_approval_mode_set_and_clear(client):
+    session = "cs-abc123"
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": session, "mode": "dont_ask"})
+    assert resp.json()["sessions"] == {session: "dont_ask"}
+    # mode=default clears the per-session override (falls back to global).
+    resp = await client.post("/api/observatory/approval-mode", json={"scope": session, "mode": "default"})
+    assert resp.json()["sessions"] == {}
 
 
 @pytest.mark.asyncio

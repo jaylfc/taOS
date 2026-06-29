@@ -183,8 +183,11 @@ async def set_throttle(body: ThrottleBody, request: Request, user: CurrentUser =
 # --- Per-session approval-mode steer (#133). A controller-owned mode the
 # dispatch loop will read each iteration to decide how much an agent may do
 # without asking: ``default`` (ask before edits), ``accept_edits`` (auto-allow
-# workspace/tmp edits), ``dont_ask`` (no prompts). Same shape as pause/throttle:
-# global plus per-lane overrides, JSON in data_dir, admin-gated writes. This is
+# workspace/tmp edits), ``dont_ask`` (no prompts). Approval mode is PER-SESSION
+# (the scope key is a session id), unlike pause/throttle which are per-lane: how
+# much an agent may do without asking is a property of the running session, not
+# the lane. Same storage shape as pause/throttle (global plus a per-session
+# override map, JSON in data_dir, admin-gated writes). This is
 # the storage+API layer only; wiring the dispatch loop to honour the mode and
 # the Observatory UI control are a deliberate follow-up (held for Jay). Until
 # then nothing reads this, so it changes no live agent behaviour. ---
@@ -203,26 +206,26 @@ def _coerce_mode(v) -> str | None:
 
 def _read_approval(request: Request) -> dict:
     """Current approval modes. ``global`` falls back to the safe ``default``
-    (ask before edits); only valid non-default per-lane overrides are kept so a
-    hand-edited or partial file cannot widen permissions unexpectedly."""
+    (ask before edits); only valid non-default per-session overrides are kept so
+    a hand-edited or partial file cannot widen permissions unexpectedly."""
     p = _approval_path(request)
     if not p.exists():
-        return {"global": "default", "lanes": {}}
+        return {"global": "default", "sessions": {}}
     try:
         data = json.loads(p.read_text())
     except (OSError, ValueError):
-        return {"global": "default", "lanes": {}}
-    lanes = {}
-    for k, v in (data.get("lanes") or {}).items():
+        return {"global": "default", "sessions": {}}
+    sessions = {}
+    for k, v in (data.get("sessions") or {}).items():
         mode = _coerce_mode(v)
         if mode is not None and mode != "default":
-            lanes[str(k)] = mode
-    return {"global": _coerce_mode(data.get("global")) or "default", "lanes": lanes}
+            sessions[str(k)] = mode
+    return {"global": _coerce_mode(data.get("global")) or "default", "sessions": sessions}
 
 
 class ApprovalModeBody(BaseModel):
-    scope: str  # "global" or a lane handle
-    mode: str  # one of APPROVAL_MODES; "default" clears a per-lane override
+    scope: str  # "global" or a session id
+    mode: str  # one of APPROVAL_MODES; "default" clears a per-session override
 
 
 @router.get("/api/observatory/approval-mode")
@@ -233,9 +236,9 @@ async def get_approval_mode(request: Request, user: CurrentUser = Depends(curren
 
 @router.post("/api/observatory/approval-mode")
 async def set_approval_mode(body: ApprovalModeBody, request: Request, user: CurrentUser = Depends(current_user)):
-    """Set the approval mode globally or for a single lane. Admin only, since it
-    relaxes how much an agent may do without asking. ``mode='default'`` on a lane
-    clears its override (it falls back to global)."""
+    """Set the approval mode globally or for a single session. Admin only, since
+    it relaxes how much an agent may do without asking. ``mode='default'`` on a
+    session clears its override (it falls back to global)."""
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="forbidden")
     scope = body.scope.strip()
@@ -252,9 +255,9 @@ async def set_approval_mode(body: ApprovalModeBody, request: Request, user: Curr
         if scope == "global":
             state["global"] = mode
         elif mode != "default":
-            state["lanes"][scope] = mode
+            state["sessions"][scope] = mode
         else:
-            state["lanes"].pop(scope, None)
+            state["sessions"].pop(scope, None)
         _atomic_write(_approval_path(request), state)
     return state
 
