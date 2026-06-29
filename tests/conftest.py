@@ -309,6 +309,10 @@ async def client(app, tmp_data_dir):
     if board_audit._db is not None:
         await board_audit.close()
     await board_audit.init()
+    receipt_store = app.state.receipt_store
+    if receipt_store._db is not None:
+        await receipt_store.close()
+    await receipt_store.init()
     project_task_store = app.state.project_task_store
     if project_task_store._db is not None:
         await project_task_store.close()
