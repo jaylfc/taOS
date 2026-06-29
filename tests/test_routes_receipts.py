@@ -44,6 +44,20 @@ async def test_blank_agent_rejected(app, client):
 
 
 @pytest.mark.asyncio
+async def test_handle_is_not_caller_settable(app, client):
+    _as(app, "u1")
+    try:
+        # A caller-supplied handle must be ignored (not spoofable vs the canonical id).
+        rid = (await client.post(
+            "/api/receipts", json={"agent_canonical_id": "a", "handle": "spoofed"}
+        )).json()["id"]
+        got = await client.get(f"/api/receipts/{rid}")
+        assert got.json()["handle"] == ""
+    finally:
+        _clear(app)
+
+
+@pytest.mark.asyncio
 async def test_non_admin_cannot_read_another_users_receipt(app, client):
     _as(app, "u1")
     try:

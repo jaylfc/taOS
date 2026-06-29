@@ -24,10 +24,13 @@ no live behaviour.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import time
 
 from tinyagentos.base_store import BaseStore
+
+logger = logging.getLogger(__name__)
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 
@@ -60,6 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_receipts_agent ON receipts(agent_canonical_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_project ON receipts(project_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_trace ON receipts(trace_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_decision ON receipts(decision_id);
+CREATE INDEX IF NOT EXISTS idx_receipts_user ON receipts(created_by_user_id);
 """
 
 _COLS = (
@@ -92,7 +96,11 @@ def _row(r) -> dict:
             try:
                 d[f] = json.loads(d[f])
             except (TypeError, ValueError):
-                pass
+                # An audit ledger must surface corruption, not silently pass a
+                # malformed entry off as valid data. Keep the raw value (lossless)
+                # but flag it so the bad row is visible, and log it.
+                logger.warning("receipt %s: unparseable JSON in field %r", d.get("id"), f)
+                d[f] = {"_unparsed": d[f]}
     return d
 
 

@@ -101,6 +101,17 @@ async def test_list_limit_is_clamped(store):
 
 
 @pytest.mark.asyncio
+async def test_corrupt_json_field_is_flagged_not_silent(store):
+    # An audit ledger must surface on-disk corruption, not pass a malformed JSON
+    # column off as valid data. Simulate corruption and read it back.
+    rid = await store.record("agent-x", tool_args={"ok": 1})
+    await store._db.execute("UPDATE receipts SET tool_args = ? WHERE id = ?", ("{not json", rid))
+    await store._db.commit()
+    got = await store.get(rid)
+    assert got["tool_args"] == {"_unparsed": "{not json"}  # flagged, lossless
+
+
+@pytest.mark.asyncio
 async def test_append_only_no_mutation_surface(store):
     # The store is append-only: it must not expose update/delete (the Time
     # Machine guarantee). Guards against a future regression adding one.

@@ -22,8 +22,11 @@ def _store(request: Request):
 
 
 class ReceiptIn(BaseModel):
+    # `handle` is deliberately NOT accepted from the caller: it is a display
+    # convenience that must derive from the agent registry, never be writer-set,
+    # so it cannot be spoofed against the authoritative canonical id. The capture
+    # hooks (slice 2) fill it server-side from the registry.
     agent_canonical_id: str
-    handle: str = ""
     project_id: str = ""
     workspace_hash: str = ""
     capability: str = ""
