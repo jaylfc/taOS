@@ -19,12 +19,10 @@ To keep this sustainable, **all contributors must agree to the Contributor Licen
 ```bash
 git clone https://github.com/jaylfc/tinyagentos.git
 cd tinyagentos
-python3 -m venv venv
-source venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev
 # Build the desktop SPA — static/desktop/ is gitignored (generated artifact)
 cd desktop && npm install && npm run build && cd ..
-pytest tests/ -v
+uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
 Python 3.10 or later and Node.js 22 or later are required.
@@ -58,7 +56,7 @@ The app catalog is one of the easiest ways to contribute. See [Adding an App to 
 1. Fork the repository
 2. Create a branch: `git checkout -b feat/my-feature`
 3. Make your changes and add tests
-4. Run `pytest tests/ -v` — all tests must pass
+4. Run `uv run pytest tests/ --ignore=tests/e2e -n auto` - all tests must pass
 5. Open a pull request against **`dev`**, not `master`
 
 Keep pull requests focused. One feature or fix per PR is easier to review.
@@ -195,7 +193,7 @@ Do not include AI tool attribution in commit messages.
 Run the full test suite:
 
 ```bash
-pytest tests/ -v
+uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
 Run a specific test file:
