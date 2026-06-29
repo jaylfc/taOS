@@ -3,6 +3,8 @@ import asyncio
 import datetime
 import io
 import logging
+import os
+import shutil
 import tarfile
 import time
 from pathlib import Path
@@ -26,6 +28,7 @@ async def _run_capture(
     cmd: list[str],
     cwd: str | None = None,
     timeout: float | None = 600.0,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     """Run a subprocess capturing combined stdout+stderr, with timeout.
 
@@ -50,12 +53,17 @@ async def _run_capture(
         ``(returncode, combined_output)``.  On timeout, returncode is
         ``-1`` and the output ends with a clear ``[TIMEOUT after Ns]``
         marker so callers can include it in the error surface.
+    env:
+        Optional environment mapping for the child process. ``None`` (the
+        default) inherits the parent environment unchanged; callers that
+        need an override (e.g. uv's ``HOME``) pass a full env dict.
     """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
+        env=env,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -629,29 +637,88 @@ async def force_update_check(request: Request):
 
 
 
+def _find_uv(project_dir: Path) -> str | None:
+    """Locate the uv binary for the dependency-install step.
+
+    uv is not always on PATH: on the Pi the service user's HOME is the install
+    dir, so uv lives at ``<install_dir>/.local/bin/uv`` rather than a global
+    location. Resolution order:
+      (a) ``shutil.which("uv")``
+      (b) ``<project_dir>/.local/bin/uv``
+      (c) ``~/.local/bin/uv`` for the process user
+      (d) ``/usr/local/bin/uv``
+
+    Returns the first path that exists and is executable, else ``None`` so the
+    caller can fall back to pip.
+    """
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in (
+        project_dir / ".local" / "bin" / "uv",
+        Path.home() / ".local" / "bin" / "uv",
+        Path("/usr/local/bin/uv"),
+    ):
+        if candidate.exists() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
+    return None
+
+
+async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
+    """Install/sync the update's Python deps, preferring a pinned uv sync.
+
+    A lockfile-pinned ``uv sync --frozen`` installs exactly what CI tested
+    (uv.lock) instead of a fresh pip resolve that can pull newer transitive
+    deps onto a user's box. When uv is not present we fall back to the legacy
+    ``pip install -e .`` so installs without uv still update.
+
+    Capture output and surface failures -- silently swallowing a failed install
+    lands users on a grey-screen the next time they restart, because the new
+    code imports a module that's not on disk. See issue #323's sibling failure
+    mode.
+
+    Returns (returncode, output); non-zero means the install failed and the
+    caller must abort the update (no restart).
+    """
+    uv_cmd = _find_uv(project_dir)
+    if uv_cmd is not None:
+        logger.info("Updater dependency install: uv sync --frozen (%s)", uv_cmd)
+        # HOME=project_dir so uv resolves its data/cache dir correctly under the
+        # service user whose HOME is the install dir (the Pi layout).
+        env = {**os.environ, "HOME": str(project_dir)}
+        return await _run_capture(
+            [uv_cmd, "sync", "--frozen"],
+            cwd=str(project_dir),
+            env=env,
+        )
+
+    pip_cmd = "pip"
+    for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
+        if candidate.exists():
+            pip_cmd = str(candidate)
+            break
+    logger.info("Updater dependency install: uv not found, using %s install -e .", pip_cmd)
+    return await _run_capture(
+        [pip_cmd, "install", "-e", "."],
+        cwd=str(project_dir),
+    )
+
+
 async def _pip_rebuild_restart(project_dir: Path, target_sha: str) -> tuple[int, str]:
     """Sync deps, rebuild the SPA, flag the pending restart, trigger restart.
 
     Returns (returncode, output); non-zero means a step failed.
     """
-    # Pip install to pick up new deps. Capture output and surface failures —
-    # silently swallowing a failed install lands users on a grey-screen the
-    # next time they restart, because the new code imports a module that's
-    # not on disk. See issue #323's sibling failure mode.
+    install_returncode, install_output = await _install_dependencies(project_dir)
+    if install_returncode != 0:
+        return install_returncode, install_output
+
+    # Venv python for the import smoke test below (.venv/bin/python).
     venv_python: Path | None = None
-    for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
+    for candidate in (project_dir / ".venv" / "bin" / "python", project_dir / "venv" / "bin" / "python"):
         if candidate.exists():
-            pip_cmd = str(candidate)
-            venv_python = candidate.parent / "python"
+            venv_python = candidate
             break
-    else:
-        pip_cmd = "pip"
-    pip_returncode, pip_output = await _run_capture(
-        [pip_cmd, "install", "-e", "."],
-        cwd=str(project_dir),
-    )
-    if pip_returncode != 0:
-        return pip_returncode, pip_output
 
     # Import smoke test in a fresh interpreter — verifies the new code can
     # actually load with the freshly installed deps. Without this a partial
