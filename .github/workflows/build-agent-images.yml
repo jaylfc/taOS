@@ -147,13 +147,12 @@ jobs:
             runner: ubuntu-24.04-arm
             debarch: arm64
     runs-on: ${{ matrix.runner }}
-    # Skip matrix legs whose base did not change (detect gates them per base).
-    # A skipped leg is not a failure, so the release job still proceeds and
-    # keeps the unchanged base's existing published asset.
-    if: >-
-      (matrix.base == 'openclaw' && needs.detect.outputs.openclaw == 'true') ||
-      (matrix.base == 'generic'  && needs.detect.outputs.generic  == 'true') ||
-      (matrix.base == 'hermes'   && needs.detect.outputs.hermes   == 'true')
+    # Build every base on every run (the historical default). A job-level `if:`
+    # cannot reference the `matrix` context (it is evaluated before the matrix
+    # expands), so the previous per-base skip caused a workflow startup failure
+    # that ran 0 jobs on every push. The detect job still stamps current upstream
+    # versions for the release manifest; re-introducing per-base gating needs the
+    # matrix itself to be emitted by detect (fromJSON), not a job-level if.
     env:
       # Map the "openclaw"/"generic"/"hermes" base label to its published alias.
       ALIAS: ${{ matrix.base == 'openclaw' && 'taos-openclaw-base' || (matrix.base == 'generic' && 'taos-base' || 'taos-hermes-base') }}
