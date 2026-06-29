@@ -103,6 +103,32 @@ async def _migration_v1_add_status(conn) -> None:
     )
     await conn.commit()
 
+
+async def _migration_v2_unique_active_handle(conn) -> None:
+    """Enforce at most one ACTIVE agent per non-empty handle.
+
+    Makes internal-identity minting idempotent at the storage layer: a
+    concurrent check-then-register race can no longer create two active rows
+    with the same handle. Scoped to ``handle != ''`` so the many handle-less
+    deployed agents (default '') are unaffected.
+
+    Guarded: if legacy data already has duplicate active handles the index
+    cannot be created -- log and continue rather than crash boot; the mint
+    route's reuse-by-handle path still keeps behaviour correct.
+    """
+    try:
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_handle "
+            "ON agent_registry(handle) WHERE status = 'active' AND handle != ''"
+        )
+        await conn.commit()
+    except Exception:  # noqa: BLE001 - pre-existing dup handles must not block boot
+        logger.warning(
+            "could not create uniq_active_handle index (duplicate active handles?)",
+            exc_info=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
 # ---------------------------------------------------------------------------
@@ -300,6 +326,7 @@ class AgentRegistryStore(BaseStore):
     async def _post_init(self) -> None:
         """Idempotently ensure the status column exists and is backfilled."""
         await _migration_v1_add_status(self._db)
+        await _migration_v2_unique_active_handle(self._db)
 
     # ------------------------------------------------------------------
     # Registration

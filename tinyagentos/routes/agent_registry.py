@@ -21,6 +21,7 @@ Route ordering matters: /pubkey, /revoked, and /inactive are declared before
 """
 
 import logging
+from sqlite3 import IntegrityError
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -69,6 +70,17 @@ class PatchRegistryRequest(BaseModel):
     capabilities: Optional[list[str]] = None
 
 
+# Scopes an operator may grant when minting an internal agent. Mirrors the
+# consent-flow VALID_SCOPES; the mint route must not be a back door to invent
+# arbitrary scopes that the rest of the system does not understand.
+_ALLOWED_SCOPES = frozenset({
+    "memory_read", "memory_write",
+    "a2a_send", "a2a_receive",
+    "files_read", "files_write",
+    "tools_execute", "registry_feeds_read",
+})
+
+
 class MintInternalRequest(BaseModel):
     """Body for minting an internal driver-agent identity (admin only)."""
 
@@ -84,6 +96,14 @@ class MintInternalRequest(BaseModel):
         if not val:
             raise ValueError("must not be empty")
         return val
+
+    @field_validator("scopes")
+    @classmethod
+    def _known_scopes(cls, v: list[str]) -> list[str]:
+        bad = [s for s in v if s not in _ALLOWED_SCOPES]
+        if bad:
+            raise ValueError(f"unknown scope(s): {sorted(bad)}")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +250,35 @@ async def _mint_internal_identity(
 
     existing = await store.get_by_handle(handle)
     if existing is not None:
+        # Never hand internal scopes + a fresh token to an agent that already
+        # owns this handle under a different origin (e.g. an external self-join
+        # that claimed "@Hermes"). Only a taos-internal row may be reused.
+        if existing.get("origin") != _INTERNAL_ORIGIN:
+            raise HTTPException(
+                status_code=409,
+                detail="handle is already owned by a non-internal agent",
+            )
         record = existing
         created = False
     else:
-        record = await store.register(
-            framework=_INTERNAL_ORIGIN,
-            display_name=slug,
-            user_id=user.user_id,
-            origin=_INTERNAL_ORIGIN,
-            handle=handle,
-            capabilities=[],
-        )
-        created = True
+        try:
+            record = await store.register(
+                framework=_INTERNAL_ORIGIN,
+                display_name=slug,
+                user_id=user.user_id,
+                origin=_INTERNAL_ORIGIN,
+                handle=handle,
+                capabilities=[],
+            )
+            created = True
+        except IntegrityError:
+            # Lost a check-then-register race against a concurrent mint of the
+            # same handle (the partial unique index rejected the duplicate).
+            # Re-read and reuse the row the winner created -- idempotent.
+            record = await store.get_by_handle(handle)
+            if record is None or record.get("origin") != _INTERNAL_ORIGIN:
+                raise
+            created = False
 
     canonical_id = record["canonical_id"]
     for scope in scopes:

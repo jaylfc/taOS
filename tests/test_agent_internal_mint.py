@@ -55,6 +55,28 @@ class TestGetByHandle:
         finally:
             await s.close()
 
+    async def test_unique_active_handle_blocks_duplicate(self, tmp_path):
+        """The partial unique index stops a check-then-register race from
+        creating two active rows for one non-empty handle."""
+        from sqlite3 import IntegrityError
+        s = await self._store(tmp_path / "reg.db")
+        try:
+            await s.register(framework="taos-internal", display_name="a", handle="@dup")
+            with pytest.raises(IntegrityError):
+                await s.register(framework="taos-internal", display_name="b", handle="@dup")
+        finally:
+            await s.close()
+
+    async def test_empty_handles_are_not_unique(self, tmp_path):
+        """Handle-less deployed agents (default '') must coexist -- the unique
+        index is scoped to non-empty handles."""
+        s = await self._store(tmp_path / "reg.db")
+        try:
+            await s.register(framework="claude", display_name="a")
+            await s.register(framework="claude", display_name="b")
+        finally:
+            await s.close()
+
 
 # ---------------------------------------------------------------------------
 # Routes: mint-internal / seed-internal
@@ -145,6 +167,31 @@ class TestMintInternalRoute:
             json={"handle": "  ", "slug": "x", "scopes": []},
         )
         assert resp.status_code == 422
+
+    async def test_mint_rejects_unknown_scope(self, mint_client):
+        """The mint route is not a back door for arbitrary scopes."""
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@x", "slug": "x", "scopes": ["a2a_send", "root_everything"]},
+        )
+        assert resp.status_code == 422
+
+    async def test_mint_rejects_non_internal_handle_owner(self, mint_client):
+        """If an active agent from another origin already owns the handle, the
+        mint must NOT hand it internal scopes + a token -- it 409s instead."""
+        await mint_client._app.state.agent_registry.register(
+            framework="claude", display_name="ext", origin="taos-deployed", handle="@Hermes",
+        )
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@Hermes", "slug": "hermes", "scopes": ["a2a_send"]},
+        )
+        assert resp.status_code == 409
+        # No grant leaked to the external agent that owns the handle.
+        rows = await mint_client._app.state.agent_registry.list_all()
+        ext = next(r for r in rows if r["handle"] == "@Hermes")
+        grants = await mint_client._app.state.agent_grants.list_grants(ext["canonical_id"])
+        assert grants == []
 
     async def test_mint_requires_auth(self, mint_client):
         """An unauthenticated caller cannot mint (route is admin-only and not on

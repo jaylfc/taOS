@@ -43,6 +43,27 @@ def _get_grants_store(request: Request):
     return store
 
 
+def _grant_unexpired(expires_at, now: datetime) -> bool:
+    """True if a grant's expiry is in the future (or it never expires).
+
+    Parses ``expires_at`` to a datetime instead of comparing ISO strings
+    lexicographically: a string compare is only correct when every stored value
+    uses the exact same UTC offset + precision, and silently mis-ranks a naive
+    or differently-formatted timestamp -- which could read an expired grant as
+    live (access after revocation). Fail closed: an unparseable value is treated
+    as expired. A naive timestamp is assumed UTC.
+    """
+    if expires_at is None:
+        return True
+    try:
+        exp = datetime.fromisoformat(str(expires_at))
+    except (ValueError, TypeError):
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp > now
+
+
 def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     kp = getattr(request.app.state, "agent_registry_keypair", None)
     if kp is None:
@@ -90,10 +111,9 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
     grants_store = _get_grants_store(request)
     grants = await grants_store.list_grants(canonical_id)
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
     has_scope = any(
-        g["scope"] == required_scope
-        and (g.get("expires_at") is None or g["expires_at"] > now)
+        g["scope"] == required_scope and _grant_unexpired(g.get("expires_at"), now)
         for g in grants
     )
     if not has_scope:

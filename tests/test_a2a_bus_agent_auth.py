@@ -8,6 +8,7 @@ skeleton-key guard (the agent token must not authenticate any other route).
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +22,39 @@ from tinyagentos.agent_registry_store import (
 )
 
 _BUS_PATCH = "tinyagentos.routes.a2a_bus.httpx.AsyncClient"
+
+
+class TestGrantUnexpired:
+    """Grant-expiry must be parsed, not string-compared: a naive or oddly
+    formatted timestamp must never read an expired grant as live (access after
+    revocation). Fail closed on anything unparseable."""
+
+    def _now(self):
+        return datetime(2026, 6, 29, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_none_never_expires(self):
+        from tinyagentos.agent_token_auth import _grant_unexpired
+        assert _grant_unexpired(None, self._now()) is True
+
+    def test_future_aware_is_live(self):
+        from tinyagentos.agent_token_auth import _grant_unexpired
+        now = self._now()
+        assert _grant_unexpired((now + timedelta(hours=1)).isoformat(), now) is True
+
+    def test_past_aware_is_expired(self):
+        from tinyagentos.agent_token_auth import _grant_unexpired
+        now = self._now()
+        assert _grant_unexpired((now - timedelta(hours=1)).isoformat(), now) is False
+
+    def test_naive_past_assumed_utc_is_expired(self):
+        from tinyagentos.agent_token_auth import _grant_unexpired
+        now = self._now()
+        naive_past = (now - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        assert _grant_unexpired(naive_past, now) is False
+
+    def test_unparseable_fails_closed(self):
+        from tinyagentos.agent_token_auth import _grant_unexpired
+        assert _grant_unexpired("not-a-timestamp", self._now()) is False
 
 
 def _mock_bus_client(json_payload: dict):
