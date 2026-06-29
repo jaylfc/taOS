@@ -107,7 +107,7 @@ log "installing CUDA torch from $TORCH_INDEX_URL (this can take a while)"
 
 # README: python -m pip install -e .[inference]   (package name: ltx-video)
 log "installing ltx-video (editable) with [inference] extra"
-"$PY_BIN" -m pip install -e "$REPO_DIR[inference]"
+"$PY_BIN" -m pip install -e "${REPO_DIR}[inference]"
 
 # huggingface_hub for a reproducible, revision-pinned weight download
 "$PY_BIN" -m pip install --quiet "huggingface_hub>=0.23"

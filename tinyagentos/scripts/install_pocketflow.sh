@@ -156,5 +156,5 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now taos-pocketflow-bridge.service
 echo "pocketflow-1.x" > /opt/taos/framework.version
-log done
+log "done"
 

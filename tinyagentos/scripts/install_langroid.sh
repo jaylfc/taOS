@@ -159,5 +159,5 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now taos-langroid-bridge.service
 echo "langroid-1.x" > /opt/taos/framework.version
-log done
+log "done"
 

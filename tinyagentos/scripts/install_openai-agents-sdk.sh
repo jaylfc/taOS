@@ -165,5 +165,5 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now taos-openai-agents-sdk-bridge.service
 echo "openai-agents-sdk-1.x" > /opt/taos/framework.version
-log done
+log "done"
 
