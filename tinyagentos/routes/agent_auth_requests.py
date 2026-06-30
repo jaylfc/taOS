@@ -301,12 +301,12 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
 
     # Mint canonical identity in the registry.
     # Strip whitespace first, then remove the leading "@" sigil (bus-addressing
-    # syntax only), then strip again.  Guard against an empty result (claim was
-    # "@" or whitespace-only): prefer the raw claim text, then the framework
-    # name, to ensure display_name is always non-empty.
-    _raw = record["identity_claim"].strip()
-    _claim = _raw.removeprefix("@").strip()
-    display_name = _claim or _raw or record["framework"]
+    # syntax only), then strip again.  If that leaves nothing (claim was "@" or
+    # whitespace-only) fall back to the framework name -- never the raw claim,
+    # which could still carry the "@", so display_name is always a clean,
+    # non-empty value.
+    _claim = record["identity_claim"].strip().removeprefix("@").strip()
+    display_name = _claim or record["framework"]
     reg_record = await registry.register(
         framework=record["framework"],
         display_name=display_name,
