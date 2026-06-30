@@ -91,6 +91,11 @@ async def events_stream(request: Request):
         finally:
             for t in relay_tasks:
                 t.cancel()
+            # Await the cancelled relays so they finish unwinding before we
+            # unsubscribe -- otherwise a still-running relay can touch a queue
+            # that is about to go away, and asyncio logs "Task was destroyed but
+            # it is pending". return_exceptions swallows the expected CancelledError.
+            await asyncio.gather(*relay_tasks, return_exceptions=True)
             await event_bus.unsubscribe(user_ch, user_q)
             await event_bus.unsubscribe("broadcast", bcast_q)
 

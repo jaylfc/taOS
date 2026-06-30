@@ -41,10 +41,14 @@ const RECONNECT_DELAY_MS = 5000;
 // so the set can't grow without limit over a long session.
 const MAX_SEEN_IDS = 128;
 
+// Reconnect backoff so a permanently-down backend is not hit every 5s forever.
+const MAX_RECONNECT_DELAY_MS = 30000;
+
 export function useEventStream(): void {
   useEffect(() => {
     let es: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempts = 0;
     let stopped = false;
     const seenIds: string[] = [];
     const seen = new Set<string>();
@@ -63,6 +67,11 @@ export function useEventStream(): void {
 
     const connect = () => {
       es = new EventSource("/api/events/stream");
+
+      es.onopen = () => {
+        // A clean open means the backend is healthy again; reset the backoff.
+        reconnectAttempts = 0;
+      };
 
       es.onmessage = (msg) => {
         let event: { type?: string; payload?: EventPayload; id?: string } | null;
@@ -84,9 +93,14 @@ export function useEventStream(): void {
         // A hard close (e.g. HTTP error response) leaves readyState CLOSED
         // and the browser gives up, so reconnect manually after a backoff.
         if (!stopped && es?.readyState === EventSource.CLOSED) {
+          const delay = Math.min(
+            RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
+            MAX_RECONNECT_DELAY_MS,
+          );
+          reconnectAttempts += 1;
           reconnectTimer = setTimeout(() => {
             if (!stopped) connect();
-          }, RECONNECT_DELAY_MS);
+          }, delay);
         }
       };
     };
