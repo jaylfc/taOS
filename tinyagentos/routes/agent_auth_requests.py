@@ -300,9 +300,13 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
     rel_mgr = _get_relationships(request)
 
     # Mint canonical identity in the registry.
-    # Strip any leading "@" — that sigil is bus-addressing syntax only and
-    # must never appear in a stored display_name.
-    display_name = record["identity_claim"].removeprefix("@").strip()
+    # Strip whitespace first, then remove the leading "@" sigil (bus-addressing
+    # syntax only), then strip again.  Guard against an empty result (claim was
+    # "@" or whitespace-only): prefer the raw claim text, then the framework
+    # name, to ensure display_name is always non-empty.
+    _raw = record["identity_claim"].strip()
+    _claim = _raw.removeprefix("@").strip()
+    display_name = _claim or _raw or record["framework"]
     reg_record = await registry.register(
         framework=record["framework"],
         display_name=display_name,

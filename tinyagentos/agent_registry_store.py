@@ -111,9 +111,11 @@ async def _migration_v2_strip_at_display_name(conn) -> None:
     in display_name.  Safe to run every startup — rows without a leading
     '@' are untouched by the WHERE clause.
     """
+    # '@_%' requires at least one character after '@', so bare '@'-only rows
+    # are intentionally left unchanged and cannot be produced as empty strings.
     await conn.execute(
         "UPDATE agent_registry SET display_name = substr(display_name, 2) "
-        "WHERE display_name LIKE '@%'"
+        "WHERE display_name LIKE '@_%'"
     )
     await conn.commit()
 

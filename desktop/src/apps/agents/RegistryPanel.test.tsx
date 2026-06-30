@@ -189,15 +189,13 @@ describe("RegistryPanel polling", () => {
 
     const callsBeforeAction = mockFetch.mock.calls.length;
 
-    // Click suspend button if it exists (entry is "active" so suspend appears)
-    const suspendBtn = screen.queryByTitle("Suspend");
-    if (suspendBtn) {
-      await act(async () => {
-        suspendBtn.click();
-        await Promise.resolve();
-      });
-      // Should have triggered an additional registry fetch (post-action reload)
-      expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBeforeAction);
-    }
+    // Entry is "active" so Suspend must be present — assert rather than guard.
+    const suspendBtn = screen.getByTitle("Suspend");
+    await act(async () => {
+      suspendBtn.click();
+      await Promise.resolve();
+    });
+    // Should have triggered an additional registry fetch (post-action reload)
+    expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBeforeAction);
   });
 });

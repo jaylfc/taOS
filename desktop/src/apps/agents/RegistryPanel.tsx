@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ChevronRight,
   ShieldCheck,
@@ -370,8 +370,11 @@ export function RegistryPanel() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Monotonic counter — only the latest in-flight response is applied.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setErr(null);
     try {
@@ -379,6 +382,7 @@ export function RegistryPanel() {
         fetch("/auth/status", { credentials: "include" }),
         fetch("/api/agents/registry", { credentials: "include" }),
       ]);
+      if (seq !== loadSeq.current) return; // stale — a newer load fired; discard
       if (statusResp.ok) {
         const s = await statusResp.json();
         setIsAdmin(!!s.user?.is_admin);
@@ -391,9 +395,10 @@ export function RegistryPanel() {
         setErr(`Failed to load registry (${registryResp.status})`);
       }
     } catch (e: unknown) {
+      if (seq !== loadSeq.current) return;
       setErr(e instanceof Error ? e.message : "Network error");
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, []);
 
@@ -422,12 +427,22 @@ export function RegistryPanel() {
         startPolling();
       }
     };
+    // Also refetch when the window regains focus while already visible
+    // (covers alt-tab / dock-click without a tab switch).
+    const onFocus = () => {
+      if (!document.hidden) {
+        void load();
+        startPolling();
+      }
+    };
 
     if (!document.hidden) startPolling();
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
     return () => {
       stopPolling();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
     };
   }, [expanded, load]);
 
