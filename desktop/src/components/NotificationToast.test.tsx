@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { NotificationToasts } from "./NotificationToast";
 
 const mockDismiss = vi.fn();
+const mockArchiveRead = vi.fn();
 const mockNotifications: Array<{
   id: string;
   source: string;
@@ -15,8 +16,18 @@ const mockNotifications: Array<{
 }> = [];
 
 vi.mock("@/stores/notification-store", () => ({
-  useNotificationStore: (selector: (state: { notifications: typeof mockNotifications; dismiss: typeof mockDismiss }) => unknown) =>
-    selector({ notifications: mockNotifications, dismiss: mockDismiss }),
+  useNotificationStore: (
+    selector: (state: {
+      notifications: typeof mockNotifications;
+      dismiss: typeof mockDismiss;
+      archiveRead: typeof mockArchiveRead;
+    }) => unknown,
+  ) =>
+    selector({
+      notifications: mockNotifications,
+      dismiss: mockDismiss,
+      archiveRead: mockArchiveRead,
+    }),
 }));
 
 vi.mock("@/stores/process-store", () => ({
@@ -89,6 +100,33 @@ describe("NotificationToasts", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("archives (not just removes) the consent toast when a decision is made", async () => {
+    mockDismiss.mockClear();
+    mockArchiveRead.mockClear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+    );
+    mockNotifications.length = 0;
+    mockNotifications.push({
+      id: "srv-8",
+      source: "auth_requests",
+      title: "Access request",
+      body: "owl@lab is requesting memory_read",
+      level: "info",
+      read: false,
+      timestamp: Date.now(),
+      data: { request_id: "req-2", requested_scopes: ["memory_read"] },
+    });
+    render(<NotificationToasts />);
+
+    fireEvent.click(screen.getByRole("button", { name: /deny/i }));
+
+    // Resolving archives + reads (lands in History); not a plain dismiss.
+    await waitFor(() => expect(mockArchiveRead).toHaveBeenCalledWith("srv-8"));
+    expect(mockDismiss).not.toHaveBeenCalled();
   });
 
   it("auto-expires the toast after 5s without archiving it", () => {

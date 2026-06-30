@@ -140,4 +140,26 @@ describe("NotificationCentre click routing", () => {
     expect(screen.getByRole("button", { name: /allow/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
   });
+
+  it("archives (not just removes) the notification when a consent decision is made", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) }),
+    );
+    notifications = [
+      notif({
+        id: "srv-4",
+        source: "auth_requests",
+        title: "Access request",
+        data: { request_id: "req-9", requested_scopes: ["memory_read"] },
+      }),
+    ];
+    render(<NotificationCentre />);
+
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+
+    // Resolution archives + reads (lands in History), it is NOT a plain dismiss.
+    await waitFor(() => expect(archiveRead).toHaveBeenCalledWith("srv-4"));
+    expect(dismiss).not.toHaveBeenCalled();
+  });
 });

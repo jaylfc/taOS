@@ -145,6 +145,11 @@ class TestNotificationStore:
         active_ids = {(i["data"] or {}).get("request_id") for i in await notif_store.list()}
         assert "req-1" not in active_ids
         assert "req-2" in active_ids
+        # Resolving moves it into History (archived, not deleted) AND marks it
+        # read — acting on a notification both reads and archives it (#62).
+        history = await notif_store.list_archived()
+        archived = next(h for h in history if (h["data"] or {}).get("request_id") == "req-1")
+        assert archived["read"] is True
         # Idempotent: archiving again matches nothing.
         assert await notif_store.archive_by_source_ref("auth_requests", "req-1") == 0
 
