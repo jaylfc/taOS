@@ -122,6 +122,11 @@ jobs:
         run: |
           cd desktop
           npm ci --silent
+          # Explicit type-check gate: fails CI on any TS error before bundling.
+          # npm run build already includes tsc -b, but the separate invocation
+          # surfaces the error in a distinct named step so it is easy to spot in
+          # the run log, and guards against future changes to the build script.
+          npx tsc -b
           npm run build
 
       # Gate the desktop vitest suite (~1,900 tests, ~25s). A small set of

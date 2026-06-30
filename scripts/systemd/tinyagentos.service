@@ -24,11 +24,18 @@ ExecStartPre=+/bin/sh -c '\
 # Rebuild the desktop bundle if desktop/src is newer than the last build output.
 # Catches the case where `git pull` landed new frontend source but `npm run build`
 # was not run before restarting the service. ~0s when current, ~50s when stale.
+# NON-FATAL: a failed rebuild logs a warning and the service starts with the
+# existing bundle rather than crash-looping. A type error or OOM during the
+# build should never brick the controller.
 ExecStartPre=/bin/sh -c '\
   cd TAOS_INSTALL_DIR && \
   if [ -d desktop ] && { [ ! -f static/desktop/index.html ] || [ -n "$(find desktop/src -type f -newer static/desktop/index.html -print -quit 2>/dev/null)" ]; }; then \
-    echo "[taos] desktop source newer than bundle — rebuilding..." && \
-    cd desktop && npm install --silent && npm run build; \
+    echo "[taos] desktop source newer than bundle — rebuilding..."; \
+    if (cd desktop && npm install --silent && npm run build); then \
+      echo "[taos] desktop rebuild succeeded"; \
+    else \
+      echo "[taos] desktop rebuild FAILED — starting with existing bundle (see journalctl -u tinyagentos)"; \
+    fi; \
   fi'
 # Launch via the module entrypoint (not uvicorn directly) so the dual-port
 # browser-proxy origin starts. __main__.main() reads TAOS_HOST/TAOS_PORT and
