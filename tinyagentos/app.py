@@ -1180,10 +1180,24 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         # System event bus — unified typed-event broadcast.
         from tinyagentos.events import EventBus, SystemEventStore
+        from tinyagentos.events.bus import SystemEvent as _SystemEvent
         _system_events = SystemEventStore(data_dir / "system-events.db")
         await _system_events.init()
         app.state.system_events = _system_events
         app.state.event_bus = EventBus()
+
+        # Wire NotificationStore → EventBus so SSE clients get instant push.
+        # The emitter is best-effort: failures are logged and never break add().
+        async def _notify_emitter(row: dict) -> None:
+            ev = _SystemEvent(
+                kind="notification.added",
+                source="system",
+                targets=["broadcast"],
+                payload=row,
+            )
+            await app.state.event_bus.broadcast(ev)
+
+        notif_store.set_event_emitter(_notify_emitter)
 
         # All startup init complete — allow requests through.
         app.state._startup_complete = True

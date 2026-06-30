@@ -2,12 +2,16 @@ import { useEffect } from "react";
 import { useNotificationStore } from "@/stores/notification-store";
 import { fetchServerNotifications } from "@/lib/server-notifications";
 
-const POLL_MS = 30_000;
+// The SSE stream (use-event-stream) is the primary delivery path for new
+// notifications. This poll is a slow safety-net: it catches any notifications
+// missed while the SSE connection was down (e.g. network hiccup, tab sleep).
+const POLL_MS = 120_000;
 
 /**
  * Keep the notification store in sync with the backend feed: fetch + merge on
- * mount, poll every 30s, and refresh immediately whenever the notification
- * centre transitions to open. Mount once under the desktop shell.
+ * mount, poll every 120s (fallback; SSE is primary), and refresh immediately
+ * whenever the notification centre transitions to open. Mount once under the
+ * desktop shell.
  */
 export function useServerNotifications() {
   const centreOpen = useNotificationStore((s) => s.centreOpen);

@@ -73,6 +73,16 @@ class EventBus:
         for q in list(self._queues.get(channel, [])):
             q.put_nowait(event)
 
+    async def broadcast(self, event: SystemEvent) -> None:
+        """Publish *event* directly to the broadcast channel.
+
+        Bypasses the routing sinks (trace_store, notifications, agent_messages)
+        so callers that have already persisted the event (e.g. NotificationStore)
+        can push it to SSE subscribers without recursion or double-persistence.
+        """
+        async with self._lock:
+            await self._publish_to_channel(_BROADCAST_CHANNEL, event)
+
     # ------------------------------------------------------------------
     # Emit
     # ------------------------------------------------------------------

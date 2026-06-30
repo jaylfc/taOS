@@ -63,10 +63,21 @@ class NotificationStore(BaseStore):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._webhook_notifier = None
+        self._event_emitter = None  # async callable: (row: dict) -> None
 
     def set_webhook_notifier(self, notifier) -> None:
         """Attach a WebhookNotifier to fire on every notification."""
         self._webhook_notifier = notifier
+
+    def set_event_emitter(self, emitter) -> None:
+        """Attach an async callable called with each new notification row dict.
+
+        The emitter receives the same shape as the GET /api/notifications items
+        (id, timestamp, level, title, message, read, source, data). Used to
+        push new notifications to SSE subscribers without polling. Best-effort:
+        a failing emitter never breaks add().
+        """
+        self._event_emitter = emitter
 
     async def _post_init(self) -> None:
         # `archived` was added after the initial notifications ship. Guarded
@@ -98,7 +109,7 @@ class NotificationStore(BaseStore):
     ) -> None:
         ts = int(time.time())
         data_json = json.dumps(data) if data is not None else None
-        await self._db.execute(
+        cursor = await self._db.execute(
             "INSERT INTO notifications (timestamp, level, title, message, source, data) VALUES (?, ?, ?, ?, ?, ?)",
             (ts, level, title, message, source, data_json),
         )
@@ -109,6 +120,22 @@ class NotificationStore(BaseStore):
                 await self._webhook_notifier.notify(title, message, level)
             except Exception as e:
                 logger.warning(f"Webhook notification error: {e}")
+        # Push to EventBus broadcast for SSE delivery — best-effort, never breaks add()
+        if self._event_emitter:
+            try:
+                row = {
+                    "id": cursor.lastrowid,
+                    "timestamp": ts,
+                    "level": level,
+                    "title": title,
+                    "message": message,
+                    "read": False,
+                    "source": source,
+                    "data": data,
+                }
+                await self._event_emitter(row)
+            except Exception:
+                logger.warning("NotificationStore: event emitter failed", exc_info=True)
 
     async def list(self, limit: int = 20, unread_only: bool = False) -> list[dict]:
         # Active feed: archived (dismissed) notifications are excluded.

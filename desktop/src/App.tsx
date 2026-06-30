@@ -25,6 +25,7 @@ import { NotificationToasts } from "@/components/NotificationToast";
 import { NotificationCentre } from "@/components/NotificationCentre";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useServerNotifications } from "@/hooks/use-server-notifications";
+import { useEventStream } from "@/hooks/use-event-stream";
 import { usePerfAutoDetect } from "@/lib/use-perf-autodetect";
 import { TaosAssistantPanel } from "@/components/TaosAssistantPanel";
 import { useTaosAgentStore } from "@/stores/taos-agent-store";
@@ -199,6 +200,9 @@ export function App() {
   // Sync the persistent backend notification feed into the bell (desktop and
   // mobile both render NotificationCentre under this component).
   useServerNotifications();
+  // Open a persistent SSE connection for real-time OS updates. This is the
+  // primary push channel; useServerNotifications falls back to polling.
+  useEventStream();
 
   // Re-apply the persisted active theme on app boot so a reload keeps the
   // user's chosen theme app-wide (not only when Settings is opened).

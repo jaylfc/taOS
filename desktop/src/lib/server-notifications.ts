@@ -11,7 +11,7 @@ import { withCsrf } from "./csrf";
  * ids, and second-precision timestamps are converted to milliseconds.
  */
 
-interface ServerNotificationRow {
+export interface ServerNotificationRow {
   id: number;
   timestamp: number; // unix seconds
   level: string;
@@ -64,7 +64,7 @@ export function sourceToTarget(
   }
 }
 
-function mapRow(row: ServerNotificationRow): Notification {
+export function mapRow(row: ServerNotificationRow): Notification {
   const level = VALID_LEVELS.has(row.level as Notification["level"])
     ? (row.level as Notification["level"])
     : "info";
