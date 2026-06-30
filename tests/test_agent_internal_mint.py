@@ -222,6 +222,28 @@ class TestMintInternalRoute:
         rows = await mint_client._app.state.agent_registry.list_all()
         assert sum(1 for r in rows if r["handle"] == "@taOS-dev") == 1
 
+    async def test_adopt_writes_governance_audit(self, mint_client):
+        """Adopting a pre-existing identity is trust-changing -- it must leave a
+        governance audit event (action='adopt') for a forensic trail."""
+        rec = await mint_client._app.state.agent_registry.register(
+            framework="claude-code", display_name="taos-dev",
+            origin="external-selfjoin", handle="@taOS-dev",
+        )
+        await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
+        with patch("tinyagentos.routes.agent_registry._audit_governance",
+                   new_callable=AsyncMock) as audit:
+            resp = await mint_client.post(
+                "/api/agents/registry/mint-internal",
+                json={"handle": "@taOS-dev", "slug": "taos-dev",
+                      "scopes": ["a2a_receive"], "adopt": True},
+            )
+        assert resp.status_code == 200, resp.text
+        audit.assert_awaited_once()
+        kwargs = audit.await_args.kwargs
+        assert kwargs["action"] == "adopt"
+        assert kwargs["canonical_id"] == rec["canonical_id"]
+        assert kwargs["actor_user_id"]
+
     async def test_seed_internal_adopt_handles_preexisting(self, mint_client):
         """seed-internal?adopt=true vouches for a pre-existing driver handle and
         still seeds the rest."""

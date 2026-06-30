@@ -305,6 +305,20 @@ async def _mint_internal_identity(
         framework=record.get("framework", ""),
         project_id=project_id,
     )
+
+    # Minting a driver token is a privileged, trust-changing action -- leave a
+    # forensic trail. Adopt is the most sensitive (it elevates a possibly
+    # untrusted-origin identity), so it gets its own action name; create/reuse
+    # are logged too so every token issuance is traceable to an actor.
+    status_now = record.get("status", "")
+    await _audit_governance(
+        request,
+        action="adopt" if adopted else ("mint-internal-create" if created else "mint-internal-reuse"),
+        canonical_id=canonical_id,
+        actor_user_id=user.user_id,
+        before_status=status_now,
+        after_status=status_now,
+    )
     return {
         "handle": handle,
         "canonical_id": canonical_id,
