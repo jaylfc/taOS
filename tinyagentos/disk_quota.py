@@ -280,7 +280,7 @@ def _default_data_dir():
     """
     from pathlib import Path
 
-    return Path(__file__).resolve().parent.parent / "data"
+    return Path(__file__).parent.parent / "data"
 
 
 async def _cli_scan() -> None:

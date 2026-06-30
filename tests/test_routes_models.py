@@ -22,15 +22,11 @@ class TestDefaultModelsDir:
         assert str(DEFAULT_MODELS_DIR) != "/opt/tinyagentos/models"
 
     def test_honours_env_override(self, monkeypatch, tmp_path):
-        import importlib
-        import tinyagentos.routes.models as models_route_mod
-
+        # models_root() reads TAOS_MODELS_ROOT at call time, so no module reload
+        # is needed; DEFAULT_MODELS_DIR is bound to models_root() (see
+        # test_tracks_models_root). Avoids the global-state race of reload.
         monkeypatch.setenv("TAOS_MODELS_ROOT", str(tmp_path / "alt-models"))
-        try:
-            importlib.reload(models_route_mod)
-            assert models_route_mod.DEFAULT_MODELS_DIR == tmp_path / "alt-models"
-        finally:
-            importlib.reload(models_route_mod)
+        assert models_root() == tmp_path / "alt-models"
 
 
 @pytest.fixture

@@ -40,7 +40,7 @@ def models_root() -> Path:
     if override:
         return Path(override)
     # tinyagentos/installers/model_paths.py -> parents[2] is the install root
-    return Path(__file__).resolve().parents[2] / "models"
+    return Path(__file__).parents[2] / "models"
 
 
 _FAMILY_FALLBACK = "uncategorised"

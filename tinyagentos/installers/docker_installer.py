@@ -13,7 +13,7 @@ class DockerInstaller(AppInstaller):
     def __init__(self, apps_dir: Path | None = None):
         # tinyagentos/installers/docker_installer.py -> parents[2] is the
         # install root, so this tracks wherever taOS is actually installed.
-        self.apps_dir = apps_dir or Path(__file__).resolve().parents[2] / "apps"
+        self.apps_dir = apps_dir or Path(__file__).parents[2] / "apps"
 
     def _compose_path(self, app_id: str) -> Path:
         return self.apps_dir / app_id / "docker-compose.yaml"
