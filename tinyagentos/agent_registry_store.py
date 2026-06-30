@@ -104,6 +104,19 @@ async def _migration_v1_add_status(conn) -> None:
     await conn.commit()
 
 
+async def _migration_v2_strip_at_display_name(conn) -> None:
+    """Strip a leading '@' from display_name for all rows (idempotent).
+
+    The '@' sigil is bus-addressing syntax only; it must never be stored
+    in display_name.  Safe to run every startup — rows without a leading
+    '@' are untouched by the WHERE clause.
+    """
+    await conn.execute(
+        "UPDATE agent_registry SET display_name = substr(display_name, 2) "
+        "WHERE display_name LIKE '@%'"
+    )
+    await conn.commit()
+
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
 # ---------------------------------------------------------------------------
@@ -301,6 +314,7 @@ class AgentRegistryStore(BaseStore):
     async def _post_init(self) -> None:
         """Idempotently ensure the status column exists and is backfilled."""
         await _migration_v1_add_status(self._db)
+        await _migration_v2_strip_at_display_name(self._db)
 
     # ------------------------------------------------------------------
     # Registration

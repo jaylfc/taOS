@@ -10,6 +10,7 @@ from tinyagentos.agent_registry_store import (
     _assert_valid_transition,
     _b64url_decode,
     _b64url_encode,
+    _migration_v2_strip_at_display_name,
     _row_to_dict,
     _slugify,
     load_or_create_signing_keypair,
@@ -811,3 +812,76 @@ class TestFullLifecycle:
 
         assert len(suspended) == 1
         assert suspended[0]["canonical_id"] == r3["canonical_id"]
+
+
+# ---------------------------------------------------------------------------
+# Migration v2: strip leading '@' from display_name
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV2StripAtDisplayName:
+    @pytest.mark.asyncio
+    async def test_strips_leading_at_from_existing_rows(self, store):
+        """Rows inserted with a leading '@' are cleaned up by the migration."""
+        row = await store.register(framework="openclaw", display_name="normal-agent")
+        # Manually inject a row with a leading '@' to simulate pre-fix data.
+        await store._db.execute(
+            "UPDATE agent_registry SET display_name = '@tainted' WHERE canonical_id = ?",
+            (row["canonical_id"],),
+        )
+        await store._db.commit()
+
+        # Verify the '@' is present before the migration runs.
+        raw = await store.get(row["canonical_id"])
+        assert raw["display_name"] == "@tainted"
+
+        # Run the migration.
+        await _migration_v2_strip_at_display_name(store._db)
+
+        cleaned = await store.get(row["canonical_id"])
+        assert cleaned["display_name"] == "tainted"
+        assert not cleaned["display_name"].startswith("@")
+
+    @pytest.mark.asyncio
+    async def test_leaves_names_without_at_unchanged(self, store):
+        row = await store.register(framework="openclaw", display_name="clean-name")
+        await _migration_v2_strip_at_display_name(store._db)
+        after = await store.get(row["canonical_id"])
+        assert after["display_name"] == "clean-name"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_on_multiple_runs(self, store):
+        row = await store.register(framework="openclaw", display_name="normal-agent")
+        await store._db.execute(
+            "UPDATE agent_registry SET display_name = '@once' WHERE canonical_id = ?",
+            (row["canonical_id"],),
+        )
+        await store._db.commit()
+
+        await _migration_v2_strip_at_display_name(store._db)
+        await _migration_v2_strip_at_display_name(store._db)  # second run is a no-op
+
+        after = await store.get(row["canonical_id"])
+        assert after["display_name"] == "once"
+
+    @pytest.mark.asyncio
+    async def test_strips_at_on_store_init(self, tmp_path):
+        """AgentRegistryStore._post_init runs the migration automatically."""
+        s = AgentRegistryStore(tmp_path / "migr_test.db")
+        await s.init()
+
+        row = await s.register(framework="openclaw", display_name="normal-agent")
+        await s._db.execute(
+            "UPDATE agent_registry SET display_name = '@auto-migrated' WHERE canonical_id = ?",
+            (row["canonical_id"],),
+        )
+        await s._db.commit()
+
+        # Re-opening the store triggers _post_init which runs the migration.
+        await s.close()
+        s2 = AgentRegistryStore(tmp_path / "migr_test.db")
+        await s2.init()
+
+        after = await s2.get(row["canonical_id"])
+        assert after["display_name"] == "auto-migrated"
+        await s2.close()

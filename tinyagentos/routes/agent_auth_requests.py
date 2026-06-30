@@ -300,9 +300,12 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
     rel_mgr = _get_relationships(request)
 
     # Mint canonical identity in the registry.
+    # Strip any leading "@" — that sigil is bus-addressing syntax only and
+    # must never appear in a stored display_name.
+    display_name = record["identity_claim"].removeprefix("@").strip()
     reg_record = await registry.register(
         framework=record["framework"],
-        display_name=record["identity_claim"],
+        display_name=display_name,
         user_id=user.user_id,
         origin="external-selfjoin",
         handle="",
