@@ -27,8 +27,12 @@ ExecStartPre=+/bin/sh -c '\
 ExecStartPre=/bin/sh -c '\
   cd TAOS_INSTALL_DIR && \
   if [ -d desktop ] && { [ ! -f static/desktop/index.html ] || [ -n "$(find desktop/src -type f -newer static/desktop/index.html -print -quit 2>/dev/null)" ]; }; then \
-    echo "[taos] desktop source newer than bundle — rebuilding..." && \
-    cd desktop && npm install --silent && npm run build; \
+    echo "[taos] desktop source newer than bundle — rebuilding..."; \
+    if (cd desktop && npm install --silent && npm run build); then \
+      echo "[taos] desktop rebuild succeeded"; \
+    else \
+      echo "[taos] desktop rebuild FAILED — starting with the existing bundle (see journalctl -u tinyagentos)"; \
+    fi; \
   fi'
 # Launch via the module entrypoint (not uvicorn directly) so the dual-port
 # browser-proxy origin starts. __main__.main() reads TAOS_HOST/TAOS_PORT and
