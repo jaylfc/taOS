@@ -97,4 +97,28 @@ describe("AppErrorBoundary", () => {
     expect(screen.getByText("taOS was updated")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
   });
+
+  it("classifies the WebKit/Safari module-import failure as a chunk error", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = new Error("Importing a module script failed.");
+    render(
+      <AppErrorBoundary>
+        <ThrowOnRender error={err} />
+      </AppErrorBoundary>,
+    );
+    expect(screen.getByText("taOS was updated")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+  });
+
+  it("classifies the Firefox dynamic-import failure as a chunk error", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = new Error("error loading dynamically imported module: https://x/y.js");
+    render(
+      <AppErrorBoundary>
+        <ThrowOnRender error={err} />
+      </AppErrorBoundary>,
+    );
+    expect(screen.getByText("taOS was updated")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+  });
 });

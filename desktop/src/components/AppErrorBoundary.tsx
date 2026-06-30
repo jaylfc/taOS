@@ -28,7 +28,18 @@ interface State {
 }
 
 const CHUNK_NAMES = new Set(["ChunkLoadError"]);
-const CHUNK_MESSAGES = [/Loading chunk \d+ failed/i, /Failed to fetch dynamically imported module/i];
+// A stale cached shell points at chunk URLs deleted by a newer deploy; the
+// dynamic import then fails. Each JS engine words that failure differently, so
+// match all three or the WebKit/Firefox variants fall through to the dead
+// "generic" screen instead of auto-reloading (Chrome: "Failed to fetch
+// dynamically imported module"; Firefox: "error loading dynamically imported
+// module"; Safari/WebKit: "Importing a module script failed").
+const CHUNK_MESSAGES = [
+  /Loading chunk \d+ failed/i,
+  /Failed to fetch dynamically imported module/i,
+  /error loading dynamically imported module/i,
+  /importing a module script failed/i,
+];
 
 function classify(err: Error): Mode {
   if (err instanceof BackendUnavailableError) return "waiting";
