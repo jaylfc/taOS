@@ -107,6 +107,22 @@ describe("dismiss archives instead of removing", () => {
     expect(all[0].id).toBe(id);
   });
 
+  it("archiveRead archives AND marks read (resolved item lands in History)", () => {
+    const store = useNotificationStore.getState();
+    const id = store.addNotification({ source: "auth_requests", title: "Access request", body: "owl", level: "info" });
+
+    store.archiveRead(id);
+
+    const all = useNotificationStore.getState().notifications;
+    const item = all.find((n) => n.id === id);
+    expect(item?.archived).toBe(true);
+    expect(item?.read).toBe(true);
+    // It leaves the active inbox...
+    expect(all.filter((n) => !n.archived)).toHaveLength(0);
+    // ...and shows up in the History/archive view.
+    expect(store.archivedNotifications().map((n) => n.id)).toContain(id);
+  });
+
   it("excludes archived items from active notifications", () => {
     const store = useNotificationStore.getState();
     const id1 = store.addNotification({ source: "system", title: "keep", body: "active", level: "info" });

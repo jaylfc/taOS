@@ -1,5 +1,6 @@
 import time
 
+import aiosqlite
 import pytest
 import pytest_asyncio
 
@@ -118,6 +119,60 @@ class TestNotificationStore:
             await notif_store.add(f"N{i}", f"msg{i}")
         items = await notif_store.list(limit=3)
         assert len(items) == 3
+
+    async def test_data_payload_round_trips(self, notif_store):
+        payload = {"request_id": "req-1", "requested_scopes": ["memory_read"]}
+        await notif_store.add("Access request", "owl wants in", source="auth_requests", data=payload)
+        items = await notif_store.list()
+        assert items[0]["data"] == payload
+
+    async def test_data_defaults_to_none(self, notif_store):
+        await notif_store.add("Plain", "no payload")
+        items = await notif_store.list()
+        assert items[0]["data"] is None
+
+    async def test_archive_by_source_ref(self, notif_store):
+        await notif_store.add(
+            "Access request", "owl wants in", source="auth_requests",
+            data={"request_id": "req-1", "requested_scopes": []},
+        )
+        await notif_store.add(
+            "Other request", "cat wants in", source="auth_requests",
+            data={"request_id": "req-2", "requested_scopes": []},
+        )
+        n = await notif_store.archive_by_source_ref("auth_requests", "req-1")
+        assert n == 1
+        active_ids = {(i["data"] or {}).get("request_id") for i in await notif_store.list()}
+        assert "req-1" not in active_ids
+        assert "req-2" in active_ids
+        # Idempotent: archiving again matches nothing.
+        assert await notif_store.archive_by_source_ref("auth_requests", "req-1") == 0
+
+
+@pytest.mark.asyncio
+async def test_data_column_migration_on_legacy_db(tmp_path):
+    # Simulate a pre-`data` database (the column did not exist at first ship).
+    db_path = tmp_path / "legacy.db"
+    legacy = await aiosqlite.connect(str(db_path))
+    await legacy.execute(
+        "CREATE TABLE notifications ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL,"
+        " level TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL,"
+        " read INTEGER NOT NULL DEFAULT 0, source TEXT,"
+        " archived INTEGER NOT NULL DEFAULT 0)"
+    )
+    await legacy.commit()
+    await legacy.close()
+
+    # Opening the store must add the column without a destructive migration.
+    store = NotificationStore(db_path)
+    await store.init()
+    try:
+        await store.add("After upgrade", "ok", source="auth_requests", data={"request_id": "r1"})
+        items = await store.list()
+        assert items[0]["data"] == {"request_id": "r1"}
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio

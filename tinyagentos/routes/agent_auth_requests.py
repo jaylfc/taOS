@@ -39,8 +39,8 @@ router = APIRouter()
 # identity_claim + framework before new submissions are rate-limited.
 _PENDING_CAP = 5
 
-# Closed vocabulary of grantable scopes — must stay in sync with the
-# SCOPE_DESCRIPTIONS map in desktop/src/components/ConsentNotification.tsx.
+# Closed vocabulary of grantable scopes — surfaced to the user in the
+# desktop consent actions (desktop/src/components/ConsentActions.tsx).
 VALID_SCOPES = frozenset({
     "memory_read",
     "memory_write",
@@ -111,6 +111,18 @@ def _get_relationships(request: Request):
     return rel
 
 
+async def _retire_request_notification(request: Request, request_id: str) -> None:
+    """Archive the bell notification for a now-decided auth request so it leaves
+    the active list. Best effort: never fails the decision."""
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is None:
+        return
+    try:
+        await notifs.archive_by_source_ref("auth_requests", request_id)
+    except Exception:
+        pass
+
+
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
     """Per-request-id lock preventing concurrent approve races."""
     locks = getattr(request.app.state, "_approve_locks", None)
@@ -167,6 +179,30 @@ async def create_auth_request(request: Request, body: CreateAuthRequest):
         duration_secs=body.duration_secs,
         project_id=body.project_id,
     )
+
+    # Surface the request as a non-blocking bell + toast notification. The
+    # data payload carries everything the inline consent actions need to
+    # approve/deny without re-fetching. Best effort: a notification failure
+    # must not fail the created request (mirrors decisions.py).
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is not None:
+        try:
+            scopes = record["requested_scopes"] or []
+            await notifs.add(
+                title="Access request",
+                message=f"{record['identity_claim']} is requesting {', '.join(scopes)}",
+                level="info",
+                source="auth_requests",
+                data={
+                    "request_id": record["id"],
+                    "identity_claim": record["identity_claim"],
+                    "framework": record["framework"],
+                    "requested_scopes": list(scopes),
+                },
+            )
+        except Exception:
+            pass
+
     return {"request_id": record["id"], "status": "pending"}
 
 
@@ -317,6 +353,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
             detail="request was decided concurrently; check current status",
         )
 
+    await _retire_request_notification(request, request_id)
     return {"status": "accepted", "canonical_id": canonical_id}
 
 
@@ -355,6 +392,7 @@ async def deny_auth_request(
             detail="request was decided concurrently; check current status",
         )
 
+    await _retire_request_notification(request, request_id)
     return {"status": "refused"}
 
 

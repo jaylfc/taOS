@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NotificationCentre } from "./NotificationCentre";
 import type { Notification } from "@/stores/notification-store";
@@ -9,6 +9,7 @@ const closeCentre = vi.fn();
 const markAllRead = vi.fn();
 const clearAll = vi.fn();
 const dismiss = vi.fn();
+const archiveRead = vi.fn();
 const archivedNotifications = vi.fn(() => []);
 const clearArchived = vi.fn();
 
@@ -23,6 +24,7 @@ vi.mock("@/stores/notification-store", () => ({
     markAllRead,
     clearAll,
     dismiss,
+    archiveRead,
     archivedNotifications,
     clearArchived,
   }),
@@ -96,5 +98,46 @@ describe("NotificationCentre click routing", () => {
     expect(openWindow).not.toHaveBeenCalled();
     expect(closeCentre).not.toHaveBeenCalled();
     expect(markRead).toHaveBeenCalledWith("srv-2");
+  });
+
+  it("caps the inbox at 10 items and shows a 'Show more' button that opens History", () => {
+    notifications = Array.from({ length: 12 }, (_, i) =>
+      notif({ id: `srv-${i}`, title: `Note ${i}` }),
+    );
+    render(<NotificationCentre />);
+
+    // Only the first 10 are visible in the inbox.
+    expect(screen.getByText("Note 0")).toBeInTheDocument();
+    expect(screen.getByText("Note 9")).toBeInTheDocument();
+    expect(screen.queryByText("Note 10")).not.toBeInTheDocument();
+
+    const showMore = screen.getByRole("button", { name: /show more/i });
+    fireEvent.click(showMore);
+
+    // Switching to History (archive is empty here) shows its empty state.
+    expect(screen.getByText(/no archived notifications/i)).toBeInTheDocument();
+  });
+
+  it("does not show 'Show more' when there are 10 or fewer items", () => {
+    notifications = Array.from({ length: 10 }, (_, i) =>
+      notif({ id: `srv-${i}`, title: `Note ${i}` }),
+    );
+    render(<NotificationCentre />);
+    expect(screen.queryByRole("button", { name: /show more/i })).not.toBeInTheDocument();
+  });
+
+  it("renders inline consent actions for an auth_requests notification", () => {
+    notifications = [
+      notif({
+        id: "srv-3",
+        source: "auth_requests",
+        title: "Access request",
+        data: { request_id: "req-1", requested_scopes: ["memory_read"] },
+      }),
+    ];
+    render(<NotificationCentre />);
+
+    expect(screen.getByRole("button", { name: /allow/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
   });
 });

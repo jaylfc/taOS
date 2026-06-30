@@ -12,6 +12,9 @@ export interface Notification {
   timestamp: number;
   /** Extra typed payload for structured notifications like agent.paused. */
   meta?: Record<string, string>;
+  /** Structured JSON payload from the backend (e.g. an auth-request's
+   *  request_id + requested_scopes for inline consent actions). */
+  data?: Record<string, unknown>;
   /** When true the notification has been dismissed/archived. */
   archived?: boolean;
 }
@@ -25,6 +28,7 @@ interface NotificationStore {
   markRead: (id: string) => void;
   markAllRead: () => void;
   dismiss: (id: string) => void;
+  archiveRead: (id: string) => void;
   clearAll: () => void;
   toggleCentre: () => void;
   closeCentre: () => void;
@@ -95,6 +99,18 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     set((s) => ({
       notifications: s.notifications.map((n) =>
         n.id === id ? { ...n, archived: true } : n,
+      ),
+    }));
+  },
+
+  archiveRead(id) {
+    // Resolving a notification (e.g. answering an agent access-request) both
+    // reads and archives it: it leaves the active Inbox and lands in History
+    // rather than being marked read in place or silently removed (#62).
+    if (id.startsWith("srv-")) dismissedServerIds.add(id);
+    set((s) => ({
+      notifications: s.notifications.map((n) =>
+        n.id === id ? { ...n, archived: true, read: true } : n,
       ),
     }));
   },

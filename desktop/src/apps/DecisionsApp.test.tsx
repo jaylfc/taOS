@@ -58,6 +58,8 @@ describe("DecisionsApp", () => {
       mockFetch({
         "GET /api/decisions?status=pending": { ok: true, body: [singleSelect] },
         "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
+        "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       }),
     );
     render(<DecisionsApp windowId="w1" />);
@@ -76,6 +78,7 @@ describe("DecisionsApp", () => {
     const fetchMock = mockFetch({
       "GET /api/decisions?status=pending": { ok: true, body: [singleSelect] },
       "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       "POST /api/decisions/dec-1/answer": {
         ok: true,
         body: { ...singleSelect, status: "answered", answer: { value: "excalidraw" } },
@@ -104,6 +107,8 @@ describe("DecisionsApp", () => {
       mockFetch({
         "GET /api/decisions?status=pending": { ok: true, body: [] },
         "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
+        "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       }),
     );
     render(<DecisionsApp windowId="w1" />);
@@ -126,6 +131,7 @@ describe("DecisionsApp", () => {
     const fetchMock = mockFetch({
       "GET /api/decisions?status=pending": { ok: true, body: [approveDeny] },
       "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       "POST /api/decisions/dec-2/answer": {
         ok: true,
         body: { ...approveDeny, status: "answered", answer: { value: "approve" } },
@@ -147,6 +153,43 @@ describe("DecisionsApp", () => {
     expect(sent.value).toBe("approve");
   });
 
+  it("lists a pending access request and approves it via the consent action", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/decisions?status=pending": { ok: true, body: [] },
+      "GET /api/decisions?status=answered": { ok: true, body: [] },
+      "GET /api/agents/auth-requests?status=pending": {
+        ok: true,
+        body: {
+          requests: [
+            {
+              id: "req-1",
+              identity_claim: "owl@lab",
+              framework: "smolagents",
+              requested_scopes: ["memory_read", "a2a_send"],
+            },
+          ],
+        },
+      },
+      "POST /api/agents/auth-requests/req-1/approve": { ok: true, body: { status: "accepted" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DecisionsApp windowId="w1" />);
+    await flush();
+
+    await waitFor(() => expect(screen.getByText("owl@lab")).toBeTruthy());
+    expect(screen.getByText(/access requests/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await flush();
+
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "POST",
+    );
+    expect(post![0]).toBe("/api/agents/auth-requests/req-1/approve");
+    const sent = JSON.parse((post![1] as RequestInit).body as string);
+    expect(sent.granted_scopes).toEqual(["memory_read", "a2a_send"]);
+  });
+
   it("shows answered decisions in the archive tab", async () => {
     const answered = {
       ...singleSelect,
@@ -158,6 +201,7 @@ describe("DecisionsApp", () => {
       mockFetch({
         "GET /api/decisions?status=pending": { ok: true, body: [] },
         "GET /api/decisions?status=answered": { ok: true, body: [answered] },
+        "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       }),
     );
     render(<DecisionsApp windowId="w1" />);
@@ -180,6 +224,7 @@ describe("DecisionsApp", () => {
       mockFetch({
         "GET /api/decisions?status=pending": { ok: true, body: [] },
         "GET /api/decisions?status=answered": { ok: true, body: [answered] },
+        "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       }),
     );
     render(<DecisionsApp windowId="w1" />);
@@ -209,6 +254,7 @@ describe("DecisionsApp", () => {
     const fetchMock = mockFetch({
       "GET /api/decisions?status=pending": { ok: true, body: [] },
       "GET /api/decisions?status=answered": { ok: true, body: [revision] },
+      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       "GET /api/decisions/dec-2/history": {
         ok: true,
         body: { items: [original, revision] },

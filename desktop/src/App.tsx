@@ -31,7 +31,6 @@ import { useTaosAgentStore } from "@/stores/taos-agent-store";
 import { InstallPromptBanner } from "@/shell/InstallPromptBanner";
 import { EffectsLayer } from "@/theme/effects/EffectsLayer";
 import { SafetyFloor } from "@/components/SafetyFloor";
-import { ConsentNotification } from "@/components/ConsentNotification";
 
 interface SystemShortcutsProps {
   toggleSearch: () => void;
@@ -316,7 +315,6 @@ export function App() {
               <NotificationCentre />
               <TaosAssistantPanel />
               <SafetyFloor />
-              <ConsentNotification />
             </div>
           </div>
         </LoginGate>
@@ -385,7 +383,6 @@ export function App() {
       <NotificationCentre />
       <TaosAssistantPanel />
       <SafetyFloor />
-      <ConsentNotification />
     </div>
       </LoginGate>
     </ShortcutProvider>

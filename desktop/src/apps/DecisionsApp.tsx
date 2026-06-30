@@ -9,8 +9,10 @@ import {
   CheckCircle2,
   AlertCircle,
   History,
+  ShieldQuestion,
 } from "lucide-react";
 import { Button, Textarea } from "@/components/ui";
+import { ConsentActions } from "@/components/ConsentActions";
 
 type DecisionType =
   | "single_select"
@@ -50,6 +52,18 @@ interface Decision {
   // original. When set, the supersession lineage can be walked via the history
   // endpoint.
   parent_decision_id?: string | null;
+}
+
+// A pending external-agent access request (consent loop). Surfaced here as an
+// audit/manager view alongside decisions; the inline Allow/Deny reuses the same
+// ConsentActions as the bell + toast.
+interface AuthRequest {
+  id: string;
+  identity_claim: string;
+  framework: string;
+  requested_scopes: string[];
+  reason?: string;
+  created_ts?: string;
 }
 
 // created_at is stored as an epoch-seconds REAL on the backend, but the API
@@ -442,25 +456,75 @@ function AnsweredCard({ decision }: { decision: Decision }) {
   );
 }
 
+function AuthRequestCard({
+  req,
+  onResolved,
+}: {
+  req: AuthRequest;
+  onResolved: () => void;
+}) {
+  return (
+    <li className="flex flex-col gap-2 rounded-xl border border-shell-border bg-shell-bg-deep p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400">
+          <ShieldQuestion size={11} className="shrink-0" />
+          Access request
+        </span>
+        <span className="rounded-full bg-shell-surface px-2 py-0.5 text-xs text-shell-text-secondary">
+          {req.framework}
+        </span>
+      </div>
+      <p className="text-sm font-medium text-shell-text break-all">{req.identity_claim}</p>
+      {req.reason && (
+        <p className="text-xs italic text-shell-text-secondary">"{req.reason}"</p>
+      )}
+      {req.requested_scopes.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {req.requested_scopes.map((s) => (
+            <span
+              key={s}
+              className="rounded bg-shell-surface px-2 py-0.5 text-[11px] font-mono text-shell-text-secondary"
+            >
+              {s}
+            </span>
+          ))}
+        </div>
+      )}
+      <ConsentActions
+        requestId={req.id}
+        scopes={req.requested_scopes}
+        onResolved={onResolved}
+      />
+    </li>
+  );
+}
+
 type TabKey = "pending" | "answered";
 
 export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
   const [tab, setTab] = useState<TabKey>("pending");
   const [pending, setPending] = useState<Decision[]>([]);
   const [answered, setAnswered] = useState<Decision[]>([]);
+  const [authRequests, setAuthRequests] = useState<AuthRequest[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      const [pRes, aRes] = await Promise.all([
+      const [pRes, aRes, rRes] = await Promise.all([
         fetch("/api/decisions?status=pending"),
         fetch("/api/decisions?status=answered"),
+        fetch("/api/agents/auth-requests?status=pending", { credentials: "include" }),
       ]);
       // Only overwrite a list when its request actually succeeded; a transient
       // failure must not blank out decisions the user can still act on.
       if (pRes.ok) setPending(asDecisionList(await pRes.json()));
       if (aRes.ok) setAnswered(asDecisionList(await aRes.json()));
+      if (rRes.ok) {
+        const data = await rRes.json();
+        const reqs = (data?.requests ?? data ?? []) as AuthRequest[];
+        setAuthRequests(Array.isArray(reqs) ? reqs : []);
+      }
     } catch {
       // Network error: keep whatever was last loaded in place.
     } finally {
@@ -532,6 +596,25 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-5 py-4">
+        {/* Pending external-agent access requests — an audit/manager surface
+            mirroring the bell + toast consent actions. Shown on the pending tab. */}
+        {tab === "pending" && authRequests.length > 0 && (
+          <section className="mb-4 flex flex-col gap-2" aria-label="Access requests">
+            <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-shell-text-tertiary">
+              <ShieldQuestion size={13} className="shrink-0 text-amber-400" />
+              Access requests ({authRequests.length})
+            </h2>
+            <ul className="flex flex-col gap-2">
+              {authRequests.map((req) => (
+                <AuthRequestCard
+                  key={req.id}
+                  req={req}
+                  onResolved={() => load({ silent: true })}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
         {loading ? (
           <p className="text-sm text-shell-text-tertiary">Loading...</p>
         ) : list.length === 0 ? (

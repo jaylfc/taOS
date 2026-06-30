@@ -11,6 +11,7 @@ const mockNotifications: Array<{
   level: "info" | "success" | "warning" | "error";
   read: boolean;
   timestamp: number;
+  data?: Record<string, unknown>;
 }> = [];
 
 vi.mock("@/stores/notification-store", () => ({
@@ -63,6 +64,31 @@ describe("NotificationToasts", () => {
     render(<NotificationToasts />);
     fireEvent.click(screen.getByRole("button", { name: /dismiss notification/i }));
     await waitFor(() => expect(mockDismiss).toHaveBeenCalledWith("test-2"));
+  });
+
+  it("renders consent actions for an auth_requests toast and does not auto-dismiss", () => {
+    vi.useFakeTimers();
+    try {
+      mockNotifications.length = 0;
+      mockNotifications.push({
+        id: "srv-7",
+        source: "auth_requests",
+        title: "Access request",
+        body: "owl@lab is requesting memory_read",
+        level: "info",
+        read: false,
+        timestamp: Date.now(),
+        data: { request_id: "req-1", requested_scopes: ["memory_read"] },
+      });
+      render(<NotificationToasts />);
+      expect(screen.getByRole("button", { name: /allow/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /deny/i })).toBeInTheDocument();
+      // The 5s auto-expiry timer must not hide a consent toast.
+      act(() => vi.advanceTimersByTime(6000));
+      expect(screen.getByText("Access request")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("auto-expires the toast after 5s without archiving it", () => {

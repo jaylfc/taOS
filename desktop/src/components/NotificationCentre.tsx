@@ -5,8 +5,12 @@ import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { markServerRead, markAllServerRead } from "@/lib/server-notifications";
 import { SetupChecklist } from "./SetupChecklist";
+import { ConsentActions, consentPayload } from "./ConsentActions";
 
 const FALLBACK_SIZE = { w: 900, h: 640 };
+
+// Cap the active Inbox list; older items live in the History tab.
+const INBOX_CAP = 10;
 
 function formatTime(ts: number): string {
   const delta = Date.now() - ts;
@@ -19,42 +23,58 @@ function formatTime(ts: number): string {
 function NotificationItem({
   n,
   onDismiss,
+  onResolveConsent,
   onItemClick,
 }: {
   n: Notification;
   onDismiss: (id: string) => void;
+  onResolveConsent: (id: string) => void;
   onItemClick: (n: Notification) => void;
 }) {
+  // Agent access-requests carry inline Allow/Deny actions. These nested buttons
+  // live outside the clickable row to keep the markup valid.
+  const consent = n.source === "auth_requests" ? consentPayload(n.data) : null;
   return (
-    <button
-      onClick={() => onItemClick(n)}
-      className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors ${!n.read ? "bg-accent/5" : ""} ${n.action ? "cursor-pointer" : ""}`}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            {!n.read && <div className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />}
-            <span className="text-xs font-medium text-shell-text truncate">{n.title}</span>
+    <div className={`border-b border-white/5 ${!n.read ? "bg-accent/5" : ""}`}>
+      <button
+        onClick={() => onItemClick(n)}
+        className={`w-full text-left px-4 py-3 hover:bg-white/5 transition-colors ${n.action ? "cursor-pointer" : ""}`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              {!n.read && <div className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />}
+              <span className="text-xs font-medium text-shell-text truncate">{n.title}</span>
+            </div>
+            {n.body && <p className="text-xs text-shell-text-secondary mt-1 line-clamp-2">{n.body}</p>}
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-[10px] text-shell-text-tertiary">{formatTime(n.timestamp)}</span>
+              <span className="text-[10px] text-shell-text-tertiary">.</span>
+              <span className="text-[10px] text-shell-text-tertiary">{n.source}</span>
+            </div>
           </div>
-          {n.body && <p className="text-xs text-shell-text-secondary mt-1 line-clamp-2">{n.body}</p>}
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-[10px] text-shell-text-tertiary">{formatTime(n.timestamp)}</span>
-            <span className="text-[10px] text-shell-text-tertiary">.</span>
-            <span className="text-[10px] text-shell-text-tertiary">{n.source}</span>
-          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDismiss(n.id);
+            }}
+            className="p-0.5 rounded hover:bg-white/10 shrink-0"
+            aria-label={`Dismiss: ${n.title}`}
+          >
+            <X size={12} className="text-shell-text-tertiary" />
+          </button>
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDismiss(n.id);
-          }}
-          className="p-0.5 rounded hover:bg-white/10 shrink-0"
-          aria-label={`Dismiss: ${n.title}`}
-        >
-          <X size={12} className="text-shell-text-tertiary" />
-        </button>
-      </div>
-    </button>
+      </button>
+      {consent && (
+        <div className="px-4 pb-3">
+          <ConsentActions
+            requestId={consent.requestId}
+            scopes={consent.scopes}
+            onResolved={() => onResolveConsent(n.id)}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -67,6 +87,7 @@ export function NotificationCentre() {
     markAllRead,
     clearAll,
     dismiss,
+    archiveRead,
     archivedNotifications,
     clearArchived,
   } = useNotificationStore();
@@ -194,14 +215,25 @@ export function NotificationCentre() {
                   <p className="text-xs text-shell-text-tertiary">No notifications</p>
                 </div>
               ) : (
-                active.map((n) => (
-                  <NotificationItem
-                    key={n.id}
-                    n={n}
-                    onDismiss={dismiss}
-                    onItemClick={handleItemClick}
-                  />
-                ))
+                <>
+                  {active.slice(0, INBOX_CAP).map((n) => (
+                    <NotificationItem
+                      key={n.id}
+                      n={n}
+                      onDismiss={dismiss}
+                      onResolveConsent={archiveRead}
+                      onItemClick={handleItemClick}
+                    />
+                  ))}
+                  {active.length > INBOX_CAP && (
+                    <button
+                      onClick={() => setTab("history")}
+                      className="w-full px-4 py-3 text-xs font-medium text-accent hover:bg-white/5 transition-colors"
+                    >
+                      Show more ({active.length - INBOX_CAP}) in History
+                    </button>
+                  )}
+                </>
               )}
             </>
           )}
