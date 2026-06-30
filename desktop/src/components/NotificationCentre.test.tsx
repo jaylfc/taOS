@@ -161,5 +161,7 @@ describe("NotificationCentre click routing", () => {
     // Resolution archives + reads (lands in History), it is NOT a plain dismiss.
     await waitFor(() => expect(archiveRead).toHaveBeenCalledWith("srv-4"));
     expect(dismiss).not.toHaveBeenCalled();
+    // Clicking Allow/Deny must NOT open any app window (no row-navigation side effect).
+    expect(openWindow).not.toHaveBeenCalled();
   });
 });

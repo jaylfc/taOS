@@ -271,16 +271,20 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
   const Icon = LEVEL_ICONS[notif.level];
   const isAgentPaused = notif.source === "agent.paused";
   const consent = notif.source === "auth_requests" ? consentPayload(notif.data) : null;
+  // Stable boolean for the effect dependency — using the `consent` object
+  // would recreate the timer on every render because consentPayload() returns
+  // a new object reference each time.
+  const isConsentToast = consent !== null;
 
   useEffect(() => {
     // Agent-paused and consent toasts stay until the user explicitly acts.
-    if (isAgentPaused || consent) return;
+    if (isAgentPaused || isConsentToast) return;
     // Auto-expiry only hides the toast; it must NOT archive. Archiving is an
     // explicit user action (the X button / "Keep paused"). Otherwise every
     // toast that simply times out would silently fill the History view.
     const timer = setTimeout(onExpire, 5000);
     return () => clearTimeout(timer);
-  }, [notif.id, onExpire, isAgentPaused, consent]);
+  }, [notif.id, onExpire, isAgentPaused, isConsentToast]);
 
   return (
     <div

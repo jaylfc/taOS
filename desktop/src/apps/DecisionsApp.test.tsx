@@ -58,7 +58,6 @@ describe("DecisionsApp", () => {
       mockFetch({
         "GET /api/decisions?status=pending": { ok: true, body: [singleSelect] },
         "GET /api/decisions?status=answered": { ok: true, body: [] },
-      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
         "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       }),
     );
@@ -107,7 +106,6 @@ describe("DecisionsApp", () => {
       mockFetch({
         "GET /api/decisions?status=pending": { ok: true, body: [] },
         "GET /api/decisions?status=answered": { ok: true, body: [] },
-      "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
         "GET /api/agents/auth-requests?status=pending": { ok: true, body: { requests: [] } },
       }),
     );

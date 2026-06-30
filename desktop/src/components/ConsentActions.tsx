@@ -52,7 +52,8 @@ export function ConsentActions({
     <div className="mt-2" role="group" aria-label="Consent actions">
       <div className="flex flex-wrap gap-1.5">
         <button
-          onClick={() => decide(true)}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); decide(true); }}
           disabled={busy}
           className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -60,7 +61,8 @@ export function ConsentActions({
           Allow
         </button>
         <button
-          onClick={() => decide(false)}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); decide(false); }}
           disabled={busy}
           className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-white/5 hover:bg-red-500/15 hover:text-red-300 text-shell-text-secondary border border-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >

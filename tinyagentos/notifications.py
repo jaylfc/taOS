@@ -30,17 +30,24 @@ CREATE TABLE IF NOT EXISTS notification_prefs (
 
 
 def _serialize_row(r) -> dict:
-    """Map a notifications row (id, ts, level, title, message, read, source, data)
-    to the API dict, parsing the JSON `data` payload back into an object."""
+    """Map a notifications row to the API dict, parsing the JSON `data` payload.
+
+    Uses named column access via dict(zip(COLS, r)) so a schema column reorder
+    cannot silently corrupt the mapping. The SELECT queries must select exactly
+    these columns in this order.
+    """
+    COLS = ("id", "timestamp", "level", "title", "message", "read", "source", "data")
+    row = dict(zip(COLS, r))
     data = None
-    if r[7]:
+    if row["data"]:
         try:
-            data = json.loads(r[7])
+            data = json.loads(row["data"])
         except (ValueError, TypeError):
             data = None
     return {
-        "id": r[0], "timestamp": r[1], "level": r[2], "title": r[3],
-        "message": r[4], "read": bool(r[5]), "source": r[6], "data": data,
+        "id": row["id"], "timestamp": row["timestamp"], "level": row["level"],
+        "title": row["title"], "message": row["message"], "read": bool(row["read"]),
+        "source": row["source"], "data": data,
     }
 
 
@@ -170,11 +177,12 @@ class NotificationStore(BaseStore):
                 continue
             if str(payload.get("request_id")) == target:
                 ids.append(nid)
-        for nid in ids:
-            await self._db.execute(
-                "UPDATE notifications SET archived = 1, read = 1 WHERE id = ?", (nid,)
-            )
         if ids:
+            placeholders = ",".join("?" * len(ids))
+            await self._db.execute(
+                f"UPDATE notifications SET archived = 1, read = 1 WHERE id IN ({placeholders})",
+                ids,
+            )
             await self._db.commit()
         return len(ids)
 

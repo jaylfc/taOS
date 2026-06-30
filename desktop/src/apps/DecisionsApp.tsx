@@ -512,8 +512,8 @@ export function DecisionsApp({ windowId: _windowId }: { windowId: string }) {
     if (!opts?.silent) setLoading(true);
     try {
       const [pRes, aRes, rRes] = await Promise.all([
-        fetch("/api/decisions?status=pending"),
-        fetch("/api/decisions?status=answered"),
+        fetch("/api/decisions?status=pending", { credentials: "include" }),
+        fetch("/api/decisions?status=answered", { credentials: "include" }),
         fetch("/api/agents/auth-requests?status=pending", { credentials: "include" }),
       ]);
       // Only overwrite a list when its request actually succeeded; a transient
