@@ -9,10 +9,14 @@ unauthenticated requests are rejected with 401 before they reach the handler).
 The handler also checks user_id explicitly to produce a clear error if the
 middleware somehow skips it (belt-and-braces).
 
-Reconnect / replay: each SSE frame carries an ``id:`` sequence number.  A
-reconnecting EventSource sends ``Last-Event-ID``; the EventBus replay buffer
-(last 32 events per channel) is delivered to new subscribers automatically on
-subscribe(), so recent events are re-streamed without client logic.
+Reconnect / replay: the EventBus replay buffer (last 32 events per channel)
+is delivered to new subscribers automatically on subscribe(), so recent
+events are re-streamed on every (re)connect.  This is best-effort, not
+precise replay via ``Last-Event-ID``: the ``id:`` field on each frame is a
+per-connection counter, not a stable value across reconnects, so the server
+does not filter on the ``Last-Event-ID`` request header.  Each event's JSON
+payload instead carries a stable ``id`` (the event's trace_id) so the client
+can de-dupe events it has already handled.
 """
 from __future__ import annotations
 
@@ -76,7 +80,12 @@ async def events_stream(request: Request):
                     continue
                 seq += 1
                 data = json.dumps(
-                    {"type": event.kind, "payload": event.payload, "ts": event.ts}
+                    {
+                        "type": event.kind,
+                        "payload": event.payload,
+                        "ts": event.ts,
+                        "id": event.trace_id,
+                    }
                 )
                 yield f"id: {seq}\ndata: {data}\n\n"
         finally:

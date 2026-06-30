@@ -28,32 +28,75 @@ const handlers: Record<string, EventHandler> = {
  * incoming event by its ``type`` field through the dispatch table.
  *
  * Mount once in the app shell (App.tsx) so there is exactly one connection
- * per session.  The EventSource reconnects automatically on transient errors;
- * unmount closes the connection cleanly.
+ * per session.  The browser only auto-reconnects EventSource on transient
+ * network drops; an HTTP error response (e.g. a 401 after session expiry)
+ * closes the connection for good, so that case is reconnected manually.
+ * Unmount closes the connection cleanly and cancels any pending reconnect.
  */
+const RECONNECT_DELAY_MS = 5000;
+
+// Replay on (re)connect is best-effort (see event_stream.py docstring): the
+// server cannot filter by Last-Event-ID, so the same buffered events can
+// arrive again. De-dupe by the event's stable id (trace_id) instead, bounded
+// so the set can't grow without limit over a long session.
+const MAX_SEEN_IDS = 128;
+
 export function useEventStream(): void {
   useEffect(() => {
-    const es = new EventSource("/api/events/stream");
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    const seenIds: string[] = [];
+    const seen = new Set<string>();
 
-    es.onmessage = (msg) => {
-      let event: { type?: string; payload?: EventPayload } | null;
-      try {
-        event = JSON.parse(msg.data as string);
-      } catch {
-        return;
+    const alreadySeen = (id: string | undefined): boolean => {
+      if (!id) return false;
+      if (seen.has(id)) return true;
+      seen.add(id);
+      seenIds.push(id);
+      if (seenIds.length > MAX_SEEN_IDS) {
+        const oldest = seenIds.shift();
+        if (oldest) seen.delete(oldest);
       }
-      if (!event || typeof event !== "object") return;
-      const handler = handlers[event.type ?? ""];
-      if (handler && event.payload !== undefined) {
-        handler(event.payload as EventPayload);
-      }
+      return false;
     };
 
-    es.onerror = () => {
-      // Transient network errors: the browser reconnects automatically.
-      // On hard close the effect cleanup runs and a remount opens a fresh stream.
+    const connect = () => {
+      es = new EventSource("/api/events/stream");
+
+      es.onmessage = (msg) => {
+        let event: { type?: string; payload?: EventPayload; id?: string } | null;
+        try {
+          event = JSON.parse(msg.data as string);
+        } catch {
+          return;
+        }
+        if (!event || typeof event !== "object") return;
+        if (alreadySeen(event.id)) return;
+        const handler = handlers[event.type ?? ""];
+        if (handler && event.payload !== undefined) {
+          handler(event.payload as EventPayload);
+        }
+      };
+
+      es.onerror = () => {
+        // Transient network errors: the browser reconnects automatically.
+        // A hard close (e.g. HTTP error response) leaves readyState CLOSED
+        // and the browser gives up, so reconnect manually after a backoff.
+        if (!stopped && es?.readyState === EventSource.CLOSED) {
+          reconnectTimer = setTimeout(() => {
+            if (!stopped) connect();
+          }, RECONNECT_DELAY_MS);
+        }
+      };
     };
 
-    return () => es.close();
+    connect();
+
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
+    };
   }, []);
 }
