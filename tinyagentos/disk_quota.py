@@ -271,14 +271,23 @@ class DiskQuotaMonitor:
 # CLI entry point — python -m tinyagentos.disk_quota scan
 # ---------------------------------------------------------------------------
 
-async def _cli_scan() -> None:
+def _default_data_dir():
+    """Resolve the data dir for standalone CLI use (no app.state available).
+
+    tinyagentos/disk_quota.py -> parent.parent is the install root, same
+    PROJECT_DIR derivation as app.py — works regardless of install location
+    (/opt/tinyagentos, /opt/taos, etc) and doesn't depend on $HOME.
+    """
     from pathlib import Path
+
+    return Path(__file__).resolve().parent.parent / "data"
+
+
+async def _cli_scan() -> None:
     from tinyagentos.config import load_config, save_config
     from tinyagentos.notifications import NotificationStore
 
-    data_dir = Path("/opt/tinyagentos/data")
-    if not data_dir.exists():
-        data_dir = Path(__file__).parent.parent / "data"
+    data_dir = _default_data_dir()
 
     config = load_config(data_dir / "config.yaml")
     notif_store = NotificationStore(data_dir / "notifications.db")

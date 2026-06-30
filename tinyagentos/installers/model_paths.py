@@ -30,9 +30,17 @@ from urllib.parse import urlparse
 def models_root() -> Path:
     """Single root for the layout. Override with TAOS_MODELS_ROOT for tests
     or alternate filesystems (network share, dedicated SSD, etc.).
+
+    The fallback is derived from where this file is installed (not
+    $HOME) so it works regardless of install location — /opt/tinyagentos,
+    /opt/taos, or anywhere else — and doesn't break if the service
+    account's HOME points somewhere unexpected.
     """
     override = os.environ.get("TAOS_MODELS_ROOT")
-    return Path(override) if override else Path.home() / "models"
+    if override:
+        return Path(override)
+    # tinyagentos/installers/model_paths.py -> parents[2] is the install root
+    return Path(__file__).resolve().parents[2] / "models"
 
 
 _FAMILY_FALLBACK = "uncategorised"

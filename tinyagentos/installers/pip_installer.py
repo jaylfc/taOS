@@ -9,7 +9,9 @@ from tinyagentos.installers.base import AppInstaller, run_cmd
 
 class PipInstaller(AppInstaller):
     def __init__(self, apps_dir: Path | None = None):
-        self.apps_dir = apps_dir or Path("/opt/tinyagentos/apps")
+        # tinyagentos/installers/pip_installer.py -> parents[2] is the
+        # install root, so this tracks wherever taOS is actually installed.
+        self.apps_dir = apps_dir or Path(__file__).resolve().parents[2] / "apps"
 
     async def install(self, app_id: str, install_config: dict, **kwargs) -> dict:
         app_dir = self.apps_dir / app_id

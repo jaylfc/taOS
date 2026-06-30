@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tinyagentos.disk_quota import DiskQuotaMonitor
+from tinyagentos.disk_quota import DiskQuotaMonitor, _default_data_dir
 from tinyagentos.containers.backend import ContainerInfo
 
 
@@ -338,3 +339,25 @@ class TestDefaultQuota:
 
         assert agent["disk_usage_gib"] == 12.345
         assert agent["disk_last_checked_at"] >= before
+
+
+# ------------------------------------------------------------------
+# CLI data_dir resolution — must be install-dir relative, not a
+# hardcoded /opt/tinyagentos literal and not $HOME-dependent.
+# ------------------------------------------------------------------
+
+class TestDefaultDataDir:
+    def test_resolves_under_install_root(self):
+        import tinyagentos.disk_quota as disk_quota_mod
+
+        expected_root = Path(disk_quota_mod.__file__).resolve().parent.parent
+        assert _default_data_dir() == expected_root / "data"
+
+    def test_does_not_depend_on_home(self, monkeypatch, tmp_path):
+        bogus_home = tmp_path / "stale-home-that-does-not-exist"
+        monkeypatch.setenv("HOME", str(bogus_home))
+
+        data_dir = _default_data_dir()
+
+        assert str(bogus_home) not in str(data_dir)
+        assert data_dir.name == "data"

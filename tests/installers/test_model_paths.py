@@ -79,10 +79,30 @@ class TestModelsRoot:
         monkeypatch.setenv("TAOS_MODELS_ROOT", str(tmp_path / "alt"))
         assert models_root() == tmp_path / "alt"
 
-    def test_default_is_home_models(self, monkeypatch):
+    def test_default_is_install_dir_relative(self, monkeypatch):
+        """Default must be derived from where the code lives (parents[2] of
+        tinyagentos/installers/model_paths.py = the install/repo root), not
+        $HOME — this is the fix for the startup crash where a stale
+        service-account HOME pointed at the pre-move /opt/tinyagentos dir.
+        """
         monkeypatch.delenv("TAOS_MODELS_ROOT", raising=False)
-        # Just assert the relationship to home; absolute path varies per CI
-        assert models_root() == Path.home() / "models"
+        import tinyagentos.installers.model_paths as model_paths_mod
+
+        expected_root = Path(model_paths_mod.__file__).resolve().parents[2]
+        assert models_root() == expected_root / "models"
+
+    def test_default_does_not_depend_on_home(self, monkeypatch, tmp_path):
+        """Pinning the bug: even with a bogus/unwritable $HOME, models_root()
+        must still resolve under the install dir, not under that bogus home.
+        """
+        monkeypatch.delenv("TAOS_MODELS_ROOT", raising=False)
+        bogus_home = tmp_path / "stale-home-that-does-not-exist"
+        monkeypatch.setenv("HOME", str(bogus_home))
+
+        root = models_root()
+
+        assert str(bogus_home) not in str(root)
+        assert root.name == "models"
 
 
 class TestFilenameFromUrl:

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.installers.model_paths import models_root
 from tinyagentos.model_sources import (
     estimate_ram_mb,
     get_compatibility,
@@ -36,7 +37,7 @@ class PullRequest(BaseModel):
 
 router = APIRouter()
 
-DEFAULT_MODELS_DIR = Path("/opt/tinyagentos/models")
+DEFAULT_MODELS_DIR = models_root()
 
 
 _MODEL_FILE_SUFFIXES = (".gguf", ".rkllm", ".bin", ".safetensors", ".onnx")
