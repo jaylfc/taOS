@@ -13,15 +13,29 @@
 export async function registerServiceWorker(): Promise<void> {
   if (typeof navigator === "undefined" || !navigator.serviceWorker) return;
   try {
-    // Only wire the auto-reload for a session that ALREADY has a controller.
-    // On a first-ever visit the SW claims control with no stale page to fix,
-    // so reloading there would just be a wasted refresh.
+    // Wire the controllerchange -> reload listener at most once per SW
+    // container, even if registerServiceWorker is called again (React
+    // StrictMode double-invokes effects in dev, HMR, remounts). The marker
+    // lives on the container instance so it resets naturally per test.
+    const swc = navigator.serviceWorker as ServiceWorkerContainer & {
+      __taosReloadWired?: boolean;
+    };
+    // Only wire it for a session that ALREADY has a controller: a first-ever
+    // visit claims control with no stale page to fix, so a reload there is just
+    // a wasted refresh.
     if (
-      navigator.serviceWorker.controller &&
-      typeof navigator.serviceWorker.addEventListener === "function"
+      !swc.__taosReloadWired &&
+      swc.controller &&
+      typeof swc.addEventListener === "function"
     ) {
+      swc.__taosReloadWired = true;
       let reloading = false;
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
+      // controllerchange fires whenever the controlling SW changes. This app
+      // registers one SW at one scope and never unregisters, so in practice it
+      // means a newly-activated version took control -> reload once onto the
+      // fresh index. (A manual unregister would also trigger it, which we do
+      // not do.)
+      swc.addEventListener("controllerchange", () => {
         if (reloading) return;
         reloading = true;
         window.location.reload();
@@ -31,9 +45,13 @@ export async function registerServiceWorker(): Promise<void> {
     const registration = await navigator.serviceWorker.register("/sw.js");
 
     // Proactively check for a new SW now (browsers otherwise only check on
-    // navigation / ~24h), so a fresh deploy is picked up without waiting.
+    // navigation / ~24h) so a fresh deploy is picked up without waiting.
     if (registration && typeof registration.update === "function") {
-      registration.update().catch(() => {});
+      registration.update().catch((err) => {
+        // Surface update failures (SW 404 / scope mismatch / offline) rather
+        // than swallowing them, so deploy issues are visible in the console.
+        console.debug("[taos] service worker update check failed:", err);
+      });
     }
   } catch (err) {
     console.warn("[taos] service worker registration failed:", err);

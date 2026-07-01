@@ -86,4 +86,20 @@ describe("registerServiceWorker", () => {
     await registerServiceWorker();
     expect(addEventListener).not.toHaveBeenCalled();
   });
+
+  it("wires the controllerchange listener at most once across calls", async () => {
+    const addEventListener = vi.fn();
+    const register = vi.fn().mockResolvedValue({ update: vi.fn() });
+    // Same container instance across both calls (StrictMode / remount).
+    const swMock = { register, addEventListener, controller: {} };
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: swMock, writable: true, configurable: true,
+    });
+    await registerServiceWorker();
+    await registerServiceWorker();
+    const controllerChangeCalls = addEventListener.mock.calls.filter(
+      ([type]: [string]) => type === "controllerchange",
+    );
+    expect(controllerChangeCalls).toHaveLength(1);
+  });
 });
