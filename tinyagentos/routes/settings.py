@@ -696,16 +696,13 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
     """
     uv_cmd = _find_uv(project_dir)
     if uv_cmd is not None:
-        logger.info("Updater dependency install: uv sync --frozen (%s)", uv_cmd)
         # HOME=project_dir so uv resolves its data/cache dir correctly under the
         # service user whose HOME is the install dir (the Pi layout).
         env = {**os.environ, "HOME": str(project_dir)}
         extra_args = [arg for extra in UPDATE_EXTRAS for arg in ("--extra", extra)]
-        return await _run_capture(
-            [uv_cmd, "sync", "--frozen", *extra_args],
-            cwd=str(project_dir),
-            env=env,
-        )
+        cmd = [uv_cmd, "sync", "--frozen", *extra_args]
+        logger.info("Updater dependency install: %s", " ".join(cmd))
+        return await _run_capture(cmd, cwd=str(project_dir), env=env)
 
     pip_cmd = "pip"
     for candidate in (project_dir / ".venv" / "bin" / "pip", project_dir / "venv" / "bin" / "pip"):
