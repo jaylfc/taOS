@@ -197,7 +197,11 @@ class LLMProxy:
         import sys
 
         # The install dir is the venv's grandparent (<root>/.venv/bin/python).
-        project_root = Path(sys.executable).resolve().parents[2]
+        # Do NOT resolve(): the venv python is a symlink to the base
+        # interpreter (e.g. /usr/local/bin/python3.x), so resolving walks out
+        # of the install tree and lands parents[2] on /usr. start() derives the
+        # venv bin the same non-resolved way.
+        project_root = Path(sys.executable).parents[2]
         if not (project_root / "pyproject.toml").is_file():
             logger.warning(
                 "proxy self-heal: cannot locate the install root at %s — skipping",

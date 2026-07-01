@@ -649,3 +649,44 @@ class TestProxySelfHeal:
 
         assert await LLMProxy()._selfheal_proxy_extra() is False
         assert killed["called"] is True
+
+    @pytest.mark.asyncio
+    async def test_selfheal_locates_root_through_venv_symlink(self, tmp_path, monkeypatch):
+        """sys.executable is a venv symlink to the base interpreter; the install
+        root must be the venv's grandparent, NOT the symlink target's (regression:
+        an earlier .resolve() walked out of the install tree onto /usr)."""
+        import sys
+        import tinyagentos.llm_proxy as mod
+
+        root = tmp_path / "install"
+        (root / ".venv" / "bin").mkdir(parents=True)
+        (root / "pyproject.toml").write_text("[project]\n")
+        (root / ".local" / "bin").mkdir(parents=True)
+        (root / ".local" / "bin" / "uv").write_text("x")
+        base = tmp_path / "usr" / "local" / "bin"
+        base.mkdir(parents=True)
+        real_py = base / "python3"
+        real_py.write_text("#!/bin/sh\n")
+        venv_py = root / ".venv" / "bin" / "python"
+        venv_py.symlink_to(real_py)
+        monkeypatch.setattr(sys, "executable", str(venv_py))
+
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"", None)
+
+        async def fake_exec(*cmd, **kw):
+            captured["cwd"] = kw.get("cwd")
+            captured["cmd"] = list(cmd)
+            return FakeProc()
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+
+        ok = await LLMProxy()._selfheal_proxy_extra()
+        assert ok is True
+        # cwd must be the install root (venv grandparent), not tmp_path/usr.
+        assert captured["cwd"] == str(root)
