@@ -21,6 +21,17 @@
  */
 
 const SESSION_EXPIRED_EVENT = "taos-session-expired";
+
+// API prefixes whose 401s do NOT mean the controller session expired.
+// /api/account/* proxies to the taos.my cloud account, a separate auth
+// boundary: it returns 401 whenever the user is not signed into that cloud
+// account, a normal state account-client maps to "signed-out". Firing
+// session-expired on it flashed the login gate and bounced the user out of
+// the Account pane (reported by jay 2026-07-01). Genuine controller-session
+// expiry is still caught by every other /api/* call the desktop makes.
+// (/auth/* is excluded implicitly by failing the /api/ test below.)
+const SESSION_EXPIRED_EXCLUDE = [/\/api\/account\//];
+
 let installed = false;
 
 export function installAuthGuard(): void {
@@ -43,14 +54,9 @@ export function installAuthGuard(): void {
       else if (input && typeof (input as Request).url === "string") url = (input as Request).url;
       // Only react to API paths — auth endpoints handle their own 401s.
       // Match path-prefix so absolute URLs from the same origin work too.
-      // The account proxy (/api/account/*) is a SEPARATE auth boundary: it
-      // forwards to the taos.my cloud account and returns 401 whenever the
-      // user is not signed into that cloud account, which is a normal state
-      // account-client maps to "signed-out". Firing session-expired on it
-      // flashed the login gate and bounced the user out of the Account pane
-      // (reported by jay 2026-07-01). Genuine controller-session expiry is
-      // still caught by every other /api/* call the desktop makes.
-      const isApi = /\/api\//.test(url) && !/\/api\/account\//.test(url);
+      const isApi =
+        /\/api\//.test(url) &&
+        !SESSION_EXPIRED_EXCLUDE.some((re) => re.test(url));
       if (isApi) {
         const now = Date.now();
         if (now - lastDispatch > 2000) {
