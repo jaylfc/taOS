@@ -1,0 +1,30 @@
+#!/bin/bash
+# Documentation-drift gate: local pre-commit hook.
+#
+# Runs the same two checks CI runs, against the staged index. This is a
+# convenience/fast-feedback layer only -- .github/workflows/doc-gate.yml is
+# the authoritative gate and cannot be bypassed with --no-verify.
+#
+# Enable with: scripts/install-git-hooks.sh
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+fail=0
+
+if ! python3 scripts/check_doc_gate.py invariants; then
+    fail=1
+fi
+
+if ! python3 scripts/check_doc_gate.py diff-gate --staged; then
+    fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo ""
+    echo "Fix the docs, or add a 'Docs-Reviewed: <why>' line to your commit message (the commit-msg hook accepts that). CI enforces this regardless of --no-verify."
+    exit 1
+fi
+
+exit 0

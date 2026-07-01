@@ -1,0 +1,44 @@
+#!/bin/bash
+# Documentation-drift gate: commit-msg escape hatch.
+#
+# The pre-commit hook already checked the staged diff. If it failed only
+# because a rule wants a doc edit that isn't in this commit, this hook still
+# accepts the commit when the message carries a non-empty
+# "Docs-Reviewed: <why>" trailer line. Matches the trailer docs/doc-gate.toml
+# configures for CI (default: "Docs-Reviewed:").
+set -euo pipefail
+
+trailer="Docs-Reviewed:"
+msg_file="$1"
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if python3 scripts/check_doc_gate.py diff-gate --staged >/dev/null 2>&1; then
+    exit 0
+fi
+
+trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+while IFS= read -r line; do
+    line="$(trim "$line")"
+    case "$line" in
+        "$trailer"*)
+            rest="$(trim "${line#"$trailer"}")"
+            if [ -n "$rest" ]; then
+                exit 0
+            fi
+            ;;
+    esac
+done < "$msg_file"
+
+python3 scripts/check_doc_gate.py diff-gate --staged || true
+echo ""
+echo "This commit changes feature code without a matching doc update."
+echo "Fix the docs listed above, or add a line to your commit message:"
+echo "  Docs-Reviewed: <why this needs no doc change / what you checked>"
+exit 1

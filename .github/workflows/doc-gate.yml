@@ -1,0 +1,37 @@
+name: Doc drift gate
+
+# Authoritative documentation-drift gate. Blocks PRs that change feature code
+# (a desktop app, an API route module, an installer, a catalog manifest)
+# without touching the doc that covers it, unless a commit in the PR carries
+# a "Docs-Reviewed: <why>" trailer. See docs/doc-gate.toml for the rules and
+# scripts/check_doc_gate.py for the implementation. This job is authoritative
+# regardless of local hooks (--no-verify does not skip it).
+
+on:
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  doc-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF"
+
+      - name: Invariants (Layer A)
+        run: python scripts/check_doc_gate.py invariants
+
+      - name: Diff gate (Layer B)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_doc_gate.py diff-gate --base "origin/$BASE_REF"
