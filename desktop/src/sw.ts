@@ -107,19 +107,26 @@ self.addEventListener("fetch", (event: FetchEvent) => {
     return;
   }
 
+  // isShellHTML is checked BEFORE isPrecachedStatic on purpose: /desktop/,
+  // /desktop/index.html and /chat-pwa are in PRECACHE_URLS but must use
+  // network-first, not the SWR branch below -- a stale cached index
+  // reintroduces the ChunkLoadError loop. Keep this branch first.
   if (isShellHTML(url)) {
-    // Network-first for the SPA shell: a stale cached index references old
-    // hashed chunk URLs that 404 after a redeploy -> ChunkLoadError -> reload
-    // loop. Always try the network so the served index matches the deployed
-    // assets; fall back to cache only when the network fails (offline /
-    // mid-restart). For chat-pwa subpaths, key on /chat-pwa.
+    // Network-first (bounded) for the SPA shell: fetch the current index when
+    // the backend is healthy so its chunk refs match the deployed assets. Fall
+    // back to the cached shell on a non-OK response (503 mid-restart), a
+    // network failure (offline), or a stall (aborted after the timeout),
+    // preserving the Install-Update reconnect UX. cache:"no-store" bypasses the
+    // browser HTTP cache so a 304-with-empty-body cannot slip through.
     const cacheKey = url.pathname.startsWith("/chat-pwa")
       ? new Request("/chat-pwa")
       : (url.pathname !== "/desktop/index.html" ? new Request("/desktop/") : req);
     event.respondWith(
       caches.open(STATIC_CACHE).then(async (cache) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
         try {
-          const fresh = await fetch(req);
+          const fresh = await fetch(req, { cache: "no-store", signal: controller.signal });
           if (fresh.ok) {
             cache.put(cacheKey, fresh.clone());
             return fresh;
@@ -129,10 +136,12 @@ self.addEventListener("fetch", (event: FetchEvent) => {
           const hit = await cache.match(cacheKey);
           return hit || fresh;
         } catch (err) {
-          // Offline / network failure: fall back to the cached shell.
+          // Offline / stall (aborted) / network failure: fall back to cache.
           const hit = await cache.match(cacheKey);
           if (hit) return hit;
           throw err;
+        } finally {
+          clearTimeout(timer);
         }
       })
     );
