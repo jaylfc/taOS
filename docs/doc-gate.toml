@@ -1,0 +1,43 @@
+# Documentation-drift gate configuration.
+#
+# Read by scripts/check_doc_gate.py. Rules are data: add more [[rules]]
+# entries here to cover new feature areas without touching the script.
+#
+# Precision over recall: `when_changed` only triggers a rule on a structural
+# change (a file added or deleted), never a plain modification, and every
+# glob below is scoped to the specific tree it names. This is deliberate --
+# a noisy gate gets disabled, so false positives are worse than an occasional
+# missed doc update.
+
+[gate]
+trailer = "Docs-Reviewed:"
+
+[invariants]
+referenced_paths_scan = ["README.md", "docs/agent-coordination.md", "docs/AGENT_HANDOFF.md"]
+
+[[rules]]
+name = "apps"
+when_changed = ["desktop/src/apps/*/**"]
+require_doc = ["README.md"]
+hint = "a desktop app was added or removed"
+
+[[rules]]
+name = "routes"
+when_changed = ["tinyagentos/routes/*.py"]
+require_doc = ["docs/agent-coordination.md", "docs/AGENT_HANDOFF.md"]
+hint = "an API route module was added or removed"
+
+[[rules]]
+name = "installers"
+when_changed = ["tinyagentos/installers/*", "scripts/install*"]
+require_doc = ["README.md"]
+hint = "an installer was added or removed"
+
+[[rules]]
+# The repo's catalog tree is app-catalog/, not catalog/ (there is no
+# catalog/ directory in this repo). Scoped to the real path so the rule can
+# actually fire instead of being permanently dead config.
+name = "catalog"
+when_changed = ["app-catalog/**"]
+require_doc = ["README.md"]
+hint = "a catalog manifest was added or removed"
