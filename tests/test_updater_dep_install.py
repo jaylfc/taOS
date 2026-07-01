@@ -5,8 +5,10 @@ Settings "Install Update" flow:
 
   * `_find_uv` resolves uv robustly (uv is not always on PATH; on the Pi it
     lives at <install_dir>/.local/bin/uv).
-  * `_install_dependencies` prefers a lockfile-pinned `uv sync --frozen` and
-    falls back to `pip install -e .` only when uv is absent.
+  * `_install_dependencies` prefers a lockfile-pinned `uv sync --frozen
+    --extra proxy` and falls back to `pip install -e .[proxy]` only when uv is
+    absent. The proxy extra (litellm + prisma) is a core dep, so both paths
+    carry it to match install-server.sh.
   * a non-zero install return code aborts the update WITHOUT writing the
     pending-restart marker (the crash-loop safety net stays intact).
 
@@ -53,7 +55,7 @@ def test_find_uv_not_found_returns_none(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_install_uses_uv_sync_frozen(monkeypatch):
-    """uv found -> runs `uv sync --frozen` with cwd + HOME=project_dir."""
+    """uv found -> runs `uv sync --frozen --extra proxy` with cwd + HOME=project_dir."""
     project = Path("/srv/taos")
     monkeypatch.setattr(settings_mod, "_find_uv", lambda pd: "/opt/uv")
 
@@ -71,14 +73,14 @@ async def test_install_uses_uv_sync_frozen(monkeypatch):
 
     assert rc == 0
     assert out == "synced"
-    assert captured["cmd"] == ["/opt/uv", "sync", "--frozen"]
+    assert captured["cmd"] == ["/opt/uv", "sync", "--frozen", "--extra", "proxy"]
     assert captured["cwd"] == str(project)
     assert captured["env"]["HOME"] == str(project)
 
 
 @pytest.mark.asyncio
 async def test_install_falls_back_to_pip(monkeypatch):
-    """uv absent -> runs `pip install -e .` (legacy path unchanged)."""
+    """uv absent -> runs `pip install -e .[proxy]` (legacy path)."""
     project = Path("/srv/taos")
     monkeypatch.setattr(settings_mod, "_find_uv", lambda pd: None)
     # No venv pip on disk -> bare "pip".
@@ -97,7 +99,7 @@ async def test_install_falls_back_to_pip(monkeypatch):
     rc, out = await settings_mod._install_dependencies(project)
 
     assert rc == 0
-    assert captured["cmd"] == ["pip", "install", "-e", "."]
+    assert captured["cmd"] == ["pip", "install", "-e", ".[proxy]"]
     assert captured["cwd"] == str(project)
     # pip path inherits the parent env (no override).
     assert captured["env"] is None
@@ -120,7 +122,7 @@ async def test_install_uses_venv_pip_when_present(monkeypatch):
     monkeypatch.setattr(settings_mod, "_run_capture", fake_run)
 
     await settings_mod._install_dependencies(project)
-    assert captured["cmd"] == [str(venv_pip), "install", "-e", "."]
+    assert captured["cmd"] == [str(venv_pip), "install", "-e", ".[proxy]"]
 
 
 @pytest.mark.asyncio

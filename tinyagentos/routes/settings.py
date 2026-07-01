@@ -672,6 +672,12 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
     deps onto a user's box. When uv is not present we fall back to the legacy
     ``pip install -e .`` so installs without uv still update.
 
+    Both paths carry the ``proxy`` extra (litellm + prisma) to match
+    ``install-server.sh``'s ``pip install -e ".[proxy]"``. The LLM proxy is a
+    core dependency, not optional: a bare ``uv sync --frozen`` prunes the venv
+    to the locked default set and silently uninstalls litellm, disabling the
+    proxy on every update and breaking basic agent functionality.
+
     Capture output and surface failures -- silently swallowing a failed install
     lands users on a grey-screen the next time they restart, because the new
     code imports a module that's not on disk. See issue #323's sibling failure
@@ -687,7 +693,7 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
         # service user whose HOME is the install dir (the Pi layout).
         env = {**os.environ, "HOME": str(project_dir)}
         return await _run_capture(
-            [uv_cmd, "sync", "--frozen"],
+            [uv_cmd, "sync", "--frozen", "--extra", "proxy"],
             cwd=str(project_dir),
             env=env,
         )
@@ -697,9 +703,9 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
         if candidate.exists():
             pip_cmd = str(candidate)
             break
-    logger.info("Updater dependency install: uv not found, using %s install -e .", pip_cmd)
+    logger.info("Updater dependency install: uv not found, using %s install -e .[proxy]", pip_cmd)
     return await _run_capture(
-        [pip_cmd, "install", "-e", "."],
+        [pip_cmd, "install", "-e", ".[proxy]"],
         cwd=str(project_dir),
     )
 
