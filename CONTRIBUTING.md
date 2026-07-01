@@ -208,6 +208,31 @@ When adding a feature, add tests that cover the new behaviour. When fixing a bug
 
 ---
 
+## Documentation gate
+
+A gate blocks PRs that add or remove certain feature code without a matching doc update. It only fires on structural changes (a file added or deleted), never on a plain edit, and only for a small set of conservative rules configured in `docs/doc-gate.toml`:
+
+| Change | Requires editing one of |
+|--------|--------------------------|
+| A desktop app under `desktop/src/apps/` is added or removed | `README.md` |
+| A route module under `tinyagentos/routes/` is added or removed | `docs/agent-coordination.md` or `docs/AGENT_HANDOFF.md` |
+| An installer under `tinyagentos/installers/` or `scripts/install*` is added or removed | `README.md` |
+| A manifest under `app-catalog/` is added or removed | `README.md` |
+
+If your PR trips a rule and there is genuinely nothing to document (or you already covered it elsewhere), add a trailer line to a commit message instead of editing a doc:
+
+```
+Docs-Reviewed: no user-facing change, internal refactor only
+```
+
+The trailer must have non-empty text after the colon; a bare `Docs-Reviewed:` does not count.
+
+Run `scripts/install-git-hooks.sh` once to enable local hooks (`.githooks/pre-commit` and `.githooks/commit-msg`) so the gate runs before you push instead of after you open the PR. Local hooks are a convenience only: `.github/workflows/doc-gate.yml` is the authoritative check and runs on every PR regardless of local setup or `--no-verify`.
+
+To add a new rule, edit `docs/doc-gate.toml` -- rules are data, no code changes needed.
+
+---
+
 ## Architecture Overview
 
 ```
