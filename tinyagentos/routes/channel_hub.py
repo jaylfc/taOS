@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse
@@ -10,15 +11,31 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["channel-hub"])
 
-# One lock per connector key, held across stop-old + start-new + map-assign.
-# Two concurrent connects for the same key would otherwise both pop (second
-# gets None), both start, and the loser's connector stays alive but
-# unreachable via the map, so it could never be stopped.
+# One lock per connector key, held across stop-old + start-new + map-assign
+# (and around disconnects). Two concurrent connects for the same key would
+# otherwise both pop (second gets None), both start, and the loser's
+# connector stays alive but unreachable via the map, so it could never be
+# stopped. Refcounted so an entry is evicted once no task holds or awaits it
+# (the map must not grow forever); the bookkeeping has no awaits, so it is
+# atomic under asyncio's single-threaded scheduling.
 _connect_locks: dict[str, asyncio.Lock] = {}
+_connect_lock_refs: dict[str, int] = {}
 
 
-def _connect_lock(connector_key: str) -> asyncio.Lock:
-    return _connect_locks.setdefault(connector_key, asyncio.Lock())
+@asynccontextmanager
+async def _connect_lock(connector_key: str):
+    _connect_lock_refs[connector_key] = _connect_lock_refs.get(connector_key, 0) + 1
+    lock = _connect_locks.setdefault(connector_key, asyncio.Lock())
+    try:
+        async with lock:
+            yield
+    finally:
+        remaining = _connect_lock_refs[connector_key] - 1
+        if remaining:
+            _connect_lock_refs[connector_key] = remaining
+        else:
+            del _connect_lock_refs[connector_key]
+            _connect_locks.pop(connector_key, None)
 
 
 async def _stop_prior_connector(connectors: dict, connector_key: str) -> None:
@@ -97,6 +114,13 @@ async def connect_bot(request: Request):
 
     connector_key = f"{platform}:{agent_name}"
 
+    # Validate required per-platform inputs BEFORE stopping the live
+    # connector: a malformed reconnect must fail without tearing down the
+    # working one.
+    homeserver = body.get("homeserver", "") if platform == "matrix" else ""
+    if platform == "matrix" and not homeserver:
+        return JSONResponse({"error": "homeserver is required for matrix"}, status_code=400)
+
     async with _connect_lock(connector_key):
         await _stop_prior_connector(connectors, connector_key)
 
@@ -170,9 +194,7 @@ async def connect_bot(request: Request):
             request.app.state.channel_hub_connectors = connectors
             return {"status": "connected", "platform": platform, "agent_name": agent_name}
         elif platform == "matrix":
-            homeserver = body.get("homeserver", "")
-            if not homeserver:
-                return JSONResponse({"error": "homeserver is required for matrix"}, status_code=400)
+            # homeserver validated above, before the destructive stop.
             from tinyagentos.channel_hub.matrix_connector import MatrixConnector
             connector = MatrixConnector(
                 homeserver=homeserver,
@@ -199,14 +221,17 @@ async def disconnect_bot(request: Request):
     connectors = getattr(request.app.state, "channel_hub_connectors", {})
     connector_key = f"{platform}:{agent_name}"
 
-    connector = connectors.pop(connector_key, None)
-    if connector:
-        if hasattr(connector, "stop"):
-            await connector.stop()
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "disconnected", "platform": platform, "agent_name": agent_name}
-    else:
-        return JSONResponse({"error": "Connector not found"}, status_code=404)
+    # Same per-key lock as connect_bot: a disconnect racing a reconnect must
+    # not pop the old connector mid-swap (404ing while the new one lands).
+    async with _connect_lock(connector_key):
+        connector = connectors.pop(connector_key, None)
+        if connector:
+            if hasattr(connector, "stop"):
+                await connector.stop()
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "disconnected", "platform": platform, "agent_name": agent_name}
+        else:
+            return JSONResponse({"error": "Connector not found"}, status_code=404)
 
 
 @router.get("/api/channel-hub/adapters")
