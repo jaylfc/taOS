@@ -605,3 +605,47 @@ class TestProxySelfHeal:
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
         # No pyproject.toml under tmp_path -> cannot locate install root.
         assert await LLMProxy()._selfheal_proxy_extra() is False
+
+    @pytest.mark.asyncio
+    async def test_selfheal_kills_subprocess_on_timeout(self, tmp_path, monkeypatch):
+        import asyncio as aio
+        import sys
+        import tinyagentos.llm_proxy as mod
+
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / ".local" / "bin" / "uv").write_text("x")
+        monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
+
+        killed = {"called": False}
+
+        class FakeProc:
+            returncode = None
+
+            async def communicate(self):
+                return (b"", None)
+
+            def kill(self):
+                killed["called"] = True
+
+            async def wait(self):
+                return 0
+
+        async def fake_exec(*a, **k):
+            return FakeProc()
+
+        calls = {"n": 0}
+
+        async def fake_wait_for(aw, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                if hasattr(aw, "close"):
+                    aw.close()
+                raise aio.TimeoutError()
+            return await aw
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(mod.asyncio, "wait_for", fake_wait_for)
+
+        assert await LLMProxy()._selfheal_proxy_extra() is False
+        assert killed["called"] is True

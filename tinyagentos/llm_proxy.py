@@ -238,18 +238,36 @@ class LLMProxy:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
+        except Exception as exc:  # noqa: BLE001 - non-fatal by design
+            logger.warning("proxy self-heal: could not spawn install: %s", exc)
+            return False
+
+        try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
-            if proc.returncode == 0:
-                logger.info("proxy self-heal: install succeeded")
-                return True
-            tail = (out or b"").decode(errors="replace")[-400:]
-            logger.warning(
-                "proxy self-heal: install failed (rc=%s): %s", proc.returncode, tail
-            )
+        except asyncio.TimeoutError:
+            # Kill the runaway install so it does not leak past the timeout.
+            logger.warning("proxy self-heal: install timed out after 900s — killing")
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                pass
             return False
         except Exception as exc:  # noqa: BLE001 - non-fatal by design
             logger.warning("proxy self-heal: install error: %s", exc)
             return False
+
+        if proc.returncode == 0:
+            logger.info("proxy self-heal: install succeeded")
+            return True
+        tail = (out or b"").decode(errors="replace")[-400:]
+        logger.warning(
+            "proxy self-heal: install failed (rc=%s): %s", proc.returncode, tail
+        )
+        return False
 
     async def start(
         self,
