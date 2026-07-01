@@ -13,7 +13,7 @@
 trailer = "Docs-Reviewed:"
 
 [invariants]
-referenced_paths_scan = ["README.md", "docs/agent-coordination.md", "docs/AGENT_HANDOFF.md"]
+referenced_paths_scan = ["README.md", "docs/agent-coordination.md"]
 
 [[rules]]
 name = "apps"
@@ -24,7 +24,7 @@ hint = "a desktop app was added or removed"
 [[rules]]
 name = "routes"
 when_changed = ["tinyagentos/routes/*.py"]
-require_doc = ["docs/agent-coordination.md", "docs/AGENT_HANDOFF.md"]
+require_doc = ["docs/agent-coordination.md"]
 hint = "an API route module was added or removed"
 
 [[rules]]
