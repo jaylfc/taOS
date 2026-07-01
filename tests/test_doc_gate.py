@@ -167,3 +167,15 @@ class TestCheckReferencedPaths:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_glob_double_star_matches_bare_parent():
+    """A trailing `/**` matches the bare parent path as well as anything under
+    it (folds a Kilo review note that `**` was one-or-more, not zero-or-more)."""
+    from check_doc_gate import _glob_match
+
+    assert _glob_match("app-catalog", "app-catalog/**") is True
+    assert _glob_match("app-catalog/foo/bar.json", "app-catalog/**") is True
+    # A single `*` still does not cross a separator.
+    assert _glob_match("tinyagentos/routes/desktop_browser/__init__.py",
+                       "tinyagentos/routes/*.py") is False

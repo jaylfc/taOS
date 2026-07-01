@@ -104,10 +104,10 @@ def check_referenced_paths(repo_root: Path, files_to_scan: list[str], config: di
 def _glob_match(path: str, pattern: str) -> bool:
     """Path-segment-aware glob match, unlike fnmatch (where `*` crosses `/`).
 
-    `**` matches across path separators (translates to `.*`), a single `*`
-    matches within one path segment only (`[^/]*`), `?` matches one
-    non-separator character (`[^/]`), and every other character is matched
-    literally.
+    `**` matches zero or more path segments (so a trailing `/**` also matches
+    the bare parent, e.g. `a/**` matches `a`), a single `*` matches within one
+    path segment only (`[^/]*`), `?` matches one non-separator character
+    (`[^/]`), and every other character is matched literally.
     """
     regex_parts = []
     i = 0
@@ -116,7 +116,12 @@ def _glob_match(path: str, pattern: str) -> bool:
         char = pattern[i]
         if char == "*":
             if i + 1 < length and pattern[i + 1] == "*":
-                regex_parts.append(".*")
+                # A trailing `/**` should also match the bare parent path, so
+                # fold the preceding literal `/` into an optional group.
+                if regex_parts and regex_parts[-1] == "/" and i + 2 == length:
+                    regex_parts[-1] = "(?:/.*)?"
+                else:
+                    regex_parts.append(".*")
                 i += 2
             else:
                 regex_parts.append("[^/]*")
@@ -150,7 +155,7 @@ def evaluate_rules(
     commit_messages: full text of each commit message in range (empty list
     when there is no finalized commit yet, i.e. --staged mode).
     """
-    trailer = config.get("gate", {}).get("trailer", DEFAULT_TRAILER)
+    trailer = get_trailer(config)
     rules = config.get("rules", [])
 
     all_paths = [path for _status, path in changed_status]
