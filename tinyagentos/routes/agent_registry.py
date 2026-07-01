@@ -380,12 +380,14 @@ async def seed_internal_agents(
     known = {spec["handle"] for spec in _INTERNAL_AGENTS}
     adopt_handles = {h.strip() for h in adopt.split(",") if h.strip()}
     if adopt_handles - known:
+        # Echo only the caller's own bad input; do not enumerate the internal
+        # handle set in an error body (the docstring documents it for admins).
         bad = ", ".join(sorted(adopt_handles - known))
         raise HTTPException(
             status_code=400,
             detail=(
-                f"adopt must list internal driver handles explicitly "
-                f"(one or more of: {', '.join(sorted(known))}); got: {bad}"
+                "adopt must list internal driver handles explicitly, "
+                f"never true/blanket values; got: {bad}"
             ),
         )
     seeded = []

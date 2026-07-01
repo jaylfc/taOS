@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Request, WebSocket
@@ -8,6 +9,32 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["channel-hub"])
+
+# One lock per connector key, held across stop-old + start-new + map-assign.
+# Two concurrent connects for the same key would otherwise both pop (second
+# gets None), both start, and the loser's connector stays alive but
+# unreachable via the map, so it could never be stopped.
+_connect_locks: dict[str, asyncio.Lock] = {}
+
+
+def _connect_lock(connector_key: str) -> asyncio.Lock:
+    return _connect_locks.setdefault(connector_key, asyncio.Lock())
+
+
+async def _stop_prior_connector(connectors: dict, connector_key: str) -> None:
+    """Stop and drop any prior connector under this key. Reconnecting (e.g.
+    after a token rotation) must not silently orphan the previous connector's
+    background task/client."""
+    old = connectors.pop(connector_key, None)
+    if old is not None and hasattr(old, "stop"):
+        try:
+            await old.stop()
+        except Exception:
+            logger.warning(
+                "channel-hub: failed to stop prior %s connector on reconnect",
+                connector_key,
+                exc_info=True,
+            )
 
 
 @router.get("/api/channel-hub/status")
@@ -46,9 +73,11 @@ async def connect_bot(request: Request):
         connector_key = f"webchat:{agent_name}"
 
         from tinyagentos.channel_hub.webchat_connector import WebChatConnector
-        connector = WebChatConnector(agent_name=agent_name, router=router_obj)
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
+        async with _connect_lock(connector_key):
+            await _stop_prior_connector(connectors, connector_key)
+            connector = WebChatConnector(agent_name=agent_name, router=router_obj)
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
         return {"status": "connected", "platform": "webchat", "agent_name": agent_name}
 
     bot_token_secret = body.get("bot_token_secret", "")
@@ -68,107 +97,96 @@ async def connect_bot(request: Request):
 
     connector_key = f"{platform}:{agent_name}"
 
-    # Reconnecting under the same key (e.g. after a token rotation) must not
-    # silently orphan the previous connector's background task/client: stop it
-    # before the new one replaces it in the map.
-    old = connectors.pop(connector_key, None)
-    if old is not None and hasattr(old, "stop"):
-        try:
-            await old.stop()
-        except Exception:
-            logger.warning(
-                "channel-hub: failed to stop prior %s connector on reconnect",
-                connector_key,
-                exc_info=True,
-            )
+    async with _connect_lock(connector_key):
+        await _stop_prior_connector(connectors, connector_key)
 
-    if platform == "telegram":
-        from tinyagentos.channel_hub.telegram_connector import TelegramConnector
-        connector = TelegramConnector(bot_token=bot_token, agent_name=agent_name, router=router_obj)
-        router_obj.assign_channel(platform, bot_token_secret, agent_name)
-        await connector.start()
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "connected", "platform": platform, "agent_name": agent_name}
-    elif platform == "discord":
-        channel_ids = body.get("channel_ids", [])
-        from tinyagentos.channel_hub.discord_connector import DiscordConnector
-        connector = DiscordConnector(
-            bot_token=bot_token, agent_name=agent_name,
-            router=router_obj, channel_ids=channel_ids,
-        )
-        router_obj.assign_channel(platform, bot_token_secret, agent_name)
-        await connector.start()
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "connected", "platform": platform, "agent_name": agent_name}
-    elif platform == "slack":
-        channel_ids = body.get("channel_ids", [])
-        from tinyagentos.channel_hub.slack_connector import SlackConnector
-        connector = SlackConnector(
-            bot_token=bot_token, agent_name=agent_name,
-            router=router_obj, channel_ids=channel_ids,
-        )
-        router_obj.assign_channel(platform, bot_token_secret, agent_name)
-        await connector.start()
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "connected", "platform": platform, "agent_name": agent_name}
-    elif platform == "email":
-        imap_host = body.get("imap_host", "")
-        imap_port = body.get("imap_port", 993)
-        smtp_host = body.get("smtp_host", "")
-        smtp_port = body.get("smtp_port", 587)
-        # bot_token holds "username:password" for email
-        parts = bot_token.split(":", 1)
-        email_user = parts[0]
-        email_pass = parts[1] if len(parts) > 1 else ""
-        from tinyagentos.channel_hub.email_connector import EmailConnector
-        connector = EmailConnector(
-            agent_name=agent_name, router=router_obj,
-            imap_host=imap_host, imap_port=imap_port,
-            smtp_host=smtp_host, smtp_port=smtp_port,
-            username=email_user, password=email_pass,
-        )
-        router_obj.assign_channel(platform, bot_token_secret, agent_name)
-        await connector.start()
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "connected", "platform": platform, "agent_name": agent_name}
-    elif platform == "github":
-        if not agent_name:
-            return JSONResponse({"error": "agent_name is required"}, status_code=400)
-        repo = body.get("repo")
-        event_kinds = body.get("event_kinds", [])
-        pr_number = body.get("pr_number")
-        from tinyagentos.channel_hub.adapters.github import GithubConnector
-        connector = GithubConnector(
-            agent_name=agent_name, router=router_obj,
-            repo=repo, event_kinds=event_kinds, pr_number=pr_number,
-        )
-        router_obj.assign_channel(platform, agent_name, agent_name)
-        await connector.start()
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "connected", "platform": platform, "agent_name": agent_name}
-    elif platform == "matrix":
-        homeserver = body.get("homeserver", "")
-        if not homeserver:
-            return JSONResponse({"error": "homeserver is required for matrix"}, status_code=400)
-        from tinyagentos.channel_hub.matrix_connector import MatrixConnector
-        connector = MatrixConnector(
-            homeserver=homeserver,
-            access_token=bot_token,
-            agent_name=agent_name,
-            router=router_obj,
-        )
-        router_obj.assign_channel(platform, bot_token_secret, agent_name)
-        await connector.start()
-        connectors[connector_key] = connector
-        request.app.state.channel_hub_connectors = connectors
-        return {"status": "connected", "platform": platform, "agent_name": agent_name}
-    else:
-        return JSONResponse({"error": f"Platform '{platform}' not yet supported"}, status_code=400)
+        if platform == "telegram":
+            from tinyagentos.channel_hub.telegram_connector import TelegramConnector
+            connector = TelegramConnector(bot_token=bot_token, agent_name=agent_name, router=router_obj)
+            router_obj.assign_channel(platform, bot_token_secret, agent_name)
+            await connector.start()
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "connected", "platform": platform, "agent_name": agent_name}
+        elif platform == "discord":
+            channel_ids = body.get("channel_ids", [])
+            from tinyagentos.channel_hub.discord_connector import DiscordConnector
+            connector = DiscordConnector(
+                bot_token=bot_token, agent_name=agent_name,
+                router=router_obj, channel_ids=channel_ids,
+            )
+            router_obj.assign_channel(platform, bot_token_secret, agent_name)
+            await connector.start()
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "connected", "platform": platform, "agent_name": agent_name}
+        elif platform == "slack":
+            channel_ids = body.get("channel_ids", [])
+            from tinyagentos.channel_hub.slack_connector import SlackConnector
+            connector = SlackConnector(
+                bot_token=bot_token, agent_name=agent_name,
+                router=router_obj, channel_ids=channel_ids,
+            )
+            router_obj.assign_channel(platform, bot_token_secret, agent_name)
+            await connector.start()
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "connected", "platform": platform, "agent_name": agent_name}
+        elif platform == "email":
+            imap_host = body.get("imap_host", "")
+            imap_port = body.get("imap_port", 993)
+            smtp_host = body.get("smtp_host", "")
+            smtp_port = body.get("smtp_port", 587)
+            # bot_token holds "username:password" for email
+            parts = bot_token.split(":", 1)
+            email_user = parts[0]
+            email_pass = parts[1] if len(parts) > 1 else ""
+            from tinyagentos.channel_hub.email_connector import EmailConnector
+            connector = EmailConnector(
+                agent_name=agent_name, router=router_obj,
+                imap_host=imap_host, imap_port=imap_port,
+                smtp_host=smtp_host, smtp_port=smtp_port,
+                username=email_user, password=email_pass,
+            )
+            router_obj.assign_channel(platform, bot_token_secret, agent_name)
+            await connector.start()
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "connected", "platform": platform, "agent_name": agent_name}
+        elif platform == "github":
+            if not agent_name:
+                return JSONResponse({"error": "agent_name is required"}, status_code=400)
+            repo = body.get("repo")
+            event_kinds = body.get("event_kinds", [])
+            pr_number = body.get("pr_number")
+            from tinyagentos.channel_hub.adapters.github import GithubConnector
+            connector = GithubConnector(
+                agent_name=agent_name, router=router_obj,
+                repo=repo, event_kinds=event_kinds, pr_number=pr_number,
+            )
+            router_obj.assign_channel(platform, agent_name, agent_name)
+            await connector.start()
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "connected", "platform": platform, "agent_name": agent_name}
+        elif platform == "matrix":
+            homeserver = body.get("homeserver", "")
+            if not homeserver:
+                return JSONResponse({"error": "homeserver is required for matrix"}, status_code=400)
+            from tinyagentos.channel_hub.matrix_connector import MatrixConnector
+            connector = MatrixConnector(
+                homeserver=homeserver,
+                access_token=bot_token,
+                agent_name=agent_name,
+                router=router_obj,
+            )
+            router_obj.assign_channel(platform, bot_token_secret, agent_name)
+            await connector.start()
+            connectors[connector_key] = connector
+            request.app.state.channel_hub_connectors = connectors
+            return {"status": "connected", "platform": platform, "agent_name": agent_name}
+        else:
+            return JSONResponse({"error": f"Platform '{platform}' not yet supported"}, status_code=400)
 
 
 @router.post("/api/channel-hub/disconnect")

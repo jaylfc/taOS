@@ -263,6 +263,26 @@ class TestMintInternalRoute:
         resp2 = await mint_client.post("/api/agents/registry/seed-internal")
         assert resp2.status_code == 409
 
+    async def test_seed_internal_adopt_multiple_listed(self, mint_client):
+        """Multiple handles (with copy-paste spacing and a duplicate) adopt in
+        one call; each named row comes back adopted."""
+        reg = mint_client._app.state.agent_registry
+        for handle, name in (("@taOS-dev", "taos-dev"), ("@Hermes", "hermes")):
+            rec = await reg.register(
+                framework="claude-code", display_name=name,
+                origin="external-selfjoin", handle=handle,
+            )
+            await reg.set_status(rec["canonical_id"], "active")
+        resp = await mint_client.post(
+            "/api/agents/registry/seed-internal"
+            "?adopt=@taOS-dev,%20@Hermes,@taOS-dev"
+        )
+        assert resp.status_code == 200, resp.text
+        seeded = {s["handle"]: s for s in resp.json()["seeded"]}
+        assert seeded["@taOS-dev"]["adopted"] is True
+        assert seeded["@Hermes"]["adopted"] is True
+        assert seeded["@taOSmd-dev"]["created"] is True
+
     async def test_seed_internal_rejects_blanket_adopt(self, mint_client):
         """A bare adopt=true (or any non-handle value) is a 400: adoption
         grants driver scopes + a token to a pre-existing identity, so each

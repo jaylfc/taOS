@@ -196,24 +196,34 @@ class LLMProxy:
         import shutil
         import sys
 
+        import tomllib
+
         # The install dir is an ancestor of the venv python (normally the
         # venv's grandparent: <root>/.venv/bin/python). Do NOT resolve(): the
         # venv python is a symlink to the base interpreter (e.g.
         # /usr/local/bin/python3.x), so resolving walks out of the install
-        # tree. Walk upward to the first ancestor holding pyproject.toml so a
-        # different venv depth (python3.x binary name, nested layouts) still
-        # finds the root instead of silently no-opping.
+        # tree. Walk upward to the first ancestor whose pyproject.toml is
+        # OURS (project.name == tinyagentos): matching on the file alone
+        # could latch onto an unrelated project's pyproject higher up (e.g.
+        # one in $HOME) and pip-install that project's pins into our venv.
+        def _is_install_root(parent: Path) -> bool:
+            pj = parent / "pyproject.toml"
+            if not pj.is_file():
+                return False
+            try:
+                with open(pj, "rb") as fh:
+                    name = tomllib.load(fh).get("project", {}).get("name")
+            except Exception:  # noqa: BLE001 - unreadable/foreign file: keep walking
+                return False
+            return name == "tinyagentos"
+
         project_root = next(
-            (
-                parent
-                for parent in Path(sys.executable).parents
-                if (parent / "pyproject.toml").is_file()
-            ),
+            (p for p in Path(sys.executable).parents if _is_install_root(p)),
             None,
         )
         if project_root is None:
             logger.warning(
-                "proxy self-heal: no pyproject.toml above %s — skipping",
+                "proxy self-heal: no tinyagentos pyproject.toml above %s — skipping",
                 sys.executable,
             )
             return False
@@ -242,12 +252,17 @@ class LLMProxy:
             # project dependency — the exact churn this self-heal exists to
             # undo — and a later bare `uv sync --frozen` would strip the
             # extra right back out anyway.
-            import tomllib
-
             try:
                 with open(project_root / "pyproject.toml", "rb") as fh:
                     optional = tomllib.load(fh)["project"]["optional-dependencies"]
-                reqs = [r for e in UPDATE_EXTRAS for r in optional.get(e, [])]
+                # strip(): a stray newline/whitespace in a pyproject entry
+                # would otherwise reach pip verbatim and fail opaquely.
+                reqs = [
+                    r.strip()
+                    for e in UPDATE_EXTRAS
+                    for r in optional.get(e, [])
+                    if r.strip()
+                ]
             except Exception as exc:  # noqa: BLE001 - non-fatal by design
                 logger.warning(
                     "proxy self-heal: cannot read extras from pyproject: %s", exc
@@ -260,7 +275,16 @@ class LLMProxy:
                 )
                 return False
             pip = str(Path(sys.executable).parent / "pip")
-            cmd = [pip, "install", *reqs]
+            # --no-input: never block the 900s window on a TTY prompt.
+            # --disable-pip-version-check: no upgrade nag in the captured
+            # stream. (No --quiet: failure output must stay in the logs.)
+            cmd = [
+                pip,
+                "install",
+                "--no-input",
+                "--disable-pip-version-check",
+                *reqs,
+            ]
 
         logger.warning(
             "proxy self-heal: litellm missing, installing the proxy extra: %s",

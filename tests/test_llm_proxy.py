@@ -548,7 +548,7 @@ class TestProxySelfHeal:
         import sys
         import tinyagentos.llm_proxy as mod
 
-        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "tinyagentos"\n')
         binp = tmp_path / ".local" / "bin"
         binp.mkdir(parents=True)
         (binp / "uv").write_text("x")
@@ -582,7 +582,7 @@ class TestProxySelfHeal:
         import sys
         import tinyagentos.llm_proxy as mod
 
-        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "tinyagentos"\n')
         (tmp_path / ".local" / "bin").mkdir(parents=True)
         (tmp_path / ".local" / "bin" / "uv").write_text("x")
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
@@ -612,7 +612,7 @@ class TestProxySelfHeal:
         import sys
         import tinyagentos.llm_proxy as mod
 
-        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "tinyagentos"\n')
         (tmp_path / ".local" / "bin").mkdir(parents=True)
         (tmp_path / ".local" / "bin" / "uv").write_text("x")
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
@@ -660,7 +660,7 @@ class TestProxySelfHeal:
 
         root = tmp_path / "install"
         (root / ".venv" / "bin").mkdir(parents=True)
-        (root / "pyproject.toml").write_text("[project]\n")
+        (root / "pyproject.toml").write_text('[project]\nname = "tinyagentos"\n')
         (root / ".local" / "bin").mkdir(parents=True)
         (root / ".local" / "bin" / "uv").write_text("x")
         base = tmp_path / "usr" / "local" / "bin"
@@ -702,7 +702,7 @@ class TestProxySelfHeal:
         root = tmp_path / "install"
         deep = root / "envs" / ".venv" / "bin"
         deep.mkdir(parents=True)
-        (root / "pyproject.toml").write_text("[project]\n")
+        (root / "pyproject.toml").write_text('[project]\nname = "tinyagentos"\n')
         (root / ".local" / "bin").mkdir(parents=True)
         (root / ".local" / "bin" / "uv").write_text("x")
         monkeypatch.setattr(sys, "executable", str(deep / "python3.12"))
@@ -737,9 +737,11 @@ class TestProxySelfHeal:
         import tinyagentos.llm_proxy as mod
 
         (tmp_path / "pyproject.toml").write_text(
-            "[project]\nname = \"x\"\nversion = \"0\"\n"
+            "[project]\nname = \"tinyagentos\"\nversion = \"0\"\n"
             "[project.optional-dependencies]\n"
-            "proxy = [\"litellm[proxy]>=1.90.0\", \"prisma>=0.11.0\"]\n"
+            # trailing whitespace/newline in an entry must be stripped, not
+            # reach pip verbatim
+            "proxy = [\"litellm[proxy]>=1.90.0\", \"prisma>=0.11.0\\n\"]\n"
         )
         (tmp_path / ".venv" / "bin").mkdir(parents=True)
         monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
@@ -763,7 +765,23 @@ class TestProxySelfHeal:
         assert captured["cmd"] == [
             str(tmp_path / ".venv" / "bin" / "pip"),
             "install",
+            "--no-input",
+            "--disable-pip-version-check",
             "litellm[proxy]>=1.90.0",
             "prisma>=0.11.0",
         ]
         assert "-e" not in captured["cmd"]
+
+    @pytest.mark.asyncio
+    async def test_selfheal_ignores_foreign_pyproject(self, tmp_path, monkeypatch):
+        """The root walk must not trust just any pyproject.toml above the
+        interpreter: a foreign project's file (e.g. one in $HOME) would make
+        the self-heal pip-install THAT project's pins into our venv. Only a
+        pyproject whose project.name is tinyagentos counts."""
+        import sys
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "someone-else"\n')
+        (tmp_path / ".venv" / "bin").mkdir(parents=True)
+        monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
+
+        assert await LLMProxy()._selfheal_proxy_extra() is False
