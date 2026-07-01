@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import re
 import subprocess
 import sys
@@ -102,8 +101,37 @@ def check_referenced_paths(repo_root: Path, files_to_scan: list[str], config: di
     return failures
 
 
+def _glob_match(path: str, pattern: str) -> bool:
+    """Path-segment-aware glob match, unlike fnmatch (where `*` crosses `/`).
+
+    `**` matches across path separators (translates to `.*`), a single `*`
+    matches within one path segment only (`[^/]*`), `?` matches one
+    non-separator character (`[^/]`), and every other character is matched
+    literally.
+    """
+    regex_parts = []
+    i = 0
+    length = len(pattern)
+    while i < length:
+        char = pattern[i]
+        if char == "*":
+            if i + 1 < length and pattern[i + 1] == "*":
+                regex_parts.append(".*")
+                i += 2
+            else:
+                regex_parts.append("[^/]*")
+                i += 1
+        elif char == "?":
+            regex_parts.append("[^/]")
+            i += 1
+        else:
+            regex_parts.append(re.escape(char))
+            i += 1
+    return re.fullmatch("".join(regex_parts), path) is not None
+
+
 def _match_any(path: str, patterns: list[str]) -> bool:
-    return any(fnmatch.fnmatch(path, pat) for pat in patterns)
+    return any(_glob_match(path, pat) for pat in patterns)
 
 
 def evaluate_rules(
@@ -190,6 +218,12 @@ def _git_commit_messages(base_ref: str) -> list[str]:
     return [m for m in out.split("\x00") if m.strip()]
 
 
+def get_trailer(config: dict) -> str:
+    """Single source of truth for the commit-message trailer prefix, shared
+    by the diff-gate check and the hooks (via the print-trailer command)."""
+    return config.get("gate", {}).get("trailer", DEFAULT_TRAILER)
+
+
 def _report(failures: list[str]) -> int:
     if not failures:
         print("doc-gate: clean")
@@ -204,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("invariants", help="Run Layer-A deterministic checks")
+    sub.add_parser("print-trailer", help="Print the configured commit trailer prefix")
 
     diff_parser = sub.add_parser("diff-gate", help="Run Layer-B path->doc rule engine")
     group = diff_parser.add_mutually_exclusive_group(required=True)
@@ -217,6 +252,10 @@ def main(argv: list[str] | None = None) -> int:
         files_to_scan = config.get("invariants", {}).get("referenced_paths_scan", [])
         failures = check_referenced_paths(REPO_ROOT, files_to_scan, config)
         return _report(failures)
+
+    if args.command == "print-trailer":
+        print(get_trailer(config))
+        return 0
 
     # diff-gate
     if args.staged:

@@ -215,7 +215,7 @@ A gate blocks PRs that add or remove certain feature code without a matching doc
 | Change | Requires editing one of |
 |--------|--------------------------|
 | A desktop app under `desktop/src/apps/` is added or removed | `README.md` |
-| A route module under `tinyagentos/routes/` is added or removed | `docs/agent-coordination.md` or `docs/AGENT_HANDOFF.md` |
+| A route module under `tinyagentos/routes/` is added or removed | `docs/agent-coordination.md` |
 | An installer under `tinyagentos/installers/` or `scripts/install*` is added or removed | `README.md` |
 | A manifest under `app-catalog/` is added or removed | `README.md` |
 

@@ -91,6 +91,47 @@ class TestEvaluateRules:
         assert failures[0].startswith("routes -- ")
 
 
+class TestGlobMatch:
+    def test_single_star_stays_within_segment(self):
+        assert dg._glob_match("tinyagentos/routes/settings.py", "tinyagentos/routes/*.py")
+        assert not dg._glob_match(
+            "tinyagentos/routes/desktop_browser/__init__.py",
+            "tinyagentos/routes/*.py",
+        )
+
+    def test_double_star_crosses_segments(self):
+        assert dg._glob_match(
+            "desktop/src/apps/Foo/sub/x.ts", "desktop/src/apps/*/**"
+        )
+
+    def test_trailing_star_matches_within_segment(self):
+        assert dg._glob_match("scripts/install-server.sh", "scripts/install*")
+
+    def test_double_star_matches_nested_manifest(self):
+        assert dg._glob_match("app-catalog/foo/bar.json", "app-catalog/**")
+
+
+class TestEvaluateRulesRoutesGlobPrecision:
+    def test_nested_route_file_does_not_trigger_routes_rule(self):
+        changed = [("A", "tinyagentos/routes/desktop_browser/newmod.py")]
+        assert dg.evaluate_rules(changed, [], APPS_RULE_CONFIG) == []
+
+    def test_top_level_route_file_triggers_routes_rule(self):
+        changed = [("A", "tinyagentos/routes/newroute.py")]
+        failures = dg.evaluate_rules(changed, [], APPS_RULE_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("routes -- ")
+
+
+class TestGetTrailer:
+    def test_returns_configured_trailer(self):
+        config = {"gate": {"trailer": "Docs-Reviewed:"}}
+        assert dg.get_trailer(config) == "Docs-Reviewed:"
+
+    def test_falls_back_to_default_when_missing(self):
+        assert dg.get_trailer({}) == dg.DEFAULT_TRAILER
+
+
 class TestCheckReferencedPaths:
     def test_dead_path_token_fails(self, tmp_path: Path):
         readme = tmp_path / "README.md"

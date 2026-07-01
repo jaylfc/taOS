@@ -8,10 +8,11 @@
 # configures for CI (default: "Docs-Reviewed:").
 set -euo pipefail
 
-trailer="Docs-Reviewed:"
 msg_file="$1"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+trailer="$(python3 "$repo_root/scripts/check_doc_gate.py" print-trailer 2>/dev/null || echo 'Docs-Reviewed:')"
 
 if python3 scripts/check_doc_gate.py diff-gate --staged >/dev/null 2>&1; then
     exit 0
