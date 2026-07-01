@@ -664,6 +664,14 @@ def _find_uv(project_dir: Path) -> str | None:
     return None
 
 
+# Optional-dependency extras the updater must install so a `uv sync --frozen`
+# does not prune them out of the venv. Single source of truth for the Python
+# side; `scripts/install-server.sh` installs the same set via
+# `pip install -e ".[proxy]"`, and `test_updater_dep_install.py` asserts the two
+# stay in parity so they cannot silently drift (the bug that stripped litellm).
+UPDATE_EXTRAS: tuple[str, ...] = ("proxy",)
+
+
 async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
     """Install/sync the update's Python deps, preferring a pinned uv sync.
 
@@ -692,8 +700,9 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
         # HOME=project_dir so uv resolves its data/cache dir correctly under the
         # service user whose HOME is the install dir (the Pi layout).
         env = {**os.environ, "HOME": str(project_dir)}
+        extra_args = [arg for extra in UPDATE_EXTRAS for arg in ("--extra", extra)]
         return await _run_capture(
-            [uv_cmd, "sync", "--frozen", "--extra", "proxy"],
+            [uv_cmd, "sync", "--frozen", *extra_args],
             cwd=str(project_dir),
             env=env,
         )
@@ -703,9 +712,10 @@ async def _install_dependencies(project_dir: Path) -> tuple[int, str]:
         if candidate.exists():
             pip_cmd = str(candidate)
             break
-    logger.info("Updater dependency install: uv not found, using %s install -e .[proxy]", pip_cmd)
+    pip_target = f".[{','.join(UPDATE_EXTRAS)}]"
+    logger.info("Updater dependency install: uv not found, using %s install -e %s", pip_cmd, pip_target)
     return await _run_capture(
-        [pip_cmd, "install", "-e", ".[proxy]"],
+        [pip_cmd, "install", "-e", pip_target],
         cwd=str(project_dir),
     )
 

@@ -125,6 +125,27 @@ async def test_install_uses_venv_pip_when_present(monkeypatch):
     assert captured["cmd"] == [str(venv_pip), "install", "-e", ".[proxy]"]
 
 
+def test_updater_extras_match_install_server():
+    """The updater's UPDATE_EXTRAS must equal install-server.sh's pip extras.
+
+    Both install paths carry the same optional extras; if install-server.sh
+    later adds one (e.g. `.[proxy,gpu]`) the updater must too, or a bare-set
+    `uv sync --frozen` will strip it on the next update. This binds the two
+    so a drift fails CI instead of silently breaking a live box.
+    """
+    import re
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script = (repo_root / "scripts" / "install-server.sh").read_text()
+    matches = re.findall(r'pip install[^\n]*-e\s+["\']?\.\[([^\]]+)\]', script)
+    assert matches, "could not find a `pip install -e .[extras]` line in install-server.sh"
+    script_extras = {e.strip() for e in matches[-1].split(",") if e.strip()}
+    assert script_extras == set(settings_mod.UPDATE_EXTRAS), (
+        f"install-server.sh installs extras {script_extras} but the updater installs "
+        f"{set(settings_mod.UPDATE_EXTRAS)}; keep them in parity (settings.UPDATE_EXTRAS)"
+    )
+
+
 @pytest.mark.asyncio
 async def test_install_nonzero_rc_is_propagated(monkeypatch):
     """A failed install returns (rc, output) so the caller aborts safely."""
