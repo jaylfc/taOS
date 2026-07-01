@@ -360,19 +360,34 @@ async def mint_internal_agent(
 async def seed_internal_agents(
     request: Request,
     user: CurrentUser = Depends(current_user),
-    adopt: bool = False,
+    adopt: str = "",
 ):
     """Idempotently mint the four internal driver agents and return their tokens.
 
     Admin only.  Each of @taOS-dev, @taOS-website-dev, @taOSmd-dev, @Hermes is
     minted with the a2a_send + a2a_receive scopes.  Re-running creates no
-    duplicate rows.  ``adopt=true`` (query param) vouches for any of those
-    handles that already exist under a non-internal origin (e.g. a driver that
-    self-joined earlier) instead of 409ing.  Response: {"seeded": [{handle,
-    canonical_id, created, adopted, scopes, token}, ...]}.
+    duplicate rows.  ``adopt`` (query param) is a comma-separated list of the
+    specific handles to vouch for when they already exist under a non-internal
+    origin (e.g. ``?adopt=@taOS-dev``); each adoption grants driver scopes and
+    a token to a pre-existing identity, so it must name each handle explicitly
+    rather than blanket-vouch for all four (a driver handle claimed by someone
+    else via the consent flow must not be adopted as a side effect).  A bare
+    ``adopt=true`` is rejected.  Response: {"seeded": [{handle, canonical_id,
+    created, adopted, scopes, token}, ...]}.
     """
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="forbidden")
+    known = {spec["handle"] for spec in _INTERNAL_AGENTS}
+    adopt_handles = {h.strip() for h in adopt.split(",") if h.strip()}
+    if adopt_handles - known:
+        bad = ", ".join(sorted(adopt_handles - known))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"adopt must list internal driver handles explicitly "
+                f"(one or more of: {', '.join(sorted(known))}); got: {bad}"
+            ),
+        )
     seeded = []
     for spec in _INTERNAL_AGENTS:
         seeded.append(
@@ -382,7 +397,7 @@ async def seed_internal_agents(
                 handle=spec["handle"],
                 slug=spec["slug"],
                 scopes=list(_INTERNAL_AGENT_SCOPES),
-                adopt=adopt,
+                adopt=spec["handle"] in adopt_handles,
             )
         )
     return {"seeded": seeded}

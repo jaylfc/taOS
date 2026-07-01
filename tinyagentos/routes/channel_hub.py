@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["channel-hub"])
 
@@ -63,6 +67,20 @@ async def connect_bot(request: Request):
     connectors = getattr(request.app.state, "channel_hub_connectors", {})
 
     connector_key = f"{platform}:{agent_name}"
+
+    # Reconnecting under the same key (e.g. after a token rotation) must not
+    # silently orphan the previous connector's background task/client: stop it
+    # before the new one replaces it in the map.
+    old = connectors.pop(connector_key, None)
+    if old is not None and hasattr(old, "stop"):
+        try:
+            await old.stop()
+        except Exception:
+            logger.warning(
+                "channel-hub: failed to stop prior %s connector on reconnect",
+                connector_key,
+                exc_info=True,
+            )
 
     if platform == "telegram":
         from tinyagentos.channel_hub.telegram_connector import TelegramConnector

@@ -245,14 +245,16 @@ class TestMintInternalRoute:
         assert kwargs["actor_user_id"]
 
     async def test_seed_internal_adopt_handles_preexisting(self, mint_client):
-        """seed-internal?adopt=true vouches for a pre-existing driver handle and
-        still seeds the rest."""
+        """seed-internal?adopt=@handle vouches for THAT pre-existing driver
+        handle explicitly and still seeds the rest."""
         rec = await mint_client._app.state.agent_registry.register(
             framework="claude-code", display_name="taos-dev",
             origin="external-selfjoin", handle="@taOS-dev",
         )
         await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
-        resp = await mint_client.post("/api/agents/registry/seed-internal?adopt=true")
+        resp = await mint_client.post(
+            "/api/agents/registry/seed-internal?adopt=@taOS-dev"
+        )
         assert resp.status_code == 200, resp.text
         seeded = {s["handle"]: s for s in resp.json()["seeded"]}
         assert seeded["@taOS-dev"]["adopted"] is True and seeded["@taOS-dev"]["created"] is False
@@ -260,6 +262,31 @@ class TestMintInternalRoute:
         # Without adopt it would have 409d on @taOS-dev:
         resp2 = await mint_client.post("/api/agents/registry/seed-internal")
         assert resp2.status_code == 409
+
+    async def test_seed_internal_rejects_blanket_adopt(self, mint_client):
+        """A bare adopt=true (or any non-handle value) is a 400: adoption
+        grants driver scopes + a token to a pre-existing identity, so each
+        handle must be vouched for explicitly, never all four at once."""
+        resp = await mint_client.post(
+            "/api/agents/registry/seed-internal?adopt=true"
+        )
+        assert resp.status_code == 400
+        assert "explicitly" in resp.json()["detail"]
+
+    async def test_seed_internal_adopt_only_covers_listed_handles(self, mint_client):
+        """A pre-existing handle NOT named in adopt still 409s even when
+        another handle is being adopted."""
+        reg = mint_client._app.state.agent_registry
+        for handle, name in (("@taOS-dev", "taos-dev"), ("@Hermes", "hermes")):
+            rec = await reg.register(
+                framework="claude-code", display_name=name,
+                origin="external-selfjoin", handle=handle,
+            )
+            await reg.set_status(rec["canonical_id"], "active")
+        resp = await mint_client.post(
+            "/api/agents/registry/seed-internal?adopt=@taOS-dev"
+        )
+        assert resp.status_code == 409
 
     async def test_mint_requires_auth(self, mint_client):
         """An unauthenticated caller cannot mint (route is admin-only and not on

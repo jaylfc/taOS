@@ -196,16 +196,25 @@ class LLMProxy:
         import shutil
         import sys
 
-        # The install dir is the venv's grandparent (<root>/.venv/bin/python).
-        # Do NOT resolve(): the venv python is a symlink to the base
-        # interpreter (e.g. /usr/local/bin/python3.x), so resolving walks out
-        # of the install tree and lands parents[2] on /usr. start() derives the
-        # venv bin the same non-resolved way.
-        project_root = Path(sys.executable).parents[2]
-        if not (project_root / "pyproject.toml").is_file():
+        # The install dir is an ancestor of the venv python (normally the
+        # venv's grandparent: <root>/.venv/bin/python). Do NOT resolve(): the
+        # venv python is a symlink to the base interpreter (e.g.
+        # /usr/local/bin/python3.x), so resolving walks out of the install
+        # tree. Walk upward to the first ancestor holding pyproject.toml so a
+        # different venv depth (python3.x binary name, nested layouts) still
+        # finds the root instead of silently no-opping.
+        project_root = next(
+            (
+                parent
+                for parent in Path(sys.executable).parents
+                if (parent / "pyproject.toml").is_file()
+            ),
+            None,
+        )
+        if project_root is None:
             logger.warning(
-                "proxy self-heal: cannot locate the install root at %s — skipping",
-                project_root,
+                "proxy self-heal: no pyproject.toml above %s — skipping",
+                sys.executable,
             )
             return False
 
@@ -227,8 +236,31 @@ class LLMProxy:
             extra_args = [a for e in UPDATE_EXTRAS for a in ("--extra", e)]
             cmd = [uv, "sync", "--frozen", *extra_args]
         else:
+            # Without uv, install ONLY the extras' requirements (read from
+            # pyproject so the pins stay single-sourced). An editable
+            # reinstall (pip install -e .[proxy]) would re-resolve every
+            # project dependency — the exact churn this self-heal exists to
+            # undo — and a later bare `uv sync --frozen` would strip the
+            # extra right back out anyway.
+            import tomllib
+
+            try:
+                with open(project_root / "pyproject.toml", "rb") as fh:
+                    optional = tomllib.load(fh)["project"]["optional-dependencies"]
+                reqs = [r for e in UPDATE_EXTRAS for r in optional.get(e, [])]
+            except Exception as exc:  # noqa: BLE001 - non-fatal by design
+                logger.warning(
+                    "proxy self-heal: cannot read extras from pyproject: %s", exc
+                )
+                return False
+            if not reqs:
+                logger.warning(
+                    "proxy self-heal: no requirements found for extras %s",
+                    UPDATE_EXTRAS,
+                )
+                return False
             pip = str(Path(sys.executable).parent / "pip")
-            cmd = [pip, "install", "-e", f".[{','.join(UPDATE_EXTRAS)}]"]
+            cmd = [pip, "install", *reqs]
 
         logger.warning(
             "proxy self-heal: litellm missing, installing the proxy extra: %s",
