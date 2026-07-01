@@ -47,6 +47,25 @@ describe("auth-guard", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("does not dispatch on 401 from /api/account/* paths", async () => {
+    // The account proxy (taos.my cloud account) is a separate auth boundary
+    // and returns 401 when the user simply is not signed into the cloud —
+    // account-client maps that to a signed-out state. Treating it as a
+    // controller-session expiry flashed the login gate and bounced the user
+    // out of the Account pane. Reported by jay 2026-07-01.
+    vi.resetModules();
+    const { installAuthGuard: install } = await import("../auth-guard");
+    window.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
+    install();
+
+    const handler = vi.fn();
+    window.addEventListener(SESSION_EXPIRED_EVENT, handler);
+    await window.fetch("/api/account/me");
+    window.removeEventListener(SESSION_EXPIRED_EVENT, handler);
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("does not dispatch on 200", async () => {
     vi.resetModules();
     const { installAuthGuard: install } = await import("../auth-guard");

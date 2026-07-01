@@ -30,6 +30,7 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 - The LLM proxy now self-heals: if litellm is missing at startup (e.g. left over from an update before the fix above), it reinstalls itself once automatically and comes back online.
 - The desktop no longer breaks after an update: it reliably loads the new version after a redeploy instead of getting stuck on stale cached code or crashing when opening an app, on Chrome, Safari, and Firefox alike.
 - A failed background rebuild during boot no longer crash-loops the controller; it now falls back to the last working build and logs a warning instead.
+- Opening Settings > Account no longer flashes the login screen and bounces you back to System Info when you are not signed into a taOS cloud account; the account service's expected "not signed in" response is no longer mistaken for your device session expiring.
 
 ## [1.0.0-beta.13] - 2026-06-28
 

@@ -43,7 +43,14 @@ export function installAuthGuard(): void {
       else if (input && typeof (input as Request).url === "string") url = (input as Request).url;
       // Only react to API paths — auth endpoints handle their own 401s.
       // Match path-prefix so absolute URLs from the same origin work too.
-      const isApi = /\/api\//.test(url);
+      // The account proxy (/api/account/*) is a SEPARATE auth boundary: it
+      // forwards to the taos.my cloud account and returns 401 whenever the
+      // user is not signed into that cloud account, which is a normal state
+      // account-client maps to "signed-out". Firing session-expired on it
+      // flashed the login gate and bounced the user out of the Account pane
+      // (reported by jay 2026-07-01). Genuine controller-session expiry is
+      // still caught by every other /api/* call the desktop makes.
+      const isApi = /\/api\//.test(url) && !/\/api\/account\//.test(url);
       if (isApi) {
         const now = Date.now();
         if (now - lastDispatch > 2000) {
