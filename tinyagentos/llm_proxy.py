@@ -113,6 +113,10 @@ class LLMProxy:
         self._data_dir = data_dir
         self._process: subprocess.Popen | None = None
         self._keystore_cache = None
+        # One-shot guard: if litellm is missing at start() (e.g. a pre-fix
+        # update stripped the proxy extra), self-install it once per process
+        # rather than retry the slow install on every start() call.
+        self._selfheal_attempted = False
 
     def _keystore(self):
         """Lazily open the in-house key store (controller side)."""
@@ -178,6 +182,74 @@ class LLMProxy:
                 "from tinyagentos.litellm_auth import user_api_key_auth\n"
             )
         return config_path
+
+    async def _selfheal_proxy_extra(self) -> bool:
+        """One-time attempt to install the missing litellm proxy extra.
+
+        install-server.sh installs ``.[proxy]`` (litellm + prisma), but any
+        update run by a pre-fix updater ran a bare ``uv sync --frozen`` and
+        pruned the extra out of the venv, so a fresh boot finds litellm gone
+        and every agent loses its LLM route. Since the proxy is core, install
+        it once here rather than leave it disabled. Bounded + non-fatal: on any
+        failure the proxy just stays disabled and the box keeps running.
+        """
+        import shutil
+        import sys
+
+        # The install dir is the venv's grandparent (<root>/.venv/bin/python).
+        project_root = Path(sys.executable).resolve().parents[2]
+        if not (project_root / "pyproject.toml").is_file():
+            logger.warning(
+                "proxy self-heal: cannot locate the install root at %s — skipping",
+                project_root,
+            )
+            return False
+
+        # Single source of truth for the extras (matches the updater); fall
+        # back to the literal if the import is unavailable for any reason.
+        try:
+            from tinyagentos.routes.settings import UPDATE_EXTRAS
+        except Exception:
+            UPDATE_EXTRAS = ("proxy",)
+
+        # HOME=install dir so uv resolves its cache under the service user.
+        env = {**os.environ, "HOME": str(project_root)}
+        uv = None
+        cand = project_root / ".local" / "bin" / "uv"
+        if cand.exists():
+            uv = str(cand)
+        uv = uv or shutil.which("uv")
+        if uv:
+            extra_args = [a for e in UPDATE_EXTRAS for a in ("--extra", e)]
+            cmd = [uv, "sync", "--frozen", *extra_args]
+        else:
+            pip = str(Path(sys.executable).parent / "pip")
+            cmd = [pip, "install", "-e", f".[{','.join(UPDATE_EXTRAS)}]"]
+
+        logger.warning(
+            "proxy self-heal: litellm missing, installing the proxy extra: %s",
+            " ".join(cmd),
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(project_root),
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
+            if proc.returncode == 0:
+                logger.info("proxy self-heal: install succeeded")
+                return True
+            tail = (out or b"").decode(errors="replace")[-400:]
+            logger.warning(
+                "proxy self-heal: install failed (rc=%s): %s", proc.returncode, tail
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 - non-fatal by design
+            logger.warning("proxy self-heal: install error: %s", exc)
+            return False
 
     async def start(
         self,
@@ -255,6 +327,16 @@ class LLMProxy:
         import sys
         venv_bin = Path(sys.executable).parent / "litellm"
         litellm_cmd = str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
+        if not litellm_cmd and not self._selfheal_attempted:
+            # The proxy is a core dependency. A pre-fix update ran a bare
+            # `uv sync --frozen` and stripped the proxy extra, so a fresh boot
+            # finds litellm gone. Self-install it once (bounded, non-fatal);
+            # this runs inside the background litellm-bringup task so a slow
+            # install does not block controller startup.
+            self._selfheal_attempted = True
+            if await self._selfheal_proxy_extra():
+                venv_bin = Path(sys.executable).parent / "litellm"
+                litellm_cmd = str(venv_bin) if venv_bin.exists() else shutil.which("litellm")
         if not litellm_cmd:
             logger.warning("LiteLLM not installed — proxy disabled. Install with: pip install litellm[proxy]")
             return False

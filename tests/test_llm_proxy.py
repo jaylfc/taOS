@@ -537,3 +537,71 @@ class TestInhouseKeys:
         assert proxy._keystore().lookup(key)["allowed_models"] == ["b", "c"]
         assert await proxy.delete_agent_key(key) is True
         assert proxy._keystore().lookup(key) is None
+
+
+class TestProxySelfHeal:
+    """The proxy self-installs the litellm extra once if a pre-fix update
+    stripped it (bounded + non-fatal), so agents are not left without a route."""
+
+    @pytest.mark.asyncio
+    async def test_selfheal_uses_uv_sync_extra_proxy(self, tmp_path, monkeypatch):
+        import sys
+        import tinyagentos.llm_proxy as mod
+
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        binp = tmp_path / ".local" / "bin"
+        binp.mkdir(parents=True)
+        (binp / "uv").write_text("x")
+        monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
+
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b"ok", None)
+
+        async def fake_exec(*cmd, **kw):
+            captured["cmd"] = list(cmd)
+            captured["cwd"] = kw.get("cwd")
+            captured["home"] = (kw.get("env") or {}).get("HOME")
+            return FakeProc()
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+
+        ok = await LLMProxy()._selfheal_proxy_extra()
+        assert ok is True
+        assert captured["cmd"][:4] == [str(binp / "uv"), "sync", "--frozen", "--extra"]
+        assert "proxy" in captured["cmd"]
+        assert captured["cwd"] == str(tmp_path)
+        assert captured["home"] == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_selfheal_nonzero_returns_false(self, tmp_path, monkeypatch):
+        import sys
+        import tinyagentos.llm_proxy as mod
+
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / ".local" / "bin" / "uv").write_text("x")
+        monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
+
+        class FakeProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (b"boom", None)
+
+        async def fake_exec(*cmd, **kw):
+            return FakeProc()
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        assert await LLMProxy()._selfheal_proxy_extra() is False
+
+    @pytest.mark.asyncio
+    async def test_selfheal_skips_when_no_install_root(self, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setattr(sys, "executable", str(tmp_path / ".venv" / "bin" / "python"))
+        # No pyproject.toml under tmp_path -> cannot locate install root.
+        assert await LLMProxy()._selfheal_proxy_extra() is False
