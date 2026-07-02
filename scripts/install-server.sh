@@ -1367,7 +1367,9 @@ _try_prebuilt_bundle() {
         if ! mv "$_stage/desktop" "$INSTALL_DIR/static/desktop"; then
             # Do not claim the restore worked unless it actually did: a failed
             # rename-back would otherwise leave no desktop while saying otherwise.
-            if [[ -n "$_old" ]] && mv "$_old" "$INSTALL_DIR/static/desktop"; then
+            if [[ -z "$_old" ]]; then
+                warn "installing the prebuilt bundle failed during the swap — no previous desktop existed; the local build below (or a re-run) will create static/desktop"
+            elif mv "$_old" "$INSTALL_DIR/static/desktop"; then
                 warn "installing the prebuilt bundle failed during the swap — previous desktop restored"
             else
                 warn "installing the prebuilt bundle failed during the swap AND the previous desktop could not be restored — static/desktop is missing; the local build below (or a re-run) will recreate it"
