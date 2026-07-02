@@ -105,7 +105,7 @@ if [[ -r /proc/device-tree/model ]]; then
     log "board=$(tr -d '\0' < /proc/device-tree/model)"
 fi
 if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
-    log "current librknnrt=$(strings "$LIBRKNNRT_DEST" 2>/dev/null | grep -m1 -oE 'librknnrt version: [0-9.]+' || echo 'version string not found')"
+    log "current librknnrt=$(strings "$LIBRKNNRT_DEST" 2>/dev/null | grep -m1 -oE 'librknnrt version: [0-9]+\.[0-9]+\.[0-9]+' || echo 'version string not found')"
 fi
 
 # verify_sha256 <file> <expected_hex> <label>

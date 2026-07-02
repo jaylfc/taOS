@@ -65,12 +65,12 @@ log "os=$os_name arch=$arch"
 if [[ -r /etc/os-release ]]; then
     log "distro=$( . /etc/os-release; echo "${PRETTY_NAME:-$ID}" )"
 fi
-log "kernel=$(uname -r)"
+log "kernel=$(uname -r) arch=$(uname -m)"
 if [[ -r /proc/device-tree/model ]]; then
     log "board=$(tr -d '\0' < /proc/device-tree/model)"
 fi
 command -v python3 >/dev/null 2>&1 && log "python3=$(python3 --version 2>&1)"
-log "disk_free_root=$(df -Ph / | awk 'NR==2 {print $4}')"
+log "disk_free_root=$(df -Ph / 2>/dev/null | awk 'NR==2 {print $4}' || echo unknown)"
 log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
 
 # --- system dependencies --------------------------------------------------
