@@ -64,6 +64,13 @@ export interface WindowOp {
   preset?: "tile-2" | "tile-3" | "center" | "cascade";
 }
 
+// The valid WindowOp actions, as a runtime allowlist for the event receiver
+// (the type union alone cannot guard an untrusted CustomEvent payload).
+const WINDOW_ACTIONS = new Set<WindowOp["action"]>([
+  "open", "close", "focus", "minimize", "restore",
+  "maximize", "move", "resize", "snap", "arrange",
+]);
+
 const TOP = 36; // below the 32px top bar
 const DOCK = 88; // above the dock
 
@@ -226,12 +233,18 @@ export function useDesktopControl(): void {
       // `op`/`app` are accepted as aliases for `action`/`appId` (see module
       // docstring) since they mirror the sibling taos:open-app payload shape.
       const raw = (e as CustomEvent).detail as Record<string, unknown> | undefined;
-      const action = (raw?.action ?? raw?.op) as WindowOp["action"] | undefined;
-      if (!action) {
-        console.warn("taos:window ignored: no action/op in payload", raw);
+      const candidate = raw?.action ?? raw?.op;
+      // Allowlist the action so an unknown string (e.g. op: "shutdown") is
+      // rejected loudly here rather than falling through run()'s switch as a
+      // silent no-op, which is the very behaviour this receiver fixes.
+      if (typeof candidate !== "string" || !WINDOW_ACTIONS.has(candidate as WindowOp["action"])) {
+        console.warn("taos:window ignored: missing or unknown action/op", raw);
         return;
       }
-      const appId = (raw?.appId ?? raw?.app) as string | undefined;
+      const action = candidate as WindowOp["action"];
+      // appId must be a string; a non-string app silently fails the lookup.
+      const rawAppId = raw?.appId ?? raw?.app;
+      const appId = typeof rawAppId === "string" ? rawAppId : undefined;
       run({ ...(raw as Partial<WindowOp>), action, appId });
     };
     window.addEventListener("taos:window", onWindow);

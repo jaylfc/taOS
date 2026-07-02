@@ -54,6 +54,19 @@ describe("useDesktopControl taos:window receiver", () => {
     expect(useProcessStore.getState().windows.find((w) => w.id === id)!.closing).toBeFalsy();
   });
 
+  it("warns and ignores an unknown action/op (not in the allowlist)", () => {
+    renderHook(() => useDesktopControl());
+    const id = useProcessStore.getState().openWindow("coding-studio", { w: 800, h: 600 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    window.dispatchEvent(
+      new CustomEvent("taos:window", { detail: { op: "shutdown", app: "coding-studio" } }),
+    );
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(useProcessStore.getState().windows.find((w) => w.id === id)!.closing).toBeFalsy();
+  });
+
   it("removes the event listener on unmount", () => {
     const { unmount } = renderHook(() => useDesktopControl());
     const id = useProcessStore.getState().openWindow("coding-studio", { w: 800, h: 600 });
