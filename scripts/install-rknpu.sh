@@ -99,7 +99,10 @@ die()  { printf '\033[1;31m[rknpu]\033[0m %s\n' "$*" >&2; exit 1; }
 # never drift if upstream rewords the version string.
 librknnrt_current_version() {
     if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
-        strings "$LIBRKNNRT_DEST" | awk '/librknnrt version: / { print $3; exit }'
+        # No early awk exit: it SIGPIPEs strings and trips pipefail (see the
+        # note at the version-verify site). Read to EOF and print the first
+        # match only.
+        strings "$LIBRKNNRT_DEST" 2>/dev/null | awk '/librknnrt version: / && !seen { print $3; seen=1 }'
     fi
 }
 
@@ -337,7 +340,14 @@ pin_librknnrt() {
     # when the tool is unavailable; only die on a genuine version mismatch.
     local verified=""
     if command -v strings >/dev/null 2>&1; then
-        verified="$(strings "$tmp" | awk '/librknnrt version: / { print $3; exit }')"
+        # awk must NOT exit early here: an early `exit` closes the pipe and
+        # SIGPIPEs `strings`, which under `set -o pipefail` fails the whole
+        # command substitution, and with `set -e` that aborted the ENTIRE
+        # install on the first clean run wherever binutils was present (#1560,
+        # #1543). The second run only worked because librknnrt was already at
+        # 2.3.0 and this whole pin block was skipped. Read to EOF (no early
+        # exit) and guard the assignment so a strings/awk hiccup is never fatal.
+        verified="$(strings "$tmp" 2>/dev/null | awk '/librknnrt version: / && !seen { print $3; seen=1 }')" || true
         if [[ -z "$verified" ]]; then
             # Fall back to re-reading the installed path (legacy behaviour).
             verified="$(librknnrt_current_version || true)"
