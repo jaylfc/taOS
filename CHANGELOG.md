@@ -7,6 +7,9 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Fixed
+- The Rockchip NPU installer no longer fails on fresh installs with "reference is not a tree": the rkllama pin now points at a commit that fresh clones can actually check out, and a stale pin fails with a clear explanation and override instructions instead of a raw git error.
+
 ## [1.0.0-beta.14] - 2026-07-01
 
 ### Added
