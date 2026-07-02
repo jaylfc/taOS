@@ -94,6 +94,20 @@ log()  { printf '\033[1;34m[rknpu]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[rknpu]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[rknpu]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Environment banner: every user-posted install log should self-describe the
+# machine it ran on (distro, kernel, board, current NPU runtime) so a failure
+# report is diagnosable without a round-trip asking for these.
+if [[ -r /etc/os-release ]]; then
+    log "distro=$( . /etc/os-release; echo "${PRETTY_NAME:-$ID}" )"
+fi
+log "kernel=$(uname -r) arch=$(uname -m)"
+if [[ -r /proc/device-tree/model ]]; then
+    log "board=$(tr -d '\0' < /proc/device-tree/model)"
+fi
+if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
+    log "current librknnrt=$(strings "$LIBRKNNRT_DEST" 2>/dev/null | grep -m1 -oE 'librknnrt version: [0-9.]+' || echo 'version string not found')"
+fi
+
 # verify_sha256 <file> <expected_hex> <label>
 # Hard-fails on mismatch: a corrupted download or a tampered mirror must
 # never be silently accepted.

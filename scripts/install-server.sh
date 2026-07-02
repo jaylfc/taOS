@@ -59,6 +59,18 @@ warn() { printf '\033[1;33m[server-install]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[server-install]\033[0m %s\n' "$*" >&2; exit 1; }
 
 log "os=$os_name arch=$arch"
+# Environment banner: every user-posted install log should self-describe the
+# machine it ran on (distro, kernel, board, python, free disk) so a failure
+# report is diagnosable without a round-trip asking for these.
+if [[ -r /etc/os-release ]]; then
+    log "distro=$( . /etc/os-release; echo "${PRETTY_NAME:-$ID}" )"
+fi
+log "kernel=$(uname -r)"
+if [[ -r /proc/device-tree/model ]]; then
+    log "board=$(tr -d '\0' < /proc/device-tree/model)"
+fi
+command -v python3 >/dev/null 2>&1 && log "python3=$(python3 --version 2>&1)"
+log "disk_free_root=$(df -Ph / | awk 'NR==2 {print $4}')"
 log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
 
 # --- system dependencies --------------------------------------------------
