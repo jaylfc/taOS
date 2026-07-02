@@ -267,6 +267,7 @@ function TemplateCard({ template, onUse }: { template: Template; onUse: () => vo
           <button
             type="button"
             onClick={onUse}
+            aria-label={`Use ${template.title} template`}
             className="flex items-center gap-1.5 rounded-full border border-shell-border bg-shell-surface-active px-3 py-1.5 text-[11.5px] font-bold text-shell-text transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             <Play size={12} />

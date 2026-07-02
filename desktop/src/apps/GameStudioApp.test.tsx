@@ -120,22 +120,15 @@ describe("GameStudioApp", () => {
   it("selecting a template from the gallery routes to Play and loads its scene", () => {
     renderApp("gamestudio-template-select-test");
     const template = TEMPLATES[2]!; // pick a non-default template so the routing is provable
-    // Scope to this template's card (so we cannot click another card's button),
-    // then find its action button by label. Selecting by text rather than
-    // grabbing the first button drops the assumption that the card has exactly
-    // one button; using querySelectorAll rather than getByRole avoids the
-    // accessible-name role computation, which was non-deterministic in the full
-    // CI suite.
-    const titleEl = screen.getByText(template.title);
-    const card = titleEl.closest("[class*='rounded-2xl']");
-    if (!(card instanceof HTMLElement)) {
-      throw new Error("template card not found");
-    }
-    const useButton = Array.from(card.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Use"),
-    );
-    expect(useButton).toBeTruthy();
-    fireEvent.click(useButton!);
+    // Each card's Use button carries a unique accessible name
+    // (`Use <title> template`), so we can target this template's button by role
+    // and name alone. That decouples the test from the card's DOM shape and
+    // Tailwind classes, and the per-template name is unambiguous, so the earlier
+    // getByRole ambiguity (many identical "Use" buttons) no longer applies.
+    const useButton = screen.getByRole("button", {
+      name: `Use ${template.title} template`,
+    });
+    fireEvent.click(useButton);
 
     const nav = screen.getByRole("navigation", { name: "Game Studio views" });
     const playBtn = nav.querySelector('[aria-label="Play"]') as HTMLElement;
