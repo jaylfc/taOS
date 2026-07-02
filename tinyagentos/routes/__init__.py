@@ -320,6 +320,10 @@ def register_all_routers(app):
     from tinyagentos.routes.client_logs import router as client_logs_router
     app.include_router(client_logs_router)
 
+    # Logs app backend (#1548 part 1): journald/file log sources + bug-report bundle.
+    from tinyagentos.routes.system_logs import router as system_logs_router
+    app.include_router(system_logs_router)
+
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router)
 
