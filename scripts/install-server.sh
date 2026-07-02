@@ -737,24 +737,26 @@ ensure_container_runtime() {
         # apt-cache madison is the lightest "is the package available?"
         # probe — empty output means no candidate, which is what we want.
         sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null || true
-        if [[ -n "$(apt-cache madison incus 2>/dev/null)" ]]; then
-            # Prefer incus-base: the full `incus` metapackage pulls incus-ui and
-            # other extras whose dependencies are unsatisfiable on Debian
-            # Bookworm ARM64 ("held broken packages"), whereas incus-base is the
-            # minimal daemon+CLI and installs cleanly there (#1555). Fall back to
-            # the full package where incus-base is not a candidate.
-            log "incus available in default apt repos — installing (incus-base preferred)"
-            _incus_pkg="incus"
-            [[ -n "$(apt-cache madison incus-base 2>/dev/null)" ]] && _incus_pkg="incus-base"
+        # Prefer incus-base: the full `incus` metapackage pulls incus-ui and
+        # other extras whose dependencies are unsatisfiable on Debian Bookworm
+        # ARM64 ("held broken packages"), whereas incus-base is the minimal
+        # daemon+CLI and installs cleanly there (#1555). Use the full package
+        # only where incus-base is not a candidate. Gate on EITHER package so a
+        # repo shipping incus-base but not the metapackage still takes this
+        # native path instead of a wasted Zabbly round trip.
+        _incus_pkg=""
+        [[ -n "$(apt-cache madison incus-base 2>/dev/null)" ]] && _incus_pkg="incus-base"
+        [[ -z "$_incus_pkg" && -n "$(apt-cache madison incus 2>/dev/null)" ]] && _incus_pkg="incus"
+        if [[ -n "$_incus_pkg" ]]; then
+            log "incus available in default apt repos — installing $_incus_pkg"
+            # No metapackage fallback: the exact failure this fix targets is the
+            # full `incus` package being broken on the vendor image, so retrying
+            # it would fail identically. The warn below covers the failure path.
             if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$_incus_pkg"; then
                 installed=1
                 log "container runtime: $_incus_pkg installed from default apt repos"
-            elif [[ "$_incus_pkg" == "incus-base" ]] \
-                 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus; then
-                installed=1
-                log "container runtime: incus installed from default apt repos (incus-base unavailable)"
             else
-                warn "default apt install of incus failed — see /var/log/apt/term.log"
+                warn "default apt install of $_incus_pkg failed — see /var/log/apt/term.log"
             fi
         else
             # Detect distro codename for Zabbly repo line.
