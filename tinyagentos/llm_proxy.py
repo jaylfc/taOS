@@ -206,21 +206,26 @@ class LLMProxy:
         # OURS (project.name == tinyagentos): matching on the file alone
         # could latch onto an unrelated project's pyproject higher up (e.g.
         # one in $HOME) and pip-install that project's pins into our venv.
-        def _is_install_root(parent: Path) -> bool:
+        def _load_install_pyproject(parent: Path) -> dict | None:
             pj = parent / "pyproject.toml"
             if not pj.is_file():
-                return False
+                return None
             try:
                 with open(pj, "rb") as fh:
-                    name = tomllib.load(fh).get("project", {}).get("name")
+                    doc = tomllib.load(fh)
             except Exception:  # noqa: BLE001 - unreadable/foreign file: keep walking
-                return False
-            return name == "tinyagentos"
+                return None
+            return doc if doc.get("project", {}).get("name") == "tinyagentos" else None
 
-        project_root = next(
-            (p for p in Path(sys.executable).parents if _is_install_root(p)),
-            None,
-        )
+        # Keep the parsed document alongside the root so the pip fallback
+        # below reuses it instead of re-opening and re-parsing the file.
+        project_root = None
+        pyproject_doc: dict | None = None
+        for parent in Path(sys.executable).parents:
+            pyproject_doc = _load_install_pyproject(parent)
+            if pyproject_doc is not None:
+                project_root = parent
+                break
         if project_root is None:
             logger.warning(
                 "proxy self-heal: no tinyagentos pyproject.toml above %s — skipping",
@@ -253,8 +258,7 @@ class LLMProxy:
             # undo — and a later bare `uv sync --frozen` would strip the
             # extra right back out anyway.
             try:
-                with open(project_root / "pyproject.toml", "rb") as fh:
-                    optional = tomllib.load(fh)["project"]["optional-dependencies"]
+                optional = pyproject_doc["project"]["optional-dependencies"]
                 # strip(): a stray newline/whitespace in a pyproject entry
                 # would otherwise reach pip verbatim and fail opaquely.
                 reqs = [

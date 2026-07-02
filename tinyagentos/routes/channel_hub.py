@@ -41,14 +41,22 @@ async def _connect_lock(connector_key: str):
 async def _stop_prior_connector(connectors: dict, connector_key: str) -> None:
     """Stop and drop any prior connector under this key. Reconnecting (e.g.
     after a token rotation) must not silently orphan the previous connector's
-    background task/client."""
+    background task/client.
+
+    The pop happens before the await on purpose: callers hold the per-key
+    connect lock, so nothing can observe the gap, and the caller is about to
+    overwrite the slot with a fresh connector either way. If stop() raises,
+    the old connector's task may live until process restart; that is logged
+    loudly rather than blocking the reconnect, because keeping a broken
+    connector registered would be strictly worse."""
     old = connectors.pop(connector_key, None)
     if old is not None and hasattr(old, "stop"):
         try:
             await old.stop()
         except Exception:
-            logger.warning(
-                "channel-hub: failed to stop prior %s connector on reconnect",
+            logger.error(
+                "channel-hub: failed to stop prior %s connector on reconnect; "
+                "its background task may persist until restart",
                 connector_key,
                 exc_info=True,
             )

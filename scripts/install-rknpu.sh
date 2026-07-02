@@ -94,6 +94,15 @@ log()  { printf '\033[1;34m[rknpu]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[rknpu]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[rknpu]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Single source of truth for reading the installed librknnrt version; used by
+# both the environment banner below and the pin logic later so the two can
+# never drift if upstream rewords the version string.
+librknnrt_current_version() {
+    if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
+        strings "$LIBRKNNRT_DEST" | awk '/librknnrt version: / { print $3; exit }'
+    fi
+}
+
 # Environment banner: every user-posted install log should self-describe the
 # machine it ran on (distro, kernel, board, current NPU runtime) so a failure
 # report is diagnosable without a round-trip asking for these.
@@ -104,9 +113,8 @@ log "kernel=$(uname -r) arch=$(uname -m)"
 if [[ -r /proc/device-tree/model ]]; then
     log "board=$(tr -d '\0' < /proc/device-tree/model)"
 fi
-if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
-    log "current librknnrt=$(strings "$LIBRKNNRT_DEST" 2>/dev/null | grep -m1 -oE 'librknnrt version: [0-9]+\.[0-9]+\.[0-9]+' || echo 'version string not found')"
-fi
+_rt_v="$(librknnrt_current_version || true)"
+log "current librknnrt=${_rt_v:-none}"
 
 # verify_sha256 <file> <expected_hex> <label>
 # Hard-fails on mismatch: a corrupted download or a tampered mirror must
@@ -260,12 +268,6 @@ detect_rknpu_driver() {
 
 # -------- (3) librknnrt 2.3.0 pin ----------------------------------------
 
-librknnrt_current_version() {
-    if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
-        strings "$LIBRKNNRT_DEST" | awk '/librknnrt version: / { print $3; exit }'
-    fi
-}
-
 pin_librknnrt() {
     local current
     current="$(librknnrt_current_version || true)"
@@ -356,7 +358,8 @@ install_rkllama() {
         # refuse unadvertised objects) so the verification below sees the
         # same coverage as the re-install path; on failure fall through to
         # the curated error instead of dying on git's raw message.
-        run_as_user git -C "$RKLLAMA_DIR" fetch --quiet origin "$RKLLAMA_REF" 2>/dev/null || true
+        run_as_user git -C "$RKLLAMA_DIR" fetch --quiet origin "$RKLLAMA_REF" 2>/dev/null \
+            || log "note: direct fetch of the pinned ref was refused (normal when the server does not serve unadvertised objects); relying on the refs the clone brought down"
     fi
     # Verify the pinned ref is actually fetchable before checking it out. A
     # fresh clone only has branch/tag refs, so a pin orphaned by a history
