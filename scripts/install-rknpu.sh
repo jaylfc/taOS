@@ -347,7 +347,16 @@ pin_librknnrt() {
         # #1543). The second run only worked because librknnrt was already at
         # 2.3.0 and this whole pin block was skipped. Read to EOF (no early
         # exit) and guard the assignment so a strings/awk hiccup is never fatal.
-        verified="$(strings "$tmp" 2>/dev/null | awk '/librknnrt version: / && !seen { print $3; seen=1 }')" || true
+        # Capture the substitution status so a genuine strings/awk failure is
+        # not silently indistinguishable from "no version string" (which used
+        # to mean only "binutils missing"); warn so a future first-run failure
+        # stays diagnosable.
+        if verified="$(strings "$tmp" 2>/dev/null | awk '/librknnrt version: / && !seen { print $3; seen=1 }')"; then
+            :
+        else
+            warn "strings/awk version probe failed on the downloaded runtime; falling back to the installed path"
+            verified=""
+        fi
         if [[ -z "$verified" ]]; then
             # Fall back to re-reading the installed path (legacy behaviour).
             verified="$(librknnrt_current_version || true)"
