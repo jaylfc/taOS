@@ -10,7 +10,7 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 ## [1.0.0-beta.15] - 2026-07-02
 
 ### Fixed
-- The Rockchip NPU installer no longer fails on fresh installs with "reference is not a tree": the rkllama pin now points at a commit that fresh clones can actually check out, and a stale pin fails with a clear explanation and override instructions instead of a raw git error. Reported by @mandresve (#1527).
+- The Rockchip NPU installer no longer fails on fresh installs with "reference is not a tree": the rkllama pin points at the proven production commit (made reachable for fresh clones again), and a stale pin fails with a clear explanation instead of a raw git error. This also keeps the generated rkllama service startable: the newer rkllama default branch dropped the preload option the service relies on. Reported by @mandresve (#1527, #1529).
 - Reconnecting a comms channel (Telegram/Slack/Discord/email/Matrix/webchat) after a token rotation now stops the previous connector instead of silently leaking its background task, concurrent reconnects for the same agent can no longer orphan a connector, and a malformed Matrix reconnect fails cleanly without tearing down the working connector.
 - The LLM proxy self-heal is more robust: it locates the install root at any venv layout, only trusts our own pyproject when doing so, and its pip fallback installs just the proxy requirements instead of re-resolving every dependency.
 - Seeding the internal driver agents now requires naming each pre-existing handle explicitly to adopt it; a blanket adopt flag is rejected so a handle claimed by someone else can never be vouched for as a side effect.
