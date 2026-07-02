@@ -222,6 +222,47 @@ class TestSetupStatus:
         resp = await client.get("/api/setup/status")
         assert resp.json()["complete"] is False
 
+    async def test_npu_absent_by_default(self, client, app):
+        """No hardware profile (or a non-Rockchip one) hides the NPU step."""
+        # Pin the profile: another test in this class sets a Rockchip profile
+        # on the shared app fixture, and test order must not matter.
+        app.state.hardware_profile = None
+        app.state.config.backends = []
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["npu_present"] is False
+        assert data["npu_backend_running"] is False
+
+    async def test_npu_present_and_backend_state(self, client, app, monkeypatch):
+        """A Rockchip profile surfaces the step; completion mirrors a live
+        rkllama probe (#1535)."""
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+        import tinyagentos.installers.rkllama_installer as rk
+
+        monkeypatch.setattr(rk, "rkllama_is_running", lambda: True)
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["npu_present"] is True
+        assert data["npu_backend_running"] is True
+
+    async def test_npu_present_backend_not_running(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+        import tinyagentos.installers.rkllama_installer as rk
+
+        monkeypatch.setattr(rk, "rkllama_is_running", lambda: False)
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["npu_present"] is True
+        assert data["npu_backend_running"] is False
+
     async def test_dismissed_false_initially(self, client):
         resp = await client.get("/api/setup/status")
         assert resp.json()["dismissed"] is False
