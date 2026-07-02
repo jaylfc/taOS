@@ -118,7 +118,9 @@ class DownloadManager:
             digest = computed_sha256
             if digest is None:
                 digest = hashlib.sha256(task.dest.read_bytes()).hexdigest()
-            if digest != expected_sha256:
+            # Hex digests are case-insensitive; a caller passing an uppercase
+            # expected value must not be treated as a mismatch.
+            if digest.lower() != expected_sha256.lower():
                 return "SHA256 mismatch"
         return None
 
@@ -158,7 +160,11 @@ class DownloadManager:
                     expected_sha256=expected_sha256,
                     progress_cb=_progress,
                 )
-                error = self._validate_download(task, expected_sha256)
+                # torrent.download() already SHA-verified the file internally
+                # (and raised on mismatch), so re-hashing here would just re-read
+                # a multi-GB file to no benefit. Only the cheap non-empty / size
+                # floor is needed on this path.
+                error = self._validate_download(task)
                 if error:
                     task.dest.unlink(missing_ok=True)
                     task.status = "error"
@@ -196,8 +202,19 @@ class DownloadManager:
             async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
                 async with client.stream("GET", task.url) as resp:
                     resp.raise_for_status()
+                    # Content-Length is the size of the ON-THE-WIRE body. When
+                    # the response is content-encoded (gzip/br/deflate/zstd),
+                    # httpx's aiter_bytes() transparently decompresses, so the
+                    # bytes we write to disk are LARGER than Content-Length.
+                    # Treating that as the expected on-disk size would make
+                    # _validate_download flag a perfectly good download as a
+                    # "size mismatch" and delete it, so leave total_bytes at 0
+                    # (unknown) for encoded responses and rely on the SHA check.
                     total = resp.headers.get("content-length")
-                    task.total_bytes = int(total) if total else 0
+                    if total and not resp.headers.get("content-encoding"):
+                        task.total_bytes = int(total)
+                    else:
+                        task.total_bytes = 0
                     with open(task.dest, "wb") as f:
                         async for chunk in resp.aiter_bytes(chunk_size=65536):
                             f.write(chunk)
