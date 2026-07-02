@@ -7,11 +7,6 @@ function renderApp() {
 }
 
 describe("MusicStudioApp", () => {
-  it("renders the app titlebar with name", () => {
-    renderApp();
-    expect(screen.getByText("Music Studio")).toBeDefined();
-  });
-
   it("renders all rail items", () => {
     renderApp();
     const nav = screen.getByRole("navigation", { name: "Music Studio views" });

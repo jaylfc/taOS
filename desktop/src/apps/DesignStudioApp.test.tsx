@@ -7,11 +7,6 @@ function renderApp() {
 }
 
 describe("DesignStudioApp", () => {
-  it("renders the app titlebar", () => {
-    renderApp();
-    expect(screen.getByText("Design Studio")).toBeDefined();
-  });
-
   it("renders all rail items", () => {
     renderApp();
     const nav = screen.getByRole("navigation", { name: "Design Studio views" });

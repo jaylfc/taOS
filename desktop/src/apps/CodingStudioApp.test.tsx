@@ -7,11 +7,6 @@ function renderApp() {
 }
 
 describe("CodingStudioApp", () => {
-  it("renders the app titlebar", () => {
-    renderApp();
-    expect(screen.getByText("Coding Studio")).toBeDefined();
-  });
-
   it("renders all rail items", () => {
     renderApp();
     // Rail buttons use aria-label for exact matching via the nav element

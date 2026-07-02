@@ -62,11 +62,6 @@ export function GameStudioApp({ windowId }: { windowId: string }) {
         }
       `}</style>
 
-      {/* title strip */}
-      <div className="flex h-[46px] flex-none items-center justify-center border-b border-shell-border">
-        <span className="text-[13px] font-semibold tracking-[-0.01em]">Game Studio</span>
-      </div>
-
       <div className="flex min-h-0 flex-1">
         {/* left rail */}
         <nav

@@ -4,11 +4,6 @@ import React from "react";
 import { AppStudioApp } from "./AppStudioApp";
 
 describe("AppStudioApp", () => {
-  it("renders the titlebar with App Studio", () => {
-    render(<AppStudioApp windowId="test" />);
-    expect(screen.getByText("App Studio")).toBeInTheDocument();
-  });
-
   it("renders all rail items", () => {
     const { container } = render(<AppStudioApp windowId="test" />);
     const nav = container.querySelector("nav[aria-label='App Studio views']");

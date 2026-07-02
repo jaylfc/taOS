@@ -18,11 +18,6 @@ export function OfficeSuiteApp({ windowId: _windowId }: { windowId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-shell-bg text-shell-text select-none">
-      {/* title strip */}
-      <div className="flex h-[46px] flex-none items-center justify-center border-b border-shell-border">
-        <span className="text-[13px] font-semibold tracking-[-0.01em]">Office Suite</span>
-      </div>
-
       <div className="flex min-h-0 flex-1">
         {/* left rail */}
         <nav

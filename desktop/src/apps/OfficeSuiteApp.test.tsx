@@ -7,11 +7,6 @@ function renderApp() {
 }
 
 describe("OfficeSuiteApp", () => {
-  it("renders the app titlebar", () => {
-    renderApp();
-    expect(screen.getByText("Office Suite")).toBeDefined();
-  });
-
   it("renders all rail items", () => {
     renderApp();
     const nav = screen.getByRole("navigation", { name: "Office Suite views" });
