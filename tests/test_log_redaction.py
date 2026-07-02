@@ -101,3 +101,50 @@ class TestSafety:
         out = redact_lines(["password=abcdef123456", "all good here"])
         assert out[0] == f"password={PLACEHOLDER}"
         assert out[1] == "all good here"
+
+
+class TestFoldedFindings:
+    """Negative/regression tests for the review folds (base64 bearer, JWT,
+    partial-leak known values, PEM framing, coercion)."""
+
+    def test_base64_bearer_masked_whole(self):
+        # + / = must not truncate the value (AWS/OAuth2 token shape).
+        out = redact("Authorization: Bearer abc123+def/456ghi789=")
+        assert "abc123" not in out
+        assert out == f"Authorization: Bearer {PLACEHOLDER}"
+
+    def test_bare_jwt_masked(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4"
+        out = redact(f"id_token={jwt}")
+        assert "SflKxwRJSMeKKF2QT4" not in out
+
+    def test_google_api_key(self):
+        assert PLACEHOLDER in redact("AIzaSyA0000000000000000000000000000000X")
+
+    def test_stripe_live_key(self):
+        assert PLACEHOLDER in redact("sk_live_0000000000000000abcdef")
+
+    def test_known_value_masks_whole_token(self):
+        # secret is a prefix of a longer id: the whole token must vanish, no
+        # trailing leak, no garbled placeholder.
+        out = redact("request_id=abcdef1234560000", known_values=["abcdef123456"])
+        assert "0000" not in out
+        assert "[REDACTED]0" not in out
+        assert PLACEHOLDER in out
+
+    def test_pem_keeps_framing(self):
+        block = (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            "b3BlbnNzaC1rZXktdjEAAAAA\n"
+            "-----END OPENSSH PRIVATE KEY-----"
+        )
+        out = redact(block)
+        assert "b3BlbnNz" not in out
+        assert "-----BEGIN OPENSSH PRIVATE KEY-----" in out
+        assert "-----END OPENSSH PRIVATE KEY-----" in out
+
+    def test_redact_lines_coerces_non_str(self):
+        out = redact_lines(["password=abcdef123456", None, 42])
+        assert out[0] == f"password={PLACEHOLDER}"
+        assert out[1] == "None"
+        assert out[2] == "42"
