@@ -324,7 +324,7 @@ pin_librknnrt() {
     # the whole install right after the library was correctly replaced and
     # rkllama never got installed (#1543). The cache refresh is best-effort:
     # the library is already at its canonical path.
-    sudo ldconfig || warn "ldconfig exited non-zero after installing librknnrt (harmless on merged /lib layouts; continuing)"
+    sudo ldconfig || warn "ldconfig exited $? after installing librknnrt (its stderr above has the cause; harmless on merged /lib layouts where the runtime resolves by absolute path; continuing)"
 
     # Verify the version string as a belt-and-braces check. The SHA256 above
     # already proved $tmp is byte-for-byte the pinned runtime, so this is
@@ -400,7 +400,15 @@ install_rkllama() {
         # libs; vendor Debian images ship without them and the service then
         # crashloops on "ImportError: libGL.so.1" (#1545). Bookworm+ names the
         # GL runtime libgl1; older releases only have libgl1-mesa-glx.
-        dpkg-query -W libglib2.0-0 >/dev/null 2>&1 || _need+=("libglib2.0-0")
+        # GLib was renamed libglib2.0-0t64 in Ubuntu 24.04 / Debian Trixie;
+        # probe both installed names and add whichever the repos carry.
+        if ! dpkg-query -W libglib2.0-0 >/dev/null 2>&1 && ! dpkg-query -W libglib2.0-0t64 >/dev/null 2>&1; then
+            if [[ -n "$(apt-cache madison libglib2.0-0 2>/dev/null)" ]]; then
+                _need+=("libglib2.0-0")
+            else
+                _need+=("libglib2.0-0t64")
+            fi
+        fi
         dpkg-query -W libsm6 >/dev/null 2>&1 || _need+=("libsm6")
         dpkg-query -W libxext6 >/dev/null 2>&1 || _need+=("libxext6")
         if ! dpkg-query -W libgl1 >/dev/null 2>&1 && ! dpkg-query -W libgl1-mesa-glx >/dev/null 2>&1; then

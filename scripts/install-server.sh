@@ -909,8 +909,18 @@ PY
 # docker-compose-v2. Trying only the Ubuntu name broke Debian Bookworm
 # (vendor Pi images included) with "Unable to locate package" (#1541).
 _apt_install_compose() {
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin 2>/dev/null \
-        || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2
+    local _err
+    if _err=$(sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin 2>&1); then
+        return 0
+    fi
+    # Only fall through to the Ubuntu name when the Debian name simply is not
+    # in the repos; any other apt failure (locks, held packages, resolver)
+    # is real and must reach the operator, not be masked by a second attempt.
+    if ! grep -qi "unable to locate package" <<<"$_err"; then
+        printf '%s\n' "$_err" >&2
+        return 1
+    fi
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2
 }
 
 ensure_docker_for_apps() {
@@ -1286,10 +1296,12 @@ _bundle_base="https://github.com/jaylfc/taOS/releases/download/bundle-latest"
 # (#1544). Drop to the owning user, matching the checkout-update logic above.
 _tree_owner="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
 _git_ro() {
+    # safe.directory is passed explicitly so a TOCTOU owner change between the
+    # stat above and this call cannot re-trip the dubious-ownership guard.
     if [[ "$(id -u)" == "0" && -n "$_tree_owner" && "$_tree_owner" != "root" ]]; then
-        sudo -u "$_tree_owner" git -C "$INSTALL_DIR" "$@"
+        sudo -u "$_tree_owner" git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"
     else
-        git -C "$INSTALL_DIR" "$@"
+        git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"
     fi
 }
 _desktop_tree="$(_git_ro rev-parse HEAD:desktop 2>/dev/null || echo "")"
@@ -1300,7 +1312,7 @@ _desktop_tree="$(_git_ro rev-parse HEAD:desktop 2>/dev/null || echo "")"
 # for logs). Returns 0 only when a tree-matching, checksum-verified bundle was
 # installed into static/desktop/.
 _try_prebuilt_bundle() {
-    local _base="$1" _label="$2" _remote_tree _stage _tarball _exp_sha _sha_cmd _own
+    local _base="$1" _label="$2" _remote_tree _stage _tarball _exp_sha _sha_cmd _own _old
     _remote_tree="$(curl -fsSL --max-time 20 "$_base/desktop-tree.txt" 2>/dev/null | tr -d '[:space:]' || echo "")"
     if [[ -z "$_remote_tree" ]]; then
         # Say WHY there is no prebuilt: a transient network failure here used
@@ -1319,18 +1331,45 @@ _try_prebuilt_bundle() {
     # rename and avoids writing through an attacker-planted symlink while
     # running as root in the common `curl | sudo bash` invocation.
     _stage="$(mktemp -d "$INSTALL_DIR/static/.taos-bundle.XXXXXX")"
-    _tarball="$(mktemp "$INSTALL_DIR/static/.taos-bundle.XXXXXX.tgz")"
+    # BSD/macOS mktemp requires the template to END in Xs (no suffix allowed).
+    _tarball="$(mktemp "$INSTALL_DIR/static/.taos-bundle-tar.XXXXXX")"
     # Verify the download against the CI-published SHA256 before extracting,
     # so a corrupted or tampered tarball is rejected (we fall back to a local
-    # build). sha256sum on Linux, shasum -a 256 on macOS.
+    # build). sha256sum on Linux, shasum -a 256 on macOS; with neither, say
+    # explicitly that VERIFICATION was impossible (not "download failed").
     _exp_sha="$(curl -fsSL --max-time 20 "$_base/desktop-bundle.sha256" 2>/dev/null | tr -d '[:space:]' || echo "")"
-    _sha_cmd="sha256sum"; command -v sha256sum >/dev/null 2>&1 || _sha_cmd="shasum -a 256"
+    _sha_cmd="sha256sum"
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        if command -v shasum >/dev/null 2>&1; then
+            _sha_cmd="shasum -a 256"
+        else
+            warn "no sha256 tool available — cannot verify the prebuilt bundle, skipping it"
+            rm -rf "$_stage" "$_tarball"
+            return 1
+        fi
+    fi
     if curl -fsSL --max-time 120 "$_base/desktop-bundle.tar.gz" -o "$_tarball" \
        && [[ -n "$_exp_sha" && "$($_sha_cmd "$_tarball" | awk '{print $1}')" == "$_exp_sha" ]] \
        && tar -C "$_stage" -xzf "$_tarball" \
        && [[ -f "$_stage/desktop/index.html" ]]; then
-        rm -rf "$INSTALL_DIR/static/desktop"
-        mv "$_stage/desktop" "$INSTALL_DIR/static/desktop"
+        # Swap via rename-out / rename-in (same filesystem, so each mv is an
+        # atomic rename): a failed swap must never leave the install with NO
+        # desktop at all, which is what delete-then-move risked.
+        _old=""
+        if [[ -d "$INSTALL_DIR/static/desktop" ]]; then
+            _old="$_stage/desktop.old"
+            if ! mv "$INSTALL_DIR/static/desktop" "$_old"; then
+                warn "could not move the current desktop aside — leaving it in place"
+                rm -rf "$_stage" "$_tarball"
+                return 1
+            fi
+        fi
+        if ! mv "$_stage/desktop" "$INSTALL_DIR/static/desktop"; then
+            [[ -n "$_old" ]] && mv "$_old" "$INSTALL_DIR/static/desktop" 2>/dev/null
+            warn "installing the prebuilt bundle failed during the swap — previous desktop restored"
+            rm -rf "$_stage" "$_tarball"
+            return 1
+        fi
         # Match the repo owner so a later in-app rebuild (run as that user) can
         # still write here; only meaningful when installing as root. Trailing
         # colon sets the owner's primary group (do not assume a group named
@@ -1343,7 +1382,7 @@ _try_prebuilt_bundle() {
         log "prebuilt desktop bundle installed into static/desktop/ (from $_label)"
         return 0
     fi
-    warn "prebuilt bundle download/extract from $_label failed"
+    warn "prebuilt bundle from $_label failed (download error, checksum mismatch, or bad archive)"
     rm -rf "$_stage" "$_tarball"
     return 1
 }
@@ -1366,6 +1405,7 @@ fi
 if [[ "$_prebuilt_done" == "0" ]]; then
     if command -v npm >/dev/null 2>&1; then
         log "building desktop SPA locally (no matching prebuilt bundle for this source)"
+        log "  note: the vite build needs roughly 2-4GB of free memory; on small boards close other services first"
         if ! (cd "$INSTALL_DIR/desktop" && npm install --silent && npm run build); then
             die "desktop SPA build failed. This almost always means the machine ran out of memory: the vite build needs roughly 2-4GB free. On WSL the Linux VM is capped at about half of Windows RAM by default, so add to C:\\Users\\<you>\\.wslconfig:
     [wsl2]
