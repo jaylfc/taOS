@@ -9,6 +9,8 @@ interface SetupStatus {
   taos_model_set: boolean;
   has_agent: boolean;
   memory_enabled: boolean;
+  npu_present?: boolean;
+  npu_backend_running?: boolean;
   dismissed: boolean;
   complete: boolean;
 }
@@ -52,6 +54,16 @@ const STEPS: Step[] = [
   },
 ];
 
+// Shown only when the board has a Rockchip NPU (#1535): the backend that
+// serves on-device models is a Store install, and without this step nothing
+// in the setup flow ever surfaces it.
+const NPU_STEP: Step = {
+  key: "npu_backend_running",
+  label: "Install the NPU backend",
+  detail: "Install rkllama from the Store to run models on this device's NPU",
+  appId: "store",
+};
+
 export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [dismissing, setDismissing] = useState(false);
@@ -84,7 +96,8 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
 
   if (!status || status.dismissed || status.complete) return null;
 
-  const doneCount = STEPS.filter((s) => Boolean(status[s.key])).length;
+  const steps = status.npu_present ? [...STEPS, NPU_STEP] : STEPS;
+  const doneCount = steps.filter((s) => Boolean(status[s.key])).length;
 
   return (
     <div className="border-b border-white/10">
@@ -93,7 +106,7 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-shell-text">Get started</span>
           <span className="text-[10px] text-shell-text-tertiary bg-white/5 rounded-full px-1.5 py-0.5">
-            {doneCount}/{STEPS.length}
+            {doneCount}/{steps.length}
           </span>
         </div>
         <button
@@ -109,7 +122,7 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
 
       {/* Steps */}
       <ul role="list" className="pb-2">
-        {STEPS.map((step) => {
+        {steps.map((step) => {
           const done = Boolean(status[step.key]);
           return (
             <li key={step.key}>

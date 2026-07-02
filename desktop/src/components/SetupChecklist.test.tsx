@@ -175,4 +175,32 @@ describe("SetupChecklist", () => {
     render(<SetupChecklist />);
     expect(await screen.findByRole("list")).toBeInTheDocument();
   });
+
+  it("hides the NPU step on boards without an NPU", async () => {
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    await screen.findByText("Get started");
+    expect(screen.queryByText("Install the NPU backend")).toBeNull();
+    expect(screen.getByText("0/5")).toBeInTheDocument();
+  });
+
+  it("shows the NPU step as a sixth item when an NPU is present", async () => {
+    mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: false });
+    render(<SetupChecklist />);
+    expect(await screen.findByText("Install the NPU backend")).toBeInTheDocument();
+    expect(
+      screen.getByText("Install rkllama from the Store to run models on this device's NPU"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("0/6")).toBeInTheDocument();
+  });
+
+  it("marks the NPU step complete when the backend is running", async () => {
+    mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: true });
+    render(<SetupChecklist />);
+    const doneStep = await screen.findByRole("button", {
+      name: "Install the NPU backend — complete",
+    });
+    expect(doneStep).toBeInTheDocument();
+    expect(screen.getByText("1/6")).toBeInTheDocument();
+  });
 });
