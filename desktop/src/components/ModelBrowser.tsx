@@ -103,7 +103,7 @@ export function ModelBrowser({
     "compatible",
   );
   const [downloading, setDownloading] = useState<
-    Record<string, { percent: number; status: string }>
+    Record<string, { percent: number; status: string; error?: string }>
   >({});
   const [loadedModels, setLoadedModels] = useState<LoadedModel[]>([]);
 
@@ -243,11 +243,16 @@ export function ModelBrowser({
         });
         const data = await res.json();
         if (!data.download_id) {
-          setDownloading((prev) => {
-            const n = { ...prev };
-            delete n[key];
-            return n;
-          });
+          // Keep the failure on screen: silently clearing here made a
+          // rejected install look like an instant success (#1548).
+          setDownloading((prev) => ({
+            ...prev,
+            [key]: {
+              percent: 0,
+              status: "error",
+              error: data.error || data.detail || "The download could not be started",
+            },
+          }));
           return;
         }
         const interval = setInterval(async () => {
@@ -272,11 +277,17 @@ export function ModelBrowser({
               onModelDownloaded?.(modelId, variantId);
             } else if (task.status === "error") {
               clearInterval(interval);
-              setDownloading((prev) => {
-                const n = { ...prev };
-                delete n[key];
-                return n;
-              });
+              // A failed download must stay visible with its cause; clearing
+              // it made an immediate failure indistinguishable from a
+              // completed install (#1548).
+              setDownloading((prev) => ({
+                ...prev,
+                [key]: {
+                  percent: task.percent ?? 0,
+                  status: "error",
+                  error: task.error || "Download failed",
+                },
+              }));
             }
           } catch {
             clearInterval(interval);
@@ -515,7 +526,31 @@ export function ModelBrowser({
                               </div>
                             </div>
                             <div className="shrink-0">
-                              {dl ? (
+                              {dl && dl.status === "error" ? (
+                                <div
+                                  className="flex items-center gap-2 max-w-[260px]"
+                                  role="alert"
+                                >
+                                  <span
+                                    className="text-[10px] text-red-400 flex items-center gap-1 truncate"
+                                    title={dl.error}
+                                  >
+                                    <AlertTriangle size={10} className="shrink-0" />
+                                    <span className="truncate">
+                                      {dl.error || "Download failed"}
+                                    </span>
+                                  </span>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      startDownload(model.id, variant.id)
+                                    }
+                                  >
+                                    Retry
+                                  </Button>
+                                </div>
+                              ) : dl ? (
                                 <div className="flex items-center gap-2 text-xs text-shell-text-secondary">
                                   <Loader2
                                     size={12}

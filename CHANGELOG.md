@@ -7,6 +7,9 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Fixed
+- Models: a failed model download no longer looks like an instant successful install. The failure now stays on the model card with the actual cause from the backend (for example a checksum mismatch or an unreachable download host) and a Retry button, instead of the progress UI silently disappearing (#1548).
+
 ## [1.0.0-beta.16] - 2026-07-02
 
 ### Added
