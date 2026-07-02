@@ -71,9 +71,12 @@ if [[ -r /proc/device-tree/model ]]; then
 fi
 command -v python3 >/dev/null 2>&1 && log "python3=$(python3 --version 2>&1)"
 # Report free space on the filesystem the install actually targets;
-# INSTALL_DIR may not exist yet on a fresh box, so fall back to /.
+# INSTALL_DIR may not exist yet on a fresh box, so walk up to its nearest
+# existing ancestor (falling back to / masks a full /opt-style volume).
 _df_target="$INSTALL_DIR"
-[[ -d "$_df_target" ]] || _df_target="/"
+while [[ ! -d "$_df_target" && "$_df_target" != "/" ]]; do
+    _df_target="$(dirname "$_df_target")"
+done
 log "disk_free=$(df -Ph "$_df_target" 2>/dev/null | awk 'NR==2 {print $4}' || echo unknown) (at $_df_target)"
 log "install_dir=$INSTALL_DIR branch=$BRANCH port=$TAOS_PORT proxy_port=$TAOS_BROWSER_PROXY_PORT qmd_port=$TAOS_QMD_PORT"
 

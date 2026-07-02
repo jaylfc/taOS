@@ -113,8 +113,14 @@ log "kernel=$(uname -r) arch=$(uname -m)"
 if [[ -r /proc/device-tree/model ]]; then
     log "board=$(tr -d '\0' < /proc/device-tree/model)"
 fi
-_rt_v="$(librknnrt_current_version || true)"
-log "current librknnrt=${_rt_v:-none}"
+if [[ ! -f "$LIBRKNNRT_DEST" ]]; then
+    log "current librknnrt=not installed"
+elif ! command -v strings >/dev/null 2>&1; then
+    log "current librknnrt=unknown (strings/binutils not installed yet)"
+else
+    _rt_v="$(librknnrt_current_version || true)"
+    log "current librknnrt=${_rt_v:-version string not found}"
+fi
 
 # verify_sha256 <file> <expected_hex> <label>
 # Hard-fails on mismatch: a corrupted download or a tampered mirror must
@@ -358,8 +364,8 @@ install_rkllama() {
         # refuse unadvertised objects) so the verification below sees the
         # same coverage as the re-install path; on failure fall through to
         # the curated error instead of dying on git's raw message.
-        run_as_user git -C "$RKLLAMA_DIR" fetch --quiet origin "$RKLLAMA_REF" 2>/dev/null \
-            || log "note: direct fetch of the pinned ref was refused (normal when the server does not serve unadvertised objects); relying on the refs the clone brought down"
+        _fetch_err="$(run_as_user git -C "$RKLLAMA_DIR" fetch --quiet origin "$RKLLAMA_REF" 2>&1)" \
+            || log "note: direct fetch of the pinned ref failed (${_fetch_err:-no detail}); relying on the refs the clone brought down"
     fi
     # Verify the pinned ref is actually fetchable before checking it out. A
     # fresh clone only has branch/tag refs, so a pin orphaned by a history
