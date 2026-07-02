@@ -336,6 +336,13 @@ install_rkllama() {
         log "cloning $RKLLAMA_REPO -> $RKLLAMA_DIR"
         run_as_user mkdir -p "$(dirname "$RKLLAMA_DIR")"
         run_as_user git clone --quiet "$RKLLAMA_REPO" "$RKLLAMA_DIR"
+        # A clone brings down all branches and tags, but an overridden
+        # TAOS_RKLLAMA_REF can be a SHA reachable from none of them. Try to
+        # fetch the configured ref explicitly (best-effort: some servers
+        # refuse unadvertised objects) so the verification below sees the
+        # same coverage as the re-install path; on failure fall through to
+        # the curated error instead of dying on git's raw message.
+        run_as_user git -C "$RKLLAMA_DIR" fetch --quiet origin "$RKLLAMA_REF" 2>/dev/null || true
     fi
     # Verify the pinned ref is actually fetchable before checking it out. A
     # fresh clone only has branch/tag refs, so a pin orphaned by a history
@@ -344,7 +351,7 @@ install_rkllama() {
     # override, rather than silently falling back to a moving branch (which
     # would break install reproducibility).
     if ! run_as_user git -C "$RKLLAMA_DIR" cat-file -e "${RKLLAMA_REF}^{commit}" 2>/dev/null; then
-        die "pinned rkllama ref ${RKLLAMA_REF:0:12} is not reachable from any branch of $RKLLAMA_REPO (the fork's history may have been rewritten). Update taOS for a current pin, or override with TAOS_RKLLAMA_REF=<ref>."
+        die "pinned rkllama ref ${RKLLAMA_REF:0:12} is not reachable from any branch or tag of $RKLLAMA_REPO (the fork's history may have been rewritten). Update taOS for a current pin, or override with TAOS_RKLLAMA_REF=<ref>."
     fi
     run_as_user git -C "$RKLLAMA_DIR" checkout --quiet "$RKLLAMA_REF"
     log "rkllama pinned to $(run_as_user git -C "$RKLLAMA_DIR" rev-parse --short HEAD)"
