@@ -65,7 +65,7 @@ log "os=$os_name arch=$arch"
 if [[ -r /etc/os-release ]]; then
     log "distro=$( . /etc/os-release; echo "${PRETTY_NAME:-$ID}" )"
 fi
-log "kernel=$(uname -r) arch=$(uname -m)"
+log "kernel=$(uname -r)"
 if [[ -r /proc/device-tree/model ]]; then
     log "board=$(tr -d '\0' < /proc/device-tree/model)"
 fi
