@@ -347,15 +347,20 @@ async def resume_agents_from_notes(app_state) -> None:
             await save_config_locked(config, config.config_path)
         except Exception:
             logger.exception("persisting agent unpauses failed")
-            await notif.add(
-                title="Agent resume not persisted",
-                message=(
-                    "Agents were resumed but the config write failed; they may "
-                    "show as paused again after the next restart."
-                ),
-                level="warning",
-                source="system.lifecycle",
-            )
+            try:
+                await notif.add(
+                    title="Agent resume not persisted",
+                    message=(
+                        "Agents were resumed but the config write failed; they may "
+                        "show as paused again after the next restart."
+                    ),
+                    level="warning",
+                    source="system.lifecycle",
+                )
+            except Exception:
+                # The log line above already carries the failure; a broken
+                # notification store must not abort the rest of the resume.
+                logger.exception("could not post the persist-failure warning")
         else:
             # Notes go only after the unpauses are persisted (see _unpause).
             for _, np_ in finalize:
@@ -427,9 +432,9 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
         try:
             await notif.add(
                 title="Some agents are still paused",
-            message=(
-                f"Could not resume after the restart: {', '.join(sorted(remaining))}. "
-                "They stay paused; check the agent containers, then unpause from the Agents app."
+                message=(
+                    f"Could not resume after the restart: {', '.join(sorted(remaining))}. "
+                    "They stay paused; check the agent containers, then unpause from the Agents app."
                 ),
                 level="warning",
                 source="system.lifecycle",
