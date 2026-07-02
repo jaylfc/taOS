@@ -67,8 +67,14 @@ if [[ -d "$REPO_ROOT/app-catalog" ]]; then
   cp -R "$REPO_ROOT/app-catalog" "$CONTENTS/Resources/taos/app-catalog"
 fi
 
-# Frontend
-cp -R "$STAGING/frontend" "$CONTENTS/Resources/frontend"
+# Frontend. The server serves PROJECT_DIR/static (= Resources/taos/static):
+# shared assets (icons, wallpapers, PWA manifests) come from the repo static/
+# dir and the SPA build goes to static/desktop (tinyagentos/routes/desktop.py
+# SPA_DIR). Resources/frontend was never read by the server.
+mkdir -p "$CONTENTS/Resources/taos/static"
+cp -R "$REPO_ROOT/static"/. "$CONTENTS/Resources/taos/static/"
+rm -rf "$CONTENTS/Resources/taos/static/desktop"
+cp -R "$STAGING/frontend" "$CONTENTS/Resources/taos/static/desktop"
 
 # Apple container CLI + libexec plugins (image/network/runtime)
 mkdir -p "$CONTENTS/Resources/bin"
