@@ -230,7 +230,7 @@ class TestSharedFolderTraversal:
         assert not (folder_mgr.storage_dir.parent / "evil").exists()
         # every escape variant normalizes to the same contained basename
         for variant in ("../evil", "/etc/evil", "..\\evil"):
-            assert folder_mgr._safe_label(variant).endswith("evil")
+            assert folder_mgr._safe_label(variant) == "evil"
 
     async def test_create_folder_flattens_slashy_name(self, folder_mgr):
         # A nested-looking name collapses to its basename, staying contained.

@@ -39,6 +39,9 @@ async def create_shared_folder(request: Request, body: CreateFolderRequest):
             description=body.description,
             agents=body.agents,
         )
+    except ValueError:
+        # _safe_label rejected a traversal name: clean 400, not a 500 + trace.
+        return JSONResponse({"error": "Invalid folder name"}, status_code=400)
     except Exception as e:
         if "UNIQUE constraint" in str(e):
             return JSONResponse({"error": f"Folder '{body.name}' already exists"}, status_code=409)
@@ -58,7 +61,10 @@ async def delete_shared_folder(request: Request, folder_id: int):
 @router.get("/api/shared-folders/{name}/files")
 async def list_shared_folder_files(request: Request, name: str):
     mgr = request.app.state.shared_folders
-    return mgr.list_files(name)
+    try:
+        return mgr.list_files(name)
+    except ValueError:
+        return JSONResponse({"error": "Invalid folder name"}, status_code=400)
 
 
 @router.post("/api/shared-folders/{name}/upload")

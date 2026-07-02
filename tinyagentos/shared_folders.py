@@ -49,7 +49,10 @@ class SharedFolderManager(BaseStore):
         etc.). A shared-folder name and an uploaded filename are both flat
         labels, so stripping to the basename is the correct, lossless guard.
         """
-        safe = Path(str(label)).name
+        # Normalize backslashes to forward slashes first: on POSIX, Path only
+        # splits on "/", so a Windows-style "..\evil" would otherwise survive
+        # as a literal name. Doing it here makes the guard platform-independent.
+        safe = Path(str(label).replace("\\", "/")).name
         if not safe or safe in (".", ".."):
             raise ValueError(f"invalid shared-folder name: {label!r}")
         return safe
