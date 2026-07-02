@@ -264,10 +264,12 @@ def _load_or_synthesize_note(note_path: Path) -> dict:
         except Exception:
             logger.warning("unreadable resume note at %s; synthesizing", note_path)
     # No controller-side note: the framework handled /prepare-for-shutdown
-    # itself and keeps its own state, so a minimal note is enough.
+    # itself and keeps its own state, so a minimal note is enough. Field
+    # shapes mirror _write_controller_note (paused_at is an int there) so a
+    # framework parsing either source sees a single contract.
     return {
         "reason": "restart",
-        "paused_at": None,
+        "paused_at": int(time.time()),
         "last_user_msg": None,
         "in_progress_task": None,
         "next_step_hint": "controller restarted; resume normal operation",
@@ -284,13 +286,16 @@ async def _post_resume(host: str, port: int, note: dict) -> bool:
         return False
 
 
-async def _unpause(app_state, agent: dict, note_path: Path) -> None:
+async def _unpause(app_state, agent: dict, note_path: Path | None) -> None:
     agent["paused"] = False
-    note_path.unlink(missing_ok=True)
     from tinyagentos.config import save_config_locked
 
     config = app_state.config
     await save_config_locked(config, config.config_path)
+    # Delete the note only AFTER the unpause is persisted: a failed config
+    # write must never leave paused=True with the recovery note already gone.
+    if note_path is not None:
+        note_path.unlink(missing_ok=True)
 
 
 async def resume_agents_from_notes(app_state) -> None:
@@ -304,6 +309,9 @@ async def resume_agents_from_notes(app_state) -> None:
 
     resumed: list[str] = []
     pending: list[str] = []
+    # (agent, note_path-to-delete) pairs; flags flip and persist in ONE locked
+    # config write below instead of one write per agent.
+    finalize: list[tuple[dict, Path | None]] = []
 
     for agent in paused:
         name = agent["name"]
@@ -313,17 +321,29 @@ async def resume_agents_from_notes(app_state) -> None:
 
         if not host:
             # Nothing to call: the pause flag is the only thing holding the
-            # agent back, so clear it.
-            await _unpause(app_state, agent, note_path)
+            # agent back, so clear it. Keep any note on disk: nothing consumed
+            # it, and it may carry state worth inspecting.
+            finalize.append((agent, None))
             resumed.append(name)
             continue
 
         note = _load_or_synthesize_note(note_path)
         if await _post_resume(host, port, note):
-            await _unpause(app_state, agent, note_path)
+            finalize.append((agent, note_path))
             resumed.append(name)
         else:
             pending.append(name)
+
+    if finalize:
+        for agent, _ in finalize:
+            agent["paused"] = False
+        from tinyagentos.config import save_config_locked
+
+        await save_config_locked(config, config.config_path)
+        # Notes go only after the unpauses are persisted (see _unpause).
+        for _, np_ in finalize:
+            if np_ is not None:
+                np_.unlink(missing_ok=True)
 
     if resumed:
         await notif.add(
@@ -354,22 +374,29 @@ async def _resume_retry_loop(app_state, names: list[str]) -> None:
 
     while remaining and time.monotonic() < deadline:
         await asyncio.sleep(_RESUME_RETRY_INTERVAL_S)
-        for agent in list(config.agents):
-            name = agent["name"]
-            if name not in remaining or not agent.get("paused", False):
-                remaining.discard(name)
-                continue
-            note_path = data_dir / "agent-memory" / name / "resume_note.json"
-            note = _load_or_synthesize_note(note_path)
-            if await _post_resume(agent.get("host", ""), agent.get("port", 8080), note):
-                await _unpause(app_state, agent, note_path)
-                remaining.discard(name)
-                await notif.add(
-                    title=f"Agent {name} resumed",
-                    message="Resumed after the controller restart (agent took a while to come back up).",
-                    level="info",
-                    source="system.lifecycle",
-                )
+        by_name = {a["name"]: a for a in config.agents}
+        for name in list(remaining):
+            # Any raise past this point (config write, notification store)
+            # would kill the loop and re-create the silent pause this fix
+            # exists to remove; log and keep going instead.
+            try:
+                agent = by_name.get(name)
+                if agent is None or not agent.get("paused", False):
+                    remaining.discard(name)
+                    continue
+                note_path = data_dir / "agent-memory" / name / "resume_note.json"
+                note = _load_or_synthesize_note(note_path)
+                if await _post_resume(agent.get("host", ""), agent.get("port", 8080), note):
+                    await _unpause(app_state, agent, note_path)
+                    remaining.discard(name)
+                    await notif.add(
+                        title=f"Agent {name} resumed",
+                        message="Resumed after the controller restart (agent took a while to come back up).",
+                        level="info",
+                        source="system.lifecycle",
+                    )
+            except Exception:
+                logger.exception("resume retry for agent %s failed; will retry", name)
 
     if remaining:
         await notif.add(

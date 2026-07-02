@@ -61,12 +61,19 @@ class TestResumeAgentsFromNotes:
 
     @pytest.mark.asyncio
     async def test_unpauses_hostless_agent_directly(self, tmp_path):
+        """Hostless agents unpause without a /resume call, and any note on
+        disk is preserved (nothing consumed it)."""
         agent = {"name": "wkrlan1", "host": "", "paused": True}
         state = _app_state(tmp_path, [agent])
+        note_dir = tmp_path / "agent-memory" / "wkrlan1"
+        note_dir.mkdir(parents=True)
+        note_file = note_dir / "resume_note.json"
+        note_file.write_text(json.dumps({"reason": "pause"}))
 
         await ro.resume_agents_from_notes(state)
 
         assert agent["paused"] is False
+        assert note_file.exists()
 
     @pytest.mark.asyncio
     async def test_uses_existing_note_when_present(self, tmp_path, monkeypatch):
