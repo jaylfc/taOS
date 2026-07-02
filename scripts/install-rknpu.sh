@@ -351,11 +351,16 @@ pin_librknnrt() {
         # not silently indistinguishable from "no version string" (which used
         # to mean only "binutils missing"); warn so a future first-run failure
         # stays diagnosable.
-        if verified="$(strings "$tmp" 2>/dev/null | awk '/librknnrt version: / && !seen { print $3; seen=1 }')"; then
+        # Do NOT swallow strings' stderr: if the probe fails (truncated
+        # download, bad perms, corrupted ELF) its real error is the diagnostic,
+        # so let it through to the log alongside the warn below. On a valid
+        # runtime strings is quiet on stderr, so this adds no normal-path noise.
+        if verified="$(strings "$tmp" | awk '/librknnrt version: / && !seen { print $3; seen=1 }')"; then
             :
         else
+            # A failed substitution already leaves $verified empty, so no reset
+            # is needed; the fallback below re-reads the installed path.
             warn "strings/awk version probe failed on the downloaded runtime; falling back to the installed path"
-            verified=""
         fi
         if [[ -z "$verified" ]]; then
             # Fall back to re-reading the installed path (legacy behaviour).
