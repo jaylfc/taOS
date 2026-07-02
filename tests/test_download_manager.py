@@ -315,6 +315,23 @@ class TestDownloadHttp:
         assert dest.read_bytes() == data
 
     @pytest.mark.asyncio
+    async def test_download_empty_body_marks_error_not_complete(self, dm, tmp_path):
+        """A 0-byte response body (e.g. an error page served with a 200,
+        or a stream that closes immediately) must not be reported as a
+        complete download."""
+        dest = tmp_path / "out.bin"
+        task = DownloadTask(id="dl", url="http://example.com/f.bin", dest=dest)
+        mock_resp = self._make_async_context_manager_mock(b"", None)
+        mock_client = self._make_mock_client(mock_resp)
+
+        with patch("tinyagentos.download_manager.httpx.AsyncClient", return_value=mock_client):
+            await dm._download(task, expected_sha256=None)
+
+        assert task.status == "error"
+        assert task.error == "download produced no data"
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
     async def test_download_no_content_length(self, dm, tmp_path):
         data = b"no content length"
         dest = tmp_path / "out.bin"
@@ -391,6 +408,7 @@ class TestDownloadWithFallback:
     async def test_torrent_success_path(self, dm, tmp_path):
         dest = tmp_path / "model.bin"
         task = DownloadTask(id="dl", url="http://example.com/m.bin", dest=dest)
+        data = b"z" * 999
 
         fake_torrent = AsyncMock()
         fake_progress_task = MagicMock()
@@ -398,6 +416,7 @@ class TestDownloadWithFallback:
         fake_progress_task.downloaded_bytes = 999
 
         async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb):
+            dest.write_bytes(data)
             progress_cb(fake_progress_task)
 
         fake_torrent.download = mock_download
@@ -414,6 +433,62 @@ class TestDownloadWithFallback:
         assert task.total_bytes == 999
         assert task.downloaded_bytes == 999
         assert task.completed_at > 0
+        assert dest.read_bytes() == data
+
+    @pytest.mark.asyncio
+    async def test_torrent_success_reported_but_no_file_marks_error(self, dm, tmp_path):
+        """Guards against the false-complete bug: the torrent swarm can
+        report a clean finish via progress_cb while writing nothing (or
+        an empty file) to dest. That must not be reported as complete."""
+        dest = tmp_path / "model.bin"
+        task = DownloadTask(id="dl", url="http://example.com/m.bin", dest=dest)
+
+        fake_torrent = AsyncMock()
+        fake_progress_task = MagicMock()
+        fake_progress_task.total_bytes = 999
+        fake_progress_task.downloaded_bytes = 999
+
+        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb):
+            # never writes dest, just reports progress as if it finished
+            progress_cb(fake_progress_task)
+
+        fake_torrent.download = mock_download
+
+        with patch.object(dm, "_get_torrent_downloader", return_value=fake_torrent):
+            await dm._download_with_fallback(
+                task,
+                expected_sha256=None,
+                magnet="magnet:?xt=urn:btih:abc",
+                license_allows_redistribution=True,
+            )
+
+        assert task.status == "error"
+        assert task.error == "download produced no data"
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
+    async def test_torrent_success_reported_but_empty_file_marks_error(self, dm, tmp_path):
+        dest = tmp_path / "model.bin"
+        task = DownloadTask(id="dl", url="http://example.com/m.bin", dest=dest)
+
+        fake_torrent = AsyncMock()
+
+        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb):
+            dest.write_bytes(b"")
+
+        fake_torrent.download = mock_download
+
+        with patch.object(dm, "_get_torrent_downloader", return_value=fake_torrent):
+            await dm._download_with_fallback(
+                task,
+                expected_sha256=None,
+                magnet="magnet:?xt=urn:btih:abc",
+                license_allows_redistribution=True,
+            )
+
+        assert task.status == "error"
+        assert task.error == "download produced no data"
+        assert not dest.exists()
 
     @pytest.mark.asyncio
     async def test_torrent_failure_falls_back_to_http(self, dm, tmp_path):

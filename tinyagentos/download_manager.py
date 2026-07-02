@@ -97,6 +97,31 @@ class DownloadManager:
     def list_all(self) -> list[DownloadTask]:
         return list(self._tasks.values())
 
+    def _validate_download(
+        self,
+        task: DownloadTask,
+        expected_sha256: str | None = None,
+        computed_sha256: str | None = None,
+    ) -> str | None:
+        """Check a finished download before it is marked complete.
+
+        Returns None if the download is valid, or an error message
+        describing why it isn't. Applies to both the torrent and HTTP
+        paths so neither can mark a task complete when nothing (or the
+        wrong thing) was actually written to disk.
+        """
+        if not task.dest.exists() or task.dest.stat().st_size == 0:
+            return "download produced no data"
+        if task.total_bytes and task.dest.stat().st_size != task.total_bytes:
+            return "size mismatch"
+        if expected_sha256:
+            digest = computed_sha256
+            if digest is None:
+                digest = hashlib.sha256(task.dest.read_bytes()).hexdigest()
+            if digest != expected_sha256:
+                return "SHA256 mismatch"
+        return None
+
     async def _download_with_fallback(
         self,
         task: DownloadTask,
@@ -133,6 +158,17 @@ class DownloadManager:
                     expected_sha256=expected_sha256,
                     progress_cb=_progress,
                 )
+                error = self._validate_download(task, expected_sha256)
+                if error:
+                    task.dest.unlink(missing_ok=True)
+                    task.status = "error"
+                    task.error = error
+                    logger.error(
+                        "Torrent download for %s produced an invalid result (%s)",
+                        task.id,
+                        error,
+                    )
+                    return
                 task.status = "complete"
                 task.completed_at = time.time()
                 logger.info("Downloaded %s via torrent swarm", task.id)
@@ -167,10 +203,11 @@ class DownloadManager:
                             f.write(chunk)
                             sha.update(chunk)
                             task.downloaded_bytes += len(chunk)
-            if expected_sha256 and sha.hexdigest() != expected_sha256:
+            error = self._validate_download(task, expected_sha256, computed_sha256=sha.hexdigest())
+            if error:
                 task.dest.unlink(missing_ok=True)
                 task.status = "error"
-                task.error = "SHA256 mismatch"
+                task.error = error
             else:
                 task.status = "complete"
                 task.completed_at = time.time()
