@@ -259,6 +259,11 @@ export function ModelBrowser({
           try {
             const pr = await fetch(`/api/models/downloads/${data.download_id}`);
             const task = await pr.json();
+            // A proxy error page or empty body must land in the catch below
+            // (which surfaces an error), not TypeError into a stuck spinner.
+            if (!task || typeof task !== "object") {
+              throw new Error("invalid poll response");
+            }
             setDownloading((prev) => ({
               ...prev,
               [key]: {
@@ -285,12 +290,24 @@ export function ModelBrowser({
                 [key]: {
                   percent: task.percent ?? 0,
                   status: "error",
+                  // || not ??: the backend initialises error to an empty
+                  // string, and an empty alert helps nobody.
                   error: task.error || "Download failed",
                 },
               }));
             }
           } catch {
+            // Losing the poll (network blip, proxy error page) must not
+            // strand a spinner with no outcome; surface it as an error.
             clearInterval(interval);
+            setDownloading((prev) => ({
+              ...prev,
+              [key]: {
+                percent: 0,
+                status: "error",
+                error: "Lost contact with the download; retry to continue",
+              },
+            }));
           }
         }, 2000);
       } catch {

@@ -700,16 +700,33 @@ ensure_container_runtime() {
         esac
         return 0
     fi
+    # A pre-existing Docker/podman (vendor Pi images often ship Docker) is a
+    # usable runtime, but agent LXC deploys prefer incus — and returning early
+    # here meant incus was never installed on such images, leaving the user to
+    # discover it from a later group-setup warning and install it by hand
+    # (#1546). Install incus as well, except on WSL (where Docker is the sane
+    # default) or with TAOS_NO_INCUS=1.
+    local _other_runtime=""
     if command -v docker >/dev/null 2>&1; then
+        _other_runtime="docker"
         log "container runtime: docker $(docker --version 2>/dev/null | head -1) — ok"
-        return 0
-    fi
-    if command -v podman >/dev/null 2>&1; then
+    elif command -v podman >/dev/null 2>&1; then
+        _other_runtime="podman"
         log "container runtime: podman $(podman --version 2>/dev/null | head -1) — ok"
-        return 0
     fi
-
-    log "no container runtime found — installing Incus"
+    if [[ -n "$_other_runtime" ]]; then
+        if [[ "${TAOS_NO_INCUS:-0}" == "1" ]]; then
+            log "TAOS_NO_INCUS=1 — not installing incus; agent containers will use $_other_runtime"
+            return 0
+        fi
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            log "WSL detected — using $_other_runtime; skipping the incus install"
+            return 0
+        fi
+        log "incus not found — installing it as well (preferred runtime for agent containers; set TAOS_NO_INCUS=1 to skip)"
+    else
+        log "no container runtime found — installing Incus"
+    fi
 
     local installed=0
     if command -v apt-get >/dev/null 2>&1; then
@@ -887,6 +904,25 @@ PY
 # including compose-style stacks like SearXNG / Perplexica. incus runs agent
 # LXCs; Docker runs Docker apps. Installed by default — set TAOS_SKIP_DOCKER=1
 # to opt out (Store Docker apps then stay unavailable).
+# The Compose v2 plugin has two apt names: Debian and Docker's own repo call
+# it docker-compose-plugin; Ubuntu's universe archive calls it
+# docker-compose-v2. Trying only the Ubuntu name broke Debian Bookworm
+# (vendor Pi images included) with "Unable to locate package" (#1541).
+_apt_install_compose() {
+    local _err
+    if _err=$(sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin 2>&1); then
+        return 0
+    fi
+    # Only fall through to the Ubuntu name when the Debian name simply is not
+    # in the repos; any other apt failure (locks, held packages, resolver)
+    # is real and must reach the operator, not be masked by a second attempt.
+    if ! grep -qi "unable to locate package" <<<"$_err"; then
+        printf '%s\n' "$_err" >&2
+        return 1
+    fi
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2
+}
+
 ensure_docker_for_apps() {
     if [[ "${TAOS_SKIP_DOCKER:-0}" == "1" ]]; then
         log "TAOS_SKIP_DOCKER=1 — skipping Docker (Store Docker apps will be unavailable)"
@@ -925,8 +961,14 @@ ensure_docker_for_apps() {
         # with "unknown command: docker compose".
         log "installing Docker Engine + Compose plugin (for Store Docker apps)"
         if command -v apt-get >/dev/null 2>&1; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 \
-                || warn "apt install docker.io/docker-compose-v2 failed — Store Docker apps will be unavailable"
+            # Install the engine and the compose plugin in SEPARATE apt
+            # transactions: bundling them meant a missing compose package name
+            # (see _apt_install_compose below) failed the whole transaction and
+            # left the box without Docker at all (#1541).
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io \
+                || warn "apt install docker.io failed — Store Docker apps will be unavailable"
+            _apt_install_compose \
+                || warn "apt install of the compose plugin failed — Store Docker apps will be unavailable"
         elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y -q moby-engine docker-compose \
                 || warn "dnf install moby-engine/docker-compose failed — Store Docker apps will be unavailable"
@@ -949,7 +991,7 @@ ensure_docker_for_apps() {
     if ! docker compose version >/dev/null 2>&1; then
         log "installing the Docker Compose v2 plugin"
         if command -v apt-get >/dev/null 2>&1; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2 || true
+            _apt_install_compose || true
         elif command -v dnf >/dev/null 2>&1; then
             sudo dnf install -y -q docker-compose || true
         elif command -v pacman >/dev/null 2>&1; then
@@ -1246,50 +1288,131 @@ ensure_litellm_postgres || warn "litellm postgres setup did not complete -- virt
 # old UI. Fall back to a local build only when no matching prebuilt is available.
 
 _bundle_base="https://github.com/jaylfc/taOS/releases/download/bundle-latest"
-_desktop_tree="$(git -C "$INSTALL_DIR" rev-parse HEAD:desktop 2>/dev/null || echo "")"
-_prebuilt_done=0
-if [[ -n "$_desktop_tree" ]]; then
-    _remote_tree="$(curl -fsSL --max-time 20 "$_bundle_base/desktop-tree.txt" 2>/dev/null | tr -d '[:space:]')"
-    if [[ -n "$_remote_tree" && "$_remote_tree" == "$_desktop_tree" ]]; then
-        log "fetching prebuilt desktop bundle (matches source; no local build needed)"
-        mkdir -p "$INSTALL_DIR/static"
-        # Stage INSIDE the install tree (private, same filesystem) rather than a
-        # fixed world-writable /tmp path: this makes the final swap an atomic
-        # rename and avoids writing through an attacker-planted symlink while
-        # running as root in the common `curl | sudo bash` invocation.
-        _stage="$(mktemp -d "$INSTALL_DIR/static/.taos-bundle.XXXXXX")"
-        _tarball="$(mktemp "$INSTALL_DIR/static/.taos-bundle.XXXXXX.tgz")"
-        # Verify the download against the CI-published SHA256 before extracting,
-        # so a corrupted or tampered tarball is rejected (we fall back to a local
-        # build). sha256sum on Linux, shasum -a 256 on macOS.
-        _exp_sha="$(curl -fsSL --max-time 20 "$_bundle_base/desktop-bundle.sha256" 2>/dev/null | tr -d '[:space:]')"
-        _sha_cmd="sha256sum"; command -v sha256sum >/dev/null 2>&1 || _sha_cmd="shasum -a 256"
-        if curl -fsSL --max-time 120 "$_bundle_base/desktop-bundle.tar.gz" -o "$_tarball" \
-           && [[ -n "$_exp_sha" && "$($_sha_cmd "$_tarball" | awk '{print $1}')" == "$_exp_sha" ]] \
-           && tar -C "$_stage" -xzf "$_tarball" \
-           && [[ -f "$_stage/desktop/index.html" ]]; then
-            rm -rf "$INSTALL_DIR/static/desktop"
-            mv "$_stage/desktop" "$INSTALL_DIR/static/desktop"
-            # Match the repo owner so a later in-app rebuild (run as that user) can
-            # still write here; only meaningful when installing as root. Trailing
-            # colon sets the owner's primary group (do not assume a group named
-            # after the user exists).
-            _own="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
-            if [[ "$(id -u)" == "0" && -n "$_own" && "$_own" != "root" ]]; then
-                chown -R "$_own:" "$INSTALL_DIR/static/desktop" 2>/dev/null || true
-            fi
-            _prebuilt_done=1
-            log "prebuilt desktop bundle installed into static/desktop/"
+
+# The repo is chowned to the 'taos' service user at the end of a system
+# install, so on a re-run as root a plain `git rev-parse` here trips git's
+# dubious-ownership check, returned empty, and silently disabled the prebuilt
+# path — every re-run then fell back to the memory-heavy local vite build
+# (#1544). Drop to the owning user, matching the checkout-update logic above.
+_tree_owner="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
+_git_ro() {
+    # safe.directory is passed explicitly so a TOCTOU owner change between the
+    # stat above and this call cannot re-trip the dubious-ownership guard.
+    if [[ "$(id -u)" == "0" && -n "$_tree_owner" && "$_tree_owner" != "root" ]]; then
+        sudo -u "$_tree_owner" git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"
+    else
+        git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"
+    fi
+}
+_desktop_tree="$(_git_ro rev-parse HEAD:desktop 2>/dev/null || echo "")"
+[[ -z "$_desktop_tree" ]] \
+    && warn "could not read the desktop/ tree SHA from $INSTALL_DIR — prebuilt bundles unavailable this run"
+
+# Try one prebuilt-bundle source ($1 = release download base URL, $2 = label
+# for logs). Returns 0 only when a tree-matching, checksum-verified bundle was
+# installed into static/desktop/.
+_try_prebuilt_bundle() {
+    local _base="$1" _label="$2" _remote_tree _stage _tarball _exp_sha _sha_cmd _own _old
+    _remote_tree="$(curl -fsSL --max-time 20 "$_base/desktop-tree.txt" 2>/dev/null | tr -d '[:space:]' || echo "")"
+    if [[ -z "$_remote_tree" ]]; then
+        # Say WHY there is no prebuilt: a transient network failure here used
+        # to be indistinguishable from a genuine source mismatch (#1544).
+        log "prebuilt bundle: $_label unreachable or missing its manifest — skipping"
+        return 1
+    fi
+    if [[ "$_remote_tree" != "$_desktop_tree" ]]; then
+        log "prebuilt bundle: $_label was built from a different desktop/ source — skipping"
+        return 1
+    fi
+    log "fetching prebuilt desktop bundle from $_label (matches source; no local build needed)"
+    mkdir -p "$INSTALL_DIR/static"
+    # Stage INSIDE the install tree (private, same filesystem) rather than a
+    # fixed world-writable /tmp path: this makes the final swap an atomic
+    # rename and avoids writing through an attacker-planted symlink while
+    # running as root in the common `curl | sudo bash` invocation.
+    _stage="$(mktemp -d "$INSTALL_DIR/static/.taos-bundle.XXXXXX")"
+    # BSD/macOS mktemp requires the template to END in Xs (no suffix allowed).
+    _tarball="$(mktemp "$INSTALL_DIR/static/.taos-bundle-tar.XXXXXX")"
+    # Verify the download against the CI-published SHA256 before extracting,
+    # so a corrupted or tampered tarball is rejected (we fall back to a local
+    # build). sha256sum on Linux, shasum -a 256 on macOS; with neither, say
+    # explicitly that VERIFICATION was impossible (not "download failed").
+    _exp_sha="$(curl -fsSL --max-time 20 "$_base/desktop-bundle.sha256" 2>/dev/null | tr -d '[:space:]' || echo "")"
+    _sha_cmd="sha256sum"
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        if command -v shasum >/dev/null 2>&1; then
+            _sha_cmd="shasum -a 256"
         else
-            warn "prebuilt bundle download/extract failed; falling back to a local build"
+            warn "no sha256 tool available — cannot verify the prebuilt bundle, skipping it"
+            rm -rf "$_stage" "$_tarball"
+            return 1
+        fi
+    fi
+    if curl -fsSL --max-time 120 "$_base/desktop-bundle.tar.gz" -o "$_tarball" \
+       && [[ -n "$_exp_sha" && "$($_sha_cmd "$_tarball" | awk '{print $1}')" == "$_exp_sha" ]] \
+       && tar -C "$_stage" -xzf "$_tarball" \
+       && [[ -f "$_stage/desktop/index.html" ]]; then
+        # Swap via rename-out / rename-in (same filesystem, so each mv is an
+        # atomic rename): a failed swap must never leave the install with NO
+        # desktop at all, which is what delete-then-move risked.
+        _old=""
+        if [[ -d "$INSTALL_DIR/static/desktop" ]]; then
+            _old="$_stage/desktop.old"
+            if ! mv "$INSTALL_DIR/static/desktop" "$_old"; then
+                warn "could not move the current desktop aside — leaving it in place"
+                rm -rf "$_stage" "$_tarball"
+                return 1
+            fi
+        fi
+        if ! mv "$_stage/desktop" "$INSTALL_DIR/static/desktop"; then
+            # Do not claim the restore worked unless it actually did: a failed
+            # rename-back would otherwise leave no desktop while saying otherwise.
+            if [[ -z "$_old" ]]; then
+                warn "installing the prebuilt bundle failed during the swap — no previous desktop existed; the local build below (or a re-run) will create static/desktop"
+            elif mv "$_old" "$INSTALL_DIR/static/desktop"; then
+                warn "installing the prebuilt bundle failed during the swap — previous desktop restored"
+            else
+                warn "installing the prebuilt bundle failed during the swap AND the previous desktop could not be restored — static/desktop is missing; the local build below (or a re-run) will recreate it"
+            fi
+            rm -rf "$_stage" "$_tarball"
+            return 1
+        fi
+        # Match the repo owner so a later in-app rebuild (run as that user) can
+        # still write here; only meaningful when installing as root. Trailing
+        # colon sets the owner's primary group (do not assume a group named
+        # after the user exists).
+        _own="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
+        if [[ "$(id -u)" == "0" && -n "$_own" && "$_own" != "root" ]]; then
+            chown -R "$_own:" "$INSTALL_DIR/static/desktop" 2>/dev/null || true
         fi
         rm -rf "$_stage" "$_tarball"
+        log "prebuilt desktop bundle installed into static/desktop/ (from $_label)"
+        return 0
+    fi
+    warn "prebuilt bundle from $_label failed (download error, checksum mismatch, or bad archive)"
+    rm -rf "$_stage" "$_tarball"
+    return 1
+}
+
+_prebuilt_done=0
+if [[ -n "$_desktop_tree" ]]; then
+    # bundle-latest tracks the newest master build, so an install pinned to an
+    # older release tag only matches it until the next master push. Fall back
+    # to the bundle attached to the release tag itself, which matches that
+    # tag's source forever (#1544).
+    _try_prebuilt_bundle "$_bundle_base" "bundle-latest" && _prebuilt_done=1
+    if [[ "$_prebuilt_done" == "0" ]]; then
+        _rel_tag="$(_git_ro describe --exact-match --tags HEAD 2>/dev/null || echo "")"
+        if [[ -n "$_rel_tag" ]]; then
+            _try_prebuilt_bundle "${_bundle_base%bundle-latest}$_rel_tag" "release $_rel_tag" && _prebuilt_done=1
+        fi
     fi
 fi
 
 if [[ "$_prebuilt_done" == "0" ]]; then
     if command -v npm >/dev/null 2>&1; then
         log "building desktop SPA locally (no matching prebuilt bundle for this source)"
+        log "  note: the vite build needs roughly 2-4GB of free memory; on small boards close other services first"
         if ! (cd "$INSTALL_DIR/desktop" && npm install --silent && npm run build); then
             die "desktop SPA build failed. This almost always means the machine ran out of memory: the vite build needs roughly 2-4GB free. On WSL the Linux VM is capped at about half of Windows RAM by default, so add to C:\\Users\\<you>\\.wslconfig:
     [wsl2]
@@ -1559,7 +1682,7 @@ ensure_taos_user() {
             && log "added 'taos' to the 'incus' group" \
             || warn "could not add 'taos' to the 'incus' group — agent container deploys may fail"
     else
-        warn "'incus' group not found — skipping (install Incus first, then re-run to add 'taos' to the group)"
+        warn "'incus' group not found — incus is not installed, so agent LXC deploys are unavailable (Docker apps still work). Install incus and re-run this installer to finish the group setup."
     fi
 
     # Mirror the existing docker-group handling: add 'taos' to docker so the
