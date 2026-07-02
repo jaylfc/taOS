@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GameStudioApp } from "./GameStudioApp";
 import { TEMPLATES } from "./gamestudio/templates";
@@ -120,12 +120,13 @@ describe("GameStudioApp", () => {
   it("selecting a template from the gallery routes to Play and loads its scene", () => {
     renderApp("gamestudio-template-select-test");
     const template = TEMPLATES[2]!; // pick a non-default template so the routing is provable
-    // Each template card's "Use" button lives alongside its title in the
-    // same content wrapper, so scope the query to that card to avoid
-    // ambiguity with the other cards' identical "Use" buttons.
+    // Scope to this template's card and find its Use button by role, so the
+    // test does not break (or silently click the wrong control) if the title
+    // is surfaced elsewhere or the card gains other buttons later.
     const titleEl = screen.getByText(template.title);
-    const useButton = titleEl.parentElement!.querySelector("button") as HTMLElement;
-    expect(useButton.textContent).toContain("Use");
+    const card = titleEl.closest("[class*='rounded-2xl']") as HTMLElement | null;
+    expect(card).toBeTruthy();
+    const useButton = within(card!).getByRole("button", { name: /use/i });
     fireEvent.click(useButton);
 
     const nav = screen.getByRole("navigation", { name: "Game Studio views" });
