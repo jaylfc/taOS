@@ -243,49 +243,141 @@ async def apply_pending_restart_check(app_state) -> None:
         )
 
 
+# The graceful-shutdown pause (prepare()) marks EVERY agent paused=True, so the
+# boot-time resume must cover every paused agent or a routine update/restart
+# strands agents paused with no indication (#97):
+#   - a framework that answered /prepare-for-shutdown itself leaves NO
+#     controller-side note, so a note-gated resume skipped exactly the agents
+#     that implemented the protocol correctly;
+#   - hostless agents have no /resume to call and were never unpaused;
+#   - agents whose containers boot slower than the controller failed the single
+#     resume attempt and stayed paused silently.
+
+_RESUME_RETRY_INTERVAL_S = 30
+_RESUME_RETRY_WINDOW_S = 600
+
+
+def _load_or_synthesize_note(note_path: Path) -> dict:
+    if note_path.exists():
+        try:
+            return json.loads(note_path.read_text())
+        except Exception:
+            logger.warning("unreadable resume note at %s; synthesizing", note_path)
+    # No controller-side note: the framework handled /prepare-for-shutdown
+    # itself and keeps its own state, so a minimal note is enough.
+    return {
+        "reason": "restart",
+        "paused_at": None,
+        "last_user_msg": None,
+        "in_progress_task": None,
+        "next_step_hint": "controller restarted; resume normal operation",
+        "context_snapshot": {},
+    }
+
+
+async def _post_resume(host: str, port: int, note: dict) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(f"http://{host}:{port}/resume", json=note)
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+async def _unpause(app_state, agent: dict, note_path: Path) -> None:
+    agent["paused"] = False
+    note_path.unlink(missing_ok=True)
+    from tinyagentos.config import save_config_locked
+
+    config = app_state.config
+    await save_config_locked(config, config.config_path)
+
+
 async def resume_agents_from_notes(app_state) -> None:
     config = app_state.config
     data_dir: Path = app_state.data_dir
     notif = app_state.notifications
 
-    resumed = []
-    for agent in config.agents:
-        if not agent.get("paused", False):
-            continue
+    paused = [a for a in config.agents if a.get("paused", False)]
+    if not paused:
+        return
+
+    resumed: list[str] = []
+    pending: list[str] = []
+
+    for agent in paused:
         name = agent["name"]
         note_path = data_dir / "agent-memory" / name / "resume_note.json"
-        if not note_path.exists():
-            continue
-
-        try:
-            note = json.loads(note_path.read_text())
-        except Exception:
-            continue
-
         host = agent.get("host", "")
         port = agent.get("port", 8080)
+
         if not host:
+            # Nothing to call: the pause flag is the only thing holding the
+            # agent back, so clear it.
+            await _unpause(app_state, agent, note_path)
+            resumed.append(name)
             continue
 
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"http://{host}:{port}/resume",
-                    json=note,
-                )
-                if resp.status_code == 200:
-                    agent["paused"] = False
-                    note_path.unlink(missing_ok=True)
-                    resumed.append(name)
-        except Exception:
-            pass  # leave paused=True and note in place
+        note = _load_or_synthesize_note(note_path)
+        if await _post_resume(host, port, note):
+            await _unpause(app_state, agent, note_path)
+            resumed.append(name)
+        else:
+            pending.append(name)
 
     if resumed:
-        from tinyagentos.config import save_config_locked
-        await save_config_locked(config, config.config_path)
         await notif.add(
-            title="All agents resumed",
-            message=f"Resumed {len(resumed)} agent(s) from resume notes: {', '.join(resumed)}",
+            title="Agents resumed",
+            message=f"Resumed {len(resumed)} agent(s) after restart: {', '.join(resumed)}",
             level="info",
+            source="system.lifecycle",
+        )
+
+    if pending:
+        # Agent containers can boot slower than the controller; keep retrying
+        # in the background instead of stranding them paused, and say so loudly
+        # if they never come back.
+        task = asyncio.create_task(_resume_retry_loop(app_state, pending))
+        bg = getattr(app_state, "_background_tasks", None)
+        if bg is not None:
+            bg.add(task)
+            task.add_done_callback(bg.discard)
+
+
+async def _resume_retry_loop(app_state, names: list[str]) -> None:
+    config = app_state.config
+    data_dir: Path = app_state.data_dir
+    notif = app_state.notifications
+
+    remaining = set(names)
+    deadline = time.monotonic() + _RESUME_RETRY_WINDOW_S
+
+    while remaining and time.monotonic() < deadline:
+        await asyncio.sleep(_RESUME_RETRY_INTERVAL_S)
+        for agent in list(config.agents):
+            name = agent["name"]
+            if name not in remaining or not agent.get("paused", False):
+                remaining.discard(name)
+                continue
+            note_path = data_dir / "agent-memory" / name / "resume_note.json"
+            note = _load_or_synthesize_note(note_path)
+            if await _post_resume(agent.get("host", ""), agent.get("port", 8080), note):
+                await _unpause(app_state, agent, note_path)
+                remaining.discard(name)
+                await notif.add(
+                    title=f"Agent {name} resumed",
+                    message="Resumed after the controller restart (agent took a while to come back up).",
+                    level="info",
+                    source="system.lifecycle",
+                )
+
+    if remaining:
+        await notif.add(
+            title="Some agents are still paused",
+            message=(
+                f"Could not resume after the restart: {', '.join(sorted(remaining))}. "
+                "They stay paused; check the agent containers, then unpause from the Agents app."
+            ),
+            level="warning",
             source="system.lifecycle",
         )
