@@ -64,13 +64,21 @@ async def list_shared_folder_files(request: Request, name: str):
 @router.post("/api/shared-folders/{name}/upload")
 async def upload_to_shared_folder(request: Request, name: str, file: UploadFile):
     mgr = request.app.state.shared_folders
-    folder_path = mgr.storage_dir / name
+    # Both the folder name (URL path) and the upload filename are caller
+    # controlled; sanitize each to a contained label so an uploaded file can
+    # never be written outside the shared-folder root (path traversal).
+    try:
+        folder_name = mgr._safe_label(name)
+        safe_filename = mgr._safe_label(file.filename or "")
+    except ValueError:
+        return JSONResponse({"error": "Invalid folder or file name"}, status_code=400)
+    folder_path = mgr.storage_dir / folder_name
     if not folder_path.exists():
         return JSONResponse({"error": f"Folder '{name}' not found"}, status_code=404)
-    dest = folder_path / file.filename
+    dest = folder_path / safe_filename
     content = await file.read()
     dest.write_bytes(content)
-    return {"status": "uploaded", "name": file.filename, "size": len(content)}
+    return {"status": "uploaded", "name": safe_filename, "size": len(content)}
 
 
 @router.post("/api/shared-folders/{folder_id}/access")

@@ -39,10 +39,28 @@ class SharedFolderManager(BaseStore):
         await self._db.commit()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _safe_label(label: str) -> str:
+        """Reduce a folder name or filename to a single flat, contained label.
+
+        Names and filenames reach the filesystem from API callers, so a "..",
+        a "/etc/..." absolute part, or an embedded "../" must never escape the
+        shared-folder root (path traversal writing to cron, authorized_keys,
+        etc.). A shared-folder name and an uploaded filename are both flat
+        labels, so stripping to the basename is the correct, lossless guard.
+        """
+        safe = Path(str(label)).name
+        if not safe or safe in (".", ".."):
+            raise ValueError(f"invalid shared-folder name: {label!r}")
+        return safe
+
     async def create_folder(self, name: str, description: str = "",
                             owner_type: str = "global", owner_name: str = "",
                             agents: list[str] | None = None) -> int:
         now = time.time()
+        # Sanitize before it reaches both the DB and the filesystem so the two
+        # stay consistent and the physical mkdir cannot escape storage_dir.
+        name = self._safe_label(name)
         cursor = await self._db.execute(
             "INSERT INTO shared_folders (name, description, owner_type, owner_name, created_at) VALUES (?, ?, ?, ?, ?)",
             (name, description, owner_type, owner_name, now))
@@ -76,7 +94,9 @@ class SharedFolderManager(BaseStore):
             row = await cursor.fetchone()
         if not row:
             return False
-        folder_path = self.storage_dir / row[0]
+        # Re-sanitize the stored name before an rmtree: defends any legacy row
+        # that predates the create-time guard.
+        folder_path = self.storage_dir / self._safe_label(row[0])
         if folder_path.exists():
             shutil.rmtree(folder_path)
         await self._db.execute("DELETE FROM shared_folders WHERE id = ?", (folder_id,))
@@ -84,7 +104,7 @@ class SharedFolderManager(BaseStore):
         return True
 
     def list_files(self, folder_name: str) -> list[dict]:
-        folder_path = self.storage_dir / folder_name
+        folder_path = self.storage_dir / self._safe_label(folder_name)
         if not folder_path.exists():
             return []
         files = []

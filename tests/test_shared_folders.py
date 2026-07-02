@@ -210,3 +210,37 @@ async def test_api_duplicate_folder_returns_409(client):
     await client.post("/api/shared-folders", json={"name": "dup"})
     resp = await client.post("/api/shared-folders", json={"name": "dup"})
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+class TestSharedFolderTraversal:
+    """A folder name or filename must never escape storage_dir (path traversal)."""
+
+    async def test_create_folder_rejects_pure_traversal_name(self, folder_mgr):
+        # Names with no real basename (bare traversal) are rejected outright.
+        for bad in ("..", ".", ""):
+            with pytest.raises(ValueError):
+                await folder_mgr.create_folder(bad)
+
+    async def test_create_folder_contains_slashy_traversal(self, folder_mgr):
+        # A traversal-looking name that has a basename is flattened to it and
+        # stays inside the storage root; nothing escapes.
+        await folder_mgr.create_folder("../../etc/evil")
+        assert (folder_mgr.storage_dir / "evil").is_dir()
+        assert not (folder_mgr.storage_dir.parent / "evil").exists()
+        # every escape variant normalizes to the same contained basename
+        for variant in ("../evil", "/etc/evil", "..\\evil"):
+            assert folder_mgr._safe_label(variant).endswith("evil")
+
+    async def test_create_folder_flattens_slashy_name(self, folder_mgr):
+        # A nested-looking name collapses to its basename, staying contained.
+        await folder_mgr.create_folder("a/b/docs")
+        assert (folder_mgr.storage_dir / "docs").is_dir()
+        assert not (folder_mgr.storage_dir / "a").exists()
+
+    async def test_safe_label_blocks_escape(self, folder_mgr):
+        assert folder_mgr._safe_label("../../etc/passwd") == "passwd"
+        with pytest.raises(ValueError):
+            folder_mgr._safe_label("..")
+        with pytest.raises(ValueError):
+            folder_mgr._safe_label("")
