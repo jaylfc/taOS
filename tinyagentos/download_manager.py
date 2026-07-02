@@ -97,7 +97,7 @@ class DownloadManager:
     def list_all(self) -> list[DownloadTask]:
         return list(self._tasks.values())
 
-    def _validate_download(
+    async def _validate_download(
         self,
         task: DownloadTask,
         expected_sha256: str | None = None,
@@ -117,7 +117,12 @@ class DownloadManager:
         if expected_sha256:
             digest = computed_sha256
             if digest is None:
-                digest = hashlib.sha256(task.dest.read_bytes()).hexdigest()
+                # Fallback for a caller that did not stream the hash. Reading a
+                # potentially multi-GB model is offloaded to a thread so it
+                # never blocks the event loop.
+                digest = await asyncio.to_thread(
+                    lambda: hashlib.sha256(task.dest.read_bytes()).hexdigest()
+                )
             # Hex digests are case-insensitive; a caller passing an uppercase
             # expected value must not be treated as a mismatch.
             if digest.lower() != expected_sha256.lower():
@@ -164,7 +169,7 @@ class DownloadManager:
                 # (and raised on mismatch), so re-hashing here would just re-read
                 # a multi-GB file to no benefit. Only the cheap non-empty / size
                 # floor is needed on this path.
-                error = self._validate_download(task)
+                error = await self._validate_download(task)
                 if error:
                     task.dest.unlink(missing_ok=True)
                     task.status = "error"
@@ -220,7 +225,7 @@ class DownloadManager:
                             f.write(chunk)
                             sha.update(chunk)
                             task.downloaded_bytes += len(chunk)
-            error = self._validate_download(task, expected_sha256, computed_sha256=sha.hexdigest())
+            error = await self._validate_download(task, expected_sha256, computed_sha256=sha.hexdigest())
             if error:
                 task.dest.unlink(missing_ok=True)
                 task.status = "error"
