@@ -69,8 +69,11 @@ _TOKEN_SHAPE_RE = re.compile(
     r'|\bAKIA[0-9A-Z]{16}\b'              # AWS access key id
     r'|\bAIza[0-9A-Za-z_\-]{35}\b'        # Google API key
     r'|\bnpm_[A-Za-z0-9]{20,}'            # npm token
-    r'|\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}'  # SendGrid
-    r'|\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}'  # JWT
+    r'|\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}\b'  # SendGrid
+    # JWT: base64url segments, but tolerate non-strict encoders that emit
+    # standard base64 (+ / =) so a real token is masked whole, not truncated
+    # at the first +, / or = padding char.
+    r'|\beyJ[A-Za-z0-9_\-+/=]{8,}\.eyJ[A-Za-z0-9_\-+/=]{6,}\.[A-Za-z0-9_\-+/=]{6,}'  # JWT
     r')'
 )
 

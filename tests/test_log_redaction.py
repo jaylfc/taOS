@@ -114,9 +114,12 @@ class TestFoldedFindings:
         assert out == f"Authorization: Bearer {PLACEHOLDER}"
 
     def test_bare_jwt_masked(self):
+        # Bare in prose: no key= prefix and no Bearer word, so only the
+        # standalone JWT shape rule can catch it.
         jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4"
-        out = redact(f"id_token={jwt}")
+        out = redact(f"decoded session {jwt} from the proxy header")
         assert "SflKxwRJSMeKKF2QT4" not in out
+        assert PLACEHOLDER in out
 
     def test_google_api_key(self):
         assert PLACEHOLDER in redact("AIzaSyA0000000000000000000000000000000X")
