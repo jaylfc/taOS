@@ -6,6 +6,17 @@ desktop/src/hooks/use-desktop-command-stream.ts). Agent tools push commands via
 POST /api/desktop/command, scoped to the calling user so a user only ever drives
 their own desktop. This is the backend half of the agent-OS-control layer (#836);
 the browser receivers already exist and are tested.
+
+kind="open-app" payload: {"app": "<appId>", "props"?: {...}}.
+
+kind="window" payload (see desktop/src/hooks/use-desktop-control.ts for the
+receiver): {"action": "<op>", "windowId"?, "appId"?, "props"?, "x"?, "y"?,
+"w"?, "h"?, "snap"?, "preset"?}. `op`/`app` are also accepted as aliases for
+`action`/`appId`. Ops: open, close, focus, minimize, restore, maximize, move,
+resize, snap, arrange (preset: tile-2 | tile-3 | center | cascade). Targeting
+precedence: explicit windowId, else first window for appId, else the
+focused/topmost window -- except close, which given an appId with no windowId
+closes every open window for that app.
 """
 from __future__ import annotations
 
@@ -140,10 +151,11 @@ async def get_layout(request: Request):
     """Read the calling user's live desktop layout: screen size + every window's
     bounds and state. This is the "screen-aware" read half of the agent window-
     management API -- the agent fetches the layout to decide placement, then
-    drives windows via POST /api/desktop/command kind="window" (move/resize/snap/
-    arrange). Mirrors the screenshot round-trip: emit a `layout` command, the
-    first desktop to answer POSTs its getLayout() to /api/desktop/layout-result.
-    409 if no desktop is connected, 504 if none responds in time.
+    drives windows via POST /api/desktop/command kind="window" (see the module
+    docstring for the full op/payload contract). Mirrors the screenshot
+    round-trip: emit a `layout` command, the first desktop to answer POSTs its
+    getLayout() to /api/desktop/layout-result. 409 if no desktop is connected,
+    504 if none responds in time.
     """
     broker = request.app.state.desktop_command_broker
     user_id = _user_id(request)

@@ -14,6 +14,12 @@ import { resolveApp } from "@/registry/app-registry";
  * Actions: open, close, focus, minimize, restore, maximize, move, resize, snap,
  * arrange (preset: tile-2 | tile-3 | center | cascade). Targeting precedence:
  * explicit windowId, else first window for appId, else the focused/topmost one.
+ * `close` is the one exception: given an appId with no windowId, it closes
+ * every open window for that app (an app can have more than one via forceNew).
+ * The CustomEvent also accepts `op`/`app` as aliases for `action`/`appId` (the
+ * sibling `taos:open-app` event uses `app`, so callers reasonably guess it here
+ * too); an event with neither `action` nor `op` is rejected with a console.warn
+ * so contract drift is visible instead of silently doing nothing.
  * This is the agent-tool side of the deep-navigation API (#836) and complements
  * `taos:open-app`.
  */
@@ -187,6 +193,12 @@ function run(op: WindowOp): string | void {
       return;
     }
     case "close": {
+      // appId with no explicit windowId closes every window for that app,
+      // not just the first match -- an app can have several (forceNew).
+      if (!op.windowId && op.appId) {
+        s.windows.filter((w) => w.appId === op.appId).forEach((w) => s.closeWindow(w.id));
+        return;
+      }
       const id = resolveId(op);
       if (id) s.closeWindow(id);
       return;
@@ -211,8 +223,16 @@ declare global {
 export function useDesktopControl(): void {
   useEffect(() => {
     const onWindow = (e: Event) => {
-      const detail = (e as CustomEvent).detail as WindowOp | undefined;
-      if (detail?.action) run(detail);
+      // `op`/`app` are accepted as aliases for `action`/`appId` (see module
+      // docstring) since they mirror the sibling taos:open-app payload shape.
+      const raw = (e as CustomEvent).detail as Record<string, unknown> | undefined;
+      const action = (raw?.action ?? raw?.op) as WindowOp["action"] | undefined;
+      if (!action) {
+        console.warn("taos:window ignored: no action/op in payload", raw);
+        return;
+      }
+      const appId = (raw?.appId ?? raw?.app) as string | undefined;
+      run({ ...(raw as Partial<WindowOp>), action, appId });
     };
     window.addEventListener("taos:window", onWindow);
     window.taosDesktop = { getLayout, run };
