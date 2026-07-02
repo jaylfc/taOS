@@ -25,6 +25,8 @@ async def setup_status(request: Request):
       taos_model_set  — the taOS agent has a model configured
       has_agent       — at least one deployed agent exists
       memory_enabled  — user completed the taOSmd memory setup wizard
+      npu_present     — a Rockchip NPU was detected on this board (#1535)
+      npu_backend_running — a live rkllama answers on the taOS or legacy port
       dismissed       — user dismissed the checklist
       complete        — has_provider AND taos_model_set (the core two steps)
     """
@@ -61,7 +63,8 @@ async def setup_status(request: Request):
 
         from tinyagentos.installers.rkllama_installer import rkllama_is_running
 
-        # Socket probes are blocking; keep them off the event loop.
+        # rkllama_is_running never raises, but its socket probes block;
+        # keep them off the event loop.
         npu_backend_running = await asyncio.to_thread(rkllama_is_running)
 
     # complete: the two core steps done

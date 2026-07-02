@@ -194,6 +194,30 @@ describe("SetupChecklist", () => {
     expect(screen.getByText("0/6")).toBeInTheDocument();
   });
 
+  it("stays visible when core steps are complete but the NPU step is outstanding", async () => {
+    mockFetchStatus({
+      ...baseStatus,
+      has_provider: true,
+      taos_model_set: true,
+      complete: true,
+      npu_present: true,
+      npu_backend_running: false,
+    });
+    render(<SetupChecklist />);
+    expect(await screen.findByText("Install the NPU backend")).toBeInTheDocument();
+  });
+
+  it("hides once complete and the NPU backend is running", () => {
+    mockFetchStatus({
+      ...baseStatus,
+      complete: true,
+      npu_present: true,
+      npu_backend_running: true,
+    });
+    const { container } = render(<SetupChecklist />);
+    expect(container.innerHTML).toBe("");
+  });
+
   it("marks the NPU step complete when the backend is running", async () => {
     mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: true });
     render(<SetupChecklist />);

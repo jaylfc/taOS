@@ -224,6 +224,9 @@ class TestSetupStatus:
 
     async def test_npu_absent_by_default(self, client, app):
         """No hardware profile (or a non-Rockchip one) hides the NPU step."""
+        # Pin the profile: another test in this class sets a Rockchip profile
+        # on the shared app fixture, and test order must not matter.
+        app.state.hardware_profile = None
         app.state.config.backends = []
         resp = await client.get("/api/setup/status")
         data = resp.json()
