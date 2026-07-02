@@ -101,8 +101,12 @@ librknnrt_current_version() {
     if [[ -f "$LIBRKNNRT_DEST" ]] && command -v strings >/dev/null 2>&1; then
         # No early awk exit: it SIGPIPEs strings and trips pipefail (see the
         # note at the version-verify site). Read to EOF and print the first
-        # match only.
-        strings "$LIBRKNNRT_DEST" 2>/dev/null | awk '/librknnrt version: / && !seen { print $3; seen=1 }'
+        # match only. Do not swallow strings' stderr: if it fails on the
+        # installed library (vendor perms, corrupted ELF) the real error should
+        # surface in the log rather than the banner silently dropping the
+        # runtime line. Both callers guard the call with `|| true`, so a probe
+        # failure cannot abort the install.
+        strings "$LIBRKNNRT_DEST" | awk '/librknnrt version: / && !seen { print $3; seen=1 }'
     fi
 }
 
