@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GameStudioApp } from "./GameStudioApp";
 import { TEMPLATES } from "./gamestudio/templates";
@@ -120,13 +120,16 @@ describe("GameStudioApp", () => {
   it("selecting a template from the gallery routes to Play and loads its scene", () => {
     renderApp("gamestudio-template-select-test");
     const template = TEMPLATES[2]!; // pick a non-default template so the routing is provable
-    // Scope to this template's card and find its Use button by role, so the
-    // test does not break (or silently click the wrong control) if the title
-    // is surfaced elsewhere or the card gains other buttons later.
+    // Scope to this template's card (so we cannot click another card's button)
+    // and grab its single action button directly. Using querySelector rather
+    // than getByRole avoids the accessible-name role computation, which was
+    // non-deterministic in the full CI suite; the card has exactly one button
+    // (Use), so this is unambiguous.
     const titleEl = screen.getByText(template.title);
     const card = titleEl.closest("[class*='rounded-2xl']") as HTMLElement | null;
     expect(card).toBeTruthy();
-    const useButton = within(card!).getByRole("button", { name: /use/i });
+    const useButton = card!.querySelector("button") as HTMLButtonElement;
+    expect(useButton.textContent).toContain("Use");
     fireEvent.click(useButton);
 
     const nav = screen.getByRole("navigation", { name: "Game Studio views" });
