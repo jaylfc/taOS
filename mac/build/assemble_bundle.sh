@@ -73,8 +73,20 @@ fi
 # SPA_DIR). Resources/frontend was never read by the server.
 mkdir -p "$CONTENTS/Resources/taos/static"
 cp -R "$REPO_ROOT/static"/. "$CONTENTS/Resources/taos/static/"
+# Locate the SPA root by its index.html rather than trusting the directory
+# name, so an upstream layout change (SPA nested under frontend/desktop/)
+# cannot silently reintroduce the /desktop 404.
+if [[ -f "$STAGING/frontend/index.html" ]]; then
+    SPA_SRC="$STAGING/frontend"
+elif [[ -f "$STAGING/frontend/desktop/index.html" ]]; then
+    SPA_SRC="$STAGING/frontend/desktop"
+else
+    echo "assemble_bundle: no SPA index.html under $STAGING/frontend" >&2
+    exit 1
+fi
 rm -rf "$CONTENTS/Resources/taos/static/desktop"
-cp -R "$STAGING/frontend" "$CONTENTS/Resources/taos/static/desktop"
+mkdir -p "$CONTENTS/Resources/taos/static/desktop"
+cp -R "$SPA_SRC"/. "$CONTENTS/Resources/taos/static/desktop/"
 
 # Apple container CLI + libexec plugins (image/network/runtime)
 mkdir -p "$CONTENTS/Resources/bin"
