@@ -25,7 +25,7 @@
 #     TAOS_RKNPU_SETUP        set to 1/true to skip interactive confirmation
 #     TAOS_RKLLAMA_DIR        install dir (default: ~<user>/rkllama)
 #     TAOS_RKLLAMA_REPO       git remote (default: https://github.com/jaylfc/rkllama.git)
-#     TAOS_RKLLAMA_REF        git ref  (default: 06cf874d8b29767729ec06547cf02fc92acd875c)
+#     TAOS_RKLLAMA_REF        git ref  (default: 4f518e97d114f386a153f6c6da36270c7f692712)
 #     TAOS_RKLLAMA_PORT       HTTP port (default: 7833)
 #     TAOS_QMD_EXPANSION_URL  override URL for qmd-query-expansion-1.7B-rk3588.rkllm
 #                             (default is the TAOS HF mirror at
@@ -63,7 +63,7 @@ LIBRKNNRT_DEST="/usr/lib/librknnrt.so"
 LIBRKNNRT_EXPECTED_VERSION="2.3.0"
 
 RKLLAMA_REPO="${TAOS_RKLLAMA_REPO:-https://github.com/jaylfc/rkllama.git}"
-RKLLAMA_REF="${TAOS_RKLLAMA_REF:-06cf874d8b29767729ec06547cf02fc92acd875c}"
+RKLLAMA_REF="${TAOS_RKLLAMA_REF:-4f518e97d114f386a153f6c6da36270c7f692712}"
 RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-7833}"
 
 # Qwen3-Embedding-0.6B rk3588 rkllm weights.
@@ -336,6 +336,15 @@ install_rkllama() {
         log "cloning $RKLLAMA_REPO -> $RKLLAMA_DIR"
         run_as_user mkdir -p "$(dirname "$RKLLAMA_DIR")"
         run_as_user git clone --quiet "$RKLLAMA_REPO" "$RKLLAMA_DIR"
+    fi
+    # Verify the pinned ref is actually fetchable before checking it out. A
+    # fresh clone only has branch/tag refs, so a pin orphaned by a history
+    # rewrite of the rkllama fork fails with git's opaque "reference is not a
+    # tree" (#1527). Fail with a message that says what happened and how to
+    # override, rather than silently falling back to a moving branch (which
+    # would break install reproducibility).
+    if ! run_as_user git -C "$RKLLAMA_DIR" cat-file -e "${RKLLAMA_REF}^{commit}" 2>/dev/null; then
+        die "pinned rkllama ref ${RKLLAMA_REF:0:12} is not reachable from any branch of $RKLLAMA_REPO (the fork's history may have been rewritten). Update taOS for a current pin, or override with TAOS_RKLLAMA_REF=<ref>."
     fi
     run_as_user git -C "$RKLLAMA_DIR" checkout --quiet "$RKLLAMA_REF"
     log "rkllama pinned to $(run_as_user git -C "$RKLLAMA_DIR" rev-parse --short HEAD)"
