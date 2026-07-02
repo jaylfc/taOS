@@ -69,11 +69,25 @@ class TestAgentRegistryStore:
         finally:
             await store.close()
 
-    async def test_collision_appends_two_char_suffix(self, tmp_path):
+    async def test_collision_appends_two_char_suffix(self, tmp_path, monkeypatch):
         """Two registrations with the same display_name in the same second get distinct IDs."""
         store = await self._make_store(tmp_path / "reg.db")
         try:
             now = datetime.now(timezone.utc)
+
+            # Freeze the store's clock: register() mints its own timestamp, so
+            # on a slow runner the pre-inserted id and the registration could
+            # straddle a second boundary and never collide (flaked in CI with
+            # "expected suffix on collision").
+            import tinyagentos.agent_registry_store as _store_mod
+
+            class _FrozenDatetime(datetime):
+                @classmethod
+                def now(cls, tz=None):  # noqa: ARG003 - signature parity
+                    return now
+
+            monkeypatch.setattr(_store_mod, "datetime", _FrozenDatetime)
+
             slug = _slugify("Clash")
             base_id = mint_canonical_id(slug, now)
 
