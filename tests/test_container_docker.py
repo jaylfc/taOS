@@ -56,6 +56,33 @@ class TestDockerCreate:
             result = await backend.create_container("agent-test", "ubuntu:22.04")
             assert result["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_publishes_ports_bound_to_localhost_only(self):
+        """App Runtime M4: a published port must bind to 127.0.0.1, never
+        0.0.0.0 -- only the controller may reach a container app's backend."""
+        backend = DockerBackend()
+        with patch.object(backend, "_run", new_callable=AsyncMock) as mock:
+            mock.return_value = (0, "container_id")
+            result = await backend.create_container(
+                "taos-app-echo", "myimage:latest", ports=[(13042, 5678)],
+            )
+            assert result["success"] is True
+            call_args = mock.call_args[0][0]
+            assert "-p" in call_args
+            assert "127.0.0.1:13042:5678" in call_args
+            # never publish on all interfaces
+            assert not any(a.startswith("0.0.0.0:") for a in call_args)
+
+    @pytest.mark.asyncio
+    async def test_no_ports_argument_publishes_nothing(self):
+        """Backward compatible: existing agent-deploy callers never pass ports."""
+        backend = DockerBackend()
+        with patch.object(backend, "_run", new_callable=AsyncMock) as mock:
+            mock.return_value = (0, "container_id")
+            await backend.create_container("agent-test", "ubuntu:22.04")
+            call_args = mock.call_args[0][0]
+            assert "-p" not in call_args
+
 
 class TestDockerLifecycle:
     @pytest.mark.asyncio

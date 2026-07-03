@@ -46,6 +46,7 @@ export function toAppManifest(row: UserspaceAppRow): AppManifest {
           m.SandboxedAppWindow({
             ...props,
             appId: row.app_id,
+            appType: row.app_type,
             trust,
             provenance,
             grantedCapabilities: row.permissions_granted,

@@ -8,12 +8,14 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from tinyagentos.code_analyzer import analyze_app_source, has_critical
 from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
-from tinyagentos.userspace.package import extract_package, PackageError
+from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
+from tinyagentos.userspace.package import extract_package, parse_manifest, PackageError
 from tinyagentos.userspace.url_guard import resolve_safe_public_ip
 
 # Provenance values a caller may set through the PUBLIC install endpoint. Never
@@ -171,36 +173,32 @@ async def install_app(
         manifest = extract_package(data, apps_root=_apps_root(request))
     except PackageError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    # Reject container packages before persisting anything -- no partial state.
-    if manifest["app_type"] == "container":
-        return JSONResponse(
-            {"error": "container packages are not supported in this release (web-only)"},
-            status_code=501,
-        )
     apps_root = _apps_root(request).resolve()
     app_dir = (apps_root / manifest["id"]).resolve()
     # Static security gate: this runs server-side on every install regardless
-    # of how the package was submitted (upload or source_url) or its
-    # app_type, so a modified/bypassed client can never skip it and a future
-    # app_type can never silently bypass it. Unconditional is also cheap and
-    # correct here -- "container" is already rejected above, and "tui"
-    # packages ship no _ANALYZABLE_EXTENSIONS files (just a manifest.yaml +
-    # command spec), so _collect_source_files() naturally finds nothing to
-    # scan for them. A critical finding blocks the install outright -- the
-    # extracted files are removed so nothing scanned-and-rejected is left
-    # reachable via serve_bundle. This is defense in depth in FRONT of the
-    # sandbox iframe, not a replacement for it.
-    findings = analyze_app_source(_collect_source_files(app_dir))
-    if has_critical(findings):
-        if app_dir.is_relative_to(apps_root) and app_dir != apps_root:
-            shutil.rmtree(app_dir, ignore_errors=True)
-        return JSONResponse(
-            {
-                "error": "blocked_by_security_analysis",
-                "findings": [f.to_dict() for f in findings],
-            },
-            status_code=422,
-        )
+    # of how the package was submitted (upload or source_url), so a
+    # modified/bypassed client can never skip it. Container apps ship an
+    # opaque Docker image (not analyzable source) and are skipped here --
+    # their isolation comes from the container boundary, not this scanner.
+    # "tui" packages ship no _ANALYZABLE_EXTENSIONS files (just a
+    # manifest.yaml + command spec), so _collect_source_files() naturally
+    # finds nothing to scan for them. A critical finding blocks the install
+    # outright -- the extracted files are removed so nothing
+    # scanned-and-rejected is left reachable via serve_bundle. This is
+    # defense in depth in FRONT of the sandbox iframe, not a replacement
+    # for it.
+    if manifest["app_type"] != "container":
+        findings = analyze_app_source(_collect_source_files(app_dir))
+        if has_critical(findings):
+            if app_dir.is_relative_to(apps_root) and app_dir != apps_root:
+                shutil.rmtree(app_dir, ignore_errors=True)
+            return JSONResponse(
+                {
+                    "error": "blocked_by_security_analysis",
+                    "findings": [f.to_dict() for f in findings],
+                },
+                status_code=422,
+            )
     existing = await store.get(manifest["id"])
     # A public install must never replace an app installed as first-party: that
     # would let an attacker overwrite a trusted studio's bundle (and, before the
@@ -309,21 +307,67 @@ async def set_permissions(request: Request, app_id: str):
     return {"status": "ok", "granted": safe}
 
 
+def _load_container_spec(app_dir: Path) -> dict | None:
+    """Re-parse the installed package's manifest.yaml to recover its
+    container block (image + ports). Not persisted in the store row --
+    extract_package already wrote manifest.yaml alongside the app's other
+    files, so it's re-read here rather than adding new store columns."""
+    manifest_path = app_dir / "manifest.yaml"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    except (PackageError, OSError):
+        return None
+    return manifest.get("container")
+
+
 @router.post("/api/userspace-apps/{app_id}/enable")
 async def enable_app(request: Request, app_id: str):
-    await request.app.state.userspace_apps.set_enabled(app_id, True)
+    store = request.app.state.userspace_apps
+    app = await store.get(app_id)
+    if app is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    await store.set_enabled(app_id, True)
+    if app["app_type"] == "container":
+        container_spec = _load_container_spec(_apps_root(request) / app_id)
+        if container_spec is None:
+            await store.set_enabled(app_id, False)
+            return JSONResponse(
+                {"error": "container app manifest missing or invalid"}, status_code=500
+            )
+        result = await deploy_app_container(app_id, container_spec)
+        if not result.get("success"):
+            # Do not leave a half-enabled app claiming to run.
+            await store.set_enabled(app_id, False)
+            return JSONResponse(
+                {"error": result.get("error", "container deploy failed")}, status_code=502
+            )
+        await store.set_runtime_location(app_id, result["host"], result["port"])
     return {"status": "ok"}
 
 
 @router.post("/api/userspace-apps/{app_id}/disable")
 async def disable_app(request: Request, app_id: str):
-    await request.app.state.userspace_apps.set_enabled(app_id, False)
+    store = request.app.state.userspace_apps
+    app = await store.get(app_id)
+    if app is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if app["app_type"] == "container":
+        await destroy_app_container(app_id)
+        await store.set_runtime_location(app_id, None, None)
+    await store.set_enabled(app_id, False)
     return {"status": "ok"}
 
 
 @router.delete("/api/userspace-apps/{app_id}")
 async def uninstall_app(request: Request, app_id: str):
     store = request.app.state.userspace_apps
+    app = await store.get(app_id)
+    if app is not None and app["app_type"] == "container":
+        # Best-effort: tear down the backend container before removing the
+        # store record and files, so nothing is left running unreferenced.
+        await destroy_app_container(app_id)
     removed = await store.uninstall(app_id)
     root = _apps_root(request).resolve()
     app_dir = (root / app_id).resolve()
@@ -357,6 +401,121 @@ async def serve_bundle(request: Request, app_id: str, path: str):
     resp.headers["Content-Security-Policy"] = _bundle_csp(net_origins, provenance)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+
+# Hop-by-hop headers must not be forwarded between the proxy and the
+# upstream/client (RFC 2616 §13.5.1). Authorization is stripped too, and the
+# taos_session cookie is scrubbed out of Cookie -- an untrusted container-app
+# backend must never see the controller session credential.
+_PROXY_HOP_BY_HOP = frozenset({
+    "connection", "keep-alive", "proxy-authorization", "te",
+    "trailer", "transfer-encoding", "upgrade", "host",
+})
+_PROXY_SENSITIVE_HEADERS = frozenset({"authorization"})
+_PROXY_STRIPPED_COOKIES = frozenset({"taos_session"})
+
+# Module-level HTTP client for the container-app proxy -- avoids per-request
+# connection churn, mirrors service_proxy.py's pattern.
+_container_proxy_client = httpx.AsyncClient(timeout=60.0)
+
+
+def _strip_taos_session_cookie(cookie_header: str) -> str:
+    if not cookie_header:
+        return ""
+    from http.cookies import SimpleCookie
+    jar = SimpleCookie()
+    try:
+        jar.load(cookie_header)
+    except Exception:
+        return cookie_header
+    for name in _PROXY_STRIPPED_COOKIES:
+        jar.pop(name, None)
+    return "; ".join(f"{k}={m.value}" for k, m in jar.items())
+
+
+def _filter_proxy_headers(headers: dict) -> dict:
+    filtered: dict[str, str] = {}
+    for k, v in headers.items():
+        kl = k.lower()
+        if kl in _PROXY_HOP_BY_HOP or kl in _PROXY_SENSITIVE_HEADERS:
+            continue
+        if kl == "cookie":
+            stripped = _strip_taos_session_cookie(v)
+            if not stripped:
+                continue
+            filtered[k] = stripped
+            continue
+        filtered[k] = v
+    return filtered
+
+
+@router.get("/api/userspace-apps/{app_id}/proxy", include_in_schema=False)
+async def proxy_no_slash_redirect(app_id: str):
+    """Redirect /proxy -> /proxy/ so the container app's relative links work."""
+    return RedirectResponse(url=f"/api/userspace-apps/{app_id}/proxy/", status_code=307)
+
+
+@router.api_route(
+    "/api/userspace-apps/{app_id}/proxy/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
+async def proxy_container_app(request: Request, app_id: str, path: str):
+    # Store lookup FIRST (same reasoning as serve_bundle): nothing is
+    # forwarded until the app is installed, enabled, a container app, and has
+    # a recorded runtime location.
+    app = await request.app.state.userspace_apps.get(app_id)
+    if (
+        app is None
+        or app["app_type"] != "container"
+        or not app["enabled"]
+        or not app.get("container_host")
+        or not app.get("container_port")
+    ):
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    # SECURITY: the proxy target is built ONLY from the recorded runtime
+    # location (always 127.0.0.1:<port>, set by deploy_app_container) -- never
+    # from client-controlled input. This is what rules out SSRF here.
+    host = app["container_host"]
+    port = app["container_port"]
+    upstream = f"http://{host}:{port}/{path}"
+    if request.url.query:
+        upstream = f"{upstream}?{request.url.query}"
+
+    fwd_headers = _filter_proxy_headers(dict(request.headers))
+
+    async def _stream_body():
+        async for chunk in request.stream():
+            yield chunk
+
+    try:
+        req = _container_proxy_client.build_request(
+            method=request.method, url=upstream, headers=fwd_headers, content=_stream_body(),
+        )
+        upstream_resp = await _container_proxy_client.send(req, stream=True, follow_redirects=False)
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"error": f"cannot reach app '{app_id}' -- it may be stopped or still starting"},
+            status_code=502,
+        )
+    except httpx.TimeoutException:
+        return JSONResponse({"error": f"app '{app_id}' timed out"}, status_code=504)
+
+    resp_headers = _filter_proxy_headers(dict(upstream_resp.headers))
+    granted = app.get("permissions_granted") or []
+    net_origins = [p[len("network:"):] for p in granted
+                   if isinstance(p, str) and p.startswith("network:")]
+    provenance = app.get("provenance") or default_provenance_for_trust(app.get("trust"))
+    resp_headers["Content-Security-Policy"] = _bundle_csp(net_origins, provenance)
+    resp_headers["X-Content-Type-Options"] = "nosniff"
+
+    return StreamingResponse(
+        upstream_resp.aiter_bytes(),
+        status_code=upstream_resp.status_code,
+        headers=resp_headers,
+        background=BackgroundTask(upstream_resp.aclose),
+    )
 
 
 @router.get("/api/userspace-apps/{app_id}/icon")

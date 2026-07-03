@@ -8,6 +8,9 @@ import { defaultProvenanceForTrust, type AppProvenance } from "@/lib/userspace-a
 interface Props {
   windowId: string;
   appId: string;
+  /** "container" apps run their own HTTP backend and are loaded via the
+   * server-side proxy instead of the static bundle. Defaults to "web". */
+  appType?: "web" | "container";
   trust?: "community" | "first-party";
   /** Where the app's code came from. Falls back to defaultProvenanceForTrust(trust)
    * when omitted, so a caller that only knows the legacy `trust` field still
@@ -120,11 +123,16 @@ function readThemeTokens(): Record<string, string> {
 
 export function SandboxedAppWindow({
   appId,
+  appType = "web",
   trust = "community",
   provenance,
   grantedCapabilities = [],
 }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const iframeSrc =
+    appType === "container"
+      ? `/api/userspace-apps/${encodeURIComponent(appId)}/proxy/`
+      : `/api/userspace-apps/${encodeURIComponent(appId)}/bundle/index.html?app=${encodeURIComponent(appId)}`;
   const isFirstParty = trust === "first-party";
   const resolvedProvenance: AppProvenance = provenance ?? defaultProvenanceForTrust(trust);
   const networkAllowed = hasCapability(resolvedProvenance, "app.net", grantedCapabilities);
@@ -192,7 +200,7 @@ export function SandboxedAppWindow({
       <iframe
         ref={iframeRef}
         title={appId}
-        src={`/api/userspace-apps/${encodeURIComponent(appId)}/bundle/index.html?app=${encodeURIComponent(appId)}`}
+        src={iframeSrc}
         sandbox={computeSandboxAttr(resolvedProvenance)}
         data-provenance={resolvedProvenance}
         className="w-full h-full border-0 bg-white"

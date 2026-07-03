@@ -133,6 +133,7 @@ class DockerBackend(ContainerBackend):
         env: dict[str, str] | None = None,
         host_uid: int | None = None,
         root_size_gib: int | None = None,
+        ports: list[tuple[int, int]] | None = None,
     ) -> dict:
         """Create and start a new container.
 
@@ -142,6 +143,11 @@ class DockerBackend(ContainerBackend):
         root_size_gib: when set, call set_root_quota after the container
         is created. Enforcement depends on the Docker storage driver;
         on overlay2 without pquota this is accounting-only.
+
+        ports: list of (host_port, container_port) pairs to publish. Each is
+        bound to 127.0.0.1 ONLY -- never 0.0.0.0 -- so a published port is
+        reachable from this host alone (the controller proxies to it); it
+        must never be reachable off-host.
         """
         args = [
             self.binary, "run", "-d",
@@ -155,6 +161,8 @@ class DockerBackend(ContainerBackend):
             args += ["-v", f"{host_path}:{container_path}"]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
+        for host_port, container_port in ports or []:
+            args += ["-p", f"127.0.0.1:{host_port}:{container_port}"]
         args.append(image)
         code, output = await self._run(args, timeout=300)
         if code != 0:

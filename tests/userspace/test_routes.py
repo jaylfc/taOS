@@ -110,7 +110,7 @@ async def test_install_pins_connection_to_resolved_ip(client):
 def _container_zip():
     manifest = (
         "id: ctapp\nname: ContainerApp\nversion: 1.0.0\napp_type: container\n"
-        "entry: index.html\nicon: \npermissions: []\n"
+        "entry: index.html\nicon: ''\npermissions: []\n"
         "container:\n  image: myimage:latest\n  ports: [8080]\n"
     )
     buf = io.BytesIO()
@@ -121,19 +121,22 @@ def _container_zip():
 
 
 @pytest.mark.asyncio
-async def test_container_install_rejected_with_no_stored_state(client):
-    # Finding 3: installing a container package must return 501 before
-    # persisting anything -- no app row and no extracted directory must remain.
+async def test_container_install_no_longer_gated(client):
+    # App Runtime M4: container packages are no longer rejected at install --
+    # see tests/userspace/test_container_app.py for the full deploy/enable/
+    # disable/uninstall lifecycle. This just confirms the old 501 gate is gone
+    # and the app is stored (not auto-deployed at install time).
     r = await client.post(
         "/api/userspace-apps/install",
         files={"package": ("ctapp.taosapp", _container_zip(), "application/zip")},
     )
-    assert r.status_code == 501
-    assert "container" in r.json()["error"].lower()
+    assert r.status_code == 200, r.text
+    assert r.json()["app_id"] == "ctapp"
 
-    # No app row stored.
     rows = (await client.get("/api/userspace-apps")).json()
-    assert all(a["app_id"] != "ctapp" for a in rows)
+    row = next(a for a in rows if a["app_id"] == "ctapp")
+    assert row["app_type"] == "container"
+    assert row["container_host"] is None and row["container_port"] is None
 
 
 def _net_zip():
