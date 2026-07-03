@@ -43,4 +43,26 @@ describe("workbook serialization round trip", () => {
       blankWorkbook(),
     );
   });
+
+  it("falls back to a blank workbook when a sheet element is corrupted", () => {
+    expect(
+      parseWorkbookContent(JSON.stringify({ version: 1, sheets: [null] })),
+    ).toEqual(blankWorkbook());
+    expect(
+      parseWorkbookContent(JSON.stringify({ version: 1, sheets: [{ notASheet: true }] })),
+    ).toEqual(blankWorkbook());
+    expect(
+      parseWorkbookContent(
+        JSON.stringify({ version: 1, sheets: [{ name: "Sheet1", celldata: "not-an-array" }] }),
+      ),
+    ).toEqual(blankWorkbook());
+    expect(
+      parseWorkbookContent(
+        JSON.stringify({ version: 1, sheets: [{ name: "Sheet1", row: "100" }] }),
+      ),
+    ).toEqual(blankWorkbook());
+    expect(parseWorkbookContent(JSON.stringify({ version: 1, sheets: "not-an-array" }))).toEqual(
+      blankWorkbook(),
+    );
+  });
 });
