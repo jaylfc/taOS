@@ -42,6 +42,21 @@ interface AvailableModel {
   compatibility: "green" | "yellow" | "red";
   capabilities: string[];
   size: string;
+  /** Default variant to request from POST /api/models/download. Undefined
+   * when the model has no variants (e.g. the offline MOCK_AVAILABLE
+   * fallback) — Download must then surface an error, not fake success. */
+  variantId?: string;
+  /** Backend's own verdict (has_downloaded_variant) — the authoritative
+   * source for "already installed", since the union `downloaded` list
+   * below is keyed by filename/host, not by catalog model id. */
+  installed?: boolean;
+}
+
+interface DownloadState {
+  downloadId?: string;
+  percent: number;
+  status: "starting" | "downloading" | "complete" | "error";
+  error?: string;
 }
 
 type SourceFilter = "all" | "local" | "workers" | "cloud";
@@ -89,28 +104,90 @@ const CAPABILITY_COLORS: Record<string, string> = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  DownloadProgress                                                   */
+/*  DownloadProgress — polls the real backend, no fake timer           */
 /* ------------------------------------------------------------------ */
 
-function DownloadProgress({ name, onDone }: { name: string; onDone: () => void }) {
-  const [pct, setPct] = useState(0);
+function DownloadProgress({
+  name,
+  state,
+  onUpdate,
+  onComplete,
+  onRetry,
+}: {
+  name: string;
+  state: DownloadState;
+  onUpdate: (next: DownloadState) => void;
+  onComplete: () => void;
+  onRetry: () => void;
+}) {
   const timer = useRef<ReturnType<typeof setInterval>>(undefined);
+  const { downloadId, status } = state;
 
   useEffect(() => {
-    timer.current = setInterval(() => {
-      setPct((prev) => {
-        if (prev >= 100) {
-          clearInterval(timer.current);
-          setTimeout(onDone, 400);
-          return 100;
-        }
-        return prev + Math.random() * 8 + 2;
-      });
-    }, 300);
-    return () => clearInterval(timer.current);
-  }, [onDone]);
+    if (!downloadId || status === "complete" || status === "error") return undefined;
 
-  const progress = Math.min(100, Math.round(pct));
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/models/downloads/${downloadId}`, {
+          credentials: "include",
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || typeof data !== "object") {
+          throw new Error("invalid poll response");
+        }
+        if (data.status === "complete") {
+          clearInterval(timer.current);
+          onUpdate({ downloadId, percent: 100, status: "complete" });
+          onComplete();
+        } else if (data.status === "error") {
+          clearInterval(timer.current);
+          onUpdate({
+            downloadId,
+            percent: data.percent ?? state.percent,
+            status: "error",
+            // || not ?? — the backend initialises error to "", and an
+            // empty alert helps nobody.
+            error: data.error || "Download failed",
+          });
+        } else {
+          onUpdate({
+            downloadId,
+            percent: data.percent ?? state.percent,
+            status: "downloading",
+          });
+        }
+      } catch {
+        // Losing the poll (network blip, proxy error page) must not strand
+        // a spinner with no outcome — surface it as an error.
+        clearInterval(timer.current);
+        onUpdate({
+          downloadId,
+          percent: state.percent,
+          status: "error",
+          error: "Lost contact with the download; retry to continue",
+        });
+      }
+    };
+
+    timer.current = setInterval(poll, 1000);
+    return () => clearInterval(timer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloadId, status]);
+
+  const progress = Math.min(100, Math.round(state.percent));
+
+  if (state.status === "error") {
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-red-400 truncate" role="alert">
+          {name}: {state.error || "Download failed"}
+        </span>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-1.5">
@@ -139,7 +216,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<SourceFilter>("all");
   const [subFilter, setSubFilter] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState<Set<string>>(new Set());
+  const [downloading, setDownloading] = useState<Record<string, DownloadState>>({});
 
   const [isFallback, setIsFallback] = useState(false);
 
@@ -210,14 +287,26 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
             const variants = Array.isArray(m.variants)
               ? (m.variants as Array<Record<string, unknown>>)
               : [];
-            // Pick smallest variant for display size estimate.
+            // Pick the smallest variant (by size_mb) as both the display
+            // size estimate and the default download target, falling back
+            // to the first variant when none carry a usable size_mb.
             let sizeLabel = "\u2014";
+            let variantId: string | undefined;
             if (variants.length > 0) {
-              const sizes = variants
-                .map((v) => (v.size_mb as number) ?? 0)
-                .filter((n) => n > 0);
-              if (sizes.length > 0) {
-                sizeLabel = fmtSize(Math.min(...sizes));
+              const sized = variants.filter(
+                (v) => typeof v.size_mb === "number" && (v.size_mb as number) > 0,
+              );
+              const smallest =
+                sized.length > 0
+                  ? sized.reduce((a, b) =>
+                      (b.size_mb as number) < (a.size_mb as number) ? b : a,
+                    )
+                  : variants[0];
+              variantId = (smallest?.id as string) || undefined;
+              if (sized.length > 0) {
+                sizeLabel = fmtSize(
+                  Math.min(...sized.map((v) => v.size_mb as number)),
+                );
               }
             }
             const compat =
@@ -234,6 +323,8 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                 ? (m.capabilities as string[])
                 : [],
               size: sizeLabel,
+              variantId,
+              installed: Boolean(m.has_downloaded_variant),
             };
           });
 
@@ -288,29 +379,80 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     setDownloaded((prev) => prev.filter((m) => m.id !== id));
   };
 
-  const handleDownload = (model: AvailableModel) => {
-    setDownloading((prev) => new Set(prev).add(model.id));
-  };
-
-  const handleDownloadDone = (model: AvailableModel) => {
-    setDownloading((prev) => {
-      const next = new Set(prev);
-      next.delete(model.id);
-      return next;
-    });
-    setDownloaded((prev) => [
+  const handleDownload = useCallback(async (model: AvailableModel) => {
+    if (!model.variantId) {
+      setDownloading((prev) => ({
+        ...prev,
+        [model.id]: {
+          percent: 0,
+          status: "error",
+          error: "No downloadable variant for this model",
+        },
+      }));
+      return;
+    }
+    setDownloading((prev) => ({
       ...prev,
-      {
-        id: model.id,
-        filename: `${model.id}-q4_k_m.gguf`,
-        size: model.size,
-        format: "GGUF",
-        quantization: "Q4_K_M",
-        host: "controller",
-        hostKind: "controller",
-      },
-    ]);
-  };
+      [model.id]: { percent: 0, status: "starting" },
+    }));
+    try {
+      const res = await fetch("/api/models/download", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          app_id: model.id,
+          variant_id: model.variantId,
+        }),
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>);
+      if (!res.ok || !data.download_id) {
+        setDownloading((prev) => ({
+          ...prev,
+          [model.id]: {
+            percent: 0,
+            status: "error",
+            error:
+              (data.error as string) ||
+              (data.detail as string) ||
+              "The download could not be started",
+          },
+        }));
+        return;
+      }
+      setDownloading((prev) => ({
+        ...prev,
+        [model.id]: {
+          percent: 0,
+          status: "downloading",
+          downloadId: data.download_id as string,
+        },
+      }));
+    } catch {
+      setDownloading((prev) => ({
+        ...prev,
+        [model.id]: {
+          percent: 0,
+          status: "error",
+          error: "Could not reach the backend to start the download",
+        },
+      }));
+    }
+  }, []);
+
+  const handleDownloadComplete = useCallback(
+    async (modelId: string) => {
+      setDownloading((prev) => {
+        const next = { ...prev };
+        delete next[modelId];
+        return next;
+      });
+      // Re-fetch the real catalog instead of fabricating a downloaded
+      // entry, so the Downloaded Models list reflects backend truth.
+      await fetchModels();
+    },
+    [fetchModels],
+  );
 
   const q = search.toLowerCase();
 
@@ -556,17 +698,25 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
             )}
 
             {/* Downloading */}
-            {downloading.size > 0 && (
+            {Object.keys(downloading).length > 0 && (
               <section aria-label="Downloads in progress">
                 <h2 className="text-sm font-semibold mb-3">Downloading</h2>
                 <div className="space-y-2">
-                  {[...downloading].map((id) => {
+                  {Object.entries(downloading).map(([id, state]) => {
                     const model = available.find((m) => m.id === id);
                     if (!model) return null;
                     return (
                       <Card key={id}>
                         <CardContent className="p-3.5">
-                          <DownloadProgress name={model.name} onDone={() => handleDownloadDone(model)} />
+                          <DownloadProgress
+                            name={model.name}
+                            state={state}
+                            onUpdate={(next) =>
+                              setDownloading((prev) => ({ ...prev, [id]: next }))
+                            }
+                            onComplete={() => handleDownloadComplete(id)}
+                            onRetry={() => handleDownload(model)}
+                          />
                         </CardContent>
                       </Card>
                     );
@@ -592,8 +742,9 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {filteredAvailable.map((model) => {
                     const compat = COMPAT_STYLES[model.compatibility] ?? { dot: "bg-emerald-400", label: "Recommended" };
-                    const isDownloaded = downloaded.some((d) => d.id === model.id);
-                    const isDownloading = downloading.has(model.id);
+                    const isDownloaded =
+                      model.installed || downloaded.some((d) => d.id === model.id);
+                    const isDownloading = model.id in downloading;
 
                     return (
                       <Card key={model.id}>
