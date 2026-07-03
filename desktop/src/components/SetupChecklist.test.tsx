@@ -63,30 +63,39 @@ function mockFetchStatus(status: Record<string, unknown>) {
   );
 }
 
-// Same poll interval the component uses (NPU_POLL_MS in SetupChecklist.tsx)
+// Same poll interval the component uses (BACKEND_POLL_MS in SetupChecklist.tsx)
 // while an install is in flight.
-const NPU_POLL_MS = 3000;
+const BACKEND_POLL_MS = 3000;
 
 /**
- * Stateful fetch mock for the NPU one-tap install flow: /api/setup/status
- * reflects `state.npuRunning`, and /api/setup/install-npu-backend responds
- * according to `installOk`. Returns the mutable state so a test can flip
- * npuRunning to simulate the backend coming up mid-poll.
+ * Stateful fetch mock for the one-tap backend install flow: /api/setup/status
+ * reflects `state.backendRunning` for the given `accel`, and
+ * /api/setup/install-backend responds according to `installOk`. Returns the
+ * mutable state so a test can flip backendRunning to simulate the backend
+ * coming up mid-poll.
  */
-function mockFetchNpuInstallFlow({ installOk = true }: { installOk?: boolean } = {}) {
-  const state = { npuRunning: false };
+function mockFetchBackendInstallFlow(
+  { accel = "rknpu", installOk = true }: { accel?: string; installOk?: boolean } = {},
+) {
+  const state = { backendRunning: false };
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
       if (url === "/api/setup/status") {
         return Promise.resolve(
           new Response(
-            JSON.stringify({ ...baseStatus, npu_present: true, npu_backend_running: state.npuRunning }),
+            JSON.stringify({
+              ...baseStatus,
+              npu_present: accel === "rknpu",
+              npu_backend_running: accel === "rknpu" && state.backendRunning,
+              accel,
+              default_backend_running: state.backendRunning,
+            }),
             { status: 200, headers: { "Content-Type": "application/json" } },
           ),
         );
       }
-      if (url === "/api/setup/install-npu-backend") {
+      if (url === "/api/setup/install-backend") {
         return Promise.resolve(new Response("{}", { status: installOk ? 200 : 500 }));
       }
       if (url === "/api/setup/dismiss") {
@@ -244,7 +253,13 @@ describe("SetupChecklist", () => {
   });
 
   it("shows the NPU step as an additional item when an NPU is present", async () => {
-    mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: false });
+    mockFetchStatus({
+      ...baseStatus,
+      npu_present: true,
+      npu_backend_running: false,
+      accel: "rknpu",
+      default_backend_running: false,
+    });
     render(<SetupChecklist />);
     expect(await screen.findByText("Install the NPU backend")).toBeInTheDocument();
     expect(
@@ -261,6 +276,8 @@ describe("SetupChecklist", () => {
       complete: true,
       npu_present: true,
       npu_backend_running: false,
+      accel: "rknpu",
+      default_backend_running: false,
     });
     render(<SetupChecklist />);
     expect(await screen.findByText("Install the NPU backend")).toBeInTheDocument();
@@ -272,6 +289,8 @@ describe("SetupChecklist", () => {
       complete: true,
       npu_present: true,
       npu_backend_running: true,
+      accel: "rknpu",
+      default_backend_running: true,
     });
     const { container } = render(<SetupChecklist />);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/setup/status"));
@@ -280,7 +299,13 @@ describe("SetupChecklist", () => {
   });
 
   it("marks the NPU step complete when the backend is running", async () => {
-    mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: true });
+    mockFetchStatus({
+      ...baseStatus,
+      npu_present: true,
+      npu_backend_running: true,
+      accel: "rknpu",
+      default_backend_running: true,
+    });
     render(<SetupChecklist />);
     const doneStep = await screen.findByRole("button", {
       name: "Install the NPU backend — complete",
@@ -365,14 +390,20 @@ describe("SetupChecklist", () => {
   });
 
   it("also offers a secondary Open in Store link on the outstanding NPU step", async () => {
-    mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: false });
+    mockFetchStatus({
+      ...baseStatus,
+      npu_present: true,
+      npu_backend_running: false,
+      accel: "rknpu",
+      default_backend_running: false,
+    });
     render(<SetupChecklist />);
     expect(await screen.findByRole("button", { name: "Install NPU backend" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open in Store" })).toBeInTheDocument();
   });
 
-  it("tapping Install NPU backend POSTs to install-npu-backend and shows an in-progress state", async () => {
-    mockFetchNpuInstallFlow();
+  it("tapping Install NPU backend POSTs to install-backend and shows an in-progress state", async () => {
+    mockFetchBackendInstallFlow({ accel: "rknpu" });
     render(<SetupChecklist />);
     const installBtn = await screen.findByRole("button", { name: "Install NPU backend" });
 
@@ -380,17 +411,17 @@ describe("SetupChecklist", () => {
 
     await waitFor(() => {
       expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-        "/api/setup/install-npu-backend",
+        "/api/setup/install-backend",
         expect.objectContaining({ method: "POST" }),
       );
     });
     expect(await screen.findByText("Installing NPU backend...")).toBeInTheDocument();
   });
 
-  it("ticks the NPU step automatically once a status poll reports npu_backend_running", async () => {
+  it("ticks the NPU step automatically once a status poll reports the backend running", async () => {
     vi.useFakeTimers();
     try {
-      const state = mockFetchNpuInstallFlow();
+      const state = mockFetchBackendInstallFlow({ accel: "rknpu" });
       render(<SetupChecklist />);
 
       // Let the initial /api/setup/status fetch (mount effect) resolve.
@@ -408,9 +439,9 @@ describe("SetupChecklist", () => {
       expect(screen.getByText("Installing NPU backend...")).toBeInTheDocument();
 
       // Simulate the backend coming up, then let the in-flight poll interval fire.
-      state.npuRunning = true;
+      state.backendRunning = true;
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(NPU_POLL_MS);
+        await vi.advanceTimersByTimeAsync(BACKEND_POLL_MS);
       });
 
       expect(
@@ -422,7 +453,7 @@ describe("SetupChecklist", () => {
   });
 
   it("shows a clear error with retry when the install POST fails", async () => {
-    mockFetchNpuInstallFlow({ installOk: false });
+    mockFetchBackendInstallFlow({ accel: "rknpu", installOk: false });
     render(<SetupChecklist />);
     const installBtn = await screen.findByRole("button", { name: "Install NPU backend" });
 
@@ -431,5 +462,106 @@ describe("SetupChecklist", () => {
     expect(await screen.findByText("Couldn't install the NPU backend. Try again.")).toBeInTheDocument();
     // The button reverts to its idle label so tapping it again retries.
     expect(screen.getByRole("button", { name: "Install NPU backend" })).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Platform-generalized backend step (beyond Rockchip): NVIDIA CUDA / AMD
+  // ROCm / Apple Silicon (Metal) / x86 CPU-only all get the llama.cpp-server
+  // copy and one-tap flow via the same /api/setup/install-backend endpoint.
+  // -------------------------------------------------------------------------
+
+  it("hides the backend step entirely when accel is none (e.g. Intel Arc)", async () => {
+    mockFetchStatus({ ...baseStatus, accel: "none", default_backend_running: false });
+    render(<SetupChecklist />);
+    await screen.findByText("Get started");
+    expect(screen.queryByText("Install a local model backend")).toBeNull();
+    expect(screen.getByText("0/6")).toBeInTheDocument();
+  });
+
+  it("shows the llama.cpp-server copy for a CUDA device", async () => {
+    mockFetchStatus({ ...baseStatus, accel: "cuda", default_backend_running: false });
+    render(<SetupChecklist />);
+    expect(await screen.findByText("Install a local model backend")).toBeInTheDocument();
+    expect(
+      screen.getByText("Runs chat and memory models locally on this device's GPU."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install llama.cpp server" })).toBeInTheDocument();
+  });
+
+  it("shows the llama.cpp-server copy for a ROCm device", async () => {
+    mockFetchStatus({ ...baseStatus, accel: "rocm", default_backend_running: false });
+    render(<SetupChecklist />);
+    expect(await screen.findByText("Install a local model backend")).toBeInTheDocument();
+    expect(
+      screen.getByText("Runs chat and memory models locally on this device's GPU."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the llama.cpp-server copy for an Apple Silicon (Metal) device", async () => {
+    mockFetchStatus({ ...baseStatus, accel: "metal", default_backend_running: false });
+    render(<SetupChecklist />);
+    expect(await screen.findByText("Install a local model backend")).toBeInTheDocument();
+    expect(
+      screen.getByText("Runs chat and memory models locally on this device's GPU."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the CPU-flavored copy for a CPU-only device", async () => {
+    mockFetchStatus({ ...baseStatus, accel: "cpu", default_backend_running: false });
+    render(<SetupChecklist />);
+    expect(await screen.findByText("Install a local model backend")).toBeInTheDocument();
+    expect(
+      screen.getByText("Runs chat and memory models locally on this device's CPU."),
+    ).toBeInTheDocument();
+  });
+
+  it("tapping Install llama.cpp server on a CUDA device POSTs to install-backend and ticks on completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = mockFetchBackendInstallFlow({ accel: "cuda" });
+      render(<SetupChecklist />);
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const installBtn = screen.getByRole("button", { name: "Install llama.cpp server" });
+
+      await act(async () => {
+        fireEvent.click(installBtn);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+        "/api/setup/install-backend",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(screen.getByText("Installing llama.cpp server...")).toBeInTheDocument();
+
+      state.backendRunning = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKEND_POLL_MS);
+      });
+
+      expect(
+        screen.getByRole("button", { name: "Install a local model backend — complete" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a clear error with retry for the llama.cpp-server install on a CUDA device", async () => {
+    mockFetchBackendInstallFlow({ accel: "cuda", installOk: false });
+    render(<SetupChecklist />);
+    const installBtn = await screen.findByRole("button", { name: "Install llama.cpp server" });
+
+    fireEvent.click(installBtn);
+
+    expect(
+      await screen.findByText("Couldn't install the local model backend. Try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install llama.cpp server" })).toBeInTheDocument();
   });
 });
