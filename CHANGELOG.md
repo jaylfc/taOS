@@ -7,6 +7,19 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.21] - 2026-07-03
+
+### Added
+- App Runtime: install-time permission consent. Installing a sandboxed app now shows a dialog listing the capabilities it requests, with sensitive ones (network, agent, model, memory) highlighted, and you grant or deny before the app can use them (#1579).
+- App Runtime: container app tier. Apps can now ship as their own container alongside sandboxed web apps, deployed on a per-app port bound to localhost with memory and CPU caps and reached through an isolated proxy (#1580).
+
+### Fixed
+- Store: installing an agent framework (Hermes, OpenClaw) now actually does something. It enables the framework for deployment in the Agents app, downloads its base image in the background with real progress, and notifies you when it is ready; the framework's Open action now takes you to the Agents app to deploy. Previously the install silently did nothing while showing "installed". Reported by @mandresve (#1582).
+- Models: deleting a model now removes it on the backend instead of only hiding it in the UI, and a freshly downloaded model shows as installed immediately without reopening the dialog. Reported by @mandresve (#1581, #1548).
+- Providers: providers no longer show a false Error (or a contradictory Running and Error together) on a healthy install. The panel reports true backend status, the rkllama default port matches the installer, and the toggle switches render correctly. Reported by @mandresve (#1578).
+- Settings: the Logs pane now shows real system logs (controller, model backends, LLM proxy) with a live tail, not just browser-side errors, so backend failures are actually visible. Reported by @mandresve (#1583).
+- Text Editor: creating notes and documents works again over plain http. The editor no longer crashes on a missing secure-context API, and the same class of bug was hardened across the assistant panel, push registration, and Web Studio. Reported by @mandresve (#1584).
+
 ## [1.0.0-beta.20] - 2026-07-03
 
 ### Added
