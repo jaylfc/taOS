@@ -96,8 +96,8 @@ const STUDIOS: CatalogApp[] = [
     cover: "radial-gradient(120% 120% at 70% 25%,#3a4150,transparent 60%),linear-gradient(140deg,#1c1f28,#13151b)",
   },
   {
-    id: "office-suite",
-    name: "Office Suite",
+    id: "office-studio",
+    name: "Office Studio",
     type: "studio",
     category: "Productivity",
     version: "0.0.0",

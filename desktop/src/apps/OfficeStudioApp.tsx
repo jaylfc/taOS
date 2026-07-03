@@ -1,19 +1,18 @@
 import { useState } from "react";
-import { Sparkles, Type, Grid, Monitor, Database } from "lucide-react";
-import { WriteView } from "./officesuite/WriteView";
-import { CalcView } from "./officesuite/CalcView";
-import { SlidesView } from "./officesuite/SlidesView";
+import { Sparkles, Type, Grid, Monitor } from "lucide-react";
+import { WriteView } from "./officestudio/WriteView";
+import { CalcView } from "./officestudio/CalcView";
+import { SlidesView } from "./officestudio/SlidesView";
 
-type OfficeView = "write" | "calc" | "slides" | "data";
+type OfficeView = "write" | "calc" | "slides";
 
 const RAIL: { id: OfficeView; label: string; icon: typeof Sparkles }[] = [
   { id: "write", label: "Write", icon: Type },
   { id: "calc", label: "Calc", icon: Grid },
   { id: "slides", label: "Slides", icon: Monitor },
-  { id: "data", label: "Data", icon: Database },
 ];
 
-export function OfficeSuiteApp({ windowId: _windowId }: { windowId: string }) {
+export function OfficeStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [view, setView] = useState<OfficeView>("write");
 
   return (
@@ -21,7 +20,7 @@ export function OfficeSuiteApp({ windowId: _windowId }: { windowId: string }) {
       <div className="flex min-h-0 flex-1">
         {/* left rail */}
         <nav
-          aria-label="Office Suite views"
+          aria-label="Office Studio views"
           className="flex w-[68px] flex-none flex-col items-center gap-1.5 border-r border-shell-border bg-shell-bg-deep py-3.5"
         >
           {RAIL.map((r) => {
@@ -61,11 +60,6 @@ export function OfficeSuiteApp({ windowId: _windowId }: { windowId: string }) {
           {view === "write" && <WriteView />}
           {view === "calc" && <CalcView />}
           {view === "slides" && <SlidesView />}
-          {view === "data" && (
-            <div className="flex flex-1 items-center justify-center text-[13px] text-shell-text-tertiary">
-              Data view coming soon
-            </div>
-          )}
         </div>
       </div>
     </div>

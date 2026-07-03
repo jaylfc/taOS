@@ -21,7 +21,7 @@ describe("StudiosView", () => {
       "Design Studio",
       "Music Studio",
       "App Studio",
-      "Office Suite",
+      "Office Studio",
       "Web Studio",
     ];
     for (const name of expected) {

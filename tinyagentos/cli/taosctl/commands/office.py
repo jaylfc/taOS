@@ -1,4 +1,4 @@
-"""taosctl office -- manage Office Suite documents from the shell.
+"""taosctl office -- manage Office Studio documents from the shell.
 
 Wraps tinyagentos/routes/office.py (CRUD on /api/office/docs) so agents and
 scripts can create, list, read, update, and delete documents (write, calc, db,
@@ -15,7 +15,7 @@ KINDS = ("write", "calc", "db", "slides")
 
 
 def register(subparsers) -> None:
-    p = subparsers.add_parser(NOUN, help="Manage Office Suite documents")
+    p = subparsers.add_parser(NOUN, help="Manage Office Studio documents")
     verbs = p.add_subparsers(dest="verb", required=True, metavar="<verb>")
 
     cp = verbs.add_parser("create", help="Create a document")

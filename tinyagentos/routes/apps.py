@@ -33,7 +33,7 @@ _GENERIC_ICON = "/static/app-icons/generic-service.svg"
 OPTIONAL_FRONTEND_APPS = {
     # Creative Studios: a frontend-only optional app whose install row just
     # flips the launcher visibility, no service spawned.
-    "coding-studio", "design-studio", "music-studio", "app-studio", "office-suite",
+    "coding-studio", "design-studio", "music-studio", "app-studio", "office-studio",
 }
 _FRONTEND_APP_KIND = "frontend-app"
 
@@ -44,7 +44,7 @@ APP_VERSIONS: dict[str, str] = {
     "design-studio": "1.0.0",
     "music-studio": "1.0.0",
     "app-studio": "1.0.0",
-    "office-suite": "1.0.0",
+    "office-studio": "1.0.0",
 }
 
 # Trust level for each optional app (all current optional apps are first-party).
@@ -53,7 +53,7 @@ APP_TRUST: dict[str, str] = {
     "design-studio": "first-party",
     "music-studio": "first-party",
     "app-studio": "first-party",
-    "office-suite": "first-party",
+    "office-studio": "first-party",
 }
 
 
