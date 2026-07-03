@@ -19,6 +19,17 @@ interface Note {
 
 const STORAGE_KEY = "tinyagentos-notes";
 
+// crypto.randomUUID() only exists in secure contexts (https, or localhost).
+// taOS is normally reached over plain http (e.g. http://taos.local:6969), so
+// window.crypto.randomUUID is undefined there and calling it threw inside the
+// click handler, silently killing note creation. Fall back to a non-crypto id.
+function newNoteId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `note-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function loadNotes(): Note[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -199,7 +210,7 @@ export function TextEditorApp({ windowId: _windowId }: { windowId: string }) {
 
   const createNote = useCallback(() => {
     const note: Note = {
-      id: crypto.randomUUID(),
+      id: newNoteId(),
       content: "# New Note\n\nStart writing...",
       updatedAt: Date.now(),
     };
