@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Platformer Lite</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0a0d14; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; color: #fff; }
+      #scene { position: absolute; inset: 0; }
+      #scene canvas { display: block; }
+      #hud { position: absolute; top: 12px; left: 12px; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+      #score { font-size: 20px; font-weight: 600; }
+      #help { position: absolute; bottom: 12px; left: 12px; font-size: 13px; opacity: 0.75; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+      #message { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; font-weight: 700; text-align: center; text-shadow: 0 2px 6px rgba(0,0,0,0.9); display: none; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="scene"></div>
+    <div id="hud"><div id="score">Gems: 0 / 0</div></div>
+    <div id="help">WASD / Arrow keys to move &middot; Space to jump</div>
+    <div id="message"></div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>

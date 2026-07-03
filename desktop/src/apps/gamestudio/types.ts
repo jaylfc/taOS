@@ -1,78 +1,46 @@
 /* ------------------------------------------------------------------ */
 /*  Game Studio — shared types                                         */
 /*                                                                     */
-/*  Phase 1 ships the app shell + a real three.js preview. AI          */
-/*  generation, the skill pack and asset backends arrive in later      */
-/*  phases; the types here describe the shell, the demo scenes and     */
-/*  the honest "later phase" affordances, not a generation pipeline.   */
+/*  A game is a real, saved thing: an id, some metadata, and a flat set */
+/*  of web files persisted server-side under data/games/{id}/. Every    */
+/*  view (Create, Editor, Library, Share) reads or writes through the   */
+/*  same /api/games endpoints -- see games-api.ts.                      */
 /* ------------------------------------------------------------------ */
 
-export type StudioView = "create" | "play" | "share";
+export type StudioView = "create" | "editor" | "library" | "share";
 
-/** Device preview the Play stage emulates. XR is a labelled affordance in
- *  phase 1 (real WebXR is a later phase); Desktop/Mobile resize the stage. */
-export type DevicePreview = "desktop" | "mobile" | "xr";
-
-/** A demo scene the three.js preview can load. Each template maps to one.
- *  Phase 1 ships two genuinely interactive scenes (runner, orbit); the rest
- *  fall back to the runner scene with their own label, so "Use template"
- *  always loads something real rather than faking a bespoke build. */
-export type SceneKind = "runner" | "orbit";
-
-/** Genre chips shown on the Create view. Multi-select, illustrative; they do
- *  not drive generation in phase 1. */
-export const GENRES = [
-  "Platformer",
-  "Endless Runner",
-  "Tower Defense",
-  "Top-down Shooter",
-  "Racing",
-  "Puzzle",
-  "FPS",
-  "XR / VR Experience",
-] as const;
-
-export type Genre = (typeof GENRES)[number];
-
-/** Offline model selector options. Labelled-but-inert in phase 1: offline
- *  generation is a later phase, so picking a model changes the label only. */
-export const OFFLINE_MODELS = [
-  "Gemma 4 E4B (offline)",
-  "Qwen3 4B (offline)",
-  "Llama 3.2 3B (offline)",
-] as const;
-
-export const ART_STYLES = [
-  "Low-poly 3D",
-  "Pixel art",
-  "Flat vector",
-  "Hand-drawn",
-] as const;
-
-export const DIFFICULTIES = ["Casual", "Normal", "Hard"] as const;
-
-/** A starter template. Selecting one loads its demo scene into the Play view. */
+/** A starter template: a small, real, playable seed file set shipped under
+ *  desktop/public/gamestudio-seeds/{id}/. "Generate with AI" hands the seed
+ *  files to the agent to customize; "Use template" saves the seed as-is. */
 export interface Template {
   id: string;
   title: string;
   genre: string;
   desc: string;
-  /** CSS background for the card cover + the publish cover. */
+  /** CSS background for the template card + share cover. */
   cover: string;
-  /** Which real three.js scene the Play view loads for this template. */
-  scene: SceneKind;
+  /** Filenames (flat, no subdirectories) that make up this template's seed. */
+  files: string[];
 }
 
-/** A build-log entry. Static/illustrative in phase 1: it represents the
- *  future agent build trace (a director routes a prompt across specialist
- *  blocks), not a live pipeline. */
-export interface BuildStep {
-  who: string;
-  what: string;
-  tag: string;
-  state: "done" | "run" | "queue";
-  director?: boolean;
+/** Metadata for a saved game, as returned by GET /api/games and the
+ *  non-`files` fields of GET /api/games/{id}. */
+export interface GameMeta {
+  id: string;
+  name: string;
+  prompt: string;
+  template: string;
+  created: number;
+  updated: number;
 }
 
-/** Visibility for the Share view publish card. */
-export type Visibility = "private" | "community";
+/** GET /api/games/{id}: metadata plus the full file map. */
+export interface GameRecord extends GameMeta {
+  files: Record<string, string>;
+}
+
+/** A chat turn in the Editor's AI sidebar. */
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}

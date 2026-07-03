@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Top-Down Collector</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0a0d14; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; color: #fff; }
+      #game { display: block; }
+      #help { position: absolute; bottom: 12px; left: 12px; font-size: 13px; opacity: 0.75; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="help">WASD / Arrow keys to move &middot; collect gems, avoid the red hazards</div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>

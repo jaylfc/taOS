@@ -1,132 +1,72 @@
-import type { Template, BuildStep } from "./types";
+import type { Template } from "./types";
 
 /* ------------------------------------------------------------------ */
-/*  Starter templates + the illustrative build log                     */
+/*  Starter templates                                                  */
 /*                                                                     */
-/*  Templates mirror the approved mock. Each carries a `scene` that the */
-/*  Play view renders with real three.js. Phase 1 ships two interactive */
-/*  scenes (runner, orbit); the others reuse the runner scene under     */
-/*  their own title, so "Use template" always loads a live 3D preview.  */
+/*  Each template is a real, playable seed shipped as static files      */
+/*  under desktop/public/gamestudio-seeds/{id}/ (served at              */
+/*  /desktop/gamestudio-seeds/{id}/{file} -- the desktop app's Vite      */
+/*  base). Every seed is fully self-contained: the two 3D templates      */
+/*  bundle three.js as a relative three.module.js, never a CDN.         */
 /* ------------------------------------------------------------------ */
 
 export const TEMPLATES: Template[] = [
   {
-    id: "pixel-platformer",
-    title: "Pixel Platformer",
+    id: "platformer-lite",
+    title: "Platformer Lite",
     genre: "Platformer",
-    desc: "Run, jump and stomp across handcrafted levels with springs and moving platforms.",
+    desc: "Jump across floating platforms and collect every gem in a real 3D scene with gravity and a follow camera.",
     cover:
       "radial-gradient(120% 120% at 30% 20%, #1f5a3a, transparent 60%), linear-gradient(140deg,#12261b,#0c1712)",
-    scene: "runner",
+    files: ["index.html", "game.js", "three.module.js"],
   },
   {
-    id: "neon-runner",
-    title: "Neon Runner",
-    genre: "Endless Runner",
-    desc: "Auto-run through a synthwave city. Dodge, slide and chase the high score.",
-    cover:
-      "radial-gradient(120% 120% at 70% 25%, #3a4a7a, transparent 60%), linear-gradient(140deg,#16213a,#0c1120)",
-    scene: "runner",
-  },
-  {
-    id: "keep-defense",
-    title: "Keep Defense",
-    genre: "Tower Defense",
-    desc: "Place towers along the path and hold the line against waves of raiders.",
-    cover:
-      "radial-gradient(120% 120% at 40% 30%, #16607a, transparent 60%), linear-gradient(140deg,#0e2230,#0a1620)",
-    scene: "orbit",
-  },
-  {
-    id: "arena-top-down",
-    title: "Arena Top-Down",
-    genre: "Top-down Shooter",
-    desc: "Twin-stick survival in a tight arena with pickups and rising difficulty.",
+    id: "top-down-collector",
+    title: "Top-Down Collector",
+    genre: "Top-down",
+    desc: "Move around a bounded arena collecting gems while dodging bouncing hazards. Real canvas 2D movement and collision.",
     cover:
       "radial-gradient(120% 120% at 60% 25%, #2a3f7a, transparent 60%), linear-gradient(140deg,#141a2b,#0d1119)",
-    scene: "orbit",
+    files: ["index.html", "game.js"],
   },
   {
-    id: "drift-circuit",
-    title: "Drift Circuit",
-    genre: "Racing",
-    desc: "Three low-poly tracks, drift boost and ghost laps to beat.",
-    cover:
-      "radial-gradient(120% 120% at 35% 25%, #1f4d63, transparent 60%), linear-gradient(140deg,#10222a,#0b161b)",
-    scene: "runner",
-  },
-  {
-    id: "block-puzzle",
-    title: "Block Puzzle",
-    genre: "Puzzle",
-    desc: "Rotate and drop pieces to clear lines. Endless and daily modes.",
+    id: "breakout",
+    title: "Breakout",
+    genre: "Arcade",
+    desc: "Classic paddle-and-ball brick breaker with real physics, lives and a win/lose state.",
     cover:
       "radial-gradient(120% 120% at 60% 25%, #5a3a1f, transparent 60%), linear-gradient(140deg,#231811,#16100a)",
-    scene: "orbit",
+    files: ["index.html", "game.js"],
   },
   {
-    id: "corridor-fps",
-    title: "Corridor FPS",
-    genre: "FPS",
-    desc: "A short first-person shooting gallery with three rooms and a boss.",
+    id: "orbit-shooter",
+    title: "Orbit Shooter",
+    genre: "Shooter",
+    desc: "Aim your turret with the mouse and shoot down enemies closing in from every side in a 3D arena.",
     cover:
-      "radial-gradient(120% 120% at 40% 30%, #1f5a3a, transparent 60%), linear-gradient(140deg,#10261b,#0a1712)",
-    scene: "runner",
-  },
-  {
-    id: "orbit-tap",
-    title: "Orbit Tap",
-    genre: "XR / VR",
-    desc: "A room-scale tap-the-orb warm-up built for headsets and hand tracking.",
-    cover:
-      "radial-gradient(120% 120% at 65% 25%, #2a3f7a, transparent 60%), linear-gradient(140deg,#141a2b,#0d1119)",
-    scene: "orbit",
+      "radial-gradient(120% 120% at 40% 30%, #16607a, transparent 60%), linear-gradient(140deg,#0e2230,#0a1620)",
+    files: ["index.html", "game.js", "three.module.js"],
   },
 ];
 
-/** The template the Play stage loads before the user picks one, so the
- *  3D preview always has a real scene to render. */
 export const DEFAULT_TEMPLATE: Template = TEMPLATES[0]!;
 
-/** Illustrative build trace shown beside the Play stage. Static in phase 1:
- *  it pictures the future agent pipeline (a director splitting a prompt across
- *  specialist blocks), and is clearly labelled as a preview, not a live run. */
-export const BUILD_LOG: BuildStep[] = [
-  {
-    who: "Director",
-    what: "Reads the prompt, picks a template and splits the work across five specialist blocks.",
-    tag: "routing",
-    state: "done",
-    director: true,
-  },
-  {
-    who: "Gameplay",
-    what: "Wires the run loop, jump and lane swap, following the movement guide for the genre.",
-    tag: "gameplay",
-    state: "done",
-  },
-  {
-    who: "Graphics",
-    what: "Places low-poly geometry, materials and lighting in the scene you can preview here.",
-    tag: "graphics",
-    state: "run",
-  },
-  {
-    who: "UI",
-    what: "Score, combo meter, a pause sheet and a game-over card.",
-    tag: "ui",
-    state: "queue",
-  },
-  {
-    who: "Audio",
-    what: "Footsteps, pickups and a loop from the free pack.",
-    tag: "audio",
-    state: "queue",
-  },
-  {
-    who: "QA",
-    what: "Runs the game on desktop, mobile and fullscreen and checks it holds frame rate.",
-    tag: "qa",
-    state: "queue",
-  },
-];
+export function findTemplate(id: string): Template | undefined {
+  return TEMPLATES.find((t) => t.id === id);
+}
+
+/** Fetch a template's seed files as {filename: content}. three.module.js
+ *  (when present) is a plain ES module text file, not a binary asset, so it
+ *  round-trips through the same text-file storage as every other game file. */
+export async function fetchSeedFiles(template: Template): Promise<Record<string, string>> {
+  const entries = await Promise.all(
+    template.files.map(async (name) => {
+      const res = await fetch(`/desktop/gamestudio-seeds/${template.id}/${name}`);
+      if (!res.ok) {
+        throw new Error(`Failed to load "${name}" for the ${template.title} template (HTTP ${res.status})`);
+      }
+      return [name, await res.text()] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
