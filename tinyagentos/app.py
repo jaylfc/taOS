@@ -96,6 +96,7 @@ from tinyagentos.user_personas import UserPersonaStore
 from tinyagentos.installed_apps import InstalledAppsStore
 from tinyagentos.skills import SkillStore
 from tinyagentos.office_docs import OfficeDocStore
+from tinyagentos.web_sites import WebSiteStore
 from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_categories import CategoryEngine
@@ -395,6 +396,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     userspace_apps = UserspaceAppStore(data_dir / "userspace_apps.db")
     userspace_data = UserspaceDataStore(data_dir / "userspace_data.db")
     office_docs = OfficeDocStore(data_dir / "office_docs.db")
+    web_sites = WebSiteStore(data_dir / "web_sites.db")
     coding_workspaces_store = CodingWorkspaceStore(
         data_dir / "coding_workspaces.db",
         data_dir / "coding-workspaces",
@@ -509,6 +511,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.userspace_data = userspace_data
         await office_docs.init()
         app.state.office_docs = office_docs
+        await web_sites.init()
+        app.state.web_sites = web_sites
         await coding_workspaces_store.init()
         app.state.coding_workspaces = coding_workspaces_store
         await install_registry_store.init()
@@ -814,6 +818,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.userspace_apps = userspace_apps
         app.state.userspace_data = userspace_data
         app.state.office_docs = office_docs
+        app.state.web_sites = web_sites
         app.state.coding_workspaces = coding_workspaces_store
         app.state.install_registry = install_registry_store
         app.state.store_submissions = store_submissions
@@ -1288,6 +1293,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await userspace_apps.close()
         await userspace_data.close()
         await office_docs.close()
+        await web_sites.close()
         await coding_workspaces_store.close()
         await install_registry_store.close()
         await user_memory.close()
@@ -1477,6 +1483,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.userspace_apps = userspace_apps
     app.state.userspace_data = userspace_data
     app.state.office_docs = office_docs
+    app.state.web_sites = web_sites
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
     app.state.store_submissions = store_submissions

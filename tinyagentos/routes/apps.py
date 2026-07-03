@@ -34,6 +34,7 @@ OPTIONAL_FRONTEND_APPS = {
     # Creative Studios: a frontend-only optional app whose install row just
     # flips the launcher visibility, no service spawned.
     "coding-studio", "design-studio", "music-studio", "app-studio", "office-studio",
+    "web-studio",
 }
 _FRONTEND_APP_KIND = "frontend-app"
 
@@ -45,6 +46,7 @@ APP_VERSIONS: dict[str, str] = {
     "music-studio": "1.0.0",
     "app-studio": "1.0.0",
     "office-studio": "1.0.0",
+    "web-studio": "1.0.0",
 }
 
 # Trust level for each optional app (all current optional apps are first-party).
@@ -54,6 +56,7 @@ APP_TRUST: dict[str, str] = {
     "music-studio": "first-party",
     "app-studio": "first-party",
     "office-studio": "first-party",
+    "web-studio": "first-party",
 }
 
 
