@@ -4,6 +4,8 @@ Also covers the account-email path in /auth/setup.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -242,9 +244,11 @@ class TestSetupStatus:
             npu=SimpleNamespace(type="rknpu", tops=6)
         )
         import tinyagentos.installers.rkllama_installer as rk
+        import tinyagentos.installers.rkllamacpp_installer as rkcpp
         import tinyagentos.routes.setup as setup_routes
 
         monkeypatch.setattr(rk, "rkllama_is_running", lambda: True)
+        monkeypatch.setattr(rkcpp, "rkllamacpp_is_running", lambda: False)
         # The probe result is TTL-cached; reset so this test sees a fresh probe.
         monkeypatch.setattr(setup_routes, "_npu_probe_cache", (0.0, False))
         resp = await client.get("/api/setup/status")
@@ -259,14 +263,36 @@ class TestSetupStatus:
             npu=SimpleNamespace(type="rknpu", tops=6)
         )
         import tinyagentos.installers.rkllama_installer as rk
+        import tinyagentos.installers.rkllamacpp_installer as rkcpp
         import tinyagentos.routes.setup as setup_routes
 
         monkeypatch.setattr(rk, "rkllama_is_running", lambda: False)
+        monkeypatch.setattr(rkcpp, "rkllamacpp_is_running", lambda: False)
         monkeypatch.setattr(setup_routes, "_npu_probe_cache", (0.0, False))
         resp = await client.get("/api/setup/status")
         data = resp.json()
         assert data["npu_present"] is True
         assert data["npu_backend_running"] is False
+
+    async def test_npu_backend_running_true_via_rkllamacpp_alone(self, client, app, monkeypatch):
+        """Either NPU backend running satisfies the step — they're
+        alternatives, not a matched pair."""
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+        import tinyagentos.installers.rkllama_installer as rk
+        import tinyagentos.installers.rkllamacpp_installer as rkcpp
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(rk, "rkllama_is_running", lambda: False)
+        monkeypatch.setattr(rkcpp, "rkllamacpp_is_running", lambda: True)
+        monkeypatch.setattr(setup_routes, "_npu_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["npu_present"] is True
+        assert data["npu_backend_running"] is True
 
     async def test_dismissed_false_initially(self, client):
         resp = await client.get("/api/setup/status")
@@ -300,3 +326,91 @@ class TestSetupDismiss:
         resp = await client.post("/api/setup/dismiss")
         assert resp.status_code == 200
         assert resp.json()["dismissed"] is True
+
+
+# ---------------------------------------------------------------------------
+# POST /api/setup/install-npu-backend — one-tap NPU backend install
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestInstallNpuBackend:
+    """Gated on npu_present; triggers the rkllama + rk-llama.cpp backend
+    SERVER installs (not model pulls) via the same script path the Store
+    uses."""
+
+    async def test_404_or_400_when_no_hardware_profile(self, client, app):
+        app.state.hardware_profile = None
+        resp = await client.post("/api/setup/install-npu-backend")
+        assert resp.status_code in (400, 404)
+        assert "error" in resp.json()
+
+    async def test_400_when_npu_not_rockchip(self, client, app):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(npu=SimpleNamespace(type="none"))
+        resp = await client.post("/api/setup/install-npu-backend")
+        assert resp.status_code == 400
+
+    async def test_triggers_both_backend_installs_when_npu_present(
+        self, client, app, monkeypatch,
+    ):
+        """Both rkllama and rk-llama-cpp get dispatched through
+        _legacy_install — the exact same script path Store installs use —
+        and never touch the model-pull or image-gen paths."""
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        calls: list[str] = []
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            calls.append(app_id)
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        resp = await client.post("/api/setup/install-npu-backend")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["npu_present"] is True
+        assert set(data["backends"].keys()) == {"rkllama", "rk-llama-cpp"}
+        assert data["backends"]["rkllama"]["started"] is True
+        assert data["backends"]["rk-llama-cpp"]["started"] is True
+        assert "install_id" in data["backends"]["rkllama"]
+
+        # The two installs run as background tasks; let the loop drain them.
+        for _ in range(50):
+            if len(calls) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert set(calls) == {"rkllama", "rk-llama-cpp"}
+
+    async def test_reruns_safely_when_already_running(self, client, app, monkeypatch):
+        """Re-running (e.g. a half-installed box) is a no-op-safe retry —
+        the endpoint doesn't refuse a second call."""
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        first = await client.post("/api/setup/install-npu-backend")
+        second = await client.post("/api/setup/install-npu-backend")
+        assert first.status_code == 200
+        assert second.status_code == 200

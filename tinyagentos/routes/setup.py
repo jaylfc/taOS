@@ -6,6 +6,7 @@ POST /api/setup/dismiss → persist user's dismissal of the checklist
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -25,6 +26,11 @@ _npu_probe_cache: tuple[float, bool] = (0.0, False)
 
 
 async def _npu_backend_running() -> bool:
+    """True if either NPU LLM backend (rkllama or rk-llama.cpp) is live.
+
+    Installing either one from the Store satisfies the checklist step —
+    they're alternative backends for the same NPU, not a matched pair.
+    """
     global _npu_probe_cache
     now = time.monotonic()
     cached_at, cached = _npu_probe_cache
@@ -32,15 +38,20 @@ async def _npu_backend_running() -> bool:
         return cached
 
     from tinyagentos.installers.rkllama_installer import rkllama_is_running
+    from tinyagentos.installers.rkllamacpp_installer import rkllamacpp_is_running
 
-    try:
-        # rkllama_is_running never raises, but its socket probes block;
-        # keep them off the event loop and cap how long one can hang.
-        running = await asyncio.wait_for(
-            asyncio.to_thread(rkllama_is_running), _NPU_PROBE_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
-        running = False
+    async def _probe(fn) -> bool:
+        try:
+            # Neither probe raises, but both block on socket I/O; keep them
+            # off the event loop and cap how long one can hang.
+            return await asyncio.wait_for(asyncio.to_thread(fn), _NPU_PROBE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return False
+
+    rkllama_up, rkllamacpp_up = await asyncio.gather(
+        _probe(rkllama_is_running), _probe(rkllamacpp_is_running),
+    )
+    running = rkllama_up or rkllamacpp_up
     _npu_probe_cache = (now, running)
     return running
 
@@ -56,7 +67,7 @@ async def setup_status(request: Request):
       has_agent       — at least one deployed agent exists
       memory_enabled  — user completed the taOSmd memory setup wizard
       npu_present     — a Rockchip NPU was detected on this board (#1535)
-      npu_backend_running — a live rkllama answers on the taOS or legacy port
+      npu_backend_running — a live rkllama OR rk-llama.cpp answers locally
       dismissed       — user dismissed the checklist
       complete        — has_provider AND taos_model_set (the core two steps)
     """
@@ -115,3 +126,83 @@ async def setup_dismiss(request: Request):
     prefs["dismissed"] = True
     await store.save_preference("user", _PREF_NAMESPACE, prefs)
     return JSONResponse({"ok": True, "dismissed": True})
+
+
+@router.post("/api/setup/install-npu-backend")
+async def install_npu_backend(request: Request):
+    """One-tap install of the NPU LLM backend SERVERS (rkllama + rk-llama.cpp).
+
+    Runs each backend's Store install script via the same privileged
+    ScriptInstaller path the Store itself uses (creates/enables/starts the
+    systemd unit and health-gates on the service actually answering before
+    the script exits 0 — see scripts/install-rknpu.sh and
+    scripts/install-rk-llama-cpp.sh). Idempotent: re-running is safe and
+    self-heals a half-installed box, exactly like re-clicking Install in
+    the Store.
+
+    Deliberately scoped to just these two permissively-licensed
+    (Apache-2.0 / MIT) LLM-runtime servers — this is the user's one
+    explicit tap of consent for exactly those two installs, nothing more.
+    No models are pulled here (those go through the existing per-model
+    Store flow with their own license acceptance) and the AGPL RK NPU
+    image-gen stack is never touched by this endpoint. Only meaningful on
+    a Rockchip NPU board — 400 otherwise.
+    """
+    profile = getattr(request.app.state, "hardware_profile", None)
+    npu = getattr(profile, "npu", None)
+    npu_present = bool(npu is not None and getattr(npu, "type", "none") == "rknpu")
+    if not npu_present:
+        return JSONResponse(
+            {"error": "no Rockchip NPU detected on this device"}, status_code=400,
+        )
+
+    registry = getattr(request.app.state, "registry", None)
+    if registry is None:
+        return JSONResponse({"error": "app registry unavailable"}, status_code=500)
+
+    from tinyagentos.install_progress import get_global_store
+    from tinyagentos.routes.store_install import _legacy_install
+    from tinyagentos.task_utils import _create_supervised_task
+
+    progress = getattr(request.app.state, "install_progress_store", None) or get_global_store()
+    bg_tasks = getattr(request.app.state, "_background_tasks", None)
+    if bg_tasks is None:
+        bg_tasks = set()
+        request.app.state._background_tasks = bg_tasks
+
+    backends: dict[str, dict] = {}
+    for backend_app_id in ("rkllama", "rk-llama-cpp"):
+        manifest = registry.get(backend_app_id) if hasattr(registry, "get") else None
+        if manifest is None:
+            backends[backend_app_id] = {
+                "started": False,
+                "error": f"{backend_app_id!r} not in catalog",
+            }
+            continue
+
+        entry = progress.start(app_id=backend_app_id, target_remote=None)
+        install_id = entry.install_id
+
+        async def _run(app_id: str = backend_app_id, install_id: str = install_id) -> None:
+            progress.update(install_id, state="unpacking", detail=f"installing {app_id}")
+            try:
+                # Same dispatcher the Store's install-v2 endpoint uses for
+                # type=service manifests — running the real script, gated
+                # on it exiting 0 (verified-running), not just "ran".
+                resp = await _legacy_install(request, {}, app_id, None)
+            except Exception as exc:  # noqa: BLE001
+                progress.finish(install_id, success=False, error=str(exc))
+                return
+            success = getattr(resp, "status_code", 200) < 400
+            error = None
+            if not success:
+                try:
+                    error = json.loads(resp.body).get("error")
+                except Exception:  # noqa: BLE001
+                    error = "install failed"
+            progress.finish(install_id, success=success, error=error)
+
+        _create_supervised_task(_run(), bg_tasks)
+        backends[backend_app_id] = {"started": True, "install_id": install_id}
+
+    return JSONResponse({"ok": True, "npu_present": True, "backends": backends})

@@ -35,6 +35,8 @@ import asyncio
 import hashlib
 import logging
 import os
+import socket
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +70,30 @@ def _default_port() -> int:
 
 
 SERVICE_NAME = "rkllamacpp"
+
+
+def rkllamacpp_is_running(timeout: float = 1.0) -> bool:
+    """True if a live rk-llama.cpp llama-server answers /health locally.
+
+    Mirrors ``rkllama_is_running()`` in rkllama_installer.py — a cheap
+    synchronous socket + HTTP probe (no variant/model context needed),
+    used so the setup checklist's NPU step can be satisfied by either
+    NPU backend, and so a running-but-unregistered service is still
+    detected. Callers should run this off the event loop
+    (``asyncio.to_thread``) since it blocks on socket I/O.
+    """
+    port = _default_port()
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            pass
+    except OSError:
+        return False
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 class RkLlamaCppInstaller(AppInstaller):

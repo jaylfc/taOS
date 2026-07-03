@@ -285,6 +285,23 @@ def _docker_published_port(install_config: dict) -> int:
     return 0
 
 
+def _manifest_first_port(manifest) -> int:
+    """Return the first port declared in a manifest's top-level ``requires.ports``.
+
+    Script-backed service manifests (rkllama, rk-llama-cpp, ollama, ...)
+    declare their port under the manifest's top-level ``requires`` block,
+    not under ``install`` (that's a docker-only convention — see
+    ``_docker_published_port``).
+    """
+    ports = (getattr(manifest, "requires", None) or {}).get("ports") or []
+    for p in ports:
+        try:
+            return int(p)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
 async def _legacy_install(request: Request, body: dict, app_id: str | None, target_remote: str | None) -> JSONResponse:
     """Legacy method-driven install path for non-model manifests.
 
@@ -437,14 +454,17 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
         resp_target = _target_remote or "local"
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "target_remote": resp_target, **result})
 
-    # script — host-side backend/plugin manifests (e.g. ollama, tailscale)
-    # that declare install.method: script. Previously this fell straight
-    # through to the default branch below and silently marked the app
-    # installed without ever running the script (same class of bug as #410
-    # below for docker/pip, filed as #1582). Actually run it via
-    # ScriptInstaller and only mark installed on success; a missing or
-    # failing script now returns an explicit error instead of a false
-    # "installed".
+    # script — host-side backend/plugin manifests (e.g. ollama, rkllama,
+    # tailscale) that declare install.method: script. Previously this fell
+    # straight through to the default branch below and silently marked the
+    # app installed without ever running the script (same class of bug as
+    # #410 below for docker/pip, filed as #1582). Actually run it via
+    # ScriptInstaller and only mark installed / record the runtime location
+    # when the script EXITS 0. These scripts are written to be their own
+    # health gate (e.g. install-rkllama.sh delegates to install-rknpu.sh,
+    # which polls the service's HTTP port before returning) so rc==0 here
+    # means the service is actually up, not just that files landed on disk.
+    # On failure, surface the real script error and do not mark installed.
     if backend == "script":
         installer = get_installer("script")
         try:
@@ -457,6 +477,24 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
                 {"error": inst_result.get("error", "script install failed")},
                 status_code=500,
             )
+        store = getattr(request.app.state, "installed_apps", None)
+        if store is not None:
+            await store.install(app_id, body.get("version", ""), meta)
+            # Record where the now-verified-running service actually
+            # listens, same as the docker branch below, so it gets a
+            # Launchpad shortcut / proxy target. Script-backed services are
+            # host-level systemd units (installed via sudo on this
+            # controller), not remote-incus deploys, so always 127.0.0.1.
+            script_port = _manifest_first_port(manifest) if manifest is not None else 0
+            if script_port:
+                await store.update_runtime_location(
+                    app_id, host="127.0.0.1", port=script_port, backend=app_id,
+                    ui_path=(install_config.get("ui_path", "/") if isinstance(install_config, dict) else "/"),
+                )
+        if registry is not None:
+            version = body.get("version") or (getattr(manifest, "version", "") if manifest else "")
+            registry.mark_installed(app_id, version)
+        return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", **inst_result})
 
     # docker / pip — actually run the installer.
     # Previously this branch fell straight through to the installed-apps

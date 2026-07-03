@@ -7,10 +7,14 @@ description: "Ollama-compatible LLM server on Rockchip NPU — run RKNN models n
 homepage: https://github.com/NotByAI/rkllama
 license: Apache-2.0
 
+# taOS default port is 7833 (see scripts/install-rknpu.sh, RKLLAMA_PORT).
+# 8080 is the upstream rkllama default and is only kept as a legacy
+# fallback probe (rkllama_is_running() checks both) for pre-existing
+# installs that predate the 7833 switch — new installs land on 7833.
 requires:
   ram_mb: 512
   disk_mb: 500
-  ports: [8080]
+  ports: [7833]
 
 install:
   method: script
@@ -25,7 +29,7 @@ hardware_tiers:
 
 lifecycle:
   backend_type: rkllama
-  default_url: http://localhost:8080
+  default_url: http://localhost:7833
   auto_manage: true
   keep_alive_minutes: 0
   start_cmd: "systemctl start rkllama"

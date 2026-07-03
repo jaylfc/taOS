@@ -625,6 +625,65 @@ class TestScriptBackendInstall:
         installed_apps.install.assert_called_once()
         reg.mark_installed.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_failing_script_does_not_mark_installed_or_record_location(self, client):
+        """rc!=0 from the script -> surfaced error, no install/mark_installed/
+        runtime-location call at all (the exact rkllama-service bug: never
+        claim success unless the script's own health gate passed)."""
+        manifest = _make_service_manifest("rkllama", method="script")
+        manifest.install = {"method": "script", "script": "scripts/install-rkllama.sh"}
+        manifest.requires = {"ports": [7833]}
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": False, "error": "rkllama HTTP API did not come up within 60s"},
+        )
+        with patch(
+            "tinyagentos.routes.store_install.get_installer",
+            return_value=mock_installer,
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "rkllama"})
+
+        assert resp.status_code == 500
+        assert "did not come up" in resp.json()["error"]
+        installed_apps.install.assert_not_called()
+        installed_apps.update_runtime_location.assert_not_called()
+        reg.mark_installed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_script_records_runtime_location_from_manifest_port(self, client):
+        """On a verified-running exit 0, the service's declared port
+        (manifest.requires.ports, e.g. rkllama's 7833) is recorded as its
+        runtime location so it gets a Launchpad shortcut / proxy target."""
+        manifest = _make_service_manifest("rkllama", method="script")
+        manifest.install = {"method": "script", "script": "scripts/install-rkllama.sh"}
+        manifest.requires = {"ports": [7833]}
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": True, "app_id": "rkllama", "method": "script"},
+        )
+        with patch(
+            "tinyagentos.routes.store_install.get_installer",
+            return_value=mock_installer,
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "rkllama"})
+
+        assert resp.status_code == 200
+        installed_apps.install.assert_called_once()
+        reg.mark_installed.assert_called_once()
+        installed_apps.update_runtime_location.assert_called_once_with(
+            "rkllama", host="127.0.0.1", port=7833, backend="rkllama", ui_path="/",
+        )
+
 
 # ---------------------------------------------------------------------------
 # POST /api/store/uninstall-v2

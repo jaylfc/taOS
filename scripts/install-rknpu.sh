@@ -586,14 +586,14 @@ EOF
 
 wait_for_rkllama() {
     local i
-    for (( i = 0; i < 30; i++ )); do
+    for (( i = 0; i < 60; i++ )); do
         if curl -fs "http://localhost:$RKLLAMA_PORT/api/tags" >/dev/null 2>&1; then
             log "rkllama HTTP API is up on :$RKLLAMA_PORT"
             return 0
         fi
         sleep 1
     done
-    die "rkllama HTTP API did not come up within 30s — check: sudo journalctl -u rkllama -n 100"
+    die "rkllama HTTP API did not come up within 60s — check: sudo journalctl -u rkllama -n 100"
 }
 
 # -------- (7) end-to-end verify ------------------------------------------
