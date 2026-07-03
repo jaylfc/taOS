@@ -6,7 +6,7 @@ import { EditView, type SavedSite } from "./webstudio/EditView";
 import { PreviewView } from "./webstudio/PreviewView";
 import { ExportView } from "./webstudio/ExportView";
 import { emptySite } from "./webstudio/templates";
-import { isValidSite, type Site, type StudioView } from "./webstudio/types";
+import { isValidSite, MAX_CONTENT_BYTES, type Site, type StudioView } from "./webstudio/types";
 
 /* ------------------------------------------------------------------ */
 /*  Web Studio - shell (phase 1)                                       */
@@ -90,6 +90,7 @@ export function WebStudioApp(_props: { windowId: string }) {
   };
 
   const openSite = async (id: string) => {
+    if (!confirmDiscard()) return;
     setError(null);
     try {
       const res = await fetch(`/api/web/sites/${encodeURIComponent(id)}`, { credentials: "include" });
@@ -116,7 +117,16 @@ export function WebStudioApp(_props: { windowId: string }) {
     setSaving(true);
     setError(null);
     try {
-      const payload = { title: site.title.trim() || "Untitled site", content: JSON.stringify(site) };
+      const content = JSON.stringify(site);
+      // Catch an over-cap site (usually too many/too-large inlined images)
+      // here with a clear message rather than letting it fail only at PUT
+      // time with a raw 413. The cap mirrors the backend's MAX_CONTENT_BYTES.
+      if (new Blob([content]).size > MAX_CONTENT_BYTES) {
+        throw new Error(
+          "This site is too large to save (over 5 MB). Remove or shrink some images and try again.",
+        );
+      }
+      const payload = { title: site.title.trim() || "Untitled site", content };
       const url = activeId ? `/api/web/sites/${encodeURIComponent(activeId)}` : "/api/web/sites";
       const res = await fetch(url, {
         method: activeId ? "PUT" : "POST",

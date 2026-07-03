@@ -26,10 +26,17 @@ def _validate_title(title: Any) -> str | None:
 
 
 async def _parse_json(request: Request) -> dict | JSONResponse:
+    # request.json() can raise JSONDecodeError on malformed input, but an empty
+    # body or a wrong Content-Type can surface as a ValueError/UnicodeDecodeError
+    # too. Treat all of them as a 400. A non-object JSON body (list, string,
+    # number) is also rejected so downstream .get() access is always safe.
     try:
-        return await request.json()
-    except json.JSONDecodeError:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
+    return body
 
 
 def _validate_content(content: Any) -> JSONResponse | None:

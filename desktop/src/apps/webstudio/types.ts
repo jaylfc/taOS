@@ -97,15 +97,23 @@ export interface Site {
 /** Shallow shape guard for a `Site` parsed from stored/untrusted JSON.
  *  Checks only the top-level fields a corrupted or pre-migration record
  *  would be missing; it does not validate individual section content. */
+// Mirrors the backend MAX_CONTENT_BYTES cap (tinyagentos/routes/web.py) so the
+// editor can reject an over-cap site before the save round-trips to a 413.
+export const MAX_CONTENT_BYTES = 5 * 1024 * 1024;
+
 export function isValidSite(value: unknown): value is Site {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return (
-    typeof v.title === "string" &&
-    !!v.theme &&
-    typeof v.theme === "object" &&
-    Array.isArray(v.sections)
-  );
+  if (typeof v.title !== "string") return false;
+  if (!v.theme || typeof v.theme !== "object") return false;
+  if (!Array.isArray(v.sections)) return false;
+  // Validate each section shallowly: a corrupted entry must not slip through
+  // and render as a stream of "unsupported section" placeholders.
+  return v.sections.every((s) => {
+    if (!s || typeof s !== "object") return false;
+    const sec = s as Record<string, unknown>;
+    return typeof sec.id === "string" && typeof sec.type === "string";
+  });
 }
 
 /* -------------------------- theme catalog ------------------------- */

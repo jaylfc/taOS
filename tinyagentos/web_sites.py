@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 import aiosqlite
 
 from tinyagentos.base_store import BaseStore
+
+logger = logging.getLogger(__name__)
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
 
@@ -64,8 +67,11 @@ class WebSiteStore(BaseStore):
                 await self._db.commit()
                 return row
             except aiosqlite.IntegrityError:
+                # id collision: log it (a persistent stream would point at an
+                # entropy regression) and retry with a fresh id.
+                logger.warning("web_sites: site id collision on %s, retrying", site_id)
                 continue
-        raise RuntimeError("could not allocate site id")
+        raise RuntimeError("could not allocate site id after repeated id collisions")
 
     async def list(self) -> list[dict]:
         async with self._db.execute(
