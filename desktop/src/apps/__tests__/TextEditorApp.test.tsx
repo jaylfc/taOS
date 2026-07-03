@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 
 import { TextEditorApp } from "../TextEditorApp";
+import { startDrag, endDrag } from "@/shell/dnd/dnd-bus";
 
 describe("TextEditorApp", () => {
   beforeEach(() => {
@@ -12,6 +13,7 @@ describe("TextEditorApp", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    endDrag();
   });
 
   it("creates a note and shows it in the sidebar (crypto.randomUUID available)", () => {
@@ -50,6 +52,47 @@ describe("TextEditorApp", () => {
       expect(stored).toHaveLength(1);
       expect(typeof stored[0].id).toBe("string");
       expect(stored[0].id.length).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", { value: originalRandomUUID, configurable: true });
+    }
+  });
+
+  it("keeps the same CodeMirror instance and focus through continuous typing, even when crypto.randomUUID is unavailable (#1596)", () => {
+    // #1596: the editor accepted exactly one character then lost focus, 100%
+    // reproducible over plain http. Drive several sequential edits through the
+    // exact same dispatch -> updateListener -> onChange chain a real keystroke
+    // uses (via the editor's own insertAtCursor, triggered here through the
+    // drop-target plumbing) and confirm the underlying view survives them all.
+    const originalRandomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+
+    try {
+      const { container } = render(<TextEditorApp windowId="w1" />);
+      fireEvent.click(screen.getByRole("button", { name: /create your first note/i }));
+
+      const cmEditorBefore = container.querySelector(".cm-editor");
+      expect(cmEditorBefore).toBeTruthy();
+      const dropTarget = cmEditorBefore!.parentElement!.parentElement!;
+
+      const chars = ["h", "e", "l", "l", "o"];
+      chars.forEach((ch, i) => {
+        startDrag({ kind: "knowledge", id: `k${i}`, title: ch });
+        fireEvent.drop(dropTarget);
+      });
+
+      // Same DOM node throughout: the view was never destroyed and recreated,
+      // so the browser's focus was never yanked out from under the user.
+      const cmEditorAfter = container.querySelector(".cm-editor");
+      expect(cmEditorAfter).toBe(cmEditorBefore);
+      const cmContent = container.querySelector(".cm-content");
+      expect(document.activeElement).toBe(cmContent);
+
+      // A persistent view tracks the cursor across edits, so the characters
+      // land in typed order ("hello"). Recreating the view on every keystroke
+      // (the #1596 bug) resets the cursor to the document start each time,
+      // which prepends each new character and reverses the typed order.
+      const stored = JSON.parse(localStorage.getItem("tinyagentos-notes") ?? "[]");
+      expect(stored[0].content.startsWith("hello")).toBe(true);
     } finally {
       Object.defineProperty(crypto, "randomUUID", { value: originalRandomUUID, configurable: true });
     }
