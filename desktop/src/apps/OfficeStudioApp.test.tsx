@@ -68,21 +68,37 @@ describe("OfficeStudioApp", () => {
     expect(screen.getByRole("button", { name: /Save/ })).toBeDefined();
   });
 
-  it("switches to Slides view and shows slide thumbnails", () => {
+  it("switches to Slides view and shows a real, editable deck", () => {
     renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Slides" }));
     expect(screen.getByRole("button", { name: "Slides" }).getAttribute("aria-current")).toBe(
       "page",
     );
-    // thumbnail rail
+    // thumbnail rail starts with a single default slide
     expect(screen.getByRole("complementary", { name: "Slide thumbnails" })).toBeDefined();
-    // all 5 slide thumbnails
-    expect(screen.getByLabelText("Slide 1: Build it your way")).toBeDefined();
-    expect(screen.getByLabelText("Slide 2: Ready today")).toBeDefined();
-    expect(screen.getByLabelText("Slide 3: On the way")).toBeDefined();
-    expect(screen.getByLabelText("Slide 4: Your hardware")).toBeDefined();
-    expect(screen.getByLabelText("Slide 5: Get started")).toBeDefined();
-    // slide content
-    expect(screen.getByText("Build it your way.")).toBeDefined();
+    expect(screen.getByLabelText("Slide 1: Untitled slide")).toBeDefined();
+    // deck title + layout picker + edit fields are real controls, not a mock
+    expect(screen.getByLabelText("Deck title")).toBeDefined();
+    expect(screen.getByRole("group", { name: "Slide layout" })).toBeDefined();
+    expect(screen.getByLabelText("Slide title")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Present" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Export PDF" })).toBeDefined();
+  });
+
+  it("editing the slide title updates the thumbnail label and preview", () => {
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Slides" }));
+    const titleInput = screen.getByLabelText("Slide title");
+    fireEvent.change(titleInput, { target: { value: "Welcome" } });
+    expect(screen.getByLabelText("Slide 1: Welcome")).toBeDefined();
+  });
+
+  it("adds and deletes slides from the rail", () => {
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Slides" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add slide" }));
+    expect(screen.getByLabelText("Slide 2: Untitled slide")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Delete slide 2" }));
+    expect(screen.queryByLabelText("Slide 2: Untitled slide")).toBeNull();
   });
 });
