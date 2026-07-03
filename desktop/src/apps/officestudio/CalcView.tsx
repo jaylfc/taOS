@@ -65,6 +65,15 @@ export function CalcView() {
 
   const workbookRef = useRef<WorkbookInstance>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Pending afterActivateSheet deferral; cleared on the next activation and on
+  // unmount so it can never setState after the component is gone.
+  const activateTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (activateTimerRef.current != null) clearTimeout(activateTimerRef.current);
+    },
+    [],
+  );
 
   // Hook callbacks below run outside React's render cycle, so they read the
   // latest selection off this ref rather than closing over the `selection`
@@ -358,7 +367,7 @@ export function CalcView() {
         const column: [number, number] = [sel.column[0] ?? 0, sel.column[1] ?? sel.column[0] ?? 0];
         setSelection({ row, column });
         refreshFormulaBar(row[0], column[0]);
-        const rows = workbookRef.current?.getSheet().row;
+        const rows = workbookRef.current?.getSheet()?.row;
         if (rows != null) setRowCount(rows);
       },
       afterUpdateCell: (row: number, column: number) => {
@@ -377,11 +386,13 @@ export function CalcView() {
         // reflected everywhere the imperative API reads from. Defer to the
         // next tick and confirm the workbook actually reports this sheet as
         // active before trusting getCellsByRange for it.
-        setTimeout(() => {
+        if (activateTimerRef.current != null) clearTimeout(activateTimerRef.current);
+        activateTimerRef.current = window.setTimeout(() => {
+          activateTimerRef.current = null;
           const wb = workbookRef.current;
           if (wb?.getSheet()?.id === id) {
             refreshFormulaBar(0, 0);
-            const rows = wb.getSheet().row;
+            const rows = wb.getSheet()?.row;
             if (rows != null) setRowCount(rows);
           }
         }, 0);
