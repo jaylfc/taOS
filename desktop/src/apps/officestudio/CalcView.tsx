@@ -1,194 +1,599 @@
-import { Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Workbook, type WorkbookInstance } from "@fortune-sheet/react";
+import "@fortune-sheet/react/dist/index.css";
+import type { Selection, Sheet } from "@fortune-sheet/core";
+import {
+  ArrowDownZA,
+  ArrowUpAZ,
+  Download,
+  Plus,
+  Save,
+  Sparkles,
+  Upload,
+  X,
+} from "lucide-react";
+import { cellAddress } from "./calc/address";
+import { parseCsv, sheetToCsv } from "./calc/csv";
+import { blankWorkbook, parseWorkbookContent, serializeWorkbook } from "./calc/workbook";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May"] as const;
-const BAR_HEIGHTS = [48, 60, 78, 70, 92] as const;
+type OfficeDocListItem = {
+  id: string;
+  kind: string;
+  title: string;
+  updated_at?: number;
+};
 
-const ROWS: { month: string; revenue: string; costs: string; profit: string }[] = [
-  { month: "January", revenue: "4,200", costs: "2,100", profit: "2,100" },
-  { month: "February", revenue: "5,100", costs: "2,300", profit: "2,800" },
-  { month: "March", revenue: "6,400", costs: "2,800", profit: "3,600" },
-  { month: "April", revenue: "5,900", costs: "2,600", profit: "3,300" },
-  { month: "May", revenue: "7,300", costs: "3,100", profit: "4,200" },
-];
+type OfficeDoc = OfficeDocListItem & {
+  content: string;
+};
+
+type SheetTab = { id: string; name: string };
+
+function formatUpdated(ts?: number): string {
+  if (!ts) return "Draft";
+  const d = new Date(ts * 1000);
+  return `Updated ${d.toLocaleString()}`;
+}
+
+function sortTabsByOrder(sheets: Sheet[]): SheetTab[] {
+  return [...sheets]
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((s) => ({ id: s.id ?? "", name: s.name }));
+}
 
 export function CalcView() {
+  const [docs, setDocs] = useState<OfficeDocListItem[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [title, setTitle] = useState("Untitled workbook");
+  const [updatedAt, setUpdatedAt] = useState<number | undefined>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [workbookData, setWorkbookData] = useState<Sheet[]>(() => blankWorkbook().sheets);
+  const [mountKey, setMountKey] = useState(0);
+  const [sheetTabs, setSheetTabs] = useState<SheetTab[]>(() => sortTabsByOrder(workbookData));
+  const [activeSheetId, setActiveSheetId] = useState<string>(workbookData[0]?.id ?? "");
+  const [selection, setSelection] = useState<{ row: [number, number]; column: [number, number] }>(
+    { row: [0, 0], column: [0, 0] },
+  );
+  const [formulaValue, setFormulaValue] = useState("");
+  const [filterValue, setFilterValue] = useState("");
+  const [hiddenRows, setHiddenRows] = useState<string[]>([]);
+
+  const workbookRef = useRef<WorkbookInstance>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshFormulaBar = useCallback((row: number, column: number) => {
+    const wb = workbookRef.current;
+    if (!wb) return;
+    const cells = wb.getCellsByRange({ row: [row, row], column: [column, column] });
+    const cell = cells?.[0]?.[0];
+    if (!cell) {
+      setFormulaValue("");
+      return;
+    }
+    setFormulaValue(cell.f ?? (cell.v == null ? "" : String(cell.v)));
+  }, []);
+
+  const refreshSheetTabs = useCallback(() => {
+    const wb = workbookRef.current;
+    if (!wb) return;
+    setSheetTabs(sortTabsByOrder(wb.getAllSheets()));
+  }, []);
+
+  const applyWorkbook = useCallback((sheets: Sheet[]) => {
+    setWorkbookData(sheets);
+    setMountKey((k) => k + 1);
+    const tabs = sortTabsByOrder(sheets);
+    setSheetTabs(tabs);
+    setActiveSheetId(tabs[0]?.id ?? "");
+    setSelection({ row: [0, 0], column: [0, 0] });
+    setFormulaValue("");
+    setFilterValue("");
+    setHiddenRows([]);
+  }, []);
+
+  const loadList = useCallback(async () => {
+    const res = await fetch("/api/office/docs", { credentials: "include" });
+    if (!res.ok) throw new Error("Could not load sheets");
+    const items = (await res.json()) as OfficeDocListItem[];
+    setDocs(items.filter((d) => d.kind === "calc"));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await loadList();
+        if (!cancelled) setError(null);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Load failed");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadList]);
+
+  const openDoc = async (docId: string) => {
+    setError(null);
+    try {
+      const res = await fetch(`/api/office/docs/${encodeURIComponent(docId)}`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Could not open sheet");
+      const doc = (await res.json()) as OfficeDoc;
+      const workbook = parseWorkbookContent(doc.content);
+      setActiveId(doc.id);
+      setTitle(doc.title);
+      setUpdatedAt(doc.updated_at);
+      applyWorkbook(workbook.sheets);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Open failed");
+    }
+  };
+
+  const newDoc = () => {
+    setActiveId(null);
+    setTitle("Untitled workbook");
+    setUpdatedAt(undefined);
+    setError(null);
+    applyWorkbook(blankWorkbook().sheets);
+  };
+
+  const saveDoc = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const sheets = workbookRef.current?.getAllSheets() ?? workbookData;
+      const content = serializeWorkbook(sheets);
+      const payload = { kind: "calc", title: title.trim() || "Untitled workbook", content };
+      const url = activeId
+        ? `/api/office/docs/${encodeURIComponent(activeId)}`
+        : "/api/office/docs";
+      const res = await fetch(url, {
+        method: activeId ? "PUT" : "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error || "Save failed");
+      }
+      const saved = (await res.json()) as OfficeDoc;
+      setActiveId(saved.id);
+      setTitle(saved.title);
+      setUpdatedAt(saved.updated_at);
+      await loadList();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /* ------------------------------ formula bar ---------------------- */
+
+  const commitFormula = useCallback(() => {
+    const wb = workbookRef.current;
+    if (!wb) return;
+    const [row] = selection.row;
+    const [column] = selection.column;
+    wb.setCellValue(row, column, formulaValue);
+    wb.calculateFormula();
+    refreshFormulaBar(row, column);
+  }, [selection, formulaValue, refreshFormulaBar]);
+
+  /* -------------------------------- sheets --------------------------- */
+
+  const addSheetTab = useCallback(() => {
+    workbookRef.current?.addSheet();
+  }, []);
+
+  const renameSheetTab = useCallback((id: string, current: string) => {
+    const name = window.prompt("Sheet name", current);
+    if (!name || !name.trim()) return;
+    workbookRef.current?.setSheetName(name.trim(), { id });
+  }, []);
+
+  const deleteSheetTab = useCallback(
+    (id: string) => {
+      if (sheetTabs.length <= 1) return;
+      if (!window.confirm("Delete this sheet? This cannot be undone.")) return;
+      workbookRef.current?.deleteSheet({ id });
+    },
+    [sheetTabs.length],
+  );
+
+  /* -------------------------------- sort / filter --------------------- */
+
+  const sortColumn = useCallback(
+    (direction: "asc" | "desc") => {
+      const wb = workbookRef.current;
+      if (!wb) return;
+      const sheet = wb.getSheet();
+      const rowCount = sheet.row ?? 0;
+      const colCount = sheet.column ?? 0;
+      const col = selection.column[0];
+      if (rowCount < 3 || colCount < 1) return;
+      const cells = wb.getCellsByRange({ row: [1, rowCount - 1], column: [0, colCount - 1] }) ?? [];
+      const indexed = cells.map((row, i) => ({ row, i }));
+      indexed.sort((a, b) => {
+        const av = a.row?.[col]?.v;
+        const bv = b.row?.[col]?.v;
+        const an = typeof av === "number" ? av : Number(av);
+        const bn = typeof bv === "number" ? bv : Number(bv);
+        let cmp: number;
+        if (!Number.isNaN(an) && !Number.isNaN(bn)) {
+          cmp = an - bn;
+        } else {
+          cmp = String(av ?? "").localeCompare(String(bv ?? ""));
+        }
+        return direction === "asc" ? cmp : -cmp;
+      });
+      const values = indexed.map(({ row }) =>
+        Array.from({ length: colCount }, (_, c) => row?.[c]?.f ?? row?.[c]?.v ?? ""),
+      );
+      wb.setCellValuesByRange(values, { row: [1, rowCount - 1], column: [0, colCount - 1] });
+      wb.calculateFormula();
+    },
+    [selection],
+  );
+
+  const applyFilter = useCallback(() => {
+    const wb = workbookRef.current;
+    const needle = filterValue.trim().toLowerCase();
+    if (!wb || !needle) return;
+    const sheet = wb.getSheet();
+    const rowCount = sheet.row ?? 0;
+    const col = selection.column[0];
+    if (rowCount < 2) return;
+    const cells = wb.getCellsByRange({ row: [1, rowCount - 1], column: [col, col] }) ?? [];
+    const toHide: string[] = [];
+    const toShow: string[] = [];
+    cells.forEach((rowArr, i) => {
+      const rowIndex = i + 1;
+      const cell = rowArr?.[0];
+      const text = String(cell?.m ?? cell?.v ?? "").toLowerCase();
+      (text.includes(needle) ? toShow : toHide).push(String(rowIndex));
+    });
+    if (toHide.length) wb.hideRowOrColumn(toHide, "row");
+    if (toShow.length) wb.showRowOrColumn(toShow, "row");
+    setHiddenRows(toHide);
+  }, [filterValue, selection]);
+
+  const clearFilter = useCallback(() => {
+    const wb = workbookRef.current;
+    if (wb && hiddenRows.length) wb.showRowOrColumn(hiddenRows, "row");
+    setHiddenRows([]);
+    setFilterValue("");
+  }, [hiddenRows]);
+
+  /* ---------------------------------- csv ------------------------------ */
+
+  const exportCsv = useCallback(() => {
+    const wb = workbookRef.current;
+    if (!wb) return;
+    const sheet = wb.getSheet();
+    const csv = sheetToCsv(sheet.celldata ?? []);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const sheetName = sheetTabs.find((t) => t.id === activeSheetId)?.name ?? "Sheet1";
+    a.href = url;
+    a.download = `${(title || "Untitled workbook").replace(/\s+/g, "-")}-${sheetName}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [activeSheetId, sheetTabs, title]);
+
+  const importCsv = useCallback(async (file: File) => {
+    const wb = workbookRef.current;
+    if (!wb) return;
+    const text = await file.text();
+    const rows = parseCsv(text);
+    if (rows.length === 0) return;
+    const width = Math.max(...rows.map((r) => r.length));
+    const padded = rows.map((r) => {
+      const copy = [...r];
+      while (copy.length < width) copy.push("");
+      return copy;
+    });
+    wb.setCellValuesByRange(padded, { row: [0, padded.length - 1], column: [0, width - 1] });
+    wb.calculateFormula();
+  }, []);
+
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (file) void importCsv(file);
+    },
+    [importCsv],
+  );
+
+  /* ------------------------------------- hooks -------------------------- */
+
+  // Passed to the Workbook component as part of its Settings prop. Memoized
+  // so its identity is stable across renders: Workbook treats a new settings
+  // object as a real config change, and recreating this on every render
+  // (e.g. from our own setSelection calls) causes a render/settings-change
+  // feedback loop.
+  const hooks = useMemo(
+    () => ({
+      afterSelectionChange: (_sheetId: string, sel: Selection) => {
+        const row: [number, number] = [sel.row[0] ?? 0, sel.row[1] ?? sel.row[0] ?? 0];
+        const column: [number, number] = [sel.column[0] ?? 0, sel.column[1] ?? sel.column[0] ?? 0];
+        setSelection({ row, column });
+        refreshFormulaBar(row[0], column[0]);
+      },
+      afterUpdateCell: (row: number, column: number) => {
+        setSelection((cur) => {
+          if (cur.row[0] === row && cur.column[0] === column) refreshFormulaBar(row, column);
+          return cur;
+        });
+      },
+      afterActivateSheet: (id: string) => {
+        setActiveSheetId(id);
+        setSelection({ row: [0, 0], column: [0, 0] });
+        refreshFormulaBar(0, 0);
+      },
+      afterAddSheet: (sheet: Sheet) => {
+        if (sheet.id) workbookRef.current?.activateSheet({ id: sheet.id });
+        refreshSheetTabs();
+      },
+      afterDeleteSheet: () => {
+        refreshSheetTabs();
+        const all = workbookRef.current?.getAllSheets() ?? [];
+        setActiveSheetId((cur) => {
+          if (all.some((s) => s.id === cur)) return cur;
+          return all[0]?.id ?? cur;
+        });
+      },
+      afterUpdateSheetName: () => {
+        refreshSheetTabs();
+      },
+    }),
+    [refreshFormulaBar, refreshSheetTabs],
+  );
+
+  const address = cellAddress(selection.row[0], selection.column[0]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* formula bar */}
-      <div className="flex h-[34px] flex-none items-center gap-2.5 border-b border-shell-border bg-shell-bg-deep px-3.5">
-        <span className="w-[46px] text-[11.5px] font-bold text-shell-text-secondary">B7</span>
-        <span className="text-[11.5px] text-shell-text-tertiary">
-          <span className="font-mono font-semibold text-accent">=SUM(B2:B6)</span>
+      {/* view header */}
+      <div className="flex h-[54px] flex-none items-center gap-3 border-b border-shell-border px-[22px]">
+        <h2 className="text-[17px] font-bold tracking-[-0.02em]">Calc</h2>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          aria-label="Workbook title"
+          className="w-52 truncate border-0 bg-transparent text-[13px] font-semibold text-shell-text outline-none placeholder:text-shell-text-tertiary"
+        />
+        <span className="truncate text-[12px] text-shell-text-tertiary">
+          {docs.length} sheet{docs.length === 1 ? "" : "s"} &middot;{" "}
+          {activeId ? formatUpdated(updatedAt) : "New workbook"}
         </span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={newDoc}
+            className="flex h-8 items-center gap-1.5 rounded-[9px] border border-shell-border px-3 text-[12px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <Plus size={14} />
+            New
+          </button>
+          <button
+            type="button"
+            onClick={saveDoc}
+            disabled={saving}
+            className="flex h-8 items-center gap-1.5 rounded-[9px] bg-gradient-to-br from-accent to-accent/70 px-3.5 text-[12px] font-bold text-white disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <Save size={14} />
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        {/* spreadsheet */}
-        <div className="flex-1 overflow-auto" style={{ background: "#f7f7f9" }}>
-          <table
-            className="w-full border-collapse text-[12px]"
-            style={{ color: "#23232a" }}
-            aria-label="Spreadsheet"
+      {/* formula bar */}
+      <div className="flex h-[34px] flex-none items-center gap-2.5 border-b border-shell-border bg-shell-bg-deep px-3.5">
+        <span
+          className="w-[46px] text-[11.5px] font-bold text-shell-text-secondary"
+          aria-hidden="true"
+        >
+          {address}
+        </span>
+        <span className="font-mono text-[11.5px] text-shell-text-tertiary" aria-hidden="true">
+          fx
+        </span>
+        <input
+          value={formulaValue}
+          onChange={(e) => setFormulaValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitFormula();
+            }
+          }}
+          onBlur={commitFormula}
+          aria-label={`Formula for cell ${address}`}
+          placeholder="Enter a value or formula, e.g. =SUM(A1:A3)"
+          className="flex-1 bg-transparent font-mono text-[12px] text-shell-text outline-none placeholder:text-shell-text-tertiary"
+        />
+      </div>
+
+      {/* toolbar: sort / filter / csv */}
+      <div className="flex h-[42px] flex-none items-center gap-1.5 overflow-x-auto border-b border-shell-border bg-shell-bg-deep px-3">
+        <button
+          type="button"
+          aria-label="Sort column ascending"
+          onClick={() => sortColumn("asc")}
+          className="flex h-8 w-8 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <ArrowUpAZ size={15} />
+        </button>
+        <button
+          type="button"
+          aria-label="Sort column descending"
+          onClick={() => sortColumn("desc")}
+          className="flex h-8 w-8 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <ArrowDownZA size={15} />
+        </button>
+        <div className="mx-1 h-5 w-px flex-none bg-shell-border" />
+        <input
+          value={filterValue}
+          onChange={(e) => setFilterValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              applyFilter();
+            }
+          }}
+          aria-label="Filter column"
+          placeholder="Filter column..."
+          className="h-8 w-40 flex-none rounded-lg border border-shell-border bg-shell-surface px-2.5 text-[12px] text-shell-text outline-none placeholder:text-shell-text-tertiary focus-visible:ring-2 focus-visible:ring-accent/40"
+        />
+        <button
+          type="button"
+          onClick={applyFilter}
+          className="h-8 flex-none rounded-lg px-2.5 text-[12px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          Filter
+        </button>
+        {hiddenRows.length > 0 && (
+          <button
+            type="button"
+            onClick={clearFilter}
+            className="h-8 flex-none rounded-lg px-2.5 text-[12px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
-            <thead>
-              <tr>
-                <th
-                  className="sticky top-0 h-6 w-[34px] border"
-                  style={{
-                    background: "#ededf1",
-                    color: "#7a7a85",
-                    fontSize: 10.5,
-                    fontWeight: 600,
-                    borderColor: "#e6e6ea",
-                  }}
-                />
-                {["A", "B", "C", "D"].map((col) => (
-                  <th
-                    key={col}
-                    className="sticky top-0 h-6 border px-2"
-                    style={{
-                      background: "#ededf1",
-                      color: "#7a7a85",
-                      fontSize: 10.5,
-                      fontWeight: 600,
-                      borderColor: "#e6e6ea",
-                    }}
-                  >
-                    {col}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {/* header row */}
-              <tr>
-                <td
-                  className="h-[27px] border px-2 text-center text-[10.5px] font-semibold"
-                  style={{ background: "#ededf1", color: "#7a7a85", borderColor: "#e6e6ea" }}
-                >
-                  1
-                </td>
-                <td
-                  className="h-[27px] border px-2 font-semibold"
-                  style={{ color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  Month
-                </td>
-                <td
-                  className="h-[27px] border px-2 text-right font-semibold"
-                  style={{ color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  Revenue
-                </td>
-                <td
-                  className="h-[27px] border px-2 text-right font-semibold"
-                  style={{ color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  Costs
-                </td>
-                <td
-                  className="h-[27px] border px-2 text-right font-semibold"
-                  style={{ color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  Profit
-                </td>
-              </tr>
+            Clear filter
+          </button>
+        )}
+        <div className="mx-1 h-5 w-px flex-none bg-shell-border" />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="flex h-8 flex-none items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <Upload size={14} />
+          Import CSV
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          aria-label="Import CSV file"
+          className="hidden"
+          onChange={handleFileChange}
+        />
+        <button
+          type="button"
+          onClick={exportCsv}
+          className="flex h-8 flex-none items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <Download size={14} />
+          Export CSV
+        </button>
+      </div>
 
-              {/* data rows */}
-              {ROWS.map((row, i) => (
-                <tr key={row.month}>
-                  <td
-                    className="h-[27px] border px-2 text-center text-[10.5px] font-semibold"
-                    style={{ background: "#ededf1", color: "#7a7a85", borderColor: "#e6e6ea" }}
-                  >
-                    {i + 2}
-                  </td>
-                  <td className="h-[27px] border px-2" style={{ borderColor: "#e6e6ea", color: "#33333c" }}>
-                    {row.month}
-                  </td>
-                  <td className="h-[27px] border px-2 text-right tabular-nums" style={{ borderColor: "#e6e6ea", color: "#33333c" }}>
-                    {row.revenue}
-                  </td>
-                  <td className="h-[27px] border px-2 text-right tabular-nums" style={{ borderColor: "#e6e6ea", color: "#33333c" }}>
-                    {row.costs}
-                  </td>
-                  <td className="h-[27px] border px-2 text-right tabular-nums" style={{ borderColor: "#e6e6ea", color: "#33333c" }}>
-                    {row.profit}
-                  </td>
-                </tr>
-              ))}
+      {error && (
+        <p className="border-b border-shell-border px-3.5 py-1.5 text-[12px] text-red-400" role="alert">
+          {error}
+        </p>
+      )}
 
-              {/* total row */}
-              <tr>
-                <td
-                  className="h-[27px] border px-2 text-center text-[10.5px] font-semibold"
-                  style={{ background: "#ededf1", color: "#7a7a85", borderColor: "#e6e6ea" }}
+      <div className="flex min-h-0 flex-1">
+        {/* documents sidebar */}
+        <aside className="flex w-[200px] flex-none flex-col border-r border-shell-border bg-shell-bg-deep">
+          <div className="border-b border-shell-border px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-shell-text-tertiary">
+            Sheets
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-2">
+            {loading && (
+              <p className="px-2 py-1 text-[12px] text-shell-text-tertiary">Loading...</p>
+            )}
+            {!loading && docs.length === 0 && (
+              <p className="px-2 py-1 text-[12px] text-shell-text-tertiary">No saved sheets yet</p>
+            )}
+            {docs.map((doc) => (
+              <button
+                key={doc.id}
+                type="button"
+                onClick={() => openDoc(doc.id)}
+                className={`mb-1 w-full rounded-lg px-2 py-2 text-left text-[12px] transition-colors hover:bg-shell-surface-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                  activeId === doc.id
+                    ? "bg-shell-surface text-shell-text"
+                    : "text-shell-text-secondary"
+                }`}
+              >
+                <div className="truncate font-semibold">{doc.title}</div>
+                <div className="truncate text-[10px] text-shell-text-tertiary">
+                  {formatUpdated(doc.updated_at)}
+                </div>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <Workbook
+              key={mountKey}
+              ref={workbookRef}
+              data={workbookData}
+              showToolbar={false}
+              showFormulaBar={false}
+              showSheetTabs={false}
+              hooks={hooks}
+            />
+          </div>
+
+          {/* sheet tabs */}
+          <div className="flex h-9 flex-none items-center gap-1 overflow-x-auto border-t border-shell-border bg-shell-bg-deep px-2">
+            {sheetTabs.map((tab) => (
+              <div key={tab.id} className="group relative flex flex-none items-center">
+                <button
+                  type="button"
+                  aria-current={tab.id === activeSheetId ? "true" : undefined}
+                  onClick={() => workbookRef.current?.activateSheet({ id: tab.id })}
+                  onDoubleClick={() => renameSheetTab(tab.id, tab.name)}
+                  className={`h-7 rounded-lg px-2.5 pr-6 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                    tab.id === activeSheetId
+                      ? "bg-shell-surface text-shell-text"
+                      : "text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text"
+                  }`}
                 >
-                  7
-                </td>
-                <td
-                  className="h-[27px] border px-2 font-bold"
-                  style={{ background: "#f0f0f4", color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  Total
-                </td>
-                <td
-                  className="h-[27px] border px-2 text-right font-bold tabular-nums"
-                  style={{
-                    background: "#f0f0f4",
-                    color: "#23232a",
-                    borderColor: "#e6e6ea",
-                    outline: "2px solid #a9b0c2",
-                    outlineOffset: -2,
-                  }}
-                  data-testid="total-revenue"
-                >
-                  28,900
-                </td>
-                <td
-                  className="h-[27px] border px-2 text-right font-bold tabular-nums"
-                  style={{ background: "#f0f0f4", color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  12,900
-                </td>
-                <td
-                  className="h-[27px] border px-2 text-right font-bold tabular-nums"
-                  style={{ background: "#f0f0f4", color: "#23232a", borderColor: "#e6e6ea" }}
-                >
-                  16,000
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                  {tab.name}
+                </button>
+                {sheetTabs.length > 1 && (
+                  <button
+                    type="button"
+                    aria-label={`Delete sheet ${tab.name}`}
+                    onClick={() => deleteSheetTab(tab.id)}
+                    className="absolute right-1 flex h-5 w-5 items-center justify-center rounded text-shell-text-tertiary opacity-0 hover:bg-shell-surface-active hover:text-shell-text focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              aria-label="Add sheet"
+              onClick={addSheetTab}
+              className="flex h-7 w-7 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
         </div>
 
         {/* right sidebar */}
         <aside className="flex w-[262px] flex-none flex-col gap-3.5 border-l border-shell-border bg-shell-bg p-[18px]">
-          {/* bar chart card */}
-          <div className="rounded-[13px] border border-shell-border bg-shell-surface p-3.5">
-            <div className="mb-3 text-[12px] font-bold text-shell-text">Revenue by month</div>
-            <div className="flex h-24 items-end gap-2">
-              {BAR_HEIGHTS.map((h, i) => (
-                <div
-                  key={MONTHS[i]}
-                  className="flex-1 rounded-t"
-                  style={{
-                    height: `${h}%`,
-                    background: "linear-gradient(180deg,#a9b0c2,#8b92a3)",
-                  }}
-                />
-              ))}
-            </div>
-            <div className="mt-1.5 flex gap-2">
-              {MONTHS.map((m) => (
-                <span key={m} className="flex-1 text-center text-[9px] text-shell-text-tertiary">
-                  {m}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* ask your data */}
           <div
             className="rounded-[13px] border p-3"
             style={{

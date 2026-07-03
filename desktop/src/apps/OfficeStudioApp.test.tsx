@@ -54,17 +54,18 @@ describe("OfficeStudioApp", () => {
     expect(body.textContent).toContain("Hello world");
   });
 
-  it("switches to Calc view and shows spreadsheet grid with Total row", () => {
+  it("switches to Calc view and shows the real spreadsheet chrome", () => {
     renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Calc" }));
     expect(screen.getByRole("button", { name: "Calc" }).getAttribute("aria-current")).toBe("page");
-    // spreadsheet table
-    expect(screen.getByRole("table", { name: "Spreadsheet" })).toBeDefined();
-    // total row value
-    expect(screen.getByTestId("total-revenue")).toBeDefined();
-    expect(screen.getByTestId("total-revenue").textContent).toBe("28,900");
-    // Total label
-    expect(screen.getByText("Total")).toBeDefined();
+    // formula bar reflects the active cell (A1 on a fresh workbook)
+    expect(screen.getByLabelText("Formula for cell A1")).toBeDefined();
+    // default sheet tab
+    expect(screen.getByRole("button", { name: "Sheet1" })).toBeDefined();
+    expect(screen.getByLabelText("Add sheet")).toBeDefined();
+    // workbook title + save/new actions
+    expect(screen.getByLabelText("Workbook title")).toBeDefined();
+    expect(screen.getByRole("button", { name: /Save/ })).toBeDefined();
   });
 
   it("switches to Slides view and shows slide thumbnails", () => {
