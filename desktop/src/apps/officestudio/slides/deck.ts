@@ -3,6 +3,8 @@
 // serializes its workbook (see ../calc/workbook.ts) and Write stores its
 // Tiptap HTML directly as `content`.
 
+import { randomId } from "@/lib/uid";
+
 export type SlideLayout = "title" | "title-content" | "two-column" | "section-header" | "blank";
 
 export interface Slide {
@@ -32,10 +34,7 @@ export const LAYOUTS: { id: SlideLayout; label: string }[] = [
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 function genId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `slide-${crypto.randomUUID()}`;
-  }
-  return `slide-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return randomId("slide-");
 }
 
 export function newSlide(layout: SlideLayout = "title-content"): Slide {

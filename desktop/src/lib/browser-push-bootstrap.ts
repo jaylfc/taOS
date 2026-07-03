@@ -6,6 +6,7 @@
  */
 
 import { getVapidPublicKey, subscribePush } from "./browser-push-api";
+import { randomId } from "./uid";
 
 const DEVICE_ID_KEY = "taos-browser:push-device-id";
 
@@ -45,7 +46,7 @@ export async function bootstrapPushSubscription(): Promise<
     // 2. Get or create stable device_id
     let device_id = localStorage.getItem(DEVICE_ID_KEY);
     if (!device_id) {
-      device_id = crypto.randomUUID();
+      device_id = randomId();
       localStorage.setItem(DEVICE_ID_KEY, device_id);
     }
 

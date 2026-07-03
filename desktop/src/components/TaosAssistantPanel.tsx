@@ -26,6 +26,7 @@ import {
   SCREEN_CAPTURE_CHANGED_EVENT,
 } from "@/lib/screen-capture";
 import { useProcessStore } from "@/stores/process-store";
+import { randomId } from "@/lib/uid";
 
 export interface PendingAttachment {
   id: string;
@@ -147,7 +148,7 @@ export function TaosAssistantPanelInner({ embedded = false }: { embedded?: boole
       form.append("file", new File([resp.blob], "screenshot.png", { type: resp.mime_type }));
       const uploaded = await uploadChatAttachment(form);
       const snap: PendingAttachment = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         filename: uploaded.filename,
         size: uploaded.size,
         uploading: false,
@@ -186,7 +187,7 @@ export function TaosAssistantPanelInner({ embedded = false }: { embedded?: boole
     el.onchange = async () => {
       const files = Array.from(el.files ?? []);
       for (const file of files) {
-        const id = crypto.randomUUID();
+        const id = randomId();
         setPendingAttachments((p) => [
           ...p,
           { id, filename: file.name, size: file.size, uploading: true },

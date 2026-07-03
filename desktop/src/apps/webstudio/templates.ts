@@ -5,10 +5,11 @@ import type {
   Site,
   Theme,
 } from "./types";
+import { randomId } from "@/lib/uid";
 
 /** Unique id for a section. */
 export function newSectionId(): string {
-  return `sec-${crypto.randomUUID()}`;
+  return randomId("sec-");
 }
 
 /** Default editable content for a freshly-added section of a given type. */
