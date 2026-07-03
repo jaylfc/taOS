@@ -104,10 +104,9 @@ export async function grantUserspacePermissions(appId: string, granted: string[]
  * Returns null if the row doesn't exist or the request fails. */
 export async function fetchUserspaceAppRow(appId: string): Promise<UserspaceAppRow | null> {
   try {
-    const res = await fetch("/api/userspace-apps");
+    const res = await fetch(`/api/userspace-apps/${encodeURIComponent(appId)}`);
     if (!res.ok) return null;
-    const rows = (await res.json()) as UserspaceAppRow[];
-    return rows.find((r) => r.app_id === appId) ?? null;
+    return (await res.json()) as UserspaceAppRow;
   } catch {
     return null;
   }

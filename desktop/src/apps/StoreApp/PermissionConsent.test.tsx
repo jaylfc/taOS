@@ -101,4 +101,37 @@ describe("PermissionConsent", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onDeny).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores backdrop-click and Escape while a grant POST is in flight", async () => {
+    let resolveFetch!: (value: { ok: boolean }) => void;
+    const pending = new Promise<{ ok: boolean }>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const mockFetch = vi.fn().mockReturnValue(pending);
+    vi.stubGlobal("fetch", mockFetch);
+    const onAllow = vi.fn();
+    const onDeny = vi.fn();
+
+    render(
+      <PermissionConsent
+        appId="todo"
+        appName="Todo"
+        requested={["app.net"]}
+        onAllow={onAllow}
+        onDeny={onDeny}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allowing/i })).toBeInTheDocument(),
+    );
+
+    const backdrop = screen.getByRole("dialog").parentElement!;
+    fireEvent.click(backdrop, { target: backdrop });
+    fireEvent.keyDown(backdrop, { key: "Escape" });
+    expect(onDeny).not.toHaveBeenCalled();
+
+    resolveFetch({ ok: true });
+    await waitFor(() => expect(onAllow).toHaveBeenCalled());
+  });
 });

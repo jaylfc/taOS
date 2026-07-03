@@ -30,11 +30,11 @@ export function ImportAppButton() {
     setError(null);
     try {
       const result: InstallResult = await installUserspaceApp(file);
-      const row = await fetchUserspaceAppRow(result.app_id);
       // The row is now enabled and visible regardless of consent -- only its
       // gated capabilities are withheld until the user answers below.
       emitAppEvent(USERSPACE_APPS_CHANGED);
       if (result.needs_consent) {
+        const row = await fetchUserspaceAppRow(result.app_id);
         setConsent({
           appId: result.app_id,
           appName: row?.name ?? result.app_id,

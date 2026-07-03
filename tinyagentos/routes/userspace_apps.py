@@ -111,6 +111,14 @@ async def list_apps(request: Request):
     return await request.app.state.userspace_apps.list_installed()
 
 
+@router.get("/api/userspace-apps/{app_id}")
+async def get_app(request: Request, app_id: str):
+    app = await request.app.state.userspace_apps.get(app_id)
+    if app is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return app
+
+
 # Cap the package upload / fetch size to bound memory and pre-filter zip bombs.
 _MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 

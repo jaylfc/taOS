@@ -39,6 +39,20 @@ async def test_install_list_bundle_uninstall(client):
 
 
 @pytest.mark.asyncio
+async def test_get_single_app_by_id(client):
+    await client.post("/api/userspace-apps/install",
+                      files={"package": ("todo.taosapp", _zip(), "application/zip")})
+
+    r = await client.get("/api/userspace-apps/todo")
+    assert r.status_code == 200
+    assert r.json()["app_id"] == "todo"
+    assert r.json()["name"] == "Todo"
+
+    r = await client.get("/api/userspace-apps/does-not-exist")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_bundle_path_traversal_404(client):
     await client.post("/api/userspace-apps/install",
                       files={"package": ("todo.taosapp", _zip(), "application/zip")})
