@@ -83,6 +83,50 @@ describe("AccountSection", () => {
     );
   });
 
+  it("shows the 'Reserve your username' promo when signed in with no handle", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      if (String(input).includes("/auth/status")) {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            user_id: "u1",
+            email: "jay@example.com",
+            taosgo: { status: "none" },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    render(<AccountSection />);
+    expect(await screen.findByText("Reserve your taOS username")).toBeInTheDocument();
+    expect(screen.getByText("Reserve your username")).toBeInTheDocument();
+  });
+
+  it("shows the reserved handle instead of the CTA when the account has one", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      if (String(input).includes("/auth/status")) {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            user_id: "u1",
+            email: "jay@example.com",
+            taosgo: { status: "none" },
+            handle: "jay",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    render(<AccountSection />);
+    expect(await screen.findByText("@jay")).toBeInTheDocument();
+    expect(screen.getByText("jay.taos.my")).toBeInTheDocument();
+    expect(screen.queryByText("Reserve your username")).not.toBeInTheDocument();
+  });
+
   it("shows the local 'this device' identity from /auth/status", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       if (String(input).includes("/auth/status")) {

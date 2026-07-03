@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type FormEvent } from "react";
-import { LogOut, AlertCircle, ShieldCheck, Plane, UserCircle } from "lucide-react";
+import { LogOut, AlertCircle, ShieldCheck, Plane, UserCircle, AtSign } from "lucide-react";
 import { Button, Card, Input, Label } from "@/components/ui";
 import {
   fetchAccount,
@@ -126,6 +126,46 @@ function TaosgoCard({ account }: { account: Account }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Reserve-your-username promo card                                  */
+/* ------------------------------------------------------------------ */
+
+function ReserveHandleCard({ account }: { account: Account }) {
+  const { handle } = account;
+
+  if (handle) {
+    return (
+      <Card className="p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <AtSign size={16} className="text-sky-400" />
+          <h3 className="text-sm font-medium">Your taOS username</h3>
+        </div>
+        <p className="text-sm font-medium">@{handle}</p>
+        <p className="text-xs text-shell-text-tertiary mt-0.5">{handle}.taos.my</p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <AtSign size={16} className="text-sky-400" />
+        <h3 className="text-sm font-medium">Reserve your taOS username</h3>
+      </div>
+      <p className="text-xs text-shell-text-tertiary mb-3">
+        Claim your handle for your website, blog, portfolio, and socials — held for you across
+        taOS. Included with taOSgo.
+      </p>
+      <Button
+        size="sm"
+        onClick={() => { window.location.href = "https://taos.my/account/username"; }}
+      >
+        Reserve your username
+      </Button>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Signed-in view                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -142,6 +182,7 @@ function SignedIn({ account, onSignOut }: { account: Account; onSignOut: () => v
         </Button>
       </Card>
       <TaosgoCard account={account} />
+      <ReserveHandleCard account={account} />
     </div>
   );
 }
@@ -232,7 +273,8 @@ function SignedOut({ onSignedIn }: { onSignedIn: (account: Account) => void }) {
       </form>
 
       <p className="text-xs text-shell-text-tertiary mt-3 flex items-center gap-1.5">
-        <ShieldCheck size={12} /> Your taOS account unlocks taOSgo and syncs across your devices.
+        <ShieldCheck size={12} /> Your taOS account unlocks taOSgo, app sharing, and your reserved
+        taOS username.
       </p>
     </Card>
   );
@@ -266,7 +308,9 @@ export function AccountSection() {
       <LocalAccountCard />
 
       <p className="text-sm text-shell-text-tertiary mb-5">
-        Sign in to your taOS cloud account to manage taOSgo and sync settings across your devices.
+        One taOS account for everything: secure remote access with taOSgo, sharing the apps you
+        build, and soon your own taOS username for a website, blog, portfolio, and social
+        presence.
       </p>
 
       {state.kind === "loading" && (

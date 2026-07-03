@@ -21,6 +21,9 @@ export interface Account {
   user_id: string;
   email: string;
   taosgo: TaosgoEntitlement;
+  /** Reserved taOS username (e.g. for a future website/blog/portfolio). Not
+   *  yet returned by /me; treated as absent until the backend adds it. */
+  handle?: string | null;
 }
 
 export type AccountState =
