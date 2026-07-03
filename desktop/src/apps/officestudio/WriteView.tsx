@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
@@ -18,6 +18,19 @@ import {
   Plus,
   Save,
 } from "lucide-react";
+
+// Only http(s) and mailto links are allowed. A URL with any other explicit
+// scheme (javascript:, data:, vbscript:, ...) is rejected so a link can never
+// carry executable script into a saved document. A scheme-less value (a bare
+// domain or relative path) is treated as safe.
+function isSafeHref(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i);
+  if (!scheme) return true;
+  const name = (scheme[1] ?? "").toLowerCase();
+  return name === "http" || name === "https" || name === "mailto";
+}
 
 const AI_OPTIONS: { label: string; desc: string; Icon: typeof Sparkles }[] = [
   { label: "Rewrite", desc: "Clearer, same meaning", Icon: Pencil },
@@ -87,17 +100,15 @@ export function WriteView() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Bumped on every editor transaction so toolbar active-states (bold,
-  // heading level, list...) re-render -- Tiptap's editor instance is
-  // mutable and does not itself trigger a React re-render on selection
-  // or mark changes.
-  const [, forceToolbarUpdate] = useState(0);
-
   const editor: Editor | null = useEditor({
     extensions: [
       StarterKit,
       Underline,
-      Link.configure({ openOnClick: false, autolink: false }),
+      // validate rejects dangerous schemes (javascript:, data:, ...) so a
+      // stored document cannot smuggle an executable link back in through the
+      // setContent load path. Applies to links parsed from content, not just
+      // ones created in the editor.
+      Link.configure({ openOnClick: false, autolink: false, validate: isSafeHref }),
     ],
     content: "",
     editorProps: {
@@ -117,10 +128,27 @@ export function WriteView() {
     onUpdate: ({ editor: ed }) => {
       setContent(ed.getHTML());
     },
-    onTransaction: () => {
-      forceToolbarUpdate((n) => n + 1);
-    },
   });
+
+  // Re-render the toolbar on every editor transaction so active mark and
+  // heading states stay in sync. Tiptap's editor is mutable and does not
+  // itself trigger a React re-render; useSyncExternalStore subscribes to its
+  // transactions. editor.state is a stable reference between transactions, so
+  // it is a safe snapshot.
+  useSyncExternalStore(
+    useCallback(
+      (onStoreChange) => {
+        if (!editor) return () => {};
+        editor.on("transaction", onStoreChange);
+        return () => {
+          editor.off("transaction", onStoreChange);
+        };
+      },
+      [editor],
+    ),
+    () => (editor ? editor.state : null),
+    () => null,
+  );
 
   const loadList = useCallback(async () => {
     const res = await fetch("/api/office/docs", { credentials: "include" });
@@ -209,11 +237,15 @@ export function WriteView() {
     const previousUrl = (editor.getAttributes("link").href as string | undefined) ?? "";
     const url = window.prompt("Link URL", previousUrl);
     if (url === null) return;
-    if (url === "") {
+    if (url.trim() === "") {
       editor.chain().focus().extendMarkRange("link").unsetLink().run();
       return;
     }
-    editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+    if (!isSafeHref(url)) {
+      setError("That link was blocked: only http, https, and mailto links are allowed.");
+      return;
+    }
+    editor.chain().focus().extendMarkRange("link").setLink({ href: url.trim() }).run();
   }, [editor]);
 
   const activeHeadingLevel = ((): 0 | 1 | 2 | 3 => {

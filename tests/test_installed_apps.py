@@ -160,3 +160,26 @@ async def test_multiple_apps(store):
 
     rows = await store.list_installed()
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_office_suite_install_row_migrated_to_office_studio(tmp_path):
+    # A user who installed the app under its old id keeps it installed after
+    # the Office Suite -> Office Studio rename.
+    db = tmp_path / "installed_apps.db"
+    first = InstalledAppsStore(db)
+    await first.init()
+    await first.install("office-suite", version="1.0.0")
+    await first.update_runtime_location("office-suite", host="127.0.0.1", port=1234)
+    await first.close()
+
+    # Re-opening runs _post_init, which performs the rename migration.
+    second = InstalledAppsStore(db)
+    await second.init()
+    try:
+        assert not await second.is_installed("office-suite")
+        assert await second.is_installed("office-studio")
+        runtime = await second.get_runtime_location("office-studio")
+        assert runtime is not None and runtime["runtime_port"] == 1234
+    finally:
+        await second.close()
