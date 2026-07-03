@@ -5,6 +5,14 @@ import type { CanvasElement } from "./types";
 // history to keep a long session's memory bounded. Oldest entries are evicted.
 const MAX_HISTORY = 100;
 
+// Push onto a stack with the cap applied, evicting the oldest entry. Used for
+// every push (commit, undo, and redo) so BOTH stacks stay bounded, not just
+// undoStack.
+function pushCapped(stack: CanvasElement[][], item: CanvasElement[]): void {
+  stack.push(item);
+  if (stack.length > MAX_HISTORY) stack.shift();
+}
+
 /**
  * A simple undo/redo stack over the canvas elements array. `commit` records
  * the elements array as it was *before* a change and applies the new state.
@@ -25,8 +33,7 @@ export function useElementHistory(
 
   const commit = useCallback(
     (next: CanvasElement[]) => {
-      undoStack.current.push(elements);
-      if (undoStack.current.length > MAX_HISTORY) undoStack.current.shift();
+      pushCapped(undoStack.current, elements);
       redoStack.current = [];
       setCanUndo(true);
       setCanRedo(false);
@@ -38,7 +45,7 @@ export function useElementHistory(
   const undo = useCallback(() => {
     const prev = undoStack.current.pop();
     if (!prev) return;
-    redoStack.current.push(elements);
+    pushCapped(redoStack.current, elements);
     setCanUndo(undoStack.current.length > 0);
     setCanRedo(true);
     onElementsChange(prev);
@@ -47,7 +54,7 @@ export function useElementHistory(
   const redo = useCallback(() => {
     const next = redoStack.current.pop();
     if (!next) return;
-    undoStack.current.push(elements);
+    pushCapped(undoStack.current, elements);
     setCanRedo(redoStack.current.length > 0);
     setCanUndo(true);
     onElementsChange(next);

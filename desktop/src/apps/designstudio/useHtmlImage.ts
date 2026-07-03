@@ -26,8 +26,10 @@ export function useHtmlImage(src: string | undefined): HtmlImageResult {
     el.onerror = () => {
       // Clear any previously loaded image so a failed src doesn't leave a
       // stale bitmap on the node, and surface the failure so the caller can
-      // render a broken-image placeholder instead of nothing.
+      // render a broken-image placeholder instead of nothing. Also log a
+      // diagnostic so a broken upload/Magic image is traceable in the console.
       if (!cancelled) {
+        console.warn("useHtmlImage: image failed to load", src.slice(0, 64));
         setImg(undefined);
         setFailed(true);
       }
