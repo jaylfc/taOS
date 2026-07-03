@@ -2,9 +2,12 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { PenLine, LayoutGrid, Plus, Sparkles, Circle } from "lucide-react";
 import { ModelBrowser } from "@/components/ModelBrowser";
 import { DesignView } from "./designstudio/DesignView";
-import { TemplatesView } from "./designstudio/TemplatesView";
+import { TemplatesView, type TemplateChoice } from "./designstudio/TemplatesView";
 import { MagicView } from "./designstudio/MagicView";
+import { createImageElement } from "./designstudio/elementFactory";
 import {
+  DEFAULT_ARTBOARD,
+  type Artboard,
   type CanvasElement,
   type DesignStudioView,
   type GeneratedImage,
@@ -25,6 +28,7 @@ function randomSeed(): number {
 export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [view, setView] = useState<DesignStudioView>("design");
   const [canvasElements, setCanvasElements] = useState<CanvasElement[]>([]);
+  const [artboard, setArtboard] = useState<Artboard>(DEFAULT_ARTBOARD);
 
   const [magicPrompt, setMagicPrompt] = useState("");
   const [magicStyle, setMagicStyle] = useState<string | null>(null);
@@ -85,21 +89,20 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
   const canGenerate =
     !!magicPrompt.trim() && !generating && !!selectedVariant?.downloaded;
 
-  const placeOnCanvas = useCallback((img: GeneratedImage) => {
-    setCanvasElements((prev) => {
-      const offset = prev.length * 12;
-      const element: CanvasElement = {
-        id: `${img.id}-${prev.length}-${Date.now()}`,
-        type: "image",
-        url: img.url,
-        prompt: img.prompt,
-        x: 24 + offset,
-        y: 280 + offset,
-        width: 312,
-        height: 140,
-      };
-      return [...prev, element];
-    });
+  const placeOnCanvas = useCallback(
+    (img: GeneratedImage) => {
+      setCanvasElements((prev) => [
+        ...prev,
+        createImageElement(prev, img.url, artboard.width, artboard.height, img.prompt),
+      ]);
+      setView("design");
+    },
+    [artboard.width, artboard.height],
+  );
+
+  const handleSelectTemplate = useCallback((template: TemplateChoice) => {
+    setArtboard({ name: template.name, width: template.width, height: template.height });
+    setCanvasElements([]);
     setView("design");
   }, []);
 
@@ -218,9 +221,21 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {view === "design" && <DesignView canvasElements={canvasElements} />}
-          {view === "templates" && <TemplatesView />}
-          {view === "elements" && <DesignView canvasElements={canvasElements} />}
+          {view === "design" && (
+            <DesignView
+              elements={canvasElements}
+              onElementsChange={setCanvasElements}
+              artboard={artboard}
+            />
+          )}
+          {view === "templates" && <TemplatesView onSelectTemplate={handleSelectTemplate} />}
+          {view === "elements" && (
+            <DesignView
+              elements={canvasElements}
+              onElementsChange={setCanvasElements}
+              artboard={artboard}
+            />
+          )}
           {view === "magic" && (
             <MagicView
               prompt={magicPrompt}
