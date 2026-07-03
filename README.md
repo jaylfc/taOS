@@ -258,7 +258,7 @@ Dedicated studio apps for every kind of project, each a focused, native taOS wor
 
 - **Images Studio.** Create, Library, and Edit in one app. Generate from a prompt on any discovered Stable Diffusion backend (NPU / GPU / CPU), browse a thumbnail library, and edit with tier-aware backends: inpaint and object removal, plus upscale. The platform picks the best installed backend per task and degrades gracefully when a higher tier is missing.
 - **Game Studio.** An offline-AI game maker built on three.js and react-three-fiber. Less-capable, tool-calling-weak models get guided building blocks and templates; more capable local or cloud models can author scenes directly. Games run fullscreen on desktop and mobile with a mandatory exit-to-taOS control, can be playtested in place, and optionally shared to the Store.
-- **Web Studio.** An AI-assisted, Wix-style website builder. Describe a site or start from a template, then edit it as stacked sections (hero, features, gallery, contact, and more) with inline text, image swaps, live theming, add/remove/reorder, and a responsive desktop/tablet/mobile preview. Export a self-contained static HTML page. Sites persist on your own cluster.
+- **Web Studio.** An AI-assisted, Wix-style website builder. Describe a site or start from a template, then edit it as stacked sections (hero, features, gallery, contact, and more) with inline text, image swaps, live theming, add/remove/reorder, and a responsive desktop, tablet, and mobile preview. Export a self-contained static HTML page. Sites persist on your own cluster.
 
 ### AI Generation
 - **Images**. Stable Diffusion via NPU, GPU, or CPU (multi-backend auto-discovery), surfaced through Image Studio
