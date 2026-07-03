@@ -69,7 +69,10 @@ export function PropertiesPanel({ selected, onUpdate, onDuplicate, onDelete }: P
                 min={8}
                 max={400}
                 value={selected.fontSize}
-                onChange={(e) => onUpdate({ fontSize: Number(e.target.value) || selected.fontSize })}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (!Number.isNaN(n)) onUpdate({ fontSize: n });
+                }}
                 className="w-[62px] rounded-[10px] border border-shell-border bg-shell-surface py-[9px] text-center text-[12.5px] font-semibold font-mono text-shell-text outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
               />
               <input
@@ -133,7 +136,10 @@ export function PropertiesPanel({ selected, onUpdate, onDuplicate, onDelete }: P
               min={0}
               max={40}
               value={selected.strokeWidth}
-              onChange={(e) => onUpdate({ strokeWidth: Number(e.target.value) || 0 })}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isNaN(n)) onUpdate({ strokeWidth: n });
+              }}
               className="w-[54px] rounded-[10px] border border-shell-border bg-shell-surface py-[9px] text-center text-[12.5px] font-semibold font-mono text-shell-text outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             />
           </div>
@@ -156,7 +162,10 @@ export function PropertiesPanel({ selected, onUpdate, onDuplicate, onDelete }: P
               min={1}
               max={40}
               value={selected.strokeWidth}
-              onChange={(e) => onUpdate({ strokeWidth: Number(e.target.value) || 1 })}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isNaN(n)) onUpdate({ strokeWidth: n });
+              }}
               className="w-[54px] rounded-[10px] border border-shell-border bg-shell-surface py-[9px] text-center text-[12.5px] font-semibold font-mono text-shell-text outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             />
           </div>

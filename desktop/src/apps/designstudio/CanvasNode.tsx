@@ -24,7 +24,7 @@ export function CanvasNode({
   onDblClick,
   registerNode,
 }: CanvasNodeProps) {
-  const image = useHtmlImage(el.type === "image" ? el.src : undefined);
+  const { image, failed: imageFailed } = useHtmlImage(el.type === "image" ? el.src : undefined);
 
   if (!el.visible) return null;
 
@@ -82,6 +82,27 @@ export function CanvasNode({
       );
 
     case "image":
+      if (imageFailed) {
+        // Broken-image placeholder: a dashed rect stands in for the missing
+        // bitmap so a failed Magic/upload image is visible instead of blank.
+        return (
+          <Rect
+            {...common}
+            name="broken-image-placeholder"
+            x={el.x}
+            y={el.y}
+            width={el.width}
+            height={el.height}
+            rotation={el.rotation}
+            fill="#2a2e3a"
+            stroke="#e0575c"
+            strokeWidth={2}
+            dash={[8, 6]}
+            onDragEnd={handleRectLikeDragEnd}
+            onTransformEnd={handleRectLikeTransformEnd}
+          />
+        );
+      }
       return (
         <KonvaImage
           {...common}
