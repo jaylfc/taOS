@@ -88,6 +88,37 @@ class DownloadManager:
         )
         return task
 
+    def start_installer_task(self, download_id: str, coro) -> DownloadTask:
+        """Track a model install driven by a backend-specific installer
+        coroutine (e.g. ``RkllamaInstaller.install()``, which pulls the
+        weight via the backend's own ``/api/pull`` instead of a raw HTTP/
+        torrent transfer) using the same DownloadTask the caller already
+        polls via :meth:`get_progress`. These installers don't report
+        incremental byte progress, so ``percent`` stays at 0 until the
+        task finishes.
+        """
+        task = DownloadTask(id=download_id, url="", dest=Path())
+        self._tasks[download_id] = task
+        self._running[download_id] = asyncio.create_task(self._run_installer(task, coro))
+        return task
+
+    async def _run_installer(self, task: DownloadTask, coro) -> None:
+        task.status = "downloading"
+        task.started_at = time.time()
+        try:
+            result = await coro
+        except Exception as exc:  # noqa: BLE001 — surface as a task error, never raise into the poll loop
+            task.status = "error"
+            task.error = str(exc)
+            logger.error("Installer task failed for %s: %s", task.id, exc)
+            return
+        if not result.get("success"):
+            task.status = "error"
+            task.error = result.get("error", "install failed")
+            return
+        task.status = "complete"
+        task.completed_at = time.time()
+
     def get_progress(self, download_id: str) -> DownloadTask | None:
         return self._tasks.get(download_id)
 

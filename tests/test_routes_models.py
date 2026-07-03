@@ -43,7 +43,8 @@ def catalog_with_models(tmp_path):
              "backend": ["ollama", "llama-cpp"]},
             {"id": "npu", "name": "NPU RKLLM", "format": "rkllm", "size_mb": 200,
              "min_ram_mb": 0, "download_url": "https://example.com/npu.rkllm",
-             "backend": ["rkllama"], "requires_npu": ["rk3588"]},
+             "backend": ["rkllama"], "requires_npu": ["rk3588"],
+             "requires": {"backends": [{"id": "rkllama"}]}},
         ],
         "hardware_tiers": {"arm-npu-16gb": {"recommended": "npu", "fallback": "small"}},
         "install": {"method": "download"},
@@ -267,6 +268,65 @@ class TestModelsDelete:
         assert delete_resp.status_code == 200
         assert "test-model-small.gguf" in delete_resp.json()["deleted_files"]
         assert not (models_dir / "test-model-small.gguf").exists()
+
+
+@pytest.mark.asyncio
+class TestModelDownload:
+    """POST /api/models/download must route variants that declare
+    requires.backends: [{id: rkllama}] through rkllama's own /api/pull
+    (RkllamaInstaller) instead of the generic byte-download path — a raw
+    file dump is invisible to the running rkllama server, so it can never
+    be selected as an agent model or deployed (#1599 / #1600).
+    """
+
+    async def test_generic_variant_still_uses_download_manager(self, models_app, models_client):
+        resp = await models_client.post(
+            "/api/models/download",
+            json={"app_id": "test-model", "variant_id": "small"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["download_id"] == "test-model-small"
+        task = models_app.state.download_manager.get_progress("test-model-small")
+        assert task is not None
+        assert task.url == "https://example.com/small.gguf"
+
+    async def test_rkllama_variant_routes_through_installer(self, models_app, models_client):
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ) as mock_install:
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        download_id = data["download_id"]
+        assert download_id == "test-model-npu"
+        mock_install.assert_awaited_once()
+        assert mock_install.await_args.args[0] == "test-model"
+
+        # Drain the background task so the tracked DownloadTask settles.
+        task = models_app.state.download_manager.get_progress(download_id)
+        await models_app.state.download_manager._running[download_id]
+        assert task.status == "complete"
+
+    async def test_rkllama_variant_install_failure_marks_task_error(self, models_app, models_client):
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": False, "error": "pull failed"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 200
+        download_id = resp.json()["download_id"]
+        task = models_app.state.download_manager.get_progress(download_id)
+        await models_app.state.download_manager._running[download_id]
+        assert task.status == "error"
+        assert task.error == "pull failed"
 
 
 @pytest.mark.asyncio

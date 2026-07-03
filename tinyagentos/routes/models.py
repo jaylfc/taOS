@@ -347,13 +347,39 @@ async def download_model(request: Request, body: DownloadRequest):
     if not url:
         return JSONResponse({"error": "No download URL for variant"}, status_code=400)
 
+    download_id = f"{body.app_id}-{body.variant_id}"
+    dm = request.app.state.download_manager
+
+    # Variants that declare requires.backends: [{id: rkllama, ...}] must be
+    # installed through rkllama's own /api/pull so the weight is registered
+    # with the running rkllama server (and shows up in its /api/tags). A raw
+    # HTTP download to disk here would leave the file invisible to rkllama —
+    # it never loads, so it can neither be selected as an agent model nor
+    # deployed (see #1599 / #1600).
+    backend_deps = (variant.get("requires") or {}).get("backends") or []
+    backend_ids = {b.get("id") for b in backend_deps if isinstance(b, dict)}
+    if "rkllama" in backend_ids:
+        from tinyagentos.installers.rkllama_installer import (
+            RkllamaInstaller,
+            resolve_rkllama_url,
+        )
+
+        installer = RkllamaInstaller(rkllama_url=resolve_rkllama_url(None))
+        dm.start_installer_task(
+            download_id,
+            installer.install(body.app_id, {}, variant=variant),
+        )
+        return {
+            "status": "started",
+            "download_id": download_id,
+            "app_id": body.app_id,
+            "variant_id": body.variant_id,
+        }
+
     models_dir = _models_dir(request)
     fmt = variant.get("format", "bin")
     filename = f"{body.app_id}-{body.variant_id}.{fmt}"
     dest = models_dir / filename
-
-    download_id = f"{body.app_id}-{body.variant_id}"
-    dm = request.app.state.download_manager
     # Hybrid download: DownloadManager tries the torrent swarm first if
     # the variant declares a magnet URI and the catalog publisher has
     # marked its licence as allowing redistribution. Failures fall back

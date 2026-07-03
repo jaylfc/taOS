@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Bot, Settings, X } from "lucide-react";
 import { ModelPickerModal } from "@/components/ModelPickerModal";
 import type { AgentModel } from "@/components/ModelPickerFlow";
+import { loadAgentModels } from "@/lib/models";
 import {
   fetchTaosAgentConfig,
   setTaosAgentModel,
@@ -73,12 +74,12 @@ export function TaosAgentDetailPanel({
   async function ensureModelsLoaded() {
     if (modelsLoaded) return;
     try {
-      const res = await fetch("/api/providers/models?refresh=true", {
-        headers: { Accept: "application/json" },
-      });
-      const data = res.ok ? await res.json() : { data: [] };
-      setModels((data.data ?? []).map((m: { id: string }) => ({
-        id: m.id, name: m.id, hostKind: "cloud" as const,
+      // Use the same unified loader as the agent deploy picker so the taOS
+      // agent chooser lists exactly the same models (controller-catalog,
+      // cluster-worker, and cloud-provider models keyed back to a provider).
+      const aggregated = await loadAgentModels();
+      setModels(aggregated.map((m) => ({
+        id: m.id, name: m.name, host: m.host, hostKind: m.hostKind,
       })));
     } catch { /* leave empty */ }
     finally { setModelsLoaded(true); }

@@ -551,3 +551,52 @@ class TestDownloadWithFallback:
 
         assert task.status == "complete"
         assert task.error == ""
+
+
+# ---------------------------------------------------------------------------
+# start_installer_task
+# ---------------------------------------------------------------------------
+
+class TestStartInstallerTask:
+    """A backend-specific installer (e.g. RkllamaInstaller.install(), which
+    pulls a weight via the backend's own /api/pull instead of a raw HTTP
+    transfer) is tracked through the same DownloadTask polling API as a
+    regular download."""
+
+    @pytest.mark.asyncio
+    async def test_success_marks_task_complete(self):
+        dm = DownloadManager()
+
+        async def _install():
+            return {"success": True}
+
+        task = dm.start_installer_task("dl-installer", _install())
+        assert task.id == "dl-installer"
+        assert task.status == "pending"
+        await dm._running["dl-installer"]
+        assert task.status == "complete"
+        assert task.completed_at > 0
+
+    @pytest.mark.asyncio
+    async def test_failure_result_marks_task_error(self):
+        dm = DownloadManager()
+
+        async def _install():
+            return {"success": False, "error": "rkllama pull failed"}
+
+        task = dm.start_installer_task("dl-installer", _install())
+        await dm._running["dl-installer"]
+        assert task.status == "error"
+        assert task.error == "rkllama pull failed"
+
+    @pytest.mark.asyncio
+    async def test_raised_exception_marks_task_error(self):
+        dm = DownloadManager()
+
+        async def _install():
+            raise RuntimeError("connection refused")
+
+        task = dm.start_installer_task("dl-installer", _install())
+        await dm._running["dl-installer"]
+        assert task.status == "error"
+        assert task.error == "connection refused"
