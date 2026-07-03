@@ -265,13 +265,28 @@ export function DesignView({ elements, onElementsChange, artboard }: DesignViewP
     const hadShadow = selectedNode?.shadowEnabled();
     if (selectedNode && hadShadow) selectedNode.shadowEnabled(false);
 
+    // The layer's canvas is only ever drawn at the stage's current pan/zoom,
+    // so cropping it while panned/zoomed can miss content that is off-screen
+    // or scaled. Reset the stage to an untransformed 1:1 view for the
+    // instant of capture, grab the artboard at its true size, then restore
+    // whatever view the user had.
+    const savedScale = { x: stage.scaleX(), y: stage.scaleY() };
+    const savedPos = stage.position();
+    stage.scale({ x: 1, y: 1 });
+    stage.position({ x: 0, y: 0 });
+    stage.batchDraw();
+
     const dataUrl = contentLayer.toDataURL({
-      x: stagePos.x,
-      y: stagePos.y,
-      width: artboard.width * zoom,
-      height: artboard.height * zoom,
-      pixelRatio: 1 / zoom,
+      x: 0,
+      y: 0,
+      width: artboard.width,
+      height: artboard.height,
+      pixelRatio: 2,
     });
+
+    stage.scale(savedScale);
+    stage.position(savedPos);
+    stage.batchDraw();
 
     if (selectedNode && hadShadow) selectedNode.shadowEnabled(true);
 
@@ -279,7 +294,7 @@ export function DesignView({ elements, onElementsChange, artboard }: DesignViewP
     a.href = dataUrl;
     a.download = `${artboard.name.trim().replace(/\s+/g, "-") || "design"}.png`;
     a.click();
-  }, [elements.length, selectedId, stagePos, artboard.width, artboard.height, artboard.name, zoom]);
+  }, [elements.length, selectedId, artboard.width, artboard.height, artboard.name]);
 
   /* ------------------------------- zoom / pan ----------------------------- */
 

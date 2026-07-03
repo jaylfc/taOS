@@ -1,7 +1,17 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createElement, useEffect } from "react";
+import { createElement, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+
+// Captures what the last export call saw, so tests can assert the crop is
+// independent of the stage's pan/zoom at the moment of capture. Declared via
+// vi.hoisted because vi.mock's factory below is hoisted above normal
+// top-level statements.
+const exportCapture = vi.hoisted(() => ({
+  args: undefined as Record<string, unknown> | undefined,
+  scaleAtCapture: undefined as { x: number; y: number } | undefined,
+  posAtCapture: undefined as { x: number; y: number } | undefined,
+}));
 
 // react-konva renders to a real <canvas> 2D context, which jsdom does not
 // implement. Following the project's established pattern for canvas-heavy
@@ -60,13 +70,59 @@ vi.mock("react-konva", () => {
   }
 
   function Stage(props: MockProps) {
+    // Mirrors the live x/y/scaleX/scaleY props onto the fake node's transform
+    // state, the way a real Konva stage reflects prop changes. Runs on every
+    // render (no dep array) so DesignView's zoom/pan state stays in sync.
+    const transformRef = useRef({ scale: { x: 1, y: 1 }, pos: { x: 0, y: 0 } });
     useEffect(() => {
-      const fakeLayer = { toDataURL: () => "data:image/png;base64,FAKE" };
+      transformRef.current = {
+        scale: { x: Number(props.scaleX ?? 1), y: Number(props.scaleY ?? 1) },
+        pos: { x: Number(props.x ?? 0), y: Number(props.y ?? 0) },
+      };
+    });
+
+    useEffect(() => {
+      const fakeLayer = {
+        toDataURL: (opts?: Record<string, unknown>) => {
+          exportCapture.args = opts;
+          exportCapture.scaleAtCapture = { ...transformRef.current.scale };
+          exportCapture.posAtCapture = { ...transformRef.current.pos };
+          return "data:image/png;base64,FAKE";
+        },
+      };
       const fakeStage = {
         findOne: () => fakeLayer,
         container: () => ({ getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0 }) }),
         getPointerPosition: () => ({ x: 0, y: 0 }),
-        position: () => ({ x: 0, y: 0 }),
+        position: (value?: { x: number; y: number }) => {
+          if (value !== undefined) {
+            transformRef.current.pos = value;
+            return fakeStage;
+          }
+          return transformRef.current.pos;
+        },
+        scale: (value?: { x: number; y: number }) => {
+          if (value !== undefined) {
+            transformRef.current.scale = value;
+            return fakeStage;
+          }
+          return transformRef.current.scale;
+        },
+        scaleX: (value?: number) => {
+          if (value !== undefined) {
+            transformRef.current.scale = { ...transformRef.current.scale, x: value };
+            return fakeStage;
+          }
+          return transformRef.current.scale.x;
+        },
+        scaleY: (value?: number) => {
+          if (value !== undefined) {
+            transformRef.current.scale = { ...transformRef.current.scale, y: value };
+            return fakeStage;
+          }
+          return transformRef.current.scale.y;
+        },
+        batchDraw: () => {},
         getStage: () => fakeStage,
       };
       attachRef(props.ref, fakeStage);
@@ -228,6 +284,32 @@ describe("DesignStudioApp", () => {
     clickSpy.mockRestore();
   });
 
+  it("exports the full artboard at a fixed crop regardless of the current zoom/pan", () => {
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Text" }));
+
+    // Zoom to 200% and pan (setZoomCentered re-centers around the stage
+    // size, which is a non-zero, non-default fallback in tests), so the
+    // artboard is neither at 1:1 scale nor at the stage's origin when we
+    // export.
+    fireEvent.change(screen.getByLabelText("Zoom level"), { target: { value: "200" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Export as PNG" }));
+
+    // The crop handed to toDataURL is the artboard's true size at a fixed
+    // origin, independent of the zoom/pan that was active on screen.
+    expect(exportCapture.args).toEqual({ x: 0, y: 0, width: 1080, height: 1350, pixelRatio: 2 });
+    // The stage's transform was reset to identity at the moment of capture.
+    expect(exportCapture.scaleAtCapture).toEqual({ x: 1, y: 1 });
+    expect(exportCapture.posAtCapture).toEqual({ x: 0, y: 0 });
+
+    clickSpy.mockRestore();
+  });
+
   it("duplicates the selected element with Cmd/Ctrl+D", () => {
     const { container } = renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
@@ -243,6 +325,25 @@ describe("DesignStudioApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
     const node = container.querySelector('[data-testid="konva-text"][data-id]') as HTMLElement;
     fireEvent.click(node);
+    fireEvent.keyDown(window, { key: "Delete" });
+    expect(countCanvasElements(container)).toBe(0);
+  });
+
+  it("does not delete the selection when Delete/Backspace is pressed while a form control is focused", () => {
+    const { container } = renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Text" }));
+    const node = container.querySelector('[data-testid="konva-text"][data-id]') as HTMLElement;
+    fireEvent.click(node);
+    expect(countCanvasElements(container)).toBe(1);
+
+    // The zoom picker is a <select>; Delete/Backspace typed into it must not
+    // hijack the canvas selection.
+    const zoomSelect = screen.getByLabelText("Zoom level");
+    fireEvent.keyDown(zoomSelect, { key: "Delete" });
+    fireEvent.keyDown(zoomSelect, { key: "Backspace" });
+    expect(countCanvasElements(container)).toBe(1);
+
+    // Delete still works once focus is no longer on a form control.
     fireEvent.keyDown(window, { key: "Delete" });
     expect(countCanvasElements(container)).toBe(0);
   });
