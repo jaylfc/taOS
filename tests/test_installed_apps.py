@@ -183,3 +183,26 @@ async def test_office_suite_install_row_migrated_to_office_studio(tmp_path):
         assert runtime is not None and runtime["runtime_port"] == 1234
     finally:
         await second.close()
+
+
+@pytest.mark.asyncio
+async def test_rename_migration_preserves_newer_target_row(tmp_path):
+    # If both the old and new ids somehow exist, the migration must keep the
+    # newer office-studio row and just drop the stale office-suite row, never
+    # overwrite the newer data.
+    db = tmp_path / "installed_apps.db"
+    first = InstalledAppsStore(db)
+    await first.init()
+    await first.install("office-suite", version="old")
+    await first.install("office-studio", version="new")
+    await first.close()
+
+    second = InstalledAppsStore(db)
+    await second.init()
+    try:
+        assert not await second.is_installed("office-suite")
+        rows = {r["app_id"]: r for r in await second.list_installed()}
+        assert "office-studio" in rows
+        assert rows["office-studio"]["version"] == "new"
+    finally:
+        await second.close()

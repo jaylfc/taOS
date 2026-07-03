@@ -22,17 +22,24 @@ class InstalledAppsStore(BaseStore):
 
     # App ids that were renamed. On boot, any install/runtime row keyed by the
     # old id is remapped to the new one so a user who installed the app under
-    # its former name keeps it installed after the rename. UPDATE OR REPLACE
-    # collapses the row into an existing new-id row if one is somehow present.
+    # its former name keeps it installed after the rename.
     _APP_ID_RENAMES = {"office-suite": "office-studio"}
 
     async def _post_init(self) -> None:
         assert self._db is not None
         for old_id, new_id in self._APP_ID_RENAMES.items():
             for table in ("installed_apps", "app_runtime"):
+                # UPDATE OR IGNORE then DELETE: if a new-id row already exists
+                # (the user somehow has both), the rename is ignored so the
+                # newer row is preserved, and the stale old-id row is then
+                # dropped. Never REPLACE, which would clobber the newer row.
                 await self._db.execute(
-                    f"UPDATE OR REPLACE {table} SET app_id = ? WHERE app_id = ?",
+                    f"UPDATE OR IGNORE {table} SET app_id = ? WHERE app_id = ?",
                     (new_id, old_id),
+                )
+                await self._db.execute(
+                    f"DELETE FROM {table} WHERE app_id = ?",
+                    (old_id,),
                 )
         await self._db.commit()
 
