@@ -9,7 +9,8 @@ import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, Response
 
-from tinyagentos.userspace.broker import handle_capability
+from tinyagentos.code_analyzer import analyze_app_source, has_critical
+from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.package import extract_package, PackageError
 from tinyagentos.userspace.url_guard import resolve_safe_public_ip
@@ -25,6 +26,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SDK_PATH = Path(__file__).resolve().parent.parent / "userspace" / "sdk" / "taos-app-sdk.js"
+
+# Extensions the static security analyzer treats as readable app source. Binary
+# assets (images, fonts, wasm) are skipped -- they aren't executable script/
+# markup and decoding them as text would either error or waste a scan.
+_ANALYZABLE_EXTENSIONS = {".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".css"}
+
+
+def _collect_source_files(app_dir: Path) -> dict[str, str]:
+    """Read every analyzable text file under app_dir into a {relpath: content} dict.
+
+    Used to feed the just-extracted package into analyze_app_source(). Paths
+    are POSIX-style relative to app_dir so findings read the same way
+    regardless of host OS.
+    """
+    files: dict[str, str] = {}
+    for path in sorted(app_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _ANALYZABLE_EXTENSIONS:
+            continue
+        try:
+            files[path.relative_to(app_dir).as_posix()] = path.read_text(
+                encoding="utf-8", errors="ignore"
+            )
+        except OSError:
+            continue
+    return files
 
 # Bundle CSP for sandboxed userspace packages. The `sandbox allow-scripts`
 # directive (no allow-same-origin) forces the document into an OPAQUE origin
@@ -141,6 +167,27 @@ async def install_app(
             {"error": "container packages are not supported in this release (web-only)"},
             status_code=501,
         )
+    apps_root = _apps_root(request).resolve()
+    app_dir = (apps_root / manifest["id"]).resolve()
+    # Static security gate for web apps (the shape App Studio produces): this
+    # runs server-side on every install regardless of how the package was
+    # submitted (upload or source_url), so a modified/bypassed client can never
+    # skip it. A critical finding blocks the install outright -- the extracted
+    # files are removed so nothing scanned-and-rejected is left reachable via
+    # serve_bundle. This is defense in depth in FRONT of the sandbox iframe,
+    # not a replacement for it.
+    if manifest["app_type"] == "web":
+        findings = analyze_app_source(_collect_source_files(app_dir))
+        if has_critical(findings):
+            if app_dir.is_relative_to(apps_root) and app_dir != apps_root:
+                shutil.rmtree(app_dir, ignore_errors=True)
+            return JSONResponse(
+                {
+                    "error": "blocked_by_security_analysis",
+                    "findings": [f.to_dict() for f in findings],
+                },
+                status_code=422,
+            )
     existing = await store.get(manifest["id"])
     # A public install must never replace an app installed as first-party: that
     # would let an attacker overwrite a trusted studio's bundle (and, before the
@@ -176,6 +223,32 @@ async def install_app(
         "permissions_requested": manifest["permissions"],
         "needs_consent": bool(existing and new_perms),
         "new_permissions": new_perms,
+    }
+
+
+@router.post("/api/userspace-apps/analyze")
+async def analyze_app(request: Request):
+    """Run the static security analyzer over raw App Studio source, ahead of install.
+
+    Body: {"files": {"index.html": "...", "app.js": "...", ...}}. Lets App
+    Studio's Build/Publish views show findings while the app is still just
+    generated text with no package built yet. This is a convenience preview
+    -- the authoritative, unbypassable gate is the analysis that runs inside
+    POST /api/userspace-apps/install itself.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    files = body.get("files")
+    if not isinstance(files, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in files.items()
+    ):
+        return JSONResponse({"error": "files must be a map of filename to source text"}, status_code=400)
+    findings = analyze_app_source(files)
+    return {
+        "findings": [f.to_dict() for f in findings],
+        "blocked": has_critical(findings),
     }
 
 

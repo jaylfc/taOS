@@ -44,7 +44,8 @@ async def _install_test_app(store, app_id="test-app", name="Test App",
 
 def _make_minimal_pkg(app_id="uploaded-app", name="Uploaded App",
                        version="0.1.0", app_type="web",
-                       permissions=None, entry_name="index.html"):
+                       permissions=None, entry_name="index.html",
+                       entry_content=b"<html>hello</html>"):
     """Return bytes of a valid .taosapp (zip) containing a minimal package."""
     import io
     import zipfile
@@ -64,12 +65,10 @@ def _make_minimal_pkg(app_id="uploaded-app", name="Uploaded App",
     else:
         manifest += "  []\n"
 
-    entry = b"<html>hello</html>"
-
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.yaml", manifest)
-        zf.writestr(entry_name, entry)
+        zf.writestr(entry_name, entry_content)
     return buf.getvalue()
 
 
@@ -267,6 +266,106 @@ async def test_install_container_package_returns_501(client):
     )
     assert resp.status_code == 501
     assert "container packages are not supported" in resp.json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/userspace-apps/install -- static security analysis gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_install_blocked_on_critical_finding(client):
+    """A web app whose source trips a critical detector must not be installed."""
+    await _init_userspace_stores(
+        client._transport.app,
+        client._transport.app.state.data_dir,
+    )
+    pkg = _make_minimal_pkg(
+        app_id="malicious-app",
+        entry_content=b"<html><script>eval(userInput);</script></html>",
+    )
+    resp = await client.post(
+        "/api/userspace-apps/install",
+        files={"package": ("test.taosapp", pkg, "application/zip")},
+    )
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["error"] == "blocked_by_security_analysis"
+    assert any(f["severity"] == "critical" for f in data["findings"])
+
+
+@pytest.mark.asyncio
+async def test_install_blocked_app_is_not_persisted(client):
+    """A blocked install must not create a store row or leave files on disk."""
+    app = client._transport.app
+    await _init_userspace_stores(app, app.state.data_dir)
+    store = app.state.userspace_apps
+    pkg = _make_minimal_pkg(
+        app_id="malicious-app-2",
+        entry_content=b"<html><script>eval(userInput);</script></html>",
+    )
+    await client.post(
+        "/api/userspace-apps/install",
+        files={"package": ("test.taosapp", pkg, "application/zip")},
+    )
+    assert await store.get("malicious-app-2") is None
+    app_dir = app.state.data_dir / "apps" / "malicious-app-2"
+    assert not app_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_install_clean_app_still_succeeds(client):
+    """Clean source must install exactly as before this gate was added."""
+    await _init_userspace_stores(
+        client._transport.app,
+        client._transport.app.state.data_dir,
+    )
+    pkg = _make_minimal_pkg(app_id="clean-app", entry_content=b"<html><body>Hi</body></html>")
+    resp = await client.post(
+        "/api/userspace-apps/install",
+        files={"package": ("test.taosapp", pkg, "application/zip")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["app_id"] == "clean-app"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/userspace-apps/analyze
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_returns_findings_for_critical_source(client):
+    resp = await client.post(
+        "/api/userspace-apps/analyze",
+        json={"files": {"app.js": "eval(userInput);"}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["blocked"] is True
+    assert len(data["findings"]) == 1
+    assert data["findings"][0]["rule_id"] == "eval-like-execution"
+
+
+@pytest.mark.asyncio
+async def test_analyze_returns_not_blocked_for_clean_source(client):
+    resp = await client.post(
+        "/api/userspace-apps/analyze",
+        json={"files": {"app.js": "console.log('hello');"}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["blocked"] is False
+    assert data["findings"] == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_invalid_body_returns_400(client):
+    resp = await client.post(
+        "/api/userspace-apps/analyze",
+        json={"files": "not-a-dict"},
+    )
+    assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
