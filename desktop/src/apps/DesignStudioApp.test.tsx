@@ -269,6 +269,8 @@ describe("DesignStudioApp", () => {
   });
 
   it("picking a template switches to Design view with a clean canvas at the template size", () => {
+    // The canvas is non-empty, so picking a template asks to confirm the reset.
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const { container } = renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
     expect(countCanvasElements(container)).toBe(1);
@@ -276,12 +278,33 @@ describe("DesignStudioApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Templates" }));
     fireEvent.click(screen.getByText("Instagram Post"));
 
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
     const nav = screen.getByRole("navigation", { name: "Design Studio views" });
     const designBtn = nav.querySelector('[aria-label="Design"]') as HTMLElement;
     expect(designBtn.getAttribute("aria-current")).toBe("page");
     expect(screen.getByText("Instagram Post")).toBeDefined();
     expect(screen.getByText("1080 x 1080")).toBeDefined();
     expect(countCanvasElements(container)).toBe(0);
+    confirmSpy.mockRestore();
+  });
+
+  it("keeps the current design when a template reset is cancelled", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { container } = renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Text" }));
+    expect(countCanvasElements(container)).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Templates" }));
+    fireEvent.click(screen.getByText("Instagram Post"));
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // Still on Templates, and the design is untouched.
+    expect(
+      screen.getByRole("button", { name: "Templates" }).getAttribute("aria-current"),
+    ).toBe("page");
+    fireEvent.click(screen.getByRole("button", { name: "Design" }));
+    expect(countCanvasElements(container)).toBe(1);
+    confirmSpy.mockRestore();
   });
 
   it("switches to Magic view and shows prompt bar and style chips", () => {

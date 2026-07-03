@@ -15,6 +15,12 @@ export function useHtmlImage(src: string | undefined): HTMLImageElement | undefi
     el.onload = () => {
       if (!cancelled) setImg(el);
     };
+    el.onerror = () => {
+      // Clear any previously loaded image so a failed src doesn't leave a
+      // stale bitmap on the node; the Konva <Image> renders nothing until a
+      // valid src loads.
+      if (!cancelled) setImg(undefined);
+    };
     el.src = src;
     return () => {
       cancelled = true;

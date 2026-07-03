@@ -100,11 +100,22 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
     [artboard.width, artboard.height],
   );
 
-  const handleSelectTemplate = useCallback((template: TemplateChoice) => {
-    setArtboard({ name: template.name, width: template.width, height: template.height });
-    setCanvasElements([]);
-    setView("design");
-  }, []);
+  const handleSelectTemplate = useCallback(
+    (template: TemplateChoice) => {
+      // Picking a template resets the canvas; confirm first so an accidental
+      // click doesn't wipe unsaved work. (Persistence is a later phase.)
+      if (
+        canvasElements.length > 0 &&
+        !window.confirm("Start from this template? Your current design will be cleared.")
+      ) {
+        return;
+      }
+      setArtboard({ name: template.name, width: template.width, height: template.height });
+      setCanvasElements([]);
+      setView("design");
+    },
+    [canvasElements.length],
+  );
 
   const runGenerate = useCallback(async () => {
     const usePrompt = magicPrompt.trim();

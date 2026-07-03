@@ -386,14 +386,26 @@ export function DesignView({ elements, onElementsChange, artboard }: DesignViewP
       transform: `rotate(${editingEl.rotation}deg)`,
       transformOrigin: "top left",
     };
-  }, [editingNode, editingEl]);
+    // zoom + stagePos are read via the node's absolute position/scale, so they
+    // must be in the dep list for the overlay to re-anchor if the user
+    // zooms/pans mid-edit.
+  }, [editingNode, editingEl, zoom, stagePos]);
 
   /* -------------------------------- keyboard ------------------------------- */
 
   useEffect(() => {
     function isTypingTarget(target: EventTarget | null): boolean {
       const el = target as HTMLElement | null;
-      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      // Any focusable form control counts: a focused <select> (the zoom
+      // picker) or color/number input must not have Delete/Backspace hijacked
+      // into deleting the canvas selection.
+      return (
+        !!el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.tagName === "SELECT" ||
+          el.isContentEditable)
+      );
     }
 
     function onKeyDown(e: KeyboardEvent) {
