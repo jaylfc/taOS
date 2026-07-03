@@ -67,9 +67,10 @@ export interface InstallResult {
   new_permissions: string[];
 }
 
-export async function installUserspaceApp(file: File): Promise<InstallResult> {
+export async function installUserspaceApp(file: File, provenance?: string): Promise<InstallResult> {
   const form = new FormData();
   form.append("package", file);
+  if (provenance) form.append("provenance", provenance);
   const res = await fetch("/api/userspace-apps/install", {
     method: "POST",
     credentials: "include",
