@@ -105,6 +105,24 @@ def parse_manifest(text: str) -> dict:
     return data
 
 
+def build_package(manifest: dict, files: dict[str, str]) -> bytes:
+    """Build a .taosapp zip (manifest.yaml + files) in memory, returning its bytes.
+
+    The inverse of extract_package(). The manifest is validated with the same
+    parse_manifest() rules extract_package() enforces on the way in, so a
+    package built here is guaranteed importable by any other taOS instance's
+    install endpoint. `files` maps a flat filename (no path separators) to its
+    text content.
+    """
+    parse_manifest(yaml.safe_dump(manifest))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.yaml", yaml.safe_dump(manifest, sort_keys=False))
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
 def extract_package(data: bytes, apps_root: Path) -> dict:
     """Validate + extract a .taosapp zip into apps_root/{id}/. Returns the manifest."""
     try:
