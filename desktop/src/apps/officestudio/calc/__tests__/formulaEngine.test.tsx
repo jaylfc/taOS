@@ -12,6 +12,15 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { Workbook, type WorkbookInstance } from "@fortune-sheet/react";
 import "@fortune-sheet/react/dist/index.css";
 
+// Re-reads ref.current at the point of use instead of caching it in a local
+// variable, since the exposed API instance can be replaced across internal
+// re-renders; the RefObject itself is the stable handle to hold on to.
+function currentWb(ref: RefObject<WorkbookInstance | null>): WorkbookInstance {
+  const wb = ref.current;
+  if (!wb) throw new Error("workbook ref not ready");
+  return wb;
+}
+
 function Harness({
   id,
   setup,
@@ -57,7 +66,7 @@ describe("spreadsheet formula engine", () => {
         }}
       />,
     );
-    await waitFor(() => expect(wbRef!.current!.getCellValue(3, 0)).toBe(6));
+    await waitFor(() => expect(currentWb(wbRef!).getCellValue(3, 0)).toBe(6));
   });
 
   it("recomputes a dependent cell after the cell it references changes", async () => {
@@ -74,11 +83,11 @@ describe("spreadsheet formula engine", () => {
         }}
       />,
     );
-    await waitFor(() => expect(wbRef!.current!.getCellValue(0, 1)).toBe(10));
+    await waitFor(() => expect(currentWb(wbRef!).getCellValue(0, 1)).toBe(10));
 
-    wbRef!.current!.setCellValue(0, 0, 7); // A1 changes
-    wbRef!.current!.calculateFormula();
-    await waitFor(() => expect(wbRef!.current!.getCellValue(0, 1)).toBe(14));
+    currentWb(wbRef!).setCellValue(0, 0, 7); // A1 changes
+    currentWb(wbRef!).calculateFormula();
+    await waitFor(() => expect(currentWb(wbRef!).getCellValue(0, 1)).toBe(14));
   });
 
   it("supports AVERAGE, MIN, MAX, COUNT and IF over a range", async () => {
@@ -102,11 +111,11 @@ describe("spreadsheet formula engine", () => {
       />,
     );
     await waitFor(() => {
-      expect(wbRef!.current!.getCellValue(0, 1)).toBe(4);
-      expect(wbRef!.current!.getCellValue(1, 1)).toBe(2);
-      expect(wbRef!.current!.getCellValue(2, 1)).toBe(6);
-      expect(wbRef!.current!.getCellValue(3, 1)).toBe(3);
-      expect(wbRef!.current!.getCellValue(4, 1)).toBe("yes");
+      expect(currentWb(wbRef!).getCellValue(0, 1)).toBe(4);
+      expect(currentWb(wbRef!).getCellValue(1, 1)).toBe(2);
+      expect(currentWb(wbRef!).getCellValue(2, 1)).toBe(6);
+      expect(currentWb(wbRef!).getCellValue(3, 1)).toBe(3);
+      expect(currentWb(wbRef!).getCellValue(4, 1)).toBe("yes");
     });
   });
 
@@ -123,6 +132,6 @@ describe("spreadsheet formula engine", () => {
         }}
       />,
     );
-    await waitFor(() => expect(wbRef!.current!.getCellValue(0, 0)).toBe(19));
+    await waitFor(() => expect(currentWb(wbRef!).getCellValue(0, 0)).toBe(19));
   });
 });
