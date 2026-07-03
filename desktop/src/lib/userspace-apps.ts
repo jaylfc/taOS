@@ -6,6 +6,10 @@ import type { AppManifest } from "@/registry/app-registry";
  */
 export const USERSPACE_APPS_CHANGED = "taos:userspace-apps-changed";
 
+/** Where an app's code came from. See tinyagentos/userspace/capabilities.py
+ * PROVENANCE_TIERS for the single source of truth this mirrors. */
+export type AppProvenance = "first-party" | "ai-generated" | "user-uploaded" | "unknown";
+
 export interface UserspaceAppRow {
   app_id: string;
   name: string;
@@ -16,10 +20,19 @@ export interface UserspaceAppRow {
   permissions_requested: string[];
   permissions_granted: string[];
   trust?: "community" | "first-party";
+  provenance?: AppProvenance;
+}
+
+/** Back-compat default for a row with no provenance recorded: legacy
+ * first-party built-ins classify first-party, everything else user-uploaded
+ * -- mirrors default_provenance_for_trust in the backend. */
+export function defaultProvenanceForTrust(trust?: string): AppProvenance {
+  return trust === "first-party" ? "first-party" : "user-uploaded";
 }
 
 export function toAppManifest(row: UserspaceAppRow): AppManifest {
   const trust = row.trust ?? "community";
+  const provenance = row.provenance ?? defaultProvenanceForTrust(trust);
   return {
     // Registry id is namespaced (mirrors "service:") so a community app cannot
     // shadow a built-in app id. The broker/bundle still use the raw app_id.
@@ -30,7 +43,13 @@ export function toAppManifest(row: UserspaceAppRow): AppManifest {
     component: () =>
       import("@/apps/SandboxedAppWindow").then((m) => ({
         default: (props: { windowId: string }) =>
-          m.SandboxedAppWindow({ ...props, appId: row.app_id, trust }),
+          m.SandboxedAppWindow({
+            ...props,
+            appId: row.app_id,
+            trust,
+            provenance,
+            grantedCapabilities: row.permissions_granted,
+          }),
       })),
     defaultSize: { w: 900, h: 600 },
     minSize: { w: 360, h: 280 },

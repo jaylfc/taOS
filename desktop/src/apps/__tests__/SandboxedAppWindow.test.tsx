@@ -123,6 +123,58 @@ describe("SandboxedAppWindow -- theme injection", () => {
   });
 });
 
+describe("SandboxedAppWindow -- provenance tiers", () => {
+  it("never widens the sandbox attribute beyond allow-scripts for any tier", () => {
+    for (const provenance of ["first-party", "ai-generated", "user-uploaded", "unknown"] as const) {
+      const { unmount } = render(
+        <SandboxedAppWindow windowId="w1" appId={`app-${provenance}`} provenance={provenance} />
+      );
+      const iframe = screen.getByTitle(`app-${provenance}`) as HTMLIFrameElement;
+      expect(iframe.getAttribute("sandbox")).toBe("allow-scripts");
+      expect(iframe.getAttribute("data-provenance")).toBe(provenance);
+      unmount();
+    }
+  });
+
+  it("shows no badge for a first-party app", () => {
+    render(<SandboxedAppWindow windowId="w1" appId="fp" provenance="first-party" />);
+    expect(screen.queryByTestId("provenance-badge")).toBeNull();
+  });
+
+  it("shows an AI-generated badge with network blocked by default", () => {
+    render(<SandboxedAppWindow windowId="w1" appId="agent-app" provenance="ai-generated" />);
+    const badge = screen.getByTestId("provenance-badge");
+    expect(badge.textContent).toContain("AI-generated");
+    expect(badge.textContent).toContain("Network blocked");
+  });
+
+  it("shows network allowed once app.net is granted", () => {
+    render(
+      <SandboxedAppWindow
+        windowId="w1"
+        appId="agent-app"
+        provenance="ai-generated"
+        grantedCapabilities={["app.net"]}
+      />
+    );
+    const badge = screen.getByTestId("provenance-badge");
+    expect(badge.textContent).toContain("Network allowed");
+  });
+
+  it("shows the unknown-origin badge as network blocked", () => {
+    render(<SandboxedAppWindow windowId="w1" appId="mystery" provenance="unknown" />);
+    const badge = screen.getByTestId("provenance-badge");
+    expect(badge.textContent).toContain("Unknown origin");
+    expect(badge.textContent).toContain("Network blocked");
+  });
+
+  it("falls back to defaultProvenanceForTrust when provenance is omitted", () => {
+    render(<SandboxedAppWindow windowId="w1" appId="legacy-fp" trust="first-party" />);
+    expect(screen.getByTitle("legacy-fp").getAttribute("data-provenance")).toBe("first-party");
+    expect(screen.queryByTestId("provenance-badge")).toBeNull();
+  });
+});
+
 describe("SDK theme API (mirrors taos-app-sdk.js handler)", () => {
   // The SDK ships as a plain IIFE loaded inside the sandbox iframe, so it cannot
   // be imported here without eval/new-Function (a flagged pattern). These tests
