@@ -3,22 +3,64 @@ name: llama.cpp
 type: service
 category: llm-runtime
 version: latest
-description: "C++ inference engine for GGUF models — runs on CPU, Vulkan, and Metal without CUDA."
-homepage: https://github.com/ggerganov/llama.cpp
+description: "taOS default local LLM backend (router mode) — chat, embeddings, and rerank from one process on NVIDIA CUDA, AMD ROCm, Apple Silicon, or CPU."
+homepage: https://github.com/ggml-org/llama.cpp
 license: MIT
 
+# taOS default port is 7835 (see scripts/install-llama-cpp.sh,
+# TAOS_LLAMACPP_PORT, and tinyagentos/installers/port_allocator.py
+# RESERVED_PORTS). Distinct from 7834 (LiteLLM proxy) and 7833 (rkllama).
 requires:
   ram_mb: 512
-  disk_mb: 300
-  ports: [8080]
+  disk_mb: 500
+  ports: [7835]
 
 install:
   method: script
   script: scripts/install-llama-cpp.sh
 
+lifecycle:
+  # Auto-register as a backend so the LiteLLM proxy gets a route to the
+  # local llama-server. llama-server's router mode speaks OpenAI-compatible
+  # /v1/chat/completions (plus /v1/embeddings, /v1/rerank); without this
+  # block the service runs but no agent / assistant call ever finds it.
+  backend_type: openai-compatible
+  default_url: http://localhost:7835
+  auto_manage: false
+  keep_alive_minutes: 0  # always-on — router mode itself manages per-model load/unload
+  startup_timeout_seconds: 60
+
+# Ladder-matched by tinyagentos.cluster.capabilities.tier_compatible (used
+# by config.py's auto-register gate): one minimum VRAM/RAM entry per
+# arch+accel covers every bigger machine of the same kind. apple-silicon
+# is a flat tier (unified memory, no ladder). Rockchip NPU keeps its own
+# rkllama / rk-llama.cpp manifests untouched; Intel Arc / Mali have no
+# entry here (unsupported — no one-tap backend yet).
+#
+# The x86-vulkan-* / arm-vulkan-* / arm-cpu-8gb / cpu-only entries below
+# predate this change and drive the separate (exact-match only)
+# HardwareProfile.profile_id-based Store display badge — kept as-is.
 hardware_tiers:
   x86-vulkan-4gb: full
   x86-vulkan-8gb: full
   arm-vulkan-8gb: full
   arm-cpu-8gb: full
   cpu-only: full
+
+  x86-cuda-4gb: full
+  x86-cuda-8gb: full
+  x86-cuda-12gb: full
+  x86-cuda-16gb: full
+  x86-cuda-24gb: full
+  x86-rocm-4gb: full
+  x86-rocm-8gb: full
+  x86-rocm-16gb: full
+  x86-cpu-2gb: full
+  apple-silicon: full
+  arm-cpu-16gb: full
+  arm-cpu-24gb: full
+  arm-cpu-32gb: full
+  arm-cpu-48gb: full
+  arm-cpu-64gb: full
+  arm-cpu-96gb: full
+  arm-cpu-128gb: full
