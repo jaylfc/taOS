@@ -120,27 +120,45 @@ function DownloadProgress({
   onComplete: () => void;
   onRetry: () => void;
 }) {
-  const timer = useRef<ReturnType<typeof setInterval>>(undefined);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const { downloadId, status } = state;
 
   useEffect(() => {
     if (!downloadId || status === "complete" || status === "error") return undefined;
 
+    // A running backend download must not be flipped to error by a single
+    // transient poll miss (a proxy hiccup, a momentary 502). Only give up
+    // after several CONSECUTIVE failures; a real backend status of "error"
+    // is authoritative and stops immediately.
+    const MAX_POLL_FAILURES = 3;
+    let consecutiveFailures = 0;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const schedule = () => {
+      timer.current = setTimeout(() => void poll(), 1000);
+    };
+
+    // Self-scheduling recursive poll rather than setInterval, so a slow poll
+    // never overlaps a newer one and a stale response can't clobber fresher
+    // state.
     const poll = async () => {
+      if (cancelled) return;
       try {
         const res = await fetch(`/api/models/downloads/${downloadId}`, {
           credentials: "include",
+          signal: controller.signal,
         });
         const data = await res.json().catch(() => null);
         if (!res.ok || !data || typeof data !== "object") {
           throw new Error("invalid poll response");
         }
+        consecutiveFailures = 0;
+        if (cancelled) return;
         if (data.status === "complete") {
-          clearInterval(timer.current);
           onUpdate({ downloadId, percent: 100, status: "complete" });
           onComplete();
         } else if (data.status === "error") {
-          clearInterval(timer.current);
           onUpdate({
             downloadId,
             percent: data.percent ?? state.percent,
@@ -155,22 +173,30 @@ function DownloadProgress({
             percent: data.percent ?? state.percent,
             status: "downloading",
           });
+          schedule();
         }
-      } catch {
-        // Losing the poll (network blip, proxy error page) must not strand
-        // a spinner with no outcome — surface it as an error.
-        clearInterval(timer.current);
-        onUpdate({
-          downloadId,
-          percent: state.percent,
-          status: "error",
-          error: "Lost contact with the download; retry to continue",
-        });
+      } catch (e) {
+        if (cancelled || (e as { name?: string })?.name === "AbortError") return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_POLL_FAILURES) {
+          onUpdate({
+            downloadId,
+            percent: state.percent,
+            status: "error",
+            error: "Lost contact with the download; retry to continue",
+          });
+          return;
+        }
+        schedule();
       }
     };
 
-    timer.current = setInterval(poll, 1000);
-    return () => clearInterval(timer.current);
+    void poll();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer.current) clearTimeout(timer.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloadId, status]);
 
@@ -744,7 +770,12 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                     const compat = COMPAT_STYLES[model.compatibility] ?? { dot: "bg-emerald-400", label: "Recommended" };
                     const isDownloaded =
                       model.installed || downloaded.some((d) => d.id === model.id);
-                    const isDownloading = model.id in downloading;
+                    const dlState = downloading[model.id];
+                    // Only treat a download as in-progress while it is actually
+                    // running. On error the card button must return to an
+                    // actionable Retry, not a stuck disabled "Downloading...".
+                    const isDownloading = dlState != null && dlState.status !== "error";
+                    const isErrored = dlState != null && dlState.status === "error";
 
                     return (
                       <Card key={model.id}>
@@ -788,10 +819,10 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                               size="sm"
                               onClick={() => handleDownload(model)}
                               disabled={isDownloading}
-                              aria-label={`Download ${model.name}`}
+                              aria-label={`${isErrored ? "Retry download of" : "Download"} ${model.name}`}
                             >
                               <Download size={12} />
-                              {isDownloading ? "Downloading..." : "Download"}
+                              {isDownloading ? "Downloading..." : isErrored ? "Retry" : "Download"}
                             </Button>
                           )}
                         </CardFooter>
