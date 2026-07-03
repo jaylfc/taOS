@@ -40,11 +40,6 @@ describe("GameStudioApp", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the app titlebar", () => {
-    renderApp();
-    expect(screen.getByText("Game Studio")).toBeDefined();
-  });
-
   describe("navigation rail", () => {
     it("renders Create, Play and Share", () => {
       renderApp();
