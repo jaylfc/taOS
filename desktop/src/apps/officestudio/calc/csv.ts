@@ -38,11 +38,15 @@ export function sheetToCsv(celldata: CellWithRowAndCol[]): string {
     const row = grid[entry.r];
     if (row) row[entry.c] = cellDisplayValue(entry.v);
   }
-  return grid.map((row) => row.map(csvEscape).join(",")).join("\r\n");
+  // RFC 4180 line endings (CRLF), including a trailing CRLF after the last
+  // row, matching what Excel/Sheets emit.
+  return grid.map((row) => row.map(csvEscape).join(",")).join("\r\n") + "\r\n";
 }
 
 // Minimal RFC 4180 CSV parser: handles quoted fields, escaped quotes ("")
-// inside quoted fields, and both \n and \r\n line endings.
+// inside quoted fields, and both \n and \r\n line endings. Throws if a
+// quoted field is never closed, rather than silently swallowing the rest of
+// the file into a single field.
 export function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -78,6 +82,10 @@ export function parseCsv(text: string): string[][] {
       field += ch;
     }
   }
+  if (inQuotes) {
+    throw new Error("Unterminated quoted field in CSV file");
+  }
+
   row.push(field);
   rows.push(row);
 
