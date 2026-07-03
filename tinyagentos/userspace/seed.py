@@ -37,7 +37,7 @@ async def seed_bundled_apps(store, apps_root: Path, seed_dir: Path | None = None
     1. Parse the manifest to get id + version.
     2. Skip if the app is already installed at the same version.
     3. Otherwise build a .taosapp zip in memory, extract it, then call
-       store.install(..., trust="first-party").
+       store.install(..., trust="first-party", provenance="first-party").
 
     All errors for a single app are caught and logged; they do not abort seeding
     of subsequent apps or crash startup.
@@ -80,6 +80,7 @@ async def seed_bundled_apps(store, apps_root: Path, seed_dir: Path | None = None
                 icon=manifest.get("icon", ""),
                 permissions_requested=manifest.get("permissions", []),
                 trust="first-party",
+                provenance="first-party",
             )
             logger.info("seeded bundled app %s v%s", app_id, version)
         except Exception:

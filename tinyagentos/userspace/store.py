@@ -4,6 +4,7 @@ import json
 import time
 
 from tinyagentos.base_store import BaseStore
+from tinyagentos.userspace.capabilities import default_provenance_for_trust
 
 
 class UserspaceAppStore(BaseStore):
@@ -32,7 +33,7 @@ class UserspaceAppStore(BaseStore):
     """
 
     async def _post_init(self) -> None:
-        """Add the trust column to databases created before it was introduced.
+        """Add the trust/provenance columns to databases created before they existed.
 
         SQLite has no IF NOT EXISTS for ADD COLUMN prior to 3.37, so we check
         PRAGMA table_info for broad compatibility (same pattern used by
@@ -49,27 +50,45 @@ class UserspaceAppStore(BaseStore):
                 "ALTER TABLE userspace_apps ADD COLUMN trust TEXT NOT NULL DEFAULT 'community'"
             )
             await self._db.commit()
+        if "provenance" not in existing_cols:
+            # Empty default (rather than a real tier) so the backfill below can
+            # tell "never classified" apart from an explicitly-set tier, then
+            # derive a sensible value per row from its existing trust column.
+            await self._db.execute(
+                "ALTER TABLE userspace_apps ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
+            )
+            await self._db.execute(
+                "UPDATE userspace_apps SET provenance = CASE "
+                "WHEN trust = 'first-party' THEN 'first-party' ELSE 'user-uploaded' END "
+                "WHERE provenance = ''"
+            )
+            await self._db.commit()
 
     async def install(self, app_id, name, version, app_type, entry, icon,
-                      permissions_requested, *, trust: str = "community"):
+                      permissions_requested, *, trust: str = "community",
+                      provenance: str | None = None):
         assert self._db is not None
+        if provenance is None:
+            provenance = default_provenance_for_trust(trust)
         await self._db.execute(
             """INSERT INTO userspace_apps
                (app_id, name, version, app_type, entry, icon,
-                permissions_requested, permissions_granted, enabled, installed_at, trust)
-               VALUES (?,?,?,?,?,?,?,'[]',1,?,?)
+                permissions_requested, permissions_granted, enabled, installed_at, trust, provenance)
+               VALUES (?,?,?,?,?,?,?,'[]',1,?,?,?)
                ON CONFLICT(app_id) DO UPDATE SET
                  name=excluded.name, version=excluded.version,
                  app_type=excluded.app_type, entry=excluded.entry,
                  icon=excluded.icon,
                  permissions_requested=excluded.permissions_requested,
-                 trust=excluded.trust""",
+                 trust=excluded.trust,
+                 provenance=excluded.provenance""",
             (app_id, name, version, app_type, entry, icon,
-             json.dumps(permissions_requested), int(time.time()), trust),
+             json.dumps(permissions_requested), int(time.time()), trust, provenance),
         )
         await self._db.commit()
 
     def _row_to_dict(self, row) -> dict:
+        trust = row[12] if len(row) > 12 else "community"
         return {
             "app_id": row[0], "name": row[1], "version": row[2],
             "app_type": row[3], "entry": row[4], "icon": row[5],
@@ -77,7 +96,8 @@ class UserspaceAppStore(BaseStore):
             "permissions_granted": json.loads(row[7]),
             "enabled": row[8], "installed_at": row[9],
             "container_host": row[10], "container_port": row[11],
-            "trust": row[12] if len(row) > 12 else "community",
+            "trust": trust,
+            "provenance": row[13] if len(row) > 13 and row[13] else default_provenance_for_trust(trust),
         }
 
     async def get(self, app_id) -> dict | None:

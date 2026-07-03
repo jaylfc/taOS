@@ -85,3 +85,109 @@ def describe_capability(perm: str) -> str:
     if isinstance(perm, str) and perm.startswith(NET_PREFIX):
         return f"Connect to {perm[len(NET_PREFIX):]}"
     return CAPABILITY_DESCRIPTIONS.get(perm, perm)
+
+
+# ---------------------------------------------------------------------------
+# Provenance tiers -- where an installed app's code came from.
+# ---------------------------------------------------------------------------
+#
+# Every app is classified into exactly one tier. The tier is the CEILING: the
+# set of capabilities the app holds automatically, before the user has made
+# any decision. Anything in KNOWN_CAPS not on a tier's ceiling still exists
+# and can be granted through the existing consent flow (routes/app_permissions.py,
+# the app_grant Decision, routes/userspace_apps.py's /permissions endpoint) --
+# a tier never blocks a capability outright, it only decides whether holding
+# it requires an explicit user grant. This is the single source of truth for
+# the provenance -> capability model; the broker and the app_permissions API
+# both read PROVENANCE_CEILINGS rather than hard-coding a tier's defaults.
+PROVENANCE_TIERS = ("first-party", "ai-generated", "user-uploaded", "unknown")
+
+# Fallback for an app whose provenance was never recorded or could not be
+# classified -- the most restricted tier, so an unclassified app never
+# accidentally inherits a permissive default.
+DEFAULT_PROVENANCE = "unknown"
+
+# The default (no-consent-required) capability ceiling per tier:
+#
+#  - first-party: built-in / signed taOS apps. Full trust -- every known
+#    capability, matching the pre-existing trust="first-party" broker bypass.
+#  - ai-generated: authored by an agent in App Studio. No network, no
+#    storage, no cross-app data by default -- only the inert UI-local caps
+#    (notify/window, no data leaves the app) are free. Everything else
+#    (app.kv/app.table/app.files/app.net/app.agent/app.llm/app.memory) must
+#    be explicitly requested and granted.
+#  - user-uploaded: imported/side-loaded by the user. Same floor as
+#    ai-generated -- imported code is exactly as untrusted as agent-authored
+#    code, regardless of who clicked "install".
+#  - unknown: default fallback for anything not classified. The most
+#    restricted tier -- nothing is free, not even notify/window.
+PROVENANCE_CEILINGS: dict[str, frozenset[str]] = {
+    "first-party": KNOWN_CAPS,
+    "ai-generated": frozenset({"app.notify", "app.window"}),
+    "user-uploaded": frozenset({"app.notify", "app.window"}),
+    "unknown": frozenset(),
+}
+
+# One-line description per tier, for the app_permissions API / UI badge.
+PROVENANCE_DESCRIPTIONS: dict[str, str] = {
+    "first-party": "Built into taOS",
+    "ai-generated": "Built by an agent in App Studio",
+    "user-uploaded": "Imported by you",
+    "unknown": "Origin not verified",
+}
+
+
+def is_known_provenance(value: object) -> bool:
+    """True if `value` is one of the four classified provenance tiers."""
+    return isinstance(value, str) and value in PROVENANCE_TIERS
+
+
+def capability_ceiling(provenance: str) -> frozenset[str]:
+    """The tier's default (no-consent) capability ceiling.
+
+    Falls back to DEFAULT_PROVENANCE's ceiling for an unrecognised value, so a
+    typo'd or legacy provenance never resolves to an undefined (and possibly
+    permissive) ceiling.
+    """
+    return PROVENANCE_CEILINGS.get(provenance, PROVENANCE_CEILINGS[DEFAULT_PROVENANCE])
+
+
+def default_provenance_for_trust(trust: str | None) -> str:
+    """Back-compat mapping from the legacy binary `trust` field to a tier.
+
+    Used to classify rows written before the provenance column existed:
+    trust="first-party" -> "first-party" (unchanged meaning); anything else
+    (trust="community", or missing) -> "user-uploaded", since every app that
+    reaches the userspace store today arrives either through the public
+    install endpoint (side-loaded by the user) or boot-seeding (first-party).
+    """
+    return "first-party" if trust == "first-party" else "user-uploaded"
+
+
+def capability_allowed(provenance: str, capability: str, granted: object) -> bool:
+    """True if `capability` is available to an app of this provenance.
+
+    An app can never exceed its tier's ceiling without an explicit grant: a
+    capability namespace within the tier's ceiling is always available; one
+    outside it is only available if it (or its namespace) appears in
+    `granted`, the app's explicit grants (declared manifest permissions plus
+    whatever the user has approved through the consent flow).
+    """
+    ns = _namespace(capability)
+    if ns in capability_ceiling(provenance):
+        return True
+    granted_set = set(granted) if not isinstance(granted, (set, frozenset)) else granted
+    return ns in granted_set or capability in granted_set
+
+
+def _namespace(capability: str) -> str:
+    """The `a.b` namespace of a capability, e.g. `app.kv.get` -> `app.kv`.
+
+    Mirrors tinyagentos.userspace.broker._namespace; duplicated here (rather
+    than imported) because broker.py imports FREE_CAPS/GATED_CAPS from this
+    module, and this module must stay free of a reverse dependency on it.
+    """
+    if not isinstance(capability, str):
+        return capability
+    parts = capability.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else capability
