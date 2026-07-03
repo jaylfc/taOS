@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 
+import tinyagentos.web_sites as web_sites_module
 from tinyagentos.web_sites import _new_site_id, WebSiteStore
 
 
@@ -80,3 +81,28 @@ async def test_delete_existing(web_site_store):
 @pytest.mark.asyncio
 async def test_delete_nonexistent(web_site_store):
     assert await web_site_store.delete("site-noexist") is False
+
+
+@pytest.mark.asyncio
+async def test_create_retries_on_id_collision(web_site_store, monkeypatch):
+    """A colliding id (e.g. two concurrent creates racing on the same
+    generated suffix) must not surface as a 500 -- the INSERT/PRIMARY KEY
+    is the source of truth and a fresh id is retried."""
+    ids = iter(["site-dupeid1", "site-dupeid1", "site-freshid"])
+    monkeypatch.setattr(web_sites_module, "_new_site_id", lambda: next(ids))
+
+    first = await web_site_store.create(title="First", content="{}")
+    assert first["id"] == "site-dupeid1"
+
+    second = await web_site_store.create(title="Second", content="{}")
+    assert second["id"] == "site-freshid"
+    assert second["title"] == "Second"
+
+
+@pytest.mark.asyncio
+async def test_create_gives_up_after_bounded_retries(web_site_store, monkeypatch):
+    monkeypatch.setattr(web_sites_module, "_new_site_id", lambda: "site-alwayssame")
+    await web_site_store.create(title="First", content="{}")
+
+    with pytest.raises(RuntimeError):
+        await web_site_store.create(title="Second", content="{}")

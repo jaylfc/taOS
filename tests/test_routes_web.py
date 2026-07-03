@@ -1,5 +1,7 @@
 import pytest
 
+from tinyagentos.routes.web import MAX_CONTENT_BYTES
+
 
 @pytest.mark.asyncio
 async def test_create_list_get_update_delete_site(client):
@@ -71,3 +73,47 @@ async def test_update_missing_returns_404(client):
 async def test_delete_missing_returns_404(client):
     resp = await client.delete("/api/web/sites/site-missing")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_malformed_json(client):
+    resp = await client.post(
+        "/api/web/sites",
+        content=b"{not valid json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_malformed_json(client):
+    resp = await client.put(
+        "/api/web/sites/site-missing",
+        content=b"{not valid json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_oversized_content(client):
+    resp = await client.post(
+        "/api/web/sites",
+        json={"title": "Big", "content": "x" * (MAX_CONTENT_BYTES + 1)},
+    )
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_oversized_content(client):
+    resp = await client.post(
+        "/api/web/sites",
+        json={"title": "Landing", "content": "{}"},
+    )
+    site_id = resp.json()["id"]
+
+    resp = await client.put(
+        f"/api/web/sites/{site_id}",
+        json={"content": "x" * (MAX_CONTENT_BYTES + 1)},
+    )
+    assert resp.status_code == 413
