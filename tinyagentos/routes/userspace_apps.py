@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -45,8 +46,17 @@ def _collect_source_files(app_dir: Path) -> dict[str, str]:
         if not path.is_file() or path.suffix.lower() not in _ANALYZABLE_EXTENSIONS:
             continue
         try:
+            # errors="replace" (not "ignore"): dropping invalid bytes could
+            # splice two otherwise-separate substrings into a token a
+            # detector regex matches on (e.g. the literal name of the JS
+            # function that executes a string as code), silently hiding it
+            # from the scan below. This file only ever reads app-supplied
+            # text into a string for regex scanning -- it never executes it.
+            # Replacing invalid bytes with U+FFFD instead breaks such a token
+            # apart visibly without ever deleting characters a detector looks
+            # for.
             files[path.relative_to(app_dir).as_posix()] = path.read_text(
-                encoding="utf-8", errors="ignore"
+                encoding="utf-8", errors="replace"
             )
         except OSError:
             continue
@@ -169,25 +179,28 @@ async def install_app(
         )
     apps_root = _apps_root(request).resolve()
     app_dir = (apps_root / manifest["id"]).resolve()
-    # Static security gate for web apps (the shape App Studio produces): this
-    # runs server-side on every install regardless of how the package was
-    # submitted (upload or source_url), so a modified/bypassed client can never
-    # skip it. A critical finding blocks the install outright -- the extracted
-    # files are removed so nothing scanned-and-rejected is left reachable via
-    # serve_bundle. This is defense in depth in FRONT of the sandbox iframe,
-    # not a replacement for it.
-    if manifest["app_type"] == "web":
-        findings = analyze_app_source(_collect_source_files(app_dir))
-        if has_critical(findings):
-            if app_dir.is_relative_to(apps_root) and app_dir != apps_root:
-                shutil.rmtree(app_dir, ignore_errors=True)
-            return JSONResponse(
-                {
-                    "error": "blocked_by_security_analysis",
-                    "findings": [f.to_dict() for f in findings],
-                },
-                status_code=422,
-            )
+    # Static security gate: this runs server-side on every install regardless
+    # of how the package was submitted (upload or source_url) or its
+    # app_type, so a modified/bypassed client can never skip it and a future
+    # app_type can never silently bypass it. Unconditional is also cheap and
+    # correct here -- "container" is already rejected above, and "tui"
+    # packages ship no _ANALYZABLE_EXTENSIONS files (just a manifest.yaml +
+    # command spec), so _collect_source_files() naturally finds nothing to
+    # scan for them. A critical finding blocks the install outright -- the
+    # extracted files are removed so nothing scanned-and-rejected is left
+    # reachable via serve_bundle. This is defense in depth in FRONT of the
+    # sandbox iframe, not a replacement for it.
+    findings = analyze_app_source(_collect_source_files(app_dir))
+    if has_critical(findings):
+        if app_dir.is_relative_to(apps_root) and app_dir != apps_root:
+            shutil.rmtree(app_dir, ignore_errors=True)
+        return JSONResponse(
+            {
+                "error": "blocked_by_security_analysis",
+                "findings": [f.to_dict() for f in findings],
+            },
+            status_code=422,
+        )
     existing = await store.get(manifest["id"])
     # A public install must never replace an app installed as first-party: that
     # would let an attacker overwrite a trusted studio's bundle (and, before the
@@ -226,6 +239,16 @@ async def install_app(
     }
 
 
+# DoS guards for this endpoint: it has no auth gate of its own (a preview
+# convenience, see docstring below), so an unbounded body, file count, or
+# per-file size would let a caller burn memory/CPU across every regex
+# detector with a single request. Conservative caps, mirroring the
+# _MAX_PACKAGE_BYTES pattern above.
+_MAX_ANALYZE_BODY_BYTES = 5 * 1024 * 1024   # 5 MB total request body
+_MAX_ANALYZE_FILES = 500                     # files per request
+_MAX_ANALYZE_FILE_BYTES = 1024 * 1024        # 1 MB per file's source text
+
+
 @router.post("/api/userspace-apps/analyze")
 async def analyze_app(request: Request):
     """Run the static security analyzer over raw App Studio source, ahead of install.
@@ -236,8 +259,15 @@ async def analyze_app(request: Request):
     -- the authoritative, unbypassable gate is the analysis that runs inside
     POST /api/userspace-apps/install itself.
     """
+    # Reject oversize via Content-Length when present (cheap, before read).
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > _MAX_ANALYZE_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    raw_body = await request.body()
+    if len(raw_body) > _MAX_ANALYZE_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
     except Exception:
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
     files = body.get("files")
@@ -245,6 +275,15 @@ async def analyze_app(request: Request):
         isinstance(k, str) and isinstance(v, str) for k, v in files.items()
     ):
         return JSONResponse({"error": "files must be a map of filename to source text"}, status_code=400)
+    if len(files) > _MAX_ANALYZE_FILES:
+        return JSONResponse(
+            {"error": f"too many files (max {_MAX_ANALYZE_FILES})"}, status_code=413
+        )
+    if any(len(v.encode("utf-8")) > _MAX_ANALYZE_FILE_BYTES for v in files.values()):
+        return JSONResponse(
+            {"error": f"a file exceeds the {_MAX_ANALYZE_FILE_BYTES}-byte per-file limit"},
+            status_code=413,
+        )
     findings = analyze_app_source(files)
     return {
         "findings": [f.to_dict() for f in findings],
@@ -295,11 +334,21 @@ async def uninstall_app(request: Request, app_id: str):
 
 @router.get("/api/userspace-apps/{app_id}/bundle/{path:path}")
 async def serve_bundle(request: Request, app_id: str, path: str):
+    # Store lookup FIRST, before any filesystem access: install_app extracts
+    # a package to disk and only afterwards runs the security analysis (and,
+    # on a pass, the store.install() that actually registers the app). If the
+    # file check ran first, a bundle that has been extracted but not yet
+    # vetted -- or was vetted and rejected -- would still be servable here
+    # for as long as it happens to exist on disk. Gating on the store record
+    # closes that window: nothing is served until the app is actually
+    # installed.
+    app = await request.app.state.userspace_apps.get(app_id)
+    if app is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
     root = (_apps_root(request) / app_id).resolve()
     target = (root / path).resolve()
     if not target.is_relative_to(root) or target == root or not target.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
-    app = await request.app.state.userspace_apps.get(app_id)
     granted = (app or {}).get("permissions_granted") or []
     net_origins = [p[len("network:"):] for p in granted
                    if isinstance(p, str) and p.startswith("network:")]

@@ -358,6 +358,13 @@ def detect_sandbox_escape(filename: str, content: str) -> list[Finding]:
 
 _ADD_MESSAGE_LISTENER_RE = re.compile(rf"addEventListener\s*\(\s*{_QUOTED}message{_QUOTED}")
 _POSTMESSAGE_WILDCARD_RE = re.compile(rf"\.postMessage\s*\([^)]*,\s*{_QUOTED}\*{_QUOTED}")
+# Anything that looks like the handler consulted the message's origin or
+# sender identity: a dotted `.origin` access (event.origin,
+# originalEvent.origin, ...), a destructured `{ origin }` (or `{ origin, ... }`)
+# binding, or a `.source` check (validating the sender window reference, the
+# same pattern this codebase's own SandboxedAppWindow.tsx broker uses instead
+# of an origin string).
+_ORIGIN_CHECK_RE = re.compile(r"\.origin\b|\{[^}]*\borigin\b[^}]*\}|\.source\b")
 _ORIGIN_CHECK_WINDOW = 25
 
 
@@ -366,7 +373,8 @@ def detect_postmessage_no_origin_check(filename: str, content: str) -> list[Find
 
     (1) `x.postMessage(data, "*")` broadcasts to any origin regardless of who
     is actually listening. (2) A `window.addEventListener("message", ...)`
-    handler that never references `event.origin` (or `.origin` at all)
+    handler that never references the origin/sender (`event.origin`,
+    `originalEvent.origin`, a destructured `{ origin }`, or `event.source`)
     within a bounded window of following lines will accept and act on a
     message from any origin -- the same class of bug this codebase's own
     SandboxedAppWindow.tsx broker guards against by checking `e.source`.
@@ -385,7 +393,7 @@ def detect_postmessage_no_origin_check(filename: str, content: str) -> list[Find
             ))
         if _ADD_MESSAGE_LISTENER_RE.search(line):
             window_lines = lines[i - 1: i - 1 + _ORIGIN_CHECK_WINDOW]
-            if not any(".origin" in wl for wl in window_lines):
+            if not any(_ORIGIN_CHECK_RE.search(wl) for wl in window_lines):
                 findings.append(Finding(
                     "critical", "postmessage-no-origin-check", filename, i,
                     "\"message\" event listener does not check event.origin -- it will "
@@ -394,19 +402,22 @@ def detect_postmessage_no_origin_check(filename: str, content: str) -> list[Find
     return findings
 
 
-_STORAGE_READ_RE = re.compile(r"\blocalStorage\.getItem\s*\(|document\.cookie\b")
+_STORAGE_READ_RE = re.compile(
+    r"\b(?:local|session)Storage\.getItem\s*\(|document\.cookie\b"
+)
 _NETWORK_CALL_RE = re.compile(r"\bfetch\s*\(|\.open\s*\(\s*['\"]|new\s+WebSocket\s*\(")
 _STORAGE_EXFIL_WINDOW = 10
 
 
 def detect_storage_exfil(filename: str, content: str) -> list[Finding]:
-    """Flag localStorage/cookie reads that sit close to a network call.
+    """Flag localStorage/sessionStorage/cookie reads that sit close to a network call.
 
-    Reading `localStorage.getItem(...)` or `document.cookie` is completely
-    normal on its own; it becomes an exfiltration pattern when a network
-    call (fetch/XHR/WebSocket) shows up nearby in the same file, implying
-    the read value is being shipped out. This is a same-file line-proximity
-    heuristic (`_STORAGE_EXFIL_WINDOW` lines in either direction), not
+    Reading `localStorage.getItem(...)`, `sessionStorage.getItem(...)`, or
+    `document.cookie` is completely normal on its own; it becomes an
+    exfiltration pattern when a network call (fetch/XHR/WebSocket) shows up
+    nearby in the same file, implying the read value is being shipped out.
+    This is a same-file line-proximity heuristic
+    (`_STORAGE_EXFIL_WINDOW` lines in either direction), not
     dataflow analysis -- it does not verify the read value is actually
     what's sent over the network, so an unrelated storage read and network
     call that both happen to live in the same small file can false-positive,
@@ -425,8 +436,8 @@ def detect_storage_exfil(filename: str, content: str) -> list[Finding]:
     for s in sorted(flagged):
         findings.append(Finding(
             "critical", "storage-exfil", filename, s + 1,
-            "localStorage/cookie read sits near a network call in this file -- looks like "
-            "stored data is being exfiltrated over the network.",
+            "localStorage/sessionStorage/cookie read sits near a network call in this "
+            "file -- looks like stored data is being exfiltrated over the network.",
         ))
     return findings
 
@@ -456,7 +467,8 @@ def analyze_app_source(files: dict[str, str]) -> list[Finding]:
     for filename, content in files.items():
         for detector in _ALL_DETECTORS:
             findings.extend(detector(filename, content))
-    findings.sort(key=lambda f: (list(files).index(f.file), f.line))
+    file_order = {name: idx for idx, name in enumerate(files)}
+    findings.sort(key=lambda f: (file_order[f.file], f.line))
     return findings
 
 
