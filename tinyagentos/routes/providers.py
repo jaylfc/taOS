@@ -438,7 +438,21 @@ async def list_providers(request: Request):
         # picker instead of an empty list that gets filtered out client-side.
         if not models and backend.get("models"):
             models = backend["models"]
-        lifecycle_state = catalog.get_lifecycle_state(backend["name"]) if catalog else "running"
+        # lifecycle_state only means something for backends taOS actually
+        # starts/stops (auto_manage=true) -- LifecycleManager.start()/
+        # drain_and_stop() are the only callers of set_lifecycle_state(),
+        # and both are gated on auto_manage. For every other backend (the
+        # default for a manually-added provider) BackendCatalog has never
+        # tracked a real state and get_lifecycle_state() falls back to a
+        # hardcoded "running" that isn't backed by any observation. Surfacing
+        # that fabricated value produced a contradictory "Running" pill next
+        # to a genuinely-failing "Error" status pill (#1578). Report it only
+        # when lifecycle tracking actually applies.
+        lifecycle_state = (
+            catalog.get_lifecycle_state(backend["name"])
+            if catalog and backend.get("auto_manage")
+            else None
+        )
         entry = {
             **backend,
             "status": status,

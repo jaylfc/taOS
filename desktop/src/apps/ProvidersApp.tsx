@@ -36,7 +36,11 @@ const DEFAULT_URLS: Partial<Record<ProviderType, string>> = {
   kilocode: "https://api.kilo.ai/api/gateway",
   deepseek: "https://api.deepseek.com",
   ollama: "http://localhost:11434",
-  rkllama: "http://localhost:8080",
+  // taOS default rkllama port since the 7833 migration (adjacent to qmd on
+  // 7832) -- see _DEFAULT_RKLLAMA_PORT in rkllama_installer.py. 8080 is the
+  // legacy upstream default; prefilling it here left new installs pointed
+  // at a dead port with a permanent false "Error" (#1578).
+  rkllama: "http://localhost:7833",
   "llama-cpp": "http://localhost:8080",
   vllm: "http://localhost:8000",
 };
@@ -1010,7 +1014,7 @@ function ProviderDetail({
                     (provider.enabled ?? true) ? "bg-emerald-500" : "bg-zinc-600"
                   }`}
                 >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                  <span className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
                     (provider.enabled ?? true) ? "translate-x-4" : "translate-x-0.5"
                   }`} />
                 </button>
@@ -1068,7 +1072,7 @@ function ProviderDetail({
                     (provider.enabled ?? true) ? "bg-emerald-500" : "bg-zinc-600"
                   }`}
                 >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                  <span className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
                     (provider.enabled ?? true) ? "translate-x-4" : "translate-x-0.5"
                   }`} />
                 </button>
@@ -1085,7 +1089,7 @@ function ProviderDetail({
                     (provider.auto_manage ?? false) ? "bg-emerald-500" : "bg-zinc-600"
                   }`}
                 >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                  <span className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
                     (provider.auto_manage ?? false) ? "translate-x-4" : "translate-x-0.5"
                   }`} />
                 </button>

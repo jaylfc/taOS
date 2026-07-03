@@ -216,6 +216,67 @@ class TestProviderAPI:
         assert "deepseek-v4-pro" in ids
         assert "deepseek-chat" in ids
 
+    async def test_healthy_unmanaged_provider_reports_no_lifecycle_state(self, client, app):
+        """A healthy provider must not carry a fabricated lifecycle_state.
+
+        BackendCatalog.get_lifecycle_state() falls back to a hardcoded
+        "running" for any backend LifecycleManager has never started/stopped
+        -- true for every provider with the default auto_manage=false. Before
+        this fix, that fabricated value was always surfaced and rendered as a
+        "Running" pill even when the live health probe reported "error",
+        producing a contradictory "Running" + "Error" dual-state (#1578).
+        A healthy, unmanaged provider must report status "ok" and omit
+        lifecycle_state entirely (nothing to contradict it).
+
+        The test client bypasses the app lifespan (where backend_catalog is
+        normally attached), so a stub catalog is wired up here to exercise
+        the same code path a real boot would -- otherwise this would pass
+        trivially because ``catalog`` is None either way.
+        """
+        class _StubCatalog:
+            def get_lifecycle_state(self, name):
+                return "running"
+
+        app.state.backend_catalog = _StubCatalog()
+
+        class _HealthyAdapter:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 14, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_HealthyAdapter(),
+        ):
+            resp = await client.get("/api/providers")
+        assert resp.status_code == 200
+        entry = next(p for p in resp.json() if p["name"] == "test-backend")
+        assert entry["status"] == "ok"
+        assert entry.get("lifecycle_state") is None
+
+    async def test_auto_managed_provider_still_reports_lifecycle_state(self, client, app):
+        """Once a backend is actually under LifecycleManager control
+        (auto_manage=true), lifecycle_state reflects real process bookkeeping
+        and should still be surfaced -- only the fabricated default for
+        unmanaged backends is the bug."""
+        class _StubCatalog:
+            def get_lifecycle_state(self, name):
+                return "running"
+
+        app.state.backend_catalog = _StubCatalog()
+        app.state.config.backends[0]["auto_manage"] = True
+
+        class _ErroringAdapter:
+            async def health(self, *_a, **_k):
+                return {"status": "error", "response_ms": 3, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_ErroringAdapter(),
+        ):
+            resp = await client.get("/api/providers")
+        entry = next(p for p in resp.json() if p["name"] == "test-backend")
+        assert entry["lifecycle_state"] == "running"
+
 
 @pytest.mark.asyncio
 class TestModelsPassthrough:
