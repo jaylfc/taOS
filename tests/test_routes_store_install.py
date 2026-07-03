@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tinyagentos.agent_image import base_image_alias
 from tinyagentos.catalog.resolver import DeviceCapability
 
 
@@ -51,6 +52,22 @@ def _make_service_manifest(
     m.id = manifest_id
     m.type = "service"
     m.install = {"method": method, "ports": [8080]}
+    m.requires = {}
+    m.hardware_tiers = {}
+    m.version = "1.0.0"
+    return m
+
+
+def _make_agent_framework_manifest(
+    manifest_id: str = "hermes",
+    name: str = "Hermes Agent Gateway",
+    script: str = "scripts/install.sh",
+) -> MagicMock:
+    m = MagicMock()
+    m.id = manifest_id
+    m.name = name
+    m.type = "agent-framework"
+    m.install = {"method": "script", "script": script}
     m.requires = {}
     m.hardware_tiers = {}
     m.version = "1.0.0"
@@ -412,6 +429,201 @@ class TestInstallV2:
         body = resp.json()
         assert "compat" in body
         assert "chain" in body
+
+
+# ---------------------------------------------------------------------------
+# POST /api/store/install-v2 -- agent-framework manifests (method: script) (#1582)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentFrameworkInstall:
+    """Installing an agent-framework manifest (hermes/openclaw's install.sh runs
+    inside a per-agent LXC container at deploy time, not here) enables it for
+    deploy, prefetches its base image in the background, and notifies -- it
+    must never silently do nothing while reporting "installed" (#1582)."""
+
+    @pytest.mark.asyncio
+    async def test_marks_installed_without_running_the_container_script(self, client):
+        manifest = _make_agent_framework_manifest("hermes")
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        with patch(
+            "tinyagentos.routes.store_install.ensure_image_present",
+            new=AsyncMock(return_value=True),
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "hermes"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["status"] == "installed"
+        installed_apps.install.assert_called_once_with("hermes", "1.0.0", {})
+        reg.mark_installed.assert_called_once_with("hermes", "1.0.0")
+
+    @pytest.mark.asyncio
+    async def test_triggers_base_image_prefetch_for_dedicated_framework(self, client):
+        """hermes has a dedicated base image -- installing kicks off a
+        background ensure_image_present() for it."""
+        manifest = _make_agent_framework_manifest("hermes")
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_ensure = AsyncMock(return_value=True)
+        with patch("tinyagentos.routes.store_install.ensure_image_present", new=mock_ensure):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "hermes"})
+
+        assert resp.status_code == 200
+        assert resp.json()["prefetch"] == "started"
+        mock_ensure.assert_called_once()
+        alias, url = mock_ensure.call_args[0]
+        assert alias == base_image_alias("hermes") == "taos-hermes-base"
+        assert alias in url
+
+    @pytest.mark.asyncio
+    async def test_skips_prefetch_for_framework_without_dedicated_base(self, client):
+        """agent-zero has no dedicated base image -- no prefetch is started;
+        it falls back to the generic base at deploy time."""
+        manifest = _make_agent_framework_manifest("agent-zero", name="Agent Zero")
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_ensure = AsyncMock(return_value=True)
+        with patch("tinyagentos.routes.store_install.ensure_image_present", new=mock_ensure):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "agent-zero"})
+
+        assert resp.status_code == 200
+        assert resp.json()["prefetch"] == "skipped"
+        mock_ensure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prefetch_failure_is_non_fatal(self, client):
+        """A failed prefetch never blocks the install -- the framework stays
+        enabled and a first deploy just falls back to a cold image build."""
+        manifest = _make_agent_framework_manifest("hermes")
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        with patch(
+            "tinyagentos.routes.store_install.ensure_image_present",
+            new=AsyncMock(side_effect=RuntimeError("network down")),
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "hermes"})
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        installed_apps.install.assert_called_once()
+        reg.mark_installed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_emits_actionable_notification(self, client):
+        manifest = _make_agent_framework_manifest("hermes", name="Hermes Agent Gateway")
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        mock_notifs = MagicMock()
+        mock_notifs.add = AsyncMock()
+        client._transport.app.state.notifications = mock_notifs
+
+        with patch(
+            "tinyagentos.routes.store_install.ensure_image_present",
+            new=AsyncMock(return_value=True),
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "hermes"})
+
+        assert resp.status_code == 200
+        mock_notifs.add.assert_called_once()
+        _, kwargs = mock_notifs.add.call_args
+        assert kwargs["source"] == "agent_framework"
+        assert kwargs["level"] == "success"
+        assert "Hermes Agent Gateway" in kwargs["title"]
+        assert "Agents app" in kwargs["message"]
+        assert kwargs["data"] == {"framework": "hermes"}
+
+    @pytest.mark.asyncio
+    async def test_pip_based_framework_unaffected(self, client):
+        """Pip/docker-based agent-frameworks (smolagents, langroid, ...) are
+        untouched -- they keep running the real installer, not the
+        script-only enable+prefetch+notify path."""
+        manifest = _make_agent_framework_manifest("smolagents")
+        manifest.install = {"method": "pip", "package": "smolagents"}
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(return_value={"success": True})
+        with patch(
+            "tinyagentos.installers.pip_installer.PipInstaller",
+            return_value=mock_installer,
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "smolagents"})
+
+        assert resp.status_code == 200
+        mock_installer.install.assert_called_once()
+        installed_apps.install.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/store/install-v2 -- non-framework method: script manifests (#1582)
+# ---------------------------------------------------------------------------
+
+
+class TestScriptBackendInstall:
+    """The generic install.method: script path (backend/plugin manifests
+    like ollama, tailscale) previously fell through to the default branch
+    and silently marked the app installed without ever running the script.
+    It must now actually run it, or fail loudly."""
+
+    @pytest.mark.asyncio
+    async def test_missing_script_returns_explicit_error_not_false_success(self, client):
+        manifest = _make_service_manifest("some-service", method="script")
+        manifest.install = {"method": "script", "script": "scripts/does-not-exist.sh"}
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        resp = await client.post("/api/store/install-v2", json={"manifest_id": "some-service"})
+
+        assert resp.status_code == 500
+        assert "error" in resp.json()
+        installed_apps.install.assert_not_called()
+        reg.mark_installed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_script_marks_installed(self, client):
+        manifest = _make_service_manifest("some-service", method="script")
+        manifest.install = {"method": "script", "script": "scripts/noop.sh"}
+        reg = _make_registry(manifest)
+        client._transport.app.state.registry = reg
+        installed_apps = _make_installed_apps()
+        client._transport.app.state.installed_apps = installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": True, "app_id": "some-service", "method": "script"},
+        )
+        with patch(
+            "tinyagentos.routes.store_install.get_installer",
+            return_value=mock_installer,
+        ):
+            resp = await client.post("/api/store/install-v2", json={"manifest_id": "some-service"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        mock_installer.install.assert_called_once_with("some-service", manifest.install)
+        installed_apps.install.assert_called_once()
+        reg.mark_installed.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -357,8 +357,40 @@ function AppCard({
   const [error, setError] = useState<string | null>(null);
   interface ProgressSnap { state: string; percent: number | null; bytes_downloaded: number; bytes_total: number; detail: string; error: string | null; }
   const [progress, setProgress] = useState<ProgressSnap | null>(null);
+  const isFramework = app.type === "agent-framework";
+  // Agent-framework installs kick off a background base-image prefetch (see
+  // POST /api/store/install-v2 -> _install_agent_framework). That work
+  // continues after the install call itself returns "installed", so this
+  // tracks the real download/import progress via the existing
+  // /api/agent-image/status endpoint instead of showing an instant "done".
+  const [prefetchActive, setPrefetchActive] = useState(false);
+  const [prefetchStatus, setPrefetchStatus] = useState<string | null>(null);
 
   useEffect(() => { if (defaultTargetRemote !== undefined) setSelectedTarget(defaultTargetRemote); }, [defaultTargetRemote]);
+
+  useEffect(() => {
+    if (!prefetchActive) return;
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        try {
+          const r = await fetch("/api/agent-image/status", { headers: { Accept: "application/json" } });
+          if (r.ok) {
+            const j = await r.json();
+            const status = String(j?.status ?? "idle");
+            if (!cancelled) setPrefetchStatus(status);
+            if (status === "done" || status === "failed") {
+              if (!cancelled) setPrefetchActive(false);
+              break;
+            }
+          }
+        } catch { /* network blip */ }
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+    };
+    void poll();
+    return () => { cancelled = true; };
+  }, [prefetchActive]);
 
   useEffect(() => {
     if (!busy) return;
@@ -399,11 +431,21 @@ function AppCard({
         if (selectedVariant !== "auto") body.variant_id = selectedVariant;
         const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
         if (!res.ok) { let msg = `Install failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
+        if (isFramework) {
+          try {
+            const data = await res.json();
+            if (data?.prefetch === "started") { setPrefetchStatus("downloading"); setPrefetchActive(true); }
+          } catch { /* no body / not framework prefetch */ }
+        }
         onInstall(app.id);
       }
     } catch (e) { setError(e instanceof Error ? e.message : "Network error"); }
     setBusy(false);
     setTimeout(() => setProgress(null), 1500);
+  };
+
+  const handleOpen = () => {
+    window.dispatchEvent(new CustomEvent("taos:open-app", { detail: { app: "agents" } }));
   };
 
   const visuals = compatVisuals(resolveResponse);
@@ -460,6 +502,17 @@ function AppCard({
             {progress.detail && <span className="text-[10px] text-shell-text-tertiary truncate">{progress.detail}</span>}
           </div>
         )}
+        {isFramework && prefetchStatus && prefetchStatus !== "idle" && (
+          <div className="flex items-center gap-1.5 text-[10px] text-shell-text-tertiary" aria-live="polite">
+            {(prefetchStatus === "downloading" || prefetchStatus === "importing") && <Loader2 className="w-3 h-3 animate-spin shrink-0" />}
+            <span className="truncate">
+              {prefetchStatus === "downloading" ? "Downloading base image…"
+                : prefetchStatus === "importing" ? "Preparing base image…"
+                : prefetchStatus === "done" ? "Base image ready"
+                : "Base image prefetch failed — will fetch on first deploy"}
+            </span>
+          </div>
+        )}
         {showTargetPicker && (
           <div className="flex items-center gap-2">
             <label htmlFor={`target-${app.id}`} className="text-[11px] text-shell-text-tertiary whitespace-nowrap">Install on</label>
@@ -483,15 +536,37 @@ function AppCard({
             {runtimeHost === "127.0.0.1" ? "on controller" : `on ${runtimeHost}`}
           </p>
         )}
-        <button
-          type="button"
-          onClick={handleAction}
-          disabled={busy}
-          aria-label={app.installed ? `Uninstall ${app.name}` : `Install ${app.name}`}
-          className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-full text-[12px] font-bold transition-colors ${app.installed ? "bg-red-500/15 text-red-400 hover:bg-red-500/25" : "bg-shell-surface-active text-shell-text hover:bg-white/10"}`}
-        >
-          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : app.installed ? <><Trash2 className="w-3.5 h-3.5" /> Uninstall</> : <><Download className="w-3.5 h-3.5" /> Install</>}
-        </button>
+        {app.installed && isFramework ? (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleOpen}
+              aria-label={`Deploy ${app.name} in Agents`}
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-full text-[12px] font-bold transition-colors bg-shell-surface-active text-shell-text hover:bg-white/10"
+            >
+              <Bot className="w-3.5 h-3.5" /> Deploy in Agents
+            </button>
+            <button
+              type="button"
+              onClick={handleAction}
+              disabled={busy}
+              aria-label={`Uninstall ${app.name}`}
+              className="shrink-0 p-1.5 rounded-full text-red-400 bg-red-500/15 hover:bg-red-500/25 transition-colors"
+            >
+              {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleAction}
+            disabled={busy}
+            aria-label={app.installed ? `Uninstall ${app.name}` : `Install ${app.name}`}
+            className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-full text-[12px] font-bold transition-colors ${app.installed ? "bg-red-500/15 text-red-400 hover:bg-red-500/25" : "bg-shell-surface-active text-shell-text hover:bg-white/10"}`}
+          >
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : app.installed ? <><Trash2 className="w-3.5 h-3.5" /> Uninstall</> : <><Download className="w-3.5 h-3.5" /> Install</>}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -525,7 +600,15 @@ function RichCard({
     setBusy(false);
   };
 
+  const isFramework = app.type === "agent-framework";
+
   const handleOpen = () => {
+    if (isFramework) {
+      // Agent frameworks have no standalone window -- deploying/using one
+      // happens from the Agents app's deploy flow.
+      window.dispatchEvent(new CustomEvent("taos:open-app", { detail: { app: "agents" } }));
+      return;
+    }
     // Future: launch the app window
   };
 
@@ -561,7 +644,7 @@ function RichCard({
             disabled={busy}
             className="px-4 py-1.5 rounded-full bg-shell-surface-active text-shell-text text-[12px] font-bold hover:bg-white/10 transition-colors"
           >
-            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : app.installed ? "Open" : "Get"}
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : app.installed ? (isFramework ? "Deploy in Agents" : "Open") : "Get"}
           </button>
         </div>
       </div>

@@ -17,6 +17,12 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos.agent_image import (
+    FRAMEWORKS_WITH_DEDICATED_BASE,
+    base_image_alias,
+    base_image_url_for_alias,
+    ensure_image_present,
+)
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
     ResolveErr,
@@ -27,6 +33,7 @@ from tinyagentos.catalog.resolver import (
 from tinyagentos.cluster.capabilities import hardware_to_targets
 from tinyagentos.installers.base import get_installer
 from tinyagentos.installers.lxc_installer import LXCInstaller
+from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -197,6 +204,68 @@ def _registry_get(registry, app_id: str):
     return registry.get(app_id)
 
 
+async def _install_agent_framework(
+    request: Request, manifest, app_id: str, meta: dict, body: dict,
+) -> JSONResponse:
+    """Install an agent-framework manifest declaring ``install.method: script``.
+
+    That script (e.g. hermes/openclaw's ``scripts/install.sh``) is written to
+    run once *inside a fresh per-agent LXC container* at deploy time — it
+    installs Node/npm or pip packages, writes container-local config, and
+    enables systemd units for that container (see ``deployer.py``'s
+    method=="script" branch). Running it here, on the taOS controller host,
+    at Store-install time would be wrong: there is no target container yet,
+    and the script would pollute the host instead.
+
+    So "installing" a framework from the Store means: enable it for deploy
+    (mark it installed so the Store/Agents app reflect real state — the
+    adapter registry already knows how to deploy every listed framework),
+    kick off a best-effort background prefetch of its dedicated base image
+    (if it has one) so the first real deploy is fast, and notify the user it
+    is ready to deploy. Prefetch failure is non-fatal: the framework stays
+    enabled and a first deploy falls back to a cold image build.
+    """
+    registry = getattr(request.app.state, "registry", None)
+    store = getattr(request.app.state, "installed_apps", None)
+    version = body.get("version") or getattr(manifest, "version", "") or ""
+
+    if store is not None:
+        await store.install(app_id, version, meta)
+    if registry is not None and hasattr(registry, "mark_installed"):
+        registry.mark_installed(app_id, version)
+
+    prefetch_started = False
+    if app_id in FRAMEWORKS_WITH_DEDICATED_BASE:
+        alias = base_image_alias(app_id)
+        url = base_image_url_for_alias(alias)
+        bg_tasks = getattr(request.app.state, "_background_tasks", None)
+        if bg_tasks is None:
+            bg_tasks = set()
+            request.app.state._background_tasks = bg_tasks
+        _create_supervised_task(ensure_image_present(alias, url), bg_tasks)
+        prefetch_started = True
+
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is not None:
+        try:
+            await notifs.add(
+                title=f"{getattr(manifest, 'name', app_id)} installed",
+                message="You can now deploy it from the Agents app",
+                level="success",
+                source="agent_framework",
+                data={"framework": app_id},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("_install_agent_framework: notification failed for %s", app_id, exc_info=True)
+
+    return JSONResponse({
+        "ok": True,
+        "app_id": app_id,
+        "status": "installed",
+        "prefetch": "started" if prefetch_started else "skipped",
+    })
+
+
 def _docker_published_port(install_config: dict) -> int:
     """Return the first host port a docker service publishes, or 0.
 
@@ -240,6 +309,16 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
             backend = install_block.get("method", "docker")
 
     meta = body.get("metadata") or {}
+
+    # Agent frameworks whose install.sh runs inside a per-agent LXC container
+    # at deploy time (method=="script") don't get a generic host-side
+    # install — see _install_agent_framework for why and what "install"
+    # means for them instead. Pip/docker-based frameworks (smolagents,
+    # langroid, ...) are unaffected and fall through to the normal dispatch
+    # below, unchanged.
+    if manifest is not None and getattr(manifest, "type", "") == "agent-framework" and backend == "script":
+        return await _install_agent_framework(request, manifest, app_id, meta, body)
+
     manifest_declared = manifest is not None
     if not manifest_declared:
         if isinstance(meta, dict) and meta.get("backend"):
@@ -357,6 +436,27 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
             registry.mark_installed(app_id, version)
         resp_target = _target_remote or "local"
         return JSONResponse({"ok": True, "app_id": app_id, "status": "installed", "target_remote": resp_target, **result})
+
+    # script — host-side backend/plugin manifests (e.g. ollama, tailscale)
+    # that declare install.method: script. Previously this fell straight
+    # through to the default branch below and silently marked the app
+    # installed without ever running the script (same class of bug as #410
+    # below for docker/pip, filed as #1582). Actually run it via
+    # ScriptInstaller and only mark installed on success; a missing or
+    # failing script now returns an explicit error instead of a false
+    # "installed".
+    if backend == "script":
+        installer = get_installer("script")
+        try:
+            inst_result = await installer.install(app_id, install_config)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("_legacy_install: script installer raised for %s", app_id)
+            return JSONResponse({"error": f"script install failed: {exc}"}, status_code=500)
+        if not inst_result.get("success"):
+            return JSONResponse(
+                {"error": inst_result.get("error", "script install failed")},
+                status_code=500,
+            )
 
     # docker / pip — actually run the installer.
     # Previously this branch fell straight through to the installed-apps

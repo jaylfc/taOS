@@ -56,6 +56,8 @@ export function sourceToTarget(
     case "app.installed":
     case "app.failed":
       return { action: "store" };
+    case "agent_framework":
+      return { action: "agents" };
     case "decisions":
     case "auth_requests":
       return { action: "decisions" };

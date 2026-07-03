@@ -121,6 +121,10 @@ describe("server-notifications", () => {
       expect(sourceToTarget("decisions")).toEqual({ action: "decisions" });
     });
 
+    it("routes agent-framework install notifications to the Agents app", () => {
+      expect(sourceToTarget("agent_framework")).toEqual({ action: "agents" });
+    });
+
     it("returns no action for unknown sources", () => {
       expect(sourceToTarget("something.else")).toEqual({});
       expect(sourceToTarget("")).toEqual({});
