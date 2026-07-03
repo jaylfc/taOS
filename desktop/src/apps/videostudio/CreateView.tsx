@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Clapperboard, Download, ExternalLink } from "lucide-react";
 import {
   Slider,
@@ -77,6 +78,16 @@ export function CreateView(props: CreateViewProps) {
   } = props;
 
   const selectedModel = MODEL_OPTIONS.find((m) => m.id === modelId);
+
+  // Auto-grow the prompt textarea with its content, up to the max-h set
+  // below (CSS then clamps and scrolls beyond that).
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = promptRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [prompt]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -197,6 +208,7 @@ export function CreateView(props: CreateViewProps) {
           Video prompt
         </label>
         <textarea
+          ref={promptRef}
           id="video-prompt"
           value={prompt}
           onChange={(e) => onPromptChange(e.target.value)}
@@ -208,7 +220,7 @@ export function CreateView(props: CreateViewProps) {
           }}
           placeholder="Describe the video you want to create…"
           rows={1}
-          className="min-h-[50px] flex-1 resize-none rounded-2xl border border-shell-border bg-shell-surface px-4 py-3.5 text-[13.5px] text-shell-text placeholder:text-shell-text-tertiary focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
+          className="min-h-[50px] max-h-40 flex-1 resize-none overflow-y-auto rounded-2xl border border-shell-border bg-shell-surface px-4 py-3.5 text-[13.5px] text-shell-text placeholder:text-shell-text-tertiary focus-visible:outline-none focus-visible:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/20"
         />
         <button
           type="button"

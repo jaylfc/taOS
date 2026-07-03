@@ -28,10 +28,17 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 1_000_000);
 }
 
+// Max seed accepted by the backend (matches routes/video.py's
+// random.randint(0, 2**32 - 1) range).
+const MAX_SEED = 2 ** 32 - 1;
+
 function toGeneratedVideo(raw: Record<string, unknown>): GeneratedVideo {
+  const filename = (raw.filename as string) ?? "";
   return {
-    filename: (raw.filename as string) ?? "",
-    url: (raw.path as string) ?? "",
+    filename,
+    // `raw.path` is the backend's on-disk-style path, not a servable URL --
+    // serve videos through the API's filename-based route instead.
+    url: filename ? `/api/video/${encodeURIComponent(filename)}` : "",
     prompt: (raw.prompt as string) ?? "",
     model: (raw.model as string) ?? "",
     duration: (raw.duration as number) ?? 0,
@@ -108,6 +115,8 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
     setGenerateError(null);
     setNeedsBackend(false);
     setElapsedSeconds(0);
+    setLatest(null);
+    if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       setElapsedSeconds((s) => s + 1);
     }, 1000);
@@ -118,9 +127,12 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
       duration,
       resolution,
     };
-    const parsedSeed = seed.trim() ? parseInt(seed, 10) : null;
-    if (parsedSeed !== null && !Number.isNaN(parsedSeed)) {
-      body.seed = parsedSeed;
+    const trimmedSeed = seed.trim();
+    if (trimmedSeed) {
+      const parsedSeed = parseInt(trimmedSeed, 10);
+      if (!Number.isNaN(parsedSeed) && parsedSeed >= 0) {
+        body.seed = Math.min(parsedSeed, MAX_SEED);
+      }
     }
 
     try {
@@ -166,12 +178,32 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
   /* ----------------------------- delete ---------------------------- */
 
   const handleDelete = useCallback((filename: string) => {
-    setVideos((prev) => prev.filter((v) => v.filename !== filename));
+    let removed: GeneratedVideo | undefined;
+    let removedIndex = -1;
+    setVideos((prev) => {
+      removedIndex = prev.findIndex((v) => v.filename === filename);
+      removed = prev[removedIndex];
+      return prev.filter((v) => v.filename !== filename);
+    });
     setSelectedLibraryId((cur) => (cur === filename ? null : cur));
     setLatest((cur) => (cur?.filename === filename ? null : cur));
-    fetch(`/api/video/${encodeURIComponent(filename)}`, {
-      method: "DELETE",
-    }).catch(() => {});
+
+    fetch(`/api/video/${encodeURIComponent(filename)}`, { method: "DELETE" })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Delete failed (${res.status})`);
+      })
+      .catch((e) => {
+        // Roll back the optimistic removal and surface the failure --
+        // don't let a failed delete silently vanish the item.
+        setVideos((prev) => {
+          if (!removed || prev.some((v) => v.filename === filename)) {
+            return prev;
+          }
+          const at = Math.min(removedIndex < 0 ? prev.length : removedIndex, prev.length);
+          return [...prev.slice(0, at), removed, ...prev.slice(at)];
+        });
+        setLibraryError(`Failed to delete video: ${(e as Error).message}`);
+      });
   }, []);
 
   const handleDownload = useCallback((video: GeneratedVideo) => {

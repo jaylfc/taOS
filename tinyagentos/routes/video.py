@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -191,6 +191,25 @@ async def list_videos(request: Request):
     """List all generated videos with metadata, newest first."""
     videos_dir = _videos_dir(request)
     return {"videos": _list_videos(videos_dir)}
+
+
+@router.get("/api/video/{filename}")
+async def serve_video(request: Request, filename: str):
+    """Serve a generated video file for playback/download.
+
+    The ``path`` field returned by generate/list is not itself a mounted
+    static route -- the frontend hits this endpoint by filename instead.
+    """
+    videos_dir = _videos_dir(request)
+
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+
+    video_path = videos_dir / filename
+    if not video_path.exists():
+        return JSONResponse({"error": f"Video '{filename}' not found"}, status_code=404)
+
+    return FileResponse(video_path, media_type="video/mp4", filename=filename)
 
 
 @router.delete("/api/video/{filename}")

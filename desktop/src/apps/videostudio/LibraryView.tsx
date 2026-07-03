@@ -42,8 +42,11 @@ export function LibraryView({
   onDownload,
   onDelete,
 }: LibraryViewProps) {
-  const selected =
-    videos.find((v) => v.filename === selectedId) ?? videos[0] ?? null;
+  // Only fall back to the first video when there is no explicit selection --
+  // don't silently swap in a different clip if the selected one disappears.
+  const selected = selectedId
+    ? (videos.find((v) => v.filename === selectedId) ?? null)
+    : (videos[0] ?? null);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -99,7 +102,7 @@ export function LibraryView({
                     <video
                       src={v.url}
                       muted
-                      preload="metadata"
+                      preload="none"
                       className="h-full w-full object-cover"
                     />
                   ) : (
