@@ -63,6 +63,41 @@ function mockFetchStatus(status: Record<string, unknown>) {
   );
 }
 
+// Same poll interval the component uses (NPU_POLL_MS in SetupChecklist.tsx)
+// while an install is in flight.
+const NPU_POLL_MS = 3000;
+
+/**
+ * Stateful fetch mock for the NPU one-tap install flow: /api/setup/status
+ * reflects `state.npuRunning`, and /api/setup/install-npu-backend responds
+ * according to `installOk`. Returns the mutable state so a test can flip
+ * npuRunning to simulate the backend coming up mid-poll.
+ */
+function mockFetchNpuInstallFlow({ installOk = true }: { installOk?: boolean } = {}) {
+  const state = { npuRunning: false };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url === "/api/setup/status") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ ...baseStatus, npu_present: true, npu_backend_running: state.npuRunning }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url === "/api/setup/install-npu-backend") {
+        return Promise.resolve(new Response("{}", { status: installOk ? 200 : 500 }));
+      }
+      if (url === "/api/setup/dismiss") {
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }
+      return Promise.reject(new Error("unexpected fetch: " + url));
+    }) as unknown as typeof fetch,
+  );
+  return state;
+}
+
 describe("SetupChecklist", () => {
   beforeEach(() => {
     // Default the cloud account to unavailable so tests that don't care
@@ -213,7 +248,7 @@ describe("SetupChecklist", () => {
     render(<SetupChecklist />);
     expect(await screen.findByText("Install the NPU backend")).toBeInTheDocument();
     expect(
-      screen.getByText("Install rkllama from the Store to run models on this device's NPU"),
+      screen.getByText("Installs the Rockchip NPU runtime so models run on this device's NPU."),
     ).toBeInTheDocument();
     expect(screen.getByText("0/7")).toBeInTheDocument();
   });
@@ -327,5 +362,74 @@ describe("SetupChecklist", () => {
     render(<SetupChecklist />);
     await screen.findByText(CLOUD_LABEL);
     expect(screen.queryByText(HANDLE_HINT)).toBeNull();
+  });
+
+  it("also offers a secondary Open in Store link on the outstanding NPU step", async () => {
+    mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: false });
+    render(<SetupChecklist />);
+    expect(await screen.findByRole("button", { name: "Install NPU backend" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open in Store" })).toBeInTheDocument();
+  });
+
+  it("tapping Install NPU backend POSTs to install-npu-backend and shows an in-progress state", async () => {
+    mockFetchNpuInstallFlow();
+    render(<SetupChecklist />);
+    const installBtn = await screen.findByRole("button", { name: "Install NPU backend" });
+
+    fireEvent.click(installBtn);
+
+    await waitFor(() => {
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+        "/api/setup/install-npu-backend",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(await screen.findByText("Installing NPU backend...")).toBeInTheDocument();
+  });
+
+  it("ticks the NPU step automatically once a status poll reports npu_backend_running", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = mockFetchNpuInstallFlow();
+      render(<SetupChecklist />);
+
+      // Let the initial /api/setup/status fetch (mount effect) resolve.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const installBtn = screen.getByRole("button", { name: "Install NPU backend" });
+
+      await act(async () => {
+        fireEvent.click(installBtn);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("Installing NPU backend...")).toBeInTheDocument();
+
+      // Simulate the backend coming up, then let the in-flight poll interval fire.
+      state.npuRunning = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(NPU_POLL_MS);
+      });
+
+      expect(
+        screen.getByRole("button", { name: "Install the NPU backend — complete" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a clear error with retry when the install POST fails", async () => {
+    mockFetchNpuInstallFlow({ installOk: false });
+    render(<SetupChecklist />);
+    const installBtn = await screen.findByRole("button", { name: "Install NPU backend" });
+
+    fireEvent.click(installBtn);
+
+    expect(await screen.findByText("Couldn't install the NPU backend. Try again.")).toBeInTheDocument();
+    // The button reverts to its idle label so tapping it again retries.
+    expect(screen.getByRole("button", { name: "Install NPU backend" })).toBeInTheDocument();
   });
 });

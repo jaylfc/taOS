@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { CheckCircle2, Circle, ChevronRight, X } from "lucide-react";
+import { CheckCircle2, Circle, ChevronRight, Loader2, X } from "lucide-react";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { fetchAccount, type AccountState } from "@/lib/account-client";
@@ -66,15 +66,20 @@ const STEPS: Step[] = [
   },
 ];
 
-// Shown only when the board has a Rockchip NPU (#1535): the backend that
-// serves on-device models is a Store install, and without this step nothing
-// in the setup flow ever surfaces it.
+// Shown only when the board has a Rockchip NPU (#1535): without this step
+// nothing in the setup flow ever surfaces the on-device NPU backend. Tapping
+// it is a one-tap install (POST /api/setup/install-npu-backend); "Open in
+// Store" stays as a secondary, manual escape hatch.
 const NPU_STEP: Step = {
   key: "npu_backend_running",
   label: "Install the NPU backend",
-  detail: "Install rkllama from the Store to run models on this device's NPU",
+  detail: "Installs the Rockchip NPU runtime so models run on this device's NPU.",
   appId: "store",
 };
+
+// How often to re-poll /api/setup/status while an NPU install is in flight,
+// so the step ticks on its own once the backend comes up.
+const NPU_POLL_MS = 3000;
 
 export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   const [status, setStatus] = useState<SetupStatus | null>(null);
@@ -83,6 +88,8 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   // status endpoint; it degrades to "unavailable" rather than throwing when
   // the account service can't be reached, so onboarding still works offline.
   const [cloudAccount, setCloudAccount] = useState<AccountState>({ kind: "loading" });
+  const [npuInstalling, setNpuInstalling] = useState(false);
+  const [npuError, setNpuError] = useState<string | null>(null);
   const openWindow = useProcessStore((s) => s.openWindow);
 
   useEffect(() => {
@@ -104,6 +111,25 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
     return () => { cancelled = true; };
   }, []);
 
+  // While an NPU install is in flight, re-poll status so the step ticks over
+  // to done on its own the moment npu_backend_running flips true — no manual
+  // refresh needed.
+  useEffect(() => {
+    if (!npuInstalling) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      fetch("/api/setup/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: SetupStatus | null) => {
+          if (cancelled || !data) return;
+          setStatus(data);
+          if (data.npu_backend_running) setNpuInstalling(false);
+        })
+        .catch(() => {});
+    }, NPU_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [npuInstalling]);
+
   const handleDismiss = async () => {
     setDismissing(true);
     try {
@@ -121,6 +147,22 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   const cloudSignedIn = cloudAccount.kind === "signed-in";
   const isDone = (step: Step) =>
     step.key === "cloud_account" ? cloudSignedIn : Boolean(status?.[step.key]);
+
+  // Primary one-tap action for the NPU step: trigger the server-side install
+  // of both NPU backends rather than sending the user to the Store to hunt
+  // for it. Stays "installing" until the poll above confirms the backend is
+  // actually answering — the tap only starts the install, it doesn't finish it.
+  const handleInstallNpu = async () => {
+    setNpuError(null);
+    setNpuInstalling(true);
+    try {
+      const res = await fetch("/api/setup/install-npu-backend", { method: "POST" });
+      if (!res.ok) throw new Error(`install-npu-backend: ${res.status}`);
+    } catch {
+      setNpuInstalling(false);
+      setNpuError("Couldn't install the NPU backend. Try again.");
+    }
+  };
 
   if (!status || status.dismissed) return null;
   // complete covers the two core steps only; on an NPU board the backend
@@ -161,6 +203,43 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
       <ul role="list" className="pb-2">
         {steps.map((step) => {
           const done = isDone(step);
+          const isNpuStep = step.key === "npu_backend_running";
+
+          // The NPU step gets a one-tap install action + a secondary "Open in
+          // Store" link instead of a single row-as-button; every other step
+          // (and the NPU step once done) keeps the plain tap-to-open row.
+          if (isNpuStep && !done) {
+            return (
+              <li key={step.key}>
+                <div className="flex items-center gap-2.5 px-4 py-2">
+                  <Circle size={14} className="text-shell-text-tertiary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-shell-text">{step.label}</p>
+                    <p className={`text-[10px] truncate ${npuError ? "text-red-400" : "text-shell-text-tertiary"}`}>
+                      {npuError ?? step.detail}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={handleInstallNpu}
+                      disabled={npuInstalling}
+                      className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-full bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-60 disabled:cursor-default"
+                    >
+                      {npuInstalling && <Loader2 size={10} className="animate-spin" />}
+                      {npuInstalling ? "Installing NPU backend..." : "Install NPU backend"}
+                    </button>
+                    <button
+                      onClick={() => handleStep(step)}
+                      className="text-[10px] text-shell-text-tertiary hover:text-shell-text underline underline-offset-2"
+                    >
+                      Open in Store
+                    </button>
+                  </div>
+                </div>
+              </li>
+            );
+          }
+
           return (
             <li key={step.key}>
               <button
