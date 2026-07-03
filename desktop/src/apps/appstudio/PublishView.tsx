@@ -1,9 +1,51 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Folder, Bell, Users, Shield, Sparkles, Upload, Share2, Download, CheckSquare } from "lucide-react";
+import { analyzeAppSource, type Finding } from "./analyze-source";
+import { FindingsPanel } from "./FindingsPanel";
 
 /* ------------------------------------------------------------------ */
 /*  PublishView -- app identity + capabilities + side publish panel    */
 /* ------------------------------------------------------------------ */
+
+// Placeholder source for the "Chore Quest" demo app shown throughout App
+// Studio. App Studio does not yet persist the agent's generated files (the
+// Build view only streams a chat transcript, see BuildView.tsx) -- once that
+// pipeline lands, this should be replaced with the actual generated source
+// for the app being published. Wiring the analyzer against this in the
+// meantime keeps the publish-time security gate exercised end to end: the
+// backend runs the exact same analyze_app_source() call it runs on the real
+// install/publish path.
+const DEMO_APP_SOURCE: Record<string, string> = {
+  "index.html": [
+    "<!doctype html>",
+    "<html>",
+    "  <head><title>Chore Quest</title></head>",
+    "  <body>",
+    '    <div id="app"></div>',
+    '    <script src="app.js"></script>',
+    "  </body>",
+    "</html>",
+  ].join("\n"),
+  "app.js": [
+    "const chores = [",
+    '  { who: "Mara", task: "Take out the bins", done: true },',
+    '  { who: "Ben", task: "Walk the dog", done: false },',
+    "];",
+    "",
+    "function render() {",
+    '  const root = document.getElementById("app");',
+    '  const list = document.createElement("ul");',
+    "  chores.forEach((c) => {",
+    '    const item = document.createElement("li");',
+    "    item.textContent = `${c.who}: ${c.task}`;",
+    "    list.appendChild(item);",
+    "  });",
+    "  root.replaceChildren(list);",
+    "}",
+    "",
+    "render();",
+  ].join("\n"),
+};
 
 interface PermRow {
   key: string;
@@ -41,9 +83,36 @@ export function PublishView() {
   const [enabled, setEnabled] = useState<Record<string, boolean>>(
     Object.fromEntries(PERMS.map((p) => [p.key, p.defaultOn]))
   );
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [scanning, setScanning] = useState(true);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const toggle = (key: string) =>
     setEnabled((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  useEffect(() => {
+    let cancelled = false;
+    setScanning(true);
+    setScanError(null);
+    analyzeAppSource(DEMO_APP_SOURCE)
+      .then((result) => {
+        if (cancelled) return;
+        setFindings(result.findings);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setScanError(String(e instanceof Error ? e.message : e));
+      })
+      .finally(() => {
+        if (!cancelled) setScanning(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const blocked = !scanning && !scanError && findings.some((f) => f.severity === "critical");
+  const publishDisabled = scanning || blocked;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -82,6 +151,9 @@ export function PublishView() {
                 </div>
               </div>
             </div>
+
+            {/* security scan panel */}
+            <FindingsPanel loading={scanning} error={scanError} findings={findings} />
 
             {/* capabilities section */}
             <div className="mb-[11px] text-[11px] font-bold uppercase tracking-[0.06em] text-shell-text-tertiary">
@@ -154,11 +226,14 @@ export function PublishView() {
 
           <button
             type="button"
-            className="flex h-[46px] items-center justify-center gap-[9px] rounded-[13px] text-[13.5px] font-bold text-white shadow-[0_8px_22px_-8px_rgba(139,146,163,0.35)]"
+            disabled={publishDisabled}
+            aria-disabled={publishDisabled}
+            title={blocked ? "Fix the critical security findings before publishing" : undefined}
+            className="flex h-[46px] items-center justify-center gap-[9px] rounded-[13px] text-[13.5px] font-bold text-white shadow-[0_8px_22px_-8px_rgba(139,146,163,0.35)] disabled:cursor-not-allowed disabled:opacity-50"
             style={{ background: "linear-gradient(135deg,var(--color-accent),var(--color-accent))" }}
           >
             <Upload size={16} />
-            Publish to my Store
+            {blocked ? "Blocked by security scan" : "Publish to my Store"}
           </button>
 
           <button
