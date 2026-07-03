@@ -28,6 +28,32 @@ describe("OfficeStudioApp", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDefined();
   });
 
+  it("renders the Tiptap document body with an accessible label", () => {
+    renderApp();
+    const body = screen.getByRole("textbox", { name: "Document body" });
+    expect(body).toBeDefined();
+    expect(body.getAttribute("contenteditable")).toBe("true");
+  });
+
+  it("toggles Bold on and off from the toolbar", () => {
+    renderApp();
+    const boldBtn = screen.getByRole("button", { name: "Bold" });
+    expect(boldBtn.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(boldBtn);
+    expect(boldBtn.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(boldBtn);
+    expect(boldBtn.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("typing into the document body updates the editor content", () => {
+    renderApp();
+    const body = screen.getByRole("textbox", { name: "Document body" });
+    body.focus();
+    body.innerHTML = "<p>Hello world</p>";
+    fireEvent.input(body);
+    expect(body.textContent).toContain("Hello world");
+  });
+
   it("switches to Calc view and shows spreadsheet grid with Total row", () => {
     renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Calc" }));

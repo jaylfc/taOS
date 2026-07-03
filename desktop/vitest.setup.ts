@@ -25,6 +25,20 @@ if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !=
   Element.prototype.scrollIntoView = function () {};
 }
 
+// JSDOM does not implement Range.prototype.getClientRects/getBoundingClientRect.
+// ProseMirror (the Tiptap editor powering Office Studio's Write view) calls
+// these to scroll the selection into view after every transaction, which
+// would otherwise throw and crash any test that types into the editor.
+if (typeof Range !== "undefined" && typeof Range.prototype.getClientRects !== "function") {
+  const emptyRect = (): DOMRect => ({
+    x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0,
+    toJSON() { return this; },
+  });
+  Range.prototype.getClientRects = () =>
+    ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = emptyRect;
+}
+
 // JSDOM does not implement window.matchMedia. Hooks like useIsMobile call it
 // in a useEffect, which would otherwise crash any test that mounts them.
 // Default to "no match" (desktop). Individual tests can override per-suite.
