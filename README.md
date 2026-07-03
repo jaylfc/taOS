@@ -249,7 +249,7 @@ Hidden internal gateway that unifies all inference providers behind a single Ope
 Features unlock automatically based on your hardware and cluster. Solo Pi sees core features. Add a GPU worker and image generation, video, and training appear. No configuration, the platform just knows what's possible.
 
 ### Creative Studios
-Dedicated studio apps for every kind of project, each a focused, native taOS workspace that runs entirely on your own cluster. Two are bundled (Images, Game Studio); Coding, App, Design, Music, Office, and Web studios are implemented but gated as optional apps (App Studio is taOS's own app builder, so agents and users can build and share new apps).
+Dedicated studio apps for every kind of project, each a focused, native taOS workspace that runs entirely on your own cluster. Two are bundled (Images, Game Studio); Coding, App, Design, Music, Office, Web, and Video studios are implemented but gated as optional apps (App Studio is taOS's own app builder, so agents and users can build and share new apps).
 
 <p align="center">
   <img src="docs/images/images-studio.jpg" alt="Images Studio -- generate from a prompt and edit on a local GPU" width="49%">
@@ -259,10 +259,11 @@ Dedicated studio apps for every kind of project, each a focused, native taOS wor
 - **Images Studio.** Create, Library, and Edit in one app. Generate from a prompt on any discovered Stable Diffusion backend (NPU / GPU / CPU), browse a thumbnail library, and edit with tier-aware backends: inpaint and object removal, plus upscale. The platform picks the best installed backend per task and degrades gracefully when a higher tier is missing.
 - **Game Studio.** An offline-AI game maker built on three.js and react-three-fiber. Less-capable, tool-calling-weak models get guided building blocks and templates; more capable local or cloud models can author scenes directly. Games run fullscreen on desktop and mobile with a mandatory exit-to-taOS control, can be playtested in place, and optionally shared to the Store.
 - **Web Studio.** An AI-assisted, Wix-style website builder. Describe a site or start from a template, then edit it as stacked sections (hero, features, gallery, contact, and more) with inline text, image swaps, live theming, add/remove/reorder, and a responsive desktop, tablet, and mobile preview. Export a self-contained static HTML page. Sites persist on your own cluster.
+- **Video Studio.** Create and Library in one app. Describe a scene, pick a resolution and duration, and generate a clip on any discovered video backend (WanGP / Wan 2.1). Generated clips land in a library with inline playback, download, and delete.
 
 ### AI Generation
 - **Images**. Stable Diffusion via NPU, GPU, or CPU (multi-backend auto-discovery), surfaced through Image Studio
-- **Video**. WanGP, LTX Video (unlocks with 6GB+ GPU worker)
+- **Video**. WanGP, LTX Video (unlocks with 6GB+ GPU worker), surfaced through Video Studio
 - **Audio**. Kokoro TTS, Chatterbox, Piper, Whisper STT, MusicGPT
 - **Games**. three.js + react-three-fiber scenes authored offline through Game Studio
 
