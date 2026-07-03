@@ -50,6 +50,7 @@
     "clsx": "^2.1.1",
     "emoji-picker-react": "^4.19.1",
     "highlight.js": "^11.11.1",
+    "jspdf": "^4.2.1",
     "konva": "^10.3.0",
     "lucide-react": "^0.577.0",
     "mathjs": "^15.2.0",
