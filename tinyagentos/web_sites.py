@@ -4,6 +4,8 @@ import secrets
 import time
 from pathlib import Path
 
+import aiosqlite
+
 from tinyagentos.base_store import BaseStore
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
@@ -37,31 +39,33 @@ class WebSiteStore(BaseStore):
         super().__init__(db_path)
 
     async def create(self, title: str, content: str) -> dict:
+        now = int(time.time())
+        # The id is generated and inserted speculatively; the PRIMARY KEY
+        # constraint is the actual source of truth for uniqueness, not a
+        # prior SELECT (which would leave a TOCTOU window between two
+        # concurrent creates picking the same id). On a collision we just
+        # retry with a fresh id, bounded so a persistently broken generator
+        # can't spin forever.
         for _ in range(8):
             site_id = _new_site_id()
-            async with self._db.execute(
-                "SELECT 1 FROM sites WHERE id = ?", (site_id,)
-            ) as cur:
-                if await cur.fetchone() is None:
-                    break
-        else:
-            raise RuntimeError("could not allocate site id")
-
-        now = int(time.time())
-        row = {
-            "id": site_id,
-            "title": title,
-            "content": content,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await self._db.execute(
-            """INSERT INTO sites (id, title, content, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (row["id"], row["title"], row["content"], row["created_at"], row["updated_at"]),
-        )
-        await self._db.commit()
-        return row
+            row = {
+                "id": site_id,
+                "title": title,
+                "content": content,
+                "created_at": now,
+                "updated_at": now,
+            }
+            try:
+                await self._db.execute(
+                    """INSERT INTO sites (id, title, content, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (row["id"], row["title"], row["content"], row["created_at"], row["updated_at"]),
+                )
+                await self._db.commit()
+                return row
+            except aiosqlite.IntegrityError:
+                continue
+        raise RuntimeError("could not allocate site id")
 
     async def list(self) -> list[dict]:
         async with self._db.execute(

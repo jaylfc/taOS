@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -8,6 +9,10 @@ from fastapi.responses import JSONResponse
 from tinyagentos.web_sites import WebSiteStore
 
 router = APIRouter()
+
+# Sites can embed image data URIs in `content`; cap the row so a single
+# oversized upload can't bloat the SQLite database unboundedly.
+MAX_CONTENT_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
 def _get_store(request: Request) -> WebSiteStore:
@@ -20,15 +25,37 @@ def _validate_title(title: Any) -> str | None:
     return title.strip()
 
 
+async def _parse_json(request: Request) -> dict | JSONResponse:
+    try:
+        return await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+
+def _validate_content(content: Any) -> JSONResponse | None:
+    """Returns an error response if `content` is invalid, else None."""
+    if not isinstance(content, str):
+        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
+        return JSONResponse(
+            {"error": f"content exceeds the {MAX_CONTENT_BYTES} byte limit"},
+            status_code=413,
+        )
+    return None
+
+
 @router.post("/api/web/sites")
 async def create_site(request: Request):
-    body = await request.json()
+    body = await _parse_json(request)
+    if isinstance(body, JSONResponse):
+        return body
     title = _validate_title(body.get("title"))
     if title is None:
         return JSONResponse({"error": "title is required"}, status_code=400)
     content = body.get("content", "")
-    if not isinstance(content, str):
-        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    content_error = _validate_content(content)
+    if content_error is not None:
+        return content_error
 
     store = _get_store(request)
     site = await store.create(title=title, content=content)
@@ -52,7 +79,9 @@ async def get_site(request: Request, site_id: str):
 
 @router.put("/api/web/sites/{site_id}")
 async def update_site(request: Request, site_id: str):
-    body = await request.json()
+    body = await _parse_json(request)
+    if isinstance(body, JSONResponse):
+        return body
     store = _get_store(request)
 
     existing = await store.get(site_id)
@@ -65,8 +94,9 @@ async def update_site(request: Request, site_id: str):
         return JSONResponse({"error": "title is required"}, status_code=400)
 
     content = body.get("content", existing["content"])
-    if not isinstance(content, str):
-        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    content_error = _validate_content(content)
+    if content_error is not None:
+        return content_error
 
     site = await store.update(site_id=site_id, title=title, content=content)
     return site
