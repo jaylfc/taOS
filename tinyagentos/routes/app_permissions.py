@@ -20,12 +20,35 @@ from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.userspace.capabilities import (
     FREE_CAPS,
     NET_PREFIX,
+    capability_allowed,
+    capability_ceiling,
+    default_provenance_for_trust,
     describe_capability,
     is_known_capability,
     is_valid_network_grant,
 )
 
 router = APIRouter()
+
+
+async def _resolve_provenance(request: Request, app_id: str) -> str | None:
+    """The app's provenance tier, if `app_id` is a classified userspace app.
+
+    None if `app_id` doesn't match any row in the userspace apps store -- most
+    callers of this generic grant ledger are not sandboxed userspace apps at
+    all (native features requesting a capability on their own behalf), so
+    their pending-consent computation is left exactly as before rather than
+    guessed at.
+    """
+    store = getattr(request.app.state, "userspace_apps", None)
+    # Uninitialised (e.g. a test app that never ran the userspace lifespan) is
+    # treated the same as "no store" -- best effort, never a 500.
+    if store is None or getattr(store, "_db", None) is None:
+        return None
+    row = await store.get(app_id)
+    if row is None:
+        return None
+    return row.get("provenance") or default_provenance_for_trust(row.get("trust"))
 
 
 def app_grant_decision_payload(app_id: str, capabilities: list[str]) -> dict:
@@ -65,11 +88,21 @@ class RevokeIn(BaseModel):
 async def list_app_permissions(
     app_id: str, request: Request, user: CurrentUser = Depends(current_user)
 ):
-    """The current user's capability decisions for an app, plus the granted set."""
+    """The current user's capability decisions for an app, plus the granted set.
+
+    Also reports `provenance` (null if `app_id` isn't a classified userspace
+    app) and `ceiling` -- the capabilities that tier holds without any of
+    `grants` -- so a UI can show why a capability needs consent.
+    """
     store = request.app.state.app_grants
     grants = await store.list_grants(user.user_id, app_id)
     granted = sorted(await store.granted_capabilities(user.user_id, app_id))
-    return {"app_id": app_id, "grants": grants, "granted": granted}
+    provenance = await _resolve_provenance(request, app_id)
+    ceiling = sorted(capability_ceiling(provenance)) if provenance else None
+    return {
+        "app_id": app_id, "grants": grants, "granted": granted,
+        "provenance": provenance, "ceiling": ceiling,
+    }
 
 
 @router.post("/api/apps/{app_id}/permissions")
@@ -140,8 +173,21 @@ async def request_app_consent(
             return JSONResponse({"error": f"invalid network origin: {cap}"}, status_code=400)
         caps.append(cap)
 
-    # Free caps are granted without consent; caps the user already granted or
-    # denied for this app are not re-prompted (the Permissions app revisits).
+    # Which caps are auto-free (no consent needed) depends on the app's
+    # provenance tier. Only a classified userspace app (found in the
+    # userspace_apps store) gets tier-aware treatment; every other caller of
+    # this generic ledger (a native feature requesting a capability on its own
+    # behalf, not a sandboxed app) keeps the plain FREE_CAPS-are-free rule it
+    # always had, unchanged.
+    provenance = await _resolve_provenance(request, app_id)
+
+    def _auto_free(cap: str) -> bool:
+        if provenance is not None:
+            return capability_allowed(provenance, cap, set())
+        return cap in FREE_CAPS
+
+    # Caps the user already granted or denied for this app are not re-prompted
+    # (the Permissions app revisits).
     decided = {g["capability"] for g in await grants.list_grants(user.user_id, app_id)}
     # Caps that already have an unanswered app_grant Decision for this app: the
     # lazy first-use path re-fires on every denied access until the user answers,
@@ -156,7 +202,7 @@ async def request_app_consent(
     # a colliding option whose value the dedup suffixer rewrites to a non-cap.
     pending: list[str] = []
     for c in caps:
-        if c in FREE_CAPS or c in decided or c in awaiting or c in pending:
+        if _auto_free(c) or c in decided or c in awaiting or c in pending:
             continue
         pending.append(c)
     if not pending:

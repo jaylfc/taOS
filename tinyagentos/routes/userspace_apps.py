@@ -6,12 +6,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Request, UploadFile, File
+from fastapi import APIRouter, Form, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, Response
 
-from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
+from tinyagentos.userspace.broker import handle_capability
+from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.package import extract_package, PackageError
 from tinyagentos.userspace.url_guard import resolve_safe_public_ip
+
+# Provenance values a caller may set through the PUBLIC install endpoint. Never
+# includes "first-party" -- that tier is only reachable via the internal
+# boot-seeding path (seed.py) or a verified signature (P2), matching the
+# existing trust="community"-only invariant this endpoint already enforces.
+_PUBLIC_PROVENANCES = {"ai-generated", "user-uploaded"}
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +36,21 @@ _SDK_PATH = Path(__file__).resolve().parent.parent / "userspace" / "sdk" / "taos
 # user has granted `network:<origin>` permissions gets exactly those origins
 # added to connect-src and nothing else (each origin is strictly validated at
 # manifest-parse time, so it cannot inject other CSP directives).
-def _bundle_csp(net_origins: list[str]) -> str:
+#
+# `provenance` only ever TIGHTENS this baseline further -- it never grants back
+# a directive every tier already gets. Today that means the "unknown" tier (an
+# app that could not be classified at all) also loses the permissive
+# `img-src https:` catch-all, so it cannot even passively load images from an
+# arbitrary origin. Every other tier keeps the existing img-src.
+def _bundle_csp(net_origins: list[str], provenance: str = "user-uploaded") -> str:
     connect = "connect-src 'self'" + "".join(" " + o for o in net_origins)
+    img_src = "img-src 'self' data: blob:" if provenance == "unknown" else "img-src 'self' https: data: blob:"
     return (
         "sandbox allow-scripts allow-forms allow-popups; "
         "default-src 'none'; "
         "script-src 'self' 'unsafe-inline' blob:; "
         "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' https: data: blob:; "
+        f"{img_src}; "
         "font-src 'self' data:; "
         f"{connect}; "
         "frame-ancestors 'self'; base-uri 'none'"
@@ -64,7 +78,11 @@ _MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 
 
 @router.post("/api/userspace-apps/install")
-async def install_app(request: Request, package: UploadFile | None = File(default=None)):
+async def install_app(
+    request: Request,
+    package: UploadFile | None = File(default=None),
+    provenance: str | None = Form(default=None),
+):
     store = request.app.state.userspace_apps
     if package is not None:
         data = await package.read(_MAX_PACKAGE_BYTES + 1)
@@ -76,6 +94,7 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
         url = body.get("source_url")
         if not url:
             return JSONResponse({"error": "source_url or package required"}, status_code=400)
+        provenance = body.get("provenance") or provenance
         # SSRF guard: resolve + validate the host ONCE, then pin the connection
         # to that validated IP. Re-resolving at fetch time would reopen a
         # DNS-rebinding TOCTOU window. follow_redirects stays off so a 3xx
@@ -139,11 +158,18 @@ async def install_app(request: Request, package: UploadFile | None = File(defaul
     # trust is always 'community' through this public endpoint -- no manifest
     # field can elevate it. first-party trust is set only through the internal
     # boot-seeding path (P4) or after package signature verification (P2).
+    #
+    # provenance defaults to "user-uploaded" (a public install IS a side-load,
+    # by definition) but a caller can tag it "ai-generated" instead, e.g. once
+    # App Studio's publish flow posts here -- "first-party" is never accepted,
+    # same invariant as trust above.
+    resolved_provenance = provenance if provenance in _PUBLIC_PROVENANCES else "user-uploaded"
     await store.install(
         app_id=manifest["id"], name=manifest["name"], version=manifest["version"],
         app_type=manifest["app_type"], entry=manifest["entry"], icon=manifest["icon"],
         permissions_requested=manifest["permissions"],
         trust="community",
+        provenance=resolved_provenance,
     )
     return {
         "app_id": manifest["id"],
@@ -204,8 +230,9 @@ async def serve_bundle(request: Request, app_id: str, path: str):
     granted = (app or {}).get("permissions_granted") or []
     net_origins = [p[len("network:"):] for p in granted
                    if isinstance(p, str) and p.startswith("network:")]
+    provenance = (app or {}).get("provenance") or default_provenance_for_trust((app or {}).get("trust"))
     resp = FileResponse(target)
-    resp.headers["Content-Security-Policy"] = _bundle_csp(net_origins)
+    resp.headers["Content-Security-Policy"] = _bundle_csp(net_origins, provenance)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
@@ -245,31 +272,30 @@ async def broker(request: Request, app_id: str):
     if app is None or not app["enabled"]:
         return JSONResponse({"error": "app not found or disabled"}, status_code=404)
     body = await request.json()
-    # First-party apps have all gated capabilities pre-authorised -- no per-cap
-    # consent step is needed. Community apps use only their explicitly granted set.
-    if app.get("trust") == "first-party":
-        granted = set(GATED_CAPS)
-    else:
-        # The userspace broker stays the runtime enforcer; the app_grants ledger
-        # feeds it (decision 24). A capability the current user granted this app
-        # via the consent flow also authorises it, on top of the per-app granted
-        # set. Additive and best-effort: no auth session or no ledger falls back
-        # to the per-app set, so nothing that worked before changes.
-        granted = set(app["permissions_granted"])
-        uid = getattr(request.state, "user_id", None)
-        grants_store = getattr(request.app.state, "app_grants", None)
-        if uid and grants_store is not None:
-            try:
-                granted |= await grants_store.granted_capabilities(uid, app_id)
-            except Exception:
-                # Genuinely best-effort: an uninitialised store or a query error
-                # must not turn a previously-working broker call into a 500. Fall
-                # back to the per-app granted set.
-                logger.warning(
-                    "app_grants lookup failed for app %s; using per-app grants only",
-                    app_id,
-                    exc_info=True,
-                )
+    # granted starts at the app's provenance ceiling (#PROV): first-party's
+    # ceiling is every known capability, so it behaves exactly like the old
+    # trust="first-party" bypass; every other tier's ceiling excludes the
+    # gated namespaces (network/agent/llm/memory), so those still need an
+    # explicit grant exactly as "community" apps always required. On top of
+    # the ceiling, the app's own declared+granted permissions and the
+    # app_grants consent ledger are additive, same as before.
+    provenance = app.get("provenance") or default_provenance_for_trust(app.get("trust"))
+    granted = set(capability_ceiling(provenance))
+    granted |= set(app["permissions_granted"])
+    uid = getattr(request.state, "user_id", None)
+    grants_store = getattr(request.app.state, "app_grants", None)
+    if uid and grants_store is not None:
+        try:
+            granted |= await grants_store.granted_capabilities(uid, app_id)
+        except Exception:
+            # Genuinely best-effort: an uninitialised store or a query error
+            # must not turn a previously-working broker call into a 500. Fall
+            # back to the ceiling + per-app granted set.
+            logger.warning(
+                "app_grants lookup failed for app %s; using per-app grants only",
+                app_id,
+                exc_info=True,
+            )
     out = await handle_capability(
         app_id, body.get("capability", ""), body.get("args") or {},
         granted=granted,
