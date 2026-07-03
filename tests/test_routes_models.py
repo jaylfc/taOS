@@ -156,6 +156,34 @@ class TestModelsAPI:
         for m in data["models"]:
             assert m["has_downloaded_variant"] is False
 
+    async def test_downloaded_file_carries_model_id(self, models_app, models_client):
+        """A downloaded file whose name matches the
+        {manifest.id}-{variant.id}.{format} convention used by
+        POST /api/models/download must carry that manifest id in
+        downloaded_files, so the frontend can wire per-file Delete to
+        DELETE /api/models/{model_id} without reverse-engineering the
+        naming convention itself (#1581)."""
+        models_dir = models_app.state.models_dir
+        (models_dir / "test-model-small.gguf").write_bytes(b"x" * 100)
+
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        entry = next(f for f in data["downloaded_files"] if f["filename"] == "test-model-small.gguf")
+        assert entry["model_id"] == "test-model"
+
+    async def test_downloaded_file_without_manifest_match_has_no_model_id(
+        self, models_app, models_client
+    ):
+        """A file that doesn't match any manifest's naming convention (e.g. a
+        legacy/manually-placed file) must not get a fabricated model_id."""
+        models_dir = models_app.state.models_dir
+        (models_dir / "some-legacy-file.gguf").write_bytes(b"x" * 100)
+
+        resp = await models_client.get("/api/models")
+        data = resp.json()
+        entry = next(f for f in data["downloaded_files"] if f["filename"] == "some-legacy-file.gguf")
+        assert "model_id" not in entry
+
     async def test_registry_installed_with_disk_evidence_marks_downloaded(
         self, models_client, models_app, tmp_path
     ):
@@ -220,6 +248,25 @@ class TestModelsDelete:
         data = resp.json()
         assert data["status"] == "deleted"
         assert data["deleted_files"] == []
+
+    async def test_delete_using_model_id_surfaced_in_list(self, models_app, models_client):
+        """End-to-end: the model_id GET /api/models attaches to a downloaded
+        file is exactly the id DELETE /api/models/{model_id} needs to remove
+        it — this is the wiring the frontend Delete button now relies on."""
+        models_dir = models_app.state.models_dir
+        (models_dir / "test-model-small.gguf").write_bytes(b"x" * 100)
+
+        list_resp = await models_client.get("/api/models")
+        entry = next(
+            f for f in list_resp.json()["downloaded_files"]
+            if f["filename"] == "test-model-small.gguf"
+        )
+        model_id = entry["model_id"]
+
+        delete_resp = await models_client.delete(f"/api/models/{model_id}")
+        assert delete_resp.status_code == 200
+        assert "test-model-small.gguf" in delete_resp.json()["deleted_files"]
+        assert not (models_dir / "test-model-small.gguf").exists()
 
 
 @pytest.mark.asyncio

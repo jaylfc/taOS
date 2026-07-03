@@ -33,6 +33,9 @@ interface DownloadedModel {
   host: string;
   hostKind: "controller" | "worker" | "cloud";
   backend?: string;
+  /** Catalog manifest id — set when the backend could match this file to a
+   *  manifest variant. Delete calls DELETE /api/models/{modelId} using this. */
+  modelId?: string;
 }
 
 interface AvailableModel {
@@ -75,6 +78,7 @@ function aggregatedToDownloaded(a: AggregatedModel): DownloadedModel {
     host: a.host,
     hostKind: a.hostKind,
     backend: a.backend,
+    modelId: a.modelId,
   };
 }
 
@@ -252,7 +256,17 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     if (app) openWindow("providers", app.defaultSize);
   };
 
+  // fetchModels is called both on mount and right after a download/delete
+  // completes. Those calls can overlap (the mount fetch is still in flight
+  // when a fast download finishes) and network responses can resolve out of
+  // order, so a stale response must never clobber a fresher one — the same
+  // problem DownloadProgress's poll() solves with cancellation below. A
+  // monotonically increasing sequence number lets only the LAST call's
+  // response commit state.
+  const fetchSeqRef = useRef(0);
+
   const fetchModels = useCallback(async () => {
+    const seq = ++fetchSeqRef.current;
     // Kick off cluster workers + providers in parallel with /api/models so the
     // union (controller + workers + cloud) is ready in a single state flip.
     const workersPromise = fetchClusterWorkers();
@@ -288,6 +302,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                 filename: (d.filename as string) ?? "unknown",
                 size_mb: (d.size_mb as number) ?? 0,
                 format: (d.format as string) ?? "bin",
+                model_id: d.model_id as string | undefined,
               }),
             ),
           );
@@ -354,6 +369,10 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
             };
           });
 
+          // A newer fetchModels() call has already started (or finished) —
+          // committing this stale response would clobber fresher state, e.g.
+          // flipping a just-completed download back to "not installed".
+          if (seq !== fetchSeqRef.current) return;
           setDownloaded(downloadedList);
           setAvailable(availableList);
           setIsFallback(false);
@@ -377,6 +396,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
       const cloudList = cloudProvidersToAggregated(providers).map(
         aggregatedToDownloaded,
       );
+      if (seq !== fetchSeqRef.current) return;
       if (workerList.length > 0 || cloudList.length > 0) {
         setDownloaded([...workerList, ...cloudList]);
         setAvailable(MOCK_AVAILABLE);
@@ -387,6 +407,7 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     } catch {
       /* ignore */
     }
+    if (seq !== fetchSeqRef.current) return;
     // No real models reachable anywhere (backend down AND no providers/workers
     // configured) — leave the lists empty so the clear "No models yet" empty
     // state renders instead of misleading mock cards. This is what makes the
@@ -401,9 +422,54 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
     fetchModels();
   }, [fetchModels]);
 
-  const handleDelete = (id: string) => {
-    setDownloaded((prev) => prev.filter((m) => m.id !== id));
-  };
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<Record<string, string>>({});
+
+  const handleDelete = useCallback(
+    async (model: DownloadedModel) => {
+      if (!model.modelId) {
+        setDeleteError((prev) => ({
+          ...prev,
+          [model.id]: "Cannot delete: unrecognised model file",
+        }));
+        return;
+      }
+      setDeletingId(model.id);
+      setDeleteError((prev) => {
+        const next = { ...prev };
+        delete next[model.id];
+        return next;
+      });
+      try {
+        const res = await fetch(`/api/models/${encodeURIComponent(model.modelId)}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
+        const data = await res.json().catch(() => ({}) as Record<string, unknown>);
+        if (!res.ok) {
+          setDeleteError((prev) => ({
+            ...prev,
+            [model.id]:
+              (data.error as string) ||
+              (data.detail as string) ||
+              "The model could not be deleted",
+          }));
+          return;
+        }
+        // Re-fetch the real catalog instead of assuming success locally, so
+        // the list reflects backend truth (mirrors handleDownloadComplete).
+        await fetchModels();
+      } catch {
+        setDeleteError((prev) => ({
+          ...prev,
+          [model.id]: "Could not reach the backend to delete the model",
+        }));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [fetchModels],
+  );
 
   const handleDownload = useCallback(async (model: AvailableModel) => {
     if (!model.variantId) {
@@ -664,7 +730,8 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => handleDelete(model.id)}
+                                onClick={() => handleDelete(model)}
+                                disabled={deletingId === model.id}
                                 className="h-7 w-7 hover:text-red-400 hover:bg-red-500/15"
                                 aria-label={`Delete ${model.filename}`}
                                 title="Delete model"
@@ -687,6 +754,11 @@ export function ModelsApp({ windowId: _windowId }: { windowId: string }) {
                               <span className="ml-auto tabular-nums">{model.size}</span>
                             )}
                           </div>
+                          {deleteError[model.id] && (
+                            <p className="text-[11px] text-red-400" role="alert">
+                              {deleteError[model.id]}
+                            </p>
+                          )}
                         </CardContent>
                       </Card>
                     );

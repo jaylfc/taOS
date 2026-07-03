@@ -33,6 +33,10 @@ export interface AggregatedModel {
   /** Optional format (GGUF, etc.). */
   format?: string;
   quantization?: string;
+  /** Catalog manifest id — set for controller-local files the backend could
+   *  match against a manifest variant's naming convention. Lets Delete call
+   *  DELETE /api/models/{modelId} instead of guessing it from the filename. */
+  modelId?: string;
 }
 
 const SIZE_RE = /[Qq]\d[_A-Za-z0-9]*/;
@@ -46,6 +50,7 @@ export interface ControllerDownloaded {
   filename: string;
   size_mb?: number;
   format?: string;
+  model_id?: string;
 }
 
 /** Map a controller /api/models downloaded_files entry to an AggregatedModel. */
@@ -64,6 +69,7 @@ export function controllerDownloadedToAggregated(
     size: fmtSize(d.size_mb ?? 0),
     format: (d.format ?? "bin").toUpperCase(),
     quantization: quant,
+    modelId: d.model_id,
   };
 }
 

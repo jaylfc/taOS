@@ -109,6 +109,27 @@ def _scan_all_roots(roots: list[Path]) -> list[dict]:
     return merged
 
 
+def _attach_model_ids(downloaded_files: list[dict], models) -> None:
+    """Attach the catalog manifest id to each downloaded file entry.
+
+    Matches on the ``{manifest.id}-{variant.id}.{format}`` naming convention
+    that POST /api/models/download uses when writing a variant to disk (see
+    ``_model_to_dict``'s own ``expected_filename`` check below, which this
+    mirrors). Lets the frontend wire a per-file Delete button to
+    DELETE /api/models/{model_id} without having to reverse-engineer that
+    naming convention itself.
+    """
+    by_filename: dict[str, str] = {}
+    for m in models:
+        for v in m.variants:
+            expected = f"{m.id}-{v['id']}.{v.get('format', 'bin')}"
+            by_filename.setdefault(expected, m.id)
+    for entry in downloaded_files:
+        model_id = by_filename.get(entry["filename"])
+        if model_id:
+            entry["model_id"] = model_id
+
+
 def _is_service_installed(variant: dict) -> bool:
     """Detect whether a multi-file service-backed variant is installed on disk
     outside the ``data/models`` tree.
@@ -284,6 +305,7 @@ async def list_models(request: Request):
 
     models = registry.list_available(type_filter="model")
     downloaded = _scan_all_roots(_scan_roots(request))
+    _attach_model_ids(downloaded, models)
     live_models = catalog.all_models() if catalog is not None else []
     # Build {app_id: True} from the install registry so backend-installed
     # models (e.g. rk-llama.cpp GGUFs at ~/rk-llama.cpp/models/) still show
