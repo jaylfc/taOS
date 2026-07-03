@@ -180,7 +180,16 @@ const MarkdownEditor = React.forwardRef<
       view.destroy();
       viewRef.current = null;
     };
-  }, [content]); // re-create when content identity changes (note switch)
+    // Mount once per component instance. The parent already remounts this
+    // component (fresh `key={activeNote.id}`) when the active note changes,
+    // so a new view with the right initial doc is created on note switch.
+    // Depending on `content` here as well made the effect re-fire on every
+    // keystroke (onChange -> setNotes -> content prop changes), destroying
+    // and recreating the CodeMirror view mid-edit. The new view isn't
+    // focused, so the editor dropped keyboard focus after each character
+    // typed (#1596).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return <div ref={containerRef} className="h-full w-full" />;
 });

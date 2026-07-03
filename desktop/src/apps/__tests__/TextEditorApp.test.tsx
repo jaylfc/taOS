@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
+import { EditorView } from "@codemirror/view";
 
 import { TextEditorApp } from "../TextEditorApp";
 
@@ -50,6 +51,58 @@ describe("TextEditorApp", () => {
       expect(stored).toHaveLength(1);
       expect(typeof stored[0].id).toBe("string");
       expect(stored[0].id.length).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", { value: originalRandomUUID, configurable: true });
+    }
+  });
+
+  it("keeps the CodeMirror view mounted and focused across consecutive keystrokes (#1596)", () => {
+    // Simulate the non-secure-context (plain http) environment taOS normally
+    // runs in, same as the regression test above, so this also proves the
+    // remaining fix isn't hiding behind an available crypto.randomUUID.
+    const originalRandomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+
+    try {
+      const { container } = render(<TextEditorApp windowId="w1" />);
+      fireEvent.click(screen.getByRole("button", { name: /create your first note/i }));
+
+      const cmDom = container.querySelector(".cm-editor") as HTMLElement;
+      expect(cmDom).toBeTruthy();
+      const initialView = EditorView.findFromDOM(cmDom);
+      expect(initialView).toBeTruthy();
+      act(() => initialView!.focus());
+
+      // Type several characters one at a time, the way a real keystroke
+      // reaches CodeMirror: each one dispatches a doc change, which fires the
+      // app's onChange -> setNotes -> re-render with the updated content.
+      let view = initialView!;
+      for (const ch of ["h", "e", "l", "l", "o"]) {
+        expect(() => {
+          act(() => {
+            const head = view.state.selection.main.head;
+            view.dispatch({
+              changes: { from: head, insert: ch },
+              selection: { anchor: head + ch.length },
+            });
+          });
+        }).not.toThrow();
+
+        // The view must survive the resulting re-render untouched: same DOM
+        // node, same EditorView instance, still focused. Before the fix, the
+        // editor's mount effect depended on `content` and tore the whole view
+        // down and rebuilt it (unfocused) on every keystroke, matching the
+        // reported "type one char, lose focus, click, type one more" bug.
+        const domAfter = container.querySelector(".cm-editor") as HTMLElement;
+        expect(domAfter).toBe(cmDom);
+        const viewAfter = EditorView.findFromDOM(domAfter);
+        expect(viewAfter).toBe(view);
+        expect(viewAfter!.hasFocus).toBe(true);
+        view = viewAfter!;
+      }
+
+      const stored = JSON.parse(localStorage.getItem("tinyagentos-notes") ?? "[]");
+      expect(stored[0].content).toContain("hello");
     } finally {
       Object.defineProperty(crypto, "randomUUID", { value: originalRandomUUID, configurable: true });
     }
