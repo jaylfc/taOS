@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { SetupChecklist } from "./SetupChecklist";
+import { fetchAccount } from "@/lib/account-client";
 
 vi.mock("@/stores/process-store", () => ({
   useProcessStore: (sel: (s: Record<string, unknown>) => unknown) =>
@@ -22,6 +23,15 @@ vi.mock("@/registry/app-registry", () => ({
     launchpadOrder: 1,
   }),
 }));
+
+vi.mock("@/lib/account-client", () => ({
+  fetchAccount: vi.fn(),
+}));
+
+const CLOUD_LABEL = "Sign in to your taOS account (optional)";
+const CLOUD_DETAIL =
+  "One account for taOSgo remote access, app sharing, and reserving your taOS username for a future website and socials.";
+const HANDLE_HINT = "Tip: reserve your taOS username in Settings before someone else takes it.";
 
 const baseStatus = {
   account: false,
@@ -54,6 +64,12 @@ function mockFetchStatus(status: Record<string, unknown>) {
 }
 
 describe("SetupChecklist", () => {
+  beforeEach(() => {
+    // Default the cloud account to unavailable so tests that don't care
+    // about it settle deterministically instead of hanging on "loading".
+    vi.mocked(fetchAccount).mockResolvedValue({ kind: "unavailable" });
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -95,13 +111,14 @@ describe("SetupChecklist", () => {
     mockFetchStatus(baseStatus);
     render(<SetupChecklist />);
     expect(await screen.findByText("Get started")).toBeInTheDocument();
-    expect(screen.getByText("0/5")).toBeInTheDocument();
+    expect(screen.getByText("0/6")).toBeInTheDocument();
   });
 
-  it("renders all five step labels", async () => {
+  it("renders all six step labels", async () => {
     mockFetchStatus(baseStatus);
     render(<SetupChecklist />);
     expect(await screen.findByText("Create your account")).toBeInTheDocument();
+    expect(screen.getByText(CLOUD_LABEL)).toBeInTheDocument();
     expect(screen.getByText("Add a provider")).toBeInTheDocument();
     expect(screen.getByText("Choose a model for the taOS agent")).toBeInTheDocument();
     expect(screen.getByText("Deploy your first agent")).toBeInTheDocument();
@@ -124,7 +141,7 @@ describe("SetupChecklist", () => {
       has_provider: true,
     });
     render(<SetupChecklist />);
-    expect(await screen.findByText("2/5")).toBeInTheDocument();
+    expect(await screen.findByText("2/6")).toBeInTheDocument();
   });
 
   it("does not show detail text for completed steps", async () => {
@@ -188,17 +205,17 @@ describe("SetupChecklist", () => {
     render(<SetupChecklist />);
     await screen.findByText("Get started");
     expect(screen.queryByText("Install the NPU backend")).toBeNull();
-    expect(screen.getByText("0/5")).toBeInTheDocument();
+    expect(screen.getByText("0/6")).toBeInTheDocument();
   });
 
-  it("shows the NPU step as a sixth item when an NPU is present", async () => {
+  it("shows the NPU step as an additional item when an NPU is present", async () => {
     mockFetchStatus({ ...baseStatus, npu_present: true, npu_backend_running: false });
     render(<SetupChecklist />);
     expect(await screen.findByText("Install the NPU backend")).toBeInTheDocument();
     expect(
       screen.getByText("Install rkllama from the Store to run models on this device's NPU"),
     ).toBeInTheDocument();
-    expect(screen.getByText("0/6")).toBeInTheDocument();
+    expect(screen.getByText("0/7")).toBeInTheDocument();
   });
 
   it("stays visible when core steps are complete but the NPU step is outstanding", async () => {
@@ -234,6 +251,81 @@ describe("SetupChecklist", () => {
       name: "Install the NPU backend — complete",
     });
     expect(doneStep).toBeInTheDocument();
+    expect(screen.getByText("1/7")).toBeInTheDocument();
+  });
+
+  it("renders the cloud-account step with the exact label and detail copy", async () => {
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    expect(await screen.findByText(CLOUD_LABEL)).toBeInTheDocument();
+    expect(screen.getByText(CLOUD_DETAIL)).toBeInTheDocument();
+  });
+
+  it("ticks the cloud-account step when the cloud account is signed in", async () => {
+    vi.mocked(fetchAccount).mockResolvedValue({
+      kind: "signed-in",
+      account: {
+        user_id: "u1",
+        email: "user@example.com",
+        taosgo: { status: "none" },
+        handle: "someuser",
+      },
+    });
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    const doneStep = await screen.findByRole("button", {
+      name: `${CLOUD_LABEL} — complete`,
+    });
+    expect(doneStep).toBeInTheDocument();
     expect(screen.getByText("1/6")).toBeInTheDocument();
+  });
+
+  it("shows the cloud-account step unticked without error when the account service is unavailable", async () => {
+    vi.mocked(fetchAccount).mockResolvedValue({ kind: "unavailable" });
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    const pendingStep = await screen.findByRole("button", { name: CLOUD_LABEL });
+    expect(pendingStep).toBeInTheDocument();
+    expect(screen.getByText("0/6")).toBeInTheDocument();
+    expect(screen.queryByText(HANDLE_HINT)).toBeNull();
+  });
+
+  it("shows the reserve-username hint when signed in without a handle", async () => {
+    vi.mocked(fetchAccount).mockResolvedValue({
+      kind: "signed-in",
+      account: {
+        user_id: "u1",
+        email: "user@example.com",
+        taosgo: { status: "none" },
+        handle: null,
+      },
+    });
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    expect(await screen.findByText(HANDLE_HINT)).toBeInTheDocument();
+  });
+
+  it("omits the reserve-username hint when the account has a handle", async () => {
+    vi.mocked(fetchAccount).mockResolvedValue({
+      kind: "signed-in",
+      account: {
+        user_id: "u1",
+        email: "user@example.com",
+        taosgo: { status: "none" },
+        handle: "someuser",
+      },
+    });
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    await screen.findByRole("button", { name: `${CLOUD_LABEL} — complete` });
+    expect(screen.queryByText(HANDLE_HINT)).toBeNull();
+  });
+
+  it("omits the reserve-username hint when signed out", async () => {
+    vi.mocked(fetchAccount).mockResolvedValue({ kind: "signed-out" });
+    mockFetchStatus(baseStatus);
+    render(<SetupChecklist />);
+    await screen.findByText(CLOUD_LABEL);
+    expect(screen.queryByText(HANDLE_HINT)).toBeNull();
   });
 });

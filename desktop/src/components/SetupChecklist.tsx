@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { CheckCircle2, Circle, ChevronRight, X } from "lucide-react";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
+import { fetchAccount, type AccountState } from "@/lib/account-client";
 
 interface SetupStatus {
   account: boolean;
@@ -15,11 +16,14 @@ interface SetupStatus {
   complete: boolean;
 }
 
+// "cloud_account" isn't part of the backend status payload -- it self-ticks
+// from the taos.my account state (see CLOUD_ACCOUNT_STEP below).
 interface Step {
-  key: keyof SetupStatus;
+  key: keyof SetupStatus | "cloud_account";
   label: string;
   detail: string;
   appId?: string;
+  appProps?: Record<string, unknown>;
 }
 
 const STEPS: Step[] = [
@@ -27,6 +31,14 @@ const STEPS: Step[] = [
     key: "account",
     label: "Create your account",
     detail: "Done at sign-up",
+  },
+  {
+    key: "cloud_account",
+    label: "Sign in to your taOS account (optional)",
+    detail:
+      "One account for taOSgo remote access, app sharing, and reserving your taOS username for a future website and socials.",
+    appId: "settings",
+    appProps: { section: "account" },
   },
   {
     key: "has_provider",
@@ -67,6 +79,10 @@ const NPU_STEP: Step = {
 export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [dismissing, setDismissing] = useState(false);
+  // The taos.my cloud account is optional and separate from the local setup
+  // status endpoint; it degrades to "unavailable" rather than throwing when
+  // the account service can't be reached, so onboarding still works offline.
+  const [cloudAccount, setCloudAccount] = useState<AccountState>({ kind: "loading" });
   const openWindow = useProcessStore((s) => s.openWindow);
 
   useEffect(() => {
@@ -77,6 +93,14 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
         if (!cancelled && data) setStatus(data);
       })
       .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAccount().then((state) => {
+      if (!cancelled) setCloudAccount(state);
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -91,8 +115,12 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   const handleStep = (step: Step) => {
     if (!step.appId) return;
     const app = getApp(step.appId);
-    if (app) openWindow(step.appId, app.defaultSize);
+    if (app) openWindow(step.appId, app.defaultSize, step.appProps);
   };
+
+  const cloudSignedIn = cloudAccount.kind === "signed-in";
+  const isDone = (step: Step) =>
+    step.key === "cloud_account" ? cloudSignedIn : Boolean(status?.[step.key]);
 
   if (!status || status.dismissed) return null;
   // complete covers the two core steps only; on an NPU board the backend
@@ -102,7 +130,11 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
   if (status.complete && !npuOutstanding) return null;
 
   const steps = status.npu_present ? [...STEPS, NPU_STEP] : STEPS;
-  const doneCount = steps.filter((s) => Boolean(status[s.key])).length;
+  const doneCount = steps.filter((s) => isDone(s)).length;
+  // Signed in but hasn't claimed a username yet -- surfaced as a nudge, not
+  // a blocker; omitted when signed out or once a handle exists.
+  const showHandleHint =
+    cloudAccount.kind === "signed-in" && !cloudAccount.account.handle;
 
   return (
     <div className="border-b border-white/10">
@@ -128,7 +160,7 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
       {/* Steps */}
       <ul role="list" className="pb-2">
         {steps.map((step) => {
-          const done = Boolean(status[step.key]);
+          const done = isDone(step);
           return (
             <li key={step.key}>
               <button
@@ -150,6 +182,11 @@ export function SetupChecklist({ onDismissed }: { onDismissed?: () => void }) {
                   </p>
                   {!done && (
                     <p className="text-[10px] text-shell-text-tertiary truncate">{step.detail}</p>
+                  )}
+                  {step.key === "cloud_account" && showHandleHint && (
+                    <p className="text-[10px] text-shell-text-tertiary/70 truncate">
+                      Tip: reserve your taOS username in Settings before someone else takes it.
+                    </p>
                   )}
                 </div>
                 {!done && step.appId && (
