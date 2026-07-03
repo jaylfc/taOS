@@ -121,6 +121,19 @@ const STUDIOS: CatalogApp[] = [
     studioState: "available",
     cover: "radial-gradient(120% 120% at 65% 25%,#324a47,transparent 60%),linear-gradient(140deg,#152624,#0f1817)",
   },
+  {
+    id: "video-studio",
+    name: "Video Studio",
+    type: "studio",
+    category: "Creative",
+    version: "1.0.0",
+    description: "Generate short video clips from a prompt on your own GPU worker.",
+    tagline: "Text-to-video, on your hardware",
+    installed: false,
+    compat: "green",
+    studioState: "available",
+    cover: "radial-gradient(120% 120% at 30% 20%,#4a2f3a,transparent 60%),linear-gradient(140deg,#271620,#1a0f16)",
+  },
 ];
 
 /* ------------------------------------------------------------------

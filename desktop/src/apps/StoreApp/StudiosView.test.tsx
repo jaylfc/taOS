@@ -23,6 +23,7 @@ describe("StudiosView", () => {
       "App Studio",
       "Office Studio",
       "Web Studio",
+      "Video Studio",
     ];
     for (const name of expected) {
       expect(screen.getAllByText(name).length).toBeGreaterThan(0);
