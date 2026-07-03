@@ -29,11 +29,12 @@ describe("StudiosView", () => {
     }
   });
 
-  it("shows a Soon badge on the unreleased studio", () => {
+  it("shows no Soon badges now every taOS studio has shipped", () => {
     render(<StudiosView />);
-    // Only Web Studio is still "soon"; Coding/Design/Music/App/Office are in beta.
-    const soonBadges = screen.getAllByText("Soon");
-    expect(soonBadges.length).toBe(1);
+    // Web Studio was the last "soon" studio; it is now available, so no
+    // taOS studio card should carry a Soon badge.
+    const soonBadges = screen.queryAllByText("Soon");
+    expect(soonBadges.length).toBe(0);
   });
 
   it("shows Coding Studio in the hero section with the featured eyebrow", () => {
