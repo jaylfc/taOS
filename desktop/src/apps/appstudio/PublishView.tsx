@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Folder, Bell, Users, Shield, Upload, Share2, Download, CheckSquare } from "lucide-react";
+import { Folder, Bell, Users, Shield, Sparkles, Upload, Share2, Download, CheckSquare } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
 /*  PublishView -- app identity + capabilities + side publish panel    */
@@ -66,7 +66,17 @@ export function PublishView() {
                 <CheckSquare size={30} />
               </div>
               <div>
-                <div className="text-[19px] font-extrabold tracking-[-0.02em]">Chore Quest</div>
+                <div className="flex items-center gap-[8px]">
+                  <span className="text-[19px] font-extrabold tracking-[-0.02em]">Chore Quest</span>
+                  <span
+                    data-testid="provenance-badge"
+                    data-provenance="ai-generated"
+                    className="flex items-center gap-1 rounded-full border border-shell-border bg-shell-surface px-[8px] py-[2px] text-[10px] font-semibold text-shell-text-secondary"
+                  >
+                    <Sparkles size={11} />
+                    AI-generated
+                  </span>
+                </div>
                 <div className="mt-[3px] text-[12.5px] text-shell-text-secondary">
                   A weekly chore tracker with points and a family leaderboard.
                 </div>
