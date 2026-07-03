@@ -233,8 +233,10 @@ async def test_install_private_url_returns_400(client):
 
 
 @pytest.mark.asyncio
-async def test_install_container_package_returns_501(client):
-    """Container app_type must be rejected with 501."""
+async def test_install_container_package_succeeds(client):
+    """Container app_type installs successfully (App Runtime M4 lifted the old
+    web-only 501 gate). Install does NOT auto-deploy -- the backend container
+    is created on enable -- so no Docker is touched here."""
     await _init_userspace_stores(
         client._transport.app,
         client._transport.app.state.data_dir,
@@ -260,12 +262,25 @@ async def test_install_container_package_returns_501(client):
         zf.writestr("manifest.yaml", manifest)
     pkg = buf.getvalue()
 
-    resp = await client.post(
-        "/api/userspace-apps/install",
-        files={"package": ("container.taosapp", pkg, "application/zip")},
-    )
-    assert resp.status_code == 501
-    assert "container packages are not supported" in resp.json()["error"]
+    # Guard: even though install must not deploy, patch the deployer so a
+    # regression that starts deploying at install time would fail loudly here.
+    with patch(
+        "tinyagentos.routes.userspace_apps.deploy_app_container",
+        new_callable=AsyncMock,
+    ) as deploy:
+        resp = await client.post(
+            "/api/userspace-apps/install",
+            files={"package": ("container.taosapp", pkg, "application/zip")},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["app_id"] == "container-app"
+        deploy.assert_not_awaited()
+
+    # App is recorded as a container app, with no runtime location yet.
+    rows = (await client.get("/api/userspace-apps")).json()
+    row = next(a for a in rows if a["app_id"] == "container-app")
+    assert row["app_type"] == "container"
+    assert row["container_host"] is None and row["container_port"] is None
 
 
 # ---------------------------------------------------------------------------
