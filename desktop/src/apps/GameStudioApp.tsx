@@ -1,54 +1,35 @@
 import { useState } from "react";
-import { Sparkles, Play, Share2 } from "lucide-react";
+import { Sparkles, SquareCode, LayoutGrid, Share2 } from "lucide-react";
 import { CreateView } from "./gamestudio/CreateView";
-import { PlayView } from "./gamestudio/PlayView";
+import { EditorView } from "./gamestudio/EditorView";
+import { LibraryView } from "./gamestudio/LibraryView";
 import { ShareView } from "./gamestudio/ShareView";
-import { DEFAULT_TEMPLATE } from "./gamestudio/templates";
-import { OFFLINE_MODELS, type StudioView, type Template } from "./gamestudio/types";
+import type { StudioView } from "./gamestudio/types";
 
 /* ------------------------------------------------------------------ */
-/*  Game Studio — shell (phase 1)                                      */
+/*  Game Studio — an AI-assisted game maker                            */
 /*                                                                     */
-/*  Make a game from a prompt, test it live, share it to the Store.    */
-/*  Left icon rail (Create / Play / Share) + the active surface, the   */
-/*  same shape as Images Studio.                                        */
-/*                                                                      */
-/*  Phase 1 ships the shell + a genuinely-working three.js preview.    */
-/*  Offline AI generation, the skill pack and the store-publish        */
-/*  backend are later phases and are surfaced as honest "coming"        */
-/*  affordances, never faked. Registered as a normal app for now;       */
-/*  it should become an optional install in a follow-up (#53).          */
+/*  Left icon rail (Create / Editor / Library / Share) + the active     */
+/*  surface, the same shape as Images/Web/Coding Studio. Create really   */
+/*  streams the taOS agent to customize a starter template; Editor is    */
+/*  a three-pane file editor + live preview + AI chat; Library lists     */
+/*  saved games; Share installs or exports a real .taosapp package.      */
 /* ------------------------------------------------------------------ */
 
 const RAIL: { id: StudioView; label: string; icon: typeof Sparkles }[] = [
   { id: "create", label: "Create", icon: Sparkles },
-  { id: "play", label: "Play", icon: Play },
+  { id: "editor", label: "Editor", icon: SquareCode },
+  { id: "library", label: "Library", icon: LayoutGrid },
   { id: "share", label: "Share", icon: Share2 },
 ];
 
-export function GameStudioApp({ windowId }: { windowId: string }) {
+export function GameStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [view, setView] = useState<StudioView>("create");
+  const [activeGameId, setActiveGameId] = useState<string | null>(null);
 
-  // Create-form state (illustrative in phase 1; the template drives Play).
-  const [prompt, setPrompt] = useState("");
-  const [genres, setGenres] = useState<Set<string>>(new Set(["Platformer"]));
-  const [model, setModel] = useState<string>(OFFLINE_MODELS[0]);
-
-  // The template loaded into Play & Test + Share. Defaults to the first so
-  // the Play stage always has a real scene to render.
-  const [active, setActive] = useState<Template>(DEFAULT_TEMPLATE);
-
-  const toggleGenre = (g: string) =>
-    setGenres((prev) => {
-      const next = new Set(prev);
-      if (next.has(g)) next.delete(g);
-      else next.add(g);
-      return next;
-    });
-
-  const useTemplate = (t: Template) => {
-    setActive(t);
-    setView("play");
+  const openGame = (gameId: string) => {
+    setActiveGameId(gameId);
+    setView("editor");
   };
 
   return (
@@ -93,22 +74,21 @@ export function GameStudioApp({ windowId }: { windowId: string }) {
 
         {/* active surface */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {view === "create" && (
-            <CreateView
-              windowId={windowId}
-              prompt={prompt}
-              onPromptChange={setPrompt}
-              genres={genres}
-              onToggleGenre={toggleGenre}
-              model={model}
-              onModelChange={setModel}
-              onUseTemplate={useTemplate}
-            />
-          )}
+          {view === "create" && <CreateView onOpenGame={openGame} />}
 
-          {view === "play" && <PlayView key={active.id} windowId={windowId} template={active} />}
+          {view === "editor" &&
+            (activeGameId ? (
+              <EditorView key={activeGameId} gameId={activeGameId} />
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-shell-text-tertiary">
+                <SquareCode size={28} />
+                <p className="text-[13px]">Create a game or open one from your Library.</p>
+              </div>
+            ))}
 
-          {view === "share" && <ShareView template={active} />}
+          {view === "library" && <LibraryView onOpenGame={openGame} />}
+
+          {view === "share" && <ShareView gameId={activeGameId} />}
         </div>
       </div>
     </div>

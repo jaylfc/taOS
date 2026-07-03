@@ -127,7 +127,7 @@ taOS ships with a full browser-based desktop environment. Open it at `http://you
 
 **OS apps (9):** Weather, Calculator (math.js), Calendar (month view), Contacts (CRUD), Browser (URL-rewriting proxy, agent-ready), Media Player (Plyr), Text Editor (CodeMirror 6 with Obsidian-style theme), Image Viewer (zoom/rotate), Terminal (real PTY + SSH client).
 
-**Games & studios (4):** Game Studio (offline-AI game maker, three.js + react-three-fiber, fullscreen play with mandatory exit-to-taOS, test then optionally share to the Store), Chess (plays against real agents via LLM), Wordle, Crosswords.
+**Games & studios (4):** Game Studio (AI-assisted game maker -- describe an idea or start from a real three.js/canvas template, edit the generated files with a live preview and an AI chat sidebar, then install locally or export a .taosapp package), Chess (plays against real agents via LLM), Wordle, Crosswords.
 
 The Activity app includes a Cluster overview panel showing live worker status and resource stats alongside the process monitor. The Model Browser surfaces cloud models (from configured providers) alongside local catalog models, with a provider badge per entry. The deploy wizard accepts cloud models as inference targets.
 
@@ -257,7 +257,7 @@ Dedicated studio apps for every kind of project, each a focused, native taOS wor
 </p>
 
 - **Images Studio.** Create, Library, and Edit in one app. Generate from a prompt on any discovered Stable Diffusion backend (NPU / GPU / CPU), browse a thumbnail library, and edit with tier-aware backends: inpaint and object removal, plus upscale. The platform picks the best installed backend per task and degrades gracefully when a higher tier is missing.
-- **Game Studio.** An offline-AI game maker built on three.js and react-three-fiber. Less-capable, tool-calling-weak models get guided building blocks and templates; more capable local or cloud models can author scenes directly. Games run fullscreen on desktop and mobile with a mandatory exit-to-taOS control, can be playtested in place, and optionally shared to the Store.
+- **Game Studio.** An AI-assisted game maker. Describe a game or start from a real, playable starter template (a 3D platformer and orbit shooter on three.js, a 2D top-down collector and breakout on canvas); the taOS agent customizes the template's files to match your prompt. Edit files directly or ask the AI chat sidebar for changes, with a live sandboxed preview and a fullscreen Play mode with a mandatory exit-to-taOS control. Install a finished game locally as a sandboxed app, or export it as a .taosapp package.
 - **Web Studio.** An AI-assisted, Wix-style website builder. Describe a site or start from a template, then edit it as stacked sections (hero, features, gallery, contact, and more) with inline text, image swaps, live theming, add/remove/reorder, and a responsive desktop, tablet, and mobile preview. Export a self-contained static HTML page. Sites persist on your own cluster.
 - **Video Studio.** Create and Library in one app. Describe a scene, pick a resolution and duration, and generate a clip on any discovered video backend (WanGP / Wan 2.1). Generated clips land in a library with inline playback, download, and delete.
 
@@ -265,7 +265,7 @@ Dedicated studio apps for every kind of project, each a focused, native taOS wor
 - **Images**. Stable Diffusion via NPU, GPU, or CPU (multi-backend auto-discovery), surfaced through Image Studio
 - **Video**. WanGP, LTX Video (unlocks with 6GB+ GPU worker), surfaced through Video Studio
 - **Audio**. Kokoro TTS, Chatterbox, Piper, Whisper STT, MusicGPT
-- **Games**. three.js + react-three-fiber scenes authored offline through Game Studio
+- **Games**. Real three.js and canvas games, customized by the taOS agent through Game Studio and installable as sandboxed apps
 
 ### Training & Fine-Tuning
 - **LoRA Training.** Train agent-specific adapters from the web UI (8GB+ GPU)
