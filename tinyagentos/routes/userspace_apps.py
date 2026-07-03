@@ -420,17 +420,21 @@ _container_proxy_client = httpx.AsyncClient(timeout=60.0)
 
 
 def _strip_taos_session_cookie(cookie_header: str) -> str:
+    # Textual scrub that does not depend on SimpleCookie's grammar: a
+    # malformed Cookie header must still have taos_session removed, never
+    # forwarded whole (SimpleCookie.load could raise and leak the credential).
     if not cookie_header:
         return ""
-    from http.cookies import SimpleCookie
-    jar = SimpleCookie()
-    try:
-        jar.load(cookie_header)
-    except Exception:
-        return cookie_header
-    for name in _PROXY_STRIPPED_COOKIES:
-        jar.pop(name, None)
-    return "; ".join(f"{k}={m.value}" for k, m in jar.items())
+    kept = []
+    for part in cookie_header.split(";"):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        name = stripped.split("=", 1)[0].strip()
+        if name in _PROXY_STRIPPED_COOKIES:
+            continue
+        kept.append(stripped)
+    return "; ".join(kept)
 
 
 def _filter_proxy_headers(headers: dict) -> dict:

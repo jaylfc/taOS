@@ -192,3 +192,49 @@ async def test_proxy_404s_when_no_runtime_location(client):
     await _install(client)  # installed, but never enabled -- no runtime location
     r = await client.get("/api/userspace-apps/echo/proxy/")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_proxy_strips_taos_session_even_from_malformed_cookie(client):
+    # A malformed Cookie header must NOT leak the taos_session credential to
+    # the untrusted container backend, even when it is not valid cookie
+    # grammar (the scrub is textual, never SimpleCookie-dependent).
+    await _install(client)
+    with patch("tinyagentos.routes.userspace_apps.deploy_app_container",
+               new_callable=AsyncMock) as deploy:
+        deploy.return_value = {"success": True, "host": "127.0.0.1", "port": 13042}
+        await client.post("/api/userspace-apps/echo/enable")
+
+    captured = {}
+
+    class _FakeUpstreamResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+
+        async def aiter_bytes(self):
+            yield b"ok"
+
+        async def aclose(self):
+            pass
+
+    async def _fake_send(req, **kwargs):
+        captured["cookie"] = req.headers.get("cookie", "")
+        return _FakeUpstreamResponse()
+
+    # Include the REAL session cookie (so auth passes) inside an otherwise
+    # malformed Cookie header that would trip SimpleCookie.load. taos_session
+    # is exactly what must be scrubbed before the request reaches the backend.
+    session_token = client.cookies.get("taos_session")
+    malformed = f"taos_session={session_token}; bad==value; keep=1; ;;"
+    with patch("tinyagentos.routes.userspace_apps._container_proxy_client.send", new=_fake_send):
+        r = await client.get(
+            "/api/userspace-apps/echo/proxy/status",
+            headers={"Cookie": malformed},
+        )
+
+    assert r.status_code == 200
+    # taos_session (and its value) must never reach the backend...
+    assert "taos_session" not in captured["cookie"]
+    assert session_token not in captured["cookie"]
+    # ...while an unrelated cookie is still forwarded.
+    assert "keep=1" in captured["cookie"]
