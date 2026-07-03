@@ -24,6 +24,79 @@ _NPU_PROBE_TTL_S = 5.0
 _NPU_PROBE_TIMEOUT_S = 5.0
 _npu_probe_cache: tuple[float, bool] = (0.0, False)
 
+# Same reasoning as the NPU probe cache above, for the llama-cpp /health probe.
+_LLAMACPP_PROBE_TTL_S = 5.0
+_LLAMACPP_PROBE_TIMEOUT_S = 5.0
+_llamacpp_probe_cache: tuple[float, bool] = (0.0, False)
+
+
+def _accel_for_profile(profile) -> str:
+    """Map a HardwareProfile to the accelerator its default local-LLM-backend
+    setup step targets: ``"rknpu"|"cuda"|"rocm"|"metal"|"cpu"|"none"``.
+
+    Locked product decision: llama.cpp server (MIT, router mode) is the
+    default local backend on NVIDIA CUDA, AMD ROCm, Apple Silicon (Metal),
+    and x86 CPU-only. Rockchip NPU boards keep their existing rkllama /
+    rk-llama.cpp one-tap untouched (mapped to "rknpu" here, handled by the
+    existing NPU probes/endpoint). Intel Arc and Mali have no one-tap
+    backend yet, so they map to "none" (no step shown) — including the
+    "intel" gpu.type documented in hardware.py's GpuInfo even though
+    current detection never actually sets it.
+    """
+    if profile is None:
+        return "none"
+    npu = getattr(profile, "npu", None)
+    if npu is not None and getattr(npu, "type", "none") == "rknpu":
+        return "rknpu"
+    gpu = getattr(profile, "gpu", None)
+    gpu_type = getattr(gpu, "type", "none") if gpu is not None else "none"
+    if gpu_type == "nvidia" and getattr(gpu, "cuda", False):
+        return "cuda"
+    if gpu_type == "amd" and getattr(gpu, "rocm", False):
+        return "rocm"
+    if gpu_type == "apple":
+        return "metal"
+    if gpu_type in ("intel", "mali"):
+        return "none"
+    # x86 CPU-only fallback (also covers an nvidia/amd card present without
+    # its driver/toolkit actually usable — cuda/rocm flags false above).
+    cpu = getattr(profile, "cpu", None)
+    arch = getattr(cpu, "arch", "") if cpu is not None else ""
+    if arch in ("x86_64", "amd64", "AMD64", "i686", "x86"):
+        return "cpu"
+    return "none"
+
+
+async def _llamacpp_backend_running() -> bool:
+    """True if the generic (non-Rockchip) llama.cpp router-mode server
+    answers /health on its default port. TTL-cached for the same reason
+    as ``_npu_backend_running`` — this is polled by the setup checklist."""
+    global _llamacpp_probe_cache
+    now = time.monotonic()
+    cached_at, cached = _llamacpp_probe_cache
+    if cached_at and now - cached_at < _LLAMACPP_PROBE_TTL_S:
+        return cached
+
+    from tinyagentos.installers.llamacpp_installer import llamacpp_is_running
+
+    try:
+        running = await asyncio.wait_for(
+            asyncio.to_thread(llamacpp_is_running), _LLAMACPP_PROBE_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        running = False
+    _llamacpp_probe_cache = (now, running)
+    return running
+
+
+async def _default_backend_running(accel: str) -> bool:
+    """Probe this device's default local LLM backend, dispatched by accel."""
+    if accel == "rknpu":
+        return await _npu_backend_running()
+    if accel in ("cuda", "rocm", "metal", "cpu"):
+        return await _llamacpp_backend_running()
+    return False
+
 
 async def _npu_backend_running() -> bool:
     """True if either NPU LLM backend (rkllama or rk-llama.cpp) is live.
@@ -68,6 +141,13 @@ async def setup_status(request: Request):
       memory_enabled  — user completed the taOSmd memory setup wizard
       npu_present     — a Rockchip NPU was detected on this board (#1535)
       npu_backend_running — a live rkllama OR rk-llama.cpp answers locally
+      accel           — this device's default-local-backend accelerator:
+                         "rknpu"|"cuda"|"rocm"|"metal"|"cpu"|"none". "none"
+                         means no one-tap backend step is shown (e.g. Intel
+                         Arc / Mali have none yet).
+      default_backend_running — the accel-appropriate backend answers
+                         locally (rkllama/rk-llama.cpp probes for "rknpu",
+                         llama.cpp server /health for the other four)
       dismissed       — user dismissed the checklist
       complete        — has_provider AND taos_model_set (the core two steps)
     """
@@ -102,6 +182,15 @@ async def setup_status(request: Request):
     if npu_present:
         npu_backend_running = await _npu_backend_running()
 
+    # Generalized platform-conditional step (beyond Rockchip): every other
+    # supported accelerator gets the same one-tap treatment via the
+    # llama.cpp router-mode server. accel=="none" hides the step entirely
+    # (e.g. Intel Arc / Mali, or no hardware profile at all).
+    accel = _accel_for_profile(profile)
+    default_backend_running = False
+    if accel != "none":
+        default_backend_running = await _default_backend_running(accel)
+
     # complete: the two core steps done
     complete = has_provider and taos_model_set
 
@@ -113,6 +202,8 @@ async def setup_status(request: Request):
         "memory_enabled": memory_enabled,
         "npu_present": npu_present,
         "npu_backend_running": npu_backend_running,
+        "accel": accel,
+        "default_backend_running": default_backend_running,
         "dismissed": dismissed,
         "complete": complete,
     })
@@ -206,3 +297,79 @@ async def install_npu_backend(request: Request):
         backends[backend_app_id] = {"started": True, "install_id": install_id}
 
     return JSONResponse({"ok": True, "npu_present": True, "backends": backends})
+
+
+@router.post("/api/setup/install-backend")
+async def install_backend(request: Request):
+    """One-tap install of this device's default local LLM backend.
+
+    Generalizes install-npu-backend (#1535/#1597/#1598) beyond Rockchip:
+    on a Rockchip board this IS the NPU path (delegates to
+    install_npu_backend above, kept as a thin compat alias at its own
+    route too). On NVIDIA CUDA / AMD ROCm / Apple Silicon (Metal) / x86
+    CPU-only, dispatches the ``llama-cpp`` Store manifest's install
+    (scripts/install-llama-cpp.sh) through the exact same
+    ScriptInstaller / supervised-background-task / install-progress-store
+    machinery the NPU path already uses — same one-tap discipline
+    (create+enable+start+health-gate, mark-installed only when verified).
+
+    llama.cpp is MIT-licensed, so this one tap is the user's full consent
+    for installing that single server binary — no models are pulled here
+    (those go through the per-model Store flow with their own license
+    acceptance) and no other stack is touched. 400 when this device has
+    no supported accelerator (accel == "none", e.g. Intel Arc / Mali).
+    """
+    profile = getattr(request.app.state, "hardware_profile", None)
+    accel = _accel_for_profile(profile)
+    if accel == "none":
+        return JSONResponse(
+            {"error": "no supported local model backend for this device"}, status_code=400,
+        )
+    if accel == "rknpu":
+        return await install_npu_backend(request)
+
+    registry = getattr(request.app.state, "registry", None)
+    if registry is None:
+        return JSONResponse({"error": "app registry unavailable"}, status_code=500)
+
+    app_id = "llama-cpp"
+    manifest = registry.get(app_id) if hasattr(registry, "get") else None
+    if manifest is None:
+        return JSONResponse({"error": f"{app_id!r} not in catalog"}, status_code=500)
+
+    from tinyagentos.install_progress import get_global_store
+    from tinyagentos.routes.store_install import _legacy_install
+    from tinyagentos.task_utils import _create_supervised_task
+
+    progress = getattr(request.app.state, "install_progress_store", None) or get_global_store()
+    bg_tasks = getattr(request.app.state, "_background_tasks", None)
+    if bg_tasks is None:
+        bg_tasks = set()
+        request.app.state._background_tasks = bg_tasks
+
+    entry = progress.start(app_id=app_id, target_remote=None)
+    install_id = entry.install_id
+
+    async def _run(install_id: str = install_id) -> None:
+        progress.update(install_id, state="unpacking", detail=f"installing {app_id}")
+        try:
+            resp = await _legacy_install(request, {}, app_id, None)
+        except Exception as exc:  # noqa: BLE001
+            progress.finish(install_id, success=False, error=str(exc))
+            return
+        success = getattr(resp, "status_code", 200) < 400
+        error = None
+        if not success:
+            try:
+                error = json.loads(resp.body).get("error")
+            except Exception:  # noqa: BLE001
+                error = "install failed"
+        progress.finish(install_id, success=success, error=error)
+
+    _create_supervised_task(_run(), bg_tasks)
+
+    return JSONResponse({
+        "ok": True,
+        "accel": accel,
+        "backend": {app_id: {"started": True, "install_id": install_id}},
+    })

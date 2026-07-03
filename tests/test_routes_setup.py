@@ -300,6 +300,132 @@ class TestSetupStatus:
 
 
 # ---------------------------------------------------------------------------
+# accel detection + default_backend_running — generalizes the NPU-only step
+# (#1535/#1597/#1598) to NVIDIA CUDA / AMD ROCm / Apple Silicon / x86 CPU.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestAccelDetection:
+    async def test_accel_none_without_hardware_profile(self, client, app):
+        app.state.hardware_profile = None
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "none"
+        assert data["default_backend_running"] is False
+
+    async def test_accel_rknpu_on_rockchip_board(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+        import tinyagentos.installers.rkllama_installer as rk
+        import tinyagentos.installers.rkllamacpp_installer as rkcpp
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(rk, "rkllama_is_running", lambda: False)
+        monkeypatch.setattr(rkcpp, "rkllamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_npu_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "rknpu"
+        assert data["default_backend_running"] is False
+
+    async def test_accel_cuda_on_nvidia_gpu(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="nvidia", cuda=True, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "cuda"
+        assert data["default_backend_running"] is False
+
+    async def test_accel_rocm_on_amd_gpu(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="amd", cuda=False, rocm=True),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: True)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "rocm"
+        assert data["default_backend_running"] is True
+
+    async def test_accel_metal_on_apple_silicon(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="apple", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="arm64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        assert resp.json()["accel"] == "metal"
+
+    async def test_accel_cpu_on_x86_with_no_gpu(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="none", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+        import tinyagentos.installers.llamacpp_installer as llamacpp
+        import tinyagentos.routes.setup as setup_routes
+
+        monkeypatch.setattr(llamacpp, "llamacpp_is_running", lambda: False)
+        monkeypatch.setattr(setup_routes, "_llamacpp_probe_cache", (0.0, False))
+        resp = await client.get("/api/setup/status")
+        assert resp.json()["accel"] == "cpu"
+
+    async def test_accel_none_on_intel_arc(self, client, app):
+        """Intel Arc: skip — no one-tap backend step is shown."""
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="intel", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+        resp = await client.get("/api/setup/status")
+        data = resp.json()
+        assert data["accel"] == "none"
+        assert data["default_backend_running"] is False
+
+    async def test_accel_none_on_mali(self, client, app):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="mali", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="aarch64"),
+        )
+        resp = await client.get("/api/setup/status")
+        assert resp.json()["accel"] == "none"
+
+
+# ---------------------------------------------------------------------------
 # Dismiss tests
 # ---------------------------------------------------------------------------
 
@@ -414,3 +540,181 @@ class TestInstallNpuBackend:
         second = await client.post("/api/setup/install-npu-backend")
         assert first.status_code == 200
         assert second.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/setup/install-backend — generalized one-tap backend install
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestInstallBackend:
+    """Dispatches per accel: rknpu delegates to install-npu-backend's exact
+    behavior; cuda/rocm/metal/cpu install the llama-cpp Store manifest
+    through the same script/progress machinery; none 400s."""
+
+    async def test_400_when_accel_none(self, client, app):
+        app.state.hardware_profile = None
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+    async def test_400_on_intel_arc(self, client, app):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="intel", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 400
+
+    async def test_rknpu_delegates_to_install_npu_backend(self, client, app, monkeypatch):
+        """On a Rockchip board, install-backend does exactly what
+        install-npu-backend does (both rkllama + rk-llama-cpp)."""
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="rknpu", tops=6)
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        calls: list[str] = []
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            calls.append(app_id)
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["npu_present"] is True
+        assert set(data["backends"].keys()) == {"rkllama", "rk-llama-cpp"}
+
+        for _ in range(50):
+            if len(calls) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert set(calls) == {"rkllama", "rk-llama-cpp"}
+
+    async def test_cuda_dispatches_llama_cpp_install(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="nvidia", cuda=True, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        calls: list[str] = []
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            calls.append(app_id)
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["accel"] == "cuda"
+        assert data["backend"]["llama-cpp"]["started"] is True
+        assert "install_id" in data["backend"]["llama-cpp"]
+
+        for _ in range(50):
+            if calls:
+                break
+            await asyncio.sleep(0.01)
+        assert calls == ["llama-cpp"]
+
+    async def test_rocm_dispatches_llama_cpp_install(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="amd", cuda=False, rocm=True),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 200
+        assert resp.json()["accel"] == "rocm"
+
+    async def test_metal_dispatches_llama_cpp_install(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="apple", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="arm64"),
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 200
+        assert resp.json()["accel"] == "metal"
+
+    async def test_cpu_dispatches_llama_cpp_install(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        from fastapi.responses import JSONResponse
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="none", cuda=False, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+
+        import tinyagentos.routes.store_install as store_install
+
+        async def fake_legacy_install(request, body, app_id, target_remote):
+            return JSONResponse({"ok": True, "app_id": app_id, "status": "installed"})
+
+        monkeypatch.setattr(store_install, "_legacy_install", fake_legacy_install)
+
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 200
+        assert resp.json()["accel"] == "cpu"
+
+    async def test_500_when_llama_cpp_not_in_catalog(self, client, app, monkeypatch):
+        from types import SimpleNamespace
+
+        app.state.hardware_profile = SimpleNamespace(
+            npu=SimpleNamespace(type="none"),
+            gpu=SimpleNamespace(type="nvidia", cuda=True, rocm=False),
+            cpu=SimpleNamespace(arch="x86_64"),
+        )
+
+        class _EmptyRegistry:
+            def get(self, app_id):
+                return None
+
+        app.state.registry = _EmptyRegistry()
+        resp = await client.post("/api/setup/install-backend")
+        assert resp.status_code == 500

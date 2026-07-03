@@ -23,6 +23,9 @@ class TestReservedPorts:
     def test_litellm_new_host_port_reserved(self):
         assert 7834 in RESERVED_PORTS
 
+    def test_llamacpp_port_reserved(self):
+        assert 7835 in RESERVED_PORTS
+
 
 class TestAllocateHostPort:
     def test_deterministic_for_same_app_id(self):

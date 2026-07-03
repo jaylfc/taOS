@@ -42,6 +42,7 @@ RESERVED_PORTS: frozenset[int] = frozenset({
     7832,  # taOS qmd memory service
     7833,  # taOS rkllama NPU backend
     7834,  # taOS LiteLLM proxy (new default host port)
+    7835,  # taOS llama-cpp server (default local LLM backend: CUDA/ROCm/Metal/CPU)
     7900,  # taosmd A2A bus
     8000,  # Django / generic dev
     8080,  # Tomcat / common web app default
