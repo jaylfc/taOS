@@ -176,7 +176,7 @@ def capability_allowed(provenance: str, capability: str, granted: object) -> boo
     ns = _namespace(capability)
     if ns in capability_ceiling(provenance):
         return True
-    granted_set = set(granted) if not isinstance(granted, (set, frozenset)) else granted
+    granted_set = set(granted)
     return ns in granted_set or capability in granted_set
 
 

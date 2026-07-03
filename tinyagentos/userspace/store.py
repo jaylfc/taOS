@@ -54,9 +54,12 @@ class UserspaceAppStore(BaseStore):
             # Empty default (rather than a real tier) so the backfill below can
             # tell "never classified" apart from an explicitly-set tier, then
             # derive a sensible value per row from its existing trust column.
+            # Commit the ALTER before the backfill UPDATE, matching the trust
+            # column's pattern above (keep DDL and DML in separate transactions).
             await self._db.execute(
                 "ALTER TABLE userspace_apps ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"
             )
+            await self._db.commit()
             await self._db.execute(
                 "UPDATE userspace_apps SET provenance = CASE "
                 "WHEN trust = 'first-party' THEN 'first-party' ELSE 'user-uploaded' END "

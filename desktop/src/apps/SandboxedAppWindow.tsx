@@ -36,14 +36,28 @@ const PROVENANCE_LABELS: Record<AppProvenance, string> = {
   unknown: "Unknown origin",
 };
 
+/** The `a.b` namespace of a capability, e.g. `app.kv.get` -> `app.kv`.
+ * Mirrors _namespace in tinyagentos/userspace/capabilities.py. */
+function namespaceOf(capability: string): string {
+  const parts = capability.split(".");
+  return parts.length >= 2 ? parts.slice(0, 2).join(".") : capability;
+}
+
 /** True if `capability`'s namespace is free for this tier or was explicitly
- * granted -- the same "ceiling OR grant" rule the backend enforces. */
+ * granted -- the same namespace-based "ceiling OR grant" rule the backend's
+ * capability_allowed enforces (so a sub-capability like `app.kv.get` matches
+ * the `app.kv` ceiling entry, not just an exact string). */
 function hasCapability(
   provenance: AppProvenance,
   capability: string,
   granted: readonly string[],
 ): boolean {
-  return PROVENANCE_CEILINGS[provenance].includes(capability) || granted.includes(capability);
+  const ns = namespaceOf(capability);
+  return (
+    PROVENANCE_CEILINGS[provenance].includes(ns) ||
+    granted.includes(ns) ||
+    granted.includes(capability)
+  );
 }
 
 /**
