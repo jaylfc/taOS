@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import { cellAddress } from "./calc/address";
 import { parseCsv, sheetToCsv } from "./calc/csv";
-import { blankWorkbook, parseWorkbookContent, serializeWorkbook } from "./calc/workbook";
+import { compareCellValues } from "./calc/sort";
+import { blankWorkbook, DEFAULT_SHEET_ROWS, parseWorkbookContent, serializeWorkbook } from "./calc/workbook";
 
 type OfficeDocListItem = {
   id: string;
@@ -60,9 +61,19 @@ export function CalcView() {
   const [formulaValue, setFormulaValue] = useState("");
   const [filterValue, setFilterValue] = useState("");
   const [hiddenRows, setHiddenRows] = useState<string[]>([]);
+  const [rowCount, setRowCount] = useState<number>(() => workbookData[0]?.row ?? DEFAULT_SHEET_ROWS);
 
   const workbookRef = useRef<WorkbookInstance>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Hook callbacks below run outside React's render cycle, so they read the
+  // latest selection off this ref rather than closing over the `selection`
+  // state (which would be stale) or calling setSelection's functional-updater
+  // form to peek at it (which isn't a pure state transition).
+  const selectionRef = useRef(selection);
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
 
   const refreshFormulaBar = useCallback((row: number, column: number) => {
     const wb = workbookRef.current;
@@ -92,6 +103,7 @@ export function CalcView() {
     setFormulaValue("");
     setFilterValue("");
     setHiddenRows([]);
+    setRowCount(sheets[0]?.row ?? DEFAULT_SHEET_ROWS);
   }, []);
 
   const loadList = useCallback(async () => {
@@ -148,6 +160,11 @@ export function CalcView() {
     setSaving(true);
     setError(null);
     try {
+      // getAllSheets() from the live ref is the source of truth for
+      // in-progress edits; workbookData only ever holds what was last
+      // *loaded* into the component. It's a fallback for the narrow window
+      // where the Workbook hasn't mounted yet (ref still null), not a
+      // general substitute for live data.
       const sheets = workbookRef.current?.getAllSheets() ?? workbookData;
       const content = serializeWorkbook(sheets);
       const payload = { kind: "calc", title: title.trim() || "Untitled workbook", content };
@@ -197,7 +214,13 @@ export function CalcView() {
   const renameSheetTab = useCallback((id: string, current: string) => {
     const name = window.prompt("Sheet name", current);
     if (!name || !name.trim()) return;
-    workbookRef.current?.setSheetName(name.trim(), { id });
+    const wb = workbookRef.current;
+    if (!wb) return;
+    wb.setSheetName(name.trim(), { id });
+    // Read the tab list back from the workbook (source of truth) instead of
+    // relying solely on the afterUpdateSheetName hook firing to keep the
+    // sidebar tabs in sync with the grid.
+    setSheetTabs(sortTabsByOrder(wb.getAllSheets()));
   }, []);
 
   const deleteSheetTab = useCallback(
@@ -216,29 +239,21 @@ export function CalcView() {
       const wb = workbookRef.current;
       if (!wb) return;
       const sheet = wb.getSheet();
-      const rowCount = sheet.row ?? 0;
+      const sheetRows = sheet.row ?? 0;
       const colCount = sheet.column ?? 0;
       const col = selection.column[0];
-      if (rowCount < 3 || colCount < 1) return;
-      const cells = wb.getCellsByRange({ row: [1, rowCount - 1], column: [0, colCount - 1] }) ?? [];
+      if (sheetRows < 3 || colCount < 1) return;
+      const cells = wb.getCellsByRange({ row: [1, sheetRows - 1], column: [0, colCount - 1] }) ?? [];
       const indexed = cells.map((row, i) => ({ row, i }));
       indexed.sort((a, b) => {
         const av = a.row?.[col]?.v;
         const bv = b.row?.[col]?.v;
-        const an = typeof av === "number" ? av : Number(av);
-        const bn = typeof bv === "number" ? bv : Number(bv);
-        let cmp: number;
-        if (!Number.isNaN(an) && !Number.isNaN(bn)) {
-          cmp = an - bn;
-        } else {
-          cmp = String(av ?? "").localeCompare(String(bv ?? ""));
-        }
-        return direction === "asc" ? cmp : -cmp;
+        return compareCellValues(av, bv, direction);
       });
       const values = indexed.map(({ row }) =>
         Array.from({ length: colCount }, (_, c) => row?.[c]?.f ?? row?.[c]?.v ?? ""),
       );
-      wb.setCellValuesByRange(values, { row: [1, rowCount - 1], column: [0, colCount - 1] });
+      wb.setCellValuesByRange(values, { row: [1, sheetRows - 1], column: [0, colCount - 1] });
       wb.calculateFormula();
     },
     [selection],
@@ -249,10 +264,10 @@ export function CalcView() {
     const needle = filterValue.trim().toLowerCase();
     if (!wb || !needle) return;
     const sheet = wb.getSheet();
-    const rowCount = sheet.row ?? 0;
+    const sheetRows = sheet.row ?? 0;
     const col = selection.column[0];
-    if (rowCount < 2) return;
-    const cells = wb.getCellsByRange({ row: [1, rowCount - 1], column: [col, col] }) ?? [];
+    if (sheetRows < 2) return;
+    const cells = wb.getCellsByRange({ row: [1, sheetRows - 1], column: [col, col] }) ?? [];
     const toHide: string[] = [];
     const toShow: string[] = [];
     cells.forEach((rowArr, i) => {
@@ -268,42 +283,56 @@ export function CalcView() {
 
   const clearFilter = useCallback(() => {
     const wb = workbookRef.current;
-    if (wb && hiddenRows.length) wb.showRowOrColumn(hiddenRows, "row");
+    if (wb) {
+      // Recompute the currently-hidden rows from the workbook (source of
+      // truth) rather than trusting the hiddenRows state, which can go
+      // stale relative to the grid (e.g. after switching sheets or
+      // re-filtering).
+      const currentlyHidden = Object.keys(wb.getSheet().config?.rowhidden ?? {});
+      if (currentlyHidden.length) wb.showRowOrColumn(currentlyHidden, "row");
+    }
     setHiddenRows([]);
     setFilterValue("");
-  }, [hiddenRows]);
+  }, []);
 
   /* ---------------------------------- csv ------------------------------ */
 
   const exportCsv = useCallback(() => {
     const wb = workbookRef.current;
     if (!wb) return;
+    // Read the sheet name and its cell data from the same workbook snapshot
+    // so they can't disagree (e.g. with sheetTabs/activeSheetId state that
+    // may not have caught up yet).
     const sheet = wb.getSheet();
     const csv = sheetToCsv(sheet.celldata ?? []);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const sheetName = sheetTabs.find((t) => t.id === activeSheetId)?.name ?? "Sheet1";
+    const sheetName = sheet.name || "Sheet1";
     a.href = url;
     a.download = `${(title || "Untitled workbook").replace(/\s+/g, "-")}-${sheetName}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [activeSheetId, sheetTabs, title]);
+  }, [title]);
 
   const importCsv = useCallback(async (file: File) => {
     const wb = workbookRef.current;
     if (!wb) return;
-    const text = await file.text();
-    const rows = parseCsv(text);
-    if (rows.length === 0) return;
-    const width = Math.max(...rows.map((r) => r.length));
-    const padded = rows.map((r) => {
-      const copy = [...r];
-      while (copy.length < width) copy.push("");
-      return copy;
-    });
-    wb.setCellValuesByRange(padded, { row: [0, padded.length - 1], column: [0, width - 1] });
-    wb.calculateFormula();
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length === 0) return;
+      const width = Math.max(...rows.map((r) => r.length));
+      const padded = rows.map((r) => {
+        const copy = [...r];
+        while (copy.length < width) copy.push("");
+        return copy;
+      });
+      wb.setCellValuesByRange(padded, { row: [0, padded.length - 1], column: [0, width - 1] });
+      wb.calculateFormula();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Import failed");
+    }
   }, []);
 
   const handleFileChange = useCallback(
@@ -329,20 +358,42 @@ export function CalcView() {
         const column: [number, number] = [sel.column[0] ?? 0, sel.column[1] ?? sel.column[0] ?? 0];
         setSelection({ row, column });
         refreshFormulaBar(row[0], column[0]);
+        const rows = workbookRef.current?.getSheet().row;
+        if (rows != null) setRowCount(rows);
       },
       afterUpdateCell: (row: number, column: number) => {
-        setSelection((cur) => {
-          if (cur.row[0] === row && cur.column[0] === column) refreshFormulaBar(row, column);
-          return cur;
-        });
+        // Read the latest selection off the ref rather than the
+        // setSelection functional-updater form: state updaters must be
+        // pure, and refreshFormulaBar is a side effect (it calls
+        // setFormulaValue), so it can't live inside one.
+        const cur = selectionRef.current;
+        if (cur.row[0] === row && cur.column[0] === column) refreshFormulaBar(row, column);
       },
       afterActivateSheet: (id: string) => {
         setActiveSheetId(id);
         setSelection({ row: [0, 0], column: [0, 0] });
-        refreshFormulaBar(0, 0);
+        // The engine fires this hook (via its own setTimeout) right after
+        // it flips the active sheet id, but before that's necessarily
+        // reflected everywhere the imperative API reads from. Defer to the
+        // next tick and confirm the workbook actually reports this sheet as
+        // active before trusting getCellsByRange for it.
+        setTimeout(() => {
+          const wb = workbookRef.current;
+          if (wb?.getSheet()?.id === id) {
+            refreshFormulaBar(0, 0);
+            const rows = wb.getSheet().row;
+            if (rows != null) setRowCount(rows);
+          }
+        }, 0);
       },
       afterAddSheet: (sheet: Sheet) => {
-        if (sheet.id) workbookRef.current?.activateSheet({ id: sheet.id });
+        // addSheet() already activates the new sheet internally; only
+        // activate it ourselves if that somehow didn't happen, so we don't
+        // double-activate.
+        const wb = workbookRef.current;
+        if (sheet.id && wb && wb.getSheet()?.id !== sheet.id) {
+          wb.activateSheet({ id: sheet.id });
+        }
         refreshSheetTabs();
       },
       afterDeleteSheet: () => {
@@ -430,16 +481,20 @@ export function CalcView() {
         <button
           type="button"
           aria-label="Sort column ascending"
+          title={rowCount < 3 ? "Add at least 2 data rows to sort" : undefined}
+          disabled={rowCount < 3}
           onClick={() => sortColumn("asc")}
-          className="flex h-8 w-8 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          className="flex h-8 w-8 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-40"
         >
           <ArrowUpAZ size={15} />
         </button>
         <button
           type="button"
           aria-label="Sort column descending"
+          title={rowCount < 3 ? "Add at least 2 data rows to sort" : undefined}
+          disabled={rowCount < 3}
           onClick={() => sortColumn("desc")}
-          className="flex h-8 w-8 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          className="flex h-8 w-8 flex-none items-center justify-center rounded-lg text-shell-text-secondary hover:bg-shell-surface-active hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-40"
         >
           <ArrowDownZA size={15} />
         </button>
@@ -487,7 +542,7 @@ export function CalcView() {
           type="file"
           accept=".csv,text/csv"
           aria-label="Import CSV file"
-          className="hidden"
+          className="sr-only"
           onChange={handleFileChange}
         />
         <button
