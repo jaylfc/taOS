@@ -16,6 +16,7 @@ import { compatVisuals } from "./compat-visuals";
 import { loadFilter, saveFilter } from "./storage";
 import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 import { TaosAppsSection } from "./TaosAppsSection";
+import { ImportAppButton } from "./ImportAppButton";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MobileStore } from "./MobileStore";
 import { AppIcon, StoreCover } from "./AppIcon";
@@ -1150,6 +1151,7 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
                   <h2 className="text-[17px] font-bold text-shell-text">{searching ? `Results for "${search.trim()}"` : NAV.find((n) => n.id === activeNav)?.label}</h2>
                   <p className="text-[12px] text-shell-text-tertiary mt-0.5">{filtered.length} apps</p>
                 </div>
+                {activeNav === "apps" && !searching && <ImportAppButton />}
               </div>
               {activeNav === "updates" && (() => {
                 const updatableOptional = optionalCatalog.filter((e) => e.installed && e.update_available);

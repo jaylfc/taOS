@@ -97,6 +97,21 @@ export async function grantUserspacePermissions(appId: string, granted: string[]
   if (!res.ok) throw new Error(`granting permissions failed (${res.status})`);
 }
 
+/** Fetch a single installed userspace-app row by id -- used by the install-time
+ * consent dialog to get the app's display name and already-granted
+ * permissions (fresh installs return neither in the install response).
+ * Returns null if the row doesn't exist or the request fails. */
+export async function fetchUserspaceAppRow(appId: string): Promise<UserspaceAppRow | null> {
+  try {
+    const res = await fetch("/api/userspace-apps");
+    if (!res.ok) return null;
+    const rows = (await res.json()) as UserspaceAppRow[];
+    return rows.find((r) => r.app_id === appId) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchUserspaceApps(): Promise<AppManifest[]> {
   let rows: UserspaceAppRow[];
   try {
