@@ -6,9 +6,9 @@ import type {
   Theme,
 } from "./types";
 
-/** Short random id for a section. */
+/** Unique id for a section. */
 export function newSectionId(): string {
-  return `sec-${Math.random().toString(36).slice(2, 8)}`;
+  return `sec-${crypto.randomUUID()}`;
 }
 
 /** Default editable content for a freshly-added section of a given type. */

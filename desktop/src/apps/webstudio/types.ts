@@ -94,6 +94,20 @@ export interface Site {
   sections: Section[];
 }
 
+/** Shallow shape guard for a `Site` parsed from stored/untrusted JSON.
+ *  Checks only the top-level fields a corrupted or pre-migration record
+ *  would be missing; it does not validate individual section content. */
+export function isValidSite(value: unknown): value is Site {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.title === "string" &&
+    !!v.theme &&
+    typeof v.theme === "object" &&
+    Array.isArray(v.sections)
+  );
+}
+
 /* -------------------------- theme catalog ------------------------- */
 
 export type PaletteId = "midnight" | "sand" | "forest" | "rose" | "mono";

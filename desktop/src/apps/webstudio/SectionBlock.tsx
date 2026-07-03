@@ -64,7 +64,20 @@ function EditableText({
   );
 }
 
+/** Images are inlined as data URIs into the site's stored JSON, so an
+ *  oversized upload would bloat every save; keep it well under the
+ *  backend's MAX_CONTENT_BYTES cap on the whole site document. */
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2 MB
+
 function readImage(file: File): Promise<string> {
+  if (!file.type.startsWith("image/")) {
+    return Promise.reject(new Error(`"${file.name}" is not an image file.`));
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    return Promise.reject(
+      new Error(`"${file.name}" is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB.`),
+    );
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -125,7 +138,13 @@ function ImageSlot({
             aria-label={`Upload ${alt}`}
             onChange={async (e) => {
               const file = e.target.files?.[0];
-              if (file) onPick(await readImage(file));
+              if (file) {
+                try {
+                  onPick(await readImage(file));
+                } catch (err) {
+                  window.alert(err instanceof Error ? err.message : "Could not read image");
+                }
+              }
               e.target.value = "";
             }}
           />
@@ -266,6 +285,16 @@ export function SectionBlock({
           <div style={{ textAlign: "center", color: colors.muted }}>
             <EditableText editable={editable} value={t.businessName} onCommit={(v) => patch({ businessName: v })} ariaLabel="Footer business name" style={{ color: colors.text, fontWeight: 700 }} />
             <EditableText editable={editable} value={t.tagline} onCommit={(v) => patch({ tagline: v })} ariaLabel="Footer tagline" style={{ fontSize: 13 }} />
+          </div>
+        );
+      }
+      default: {
+        // Corrupted or unrecognized section data (e.g. an old/foreign
+        // export) should be visible, not silently render as an empty div.
+        const exhaustive: never = section.type;
+        return (
+          <div style={{ padding: 24, textAlign: "center", color: colors.muted }}>
+            Unsupported section type: {String(exhaustive)}
           </div>
         );
       }

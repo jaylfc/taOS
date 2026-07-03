@@ -100,6 +100,10 @@ function renderSection(section: Section): string {
   <span>${esc(t.tagline)}</span>
 </footer>`;
     }
+    default: {
+      const exhaustive: never = section.type;
+      throw new Error(`Unknown section type: ${String(exhaustive)}`);
+    }
   }
 }
 

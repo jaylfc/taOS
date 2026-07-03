@@ -6,7 +6,7 @@ import { EditView, type SavedSite } from "./webstudio/EditView";
 import { PreviewView } from "./webstudio/PreviewView";
 import { ExportView } from "./webstudio/ExportView";
 import { emptySite } from "./webstudio/templates";
-import type { Site, StudioView } from "./webstudio/types";
+import { isValidSite, type Site, type StudioView } from "./webstudio/types";
 
 /* ------------------------------------------------------------------ */
 /*  Web Studio - shell (phase 1)                                       */
@@ -39,6 +39,7 @@ export function WebStudioApp(_props: { windowId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
 
   const loadList = useCallback(async () => {
     const res = await fetch("/api/web/sites", { credentials: "include" });
@@ -63,16 +64,29 @@ export function WebStudioApp(_props: { windowId: string }) {
     };
   }, [loadList]);
 
+  /** True if the user should be prompted before discarding in-memory edits. */
+  const confirmDiscard = () =>
+    !dirty || window.confirm("Discard unsaved changes to the current site?");
+
   const seedInEditor = (next: Site) => {
+    if (!confirmDiscard()) return;
     setSite(next);
     setActiveId(null);
     setView("edit");
+    setDirty(false);
   };
 
   const newSite = () => {
+    if (!confirmDiscard()) return;
     setSite(emptySite());
     setActiveId(null);
     setError(null);
+    setDirty(false);
+  };
+
+  const updateSite = (next: Site) => {
+    setSite(next);
+    setDirty(true);
   };
 
   const openSite = async (id: string) => {
@@ -81,9 +95,18 @@ export function WebStudioApp(_props: { windowId: string }) {
       const res = await fetch(`/api/web/sites/${encodeURIComponent(id)}`, { credentials: "include" });
       if (!res.ok) throw new Error("Could not open site");
       const row = (await res.json()) as { id: string; title: string; content: string };
-      const model = JSON.parse(row.content) as Site;
+      let model: Site;
+      try {
+        const parsed: unknown = JSON.parse(row.content);
+        if (!isValidSite(parsed)) throw new Error("malformed site data");
+        model = parsed;
+      } catch {
+        setError("This site's saved data is corrupted; opened a blank site instead.");
+        model = emptySite();
+      }
       setSite(model);
       setActiveId(row.id);
+      setDirty(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Open failed");
     }
@@ -107,6 +130,7 @@ export function WebStudioApp(_props: { windowId: string }) {
       }
       const savedRow = (await res.json()) as { id: string };
       setActiveId(savedRow.id);
+      setDirty(false);
       await loadList();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
@@ -166,7 +190,7 @@ export function WebStudioApp(_props: { windowId: string }) {
           {view === "edit" && (
             <EditView
               site={site}
-              onChange={setSite}
+              onChange={updateSite}
               saved={saved}
               activeId={activeId}
               loading={loading}
