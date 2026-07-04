@@ -7,9 +7,21 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.22] - 2026-07-04
+
+### Added
+- Game Studio is now a real AI-assisted game maker. Describe a game and the taOS agent generates a complete, playable game from a starter template; edit it with a file editor, a live sandboxed preview and an AI chat that proposes changes; save games to your cluster; and share a finished game as a sandboxed taOS app (it installs through the same security-analyzed app runtime as any other) or export it as a package (#1602).
+- One-tap local model backend install, per hardware. On a supported machine the setup checklist offers to install a local LLM backend for your device in a single tap, creating and starting the service and confirming it actually answers before marking it done. Rockchip installs rkllama; NVIDIA, AMD, Apple Silicon and CPU-only machines install a llama.cpp server that serves chat plus embeddings and reranking from one process, so the taOS agent and taOS memory share a single backend (#1597, #1608).
+- Settings account: the taOS account is framed as the key to taOSgo, app sharing and a reserved taOS username for a future website and social presence, with a prompt to reserve your username; onboarding gains an optional step to sign in to your taOS account (#1593, #1595).
+
 ### Fixed
-- Files: deleting a file or folder now moves it to the trash instead of permanently removing it, for your own workspace, agent workspaces, and project files alike. Restore or empty it from the Recycle Bin. Reported by @mandresve (#1604).
+- Store: installing an NPU/local backend now genuinely installs and starts it. A backend that showed as installed but never actually ran is repaired: the install creates and enables the service, self-heals a half-installed machine, and only reports success once the backend answers (#1598).
+- Models: models you download are now selectable in the taOS agent and accepted at deploy. RKLLM models register with rkllama on download instead of silently landing on disk where the agent could not find them, and the agent model picker lists locally downloaded models, not just cloud ones. Reported by @mandresve (#1599, #1600).
+- Settings: theme and wallpaper choices now persist across sessions, and Desktop & Dock settings (dock size and position) actually take effect. Reported by @mandresve (#1601, #1603).
+- Text Editor: typing works continuously again; the editor no longer loses focus after each keystroke. Reported by @mandresve (#1596).
+- Files: deleting a file or folder now moves it to the Recycle Bin instead of permanently removing it, across your own workspace, agent workspaces and project files; restore or empty it from the Recycle Bin. Reported by @mandresve (#1604).
 - Projects: the New Project dialog no longer opens behind the Projects window. Reported by @mandresve (#1605).
+- App Runtime: the install-time permission consent dialog can no longer be dismissed mid-request, and skips a redundant lookup when no consent is needed (#1592).
 
 ## [1.0.0-beta.21] - 2026-07-03
 
