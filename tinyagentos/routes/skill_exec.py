@@ -574,6 +574,17 @@ async def _check_execution_policy(
     substitutes for that gate, only narrows what an already-authorized caller's
     agent may do.
     """
+    # Governance applies only to AGENT callers (a deployed agent presenting the
+    # host local token, via == "local_token"). An admin HUMAN session is the
+    # user themselves driving the OS directly, so it is never gated -- the human
+    # IS the approval authority, and self-approving their own tool calls is
+    # noise. Local-token callers remain fully governed below.
+    if (
+        getattr(request.state, "via", None) == "session"
+        and getattr(request.state, "is_admin", False)
+    ):
+        return None
+
     from tinyagentos.governance.action_classes import classify
 
     action_class = classify(skill_id)

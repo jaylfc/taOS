@@ -18,11 +18,12 @@ SENSITIVE_ACTION_CLASSES = frozenset(
 
 # tool/skill id -> action_class. file_write/file_read/list_files are scoped to
 # the agent's own workspace by execute_skill (see _resolve_agent_workspace),
-# so they are not classified as file-write-external.
+# so they are not classified as file-write-external. web_search is a read-only
+# lookup with no host/write blast radius, so it is intentionally NOT classified
+# (always allowed) even though its transport happens to be network.
 TOOL_ACTION_CLASSES: dict[str, str] = {
     "code_exec": "code-exec",
     "http_request": "external-network",
-    "web_search": "external-network",
 }
 
 

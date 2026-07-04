@@ -1,9 +1,17 @@
 """Agent governance gate in tinyagentos/routes/skill_exec.py (#160 slice 1).
 
 Covers the policy-driven deny / require-approval / allow paths for skill
-EXECUTION, and — critically — that the pre-existing authorization gate
-(GHSA-h24f-gp4c-8qjm, ``_is_admin_or_local_token``) still runs first and is
-completely unaffected by the new governance layer.
+EXECUTION, and — critically — that
+
+  (a) the pre-existing authorization gate (GHSA-h24f-gp4c-8qjm,
+      ``_is_admin_or_local_token``) still runs first and is unaffected by the
+      new governance layer, and
+  (b) governance applies ONLY to agent (local-token) callers: an admin HUMAN
+      session bypasses it entirely (the human is the approval authority).
+
+Because an admin session bypasses governance, every *gating* assertion here is
+made through a local-token client (a deployed agent), not the admin-session
+``client`` fixture.
 """
 from __future__ import annotations
 
@@ -17,6 +25,17 @@ async def _ensure_skills_seeded(app) -> None:
     store = app.state.skills
     if store._db is None:
         await store.init()
+
+
+def _local_token_client(app) -> AsyncClient:
+    """A bare client (no session cookie) presenting the host local token — the
+    way a deployed agent calls skill-exec. Governance applies to this caller."""
+    local_token = app.state.auth.get_local_token()
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {local_token}"},
+    )
 
 
 async def _member_client(app) -> AsyncClient:
@@ -45,14 +64,19 @@ def _fake_subprocess_result() -> MagicMock:
 @pytest.mark.asyncio
 class TestConservativeDefaultRequiresApproval:
     async def test_code_exec_pending_approval_and_no_run(self, client, app):
-        """code-exec is a seeded conservative default: an admin caller with no
-        live grant gets 202 pending_approval and subprocess never runs."""
+        """code-exec is a seeded conservative default: an agent (local-token)
+        caller with no live grant gets 202 pending_approval and subprocess
+        never runs."""
         await _ensure_skills_seeded(app)
-        with patch("subprocess.run") as mock_run:
-            resp = await client.post(
-                "/api/skill-exec/code_exec/call",
-                json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
-            )
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run") as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
+                )
+        finally:
+            await agent_client.aclose()
         assert resp.status_code == 202
         body = resp.json()
         assert body["status"] == "pending_approval"
@@ -75,11 +99,15 @@ class TestConservativeDefaultRequiresApproval:
         proceeds straight to the skill implementation."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.add_grant("agent-a", "code-exec", "dec-x")
-        with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
-            resp = await client.post(
-                "/api/skill-exec/code_exec/call",
-                json={"args": {"code": "print('hello')"}, "agent_name": "agent-a"},
-            )
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hello')"}, "agent_name": "agent-a"},
+                )
+        finally:
+            await agent_client.aclose()
         assert resp.status_code == 200
         assert resp.json()["returncode"] == 0
         mock_run.assert_called_once()
@@ -88,11 +116,15 @@ class TestConservativeDefaultRequiresApproval:
         """A grant for one agent does not authorize a different agent."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.add_grant("agent-a", "code-exec", "dec-x")
-        with patch("subprocess.run") as mock_run:
-            resp = await client.post(
-                "/api/skill-exec/code_exec/call",
-                json={"args": {"code": "print('no')"}, "agent_name": "agent-b"},
-            )
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run") as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('no')"}, "agent_name": "agent-b"},
+                )
+        finally:
+            await agent_client.aclose()
         assert resp.status_code == 202
         mock_run.assert_not_called()
 
@@ -102,11 +134,15 @@ class TestDenyPolicy:
     async def test_global_deny_blocks_with_403_and_no_run(self, client, app):
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "deny")
-        with patch("subprocess.run") as mock_run:
-            resp = await client.post(
-                "/api/skill-exec/code_exec/call",
-                json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
-            )
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run") as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
+                )
+        finally:
+            await agent_client.aclose()
         assert resp.status_code == 403
         assert resp.json()["error"] == "forbidden_by_policy"
         assert resp.json()["action_class"] == "code-exec"
@@ -117,10 +153,14 @@ class TestDenyPolicy:
         await app.state.execution_policies.set_policy(
             "external-network", "deny", agent_name="agent-a"
         )
-        resp = await client.post(
-            "/api/skill-exec/http_request/call",
-            json={"args": {"url": "http://example.com"}, "agent_name": "agent-a"},
-        )
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/skill-exec/http_request/call",
+                json={"args": {"url": "http://example.com"}, "agent_name": "agent-a"},
+            )
+        finally:
+            await agent_client.aclose()
         assert resp.status_code == 403
         assert resp.json()["action_class"] == "external-network"
 
@@ -133,24 +173,88 @@ class TestAllowedActionClass:
         await app.state.execution_policies.set_policy(
             "code-exec", "allow", agent_name="agent-a"
         )
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('hi')"}, "agent_name": "agent-a"},
+                )
+        finally:
+            await agent_client.aclose()
+        assert resp.status_code == 200
+        mock_run.assert_called_once()
+
+    async def test_web_search_is_unclassified_and_never_gated(self, client, app):
+        """web_search is a read-only lookup: removed from the action-class map,
+        so even an agent caller runs it unconditionally under the conservative
+        default (no 202/403)."""
+        await _ensure_skills_seeded(app)
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/skill-exec/web_search/call",
+                json={"args": {"query": "hello"}, "agent_name": "agent-a"},
+            )
+        finally:
+            await agent_client.aclose()
+        # 200 with a tool-level result/error (SearXNG not configured in tests),
+        # never a policy 202/403.
+        assert resp.status_code == 200
+
+    async def test_unclassified_skill_runs_unconditionally(self, client, app):
+        """file_read has no action class; the governance layer never gates it."""
+        await _ensure_skills_seeded(app)
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/skill-exec/file_read/call",
+                json={"args": {"path": "nope.txt"}, "agent_name": "agent-a"},
+            )
+        finally:
+            await agent_client.aclose()
+        # 200 with a tool-level "not found" error, not a policy block.
+        assert resp.status_code == 200
+        assert "error" in resp.json()
+
+
+@pytest.mark.asyncio
+class TestAdminSessionBypass:
+    """Governance applies only to agent (local-token) callers. An admin HUMAN
+    session is the user driving the OS directly and is never gated -- the same
+    code_exec call that gates an agent runs for an admin."""
+
+    async def test_admin_session_runs_code_exec_not_gated(self, client, app):
+        await _ensure_skills_seeded(app)
+        # client fixture is an admin session (via == "session", is_admin True).
         with patch("subprocess.run", return_value=_fake_subprocess_result()) as mock_run:
             resp = await client.post(
                 "/api/skill-exec/code_exec/call",
                 json={"args": {"code": "print('hi')"}, "agent_name": "agent-a"},
             )
         assert resp.status_code == 200
+        assert resp.json()["returncode"] == 0
         mock_run.assert_called_once()
+        # No execution-gate decision was created for the admin's own call.
+        gates = [
+            d for d in await app.state.decision_store.list()
+            if (d.get("metadata") or {}).get("kind") == "execution_gate"
+        ]
+        assert gates == []
 
-    async def test_unclassified_skill_runs_unconditionally(self, client, app):
-        """file_read has no action class; the governance layer never gates it."""
+    async def test_same_call_gates_a_local_token_agent(self, client, app):
         await _ensure_skills_seeded(app)
-        resp = await client.post(
-            "/api/skill-exec/file_read/call",
-            json={"args": {"path": "nope.txt"}, "agent_name": "agent-a"},
-        )
-        # 200 with a tool-level "not found" error, not a policy block.
-        assert resp.status_code == 200
-        assert "error" in resp.json()
+        agent_client = _local_token_client(app)
+        try:
+            with patch("subprocess.run") as mock_run:
+                resp = await agent_client.post(
+                    "/api/skill-exec/code_exec/call",
+                    json={"args": {"code": "print('no')"}, "agent_name": "agent-a"},
+                )
+        finally:
+            await agent_client.aclose()
+        assert resp.status_code == 202
+        mock_run.assert_not_called()
 
 
 @pytest.mark.asyncio
