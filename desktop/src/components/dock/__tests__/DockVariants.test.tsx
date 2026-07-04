@@ -17,3 +17,23 @@ describe("Dock variant selection", () => {
     expect(screen.getByTestId("dock-variant-windows-taskbar")).toBeInTheDocument();
   });
 });
+
+describe("Dock — Desktop & Dock settings flow to the rendered dock (#1603)", () => {
+  it("applies the dock-store icon size to pinned app buttons", () => {
+    useDockStore.setState({ pinned: ["files"], iconSize: "large", position: "bottom" } as never);
+    useThemeStore.setState({ structure: {} } as never);
+    render(<Dock onLaunchpadOpen={() => {}} />);
+    const icon = screen.getByRole("button", { name: /open files/i });
+    expect(icon.className).toContain("w-14");
+    expect(icon.className).toContain("h-14");
+  });
+
+  it("moves the dock to the left edge when the dock-store position is 'left'", () => {
+    useDockStore.setState({ pinned: ["files"], iconSize: "medium", position: "left" } as never);
+    useThemeStore.setState({ structure: {} } as never);
+    render(<Dock onLaunchpadOpen={() => {}} />);
+    const dock = screen.getByTestId("dock-variant-macos-dock");
+    expect(dock.className).toContain("left-3");
+    expect(dock.className).not.toContain("bottom-3");
+  });
+});

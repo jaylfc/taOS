@@ -10,6 +10,8 @@ interface Props {
 
 export function Dock({ onLaunchpadOpen }: Props) {
   const pinned = useDockStore((s) => s.pinned);
+  const iconSize = useDockStore((s) => s.iconSize);
+  const position = useDockStore((s) => s.position);
   const windows = useProcessStore((s) => s.windows);
   const { openWindow, focusWindow, restoreWindow } = useProcessStore();
   const variant = useThemeStore((s) => (s.structure?.dock?.variant as DockVariantId) ?? "macos-dock");
@@ -38,6 +40,8 @@ export function Dock({ onLaunchpadOpen }: Props) {
       windows={windows}
       onAppClick={handleClick}
       onLaunchpadOpen={onLaunchpadOpen}
+      iconSize={iconSize}
+      position={position}
     />
   );
 }

@@ -5,13 +5,28 @@ import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
+type DockIconSize = "small" | "medium" | "large";
+
 interface Props {
   appId: string;
   isRunning: boolean;
   onClick: () => void;
+  size?: DockIconSize;
 }
 
-export function DockIcon({ appId, isRunning, onClick }: Props) {
+const SIZE_CLASSES: Record<DockIconSize, string> = {
+  small: "w-8 h-8",
+  medium: "w-10 h-10",
+  large: "w-14 h-14",
+};
+
+const ICON_PX: Record<DockIconSize, number> = {
+  small: 16,
+  medium: 20,
+  large: 28,
+};
+
+export function DockIcon({ appId, isRunning, onClick, size = "medium" }: Props) {
   const app = getApp(appId);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -94,11 +109,11 @@ export function DockIcon({ appId, isRunning, onClick }: Props) {
         onClick={onClick}
         onContextMenu={onContextMenu}
         onMouseEnter={() => prefetchApp(appId)}
-        className="group relative flex items-center justify-center w-10 h-10 rounded-lg bg-shell-surface hover:bg-shell-surface-active transition-all hover:scale-110"
+        className={`group relative flex items-center justify-center ${SIZE_CLASSES[size]} rounded-lg bg-shell-surface hover:bg-shell-surface-active transition-all hover:scale-110`}
         aria-label={`Open ${app.name}`}
         title={app.name}
       >
-        <IconComponent size={20} className="text-shell-text" />
+        <IconComponent size={ICON_PX[size]} className="text-shell-text" />
         {isRunning && (
           <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-accent" />
         )}

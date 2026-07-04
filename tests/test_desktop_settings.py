@@ -16,7 +16,7 @@ async def store(tmp_path):
 async def test_get_default_settings(store):
     settings = await store.get_settings("user")
     assert settings["mode"] == "dark"
-    assert settings["wallpaper"] == "default"
+    assert settings["wallpaper"] == "graphite"
     assert "pinned" in settings["dock"]
 
 
@@ -32,6 +32,8 @@ async def test_get_dock_layout(store):
     dock = await store.get_dock("user")
     assert isinstance(dock["pinned"], list)
     assert "messages" in dock["pinned"]
+    assert dock["iconSize"] == "medium"
+    assert dock["position"] == "bottom"
 
 
 @pytest.mark.asyncio
@@ -39,6 +41,16 @@ async def test_update_dock_layout(store):
     await store.update_dock("user", {"pinned": ["agents", "files"]})
     dock = await store.get_dock("user")
     assert dock["pinned"] == ["agents", "files"]
+
+
+@pytest.mark.asyncio
+async def test_update_dock_icon_size_and_position(store):
+    await store.update_dock("user", {"iconSize": "large", "position": "left"})
+    dock = await store.get_dock("user")
+    assert dock["iconSize"] == "large"
+    assert dock["position"] == "left"
+    # Unrelated fields (e.g. pinned) survive the partial update.
+    assert "messages" in dock["pinned"]
 
 
 @pytest.mark.asyncio

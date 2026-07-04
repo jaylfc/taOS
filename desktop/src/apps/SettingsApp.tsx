@@ -25,6 +25,7 @@ import {
 } from "@/components/ui";
 import { useShortcuts } from "@/hooks/use-shortcut-registry";
 import { useThemeStore } from "@/stores/theme-store";
+import { useDockStore } from "@/stores/dock-store";
 import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
 import { safeFetch, ProgressBar, RestartProgressModal } from "@/apps/SettingsApp/_shared";
 import { UpdatesSection } from "@/apps/SettingsApp/UpdatesPanel";
@@ -680,23 +681,11 @@ function AccessibilitySection() {
 /*  Desktop & Dock                                                     */
 /* ------------------------------------------------------------------ */
 
-function DesktopDockSection() {
-  const [dockSize, setDockSize] = useState(
-    () => localStorage.getItem("taos-dock-size") ?? "medium"
-  );
-  const [dockPosition, setDockPosition] = useState(
-    () => localStorage.getItem("taos-dock-position") ?? "bottom"
-  );
-
-  const applyDockSize = (size: string) => {
-    setDockSize(size);
-    localStorage.setItem("taos-dock-size", size);
-  };
-
-  const applyDockPosition = (position: string) => {
-    setDockPosition(position);
-    localStorage.setItem("taos-dock-position", position);
-  };
+export function DesktopDockSection() {
+  const dockSize = useDockStore((s) => s.iconSize);
+  const dockPosition = useDockStore((s) => s.position);
+  const applyDockSize = useDockStore((s) => s.setIconSize);
+  const applyDockPosition = useDockStore((s) => s.setPosition);
 
   return (
     <section aria-label="Desktop and dock settings">
@@ -723,10 +712,12 @@ function DesktopDockSection() {
         <Card className="p-4">
           <p className="text-sm font-medium mb-3">Dock position</p>
           <div className="flex gap-2" role="group" aria-label="Dock position">
-            {[
-              { value: "bottom", label: "Bottom" },
-              { value: "left", label: "Left" },
-            ].map((opt) => (
+            {(
+              [
+                { value: "bottom", label: "Bottom" },
+                { value: "left", label: "Left" },
+              ] as const
+            ).map((opt) => (
               <Button
                 key={opt.value}
                 variant={dockPosition === opt.value ? "secondary" : "outline"}

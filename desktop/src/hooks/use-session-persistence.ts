@@ -26,6 +26,8 @@ export function useSessionPersistence() {
   const maximizeWindow = useProcessStore((s) => s.maximizeWindow);
   const snapWindow = useProcessStore((s) => s.snapWindow);
   const pinned = useDockStore((s) => s.pinned);
+  const dockIconSize = useDockStore((s) => s.iconSize);
+  const dockPosition = useDockStore((s) => s.position);
   const wallpaperId = useThemeStore((s) => s.wallpaperId);
   const widgets = useWidgetStore((s) => s.widgets);
 
@@ -67,9 +69,15 @@ export function useSessionPersistence() {
     // Restore dock
     fetch("/api/desktop/dock")
       .then((r) => r.json())
-      .then((data: { pinned?: string[] }) => {
+      .then((data: { pinned?: string[]; iconSize?: string; position?: string }) => {
         if (data.pinned && Array.isArray(data.pinned)) {
           useDockStore.getState().reorder(data.pinned);
+        }
+        if (data.iconSize === "small" || data.iconSize === "medium" || data.iconSize === "large") {
+          useDockStore.getState().setIconSize(data.iconSize);
+        }
+        if (data.position === "bottom" || data.position === "left") {
+          useDockStore.getState().setPosition(data.position);
         }
       })
       .catch(() => {});
@@ -78,7 +86,7 @@ export function useSessionPersistence() {
     fetch("/api/desktop/settings")
       .then((r) => r.json())
       .then((data: { wallpaper?: string }) => {
-        if (data.wallpaper && data.wallpaper !== "default") {
+        if (data.wallpaper) {
           useThemeStore.getState().setWallpaper(data.wallpaper);
         }
       })
@@ -156,14 +164,14 @@ export function useSessionPersistence() {
       fetch("/api/desktop/dock", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pinned }),
+        body: JSON.stringify({ pinned, iconSize: dockIconSize, position: dockPosition }),
       }).catch(() => {});
     }, 1000);
 
     return () => {
       if (dockTimeout.current) clearTimeout(dockTimeout.current);
     };
-  }, [pinned]);
+  }, [pinned, dockIconSize, dockPosition]);
 
   // Auto-save wallpaper (debounced 500ms)
   useEffect(() => {

@@ -4,12 +4,29 @@ import { useDockStore } from "./dock-store";
 const DEFAULT_PINNED = ["messages", "agents", "files", "store", "settings"];
 
 beforeEach(() => {
-  useDockStore.setState({ pinned: [...DEFAULT_PINNED] });
+  useDockStore.setState({ pinned: [...DEFAULT_PINNED], iconSize: "medium", position: "bottom" });
 });
 
 describe("dock-store — defaults", () => {
   it("starts with the default pinned list", () => {
     expect(useDockStore.getState().pinned).toEqual(DEFAULT_PINNED);
+  });
+
+  it("starts with medium icon size and bottom position", () => {
+    expect(useDockStore.getState().iconSize).toBe("medium");
+    expect(useDockStore.getState().position).toBe("bottom");
+  });
+});
+
+describe("dock-store — setIconSize / setPosition", () => {
+  it("updates the icon size", () => {
+    useDockStore.getState().setIconSize("large");
+    expect(useDockStore.getState().iconSize).toBe("large");
+  });
+
+  it("updates the position", () => {
+    useDockStore.getState().setPosition("left");
+    expect(useDockStore.getState().position).toBe("left");
   });
 });
 

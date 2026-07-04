@@ -1,19 +1,31 @@
 import { DockIcon } from "../DockIcon";
 import type { DockVariantProps } from "./MacosDock";
 
-export function WindowsTaskbar({ pinned, windows, onAppClick, onLaunchpadOpen }: DockVariantProps) {
+export function WindowsTaskbar({
+  pinned,
+  windows,
+  onAppClick,
+  onLaunchpadOpen,
+  iconSize = "medium",
+  position = "bottom",
+}: DockVariantProps) {
   const runningAppIds = windows.map((w) => w.appId);
   const runningNotPinned = runningAppIds.filter((id) => !pinned.includes(id));
   const items = [...pinned, ...runningNotPinned];
+  const isLeft = position === "left";
 
   return (
     <div
       data-testid="dock-variant-windows-taskbar"
-      className="fixed bottom-0 left-0 right-0 flex items-center gap-1 px-2 z-[9999] select-none"
+      className={
+        isLeft
+          ? "fixed top-0 bottom-0 left-0 flex flex-col items-center gap-1 py-2 z-[9999] select-none"
+          : "fixed bottom-0 left-0 right-0 flex items-center gap-1 px-2 z-[9999] select-none"
+      }
       style={{
-        height: "var(--spacing-dock-h)",
+        [isLeft ? "width" : "height"]: "var(--spacing-dock-h)",
         backgroundColor: "var(--color-dock-bg)",
-        borderTop: "1px solid var(--color-dock-border)",
+        [isLeft ? "borderRight" : "borderTop"]: "1px solid var(--color-dock-border)",
         boxShadow: "var(--shadow-dock)",
       }}
     >
@@ -31,15 +43,16 @@ export function WindowsTaskbar({ pinned, windows, onAppClick, onLaunchpadOpen }:
         </svg>
       </button>
 
-      <div className="w-px h-7 bg-shell-border mx-1" />
+      <div className={isLeft ? "h-px w-7 bg-shell-border my-1" : "w-px h-7 bg-shell-border mx-1"} />
 
-      <div className="flex items-center gap-1">
+      <div className={isLeft ? "flex flex-col items-center gap-1" : "flex items-center gap-1"}>
         {items.map((appId) => (
           <DockIcon
             key={appId}
             appId={appId}
             isRunning={runningAppIds.includes(appId)}
             onClick={() => onAppClick(appId)}
+            size={iconSize}
           />
         ))}
       </div>

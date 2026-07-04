@@ -1,4 +1,5 @@
 import type { WindowState } from "@/stores/process-store";
+import type { DockIconSize, DockPosition } from "@/stores/dock-store";
 import { DockIcon } from "../DockIcon";
 
 export interface DockVariantProps {
@@ -6,18 +7,33 @@ export interface DockVariantProps {
   windows: WindowState[];
   onAppClick: (appId: string) => void;
   onLaunchpadOpen: () => void;
+  iconSize?: DockIconSize;
+  position?: DockPosition;
 }
 
-export function MacosDock({ pinned, windows, onAppClick, onLaunchpadOpen }: DockVariantProps) {
+export function MacosDock({
+  pinned,
+  windows,
+  onAppClick,
+  onLaunchpadOpen,
+  iconSize = "medium",
+  position = "bottom",
+}: DockVariantProps) {
   const runningAppIds = windows.map((w) => w.appId);
   const runningNotPinned = runningAppIds.filter((id) => !pinned.includes(id));
+  const isLeft = position === "left";
+  const dividerClassName = isLeft ? "h-px w-8 bg-shell-border my-1" : "w-px h-8 bg-shell-border mx-1";
 
   return (
     <div
       data-testid="dock-variant-macos-dock"
-      className="fixed bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 rounded-2xl z-[9999] select-none"
+      className={
+        isLeft
+          ? "fixed left-3 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 py-3 rounded-2xl z-[9999] select-none"
+          : "fixed bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 rounded-2xl z-[9999] select-none"
+      }
       style={{
-        height: "var(--spacing-dock-h)",
+        [isLeft ? "width" : "height"]: "var(--spacing-dock-h)",
         padding: "var(--spacing-dock-padding)",
         backgroundColor: "var(--color-dock-bg)",
         border: "1px solid var(--color-dock-border)",
@@ -38,16 +54,22 @@ export function MacosDock({ pinned, windows, onAppClick, onLaunchpadOpen }: Dock
         </svg>
       </button>
 
-      <div className="w-px h-8 bg-shell-border mx-1" />
+      <div className={dividerClassName} />
 
       {pinned.map((appId) => (
-        <DockIcon key={appId} appId={appId} isRunning={runningAppIds.includes(appId)} onClick={() => onAppClick(appId)} />
+        <DockIcon
+          key={appId}
+          appId={appId}
+          isRunning={runningAppIds.includes(appId)}
+          onClick={() => onAppClick(appId)}
+          size={iconSize}
+        />
       ))}
 
-      {runningNotPinned.length > 0 && <div className="w-px h-8 bg-shell-border mx-1" />}
+      {runningNotPinned.length > 0 && <div className={dividerClassName} />}
 
       {runningNotPinned.map((appId) => (
-        <DockIcon key={appId} appId={appId} isRunning={true} onClick={() => onAppClick(appId)} />
+        <DockIcon key={appId} appId={appId} isRunning={true} onClick={() => onAppClick(appId)} size={iconSize} />
       ))}
     </div>
   );

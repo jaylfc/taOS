@@ -6,13 +6,19 @@ from tinyagentos.base_store import BaseStore
 DEFAULT_SETTINGS = {
     "mode": "dark",
     "accentColor": "#667eea",
-    "wallpaper": "default",
+    # Must match the frontend's own boot-time default (theme-store's
+    # DEFAULT_WP, "graphite"). "default" is a real, selectable wallpaper
+    # ("Classic") elsewhere in the catalog, so it cannot double as the
+    # "nothing saved yet" sentinel without colliding with that choice.
+    "wallpaper": "graphite",
     "dockMagnification": False,
     "topBarOpacity": 0.95,
 }
 
 DEFAULT_DOCK = {
     "pinned": ["messages", "agents", "files", "store", "settings"],
+    "iconSize": "medium",
+    "position": "bottom",
 }
 
 
