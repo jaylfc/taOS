@@ -273,9 +273,16 @@ def _find_model_manifest(registry, model_id: str):
 
 
 def _required_backend_ids(manifest) -> list[str]:
-    """Unique ``requires.backends[].id`` values declared across all variants."""
+    """Unique ``requires.backends[].id`` values declared across all variants.
+
+    Variants come straight from parsed manifest YAML (always dicts today),
+    but this runs on the hot HTTP resolution path, so a non-dict variant is
+    skipped rather than allowed to raise and turn a clean 4xx into a 500.
+    """
     ids: list[str] = []
     for v in getattr(manifest, "variants", None) or []:
+        if not isinstance(v, dict):
+            continue
         for b in (v.get("requires") or {}).get("backends") or []:
             bid = b.get("id") if isinstance(b, dict) else None
             if bid and bid not in ids:
