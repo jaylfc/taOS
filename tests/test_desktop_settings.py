@@ -54,6 +54,29 @@ async def test_update_dock_icon_size_and_position(store):
 
 
 @pytest.mark.asyncio
+async def test_dock_update_does_not_clear_a_saved_wallpaper(store):
+    """Regression (#1603, #1601): a Dock-only save (position/icon size) must not
+    reset the wallpaper. Dock and settings are stored under separate keys and
+    each save is a read-merge-write, so a partial Dock update can only ever
+    touch the "dock" row, never the "settings" row the wallpaper lives in."""
+    await store.update_settings("user", {"wallpaper": "aurora"})
+    await store.update_dock("user", {"iconSize": "large", "position": "left"})
+    settings = await store.get_settings("user")
+    assert settings["wallpaper"] == "aurora"
+
+
+@pytest.mark.asyncio
+async def test_settings_update_does_not_clear_saved_dock_layout(store):
+    """The inverse of the above: a wallpaper-only save must not reset the
+    previously-saved Dock position/icon size."""
+    await store.update_dock("user", {"iconSize": "large", "position": "left"})
+    await store.update_settings("user", {"wallpaper": "aurora"})
+    dock = await store.get_dock("user")
+    assert dock["iconSize"] == "large"
+    assert dock["position"] == "left"
+
+
+@pytest.mark.asyncio
 async def test_window_positions_roundtrip(store):
     positions = [{"appId": "messages", "x": 100, "y": 200, "w": 900, "h": 600}]
     await store.save_windows("user", positions)

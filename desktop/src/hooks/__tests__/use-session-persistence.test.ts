@@ -216,3 +216,76 @@ describe("useSessionPersistence — persistence survives a logout/login cycle (#
     });
   });
 });
+
+describe("useSessionPersistence — Dock and wallpaper auto-save write to separate endpoints (#1603, #1601)", () => {
+  // Regression: a Dock-only change (position/icon size) was reported to reset
+  // the saved wallpaper back to default on the next login. The auto-save
+  // effects below must PUT to their own endpoint with only their own field(s)
+  // — never touching the other setting — so one can never clobber the other.
+  function putCallsTo(path: string) {
+    return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([input, init]) =>
+        (typeof input === "string" ? input : input.toString()).includes(path) &&
+        (init as RequestInit | undefined)?.method === "PUT",
+    );
+  }
+
+  it("a Dock-only change never PUTs to /api/desktop/settings and leaves the wallpaper out of its own payload", async () => {
+    mockFetchWith({
+      "/api/desktop/dock": { iconSize: "medium", position: "bottom" },
+      "/api/desktop/settings": { wallpaper: "ocean" },
+    });
+
+    renderHook(() => useSessionPersistence());
+
+    await waitFor(() => {
+      expect(useThemeStore.getState().wallpaperId).toBe("ocean");
+    });
+
+    act(() => {
+      useDockStore.getState().setIconSize("large");
+      useDockStore.getState().setPosition("left");
+    });
+
+    // Past the 1s dock auto-save debounce.
+    await waitFor(() => expect(putCallsTo("/api/desktop/dock")).not.toHaveLength(0), {
+      timeout: 2000,
+    });
+
+    expect(putCallsTo("/api/desktop/settings")).toHaveLength(0);
+
+    const dockPuts = putCallsTo("/api/desktop/dock");
+    const lastBody = JSON.parse((dockPuts[dockPuts.length - 1]![1] as RequestInit).body as string);
+    expect(lastBody).not.toHaveProperty("wallpaper");
+  });
+
+  it("a wallpaper-only change never PUTs to /api/desktop/dock and its payload carries only the wallpaper", async () => {
+    mockFetchWith({
+      "/api/desktop/dock": { iconSize: "large", position: "left" },
+      "/api/desktop/settings": { wallpaper: "midnight" },
+    });
+
+    renderHook(() => useSessionPersistence());
+
+    await waitFor(() => {
+      expect(useDockStore.getState().iconSize).toBe("large");
+    });
+
+    act(() => {
+      useThemeStore.getState().setWallpaper("aurora");
+    });
+
+    // Past the 500ms wallpaper auto-save debounce.
+    await waitFor(() => expect(putCallsTo("/api/desktop/settings")).not.toHaveLength(0), {
+      timeout: 2000,
+    });
+
+    expect(putCallsTo("/api/desktop/dock")).toHaveLength(0);
+
+    const settingsPuts = putCallsTo("/api/desktop/settings");
+    const lastBody = JSON.parse(
+      (settingsPuts[settingsPuts.length - 1]![1] as RequestInit).body as string,
+    );
+    expect(lastBody).toEqual({ wallpaper: "aurora" });
+  });
+});
