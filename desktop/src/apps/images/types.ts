@@ -93,6 +93,10 @@ export interface EditCapabilities {
   image_editing: boolean;
   background_removal: boolean;
   upscale: boolean;
+  /** Per-tier health for image-editing (quality = flux-fill, fast =
+   *  iopaint), so the UI can disable Quality instead of letting a request
+   *  silently downgrade to the prompt-ignoring iopaint eraser. */
+  image_editing_tiers?: { quality: boolean; fast: boolean };
 }
 
 export const SIZE_OPTIONS = [256, 512, 768, 1024] as const;

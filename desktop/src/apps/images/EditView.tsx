@@ -12,6 +12,7 @@ import {
   ImageIcon,
   Loader2,
   Store,
+  AlertTriangle,
 } from "lucide-react";
 import { Slider, Chip, GroupLabel, Segmented } from "./controls";
 import {
@@ -96,8 +97,15 @@ export interface EditViewProps {
   image: GeneratedImage | null;
   onApplyAdjust: (filterCss: string) => void;
   /** Called after a backend edit succeeds, with the new image's url + ref so
-   *  the host can refresh the library and re-select the result. */
-  onEdited?: (result: { url: string; image_ref: string }) => void;
+   *  the host can refresh the library and re-select the result.
+   *  ``degraded``/``backend`` surface a silent tier downgrade (a Quality
+   *  request served by the fast iopaint eraser, which ignores the prompt). */
+  onEdited?: (result: {
+    url: string;
+    image_ref: string;
+    degraded?: boolean;
+    backend?: string;
+  }) => void;
 }
 
 const DEFAULT_ADJUST = { brightness: 100, contrast: 100, saturation: 100 };
@@ -114,6 +122,10 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
   const [scale, setScale] = useState<2 | 4>(2);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when the last edit result was served by a lower tier than requested
+  // (e.g. Quality asked for flux-fill but iopaint's prompt-ignoring eraser
+  // ran instead), so the result is never presented as if it were Quality.
+  const [downgradeNotice, setDowngradeNotice] = useState<string | null>(null);
 
   const [caps, setCaps] = useState<EditCapabilities | null>(null);
 
@@ -155,6 +167,20 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
   const capAvailable = !requiredCap || (caps ? caps[requiredCap] : false);
   const isMasking = tool === "erase" || tool === "inpaint";
 
+  // Is the Quality tier's own backend (flux-fill) actually healthy? If not,
+  // offering "Quality" would silently downgrade to the fast iopaint eraser,
+  // which ignores the prompt — so it must be disabled, not just offered.
+  const qualityHealthy = caps?.image_editing_tiers
+    ? caps.image_editing_tiers.quality
+    : false;
+
+  // If Quality becomes unavailable (or capabilities load in as unavailable)
+  // while it's selected, fall back to Fast rather than leave a disabled tier
+  // selected that Apply would still submit.
+  useEffect(() => {
+    if (tier === "quality" && caps && !qualityHealthy) setTier("fast");
+  }, [caps, qualityHealthy, tier]);
+
   const dirty =
     tool === "adjust" &&
     (adjust.brightness !== 100 ||
@@ -174,6 +200,14 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
   useEffect(() => {
     resetMask();
   }, [image?.url, tool, resetMask]);
+
+  // Clear the downgrade notice on a tool switch (a stale notice from a
+  // different op would be confusing). NOT keyed on image?.url: a successful
+  // edit updates the displayed image right away, and the notice must survive
+  // that swap so the user actually sees it.
+  useEffect(() => {
+    setDowngradeNotice(null);
+  }, [tool]);
 
   function syncMaskSize() {
     const img = imgRef.current;
@@ -231,6 +265,7 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
     if (tool === "adjust") setAdjust(DEFAULT_ADJUST);
     setReplacePrompt("");
     setError(null);
+    setDowngradeNotice(null);
     resetMask();
   }
 
@@ -240,6 +275,7 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
   ): Promise<void> {
     setBusy(true);
     setError(null);
+    setDowngradeNotice(null);
     try {
       const res = await fetch(path, {
         method: "POST",
@@ -253,9 +289,21 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
         );
         return;
       }
-      const { url, image_ref } = data as { url?: string; image_ref?: string };
+      const { url, image_ref, degraded, backend } = data as {
+        url?: string;
+        image_ref?: string;
+        degraded?: boolean;
+        backend?: string;
+      };
       if (url && image_ref) {
-        onEdited?.({ url, image_ref });
+        // A quality request silently served by the fast iopaint eraser must
+        // never read as a Quality result — surface it instead of dropping it.
+        setDowngradeNotice(
+          degraded
+            ? "Served by the fast eraser — the Quality model isn't available, so the prompt was ignored."
+            : null,
+        );
+        onEdited?.({ url, image_ref, degraded, backend });
         resetMask();
       }
     } catch {
@@ -391,6 +439,19 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
               {busy && (
                 <div className="absolute inset-0 flex items-center justify-center bg-shell-bg-deep/60 backdrop-blur-sm">
                   <Loader2 size={28} className="animate-spin text-accent" />
+                </div>
+              )}
+              {downgradeNotice && (
+                <div
+                  role="status"
+                  className="absolute inset-x-0 top-0 flex items-start gap-1.5 border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11.5px] font-medium leading-snug text-amber-400/90 backdrop-blur-sm"
+                >
+                  <AlertTriangle
+                    size={13}
+                    className="mt-0.5 shrink-0 text-amber-400"
+                    aria-hidden="true"
+                  />
+                  {downgradeNotice}
                 </div>
               )}
             </div>
@@ -537,7 +598,14 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
                 onChange={setTier}
                 options={[
                   { value: "fast", label: "Fast" },
-                  { value: "quality", label: "Quality" },
+                  {
+                    value: "quality",
+                    label: "Quality",
+                    disabled: !qualityHealthy,
+                    title: qualityHealthy
+                      ? undefined
+                      : "Quality model not installed",
+                  },
                 ]}
               />
             </div>

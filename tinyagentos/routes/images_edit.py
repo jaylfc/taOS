@@ -522,7 +522,14 @@ async def upscale_image(request: Request, body: UpscaleRequest):
 @router.get("/api/images/edit/capabilities")
 async def edit_capabilities(request: Request):
     """Report which editing capabilities currently have a healthy backend,
-    so the frontend can gate ops."""
+    so the frontend can gate ops.
+
+    ``image_editing_tiers`` additionally reports per-tier health for
+    image-editing (quality = flux-fill, fast = iopaint) so the UI can
+    disable the Quality option when only the fast backend is healthy,
+    instead of silently downgrading a Quality request to the
+    prompt-ignoring iopaint eraser.
+    """
     catalog = getattr(request.app.state, "backend_catalog", None)
 
     def has(capability: str) -> bool:
@@ -530,8 +537,22 @@ async def edit_capabilities(request: Request):
             return False
         return bool(catalog.backends_with_capability(capability))
 
+    def tier_healthy(capability: str, tier: str) -> bool:
+        """True if the tier's *preferred* backend type is actually healthy
+        (not just some fallback type for the capability)."""
+        if catalog is None:
+            return False
+        primary = (_TIER_PREFERENCE.get(capability, {}).get(tier) or [None])[0]
+        if primary is None:
+            return False
+        return any(b.type == primary for b in catalog.backends_with_capability(capability))
+
     return {
         "image_editing": has("image-editing"),
         "background_removal": has("background-removal"),
         "upscale": has("upscale"),
+        "image_editing_tiers": {
+            "quality": tier_healthy("image-editing", "quality"),
+            "fast": tier_healthy("image-editing", "fast"),
+        },
     }

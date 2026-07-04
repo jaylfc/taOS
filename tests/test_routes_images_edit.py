@@ -15,6 +15,7 @@ from tinyagentos.routes.images_edit import (
     FluxFillClient,
     _get_edit_backend,
     _require_image,
+    edit_capabilities,
     edit_image,
 )
 
@@ -376,3 +377,43 @@ async def test_save_oserror_maps_to_clean_error(tmp_path):
     assert result.status_code == 500
     payload = _json.loads(bytes(result.body))
     assert "Could not save result" in payload["error"]
+
+
+# --------------------------------------------------------------------------- #
+#  edit_capabilities: per-tier health so the UI can hide Quality when only     #
+#  the fast (iopaint) backend is actually healthy, instead of letting the     #
+#  frontend offer a Quality tier that silently downgrades.                    #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_capabilities_both_tiers_healthy_when_flux_fill_present():
+    """Both flux-fill and iopaint healthy -> quality and fast both report healthy."""
+    catalog = _FakeCatalog(
+        {"image-editing": [_backend("flux", "flux-fill"), _backend("io", "iopaint")]}
+    )
+    request = _request_with_catalog(catalog)
+    result = await edit_capabilities(request)
+
+    assert result["image_editing"] is True
+    assert result["image_editing_tiers"] == {"quality": True, "fast": True}
+
+
+@pytest.mark.asyncio
+async def test_capabilities_quality_unhealthy_when_only_iopaint_present():
+    """Only iopaint healthy -> quality reports unhealthy (would silently
+    downgrade to the prompt-ignoring eraser), fast still reports healthy."""
+    catalog = _FakeCatalog({"image-editing": [_backend("io", "iopaint")]})
+    request = _request_with_catalog(catalog)
+    result = await edit_capabilities(request)
+
+    assert result["image_editing"] is True  # some backend is healthy
+    assert result["image_editing_tiers"] == {"quality": False, "fast": True}
+
+
+@pytest.mark.asyncio
+async def test_capabilities_no_catalog_reports_all_unhealthy():
+    """No live catalog -> every capability and tier reports unhealthy, never raises."""
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(backend_catalog=None)))
+    result = await edit_capabilities(request)
+
+    assert result["image_editing"] is False
+    assert result["image_editing_tiers"] == {"quality": False, "fast": False}

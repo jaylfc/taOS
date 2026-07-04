@@ -14,7 +14,14 @@ export function Segmented<T extends string>({
   onChange,
   ariaLabel,
 }: {
-  options: readonly { value: T; label: string }[];
+  options: readonly {
+    value: T;
+    label: string;
+    /** Disable this option (e.g. a tier whose backend isn't installed). */
+    disabled?: boolean;
+    /** Tooltip shown on the disabled option. */
+    title?: string;
+  }[];
   value: T;
   onChange: (v: T) => void;
   ariaLabel: string;
@@ -33,8 +40,10 @@ export function Segmented<T extends string>({
             type="button"
             role="radio"
             aria-checked={on}
+            disabled={opt.disabled}
+            title={opt.title}
             onClick={() => onChange(opt.value)}
-            className={`rounded-full px-3 py-[5px] text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+            className={`rounded-full px-3 py-[5px] text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-40 ${
               on
                 ? "bg-shell-surface-active text-shell-text"
                 : "text-shell-text-secondary hover:text-shell-text"

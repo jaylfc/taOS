@@ -421,12 +421,14 @@ export function ImagesApp({ windowId: _windowId }: { windowId: string }) {
             <EditView
               image={editImage}
               onApplyAdjust={applyAdjust}
-              onEdited={async ({ url, image_ref }) => {
+              onEdited={async ({ url, image_ref, backend }) => {
                 // Refresh the library and re-select the new result for
-                // further editing.
+                // further editing. `backend` is the tier that actually ran
+                // (may differ from what was requested — see EditView's
+                // downgrade notice), so it replaces the stale value here too.
                 await fetchImages();
                 setEditImage((cur) =>
-                  cur ? { ...cur, id: image_ref, url } : cur,
+                  cur ? { ...cur, id: image_ref, url, backend } : cur,
                 );
                 setLibrarySelectedId(image_ref);
               }}
