@@ -59,9 +59,24 @@ export interface Song {
   tracks: Track[];
 }
 
+/** A song that has never been saved to the server carries a client-minted id
+ *  with this prefix. `songs-api.saveSong` uses `isLocalSongId` to decide POST
+ *  (create) vs PUT (update) -- the one documented place this convention lives.
+ *  The server never mints ids with this prefix (it uses "song-…"). */
+export const LOCAL_ID_PREFIX = "local-";
+
+export function newLocalSongId(): string {
+  return `${LOCAL_ID_PREFIX}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** True for an in-memory song that has not yet been persisted server-side. */
+export function isLocalSongId(id: string): boolean {
+  return id.startsWith(LOCAL_ID_PREFIX);
+}
+
 export function createEmptySong(name = "Untitled Song"): Song {
   return {
-    id: `local-${Math.random().toString(36).slice(2, 10)}`,
+    id: newLocalSongId(),
     name,
     tempo: 92,
     key: "A min",
@@ -88,7 +103,7 @@ function note(pitch: number, startTick: number, durationTicks: number, velocity 
 export function createDefaultSong(): Song {
   const beat = TICKS_PER_BEAT;
   return {
-    id: `local-${Math.random().toString(36).slice(2, 10)}`,
+    id: newLocalSongId(),
     name: "Untitled Song",
     tempo: 92,
     key: "A min",

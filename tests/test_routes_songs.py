@@ -79,6 +79,28 @@ async def test_update_missing_song_returns_404(client):
 
 
 @pytest.mark.asyncio
+async def test_create_rejects_oversize_content(client):
+    resp = await client.post(
+        "/api/songs",
+        json={"name": "Big", "content": "x" * (5 * 1024 * 1024 + 1)},
+    )
+    assert resp.status_code == 413
+    assert "content" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_oversize_content(client):
+    resp = await client.post("/api/songs", json={"name": "S", "content": "{}"})
+    song_id = resp.json()["id"]
+
+    resp = await client.put(
+        f"/api/songs/{song_id}",
+        json={"content": "x" * (5 * 1024 * 1024 + 1)},
+    )
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
 async def test_delete_missing_song_returns_404(client):
     resp = await client.delete("/api/songs/missing-id")
     assert resp.status_code == 404

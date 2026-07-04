@@ -160,6 +160,13 @@ function buildInstrument(instrumentId: string, channel: Tone.Channel): Instrumen
 export class AudioEngine {
   private started = false;
   private tracks = new Map<string, TrackNodes>();
+  /** Stored so it survives a full `loadSong()` rebuild (which recreates every
+   *  track Channel and would otherwise leave the shared Destination at its
+   *  previous, possibly default, level). */
+  private masterVolume = 80;
+  /** The single in-flight Sounds-library preview, so a rapid second click
+   *  can dispose the first's nodes and cancel its cleanup timer. */
+  private preview: { instrument: InstrumentHandle; channel: Tone.Channel; timeout: ReturnType<typeof setTimeout> } | null = null;
 
   /** Must be called from a user gesture handler (browser autoplay policy). */
   async ensureStarted(): Promise<void> {
@@ -178,20 +185,27 @@ export class AudioEngine {
     for (const track of song.tracks) {
       this.buildTrack(track);
     }
+    // The Destination is shared and untouched by teardown, but re-apply the
+    // stored master level anyway so a load never silently resets the fader.
+    Tone.getDestination().volume.value = volumeToDb(this.masterVolume);
   }
 
-  private buildTrack(track: Track): void {
-    const channel = new Tone.Channel({
-      volume: volumeToDb(track.volume),
-      pan: track.pan,
-      mute: track.muted,
-      solo: track.soloed,
-    }).toDestination();
+  /** Re-schedule one track's notes in place, WITHOUT stopping the transport or
+   *  re-instantiating its instrument/channel. This is the hot path for note
+   *  edits: editing a note during playback keeps playing and never re-fetches
+   *  smplr samples. No-op (falls back to a rebuild caller-side) if the track
+   *  has no engine nodes yet. */
+  rescheduleTrack(track: Track): void {
+    const nodes = this.tracks.get(track.id);
+    if (!nodes) return;
+    const transport = Tone.getTransport();
+    for (const id of nodes.eventIds) transport.clear(id);
+    nodes.eventIds = this.scheduleTrackNotes(track, nodes.instrument);
+  }
 
-    const instrument = buildInstrument(track.instrument, channel);
+  private scheduleTrackNotes(track: Track, instrument: InstrumentHandle): number[] {
     const eventIds: number[] = [];
     const transport = Tone.getTransport();
-
     for (const clip of track.clips) {
       for (const note of clip.notes) {
         const absoluteTicks = clip.startBar * BEATS_PER_BAR * TICKS_PER_BEAT + note.startTick;
@@ -204,7 +218,25 @@ export class AudioEngine {
         eventIds.push(eventId);
       }
     }
+    return eventIds;
+  }
 
+  /** True when the engine already has nodes for this track (so a note edit can
+   *  go through the incremental `rescheduleTrack` path). */
+  hasTrack(trackId: string): boolean {
+    return this.tracks.has(trackId);
+  }
+
+  private buildTrack(track: Track): void {
+    const channel = new Tone.Channel({
+      volume: volumeToDb(track.volume),
+      pan: track.pan,
+      mute: track.muted,
+      solo: track.soloed,
+    }).toDestination();
+
+    const instrument = buildInstrument(track.instrument, channel);
+    const eventIds = this.scheduleTrackNotes(track, instrument);
     this.tracks.set(track.id, { channel, instrument, eventIds });
   }
 
@@ -233,9 +265,11 @@ export class AudioEngine {
 
   /** "bar.beat.sixteenth", 1-indexed, e.g. "003.2.1" -- matches the original
    *  transport readout. Parsed from Tone.Transport's "bar:beat:sixteenth"
-   *  position string. */
+   *  position string. When stopped, `position` can read back as a bare number
+   *  (seconds) with no colons -- guard that so we don't render it as bar 1e6. */
   getPositionLabel(): string {
     const raw = String(Tone.getTransport().position);
+    if (!raw.includes(":")) return "001.1.1";
     const [barStr = "0", beatStr = "0", sixteenthStr = "0"] = raw.split(":");
     const bar = Math.trunc(Number(barStr)) + 1;
     const beat = Math.trunc(Number(beatStr)) + 1;
@@ -257,28 +291,44 @@ export class AudioEngine {
   }
 
   /** 0-100, applied to Tone's shared Destination (every track's Channel
-   *  feeds into it via `.toDestination()`). */
+   *  feeds into it via `.toDestination()`). Stored so `loadSong()` can
+   *  re-apply it after rebuilding the graph. */
   setMasterVolume(volume: number): void {
+    this.masterVolume = volume;
     Tone.getDestination().volume.value = volumeToDb(volume);
   }
 
+  private disposePreview(): void {
+    if (!this.preview) return;
+    clearTimeout(this.preview.timeout);
+    this.preview.instrument.dispose();
+    this.preview.channel.dispose();
+    this.preview = null;
+  }
+
   /** Preview a single note on an instrument without touching the loaded
-   *  song's schedule -- used by the Sounds library. */
+   *  song's schedule -- used by the Sounds library. A second click disposes
+   *  the previous preview (and cancels its cleanup timer) before starting the
+   *  next, so rapid clicks can't leak channels or cut off the newest note. */
   async previewInstrument(instrumentId: string, pitch = 60): Promise<void> {
     await this.ensureStarted();
+    this.disposePreview();
     const channel = new Tone.Channel({ volume: volumeToDb(80) }).toDestination();
     const instrument = buildInstrument(instrumentId, channel);
     const now = Tone.now();
     instrument.trigger(pitch, 0.7, now, 0.85);
-    setTimeout(() => {
+    const timeout = setTimeout(() => {
       instrument.dispose();
       channel.dispose();
+      this.preview = null;
     }, 1500);
+    this.preview = { instrument, channel, timeout };
   }
 
   dispose(): void {
     Tone.getTransport().stop();
     Tone.getTransport().cancel(0);
+    this.disposePreview();
     this.teardownTracks();
   }
 }

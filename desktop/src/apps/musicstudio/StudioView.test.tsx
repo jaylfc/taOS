@@ -111,7 +111,7 @@ describe("StudioView", () => {
     expect(notesAfter).toBe(notesBefore + 1);
   });
 
-  it("clicking an existing note removes it", () => {
+  it("clicking an existing note SELECTS it (does not delete)", () => {
     render(<Harness />);
     fireEvent.click(screen.getByText("Bass"));
 
@@ -122,6 +122,27 @@ describe("StudioView", () => {
     const firstNote = within(grid).getAllByRole("button", { name: /^Note /i })[0];
     fireEvent.pointerDown(firstNote);
     fireEvent.pointerUp(window);
+
+    // Single click is non-destructive: the note count is unchanged and the
+    // clicked note is now selected.
+    const after = within(grid).getAllByRole("button", { name: /^Note /i });
+    expect(after).toHaveLength(before);
+    expect(after[0]).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("deletes the selected note only on an explicit Delete key press", () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByText("Bass"));
+
+    const grid = screen.getByRole("grid", { name: /Piano roll for/i });
+    const before = within(grid).getAllByRole("button", { name: /^Note /i }).length;
+    expect(before).toBeGreaterThan(0);
+
+    // Select the first note (click is non-destructive), then Delete removes it.
+    const firstNote = within(grid).getAllByRole("button", { name: /^Note /i })[0];
+    fireEvent.pointerDown(firstNote);
+    fireEvent.pointerUp(window);
+    fireEvent.keyDown(grid, { key: "Delete" });
 
     const after = within(grid).getAllByRole("button", { name: /^Note /i }).length;
     expect(after).toBe(before - 1);

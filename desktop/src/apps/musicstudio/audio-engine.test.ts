@@ -22,6 +22,7 @@ vi.mock("tone", () => {
     pan: { value: number };
     mute: boolean;
     solo: boolean;
+    disposed = false;
     constructor(opts: { volume?: number; pan?: number; mute?: boolean; solo?: boolean } = {}) {
       this.volume = { value: opts.volume ?? 0 };
       this.pan = { value: opts.pan ?? 0 };
@@ -35,7 +36,9 @@ vi.mock("tone", () => {
     toDestination() {
       return this;
     }
-    dispose() {}
+    dispose() {
+      this.disposed = true;
+    }
   }
 
   class FakeSynth {
@@ -67,12 +70,14 @@ vi.mock("tone", () => {
     }),
   };
 
+  const destination = { volume: { value: 0 } };
+
   return {
     start: vi.fn(async () => {}),
     now: vi.fn(() => 0),
     getTransport: () => transport,
     getContext: () => ({ rawContext: { createGain: () => ({ connect() {}, disconnect() {} }) } }),
-    getDestination: () => ({ volume: { value: 0 } }),
+    getDestination: () => destination,
     connect: vi.fn(),
     gainToDb: (gain: number) => (gain <= 0 ? -Infinity : 20 * Math.log10(gain)),
     Midi: (pitch: number) => ({ toFrequency: () => 440 * 2 ** ((pitch - 69) / 12) }),
@@ -216,5 +221,75 @@ describe("AudioEngine transport controls", () => {
     const engine = new AudioEngine();
     Tone.getTransport().position = "2:1:3";
     expect(engine.getPositionLabel()).toBe("003.2.4");
+  });
+
+  it("getPositionLabel returns the reset label when the transport reads a bare number (stopped)", () => {
+    const engine = new AudioEngine();
+    // After stop() Tone can report `position` as bare seconds (no colons);
+    // that must not be parsed as bar:beat:sixteenth.
+    (Tone.getTransport() as unknown as { position: string | number }).position = 12.5;
+    expect(engine.getPositionLabel()).toBe("001.1.1");
+  });
+});
+
+describe("AudioEngine.rescheduleTrack (incremental note edits)", () => {
+  it("reschedules a single track WITHOUT stopping the transport or rebuilding instruments", () => {
+    const engine = new AudioEngine();
+    const song = createDefaultSong();
+    engine.loadSong(song);
+
+    const channelsAfterLoad = channelInstances.length;
+    (Tone.getTransport().stop as ReturnType<typeof vi.fn>).mockClear();
+    scheduledEvents.length = 0;
+
+    // Edit the bass track's notes (add one) and reschedule just that track.
+    const bass = { ...song.tracks[1] };
+    bass.clips = bass.clips.map((c) => ({
+      ...c,
+      notes: [...c.notes, { id: "extra", pitch: 40, startTick: 0, durationTicks: 120, velocity: 0.8 }],
+    }));
+
+    engine.rescheduleTrack(bass);
+
+    // Transport was NOT stopped and no new Channel/instrument was created.
+    expect(Tone.getTransport().stop).not.toHaveBeenCalled();
+    expect(channelInstances.length).toBe(channelsAfterLoad);
+    // The track's notes were re-scheduled (its old events cleared, new ones added).
+    expect(Tone.getTransport().clear).toHaveBeenCalled();
+    expect(scheduledEvents.length).toBe(bass.clips.reduce((n, c) => n + c.notes.length, 0));
+  });
+
+  it("is a no-op for a track the engine has no nodes for", () => {
+    const engine = new AudioEngine();
+    engine.loadSong(createDefaultSong());
+    expect(engine.hasTrack("ghost")).toBe(false);
+    expect(() =>
+      engine.rescheduleTrack({ id: "ghost", name: "x", instrument: "synth-keys", clips: [], volume: 70, pan: 0, muted: false, soloed: false }),
+    ).not.toThrow();
+  });
+});
+
+describe("AudioEngine.setMasterVolume", () => {
+  it("re-applies the stored master volume after a loadSong() rebuild", () => {
+    const engine = new AudioEngine();
+    engine.loadSong(createDefaultSong());
+    engine.setMasterVolume(30);
+    expect(Tone.getDestination().volume.value).toBeCloseTo(volumeToDb(30), 5);
+
+    // Switching songs rebuilds the graph; the master fader must not reset.
+    engine.loadSong(createDefaultSong());
+    expect(Tone.getDestination().volume.value).toBeCloseTo(volumeToDb(30), 5);
+  });
+});
+
+describe("AudioEngine.previewInstrument", () => {
+  it("disposes the previous preview before starting a new one (no leak)", async () => {
+    const engine = new AudioEngine();
+    await engine.previewInstrument("synth-lead");
+    const firstPreviewChannel = channelInstances[channelInstances.length - 1];
+    expect(firstPreviewChannel.disposed).toBe(false);
+
+    await engine.previewInstrument("synth-keys");
+    expect(firstPreviewChannel.disposed).toBe(true);
   });
 });

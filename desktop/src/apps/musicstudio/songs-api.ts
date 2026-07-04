@@ -1,6 +1,11 @@
-import type { Song } from "./types";
+import { isLocalSongId, type Song } from "./types";
 
 /** Thin client for tinyagentos/routes/songs.py's persistence endpoints. */
+
+/** Client-side mirror of routes/songs.py's MAX_CONTENT_BYTES (5 MB), so an
+ *  oversized song fails with a friendly message before the network round-trip
+ *  rather than as a raw 413. */
+const MAX_CONTENT_BYTES = 5 * 1024 * 1024;
 
 export interface SongMeta {
   id: string;
@@ -30,7 +35,15 @@ function songToContent(song: Song): string {
 }
 
 function recordToSong(record: SongRecord): Song {
-  const parsed = JSON.parse(record.content || "{}") as Partial<Song>;
+  let parsed: Partial<Song>;
+  try {
+    parsed = JSON.parse(record.content || "{}") as Partial<Song>;
+  } catch {
+    // Corrupt/truncated content shouldn't throw a raw SyntaxError at the UI;
+    // surface a friendly, catchable error the caller can render as an
+    // "couldn't load this song" state.
+    throw new Error(`Couldn't load "${record.name}" — its saved data is corrupt.`);
+  }
   return {
     id: record.id,
     name: record.name,
@@ -56,8 +69,12 @@ export async function getSong(id: string): Promise<Song> {
 /** Create or update a song. Returns the song with its (possibly new,
  *  server-assigned) id. */
 export async function saveSong(song: Song): Promise<Song> {
-  const body = JSON.stringify({ name: song.name, content: songToContent(song) });
-  const isNew = song.id.startsWith("local-");
+  const content = songToContent(song);
+  if (new Blob([content]).size > MAX_CONTENT_BYTES) {
+    throw new Error("This song is too large to save (over 5 MB). Try removing some tracks or notes.");
+  }
+  const body = JSON.stringify({ name: song.name, content });
+  const isNew = isLocalSongId(song.id);
   const res = await fetch(isNew ? "/api/songs" : `/api/songs/${encodeURIComponent(song.id)}`, {
     method: isNew ? "POST" : "PUT",
     headers: { "Content-Type": "application/json" },

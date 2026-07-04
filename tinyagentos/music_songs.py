@@ -88,12 +88,17 @@ class SongStore(BaseStore):
         }
 
     async def update(self, song_id: str, name: str, content: str) -> dict | None:
+        # Use the affected rowcount to tell a real update from a missing row so
+        # callers get None (-> 404) instead of a silent no-op that reads back as
+        # a fresh SELECT.
         now = int(time.time())
-        await self._db.execute(
+        cursor = await self._db.execute(
             "UPDATE songs SET name = ?, content = ?, updated_at = ? WHERE id = ?",
             (name, content, now, song_id),
         )
         await self._db.commit()
+        if cursor.rowcount == 0:
+            return None
         return await self.get(song_id)
 
     async def delete(self, song_id: str) -> bool:

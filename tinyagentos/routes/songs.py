@@ -9,6 +9,11 @@ from tinyagentos.music_songs import SongStore
 
 router = APIRouter()
 
+# A song's `content` holds its serialized tracks/clips/notes JSON. Cap the row
+# so a client can't store an arbitrary-size blob (unbounded SQLite growth /
+# DoS). Same cap and posture as routes/web.py's MAX_CONTENT_BYTES.
+MAX_CONTENT_BYTES = 5 * 1024 * 1024  # 5 MB
+
 # --------------------------------------------------------------------------
 # Music Studio song persistence (Phase 1) -- mirrors routes/office.py's CRUD
 # pattern. Share-as-app (a self-contained .taosapp player bundle, mirroring
@@ -29,6 +34,18 @@ def _validate_name(name: Any) -> str | None:
     return name.strip()
 
 
+def _validate_content(content: Any) -> JSONResponse | None:
+    """Return an error response if `content` is not an acceptably-sized string, else None."""
+    if not isinstance(content, str):
+        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
+        return JSONResponse(
+            {"error": f"content exceeds the {MAX_CONTENT_BYTES} byte limit"},
+            status_code=413,
+        )
+    return None
+
+
 @router.post("/api/songs")
 async def create_song(request: Request):
     body = await request.json()
@@ -36,8 +53,9 @@ async def create_song(request: Request):
     if name is None:
         return JSONResponse({"error": "name is required"}, status_code=400)
     content = body.get("content", "")
-    if not isinstance(content, str):
-        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    err = _validate_content(content)
+    if err is not None:
+        return err
 
     store = _get_store(request)
     song = await store.create(name=name, content=content)
@@ -73,10 +91,13 @@ async def update_song(request: Request, song_id: str):
         return JSONResponse({"error": "name is required"}, status_code=400)
 
     content = body.get("content", existing["content"])
-    if not isinstance(content, str):
-        return JSONResponse({"error": "content must be a string"}, status_code=400)
+    err = _validate_content(content)
+    if err is not None:
+        return err
 
     song = await store.update(song_id=song_id, name=name, content=content)
+    if song is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
     return song
 
 

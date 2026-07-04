@@ -10,8 +10,11 @@ import { findInstrument } from "./instruments";
 /*   - track mixer params (volume/pan/mute/solo) are pushed straight to  */
 /*     the live engine (no rebuild) so sliders feel instant and don't    */
 /*     re-fetch smplr samples on every drag tick.                       */
-/*   - structural changes (tracks/instruments/clips/notes) bump          */
-/*     `structureVersion`, which triggers a full `engine.loadSong()`.    */
+/*   - note/clip edits reschedule ONLY the affected track in place        */
+/*     (`engine.rescheduleTrack`), so editing a note during playback      */
+/*     never stops the transport or re-instantiates smplr instruments.    */
+/*   - track-graph changes (add/remove track, instrument swap) bump        */
+/*     `structureVersion`, which triggers a full `engine.loadSong()`.     */
 /* ------------------------------------------------------------------ */
 
 export function useStudioEngine() {
@@ -120,40 +123,67 @@ export function useStudioEngine() {
     [],
   );
 
-  const addClip = useCallback((trackId: string, startBar: number) => {
-    const clipId = localId("clip");
-    setSong((prev) => ({
-      ...prev,
-      tracks: prev.tracks.map((t) =>
-        t.id === trackId
-          ? { ...t, clips: [...t.clips, { id: clipId, name: t.name, startBar, lengthBars: 1, notes: [] }] }
-          : t,
-      ),
-    }));
-    setStructureVersion((v) => v + 1);
-    return clipId;
+  /** Commit a single-track edit: update the model and reschedule ONLY that
+   *  track in the engine (no transport stop, no instrument re-instantiation).
+   *  Falls back to a full reload if the engine has no nodes for the track yet
+   *  (e.g. it was just added structurally this tick). */
+  const applyTrackEdit = useCallback((updated: Song, trackId: string) => {
+    setSong(updated);
+    const track = updated.tracks.find((t) => t.id === trackId);
+    const engine = engineRef.current!;
+    if (track && engine.hasTrack(trackId)) {
+      engine.rescheduleTrack(track);
+    } else {
+      setStructureVersion((v) => v + 1);
+    }
   }, []);
 
-  const removeClip = useCallback((trackId: string, clipId: string) => {
-    setSong((prev) => ({
-      ...prev,
-      tracks: prev.tracks.map((t) => (t.id === trackId ? { ...t, clips: t.clips.filter((c) => c.id !== clipId) } : t)),
-    }));
-    setStructureVersion((v) => v + 1);
-    setSelectedClipId((prev) => (prev === clipId ? null : prev));
-  }, []);
+  const addClip = useCallback(
+    (trackId: string, startBar: number) => {
+      const clipId = localId("clip");
+      const prev = songRef.current;
+      const updated: Song = {
+        ...prev,
+        tracks: prev.tracks.map((t) =>
+          t.id === trackId
+            ? { ...t, clips: [...t.clips, { id: clipId, name: t.name, startBar, lengthBars: 1, notes: [] }] }
+            : t,
+        ),
+      };
+      applyTrackEdit(updated, trackId);
+      return clipId;
+    },
+    [applyTrackEdit],
+  );
 
-  const updateClipNotes = useCallback((trackId: string, clipId: string, notes: Note[]) => {
-    setSong((prev) => ({
-      ...prev,
-      tracks: prev.tracks.map((t) =>
-        t.id === trackId
-          ? { ...t, clips: t.clips.map((c: Clip) => (c.id === clipId ? { ...c, notes } : c)) }
-          : t,
-      ),
-    }));
-    setStructureVersion((v) => v + 1);
-  }, []);
+  const removeClip = useCallback(
+    (trackId: string, clipId: string) => {
+      const prev = songRef.current;
+      const updated: Song = {
+        ...prev,
+        tracks: prev.tracks.map((t) => (t.id === trackId ? { ...t, clips: t.clips.filter((c) => c.id !== clipId) } : t)),
+      };
+      applyTrackEdit(updated, trackId);
+      setSelectedClipId((cur) => (cur === clipId ? null : cur));
+    },
+    [applyTrackEdit],
+  );
+
+  const updateClipNotes = useCallback(
+    (trackId: string, clipId: string, notes: Note[]) => {
+      const prev = songRef.current;
+      const updated: Song = {
+        ...prev,
+        tracks: prev.tracks.map((t) =>
+          t.id === trackId
+            ? { ...t, clips: t.clips.map((c: Clip) => (c.id === clipId ? { ...c, notes } : c)) }
+            : t,
+        ),
+      };
+      applyTrackEdit(updated, trackId);
+    },
+    [applyTrackEdit],
+  );
 
   const previewInstrument = useCallback((instrumentId: string, pitch?: number) => {
     void engineRef.current!.previewInstrument(instrumentId, pitch);

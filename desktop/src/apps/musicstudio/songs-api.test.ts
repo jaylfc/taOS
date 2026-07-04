@@ -43,6 +43,28 @@ describe("songs-api", () => {
     expect(song).toEqual({ id: "song-1", name: "A", tempo: 100, key: "C maj", timeSig: "4/4", tracks: [] });
   });
 
+  it("getSong surfaces a friendly error (not a raw SyntaxError) when content is corrupt", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({ id: "song-1", name: "Broken", content: "{not valid json", created_at: 1, updated_at: 2 }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getSong("song-1")).rejects.toThrow(/couldn't load/i);
+  });
+
+  it("saveSong rejects an over-cap song before hitting the network", async () => {
+    const song = createDefaultSong();
+    // A single note whose JSON blows past the 5 MB content cap.
+    song.tracks[0].clips[0].notes[0].id = "x".repeat(6 * 1024 * 1024);
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({})));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(saveSong(song)).rejects.toThrow(/too large/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("saveSong POSTs a not-yet-persisted (local-) song and returns the server id", async () => {
     const song = createDefaultSong();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
