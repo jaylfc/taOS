@@ -39,6 +39,7 @@
     "@tiptap/starter-kit": "^3.26.1",
     "@tldraw/assets": "4.5.12",
     "@tldraw/tldraw": "^4.5.10",
+    "@tonejs/midi": "^2.0.28",
     "@tsparticles/engine": "^3.9.1",
     "@tsparticles/react": "^3.0.0",
     "@tsparticles/slim": "^3.9.1",
@@ -67,8 +68,10 @@
     "rehype-highlight": "^7.0.2",
     "rehype-slug": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "smplr": "^1.0.0",
     "tailwind-merge": "^3.6.0",
     "three": "0.184.0",
+    "tone": "^15.1.22",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

@@ -1,5 +1,79 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+/* Tone.js and smplr both require a real AudioContext, which jsdom does not
+ * implement -- mock both so the Studio Engine can mount without them.
+ * (Kept in sync with audio-engine.test.ts's mock.) */
+vi.mock("tone", () => {
+  class FakeChannel {
+    volume: { value: number };
+    pan: { value: number };
+    mute: boolean;
+    solo: boolean;
+    constructor(opts: { volume?: number; pan?: number; mute?: boolean; solo?: boolean } = {}) {
+      this.volume = { value: opts.volume ?? 0 };
+      this.pan = { value: opts.pan ?? 0 };
+      this.mute = opts.mute ?? false;
+      this.solo = opts.solo ?? false;
+    }
+    connect() {
+      return this;
+    }
+    toDestination() {
+      return this;
+    }
+    dispose() {}
+  }
+  class FakeSynth {
+    constructor(_opts?: unknown) {}
+    connect() {
+      return this;
+    }
+    triggerAttackRelease() {}
+    dispose() {}
+  }
+  let idCounter = 0;
+  const transport = {
+    bpm: { value: 120 },
+    position: "0:0:0" as string | number,
+    state: "stopped" as "stopped" | "started",
+    schedule: vi.fn(() => {
+      idCounter += 1;
+      return idCounter;
+    }),
+    clear: vi.fn(),
+    cancel: vi.fn(),
+    start: vi.fn(() => {
+      transport.state = "started";
+    }),
+    stop: vi.fn(() => {
+      transport.state = "stopped";
+    }),
+  };
+  return {
+    start: vi.fn(async () => {}),
+    now: vi.fn(() => 0),
+    getTransport: () => transport,
+    getContext: () => ({ rawContext: { createGain: () => ({ connect() {}, disconnect() {} }) } }),
+    getDestination: () => ({ volume: { value: 0 } }),
+    connect: vi.fn(),
+    gainToDb: (gain: number) => (gain <= 0 ? -Infinity : 20 * Math.log10(gain)),
+    Midi: (pitch: number) => ({ toFrequency: () => 440 * 2 ** ((pitch - 69) / 12) }),
+    Channel: FakeChannel,
+    MembraneSynth: FakeSynth,
+    NoiseSynth: FakeSynth,
+    MonoSynth: FakeSynth,
+    PolySynth: FakeSynth,
+    AMSynth: FakeSynth,
+    Synth: FakeSynth,
+  };
+});
+
+vi.mock("smplr", () => ({
+  SplendidGrandPiano: () => ({ ready: Promise.resolve(), start: vi.fn(), dispose: vi.fn() }),
+  Soundfont: () => ({ ready: Promise.resolve(), start: vi.fn(), dispose: vi.fn() }),
+}));
+
 import { MusicStudioApp } from "./MusicStudioApp";
 
 function renderApp() {
@@ -30,7 +104,6 @@ describe("MusicStudioApp", () => {
     renderApp();
     expect(screen.getByRole("button", { name: "Stop" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Play" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "Record" })).toBeDefined();
   });
 
   it("Studio view shows a track in the track list", () => {

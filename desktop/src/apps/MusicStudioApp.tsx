@@ -1,10 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
-import { LayoutList, Sparkles, Music2, LayoutGrid, Download } from "lucide-react";
+import { LayoutList, Sparkles, Music2, LayoutGrid, Download, FolderOpen } from "lucide-react";
 import { StudioView } from "./musicstudio/StudioView";
 import { ComposeView, type ComposedTrack } from "./musicstudio/ComposeView";
 import { SoundsView } from "./musicstudio/SoundsView";
+import { MixerView } from "./musicstudio/MixerView";
+import { LibraryView } from "./musicstudio/LibraryView";
+import { useStudioEngine } from "./musicstudio/use-studio-engine";
+import { saveSong, exportSongFile } from "./musicstudio/songs-api";
+import { exportSongMidiFile } from "./musicstudio/midi-export";
 
-type MusicView = "studio" | "compose" | "sounds" | "mixer" | "export";
+type MusicView = "studio" | "compose" | "sounds" | "mixer" | "export" | "library";
 
 const RAIL_MAIN: { id: MusicView; label: string; icon: typeof LayoutList }[] = [
   { id: "studio", label: "Studio", icon: LayoutList },
@@ -15,6 +20,10 @@ const RAIL_MAIN: { id: MusicView; label: string; icon: typeof LayoutList }[] = [
 
 export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [view, setView] = useState<MusicView>("studio");
+  const engine = useStudioEngine();
+
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
 
   const [composePrompt, setComposePrompt] = useState("");
   const [composeStyle, setComposeStyle] = useState<string | null>(null);
@@ -95,6 +104,20 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
     );
   }, []);
 
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaveStatus("idle");
+    try {
+      const saved = await saveSong(engine.song);
+      engine.loadSongRecord(saved);
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("error");
+    } finally {
+      setSaving(false);
+    }
+  }, [engine]);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-shell-bg text-shell-text select-none">
       <div className="flex min-h-0 flex-1">
@@ -128,6 +151,21 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
 
           <button
             type="button"
+            aria-label="Library"
+            aria-current={view === "library" ? "page" : undefined}
+            onClick={() => setView("library")}
+            className={`flex h-[46px] w-[46px] flex-col items-center justify-center gap-0.5 rounded-xl text-[9px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+              view === "library"
+                ? "bg-gradient-to-b from-accent/25 to-transparent text-accent"
+                : "text-shell-text-tertiary hover:bg-white/10 hover:text-shell-text-secondary"
+            }`}
+          >
+            <FolderOpen size={21} />
+            Library
+          </button>
+
+          <button
+            type="button"
             aria-label="Export"
             onClick={() => setView("export")}
             className={`flex h-[46px] w-[46px] flex-col items-center justify-center gap-0.5 rounded-xl text-[9px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
@@ -142,7 +180,7 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {view === "studio" && <StudioView />}
+          {view === "studio" && <StudioView engine={engine} onSave={() => void handleSave()} saving={saving} saveStatus={saveStatus} />}
           {view === "compose" && (
             <ComposeView
               prompt={composePrompt}
@@ -158,15 +196,46 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
               onOpenStore={openStore}
             />
           )}
-          {view === "sounds" && <SoundsView />}
-          {view === "mixer" && (
-            <div className="flex flex-1 items-center justify-center text-shell-text-secondary text-[13px]">
-              Mixer coming soon
-            </div>
+          {view === "sounds" && <SoundsView engine={engine} />}
+          {view === "mixer" && <MixerView engine={engine} />}
+          {view === "library" && (
+            <LibraryView
+              onOpenSong={(song) => {
+                engine.loadSongRecord(song);
+                setView("studio");
+              }}
+              onCreateNew={() => {
+                engine.newSong();
+                setView("studio");
+              }}
+            />
           )}
           {view === "export" && (
-            <div className="flex flex-1 items-center justify-center text-shell-text-secondary text-[13px]">
-              Export coming soon
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+              <p className="text-[14px] font-bold">{engine.song.name}</p>
+              <p className="max-w-[360px] text-[12.5px] text-shell-text-secondary">
+                Export downloads this song as a portable <span className="font-mono">.taosong</span> JSON file --
+                tempo, tracks, clips and notes, ready to re-import later.
+              </p>
+              <div className="flex gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => exportSongFile(engine.song)}
+                  className="flex items-center gap-2 rounded-[14px] border-0 px-6 py-3 text-[14px] font-bold text-white"
+                  style={{ background: "linear-gradient(135deg, var(--color-accent-strong, #a9b0c2), var(--color-accent, #8b92a3))" }}
+                >
+                  <Download size={16} />
+                  Download .taosong
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportSongMidiFile(engine.song)}
+                  className="flex items-center gap-2 rounded-[14px] border border-shell-border bg-shell-surface px-6 py-3 text-[14px] font-bold text-shell-text"
+                >
+                  <Download size={16} />
+                  Download .mid
+                </button>
+              </div>
             </div>
           )}
         </div>

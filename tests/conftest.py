@@ -350,6 +350,10 @@ async def client(app, tmp_data_dir):
     if web_sites._db is not None:
         await web_sites.close()
     await web_sites.init()
+    song_store = app.state.song_store
+    if song_store._db is not None:
+        await song_store.close()
+    await song_store.init()
     # app_grants ledger (per-app capability grants) is lifespan-owned; tests that
     # bypass the lifespan must init it so the userspace broker can consult it.
     await app.state.app_grants.init()
@@ -416,6 +420,7 @@ async def client(app, tmp_data_dir):
     await store.close()
     await office_docs.close()
     await web_sites.close()
+    await song_store.close()
     await coding_session_store.close()
     await feedback_store.close()
     await client_log_store.close()
