@@ -7,6 +7,13 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.26] - 2026-07-04
+
+### Added
+- Projects now give a task its full relational context: an agent sees the goal ancestry behind a task (its project and parent-task chain) and what is blocking it, and that "why" is surfaced in the task view and injected into the assigned agent's context when the task becomes ready or is claimed (#158).
+- Routines & Schedules: a project can now run recurring or triggered routines (cron schedule, inbound webhook, or manual/API trigger) that automatically create a task on the board and wake the assigned agent. Managed from a Routines tab in the Projects app; webhook triggers are per-token, rate-limited, and owner-only (#159).
+- Agent governance (first slice): execution policies decide whether a deployed agent's tool call is allowed, denied, or needs human approval. By default the sensitive actions (host code execution and arbitrary outbound HTTP) require an approval that lands in the Decisions inbox; once approved, a short-lived grant lets the agent proceed. Policies are a global default with per-agent overrides; admin operators are never gated (#160).
+
 ## [1.0.0-beta.25] - 2026-07-04
 
 ### Security
