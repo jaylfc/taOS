@@ -3009,6 +3009,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "argon2-cffi" },
+    { name = "croniter" },
     { name = "diff-match-patch" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -3058,6 +3059,7 @@ worker = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "argon2-cffi", specifier = ">=23.1.0" },
+    { name = "croniter", specifier = ">=3.0.3" },
     { name = "diff-match-patch", specifier = ">=20230430" },
     { name = "fastapi", specifier = ">=0.115.0,<0.137" },
     { name = "httpx", specifier = ">=0.27.0" },

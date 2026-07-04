@@ -46,6 +46,8 @@ dependencies = [
     # Diff/patch for the notes revision log: computes and applies text diffs
     # for the Time Machine history layer (tinyagentos/notes/shared_docs_store.py).
     "diff-match-patch>=20230430",
+    # Cron expression parsing for project routines (schedule -> next_fire).
+    "croniter>=3.0.3",
 ]
 
 [project.optional-dependencies]

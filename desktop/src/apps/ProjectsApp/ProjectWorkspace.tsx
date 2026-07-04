@@ -4,6 +4,7 @@ import { ProjectTaskList } from "./ProjectTaskList";
 import { ProjectMembers } from "./ProjectMembers";
 import { ProjectActivity } from "./ProjectActivity";
 import { ProjectDecisions } from "./ProjectDecisions";
+import { ProjectRoutines } from "./ProjectRoutines";
 import { ProjectBoard } from "./board/ProjectBoard";
 import { TaskModal } from "./board/TaskModal";
 import { FilesApp } from "@/apps/FilesApp";
@@ -17,8 +18,8 @@ import { ProjectFab } from "./mobile/ProjectFab";
 import { TaskCreateSheet } from "./mobile/TaskCreateSheet";
 import styles from "./ProjectsApp.module.css";
 
-type Tab = "workspace" | "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity" | "decisions";
-const TABS: Tab[] = ["workspace", "board", "canvas", "tasks", "files", "messages", "members", "activity", "decisions"];
+type Tab = "workspace" | "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity" | "decisions" | "routines";
+const TABS: Tab[] = ["workspace", "board", "canvas", "tasks", "files", "messages", "members", "activity", "decisions", "routines"];
 
 interface AgentSummary {
   id: string;
@@ -59,7 +60,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
   // Mobile pill order: surface Messages right after Workspace so it is reachable
   // without scrolling (on mobile Messages is its own full page, not a squeezed
   // pane inside Workspace).
-  const mobileTabOrder: Tab[] = ["workspace", "messages", "board", "tasks", "canvas", "files", "members", "activity", "decisions"];
+  const mobileTabOrder: Tab[] = ["workspace", "messages", "board", "tasks", "canvas", "files", "members", "activity", "decisions", "routines"];
   const tabPills = mobileTabOrder.map((t) => ({
     id: t,
     label: t.charAt(0).toUpperCase() + t.slice(1),
@@ -220,6 +221,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         {tab === "members" && <ProjectMembers project={project} onChanged={onChanged} />}
         {tab === "activity" && <ProjectActivity projectId={project.id} />}
         {tab === "decisions" && <ProjectDecisions projectId={project.id} />}
+        {tab === "routines" && <ProjectRoutines project={project} />}
       </div>
 
       {isMobile && (tab === "tasks" || tab === "board") && (

@@ -376,6 +376,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         audit=board_audit_store,
         project_store=project_store,
     )
+    from tinyagentos.projects.routines_store import RoutineStore
+    routine_store = RoutineStore(data_dir / "routines.db")
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
     from tinyagentos.decisions.decision_store import DecisionStore
     decision_store = DecisionStore(data_dir / "decisions.db")
@@ -491,6 +493,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await receipt_store.init()
         app.state.receipt_store = receipt_store
         await project_task_store.init()
+        await routine_store.init()
+        app.state.routine_store = routine_store
         await project_canvas_store.init()
         await decision_store.init()
         app.state.decision_store = decision_store
@@ -1160,6 +1164,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("beads bridge failed to start — continuing without")
             app.state.beads_bridge = None
 
+        # Routines executor: sweeps due cron routines every 60s, creating a
+        # project task and best-effort waking the assignee for each. A plain
+        # supervised loop (not a class with its own start/stop) so it rides
+        # the existing bounded cancel_and_wait shutdown path below like every
+        # other background loop.
+        from tinyagentos.projects.routine_runner import routine_tick_loop
+        _create_supervised_task(routine_tick_loop(app.state), app.state._background_tasks)
+
         try:
             canvas_snapshotter = CanvasSnapshotter(
                 project_store=project_store,
@@ -1316,6 +1328,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 logger.exception("canvas snapshotter stop failed")
         await project_canvas_store.close()
         await project_task_store.close()
+        await routine_store.close()
         await project_store.close()
         await chat_channels.close()
         await chat_messages.close()
@@ -1461,6 +1474,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.board_audit = board_audit_store
     app.state.receipt_store = receipt_store
     app.state.project_task_store = project_task_store
+    app.state.routine_store = routine_store
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker
     app.state.project_canvas_store = project_canvas_store

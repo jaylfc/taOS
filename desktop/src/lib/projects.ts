@@ -75,6 +75,23 @@ export type ProjectEvent = {
   ts: number;
 };
 
+export type Routine = {
+  id: string;
+  project_id: string;
+  title: string;
+  body_template: string;
+  assignee_id: string | null;
+  trigger_kind: "cron" | "webhook" | "api";
+  cron_expr: string | null;
+  webhook_token: string | null;
+  enabled: number;
+  last_fired: number | null;
+  next_fire: number | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+};
+
 export type TaskContextAncestor = { id: string; title: string; status: string };
 export type TaskContextBlocker = { id: string; title: string; status: string };
 
@@ -191,6 +208,47 @@ export const projectsApi = {
       }),
     getContext: (tid: string) =>
       http<TaskContext>(`/api/projects/tasks/${tid}/context`),
+  },
+
+  routines: {
+    list: (pid: string) =>
+      http<{ items: Routine[] }>(`/api/projects/${pid}/routines`).then((r) => r.items),
+    create: (
+      pid: string,
+      input: {
+        title: string;
+        body_template?: string;
+        assignee_id?: string | null;
+        trigger_kind: "cron" | "webhook" | "api";
+        cron_expr?: string | null;
+        enabled?: boolean;
+      },
+    ) =>
+      http<Routine>(`/api/projects/${pid}/routines`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    update: (
+      pid: string,
+      rid: string,
+      patch: {
+        title?: string;
+        body_template?: string;
+        assignee_id?: string | null;
+        cron_expr?: string | null;
+        enabled?: boolean;
+      },
+    ) =>
+      http<Routine>(`/api/projects/${pid}/routines/${rid}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    remove: (pid: string, rid: string) =>
+      http<{ ok: boolean }>(`/api/projects/${pid}/routines/${rid}`, { method: "DELETE" }),
+    trigger: (pid: string, rid: string) =>
+      http<{ ok: boolean; task: ProjectTask }>(`/api/projects/${pid}/routines/${rid}/trigger`, {
+        method: "POST",
+      }),
   },
 
   activity: (pid: string) =>
