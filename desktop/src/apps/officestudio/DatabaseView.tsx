@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Save, Sparkles, X } from "lucide-react";
 import {
   addColumn,
   addRow,
   blankTable,
+  type CellValue,
+  changeType,
   COLUMN_TYPES,
   type ColumnType,
   type DbTable,
@@ -13,7 +15,6 @@ import {
   renameColumn,
   serializeTable,
   setCell,
-  setColumnType,
 } from "./db/table";
 
 type OfficeDocListItem = {
@@ -43,6 +44,18 @@ export function DatabaseView() {
   const [error, setError] = useState<string | null>(null);
   const [table, setTable] = useState<DbTable>(() => blankTable());
 
+  // Monotonic token for the in-flight openDoc request. Bumping it invalidates
+  // any pending open (on unmount, on a newer open, or on newDoc), so a slow
+  // response can't land setState on an unmounted/closing view or clobber a
+  // newer selection.
+  const openReqRef = useRef(0);
+  useEffect(
+    () => () => {
+      openReqRef.current += 1;
+    },
+    [],
+  );
+
   const loadList = useCallback(async () => {
     const res = await fetch("/api/office/docs", { credentials: "include" });
     if (!res.ok) throw new Error("Could not load tables");
@@ -68,6 +81,7 @@ export function DatabaseView() {
   }, [loadList]);
 
   const openDoc = async (docId: string) => {
+    const reqId = ++openReqRef.current;
     setError(null);
     try {
       const res = await fetch(`/api/office/docs/${encodeURIComponent(docId)}`, {
@@ -75,16 +89,22 @@ export function DatabaseView() {
       });
       if (!res.ok) throw new Error("Could not open table");
       const doc = (await res.json()) as OfficeDoc;
+      // A newer open (or newDoc/unmount) superseded this request; drop it.
+      if (openReqRef.current !== reqId) return;
       setActiveId(doc.id);
       setTitle(doc.title);
       setUpdatedAt(doc.updated_at);
       setTable(parseTableContent(doc.content));
     } catch (e) {
+      if (openReqRef.current !== reqId) return;
       setError(e instanceof Error ? e.message : "Open failed");
     }
   };
 
   const newDoc = () => {
+    // Invalidate any in-flight open so its response can't overwrite this fresh
+    // table once it resolves.
+    openReqRef.current += 1;
     setActiveId(null);
     setTitle("Untitled table");
     setUpdatedAt(undefined);
@@ -95,6 +115,7 @@ export function DatabaseView() {
   const saveDoc = async () => {
     setSaving(true);
     setError(null);
+    let saved: OfficeDoc;
     try {
       const content = serializeTable(table);
       const payload = { kind: "db", title: title.trim() || "Untitled table", content };
@@ -111,26 +132,42 @@ export function DatabaseView() {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error || "Save failed");
       }
-      const saved = (await res.json()) as OfficeDoc;
-      setActiveId(saved.id);
-      setTitle(saved.title);
-      setUpdatedAt(saved.updated_at);
-      await loadList();
+      saved = (await res.json()) as OfficeDoc;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
-    } finally {
       setSaving(false);
+      return;
+    }
+    // The save itself succeeded: clear the saving state and reflect the saved
+    // doc before refreshing the list.
+    setActiveId(saved.id);
+    setTitle(saved.title);
+    setUpdatedAt(saved.updated_at);
+    setSaving(false);
+    // Refresh the sidebar list separately; a refresh failure must not report
+    // the (already successful) save as failed.
+    try {
+      await loadList();
+    } catch {
+      /* non-fatal: the save succeeded; the list refreshes on the next action */
     }
   };
 
-  const renderCellInput = (columnId: string, type: ColumnType, rowId: string, columnName: string, rowIndex: number, value: unknown) => {
+  const renderCellInput = (
+    columnId: string,
+    type: ColumnType,
+    rowId: string,
+    columnName: string,
+    rowIndex: number,
+    value: CellValue | undefined,
+  ) => {
     const label = `${columnName}, row ${rowIndex + 1}`;
     if (type === "checkbox") {
       return (
         <input
           type="checkbox"
           aria-label={label}
-          checked={Boolean(value)}
+          checked={value === true}
           onChange={(e) => setTable((t) => setCell(t, rowId, columnId, e.target.checked))}
           className="h-4 w-4 accent-accent"
         />
@@ -141,7 +178,7 @@ export function DatabaseView() {
         <input
           type="number"
           aria-label={label}
-          value={value == null ? "" : String(value)}
+          value={typeof value === "number" ? String(value) : ""}
           onChange={(e) =>
             setTable((t) =>
               setCell(t, rowId, columnId, e.target.value === "" ? null : Number(e.target.value)),
@@ -302,7 +339,7 @@ export function DatabaseView() {
                       <select
                         value={col.type}
                         onChange={(e) =>
-                          setTable((t) => setColumnType(t, col.id, e.target.value as ColumnType))
+                          setTable((t) => changeType(t, col.id, e.target.value as ColumnType))
                         }
                         aria-label={`Column type for ${col.name}`}
                         className="mt-1 w-full rounded border-0 bg-transparent text-[10.5px] font-medium text-shell-text-tertiary outline-none"

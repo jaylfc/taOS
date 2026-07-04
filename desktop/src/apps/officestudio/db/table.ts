@@ -86,14 +86,45 @@ export function renameColumn(table: DbTable, columnId: string, name: string): Db
   };
 }
 
-// Changing a column's type resets that column's cells to the new type's
-// default rather than trying to coerce old values (e.g. free text into a
-// checkbox), which would otherwise silently produce nonsense values.
-export function setColumnType(table: DbTable, columnId: string, type: ColumnType): DbTable {
+// Coerces a single cell value into the target column type, preserving data
+// wherever a sensible conversion exists rather than wiping it. Only genuinely
+// unconvertible values collapse to null (or "" for text):
+//   - number:   parsed via Number (booleans -> 1/0); non-numeric -> null
+//   - date:     parsed via Date.parse, normalized to YYYY-MM-DD; invalid -> null
+//   - checkbox: truthiness of the existing value
+//   - text:     String(value); null/undefined -> ""
+export function coerceValue(value: CellValue | undefined, type: ColumnType): CellValue {
+  switch (type) {
+    case "checkbox":
+      return Boolean(value);
+    case "number": {
+      if (value === null || value === undefined || value === "") return null;
+      const n = typeof value === "boolean" ? (value ? 1 : 0) : Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    case "date": {
+      // Only text is a meaningful date source; booleans and numbers (a bare
+      // number string like "42" would otherwise parse to a year via Date.parse)
+      // are not dates and collapse to null.
+      if (typeof value !== "string" || value === "") return null;
+      const ts = Date.parse(value);
+      if (Number.isNaN(ts)) return null;
+      return new Date(ts).toISOString().slice(0, 10);
+    }
+    case "text":
+    default:
+      return value === null || value === undefined ? "" : String(value);
+  }
+}
+
+// Changes a column's type and coerces every existing cell in that column into
+// the new type (see coerceValue), so a type change preserves convertible data
+// instead of silently wiping the column.
+export function changeType(table: DbTable, columnId: string, type: ColumnType): DbTable {
   const columns = table.columns.map((c) => (c.id === columnId ? { ...c, type } : c));
   const rows = table.rows.map((r) => ({
     ...r,
-    cells: { ...r.cells, [columnId]: defaultValueForType(type) },
+    cells: { ...r.cells, [columnId]: coerceValue(r.cells[columnId], type) },
   }));
   return { ...table, columns, rows };
 }
@@ -153,7 +184,19 @@ export function parseTableContent(content: string): DbTable {
     if (!parsed.rows.every(isValidRow)) {
       return blankTable();
     }
-    return { version: 1, columns: parsed.columns as Column[], rows: parsed.rows as Row[] };
+    const columns = parsed.columns as Column[];
+    // Drop any orphan cell keys that don't reference a current column id
+    // (e.g. from a removed column left behind by a manual JSON edit or a
+    // future schema migration), so dead data isn't silently re-serialized.
+    const validIds = new Set(columns.map((c) => c.id));
+    const rows = (parsed.rows as Row[]).map((r) => {
+      const cells: Record<string, CellValue> = {};
+      for (const [colId, value] of Object.entries(r.cells)) {
+        if (validIds.has(colId)) cells[colId] = value;
+      }
+      return { id: r.id, cells };
+    });
+    return { version: 1, columns, rows };
   } catch {
     return blankTable();
   }
