@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -24,6 +25,40 @@ import httpx
 from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
 
 logger = logging.getLogger(__name__)
+
+
+class OpenCodeBinaryNotFoundError(RuntimeError):
+    """Raised when the ``opencode`` binary cannot be located anywhere.
+
+    opencode's official installer (``curl -fsSL https://opencode.ai/install |
+    bash``) drops the binary at ``~/.opencode/bin/opencode`` and makes it
+    reachable from a terminal by appending a PATH export to the user's shell
+    rc file (``.bashrc``/``.zshrc``). Those rc files are only sourced by
+    interactive shells -- the taOS backend normally runs as a systemd service,
+    which never sources them, so ``opencode`` can be "installed system-wide"
+    and still invisible to the service's PATH. See :func:`resolve_opencode_binary`.
+    """
+
+
+def resolve_opencode_binary() -> str | None:
+    """Locate the opencode binary, working around the PATH gap above.
+
+    Checks, in order:
+      1. ``shutil.which("opencode")`` -- covers PATH already containing it.
+      2. ``~/.opencode/bin/opencode`` -- the official installer's fixed
+         location, which a non-login process (e.g. a systemd service) never
+         picks up via PATH alone.
+
+    Returns the resolved path, or ``None`` if opencode isn't installed
+    anywhere we know to look.
+    """
+    found = shutil.which("opencode")
+    if found:
+        return found
+    candidate = Path.home() / ".opencode" / "bin" / "opencode"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -161,15 +196,28 @@ class OpenCodeServer:
         except OSError:
             pass
 
-        self._proc = await asyncio.create_subprocess_exec(
-            self._cfg.binary,
-            "serve",
-            "--port", str(self._cfg.port),
-            "--hostname", "127.0.0.1",
-            stdout=self._log_fh,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-        )
+        # Resolve the bare "opencode" default past the PATH gap described in
+        # OpenCodeBinaryNotFoundError; an explicit binary override (tests, or
+        # a future config knob) is used as-is.
+        binary = self._cfg.binary
+        if binary == "opencode":
+            binary = resolve_opencode_binary() or binary
+
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                binary,
+                "serve",
+                "--port", str(self._cfg.port),
+                "--hostname", "127.0.0.1",
+                stdout=self._log_fh,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise OpenCodeBinaryNotFoundError(
+                f"opencode binary not found (tried {binary!r}). Install it with: "
+                "curl -fsSL https://opencode.ai/install | bash"
+            ) from exc
         logger.info(
             "opencode_runtime: spawned pid=%s port=%d",
             self._proc.pid, self._cfg.port,

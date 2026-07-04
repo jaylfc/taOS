@@ -223,6 +223,68 @@ async def test_ensure_running_raises_on_timeout(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# resolve_opencode_binary / OpenCodeBinaryNotFoundError (#1616)
+#
+# opencode's official installer places the binary at ~/.opencode/bin/opencode
+# and only makes it reachable via a shell-rc PATH export, which a systemd
+# service never sources. resolve_opencode_binary() must fall back to that
+# fixed location, and ensure_running() must translate a genuine "not found"
+# into a distinct, actionable exception rather than a generic subprocess error.
+# ---------------------------------------------------------------------------
+
+class TestResolveOpencodeBinary:
+    def test_prefers_path_lookup(self, monkeypatch):
+        from tinyagentos import opencode_runtime as ocr
+
+        monkeypatch.setattr(ocr.shutil, "which", lambda name: "/usr/local/bin/opencode")
+        assert ocr.resolve_opencode_binary() == "/usr/local/bin/opencode"
+
+    def test_falls_back_to_installer_default_location(self, tmp_path, monkeypatch):
+        from tinyagentos import opencode_runtime as ocr
+
+        fake_home = tmp_path / "home"
+        opencode_dir = fake_home / ".opencode" / "bin"
+        opencode_dir.mkdir(parents=True)
+        binary = opencode_dir / "opencode"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+
+        monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
+        monkeypatch.setattr(ocr.Path, "home", classmethod(lambda cls: fake_home))
+
+        assert ocr.resolve_opencode_binary() == str(binary)
+
+    def test_returns_none_when_not_installed_anywhere(self, tmp_path, monkeypatch):
+        from tinyagentos import opencode_runtime as ocr
+
+        monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
+        monkeypatch.setattr(ocr.Path, "home", classmethod(lambda cls: tmp_path / "no-home"))
+
+        assert ocr.resolve_opencode_binary() is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_raises_binary_not_found_error(tmp_path, monkeypatch):
+    """A bare exec failure (binary missing everywhere) surfaces as
+    OpenCodeBinaryNotFoundError, distinguishable from a start/health failure."""
+    from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
+
+    cfg = _make_server_cfg(tmp_path)
+    server = OpenCodeServer(cfg)
+
+    async def fake_create_subprocess(*args, **kwargs):
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'opencode'")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess)
+    monkeypatch.setattr(
+        "tinyagentos.opencode_runtime.resolve_opencode_binary", lambda: None
+    )
+
+    with pytest.raises(OpenCodeBinaryNotFoundError):
+        await server.ensure_running(deadline_s=0.05, poll_s=0.01)
+
+
+# ---------------------------------------------------------------------------
 # drive_turn — sink wiring
 # ---------------------------------------------------------------------------
 

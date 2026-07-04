@@ -123,6 +123,66 @@ async def test_chat_proxy_not_running_returns_503(client, app):
 
 
 # ---------------------------------------------------------------------------
+# #1616 — opencode-not-found vs opencode-found-but-failed-to-start must
+# return distinct, accurate errors (the old code masked both behind a single
+# generic "check that opencode is installed" message).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chat_opencode_binary_not_found_returns_install_instructions(client, app, monkeypatch):
+    """When opencode genuinely isn't installed anywhere, the error tells the
+    user to install it -- not a vague "unavailable" message."""
+    from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
+
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+    app.state.llm_proxy = _make_mock_proxy(running=True)
+
+    async def fake_ensure_server(state, model):
+        raise OpenCodeBinaryNotFoundError("opencode binary not found (tried 'opencode')")
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_server,
+    )
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hello"}]},
+    )
+    assert resp.status_code == 503
+    error = resp.json().get("error", "")
+    assert "install" in error.lower()
+    assert "opencode.ai/install" in error
+
+
+@pytest.mark.asyncio
+async def test_chat_opencode_start_failure_surfaces_real_error(client, app, monkeypatch):
+    """When opencode is found but fails to start, the real failure reason is
+    surfaced -- not masked behind the same generic message as a missing
+    binary. This must be text distinguishable from the not-found case."""
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+    app.state.llm_proxy = _make_mock_proxy(running=True)
+
+    async def fake_ensure_server(state, model):
+        raise TimeoutError("opencode server on port 4188 did not become healthy within 180.0s")
+
+    monkeypatch.setattr(
+        "tinyagentos.routes.taos_agent.ensure_taos_opencode_server",
+        fake_ensure_server,
+    )
+
+    resp = await client.post(
+        "/api/taos-agent/chat",
+        json={"messages": [{"role": "user", "content": "Hello"}]},
+    )
+    assert resp.status_code == 503
+    error = resp.json().get("error", "")
+    # The real failure reason must be present, not swallowed.
+    assert "did not become healthy" in error
+    assert "install" not in error.lower()
+
+
+# ---------------------------------------------------------------------------
 # Happy-path: two deltas then final → delta, delta, done
 # ---------------------------------------------------------------------------
 
