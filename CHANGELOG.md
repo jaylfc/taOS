@@ -7,6 +7,11 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.23] - 2026-07-04
+
+### Security
+- Fixed a high-severity missing-authorization vulnerability (GHSA-h24f-gp4c-8qjm, CWE-862): the skill-execution endpoint `POST /api/skill-exec/{skill_id}/call` ran built-in skills, including one that executes arbitrary Python on the host, without any authorization check, so an authenticated non-admin user could achieve remote code execution as the backend process user. Skill execution now requires an admin session or the host local token (the credential deployed agents authenticate with); a non-admin session is rejected with 403 before any skill code runs, with a defense-in-depth check at the code-execution sink. Reported by EQSTLab.
+
 ## [1.0.0-beta.22] - 2026-07-04
 
 ### Added
