@@ -132,12 +132,21 @@ describe("EditView — quality tier downgrade honesty", () => {
     render(<EditView image={mockImage} onApplyAdjust={vi.fn()} onEdited={vi.fn()} />);
     fireEvent.click(screen.getByRole("tab", { name: "Extend" }));
 
+    // aria-disabled (not the native disabled attribute) so the option stays
+    // hoverable/focusable and its "Quality model not installed" title tooltip
+    // actually surfaces to the user.
     const qualityOption = await screen.findByRole("radio", { name: "Quality" });
-    await waitFor(() => expect(qualityOption).toBeDisabled());
+    await waitFor(() =>
+      expect(qualityOption).toHaveAttribute("aria-disabled", "true"),
+    );
     expect(qualityOption).toHaveAttribute("title", "Quality model not installed");
 
+    // Clicking the disabled option must not switch the tier.
+    fireEvent.click(qualityOption);
+    expect(qualityOption).toHaveAttribute("aria-checked", "false");
+
     const fastOption = screen.getByRole("radio", { name: "Fast" });
-    expect(fastOption).not.toBeDisabled();
+    expect(fastOption).not.toHaveAttribute("aria-disabled");
   });
 
   it("leaves the Quality tier enabled when its backend is healthy", async () => {
@@ -153,6 +162,8 @@ describe("EditView — quality tier downgrade honesty", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Extend" }));
 
     const qualityOption = await screen.findByRole("radio", { name: "Quality" });
-    await waitFor(() => expect(qualityOption).not.toBeDisabled());
+    await waitFor(() =>
+      expect(qualityOption).not.toHaveAttribute("aria-disabled"),
+    );
   });
 });

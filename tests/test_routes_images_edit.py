@@ -410,6 +410,20 @@ async def test_capabilities_quality_unhealthy_when_only_iopaint_present():
 
 
 @pytest.mark.asyncio
+async def test_capabilities_fast_healthy_when_only_flux_fill_present():
+    """Only flux-fill healthy -> fast reports healthy, because the router
+    (via _get_edit_backend's fallback) serves a fast request on flux-fill,
+    which still honours the prompt. The probe must not disable a tier the
+    router would actually serve. Quality is healthy too (its primary ran)."""
+    catalog = _FakeCatalog({"image-editing": [_backend("flux", "flux-fill")]})
+    request = _request_with_catalog(catalog)
+    result = await edit_capabilities(request)
+
+    assert result["image_editing"] is True
+    assert result["image_editing_tiers"] == {"quality": True, "fast": True}
+
+
+@pytest.mark.asyncio
 async def test_capabilities_no_catalog_reports_all_unhealthy():
     """No live catalog -> every capability and tier reports unhealthy, never raises."""
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(backend_catalog=None)))
