@@ -119,3 +119,8 @@ docs/agent-jobs/
 # Update rollback target (written by the updater, never tracked)
 .taos-rollback
 docs/STATUS.md
+
+# Runtime restart marker (written by Settings-update flow; never track)
+data/pending-restart.json
+# Stray dev screenshot artifacts
+desktop-initial.png
