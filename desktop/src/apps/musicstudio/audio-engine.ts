@@ -174,11 +174,14 @@ export function scheduleTrackNotes(track: Track, instrument: InstrumentHandle): 
   const transport = Tone.getTransport();
   for (const clip of track.clips) {
     for (const note of clip.notes) {
-      const absoluteTicks = clip.startBar * BEATS_PER_BAR * TICKS_PER_BEAT + note.startTick;
+      // Clamp to non-negative so a malformed note can't produce a negative
+      // transport position (which Tone rejects) or a negative duration.
+      const absoluteTicks = Math.max(0, clip.startBar * BEATS_PER_BAR * TICKS_PER_BEAT + note.startTick);
+      const durationTicks = Math.max(0, note.durationTicks);
       const position = ticksToTransportPosition(absoluteTicks);
       const eventId = transport.schedule((time) => {
         const bpm = transport.bpm.value;
-        const durationSeconds = (note.durationTicks / TICKS_PER_BEAT) * (60 / bpm);
+        const durationSeconds = (durationTicks / TICKS_PER_BEAT) * (60 / bpm);
         instrument.trigger(note.pitch, durationSeconds, time, note.velocity);
       }, position);
       eventIds.push(eventId);

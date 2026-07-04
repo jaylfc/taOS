@@ -205,6 +205,12 @@ describe("renderSongToWav", () => {
     await expect(renderSongToWav(makeSong([]))).rejects.toThrow("no notes to export");
     expect(offlineCalls).toHaveLength(0);
   });
+
+  it("rejects a song whose only notes are on muted tracks (nothing audible to render)", async () => {
+    const song = makeSong([makeTrack("muted", { muted: true, clips: [makeClip(0, [makeNote(0, 480)])] })]);
+    await expect(renderSongToWav(song)).rejects.toThrow("no notes to export");
+    expect(offlineCalls).toHaveLength(0);
+  });
 });
 
 describe("audioBufferToWavBlob", () => {

@@ -79,14 +79,15 @@ export interface RenderResult {
   substitutedTracks: string[];
 }
 
-/** Render `song` to a WAV Blob via Tone.Offline. Rejects if the song has no
- *  notes at all (nothing to render). */
+/** Render `song` to a WAV Blob via Tone.Offline. Rejects if no audible track
+ *  has any notes (nothing to render), rather than bouncing silence. */
 export async function renderSongToWav(song: Song): Promise<RenderResult> {
   const tracks = audibleTracks(song);
-  const duration = computeSongDurationSeconds(song);
-  if (duration <= RELEASE_TAIL_SECONDS) {
+  const hasNotes = tracks.some((t) => t.clips.some((c) => c.notes.length > 0));
+  if (!hasNotes) {
     throw new Error("This song has no notes to export.");
   }
+  const duration = computeSongDurationSeconds(song);
 
   const substitutedTracks: string[] = [];
   const sampleRate = Tone.getContext().sampleRate;
@@ -103,7 +104,15 @@ export async function renderSongToWav(song: Song): Promise<RenderResult> {
     transport.start(0);
   }, duration, 2, sampleRate);
 
-  return { blob: audioBufferToWavBlob(buffer.get()!), substitutedTracks };
+  // ToneAudioBuffer.get() is AudioBuffer | undefined; surface the friendly UI
+  // error path rather than crashing on a null assertion if a render yields no
+  // buffer.
+  const rendered = buffer.get();
+  if (!rendered) {
+    throw new Error("The audio renderer produced no output. Please try again.");
+  }
+
+  return { blob: audioBufferToWavBlob(rendered), substitutedTracks };
 }
 
 /** Encode a native AudioBuffer as a 16-bit PCM WAV Blob (standard RIFF/WAVE
