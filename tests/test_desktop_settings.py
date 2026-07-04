@@ -76,3 +76,47 @@ async def test_widgets_roundtrip(store):
 async def test_widgets_default_empty(store):
     result = await store.get_widgets("user")
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_preference_roundtrip(store):
+    """save_preference/get_preference back the active-theme persistence path
+    (#1601): the theme id is stored via this namespaced blob, not the
+    settings/dock rows."""
+    await store.save_preference("user", "themes", {"active_theme_id": "indigo"})
+    pref = await store.get_preference("user", "themes")
+    assert pref == {"active_theme_id": "indigo"}
+
+
+@pytest.mark.asyncio
+async def test_preference_default_empty(store):
+    pref = await store.get_preference("user", "themes")
+    assert pref == {}
+
+
+@pytest.mark.asyncio
+async def test_settings_and_dock_survive_a_new_store_instance_on_the_same_db(tmp_path):
+    """Regression: settings/dock/preferences must be durable across a fresh
+    DesktopSettingsStore pointed at the same db_path (simulating a controller
+    restart or a new login session opening its own store instance), not just
+    within the connection that wrote them."""
+    db_path = tmp_path / "desktop.db"
+
+    first = DesktopSettingsStore(db_path)
+    await first.init()
+    await first.update_settings("user", {"wallpaper": "aurora"})
+    await first.update_dock("user", {"iconSize": "large", "position": "left"})
+    await first.save_preference("user", "themes", {"active_theme_id": "indigo"})
+    await first.close()
+
+    second = DesktopSettingsStore(db_path)
+    await second.init()
+    try:
+        settings = await second.get_settings("user")
+        assert settings["wallpaper"] == "aurora"
+        assert settings["dock"]["iconSize"] == "large"
+        assert settings["dock"]["position"] == "left"
+        pref = await second.get_preference("user", "themes")
+        assert pref == {"active_theme_id": "indigo"}
+    finally:
+        await second.close()

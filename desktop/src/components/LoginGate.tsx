@@ -3,6 +3,7 @@ import { Lock } from "lucide-react";
 import { OnboardingScreen } from "./OnboardingScreen";
 import { OffNetworkScreen } from "./OffNetworkScreen";
 import { SESSION_EXPIRED_EVENT } from "@/lib/auth-guard";
+import { useAuthReadyStore } from "@/stores/auth-ready-store";
 
 interface Props {
   children: React.ReactNode;
@@ -60,6 +61,14 @@ export function LoginGate({ children }: Props) {
   useEffect(() => {
     refreshStatus();
   }, [refreshStatus]);
+
+  // Publish auth-readiness for session-scoped restore effects that live
+  // outside LoginGate's children (e.g. useSessionPersistence, active-theme
+  // restore) — they must not fetch per-user data until this flips true, and
+  // must re-fetch the next time it does (see auth-ready-store.ts).
+  useEffect(() => {
+    useAuthReadyStore.getState().setReady(status.phase === "ready");
+  }, [status.phase]);
 
   // Listen for session-expired events from the global auth guard. Any
   // /api/* call returning 401 fires this; we re-run /auth/status which

@@ -11,6 +11,7 @@ import { useSessionPersistence } from "@/hooks/use-session-persistence";
 import { useDeviceMode } from "@/hooks/use-device-mode";
 import { useIsPwa } from "@/hooks/use-is-pwa";
 import { useThemeStore, restoreActiveTheme, installWebkitRepaintGuards } from "@/stores/theme-store";
+import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp } from "@/registry/app-registry";
@@ -204,14 +205,26 @@ export function App() {
   // primary push channel; useServerNotifications falls back to polling.
   useEventStream();
 
-  // Re-apply the persisted active theme on app boot so a reload keeps the
-  // user's chosen theme app-wide (not only when Settings is opened).
+  // WebKit blanks backdrop-filter surfaces when the tab is hidden then shown
+  // again (switching back into taOS); re-composite them on return. Not
+  // auth-gated: it only installs a visibility listener, no per-user fetch.
   useEffect(() => {
-    void restoreActiveTheme();
-    // WebKit blanks backdrop-filter surfaces when the tab is hidden then shown
-    // again (switching back into taOS); re-composite them on return.
     installWebkitRepaintGuards();
   }, []);
+
+  // Re-apply the persisted active theme once authenticated, so a reload keeps
+  // the user's chosen theme app-wide (not only when Settings is opened).
+  //
+  // SystemShortcuts mounts as a sibling of LoginGate, before LoginGate's own
+  // /auth/status check resolves, so firing this on bare mount races the auth
+  // check: right after a logout there is no session cookie yet, the fetch
+  // inside restoreActiveTheme 401s, and — since this used to run once on
+  // mount — it was never retried once the user logged back in (#1601).
+  // useOnAuthReady defers it until auth is confirmed and re-runs it on a
+  // later re-login.
+  useOnAuthReady(() => {
+    void restoreActiveTheme();
+  });
 
   // Apply reduce-effects / performance mode (#58) as a root attribute so the CSS
   // in tokens.css can strip blur, big shadows and continuous animations on
