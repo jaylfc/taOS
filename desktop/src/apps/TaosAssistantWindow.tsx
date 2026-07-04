@@ -6,15 +6,17 @@ export function TaosAssistantWindow({ windowId }: { windowId: string }) {
   const closeWindow = useProcessStore((s) => s.closeWindow);
   const removeWindow = useProcessStore((s) => s.removeWindow);
   const snap = useProcessStore((s) => s.snapWindow);
-  const isPopOut = useProcessStore((s) => s.windows.find((w) => w.id === windowId)?.props?.popOut);
 
   const handleClose = useCallback(() => {
     closeWindow(windowId);
     setTimeout(() => removeWindow(windowId), 250);
   }, [closeWindow, removeWindow, windowId]);
 
-  if (!isPopOut) return null;
-
+  // This window renders the chat unconditionally: it is reached both via the
+  // docked panel's "Pop out" button (which passes props.popOut) and directly
+  // from the Launchpad/dock ("taos-agent" is a regular app-registry entry).
+  // Gating render on props.popOut left the direct-launch path with nothing
+  // to show -- an empty window with no error, no content (#1615).
   return (
     <div className="h-full w-full flex flex-col bg-shell-bg-deep">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5 shrink-0 select-none">
