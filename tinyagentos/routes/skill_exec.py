@@ -25,6 +25,30 @@ router = APIRouter()
 _bg_receipt_tasks: set = set()
 
 
+def _is_admin_or_local_token(request: Request) -> bool:
+    """True if the caller is an admin session or presented the host's local token.
+
+    Skill EXECUTION (unlike the read-only discovery GET) must never be reachable
+    by a plain non-admin user session -- built-in skills include ``code_exec``,
+    which runs ``subprocess.run(["python3", "-c", code])`` against attacker-
+    supplied code, i.e. host RCE (GHSA-h24f-gp4c-8qjm). The legitimate callers
+    are: (a) an admin session, or (b) a deployed agent presenting the
+    ``TAOS_LOCAL_TOKEN`` local token (see ``deployer.py`` + ``AuthManager.
+    validate_local_token``).
+
+    ``AuthMiddleware`` (tinyagentos/auth_middleware.py) sets both signals on
+    ``request.state``: ``is_admin`` is True for an admin session AND for a
+    local token that maps to the primary user, while ``via == "local_token"``
+    is set for a valid local token even in the pre-onboarding edge case where
+    there is no primary user yet (so ``is_admin`` is False there). Checking
+    both keeps agent tool-calls working in every state the middleware allows,
+    without ever accepting a bare non-admin user session.
+    """
+    if getattr(request.state, "is_admin", False):
+        return True
+    return getattr(request.state, "via", None) == "local_token"
+
+
 # ---------------------------------------------------------------------------
 # Built-in skill implementations
 # ---------------------------------------------------------------------------
@@ -145,8 +169,24 @@ async def _skill_web_search(args: dict, request: Request) -> dict:
 
 
 async def _skill_code_exec(args: dict, request: Request) -> dict:
-    """Execute Python code in a basic sandbox."""
+    """Execute Python code in a basic sandbox.
+
+    SECURITY: this is host RCE by design -- ``subprocess.run`` against caller-
+    supplied code with no sandboxing (GHSA-h24f-gp4c-8qjm). ``execute_skill``
+    already gates every skill EXECUTION to admin-or-local-token before this
+    function is ever reached; the check below is deliberate defense-in-depth
+    so a regression in that route-level gate (or any future call site that
+    invokes this function directly) cannot resurrect the non-admin RCE. Do
+    not remove it because it looks redundant.
+
+    TODO(#131): move this to a sandboxed runner (container/seccomp/gVisor)
+    instead of a bare subprocess against the host's python3 -- this comment
+    marks the follow-up; it is out of scope for the authz fix.
+    """
     import subprocess
+
+    if not _is_admin_or_local_token(request):
+        return {"error": "forbidden: code_exec requires admin or local-token auth"}
 
     code = args.get("code", "")
     try:
@@ -496,7 +536,17 @@ def _capture_tool_receipt(request: Request, skill_id: str, args: dict, result) -
 
 @router.post("/api/skill-exec/{skill_id}/call")
 async def execute_skill(skill_id: str, request: Request):
-    """Execute a skill with the given arguments."""
+    """Execute a skill with the given arguments.
+
+    Gated to admin or the host local token (see ``_is_admin_or_local_token``
+    above) -- this EXECUTES skills, including ``code_exec`` (host RCE), so a
+    plain non-admin user session must never reach ``impl(...)`` below
+    (GHSA-h24f-gp4c-8qjm). Checked first, before touching the skill store or
+    parsing args, so no attacker-controlled work happens pre-authorization.
+    """
+    if not _is_admin_or_local_token(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
     body = await request.json()
     args = body.get("args", {})
     # Propagate agent_name from the request body into args so file-read

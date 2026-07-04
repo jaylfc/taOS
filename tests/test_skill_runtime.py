@@ -26,6 +26,17 @@ from tinyagentos.skills import SkillStore
 @pytest_asyncio.fixture
 async def app_with_store(tmp_path):
     app = FastAPI()
+
+    # This bare app has no AuthMiddleware, so simulate an already-authenticated
+    # admin request (request.state.is_admin) -- these tests exercise the skill
+    # implementations themselves, not the admin-or-local-token authz gate that
+    # execute_skill now enforces (see test_skill_exec_authz.py for that).
+    @app.middleware("http")
+    async def _fake_admin_auth(request, call_next):
+        request.state.is_admin = True
+        request.state.via = "session"
+        return await call_next(request)
+
     app.include_router(router)
     store = SkillStore(tmp_path / "skills.db")
     await store.init()
