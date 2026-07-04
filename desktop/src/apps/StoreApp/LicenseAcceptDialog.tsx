@@ -64,7 +64,7 @@ export function LicenseAcceptDialog({
         <div className="px-5 py-4 space-y-2.5">
           <p className="text-[13px] text-shell-text-secondary leading-relaxed">{text}</p>
           <p className="text-[11px] text-shell-text-tertiary">
-            Weights license: <span className="text-shell-text font-medium">{weightsLicense}</span>
+            Weights license: <span className="text-shell-text font-medium">{weightsLicense || "non-commercial (label unavailable)"}</span>
           </p>
         </div>
         {error && (

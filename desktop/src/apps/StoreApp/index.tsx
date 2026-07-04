@@ -470,6 +470,10 @@ function AppCard({
 
   const handleLicenseAccept = async () => {
     setLicenseSubmitting(true);
+    // Flip busy back on so the card's install-progress poller (keyed on busy,
+    // and cleared by handleAction when the gate returned) runs during the real
+    // accepted install instead of the card sitting idle behind the dialog.
+    setBusy(true);
     try {
       const outcome = await postInstall(true);
       if (outcome !== "gated") setLicenseGate(null);
