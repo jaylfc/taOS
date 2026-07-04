@@ -7,6 +7,19 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.27] - 2026-07-04
+
+### Added
+- Office Suite is now complete: a Database view joins Write, Calc and Presentations, so you can build simple tables (typed columns, rows, inline editing) that save alongside your other documents.
+- Office AI: Write now has working Rewrite, Shorten, Continue and Change tone actions, and Calc has a working "Ask your data" panel, both powered by your taOS agent. AI edits in Write are a single undo step (one Ctrl+Z restores your original text), and untrusted document/spreadsheet content is passed to the model as clearly delimited data, not instructions.
+- Web Studio can now generate a real website from a prompt via your taOS agent (with a safe fallback to templates), previews it in a sandboxed frame, and shares or installs it as a taOS app.
+- Music Studio is now a playable browser DAW: a Tone.js audio engine with a multi-track timeline, piano-roll editor, drum step-sequencer and mixer, songs that save to your cluster, and MIDI/JSON export.
+- Design Studio designs now save: open, rename and delete your canvases, which persist across sessions (the editor itself was already fully featured).
+
+### Fixed
+- Images Studio no longer misleads you when the Quality edit tier is unavailable: it now tells you when a request was served by the fast eraser (prompt ignored) and disables the Quality option when its model is not installed, instead of silently downgrading. Reported behavior aligned with what the backend actually does.
+- Settings: changing a Dock setting no longer resets your wallpaper to the default on the next login. Partial settings saves now merge instead of overwriting the rest of your preferences. Reported by @mandresve (#1603, #1601).
+
 ## [1.0.0-beta.26] - 2026-07-04
 
 ### Added
