@@ -89,6 +89,34 @@ export async function installUserspaceApp(file: File, provenance?: string): Prom
   return (await res.json()) as InstallResult;
 }
 
+/** Build a .taosapp package from an in-memory {filename: content} map via
+ * POST /api/userspace-apps/package, returning it as a downloadable File --
+ * used by App Studio's Build/Publish views, which generate an app's files
+ * client-side with no server-side project store of their own (unlike Game
+ * Studio / Web Studio, which package an already-saved project). */
+export async function packageUserspaceApp(name: string, files: Record<string, string>): Promise<File> {
+  const res = await fetch("/api/userspace-apps/package", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, files }),
+  });
+  if (!res.ok) {
+    let detail = `package build failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error) detail = body.error;
+    } catch {
+      // non-JSON error body; keep the status-based message
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="([^"]+)"/);
+  return new File([blob], match?.[1] ?? "app.taosapp", { type: "application/zip" });
+}
+
 export async function grantUserspacePermissions(appId: string, granted: string[]): Promise<void> {
   const res = await fetch(`/api/userspace-apps/${encodeURIComponent(appId)}/permissions`, {
     method: "POST",

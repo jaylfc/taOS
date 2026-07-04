@@ -345,6 +345,132 @@ async def test_install_clean_app_still_succeeds(client):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/userspace-apps/package
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_package_builds_valid_taosapp_zip(client):
+    resp = await client.post(
+        "/api/userspace-apps/package",
+        json={"name": "My Cool App", "files": {"index.html": "<html>hi</html>", "app.js": "const x = 1;"}},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    disposition = resp.headers["content-disposition"]
+    assert ".taosapp" in disposition
+
+    import io
+    import zipfile
+
+    import yaml
+
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    assert set(zf.namelist()) == {"manifest.yaml", "index.html", "app.js"}
+    manifest = yaml.safe_load(zf.read("manifest.yaml").decode())
+    assert manifest["name"] == "My Cool App"
+    assert manifest["app_type"] == "web"
+    assert manifest["entry"] == "index.html"
+    assert manifest["permissions"] == []
+    assert manifest["id"].startswith("my-cool-app-")
+    assert zf.read("index.html").decode() == "<html>hi</html>"
+
+
+@pytest.mark.asyncio
+async def test_package_two_calls_get_different_app_ids(client):
+    """Each build gets a unique id (random suffix), even for the same name --
+    two apps generated from the same prompt must not collide on install."""
+    resp1 = await client.post(
+        "/api/userspace-apps/package", json={"name": "Same Name", "files": {"index.html": "<html></html>"}}
+    )
+    resp2 = await client.post(
+        "/api/userspace-apps/package", json={"name": "Same Name", "files": {"index.html": "<html></html>"}}
+    )
+    import io
+    import zipfile
+
+    import yaml
+
+    id1 = yaml.safe_load(zipfile.ZipFile(io.BytesIO(resp1.content)).read("manifest.yaml").decode())["id"]
+    id2 = yaml.safe_load(zipfile.ZipFile(io.BytesIO(resp2.content)).read("manifest.yaml").decode())["id"]
+    assert id1 != id2
+
+
+@pytest.mark.asyncio
+async def test_package_empty_name_returns_400(client):
+    resp = await client.post(
+        "/api/userspace-apps/package", json={"name": "   ", "files": {"index.html": "<html></html>"}}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_package_empty_files_returns_400(client):
+    resp = await client.post("/api/userspace-apps/package", json={"name": "App", "files": {}})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_package_missing_index_html_returns_400(client):
+    resp = await client.post(
+        "/api/userspace-apps/package", json={"name": "App", "files": {"app.js": "const x = 1;"}}
+    )
+    assert resp.status_code == 400
+    assert "index.html" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_package_unsafe_filename_returns_400(client):
+    resp = await client.post(
+        "/api/userspace-apps/package",
+        json={"name": "App", "files": {"index.html": "<html></html>", "../evil.js": "x"}},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_package_too_many_files_returns_413(client):
+    files = {"index.html": "<html></html>"}
+    for i in range(45):
+        files[f"file{i}.js"] = "x"
+    resp = await client.post("/api/userspace-apps/package", json={"name": "App", "files": files})
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_package_oversize_file_returns_413(client):
+    resp = await client.post(
+        "/api/userspace-apps/package",
+        json={"name": "App", "files": {"index.html": "x" * (2 * 1024 * 1024 + 1)}},
+    )
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_package_installs_via_userspace_apps_endpoint(client):
+    """The package this endpoint builds must be installable through the
+    existing, unmodified userspace-apps install pipeline -- this is the
+    actual reuse App Studio's build flow depends on."""
+    app = client._transport.app
+    await _init_userspace_stores(app, app.state.data_dir)
+
+    pkg_resp = await client.post(
+        "/api/userspace-apps/package",
+        json={"name": "Installable App", "files": {"index.html": "<html>ok</html>"}},
+    )
+    assert pkg_resp.status_code == 200
+
+    install_resp = await client.post(
+        "/api/userspace-apps/install",
+        files={"package": ("app.taosapp", pkg_resp.content, "application/zip")},
+        data={"provenance": "ai-generated"},
+    )
+    assert install_resp.status_code == 200
+    data = install_resp.json()
+    assert data["app_id"].startswith("installable-app-")
+
+
+# ---------------------------------------------------------------------------
 # POST /api/userspace-apps/analyze
 # ---------------------------------------------------------------------------
 

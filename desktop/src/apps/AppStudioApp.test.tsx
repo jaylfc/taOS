@@ -40,20 +40,13 @@ describe("AppStudioApp", () => {
     expect(screen.getByText("Blank")).toBeInTheDocument();
   });
 
-  it("switches to Publish view and shows capability rows", () => {
+  it("switches to Publish view and shows the empty state before an app is built", () => {
     const { container } = render(<AppStudioApp windowId="test" />);
     const nav = container.querySelector("nav[aria-label='App Studio views']")!;
     const publishBtn = Array.from(nav.querySelectorAll("button")).find(
       (b) => b.getAttribute("aria-label") === "Publish"
     )!;
     fireEvent.click(publishBtn);
-    // app identity
-    expect(screen.getAllByText("Chore Quest").length).toBeGreaterThan(0);
-    // capability row labels
-    expect(screen.getByTestId("perm-row-workspace")).toBeInTheDocument();
-    expect(screen.getByTestId("perm-row-notifications")).toBeInTheDocument();
-    expect(screen.getByTestId("perm-row-household")).toBeInTheDocument();
-    // publish button
-    expect(screen.getByRole("button", { name: /publish to my store/i })).toBeInTheDocument();
+    expect(screen.getByText(/generate an app in the build view first/i)).toBeInTheDocument();
   });
 });

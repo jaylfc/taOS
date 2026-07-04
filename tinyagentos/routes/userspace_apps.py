@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import re
 import shutil
+import string
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Form, Request, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
+from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from tinyagentos.code_analyzer import analyze_app_source, has_critical
 from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
-from tinyagentos.userspace.package import extract_package, parse_manifest, PackageError
+from tinyagentos.userspace.package import build_package, extract_package, parse_manifest, PackageError
 from tinyagentos.userspace.url_guard import resolve_safe_public_ip
 
 # Provenance values a caller may set through the PUBLIC install endpoint. Never
@@ -243,6 +247,75 @@ async def install_app(
         "needs_consent": bool(existing and new_perms),
         "new_permissions": new_perms,
     }
+
+
+# Caps for building a package from an in-memory file map -- mirrors
+# routes/games.py's save-time limits (games are always web apps with a
+# handful of small files, same posture applies here).
+_MAX_BUILD_FILES = 40
+_MAX_BUILD_FILE_BYTES = 2 * 1024 * 1024
+
+
+def _is_safe_filename(name: str) -> bool:
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name and ".." not in name
+
+
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40]
+    return slug or "app"
+
+
+class PackageBuildRequest(BaseModel):
+    name: str
+    files: dict[str, str]
+
+
+@router.post("/api/userspace-apps/package")
+async def package_app(body: PackageBuildRequest):
+    """Build a .taosapp package (manifest.yaml + files) from an in-memory file
+    map and return it as a downloadable zip. Generic counterpart to
+    routes/games.py's package_game, for callers (App Studio) that generate an
+    app's files client-side with no server-side project store of their own.
+    """
+    name = body.name.strip()
+    if not name:
+        return JSONResponse({"error": "name must not be empty"}, status_code=400)
+    if not body.files:
+        return JSONResponse(
+            {"error": "files must be a non-empty map of filename to text content"}, status_code=400
+        )
+    if len(body.files) > _MAX_BUILD_FILES:
+        return JSONResponse({"error": f"too many files (max {_MAX_BUILD_FILES})"}, status_code=413)
+    if "index.html" not in body.files:
+        return JSONResponse({"error": "files must include an index.html entry point"}, status_code=400)
+    for fname, content in body.files.items():
+        if not _is_safe_filename(fname):
+            return JSONResponse({"error": f"invalid filename: {fname!r}"}, status_code=400)
+        if len(content.encode("utf-8")) > _MAX_BUILD_FILE_BYTES:
+            return JSONResponse(
+                {"error": f"file '{fname}' exceeds the {_MAX_BUILD_FILE_BYTES}-byte limit"}, status_code=413
+            )
+
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    app_id = f"{_slugify(name)}-{suffix}"
+    manifest = {
+        "id": app_id,
+        "name": name,
+        "version": "1.0.0",
+        "app_type": "web",
+        "entry": "index.html",
+        "icon": "",
+        "permissions": [],
+    }
+    try:
+        data = build_package(manifest, body.files)
+    except PackageError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{app_id}.taosapp"'},
+    )
 
 
 # DoS guards for this endpoint: it has no auth gate of its own (a preview
