@@ -58,6 +58,15 @@ def _validate_content(content: Any) -> JSONResponse | None:
     return _validate_text_field(content, "content")
 
 
+def _field_or_default(body: dict, key: str, default: str) -> str:
+    """Resolve an optional text field, treating a MISSING key or an explicit
+    JSON ``null`` the same way: fall back to ``default``. Without this, a body
+    like ``{"index_html": null}`` would yield None from ``dict.get`` and then
+    fail the string type-check as a spurious 400 (Kilo finding)."""
+    value = body.get(key)
+    return default if value is None else value
+
+
 @router.post("/api/web/sites")
 async def create_site(request: Request):
     body = await _parse_json(request)
@@ -66,11 +75,11 @@ async def create_site(request: Request):
     title = _validate_title(body.get("title"))
     if title is None:
         return JSONResponse({"error": "title is required"}, status_code=400)
-    content = body.get("content", "")
+    content = _field_or_default(body, "content", "")
     content_error = _validate_content(content)
     if content_error is not None:
         return content_error
-    index_html = body.get("index_html", "")
+    index_html = _field_or_default(body, "index_html", "")
     index_html_error = _validate_text_field(index_html, "index_html")
     if index_html_error is not None:
         return index_html_error
@@ -111,12 +120,12 @@ async def update_site(request: Request, site_id: str):
     if title is None:
         return JSONResponse({"error": "title is required"}, status_code=400)
 
-    content = body.get("content", existing["content"])
+    content = _field_or_default(body, "content", existing["content"])
     content_error = _validate_content(content)
     if content_error is not None:
         return content_error
 
-    index_html = body.get("index_html", existing.get("index_html", ""))
+    index_html = _field_or_default(body, "index_html", existing.get("index_html", ""))
     index_html_error = _validate_text_field(index_html, "index_html")
     if index_html_error is not None:
         return index_html_error
@@ -139,6 +148,11 @@ async def delete_site(request: Request, site_id: str):
 # routes/games.py's _GAME_PREVIEW_CSP). A site export has no <script> tags
 # and only ever embeds images as data: URIs, so script-src/connect-src are
 # left at 'none' rather than widened for content that doesn't need them.
+#
+# NB: `sandbox` here is the CSP *directive* (Content-Security-Policy: sandbox
+# ...), not the iframe sandbox attribute -- it is a legitimate first directive
+# in a single Content-Security-Policy header value, semicolon-separated from
+# the rest, and is what enforces the opaque origin. Not a malformed header.
 _WEB_PREVIEW_CSP = (
     "sandbox allow-scripts; "
     "default-src 'none'; "

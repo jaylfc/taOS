@@ -56,8 +56,10 @@ describe("GenerateView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Generate site/i }));
 
     await waitFor(() => expect(onGenerate).toHaveBeenCalledTimes(1));
-    const site = onGenerate.mock.calls[0][0];
+    const [site, wasAiGenerated] = onGenerate.mock.calls[0];
     expect(site.title).toBe("Fresh Cafe");
+    // A real parse must report wasAiGenerated=true so it's tagged ai-generated.
+    expect(wasAiGenerated).toBe(true);
     expect(screen.queryByText(/could not be parsed/)).not.toBeInTheDocument();
   });
 
@@ -72,8 +74,11 @@ describe("GenerateView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Generate site/i }));
 
     await waitFor(() => expect(onGenerate).toHaveBeenCalledTimes(1));
-    const site = onGenerate.mock.calls[0][0];
+    const [site, wasAiGenerated] = onGenerate.mock.calls[0];
     expect(site.sections.length).toBeGreaterThan(0);
+    // A matched-template fallback must report wasAiGenerated=false so the
+    // caller tags it user-uploaded, not ai-generated.
+    expect(wasAiGenerated).toBe(false);
     expect(screen.getByText(/could not be parsed/)).toBeInTheDocument();
   });
 

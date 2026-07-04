@@ -57,15 +57,15 @@ describe("ShareView", () => {
 
   it("shows an empty state with no active site", () => {
     vi.stubGlobal("fetch", vi.fn() as unknown as typeof fetch);
-    render(<ShareView siteId={null} />);
+    render(<ShareView siteId={null} provenance="user-uploaded" />);
     expect(screen.getByText(/Save a site in the Edit view first/)).toBeDefined();
   });
 
-  it("builds the site's .taosapp package and installs it via the existing userspace-apps endpoint, tagged ai-generated", async () => {
+  it("builds the site's .taosapp package and installs it via the existing userspace-apps endpoint, tagged with the provenance it was given", async () => {
     const { fetchMock, installCalls } = makeFetchMock();
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    render(<ShareView siteId="share-site" />);
+    render(<ShareView siteId="share-site" provenance="ai-generated" />);
     await waitFor(() => expect(screen.getByRole("button", { name: /Install on this taOS/ })).toBeDefined());
     await waitFor(() => expect(screen.getByText(/No security issues found/)).toBeDefined());
 
@@ -80,11 +80,23 @@ describe("ShareView", () => {
     await waitFor(() => expect(screen.getByText(/Installed\. Find it in Launchpad/)).toBeDefined());
   });
 
+  it("tags a hand-built site as user-uploaded, not ai-generated", async () => {
+    const { fetchMock, installCalls } = makeFetchMock();
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    render(<ShareView siteId="share-site" provenance="user-uploaded" />);
+    await waitFor(() => expect(screen.getByText(/No security issues found/)).toBeDefined());
+    fireEvent.click(screen.getByRole("button", { name: /Install on this taOS/ }));
+
+    await waitFor(() => expect(installCalls.length).toBe(1));
+    expect(installCalls[0]!.get("provenance")).toBe("user-uploaded");
+  });
+
   it("surfaces an install error instead of faking success", async () => {
     const { fetchMock } = makeFetchMock({ installStatus: 422, installBody: { error: "blocked_by_security_analysis" } });
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    render(<ShareView siteId="share-site" />);
+    render(<ShareView siteId="share-site" provenance="ai-generated" />);
     await waitFor(() => expect(screen.getByText(/No security issues found/)).toBeDefined());
     fireEvent.click(screen.getByRole("button", { name: /Install on this taOS/ }));
 
@@ -99,7 +111,7 @@ describe("ShareView", () => {
     });
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    render(<ShareView siteId="share-site" />);
+    render(<ShareView siteId="share-site" provenance="ai-generated" />);
     const installButton = await screen.findByRole("button", { name: /Blocked by security scan/ });
     expect(installButton).toBeDisabled();
 
@@ -117,7 +129,7 @@ describe("ShareView", () => {
     });
     vi.stubGlobal("fetch", unsavedFetch as unknown as typeof fetch);
 
-    render(<ShareView siteId="draft-site" />);
+    render(<ShareView siteId="draft-site" provenance="user-uploaded" />);
     await waitFor(() => expect(screen.getByText(/hasn't been saved with rendered content/)).toBeDefined());
     expect(screen.queryByRole("button", { name: /Install on this taOS/ })).not.toBeInTheDocument();
   });

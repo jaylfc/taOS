@@ -147,6 +147,39 @@ async def test_create_rejects_oversized_index_html(client):
 
 
 @pytest.mark.asyncio
+async def test_create_treats_explicit_null_content_and_index_html_as_empty(client):
+    # An explicit JSON null (not just a missing key) must be coerced to "" and
+    # NOT rejected as a spurious 400 by the string type-check (Kilo finding).
+    resp = await client.post(
+        "/api/web/sites",
+        json={"title": "Landing", "content": None, "index_html": None},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["content"] == ""
+    assert body["index_html"] == ""
+
+
+@pytest.mark.asyncio
+async def test_update_treats_explicit_null_as_keep_existing(client):
+    resp = await client.post(
+        "/api/web/sites",
+        json={"title": "Landing", "content": '{"sections": []}', "index_html": "<p>v1</p>"},
+    )
+    site_id = resp.json()["id"]
+
+    # Explicit nulls must fall back to the existing values, not 400 or wipe them.
+    resp = await client.put(
+        f"/api/web/sites/{site_id}",
+        json={"content": None, "index_html": None},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["content"] == '{"sections": []}'
+    assert body["index_html"] == "<p>v1</p>"
+
+
+@pytest.mark.asyncio
 class TestWebSitePreview:
     async def test_preview_serves_stored_html_with_csp(self, client):
         resp = await client.post(

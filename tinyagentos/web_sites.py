@@ -31,8 +31,17 @@ def _new_site_id() -> str:
 
 async def _migration_add_index_html(conn: aiosqlite.Connection) -> None:
     """Add the `index_html` column (idempotent). Added after initial release,
-    so existing databases must be migrated rather than assumed to have it --
-    see base_store.py's warning about SCHEMA vs. later columns."""
+    so existing databases must be migrated rather than assumed to have it.
+
+    This deliberately uses a guarded _post_init (PRAGMA table_info check +
+    conditional ALTER, committing its own change) rather than the MIGRATIONS
+    list: db_migrations.py footgun #2 documents that the MIGRATIONS runner
+    baseline-stamps pre-existing DBs at the latest version WITHOUT executing
+    any SQL, so a retrofit column added there would be silently skipped on
+    exactly the legacy rows that need it. The manual commit here is the same
+    sanctioned pattern as agent_registry_store._migration_v1_add_status and
+    knowledge_store's user_id retrofit, and is safely idempotent: the
+    ALTER only runs when the column is absent."""
     existing_cols = {row[1] for row in await (await conn.execute("PRAGMA table_info(sites)")).fetchall()}
     if "index_html" not in existing_cols:
         await conn.execute("ALTER TABLE sites ADD COLUMN index_html TEXT NOT NULL DEFAULT ''")

@@ -10,7 +10,13 @@ const PROMPT_IDEAS = [
   "An event page for a tech meetup",
 ];
 
-export function GenerateView({ onGenerate }: { onGenerate: (site: Site) => void }) {
+export function GenerateView({
+  onGenerate,
+}: {
+  /** wasAiGenerated is false when we fell back to a matched template, so the
+   *  caller can tag provenance honestly (ai-generated vs user-authored). */
+  onGenerate: (site: Site, wasAiGenerated: boolean) => void;
+}) {
   const [prompt, setPrompt] = useState("");
   const [palette, setPalette] = useState<PaletteId | null>(null);
   const [font, setFont] = useState<FontId | null>(null);
@@ -56,7 +62,7 @@ export function GenerateView({ onGenerate }: { onGenerate: (site: Site) => void 
         { signal: controller.signal },
       );
       if (result.usedFallback && mountedRef.current) setNotice(result.parseNotice);
-      onGenerate(applyOverrides(result.site));
+      onGenerate(applyOverrides(result.site), !result.usedFallback);
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError") && mountedRef.current) {
         setError(e instanceof Error ? e.message : String(e));

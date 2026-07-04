@@ -26,9 +26,14 @@ import type { SiteRow } from "./web-sites-api";
 
 export interface ShareViewProps {
   siteId: string | null;
+  /** Honest origin of the current site: "ai-generated" only when the agent
+   *  actually authored it, else "user-uploaded" (templates, manual edits,
+   *  matched fallback, reopened site). Both tiers share a capability ceiling;
+   *  this keeps the install tag truthful rather than always "ai-generated". */
+  provenance: "ai-generated" | "user-uploaded";
 }
 
-export function ShareView({ siteId }: ShareViewProps) {
+export function ShareView({ siteId, provenance }: ShareViewProps) {
   const [site, setSite] = useState<SiteRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -97,7 +102,7 @@ export function ShareView({ siteId }: ShareViewProps) {
     setInstallResult(null);
     try {
       const file = await fetchSitePackage(site.id);
-      const result = await installUserspaceApp(file, "ai-generated");
+      const result = await installUserspaceApp(file, provenance);
       emitAppEvent(USERSPACE_APPS_CHANGED);
       setInstallResult(result.needs_consent ? "consent" : "ok");
     } catch (e) {
@@ -105,7 +110,7 @@ export function ShareView({ siteId }: ShareViewProps) {
     } finally {
       setInstalling(false);
     }
-  }, [site]);
+  }, [site, provenance]);
 
   const handleExport = useCallback(async () => {
     if (!site) return;
