@@ -8,9 +8,18 @@ from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.projects.routine_runner import fire_routine
+from tinyagentos.rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Abuse guard for the unauthenticated webhook trigger. Keyed per token, this
+# caps how fast a single routine's webhook can mass-create tasks: a small burst
+# then a steady trickle. Unknown/disabled tokens 404 before this is consulted,
+# so they cost nothing here. In-process (resets on restart) — the right
+# trade-off for a self-hosted single-process controller; front with Caddy/nginx
+# for cross-process limits.
+_webhook_limiter = RateLimiter(capacity=5, refill_per_second=0.1)
 
 
 async def _get_owned_project(
@@ -109,7 +118,10 @@ async def update_routine(
     guard = await _require_routine_in_project(store, project_id, rid)
     if isinstance(guard, JSONResponse):
         return guard
-    return await store.update_routine(rid, **payload.model_dump(exclude_none=True))
+    try:
+        return await store.update_routine(rid, **payload.model_dump(exclude_none=True))
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
 
 @router.delete("/api/projects/{project_id}/routines/{rid}")
@@ -155,10 +167,12 @@ async def trigger_routine(
 @router.post("/api/webhooks/routines/{token}")
 async def webhook_trigger_routine(token: str, request: Request):
     """Inbound webhook trigger — no session auth. Authenticated solely by the
-    per-routine opaque token embedded in the URL (constant-time compared in
-    RoutineStore.get_by_webhook_token, mirroring gh_webhook.py's HMAC check).
-    Unknown or disabled tokens 404 rather than distinguishing the reason, so
-    the endpoint never leaks which routines exist."""
+    per-routine opaque token embedded in the URL, matched via an indexed unique
+    lookup in RoutineStore.get_by_webhook_token. Unknown or disabled tokens 404
+    rather than distinguishing the reason, so the endpoint never leaks which
+    routines exist. A per-token rate limit caps task-creation spam."""
+    if not _webhook_limiter.check(token):
+        return JSONResponse({"error": "rate limited"}, status_code=429)
     store = request.app.state.routine_store
     routine = await store.get_by_webhook_token(token)
     if routine is None:

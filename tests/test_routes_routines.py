@@ -34,6 +34,31 @@ async def test_create_cron_routine_missing_cron_expr_400(client):
 
 
 @pytest.mark.asyncio
+async def test_create_cron_routine_invalid_cron_expr_400(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    resp = await client.post(
+        f"/api/projects/{pid}/routines",
+        json={"title": "Bad", "trigger_kind": "cron", "cron_expr": "not a cron"},
+    )
+    assert resp.status_code == 400
+    assert "cron" in resp.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_routine_invalid_cron_expr_400(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    rid = (await client.post(
+        f"/api/projects/{pid}/routines",
+        json={"title": "Good", "trigger_kind": "cron", "cron_expr": "0 3 * * *"},
+    )).json()["id"]
+    resp = await client.patch(
+        f"/api/projects/{pid}/routines/{rid}",
+        json={"cron_expr": "0 99 * * *"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_create_webhook_routine_returns_token(client):
     pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
     resp = await client.post(
@@ -176,6 +201,26 @@ async def test_webhook_trigger_disabled_routine_404(client):
 
     resp = await client.post(f"/api/webhooks/routines/{token}")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_webhook_trigger_rate_limited_after_burst(client):
+    """The unauthenticated webhook must not be spammable to mass-create tasks:
+    a burst on one token eventually 429s."""
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    token = (await client.post(
+        f"/api/projects/{pid}/routines",
+        json={"title": "Inbound", "trigger_kind": "webhook"},
+    )).json()["webhook_token"]
+
+    statuses = []
+    for _ in range(8):
+        statuses.append((await client.post(f"/api/webhooks/routines/{token}")).status_code)
+
+    # Bucket capacity is small (5) with slow refill, so a tight burst of 8 must
+    # include at least one 429 while the earliest requests succeed.
+    assert 200 in statuses
+    assert 429 in statuses
 
 
 # ---------------------------------------------------------------------------

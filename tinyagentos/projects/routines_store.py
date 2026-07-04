@@ -27,12 +27,28 @@ CREATE TABLE IF NOT EXISTS routines (
 );
 CREATE INDEX IF NOT EXISTS idx_routines_project ON routines(project_id);
 CREATE INDEX IF NOT EXISTS idx_routines_due ON routines(enabled, next_fire);
+-- Webhook tokens are high-entropy opaque strings; a unique index makes the
+-- token->routine lookup an indexed O(log n) probe. SQLite treats NULLs as
+-- distinct, so the many non-webhook rows (token IS NULL) don't collide.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_routines_webhook_token ON routines(webhook_token);
 """
 
 
 def _row_to_routine(row, description) -> dict:
     keys = [d[0] for d in description]
     return dict(zip(keys, row))
+
+
+def _validate_cron(cron_expr: str) -> None:
+    """Raise ValueError if cron_expr is not a valid cron expression.
+
+    Without this, an invalid schedule reaches croniter only when next_fire is
+    computed and raises an uncaught error (croniter's own CroniterBadCronError /
+    ValueError) — surfacing as a 500. Validating up front lets the route map it
+    to a clean 400.
+    """
+    if not croniter.is_valid(cron_expr):
+        raise ValueError(f"invalid cron expression: {cron_expr!r}")
 
 
 def _compute_next_fire(cron_expr: str, base_ts: float) -> float:
@@ -55,8 +71,10 @@ class RoutineStore(BaseStore):
     ) -> dict:
         if trigger_kind not in ("cron", "webhook", "api"):
             raise ValueError(f"invalid trigger_kind: {trigger_kind}")
-        if trigger_kind == "cron" and not cron_expr:
-            raise ValueError("cron_expr is required for trigger_kind='cron'")
+        if trigger_kind == "cron":
+            if not cron_expr:
+                raise ValueError("cron_expr is required for trigger_kind='cron'")
+            _validate_cron(cron_expr)
 
         rid = new_id("rtn")
         now = time.time()
@@ -87,22 +105,25 @@ class RoutineStore(BaseStore):
             return _row_to_routine(row, cur.description)
 
     async def get_by_webhook_token(self, token: str) -> dict | None:
-        """Look up an enabled webhook routine by its token.
+        """Look up an enabled webhook routine by its token via the unique index.
 
-        Returns None for any non-match (unknown token, disabled routine, or
-        wrong trigger_kind) so callers can 404 uniformly without leaking which
-        case applied.
+        The token is a high-entropy opaque secret, so an exact indexed lookup is
+        the correct (and fastest) match — no per-row comparison needed. Returns
+        None for any non-match (unknown token, disabled routine, or wrong
+        trigger_kind, including an empty token) so callers can 404 uniformly
+        without leaking which case applied.
         """
+        if not token:
+            return None
         async with self._db.execute(
-            "SELECT * FROM routines WHERE trigger_kind = 'webhook' AND enabled = 1"
+            """SELECT * FROM routines
+               WHERE webhook_token = ? AND trigger_kind = 'webhook' AND enabled = 1""",
+            (token,),
         ) as cur:
-            rows = await cur.fetchall()
-            desc = cur.description
-        for row in rows:
-            routine = _row_to_routine(row, desc)
-            if secrets.compare_digest(routine.get("webhook_token") or "", token):
-                return routine
-        return None
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return _row_to_routine(row, cur.description)
 
     async def list_routines(self, project_id: str) -> list[dict]:
         async with self._db.execute(
@@ -137,6 +158,9 @@ class RoutineStore(BaseStore):
         existing = await self.get_routine(routine_id)
         if existing is None:
             return None
+
+        if cron_expr is not None:
+            _validate_cron(cron_expr)
 
         candidates = [
             ("title", title),
@@ -176,7 +200,14 @@ class RoutineStore(BaseStore):
         return await self.get_routine(routine_id)
 
     async def record_fire(self, routine_id: str, now_ts: float) -> dict | None:
-        """Stamp last_fired and advance next_fire (cron routines only)."""
+        """Stamp last_fired and advance next_fire (cron routines only).
+
+        Used by the manual/API and webhook trigger paths, where there is no
+        double-fire race (a human/caller drives them). The scheduler's tick
+        loop must instead use claim_due(), which advances the schedule
+        atomically under a guard so a concurrent/restarted tick can't re-fire
+        the same due routine.
+        """
         existing = await self.get_routine(routine_id)
         if existing is None:
             return None
@@ -189,6 +220,35 @@ class RoutineStore(BaseStore):
         )
         await self._db.commit()
         return await self.get_routine(routine_id)
+
+    async def claim_due(
+        self, routine_id: str, expected_next_fire: float, now_ts: float
+    ) -> bool:
+        """Atomically claim a due cron routine for firing.
+
+        Advances next_fire (and stamps last_fired) in a single UPDATE guarded on
+        the routine still having the next_fire the caller selected it with. If a
+        concurrent or restarted tick already claimed it, next_fire no longer
+        matches and rowcount is 0 — so the routine fires exactly once per due
+        instant. Returns True only for the tick that won the claim.
+        """
+        existing = await self.get_routine(routine_id)
+        if (
+            existing is None
+            or existing["trigger_kind"] != "cron"
+            or not existing["enabled"]
+            or not existing["cron_expr"]
+        ):
+            return False
+        next_fire = _compute_next_fire(existing["cron_expr"], now_ts)
+        cursor = await self._db.execute(
+            """UPDATE routines
+               SET last_fired = ?, next_fire = ?, updated_at = ?
+               WHERE id = ? AND enabled = 1 AND next_fire = ?""",
+            (now_ts, next_fire, now_ts, routine_id, expected_next_fire),
+        )
+        await self._db.commit()
+        return cursor.rowcount == 1
 
     async def delete_routine(self, routine_id: str) -> bool:
         cursor = await self._db.execute("DELETE FROM routines WHERE id = ?", (routine_id,))

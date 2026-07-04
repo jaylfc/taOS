@@ -94,44 +94,64 @@ async def _wake_and_announce(app_state, routine: dict, task: dict) -> None:
             )
 
 
-async def fire_routine(app_state, routine: dict) -> dict:
-    """Create a task from *routine*, advance its schedule, then best-effort
-    wake the assignee. Task creation always happens regardless of what
-    happens afterwards. Returns the created task dict."""
-    task_store = app_state.project_task_store
-    routine_store = app_state.routine_store
+async def _create_task_and_wake(app_state, routine: dict) -> dict:
+    """Create the board task for *routine* and best-effort wake the assignee.
 
-    task = await task_store.create_task(
+    Does NOT advance the routine's schedule — the caller is responsible for
+    that (record_fire for manual/webhook, claim_due for the scheduler tick).
+    Task creation always happens; wake is best-effort. Returns the task dict.
+    """
+    task = await app_state.project_task_store.create_task(
         project_id=routine["project_id"],
         title=routine["title"],
         created_by=f"routine:{routine['id']}",
         body=routine.get("body_template") or "",
         assignee_id=routine.get("assignee_id"),
     )
-
-    await routine_store.record_fire(routine["id"], time.time())
-
     try:
         await _wake_and_announce(app_state, routine, task)
     except Exception:
         logger.warning("routine %s: wake/announce crashed", routine["id"], exc_info=True)
+    return task
 
+
+async def fire_routine(app_state, routine: dict) -> dict:
+    """Manual/API and webhook entry point: create a task, advance the schedule,
+    then best-effort wake the assignee. Task creation always happens regardless
+    of what happens afterwards. Returns the created task dict.
+
+    The scheduler's tick loop does NOT call this — it claims the schedule
+    atomically first (see routine_tick_loop) to avoid double-firing.
+    """
+    task = await _create_task_and_wake(app_state, routine)
+    await app_state.routine_store.record_fire(routine["id"], time.time())
     return task
 
 
 async def routine_tick_loop(app_state) -> None:
     """Sweep due cron routines every TICK_INTERVAL seconds and fire each one.
 
-    Failure-isolated per iteration and per routine: one bad routine (e.g. a
-    stale project) is logged and skipped, never aborting the loop.
+    Each due routine is claimed atomically (claim_due advances its schedule
+    under a next_fire guard) BEFORE the task is created, so a concurrent or
+    restarted tick that selected the same routine loses the claim and skips it —
+    the routine fires exactly once per due instant. Failure-isolated per
+    iteration and per routine: one bad routine (e.g. a stale project) is logged
+    and skipped, never aborting the loop.
     """
     routine_store = app_state.routine_store
     while True:
         try:
-            due = await routine_store.list_due(time.time())
+            now = time.time()
+            due = await routine_store.list_due(now)
             for routine in due:
                 try:
-                    await fire_routine(app_state, routine)
+                    claimed = await routine_store.claim_due(
+                        routine["id"], routine["next_fire"], now
+                    )
+                    if not claimed:
+                        # Another tick already fired this due instant.
+                        continue
+                    await _create_task_and_wake(app_state, routine)
                 except Exception:
                     logger.exception(
                         "routine tick: fire failed for routine %s", routine.get("id")

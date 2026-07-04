@@ -57,6 +57,23 @@ async def test_create_routine_rejects_bad_trigger_kind(store):
 
 
 @pytest.mark.asyncio
+async def test_create_cron_routine_rejects_invalid_cron_expr(store):
+    with pytest.raises(ValueError):
+        await store.create_routine(
+            project_id="prj-1", title="Bad", created_by="u", cron_expr="not a cron",
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_routine_rejects_invalid_cron_expr(store):
+    r = await store.create_routine(
+        project_id="prj-1", title="Original", created_by="u", cron_expr="0 3 * * *",
+    )
+    with pytest.raises(ValueError):
+        await store.update_routine(r["id"], cron_expr="0 99 * * *")
+
+
+@pytest.mark.asyncio
 async def test_create_webhook_routine_generates_token(store):
     r = await store.create_routine(
         project_id="prj-1", title="Inbound hook", created_by="u", trigger_kind="webhook",
@@ -92,6 +109,27 @@ async def test_get_by_webhook_token_rejects_unknown(store):
         project_id="prj-1", title="Hook", created_by="u", trigger_kind="webhook",
     )
     assert await store.get_by_webhook_token("not-a-real-token") is None
+
+
+@pytest.mark.asyncio
+async def test_get_by_webhook_token_rejects_empty(store):
+    # An empty token must never match the NULL webhook_token of cron/api rows.
+    await store.create_routine(
+        project_id="prj-1", title="Cron", created_by="u", cron_expr="0 3 * * *",
+    )
+    assert await store.get_by_webhook_token("") is None
+
+
+@pytest.mark.asyncio
+async def test_get_by_webhook_token_distinguishes_multiple_routines(store):
+    a = await store.create_routine(
+        project_id="prj-1", title="Hook A", created_by="u", trigger_kind="webhook",
+    )
+    b = await store.create_routine(
+        project_id="prj-1", title="Hook B", created_by="u", trigger_kind="webhook",
+    )
+    assert (await store.get_by_webhook_token(a["webhook_token"]))["id"] == a["id"]
+    assert (await store.get_by_webhook_token(b["webhook_token"]))["id"] == b["id"]
 
 
 @pytest.mark.asyncio
@@ -229,6 +267,51 @@ async def test_record_fire_on_webhook_routine_leaves_next_fire_none(store):
     updated = await store.record_fire(r["id"], time.time())
     assert updated["next_fire"] is None
     assert updated["last_fired"] is not None
+
+
+@pytest.mark.asyncio
+async def test_claim_due_advances_schedule_and_returns_true(store):
+    r = await store.create_routine(
+        project_id="prj-1", title="Due", created_by="u", cron_expr="* * * * *",
+    )
+    first_next = r["next_fire"]
+    fired_at = first_next + 1
+    claimed = await store.claim_due(r["id"], first_next, fired_at)
+    assert claimed is True
+    after = await store.get_routine(r["id"])
+    assert after["last_fired"] == fired_at
+    assert after["next_fire"] > first_next
+
+
+@pytest.mark.asyncio
+async def test_claim_due_second_claim_of_same_instant_returns_false(store):
+    """The double-fire guard: once a routine's next_fire has been advanced, a
+    second claim for the SAME original next_fire must fail so the routine fires
+    exactly once per due instant."""
+    r = await store.create_routine(
+        project_id="prj-1", title="Due once", created_by="u", cron_expr="* * * * *",
+    )
+    original_next = r["next_fire"]
+    fired_at = original_next + 1
+    first = await store.claim_due(r["id"], original_next, fired_at)
+    second = await store.claim_due(r["id"], original_next, fired_at)
+    assert first is True
+    assert second is False
+
+
+@pytest.mark.asyncio
+async def test_claim_due_ignores_non_cron_and_disabled(store):
+    webhook = await store.create_routine(
+        project_id="prj-1", title="Hook", created_by="u", trigger_kind="webhook",
+    )
+    assert await store.claim_due(webhook["id"], 0.0, time.time()) is False
+
+    cron = await store.create_routine(
+        project_id="prj-1", title="Disabled", created_by="u", cron_expr="* * * * *",
+    )
+    original_next = cron["next_fire"]
+    await store.update_routine(cron["id"], enabled=False)
+    assert await store.claim_due(cron["id"], original_next, time.time()) is False
 
 
 @pytest.mark.asyncio

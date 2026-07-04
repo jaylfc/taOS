@@ -6,16 +6,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tinyagentos.projects.routine_runner import (
+    _create_task_and_wake,
     _resolve_assignee_agent,
     fire_routine,
     routine_tick_loop,
 )
+from tinyagentos.projects.routines_store import RoutineStore
 
 
 def _make_state(**overrides) -> SimpleNamespace:
     routine_store = MagicMock()
     routine_store.record_fire = AsyncMock(return_value=None)
     routine_store.list_due = AsyncMock(return_value=[])
+    routine_store.claim_due = AsyncMock(return_value=True)
 
     task_store = MagicMock()
     task_store.create_task = AsyncMock(
@@ -59,6 +62,7 @@ def _routine(**overrides) -> dict:
         "trigger_kind": "cron",
         "cron_expr": "0 3 * * *",
         "enabled": 1,
+        "next_fire": 1000.0,
     }
     base.update(overrides)
     return base
@@ -150,6 +154,65 @@ def test_resolve_assignee_agent_matches_by_id_or_name():
     assert _resolve_assignee_agent(config, "nope") is None
     assert _resolve_assignee_agent(config, None) is None
     assert _resolve_assignee_agent(None, "hex1") is None
+
+
+@pytest.mark.asyncio
+async def test_fire_routine_resolves_native_member_hex_id_to_agent_slug():
+    """A native project member stores the agent's config id (a 12-char hex, e.g.
+    '91a640130122') as its member_id, and that is exactly what the UI assignee
+    picker sends. Confirm a routine whose assignee_id is that hex id resolves to
+    the agent's name (slug) and wakes it — proving the wake edge actually fires
+    for real assignees, not just when id==name."""
+    hex_id = "91a640130122"
+    config = SimpleNamespace(
+        agents=[{"id": hex_id, "name": "researcher", "status": "running"}]
+    )
+    state = _make_state(config=config)
+    routine = _routine(assignee_id=hex_id)
+    await fire_routine(state, routine)
+    state.bridge_sessions.enqueue_user_message.assert_awaited_once()
+    slug = state.bridge_sessions.enqueue_user_message.call_args.args[0]
+    assert slug == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_due_routine_fires_exactly_once_across_two_concurrent_ticks(tmp_path):
+    """Two ticks that both selected the same due routine from list_due (same
+    next_fire snapshot) must not both fire it: claim_due lets exactly one win,
+    so the task is created exactly once."""
+    store = RoutineStore(tmp_path / "routines.db")
+    await store.init()
+    try:
+        r = await store.create_routine(
+            project_id="prj-1", title="Once", created_by="u", cron_expr="* * * * *",
+        )
+        now = 2_000_000.0
+        # Force it due at `now`.
+        await store._db.execute(
+            "UPDATE routines SET next_fire = ? WHERE id = ?", (now - 10, r["id"])
+        )
+        await store._db.commit()
+        snapshot = await store.get_routine(r["id"])
+
+        created = 0
+
+        async def _create_task(**kwargs):
+            nonlocal created
+            created += 1
+            return {"id": f"tsk-{created}", "project_id": "prj-1", "title": "Once"}
+
+        state = _make_state(routine_store=store)
+        state.project_task_store.create_task = AsyncMock(side_effect=_create_task)
+
+        # Two back-to-back ticks, each holding the same pre-claim snapshot.
+        for _ in range(2):
+            claimed = await store.claim_due(snapshot["id"], snapshot["next_fire"], now)
+            if claimed:
+                await _create_task_and_wake(state, snapshot)
+
+        assert created == 1
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio
