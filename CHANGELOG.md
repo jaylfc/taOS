@@ -7,6 +7,13 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.24] - 2026-07-04
+
+### Fixed
+- taOS Agent: the agent chat no longer wrongly reports "runtime unavailable" when opencode is installed system-wide. taOS now finds opencode on the PATH and at its default install location, and when the runtime genuinely can't start it shows the real error instead of a misleading generic message. The taOS Agent dialog also no longer opens as a blank window when launched from the Launchpad or Dock. Reported by @mandresve (#1615, #1616).
+- Settings: theme, wallpaper, dock position and dock icon size now persist across logout/login. They were applying in-session but a restore that ran before login completed left them reverting to defaults on the next session. Reported by @mandresve (#1601, #1603).
+- Models & Providers: when a downloaded model can't be used because the backend that serves it isn't running, taOS now says exactly that and how to fix it (install/start the backend) instead of a generic "not found anywhere", and provider connection tests report the real failure reason instead of "unknown error". Reported by @mandresve (#1599, #1600, #1614).
+
 ## [1.0.0-beta.23] - 2026-07-04
 
 ### Security
