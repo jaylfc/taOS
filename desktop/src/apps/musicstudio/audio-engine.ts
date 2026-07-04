@@ -21,7 +21,9 @@ import { BEATS_PER_BAR, TICKS_PER_BEAT, type Song, type Track } from "./types";
 
 type TriggerFn = (pitch: number, durationSeconds: number, time: number, velocity: number) => void;
 
-interface InstrumentHandle {
+/** Exported so the offline WAV renderer (wav-export.ts) can build the same
+ *  kind of instrument handle it schedules notes onto -- see scheduleTrackNotes. */
+export interface InstrumentHandle {
   trigger: TriggerFn;
   dispose: () => void;
 }
@@ -60,8 +62,11 @@ function toneTrigger(synth: { triggerAttackRelease: (...args: any[]) => unknown;
   };
 }
 
-/** Build a fully-offline Tone.js synth instrument, connected to `channel`. */
-function buildSynthInstrument(instrumentId: string, channel: Tone.Channel): InstrumentHandle {
+/** Build a fully-offline Tone.js synth instrument, connected to `channel`.
+ *  Exported so the WAV renderer can build the same synths for tracks whose
+ *  sampled (smplr) instrument can't render inside an OfflineAudioContext --
+ *  see the fallback note in wav-export.ts. */
+export function buildSynthInstrument(instrumentId: string, channel: Tone.Channel): InstrumentHandle {
   switch (instrumentId) {
     case "drum-kit": {
       const kick = new Tone.MembraneSynth().connect(channel);
@@ -157,6 +162,31 @@ function buildInstrument(instrumentId: string, channel: Tone.Channel): Instrumen
   return def.kind === "sampled" ? buildSampledInstrument(def.id, channel) : buildSynthInstrument(def.id, channel);
 }
 
+/** Schedule every note in `track`'s clips onto the CURRENT Tone.Transport
+ *  (`Tone.getTransport()`), triggering `instrument` at each note's
+ *  bar:beat:sixteenth position. A plain function rather than a method so the
+ *  offline WAV renderer (wav-export.ts) can call it verbatim from inside a
+ *  `Tone.Offline()` callback -- Tone swaps the global context for the
+ *  callback's duration, so `Tone.getTransport()` there resolves to the
+ *  offline transport and the bounce schedules identically to live playback. */
+export function scheduleTrackNotes(track: Track, instrument: InstrumentHandle): number[] {
+  const eventIds: number[] = [];
+  const transport = Tone.getTransport();
+  for (const clip of track.clips) {
+    for (const note of clip.notes) {
+      const absoluteTicks = clip.startBar * BEATS_PER_BAR * TICKS_PER_BEAT + note.startTick;
+      const position = ticksToTransportPosition(absoluteTicks);
+      const eventId = transport.schedule((time) => {
+        const bpm = transport.bpm.value;
+        const durationSeconds = (note.durationTicks / TICKS_PER_BEAT) * (60 / bpm);
+        instrument.trigger(note.pitch, durationSeconds, time, note.velocity);
+      }, position);
+      eventIds.push(eventId);
+    }
+  }
+  return eventIds;
+}
+
 export class AudioEngine {
   private started = false;
   private tracks = new Map<string, TrackNodes>();
@@ -200,25 +230,7 @@ export class AudioEngine {
     if (!nodes) return;
     const transport = Tone.getTransport();
     for (const id of nodes.eventIds) transport.clear(id);
-    nodes.eventIds = this.scheduleTrackNotes(track, nodes.instrument);
-  }
-
-  private scheduleTrackNotes(track: Track, instrument: InstrumentHandle): number[] {
-    const eventIds: number[] = [];
-    const transport = Tone.getTransport();
-    for (const clip of track.clips) {
-      for (const note of clip.notes) {
-        const absoluteTicks = clip.startBar * BEATS_PER_BAR * TICKS_PER_BEAT + note.startTick;
-        const position = ticksToTransportPosition(absoluteTicks);
-        const eventId = transport.schedule((time) => {
-          const bpm = transport.bpm.value;
-          const durationSeconds = (note.durationTicks / TICKS_PER_BEAT) * (60 / bpm);
-          instrument.trigger(note.pitch, durationSeconds, time, note.velocity);
-        }, position);
-        eventIds.push(eventId);
-      }
-    }
-    return eventIds;
+    nodes.eventIds = scheduleTrackNotes(track, nodes.instrument);
   }
 
   /** True when the engine already has nodes for this track (so a note edit can
@@ -236,7 +248,7 @@ export class AudioEngine {
     }).toDestination();
 
     const instrument = buildInstrument(track.instrument, channel);
-    const eventIds = this.scheduleTrackNotes(track, instrument);
+    const eventIds = scheduleTrackNotes(track, instrument);
     this.tracks.set(track.id, { channel, instrument, eventIds });
   }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { LayoutList, Sparkles, Music2, LayoutGrid, Download, FolderOpen } from "lucide-react";
+import { LayoutList, Sparkles, Music2, LayoutGrid, Download, FolderOpen, Loader2 } from "lucide-react";
 import { StudioView } from "./musicstudio/StudioView";
 import { ComposeView, type ComposedTrack } from "./musicstudio/ComposeView";
 import { SoundsView } from "./musicstudio/SoundsView";
@@ -8,6 +8,7 @@ import { LibraryView } from "./musicstudio/LibraryView";
 import { useStudioEngine } from "./musicstudio/use-studio-engine";
 import { saveSong, exportSongFile } from "./musicstudio/songs-api";
 import { exportSongMidiFile } from "./musicstudio/midi-export";
+import { exportSongWavFile } from "./musicstudio/wav-export";
 
 type MusicView = "studio" | "compose" | "sounds" | "mixer" | "export" | "library";
 
@@ -24,6 +25,10 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
 
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
+
+  const [renderingWav, setRenderingWav] = useState(false);
+  const [wavError, setWavError] = useState<string | null>(null);
+  const [wavNotice, setWavNotice] = useState<string | null>(null);
 
   const [composePrompt, setComposePrompt] = useState("");
   const [composeStyle, setComposeStyle] = useState<string | null>(null);
@@ -117,6 +122,24 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
       setSaving(false);
     }
   }, [engine]);
+
+  const handleExportWav = useCallback(async () => {
+    setRenderingWav(true);
+    setWavError(null);
+    setWavNotice(null);
+    try {
+      const result = await exportSongWavFile(engine.song);
+      if (result.substitutedTracks.length > 0) {
+        setWavNotice(
+          `Rendered with synth substitutes for ${result.substitutedTracks.join(", ")} -- sampled instruments can't render offline.`,
+        );
+      }
+    } catch (e) {
+      setWavError((e as Error).message || "Couldn't render this song to WAV.");
+    } finally {
+      setRenderingWav(false);
+    }
+  }, [engine.song]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-shell-bg text-shell-text select-none">
@@ -235,6 +258,20 @@ export function MusicStudioApp({ windowId: _windowId }: { windowId: string }) {
                   <Download size={16} />
                   Download .mid
                 </button>
+                <button
+                  type="button"
+                  onClick={() => void handleExportWav()}
+                  disabled={renderingWav}
+                  aria-busy={renderingWav}
+                  className="flex items-center gap-2 rounded-[14px] border border-shell-border bg-shell-surface px-6 py-3 text-[14px] font-bold text-shell-text disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {renderingWav ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                  {renderingWav ? "Rendering..." : "Download .wav"}
+                </button>
+              </div>
+              <div role="status" aria-live="polite" className="max-w-[360px] text-[12px]">
+                {wavError && <p className="text-red-400">{wavError}</p>}
+                {wavNotice && <p className="text-shell-text-secondary">{wavNotice}</p>}
               </div>
             </div>
           )}
