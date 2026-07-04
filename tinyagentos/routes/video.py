@@ -208,26 +208,41 @@ async def _generate_and_save(app, body: VideoGenerateRequest, seed: int, backend
     }
 
 
+async def _record_job_error(store, job_id: str, message: str) -> None:
+    """Best-effort: mark a job errored. If the update itself fails (e.g. the
+    store's db is gone at shutdown), log it -- but never raise, so the caller's
+    terminal-state guarantee holds even when the DB write can't."""
+    try:
+        await store.update_job(job_id, status="error", error=message, completed_at=time.time())
+    except Exception:
+        logger.exception("video job %s: failed to record error status", job_id)
+
+
 async def _run_generation_job(app, job_id: str, body: VideoGenerateRequest, seed: int, backend_url: str) -> None:
     """Background task: run the generation and record the outcome on the job.
-    Never raises -- every failure mode (known or not) is recorded as the
-    job's error status so a poller always sees a terminal state."""
+    Never raises, and always leaves the job in a terminal state (done/error)
+    -- never stuck in "running" -- so a poller always sees a final status."""
     store = await _get_video_job_store(app)
     await store.update_job(job_id, status="running")
     try:
         result = await _generate_and_save(app, body, seed, backend_url)
     except _VideoGenerationError as exc:
-        await store.update_job(job_id, status="error", error=str(exc), completed_at=time.time())
+        await _record_job_error(store, job_id, str(exc))
         return
     except Exception as exc:
         logger.exception("video generation job %s crashed", job_id)
-        await store.update_job(
-            job_id, status="error", error=f"Unexpected error: {exc}", completed_at=time.time()
-        )
+        await _record_job_error(store, job_id, f"Unexpected error: {exc}")
         return
-    await store.update_job(
-        job_id, status="done", progress=1.0, result_json=json.dumps(result), completed_at=time.time()
-    )
+    try:
+        await store.update_job(
+            job_id, status="done", progress=1.0, result_json=json.dumps(result), completed_at=time.time()
+        )
+    except Exception:
+        # The video is saved to the library regardless; only the job row failed
+        # to flip to done. Record an error so the poller doesn't hang on
+        # "running" forever, and the user can still find the clip in Library.
+        logger.exception("video job %s: failed to record done status", job_id)
+        await _record_job_error(store, job_id, "Generation finished but the job status could not be saved. Check the Library.")
 
 
 @router.post("/api/video/generate")
@@ -279,7 +294,14 @@ async def get_video_job(request: Request, job_id: str):
     if job.get("progress") is not None:
         response["progress"] = job["progress"]
     if job["status"] == "done" and job.get("result_json"):
-        response["result"] = json.loads(job["result_json"])
+        try:
+            response["result"] = json.loads(job["result_json"])
+        except (json.JSONDecodeError, TypeError):
+            # A corrupt result blob shouldn't 500 the poller. Downgrade to an
+            # error status with a clear message -- the clip is still in Library.
+            logger.warning("video job %s: result_json is not valid JSON", job_id)
+            response["status"] = "error"
+            response["error"] = "Job result is corrupt. Check the Library for the video."
     if job["status"] == "error" and job.get("error"):
         response["error"] = job["error"]
     return response

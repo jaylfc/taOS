@@ -211,12 +211,51 @@ class TestVideoGenerate:
         del video_app.state.config.server["video_backend_url"]
 
 
+    async def test_generate_unexpected_exception_marks_job_error(self, video_app, video_client):
+        """An unexpected (non-httpx) backend exception still ends the job in a
+        terminal 'error' state -- never stuck in 'running'."""
+        video_app.state.config.server["video_backend_url"] = "http://localhost:9000"
+
+        with patch("tinyagentos.routes.video.httpx.AsyncClient") as MockClient:
+            mock_instance = AsyncMock()
+            mock_instance.post.side_effect = RuntimeError("boom")
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            resp = await video_client.post("/api/video/generate", json={"prompt": "test"})
+            assert resp.status_code == 202
+            job_id = resp.json()["job_id"]
+
+            await _drain_background_tasks(video_app)
+
+        status_resp = await video_client.get(f"/api/video/jobs/{job_id}")
+        status = status_resp.json()
+        assert status["status"] == "error"
+        assert "boom" in status["error"]
+
+        del video_app.state.config.server["video_backend_url"]
+
+
 @pytest.mark.asyncio
 class TestVideoJobStatus:
     async def test_job_not_found_returns_404(self, video_client):
         resp = await video_client.get("/api/video/jobs/does-not-exist")
         assert resp.status_code == 404
         assert "error" in resp.json()
+
+    async def test_rapid_jobs_get_distinct_ids(self, video_app, video_client):
+        """Two jobs created back-to-back must get distinct (full-length) ids --
+        a truncated id would risk a PRIMARY KEY collision."""
+        from tinyagentos.routes.video import _get_video_job_store
+
+        job_store = await _get_video_job_store(video_app)
+        id1 = await job_store.create_job()
+        id2 = await job_store.create_job()
+        assert id1 != id2
+        # Full uuid4 hex is 32 chars -- not truncated.
+        assert len(id1) == 32
+        assert len(id2) == 32
 
 
 @pytest.mark.asyncio

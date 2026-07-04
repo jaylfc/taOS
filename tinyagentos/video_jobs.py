@@ -12,10 +12,15 @@ from __future__ import annotations
 import time
 import uuid
 
+import aiosqlite
+
 from tinyagentos.base_store import BaseStore
 
 VIDEO_JOBS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS video_jobs (
+    -- id is a full uuid4 hex (32 chars). It must NOT be truncated: the id is a
+    -- persistent PRIMARY KEY, and a shortened id collides (a collision would
+    -- raise IntegrityError and surface as a 500 to the enqueue caller).
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'queued',
     progress REAL DEFAULT 0.0,
@@ -31,7 +36,7 @@ class VideoJobStore(BaseStore):
     SCHEMA = VIDEO_JOBS_SCHEMA
 
     async def create_job(self) -> str:
-        job_id = str(uuid.uuid4())[:8]
+        job_id = uuid.uuid4().hex
         await self._db.execute(
             "INSERT INTO video_jobs (id, status, created_at) VALUES (?, 'queued', ?)",
             (job_id, time.time()),
@@ -40,13 +45,14 @@ class VideoJobStore(BaseStore):
         return job_id
 
     async def get_job(self, job_id: str) -> dict | None:
+        # Map columns by name via a dict row factory rather than zipping
+        # cursor.description positionally -- decoupled from column order.
+        self._db.row_factory = aiosqlite.Row
         async with self._db.execute(
             "SELECT * FROM video_jobs WHERE id = ?", (job_id,)
         ) as cursor:
             row = await cursor.fetchone()
-            if not row:
-                return None
-            return dict(zip([d[0] for d in cursor.description], row))
+            return dict(row) if row else None
 
     async def update_job(self, job_id: str, **kwargs) -> None:
         fields = [f for f in ("status", "progress", "result_json", "error", "completed_at") if f in kwargs]
