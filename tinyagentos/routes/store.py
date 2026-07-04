@@ -151,6 +151,8 @@ async def list_catalog(request: Request, type: str | None = None):
             "id": a.id, "name": a.name, "type": a.type, "category": a.category,
             "version": a.version,
             "description": a.description, "icon": a.icon,
+            "license": a.license, "weights_license": a.weights_license,
+            "license_class": a.license_class,
             "requires": a.requires, "hardware_tiers": a.hardware_tiers,
             "install_method": (a.install.get("method") or a.install.get("backend") or "") if isinstance(a.install, dict) else "",
             "installed": _installed_flag(a.id),

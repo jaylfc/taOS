@@ -82,6 +82,30 @@ class TestAppManifest:
         assert m.is_compatible("cpu-only")
         assert not m.is_compatible("nonexistent-tier")
 
+    def test_weights_license_fields_default_empty(self, catalog_dir):
+        """A manifest with no weights_license/license_class (e.g. gitea)
+        must not silently inherit a non-empty default."""
+        m = AppManifest.from_file(catalog_dir / "services" / "gitea" / "manifest.yaml")
+        assert m.weights_license == ""
+        assert m.license_class == ""
+
+    def test_weights_license_fields_load_when_present(self, tmp_path):
+        d = tmp_path / "services" / "nc-service"
+        d.mkdir(parents=True)
+        (d / "manifest.yaml").write_text(yaml.dump({
+            "id": "nc-service",
+            "name": "NC Service",
+            "type": "service",
+            "version": "1.0.0",
+            "license": "MIT",
+            "weights_license": "CC-BY-NC 4.0",
+            "license_class": "non-commercial",
+        }))
+        m = AppManifest.from_file(d / "manifest.yaml")
+        assert m.license == "MIT"
+        assert m.weights_license == "CC-BY-NC 4.0"
+        assert m.license_class == "non-commercial"
+
 
 class TestAppRegistry:
     def test_load_catalog(self, registry):

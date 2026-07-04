@@ -361,6 +361,9 @@ async def client(app, tmp_data_dir):
     # app_grants ledger (per-app capability grants) is lifespan-owned; tests that
     # bypass the lifespan must init it so the userspace broker can consult it.
     await app.state.app_grants.init()
+    # license_acceptances ledger (non-commercial weights accept-gate, #169) is
+    # also lifespan-owned; same bypass-init requirement.
+    await app.state.license_acceptances.init()
     feedback_store = app.state.feedback_store
     if feedback_store._db is not None:
         await feedback_store.close()

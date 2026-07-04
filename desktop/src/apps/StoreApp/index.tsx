@@ -17,6 +17,7 @@ import { loadFilter, saveFilter } from "./storage";
 import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 import { TaosAppsSection } from "./TaosAppsSection";
 import { ImportAppButton } from "./ImportAppButton";
+import { LicenseAcceptDialog } from "./LicenseAcceptDialog";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MobileStore } from "./MobileStore";
 import { AppIcon, StoreCover } from "./AppIcon";
@@ -419,6 +420,38 @@ function AppCard({
   const showVariantPicker = !app.installed && variantOptions.length > 1;
   const showTargetPicker = !app.installed && installTargets.length > 1;
 
+  interface LicenseGate { weightsLicense: string; name: string; text: string }
+  const [licenseGate, setLicenseGate] = useState<LicenseGate | null>(null);
+  const [licenseSubmitting, setLicenseSubmitting] = useState(false);
+
+  /** POST install-v2. Returns "ok" | "gated" | "error" — "gated" means the
+   * backend returned 412 needs_license_acceptance (non-commercial weights,
+   * #169) and licenseGate state is now set so the accept dialog renders. */
+  const postInstall = async (accepted: boolean): Promise<"ok" | "gated" | "error"> => {
+    const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
+    if (selectedVariant !== "auto") body.variant_id = selectedVariant;
+    if (accepted) body.accepted = true;
+    const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
+    if (res.status === 412) {
+      try {
+        const gate = await res.json();
+        if (gate?.needs_license_acceptance) {
+          setLicenseGate({ weightsLicense: String(gate.weights_license ?? ""), name: String(gate.name ?? app.name), text: String(gate.text ?? "") });
+          return "gated";
+        }
+      } catch { /* fall through to generic error below */ }
+    }
+    if (!res.ok) { let msg = `Install failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); return "error"; }
+    if (isFramework) {
+      try {
+        const data = await res.json();
+        if (data?.prefetch === "started") { setPrefetchStatus("downloading"); setPrefetchActive(true); }
+      } catch { /* no body / not framework prefetch */ }
+    }
+    onInstall(app.id);
+    return "ok";
+  };
+
   const handleAction = async () => {
     setBusy(true); setError(null); setProgress(null);
     try {
@@ -427,22 +460,26 @@ function AppCard({
         if (!res.ok) { let msg = `Uninstall failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
         onUninstall(app.id);
       } else {
-        const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
-        if (selectedVariant !== "auto") body.variant_id = selectedVariant;
-        const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
-        if (!res.ok) { let msg = `Install failed (${res.status})`; try { const err = await res.json(); if (err?.error) msg = String(err.error); } catch { /* ignore */ } setError(msg); setBusy(false); return; }
-        if (isFramework) {
-          try {
-            const data = await res.json();
-            if (data?.prefetch === "started") { setPrefetchStatus("downloading"); setPrefetchActive(true); }
-          } catch { /* no body / not framework prefetch */ }
-        }
-        onInstall(app.id);
+        const outcome = await postInstall(false);
+        if (outcome === "gated") { setBusy(false); return; }
       }
     } catch (e) { setError(e instanceof Error ? e.message : "Network error"); }
     setBusy(false);
     setTimeout(() => setProgress(null), 1500);
   };
+
+  const handleLicenseAccept = async () => {
+    setLicenseSubmitting(true);
+    try {
+      const outcome = await postInstall(true);
+      if (outcome !== "gated") setLicenseGate(null);
+    } catch (e) { setError(e instanceof Error ? e.message : "Network error"); setLicenseGate(null); }
+    setLicenseSubmitting(false);
+    setBusy(false);
+    setTimeout(() => setProgress(null), 1500);
+  };
+
+  const handleLicenseDecline = () => { setLicenseGate(null); setBusy(false); };
 
   const handleOpen = () => {
     window.dispatchEvent(new CustomEvent("taos:open-app", { detail: { app: "agents" } }));
@@ -477,6 +514,15 @@ function AppCard({
             <span className="text-[11px] text-shell-text-tertiary leading-none">v{app.version}</span>
           </div>
         </div>
+        {app.license_class === "non-commercial" && (
+          <span
+            className="inline-flex items-center gap-1 self-start text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-700/30 text-yellow-200"
+            title={`Model weights licensed for non-commercial use${app.weights_license ? ` (${app.weights_license})` : ""}`}
+            aria-label={`${app.name} uses non-commercial model weights${app.weights_license ? `: ${app.weights_license}` : ""}`}
+          >
+            Non-commercial weights
+          </span>
+        )}
         <p className="text-[11.5px] text-shell-text-secondary leading-relaxed flex-1">{app.description}</p>
         <div className="flex items-center justify-between">
           {app.stars ? (
@@ -568,6 +614,17 @@ function AppCard({
           </button>
         )}
       </div>
+      {licenseGate && (
+        <LicenseAcceptDialog
+          appName={licenseGate.name}
+          weightsLicense={licenseGate.weightsLicense}
+          text={licenseGate.text}
+          submitting={licenseSubmitting}
+          error={error}
+          onAccept={handleLicenseAccept}
+          onDecline={handleLicenseDecline}
+        />
+      )}
     </div>
   );
 }
@@ -967,6 +1024,9 @@ export function StoreApp({ windowId: _windowId }: { windowId: string }) {
             tagline: a.tagline ? String(a.tagline) : undefined,
             cover: a.cover ? String(a.cover) : COVER_BY_ID[String(a.id)]?.cover,
             coverImage: a.coverImage ? String(a.coverImage) : COVER_BY_ID[String(a.id)]?.coverImage,
+            license: a.license ? String(a.license) : undefined,
+            weights_license: a.weights_license ? String(a.weights_license) : undefined,
+            license_class: a.license_class ? String(a.license_class) : undefined,
           }));
           // Merge homelab apps: only add those not already in the catalog
           const catalogIds = new Set(normalized.map((a) => a.id));

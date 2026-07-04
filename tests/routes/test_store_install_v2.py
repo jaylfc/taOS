@@ -323,6 +323,115 @@ class TestDockerServiceAllocatedPort:
             )
 
 
+# ---------------------------------------------------------------------------
+# Non-commercial weights accept-gate (#169)
+# ---------------------------------------------------------------------------
+
+def make_non_commercial_service_manifest():
+    """A type=service manifest whose weights are non-commercial, mirroring
+    the real musicgen/musicgpt/flux-fill manifests post-#169."""
+    m = MagicMock()
+    m.id = "nc-service"
+    m.name = "NC Service"
+    m.type = "service"
+    m.license_class = "non-commercial"
+    m.weights_license = "CC-BY-NC 4.0"
+    m.install = {"method": "docker", "ports": [8080]}
+    m.requires = {}
+    m.hardware_tiers = {}
+    m.version = "1.0.0"
+    return m
+
+
+class TestNonCommercialLicenseGate:
+    @pytest.mark.asyncio
+    async def test_returns_412_when_not_accepted(self, client):
+        manifest = make_non_commercial_service_manifest()
+        registry = MagicMock()
+        registry.get_app = MagicMock(return_value=manifest)
+        registry.get = MagicMock(return_value=manifest)
+        registry.mark_installed = MagicMock()
+        registry.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = registry
+
+        r = await client.post("/api/store/install-v2", json={"manifest_id": "nc-service"})
+
+        assert r.status_code == 412
+        body = r.json()
+        assert body["needs_license_acceptance"] is True
+        assert body["license_id"] == "CC-BY-NC 4.0"
+        assert body["weights_license"] == "CC-BY-NC 4.0"
+        assert body["name"] == "NC Service"
+        assert "text" in body
+
+    @pytest.mark.asyncio
+    async def test_accepted_true_installs_and_records_acceptance(self, client):
+        manifest = make_non_commercial_service_manifest()
+        registry = MagicMock()
+        registry.get_app = MagicMock(return_value=manifest)
+        registry.get = MagicMock(return_value=manifest)
+        registry.mark_installed = MagicMock()
+        registry.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = registry
+
+        mock_installed_apps = MagicMock()
+        mock_installed_apps.install = AsyncMock(return_value=None)
+        mock_installed_apps.update_runtime_location = AsyncMock(return_value=None)
+        client._transport.app.state.installed_apps = mock_installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": True, "host_port": 31234, "path": "/opt/apps/nc-service"}
+        )
+        mock_installer.start = AsyncMock(return_value={"success": True})
+        mock_docker_class = MagicMock(return_value=mock_installer)
+
+        with patch("tinyagentos.installers.docker_installer.DockerInstaller", mock_docker_class):
+            r = await client.post(
+                "/api/store/install-v2",
+                json={"manifest_id": "nc-service", "accepted": True},
+            )
+
+        assert r.status_code == 200
+
+        license_store = client._transport.app.state.license_acceptances
+        record = client._transport.app.state.auth.find_user("admin")
+        accepted = await license_store.has_accepted(record["id"], "nc-service", "CC-BY-NC 4.0")
+        assert accepted is True
+
+    @pytest.mark.asyncio
+    async def test_second_install_after_acceptance_does_not_re_gate(self, client):
+        """Once accepted, a later install (accepted omitted) is not re-gated."""
+        manifest = make_non_commercial_service_manifest()
+        registry = MagicMock()
+        registry.get_app = MagicMock(return_value=manifest)
+        registry.get = MagicMock(return_value=manifest)
+        registry.mark_installed = MagicMock()
+        registry.list_available = MagicMock(return_value=[])
+        client._transport.app.state.registry = registry
+
+        record = client._transport.app.state.auth.find_user("admin")
+        license_store = client._transport.app.state.license_acceptances
+        await license_store.record_acceptance(record["id"], "nc-service", "CC-BY-NC 4.0")
+
+        mock_installed_apps = MagicMock()
+        mock_installed_apps.install = AsyncMock(return_value=None)
+        mock_installed_apps.update_runtime_location = AsyncMock(return_value=None)
+        client._transport.app.state.installed_apps = mock_installed_apps
+
+        mock_installer = MagicMock()
+        mock_installer.install = AsyncMock(
+            return_value={"success": True, "host_port": 31235, "path": "/opt/apps/nc-service"}
+        )
+        mock_installer.start = AsyncMock(return_value={"success": True})
+        mock_docker_class = MagicMock(return_value=mock_installer)
+
+        with patch("tinyagentos.installers.docker_installer.DockerInstaller", mock_docker_class):
+            r = await client.post("/api/store/install-v2", json={"manifest_id": "nc-service"})
+
+        assert r.status_code == 200
+
+
 class TestGetDeviceCapabilityDisk:
     """Unit tests for the free-disk probe in get_device_capability."""
 

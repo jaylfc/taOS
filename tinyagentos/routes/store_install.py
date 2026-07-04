@@ -699,6 +699,44 @@ async def install_app(request: Request):
         progress.finish(install_id, success=False, error="manifest not found in registry")
         return await _legacy_install(request, body, manifest_id, target_remote)
 
+    # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
+    # can be permissive while the model weights it downloads are not (e.g.
+    # musicgen pulls Meta's CC-BY-NC 4.0 weights). Block the install until the
+    # user has explicitly accepted the weights license -- either previously
+    # (recorded in license_acceptances) or on this very request (accepted:
+    # true, sent by the frontend after the user clicks Agree in the license
+    # dialog). Applies uniformly, including to admins: license acceptance is
+    # a legal fact about the user, not a permission an admin role bypasses.
+    if getattr(manifest, "license_class", "") == "non-commercial":
+        license_store = getattr(request.app.state, "license_acceptances", None)
+        license_id = getattr(manifest, "weights_license", "") or manifest.id
+        user = _get_current_user(request)
+        user_id = (user or {}).get("id") or "anonymous"
+        already_accepted = (
+            await license_store.has_accepted(user_id, manifest.id, license_id)
+            if license_store is not None else False
+        )
+        accepted_now = bool(body.get("accepted", False))
+        if not already_accepted and not accepted_now:
+            progress.finish(install_id, success=False, error="needs_license_acceptance")
+            return JSONResponse(
+                {
+                    "needs_license_acceptance": True,
+                    "license_id": license_id,
+                    "weights_license": manifest.weights_license,
+                    "name": manifest.name,
+                    "text": (
+                        f"{manifest.name} downloads model weights licensed under "
+                        f"{manifest.weights_license}, for non-commercial use only. "
+                        "Continuing means you agree to that license for the "
+                        "weights this service uses."
+                    ),
+                },
+                status_code=412,
+            )
+        if accepted_now and not already_accepted and license_store is not None:
+            await license_store.record_acceptance(user_id, manifest.id, license_id)
+
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":
         progress.update(install_id, state="unpacking", detail=f"installing {manifest.type}")

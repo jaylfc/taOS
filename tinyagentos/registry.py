@@ -31,6 +31,14 @@ class AppManifest:
     icon: str = ""
     homepage: str = ""
     license: str = ""
+    # Weights license metadata, separate from `license` (the CODE license).
+    # A manifest's runtime can be MIT while the model weights it pulls are
+    # non-commercial (e.g. musicgen's CC-BY-NC 4.0 weights) -- these two
+    # fields make that distinction explicit instead of leaving it implied by
+    # `license` alone. weights_license is a free-text label ("CC-BY-NC 4.0");
+    # license_class is "permissive" | "non-commercial" ("" = unknown/code-only).
+    weights_license: str = ""
+    license_class: str = ""
     requires: dict = field(default_factory=dict)
     install: dict = field(default_factory=dict)
     hardware_tiers: dict = field(default_factory=dict)
@@ -53,6 +61,8 @@ class AppManifest:
             icon=data.get("icon", ""),
             homepage=data.get("homepage", ""),
             license=data.get("license", ""),
+            weights_license=data.get("weights_license", ""),
+            license_class=data.get("license_class", ""),
             requires=data.get("requires", {}),
             install=data.get("install", {}),
             hardware_tiers=data.get("hardware_tiers", {}),

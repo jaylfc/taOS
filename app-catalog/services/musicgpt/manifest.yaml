@@ -6,6 +6,10 @@ version: 0.4.0
 description: "Generate music from text prompts — runs locally using Meta's MusicGen, no Python required"
 homepage: https://github.com/gabotechs/MusicGPT
 license: MIT
+# The server binary is MIT, but it runs Meta's MusicGen weights under the
+# hood, which are CC-BY-NC 4.0 -- non-commercial use only.
+weights_license: "CC-BY-NC 4.0"
+license_class: non-commercial
 
 requires:
   ram_mb: 2048

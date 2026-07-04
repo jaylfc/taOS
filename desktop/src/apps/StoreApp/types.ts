@@ -35,6 +35,14 @@ export interface CatalogApp {
   update_available?: boolean;
   /** Studios-specific lifecycle state. "soon" hides install and shows a badge. */
   studioState?: "installed" | "available" | "soon";
+  /** Code license (e.g. "MIT"). Distinct from weights_license/license_class below. */
+  license?: string;
+  /** Model weights license label (e.g. "CC-BY-NC 4.0"), when the backend pins weights
+   * under a different license than the runtime code. */
+  weights_license?: string;
+  /** "permissive" | "non-commercial" | "" (unknown/code-only). Drives the
+   * "Non-commercial weights" badge and the install-time license gate. */
+  license_class?: string;
 }
 
 export interface InstallTarget {
