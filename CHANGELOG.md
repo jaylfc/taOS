@@ -7,6 +7,11 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.25] - 2026-07-04
+
+### Security
+- Fixed a high-severity missing-authorization vulnerability (GHSA-47g9-fwwp-hrfp, CWE-862) in the system settings router: every `/api/config` and `/api/settings/*` endpoint was served with no admin check, so an authenticated non-admin user could read and overwrite the full system configuration and trigger privileged actions (`git pull` + dependency reinstall + service restart, and switching the tracked update channel), causing configuration corruption or denial of service for the whole instance. The settings router now requires an admin session or the host local token; non-admin sessions are rejected with 403 before any handler runs. Reported by EQSTLab.
+
 ## [1.0.0-beta.24] - 2026-07-04
 
 ### Fixed
