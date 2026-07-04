@@ -48,7 +48,7 @@ export function CreateProjectDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Create project"
-      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-4"
     >
       <form
         onSubmit={onSubmit}

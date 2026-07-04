@@ -9,6 +9,7 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Fixed
 - Files: deleting a file or folder now moves it to the trash instead of permanently removing it, for your own workspace, agent workspaces, and project files alike. Restore or empty it from the Recycle Bin. Reported by @mandresve (#1604).
+- Projects: the New Project dialog no longer opens behind the Projects window. Reported by @mandresve (#1605).
 
 ## [1.0.0-beta.21] - 2026-07-03
 

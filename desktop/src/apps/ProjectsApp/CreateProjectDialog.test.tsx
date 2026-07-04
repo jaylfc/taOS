@@ -39,3 +39,24 @@ describe("CreateProjectDialog slug auto-tracking", () => {
     expect((slugInput as HTMLInputElement).value).toBe("my-project");
   });
 });
+
+describe("CreateProjectDialog stacking (#1605)", () => {
+  it("portals straight to document.body, not nested under a window's DOM subtree", () => {
+    render(<CreateProjectDialog onClose={vi.fn()} onCreated={vi.fn()} />);
+    const dialog = screen.getByRole("dialog", { name: /create project/i });
+    expect(dialog.parentElement).toBe(document.body);
+  });
+
+  it("uses the app-wide top overlay layer so it always renders above windows", () => {
+    // Window.tsx applies an ever-increasing zIndex (see stores/process-store.ts
+    // nextZIndex, which starts at 1 and climbs by 1 on every open/focus/restore/
+    // maximize with no ceiling). A hardcoded low z-index like Tailwind's "z-50"
+    // gets outrun by any long-lived window session, which is exactly what made
+    // the dialog render behind the Projects window in #1605. The fix reuses the
+    // same "always on top" layer already used by ContextMenu, NotificationToast,
+    // and NotificationCentre for the same reason.
+    render(<CreateProjectDialog onClose={vi.fn()} onCreated={vi.fn()} />);
+    const dialog = screen.getByRole("dialog", { name: /create project/i });
+    expect(dialog).toHaveClass("z-[10001]");
+  });
+});
