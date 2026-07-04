@@ -14,6 +14,7 @@ describe("OfficeStudioApp", () => {
     // query within nav to avoid ambiguity with toolbar buttons
     expect(nav.querySelector('[aria-label="Write"]')).toBeTruthy();
     expect(nav.querySelector('[aria-label="Calc"]')).toBeTruthy();
+    expect(nav.querySelector('[aria-label="Database"]')).toBeTruthy();
     expect(nav.querySelector('[aria-label="Slides"]')).toBeTruthy();
     expect(nav.querySelector('[aria-label="Assist"]')).toBeTruthy();
   });
@@ -65,6 +66,19 @@ describe("OfficeStudioApp", () => {
     expect(screen.getByLabelText("Add sheet")).toBeDefined();
     // workbook title + save/new actions
     expect(screen.getByLabelText("Workbook title")).toBeDefined();
+    expect(screen.getByRole("button", { name: /Save/ })).toBeDefined();
+  });
+
+  it("switches to Database view and shows a real, editable table", () => {
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Database" }));
+    expect(screen.getByRole("button", { name: "Database" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    // default table: one Name column, one row, table title + save/new actions
+    expect(screen.getByLabelText("Table title")).toBeDefined();
+    expect(screen.getAllByLabelText("Column name")[0]).toHaveValue("Name");
+    expect(screen.getByLabelText("Name, row 1")).toBeDefined();
     expect(screen.getByRole("button", { name: /Save/ })).toBeDefined();
   });
 

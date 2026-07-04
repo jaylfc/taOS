@@ -1,14 +1,16 @@
 import { useState } from "react";
-import { Sparkles, Type, Grid, Monitor } from "lucide-react";
+import { Sparkles, Type, Grid, Table2, Monitor } from "lucide-react";
 import { WriteView } from "./officestudio/WriteView";
 import { CalcView } from "./officestudio/CalcView";
+import { DatabaseView } from "./officestudio/DatabaseView";
 import { SlidesView } from "./officestudio/SlidesView";
 
-type OfficeView = "write" | "calc" | "slides";
+type OfficeView = "write" | "calc" | "db" | "slides";
 
 const RAIL: { id: OfficeView; label: string; icon: typeof Sparkles }[] = [
   { id: "write", label: "Write", icon: Type },
   { id: "calc", label: "Calc", icon: Grid },
+  { id: "db", label: "Database", icon: Table2 },
   { id: "slides", label: "Slides", icon: Monitor },
 ];
 
@@ -59,6 +61,7 @@ export function OfficeStudioApp({ windowId: _windowId }: { windowId: string }) {
         <div className="flex min-w-0 flex-1 flex-col">
           {view === "write" && <WriteView />}
           {view === "calc" && <CalcView />}
+          {view === "db" && <DatabaseView />}
           {view === "slides" && <SlidesView />}
         </div>
       </div>
