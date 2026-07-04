@@ -52,6 +52,19 @@ interface RecycleResponse {
   status?: string;
 }
 
+// Item shape returned by GET /api/workspace/trash — the move-to-trash bin
+// backing the user's own workspace (see tinyagentos/workspace_trash.py).
+// Distinct from RecycleItem above, which is the per-agent container
+// trash-cli bin: this one is populated by deletes made in the Files app
+// itself, on the user's own workspace files.
+interface WorkspaceTrashItem {
+  id: string;
+  name: string;
+  original_path: string;
+  is_dir: boolean;
+  deleted_at: string; // ISO string
+}
+
 interface FileEntry {
   name: string;
   path: string;
@@ -478,11 +491,16 @@ export function FilesApp({
   // Context menu anchor + payload. file === null targets the empty list area.
   const [menu, setMenu] = useState<{ x: number; y: number; file: FileEntry | null } | null>(null);
 
-  // Recycle bin
+  // Recycle bin (per-agent container trash-cli)
   const [recycleItems, setRecycleItems] = useState<RecycleItem[]>([]);
   const [recycleContainerOffline, setRecycleContainerOffline] = useState<string[]>([]);
   const [recycleLoading, setRecycleLoading] = useState(false);
   const [recycleError, setRecycleError] = useState<string | null>(null);
+
+  // Workspace trash (host-side move-to-trash backing the user's own Files)
+  const [workspaceTrashItems, setWorkspaceTrashItems] = useState<WorkspaceTrashItem[]>([]);
+  const [workspaceTrashLoading, setWorkspaceTrashLoading] = useState(false);
+  const [workspaceTrashError, setWorkspaceTrashError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
@@ -663,6 +681,50 @@ export function FilesApp({
       setRecycleError(e instanceof Error ? e.message : "Delete failed");
     }
   }, [fetchRecycle]);
+
+  /* ---- Workspace trash ---- */
+  const fetchWorkspaceTrash = useCallback(async () => {
+    setWorkspaceTrashLoading(true);
+    setWorkspaceTrashError(null);
+    try {
+      const data = await apiFetch<{ items: WorkspaceTrashItem[] }>("/api/workspace/trash");
+      setWorkspaceTrashItems(Array.isArray(data.items) ? data.items : []);
+    } catch (e: unknown) {
+      setWorkspaceTrashError(e instanceof Error ? e.message : "Failed to load trash");
+    } finally {
+      setWorkspaceTrashLoading(false);
+    }
+  }, []);
+
+  const handleWorkspaceTrashRestore = useCallback(async (item: WorkspaceTrashItem) => {
+    try {
+      await apiFetch(`/api/workspace/trash/${encodeURIComponent(item.id)}/restore`, { method: "POST" });
+      fetchWorkspaceTrash();
+    } catch (e: unknown) {
+      setWorkspaceTrashError(e instanceof Error ? e.message : "Restore failed");
+    }
+  }, [fetchWorkspaceTrash]);
+
+  const handleWorkspaceTrashPurge = useCallback(async (item: WorkspaceTrashItem) => {
+    if (!window.confirm(`Permanently delete "${item.original_path}"? This cannot be undone.`)) return;
+    try {
+      await apiFetch(`/api/workspace/trash/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      fetchWorkspaceTrash();
+    } catch (e: unknown) {
+      setWorkspaceTrashError(e instanceof Error ? e.message : "Delete failed");
+    }
+  }, [fetchWorkspaceTrash]);
+
+  const handleEmptyWorkspaceTrash = useCallback(async () => {
+    if (workspaceTrashItems.length === 0) return;
+    if (!window.confirm("Permanently delete everything in the trash? This cannot be undone.")) return;
+    try {
+      await apiFetch("/api/workspace/trash", { method: "DELETE" });
+      fetchWorkspaceTrash();
+    } catch (e: unknown) {
+      setWorkspaceTrashError(e instanceof Error ? e.message : "Empty trash failed");
+    }
+  }, [fetchWorkspaceTrash, workspaceTrashItems.length]);
 
   /* ---- Actions ---- */
   const handleNewFolder = useCallback(async () => {
@@ -1020,6 +1082,7 @@ export function FilesApp({
                 setCurrentPath("");
                 setSelectedLocation("recycle");
                 fetchRecycle();
+                fetchWorkspaceTrash();
               }}
               className={`w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors ${location === "recycle" ? "bg-white/10" : ""}`}
               aria-label="Recycle Bin"
@@ -1038,6 +1101,7 @@ export function FilesApp({
               setLocation("recycle");
               setCurrentPath("");
               fetchRecycle();
+              fetchWorkspaceTrash();
             }}
             className="w-full justify-start mx-1.5 mt-1 px-3"
             aria-label="Recycle Bin"
@@ -1147,29 +1211,52 @@ export function FilesApp({
       <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-white/5">
         <Recycle size={15} className="text-shell-text-tertiary" aria-hidden="true" />
         <span className="text-sm font-medium">Recycle Bin</span>
+        {workspaceTrashItems.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleEmptyWorkspaceTrash}
+            className="h-7 ml-auto text-xs text-shell-text-tertiary hover:text-red-400"
+            aria-label="Empty workspace trash"
+          >
+            Empty Trash
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"
-          onClick={fetchRecycle}
-          className="h-7 w-7 ml-auto"
+          onClick={() => {
+            fetchRecycle();
+            fetchWorkspaceTrash();
+          }}
+          className={`h-7 w-7 ${workspaceTrashItems.length > 0 ? "" : "ml-auto"}`}
           aria-label="Refresh recycle bin"
         >
-          <RefreshCw size={13} className={recycleLoading ? "animate-spin" : ""} aria-hidden="true" />
+          <RefreshCw size={13} className={recycleLoading || workspaceTrashLoading ? "animate-spin" : ""} aria-hidden="true" />
         </Button>
       </div>
 
       {/* Error */}
-      {recycleError && (
+      {(recycleError || workspaceTrashError) && (
         <div className="mx-3 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 text-xs">
           <AlertCircle size={14} className="shrink-0" aria-hidden="true" />
-          <span className="flex-1">{recycleError}</span>
-          <button onClick={() => setRecycleError(null)} className="hover:text-red-300" aria-label="Dismiss error">&times;</button>
+          <span className="flex-1">{recycleError || workspaceTrashError}</span>
+          <button
+            onClick={() => {
+              setRecycleError(null);
+              setWorkspaceTrashError(null);
+            }}
+            className="hover:text-red-300"
+            aria-label="Dismiss error"
+          >
+            &times;
+          </button>
         </div>
       )}
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-3">
-        {recycleLoading && recycleItems.length === 0 && (
+        {(recycleLoading || workspaceTrashLoading) && recycleItems.length === 0 && workspaceTrashItems.length === 0 && (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary">
             <RefreshCw size={20} className="animate-spin" aria-hidden="true" />
           </div>
@@ -1182,11 +1269,61 @@ export function FilesApp({
           </div>
         ))}
 
-        {!recycleLoading && recycleItems.length === 0 && recycleContainerOffline.length === 0 && (
+        {!recycleLoading && !workspaceTrashLoading && recycleItems.length === 0 && workspaceTrashItems.length === 0 && recycleContainerOffline.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-shell-text-tertiary gap-2 text-center">
             <Recycle size={40} className="opacity-30" aria-hidden="true" />
-            <span className="text-sm">Recycle bin is empty. Deleted files land here automatically — 30-day retention.</span>
+            <span className="text-sm">Recycle bin is empty. Deleted files land here automatically.</span>
           </div>
+        )}
+
+        {/* Items deleted from the user's own Files workspace */}
+        {workspaceTrashItems.length > 0 && (
+          <section className="mb-4" aria-label="Trashed items from your workspace">
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-shell-text-tertiary">
+                My Files
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {workspaceTrashItems.map((item) => (
+                <Card
+                  key={item.id}
+                  className="flex items-center gap-3 px-3 py-2.5 hover:bg-shell-surface/50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs truncate font-mono" title={item.original_path}>
+                      {item.original_path}
+                    </div>
+                    <div className="text-[10px] text-shell-text-tertiary mt-0.5">
+                      {formatDate(Math.floor(new Date(item.deleted_at).getTime() / 1000))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:bg-emerald-500/15 hover:text-emerald-400"
+                      onClick={() => handleWorkspaceTrashRestore(item)}
+                      aria-label={`Restore ${item.original_path}`}
+                      title="Restore"
+                    >
+                      <RotateCcw size={13} aria-hidden="true" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:bg-red-500/15 hover:text-red-400"
+                      onClick={() => handleWorkspaceTrashPurge(item)}
+                      aria-label={`Permanently delete ${item.original_path}`}
+                      title="Delete permanently"
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </section>
         )}
 
         {Object.keys(recycleByAgent).map((agentName) => (

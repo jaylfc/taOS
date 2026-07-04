@@ -10,6 +10,17 @@ from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.workspace_trash import (
+    TrashItemNotFound,
+    TrashRestoreConflict,
+    empty_trash,
+    get_trash_dir,
+    list_trash_items,
+    move_to_trash,
+    purge_trash_item,
+    restore_trash_item,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +61,13 @@ def _get_workspace_root(request: Request) -> Path:
     ws = data_dir / USER_WORKSPACE_DIR_NAME
     ws.mkdir(parents=True, exist_ok=True)
     return ws
+
+
+def _get_workspace_trash_dir(request: Request) -> Path:
+    """Return the trash directory backing the user workspace, creating it on
+    first access."""
+    data_dir = request.app.state.config_path.parent
+    return get_trash_dir(data_dir, "workspace")
 
 
 def _resolve_safe(workspace: Path, subpath: str) -> Path | None:
@@ -302,7 +320,13 @@ async def api_get_file(request: Request, file_path: str):
 
 @router.delete("/api/workspace/files/{file_path:path}")
 async def api_delete_file(request: Request, file_path: str):
-    """Delete a file or directory from the user workspace."""
+    """Move a file or directory from the user workspace to the trash.
+
+    Nothing is permanently removed here — the item is relocated under the
+    workspace's trash directory with metadata recording where it came from,
+    so it can be restored (or purged) via the ``/api/workspace/trash``
+    routes below.
+    """
     workspace = _get_workspace_root(request)
 
     target = _resolve_safe(workspace, file_path)
@@ -312,12 +336,50 @@ async def api_delete_file(request: Request, file_path: str):
     if not target.exists():
         return JSONResponse({"error": f"'{file_path}' not found"}, status_code=404)
 
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
+    trash_dir = _get_workspace_trash_dir(request)
+    move_to_trash(trash_dir, target, file_path)
 
     return {"path": file_path, "status": "deleted"}
+
+
+@router.get("/api/workspace/trash")
+async def api_list_trash(request: Request):
+    """List items in the user workspace's trash, newest-deleted first."""
+    trash_dir = _get_workspace_trash_dir(request)
+    return {"items": list_trash_items(trash_dir)}
+
+
+@router.post("/api/workspace/trash/{item_id}/restore")
+async def api_restore_trash_item(request: Request, item_id: str):
+    """Restore a trashed item back to its original workspace path."""
+    workspace = _get_workspace_root(request)
+    trash_dir = _get_workspace_trash_dir(request)
+    try:
+        metadata = restore_trash_item(trash_dir, workspace, item_id)
+    except TrashItemNotFound:
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    except TrashRestoreConflict:
+        return JSONResponse(
+            {"error": "a file already exists at the original path"}, status_code=409
+        )
+    return {"status": "restored", "path": metadata["original_path"]}
+
+
+@router.delete("/api/workspace/trash/{item_id}")
+async def api_purge_trash_item(request: Request, item_id: str):
+    """Permanently delete one item from the trash."""
+    trash_dir = _get_workspace_trash_dir(request)
+    if not purge_trash_item(trash_dir, item_id):
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    return {"status": "purged", "id": item_id}
+
+
+@router.delete("/api/workspace/trash")
+async def api_empty_trash(request: Request):
+    """Permanently delete every item in the user workspace's trash."""
+    trash_dir = _get_workspace_trash_dir(request)
+    count = empty_trash(trash_dir)
+    return {"status": "emptied", "count": count}
 
 
 @router.get("/api/workspace/stats")

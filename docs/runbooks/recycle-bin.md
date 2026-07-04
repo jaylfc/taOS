@@ -1,5 +1,28 @@
 # Recycle bin runbook
 
+## Host-side Files trash (workspace / agent workspace / project files)
+
+The per-container mechanism below only ever sees files removed *inside* an
+agent's own container shell. The Files app also browses three folders that
+live on the controller host, not in any container — the user's own
+workspace, an agent's workspace (as mounted on the host), and a project's
+files folder — and those used to hard-delete on "delete" (#1604).
+
+They now go through a small move-to-trash helper instead
+(`tinyagentos/workspace_trash.py`): deleting moves the item under
+`<data_dir>/.taos-trash/<scope>/<item-id>/` alongside a JSON metadata
+sidecar (original relative path, deleted-at, directory flag); nothing is
+unlinked from disk until an explicit purge or empty-trash call. Routes:
+
+- `GET/POST/DELETE /api/workspace/trash[...]` — user workspace
+- `GET/POST/DELETE /api/agents/{name}/workspace/trash[...]` — agent workspace
+- `GET/POST/DELETE /api/projects/{slug}/trash[...]` — project files
+
+The Files app surfaces the user-workspace trash under Recycle Bin → "My
+Files" (restore / delete permanently / empty all). The agent-workspace and
+project-files trash routes exist and are tested, but aren't yet wired into
+a Files UI section — restore/empty for those two scopes is API-only for now.
+
 ## How it works (per container)
 
 Every taOS agent container has a soft-delete recycle bin at

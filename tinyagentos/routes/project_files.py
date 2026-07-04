@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+
+from tinyagentos.workspace_trash import (
+    TrashItemNotFound,
+    TrashRestoreConflict,
+    empty_trash,
+    get_trash_dir,
+    list_trash_items,
+    move_to_trash,
+    purge_trash_item,
+    restore_trash_item,
+)
 
 router = APIRouter()
 
@@ -20,6 +30,13 @@ def _get_project_files_root(request: Request, slug: str) -> Path | None:
     root = request.app.state.projects_root / slug / "files"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _get_project_trash_dir(request: Request, slug: str) -> Path:
+    """Return the trash directory backing one project's files, creating it
+    on first access."""
+    data_dir = Path(request.app.state.projects_root).parent
+    return get_trash_dir(data_dir, f"projects/{slug}")
 
 
 def _resolve_safe(workspace: Path, subpath: str) -> Path | None:
@@ -180,7 +197,11 @@ async def api_project_get_file(request: Request, slug: str, file_path: str):
 
 @router.delete("/api/projects/{slug}/files/{file_path:path}")
 async def api_project_delete_file(request: Request, slug: str, file_path: str):
-    """Delete a file or directory from the project's files folder."""
+    """Move a file or directory from the project's files folder to the trash.
+
+    See ``tinyagentos/routes/user_workspace.py::api_delete_file`` for why —
+    this mirrors the same move-to-trash behavior for project files.
+    """
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -192,12 +213,58 @@ async def api_project_delete_file(request: Request, slug: str, file_path: str):
     if not target.exists():
         return JSONResponse({"error": f"'{file_path}' not found"}, status_code=404)
 
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
+    trash_dir = _get_project_trash_dir(request, slug)
+    move_to_trash(trash_dir, target, file_path)
 
     return {"path": file_path, "status": "deleted"}
+
+
+@router.get("/api/projects/{slug}/trash")
+async def api_project_list_trash(request: Request, slug: str):
+    """List items in a project's trash, newest-deleted first."""
+    if _get_project_files_root(request, slug) is None:
+        return JSONResponse({"error": "Invalid slug"}, status_code=400)
+    trash_dir = _get_project_trash_dir(request, slug)
+    return {"items": list_trash_items(trash_dir)}
+
+
+@router.post("/api/projects/{slug}/trash/{item_id}/restore")
+async def api_project_restore_trash_item(request: Request, slug: str, item_id: str):
+    """Restore a trashed item back to its original path in the project's files folder."""
+    workspace = _get_project_files_root(request, slug)
+    if workspace is None:
+        return JSONResponse({"error": "Invalid slug"}, status_code=400)
+    trash_dir = _get_project_trash_dir(request, slug)
+    try:
+        metadata = restore_trash_item(trash_dir, workspace, item_id)
+    except TrashItemNotFound:
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    except TrashRestoreConflict:
+        return JSONResponse(
+            {"error": "a file already exists at the original path"}, status_code=409
+        )
+    return {"status": "restored", "path": metadata["original_path"]}
+
+
+@router.delete("/api/projects/{slug}/trash/{item_id}")
+async def api_project_purge_trash_item(request: Request, slug: str, item_id: str):
+    """Permanently delete one item from a project's trash."""
+    if _get_project_files_root(request, slug) is None:
+        return JSONResponse({"error": "Invalid slug"}, status_code=400)
+    trash_dir = _get_project_trash_dir(request, slug)
+    if not purge_trash_item(trash_dir, item_id):
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    return {"status": "purged", "id": item_id}
+
+
+@router.delete("/api/projects/{slug}/trash")
+async def api_project_empty_trash(request: Request, slug: str):
+    """Permanently delete every item in a project's trash."""
+    if _get_project_files_root(request, slug) is None:
+        return JSONResponse({"error": "Invalid slug"}, status_code=400)
+    trash_dir = _get_project_trash_dir(request, slug)
+    count = empty_trash(trash_dir)
+    return {"status": "emptied", "count": count}
 
 
 @router.get("/api/projects/{slug}/stats")

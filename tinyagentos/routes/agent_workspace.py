@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Request, UploadFile, File
@@ -14,6 +13,16 @@ from tinyagentos.routes.user_workspace import (
     _dir_signature,
     _list_dir,
     _resolve_safe,
+)
+from tinyagentos.workspace_trash import (
+    TrashItemNotFound,
+    TrashRestoreConflict,
+    empty_trash,
+    get_trash_dir,
+    list_trash_items,
+    move_to_trash,
+    purge_trash_item,
+    restore_trash_item,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +59,13 @@ def _get_agent_workspace_root(request: Request, agent_name: str) -> Path | None:
         return None
     candidate.mkdir(parents=True, exist_ok=True)
     return candidate
+
+
+def _get_agent_trash_dir(request: Request, agent_name: str) -> Path:
+    """Return the trash directory backing one agent's workspace, creating it
+    on first access."""
+    data_dir = Path(request.app.state.agent_workspaces_dir).parent
+    return get_trash_dir(data_dir, f"agents/{agent_name}")
 
 
 def _resolve_workspace(request: Request, agent_name: str) -> tuple[Path | None, JSONResponse | None]:
@@ -196,7 +212,11 @@ async def api_get_file(request: Request, agent_name: str, file_path: str):
 
 @router.delete("/api/agents/{agent_name}/workspace/files/{file_path:path}")
 async def api_delete_file(request: Request, agent_name: str, file_path: str):
-    """Delete a file or directory from an agent's workspace."""
+    """Move a file or directory from an agent's workspace to the trash.
+
+    See ``tinyagentos/routes/user_workspace.py::api_delete_file`` for why —
+    this mirrors the same move-to-trash behavior for agent workspaces.
+    """
     workspace, err = _resolve_workspace(request, agent_name)
     if err is not None:
         return err
@@ -208,9 +228,55 @@ async def api_delete_file(request: Request, agent_name: str, file_path: str):
     if not target.exists():
         return JSONResponse({"error": f"'{file_path}' not found"}, status_code=404)
 
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
+    trash_dir = _get_agent_trash_dir(request, agent_name)
+    move_to_trash(trash_dir, target, file_path)
 
     return {"path": file_path, "status": "deleted"}
+
+
+@router.get("/api/agents/{agent_name}/workspace/trash")
+async def api_list_trash(request: Request, agent_name: str):
+    """List items in an agent workspace's trash, newest-deleted first."""
+    if not _agent_exists(request, agent_name):
+        return JSONResponse({"error": f"Agent '{agent_name}' not found"}, status_code=404)
+    trash_dir = _get_agent_trash_dir(request, agent_name)
+    return {"items": list_trash_items(trash_dir)}
+
+
+@router.post("/api/agents/{agent_name}/workspace/trash/{item_id}/restore")
+async def api_restore_trash_item(request: Request, agent_name: str, item_id: str):
+    """Restore a trashed item back to its original path in the agent workspace."""
+    workspace, err = _resolve_workspace(request, agent_name)
+    if err is not None:
+        return err
+    trash_dir = _get_agent_trash_dir(request, agent_name)
+    try:
+        metadata = restore_trash_item(trash_dir, workspace, item_id)
+    except TrashItemNotFound:
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    except TrashRestoreConflict:
+        return JSONResponse(
+            {"error": "a file already exists at the original path"}, status_code=409
+        )
+    return {"status": "restored", "path": metadata["original_path"]}
+
+
+@router.delete("/api/agents/{agent_name}/workspace/trash/{item_id}")
+async def api_purge_trash_item(request: Request, agent_name: str, item_id: str):
+    """Permanently delete one item from an agent workspace's trash."""
+    if not _agent_exists(request, agent_name):
+        return JSONResponse({"error": f"Agent '{agent_name}' not found"}, status_code=404)
+    trash_dir = _get_agent_trash_dir(request, agent_name)
+    if not purge_trash_item(trash_dir, item_id):
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    return {"status": "purged", "id": item_id}
+
+
+@router.delete("/api/agents/{agent_name}/workspace/trash")
+async def api_empty_trash(request: Request, agent_name: str):
+    """Permanently delete every item in an agent workspace's trash."""
+    if not _agent_exists(request, agent_name):
+        return JSONResponse({"error": f"Agent '{agent_name}' not found"}, status_code=404)
+    trash_dir = _get_agent_trash_dir(request, agent_name)
+    count = empty_trash(trash_dir)
+    return {"status": "emptied", "count": count}
