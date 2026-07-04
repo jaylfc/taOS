@@ -321,6 +321,10 @@ async def client(app, tmp_data_dir):
     if decision_store._db is not None:
         await decision_store.close()
     await decision_store.init()
+    execution_policies = app.state.execution_policies
+    if execution_policies._db is not None:
+        await execution_policies.close()
+    await execution_policies.init()
     coding_session_store = app.state.coding_session_store
     if coding_session_store._db is not None:
         await coding_session_store.close()

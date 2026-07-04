@@ -250,8 +250,46 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
     await _apply_app_grant(request, updated, body.value)
+    await _apply_execution_grant(request, updated, body.value)
     await _route_answer_to_agent(updated, body.value)
     return updated
+
+
+async def _apply_execution_grant(request: Request, decision: dict, value) -> None:
+    """Side effect for an execution-gate Decision (agent governance #160 slice
+    1): the decision's metadata carries {kind: "execution_gate", agent_name,
+    action_class, tool}. Approving it writes a short-lived execution grant so
+    the agent's retry of that exact action passes the policy gate without
+    asking again; either way the agent is notified so it can retry or stop.
+    Mirrors ``_apply_app_grant``: the answer is already persisted, so a grant-
+    store hiccup must not fail the answer."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "execution_gate":
+        return
+    policies = getattr(request.app.state, "execution_policies", None)
+    agent_name = meta.get("agent_name")
+    action_class = meta.get("action_class")
+    if policies is None or not agent_name or not action_class:
+        return
+    approved = value == "approve"
+    try:
+        if approved:
+            await policies.add_grant(agent_name, action_class, decision.get("id"))
+    except Exception:
+        # Best-effort: the answer is already persisted, so a grant-store write
+        # must not fail the request. Log it rather than swallow silently so a
+        # broken grant write is diagnosable.
+        logger.warning(
+            "execution grant write failed for agent %s (decision %s)",
+            agent_name, decision.get("id"), exc_info=True,
+        )
+    # decision["from_agent"] is already agent_name (set when the gate created
+    # this decision in skill_exec.py); reuse the existing answer-routing path
+    # with a retry-specific message instead of the generic answer text.
+    await _route_answer_to_agent(
+        decision,
+        "you may retry the action now" if approved else "your action was denied",
+    )
 
 
 async def _apply_app_grant(request: Request, decision: dict, value) -> None:

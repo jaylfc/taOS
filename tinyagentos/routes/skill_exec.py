@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -534,6 +535,117 @@ def _capture_tool_receipt(request: Request, skill_id: str, args: dict, result) -
         logger.warning("receipt capture dispatch failed for %s", skill_id, exc_info=True)
 
 
+def _emit_policy_receipt(
+    request: Request,
+    skill_id: str,
+    agent_name: str,
+    *,
+    stop_reason: str,
+    human_approval: str | None = None,
+    decision_id: str = "",
+) -> None:
+    """Fire-and-forget receipt for a policy-gated call that never reached
+    ``impl(...)`` (deny or pending-approval). Mirrors ``_capture_tool_receipt``:
+    fail-soft, off the response path, never disrupts the tool call."""
+    try:
+        store = getattr(request.app.state, "receipt_store", None)
+        if store is None or not agent_name:
+            return
+        task = asyncio.create_task(store.record(
+            agent_name, tool_name=skill_id, stop_reason=stop_reason,
+            human_approval=human_approval, decision_id=decision_id,
+        ))
+        _bg_receipt_tasks.add(task)
+        task.add_done_callback(_bg_receipt_tasks.discard)
+    except Exception:  # noqa: BLE001 - never let receipt capture touch the tool path
+        logger.warning("policy receipt dispatch failed for %s", skill_id, exc_info=True)
+
+
+async def _check_execution_policy(
+    request: Request, skill_id: str, agent_name: str
+) -> JSONResponse | None:
+    """Agent governance gate (#160 slice 1): decide whether this agent's tool
+    call is allowed, denied, or needs a human approval. Returns a JSONResponse
+    to short-circuit the call (deny / pending-approval), or None to let
+    ``execute_skill`` proceed to ``impl(...)``.
+
+    This is a SEPARATE, ADDITIVE check that runs strictly after
+    ``_is_admin_or_local_token`` has already authorized the caller -- it never
+    substitutes for that gate, only narrows what an already-authorized caller's
+    agent may do.
+    """
+    from tinyagentos.governance.action_classes import classify
+
+    action_class = classify(skill_id)
+    if action_class is None:
+        return None
+
+    policies = getattr(request.app.state, "execution_policies", None)
+    if policies is None:
+        # Not wired in this deployment; fail open rather than break every
+        # skill call over an additive, not-yet-present store.
+        return None
+
+    effect = await policies.effective_effect(agent_name, action_class)
+    if effect == "allow":
+        return None
+
+    if effect == "deny":
+        _emit_policy_receipt(request, skill_id, agent_name, stop_reason="policy_deny")
+        board_audit = getattr(request.app.state, "board_audit", None)
+        if board_audit is not None:
+            try:
+                await board_audit.record(
+                    task_id=f"agent:{agent_name}",
+                    event="execution_policy_deny",
+                    actor=agent_name,
+                    detail={"skill_id": skill_id, "action_class": action_class},
+                )
+            except Exception:
+                logger.warning(
+                    "board_audit record failed for policy deny of %s", skill_id, exc_info=True
+                )
+        return JSONResponse(
+            {"error": "forbidden_by_policy", "action_class": action_class},
+            status_code=403,
+        )
+
+    # effect == "require_approval"
+    if await policies.has_live_grant(agent_name, action_class, time.time()):
+        return None
+
+    decision_id = ""
+    decision_store = getattr(request.app.state, "decision_store", None)
+    if decision_store is not None:
+        try:
+            decision = await decision_store.create(
+                from_agent=agent_name,
+                question=f"Agent {agent_name} wants to run {skill_id} ({action_class})",
+                type="approve_deny",
+                priority="blocking",
+                metadata={
+                    "kind": "execution_gate",
+                    "agent_name": agent_name,
+                    "action_class": action_class,
+                    "tool": skill_id,
+                },
+            )
+            decision_id = decision["id"]
+        except Exception:
+            logger.warning(
+                "decision create failed for execution gate on %s", skill_id, exc_info=True
+            )
+
+    _emit_policy_receipt(
+        request, skill_id, agent_name,
+        stop_reason="awaiting_approval", human_approval="pending", decision_id=decision_id,
+    )
+    return JSONResponse(
+        {"status": "pending_approval", "decision_id": decision_id, "action_class": action_class},
+        status_code=202,
+    )
+
+
 @router.post("/api/skill-exec/{skill_id}/call")
 async def execute_skill(skill_id: str, request: Request):
     """Execute a skill with the given arguments.
@@ -566,6 +678,14 @@ async def execute_skill(skill_id: str, request: Request):
         return JSONResponse(
             {"error": f"No implementation for {skill_id}"}, status_code=501
         )
+
+    # Agent governance (#160 slice 1): runs after the auth gate above, before
+    # the skill actually executes. agent_name mirrors the receipt capture's
+    # extraction below (args, populated from the request body).
+    agent_name = (args.get("agent_name") or "").strip()
+    gate_response = await _check_execution_policy(request, skill_id, agent_name)
+    if gate_response is not None:
+        return gate_response
 
     try:
         result = await impl(args, request)

@@ -379,6 +379,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
     from tinyagentos.decisions.decision_store import DecisionStore
     decision_store = DecisionStore(data_dir / "decisions.db")
+    from tinyagentos.governance.policy_store import ExecutionPolicyStore
+    execution_policy_store = ExecutionPolicyStore(data_dir / "execution_policies.db")
     from tinyagentos.notes.shared_docs_store import SharedDocsStore
     shared_docs_store = SharedDocsStore(data_dir / "shared_docs.db")
     from tinyagentos.coding_sessions.launcher import CodingSessionLauncher
@@ -494,6 +496,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_canvas_store.init()
         await decision_store.init()
         app.state.decision_store = decision_store
+        await execution_policy_store.init()
+        app.state.execution_policies = execution_policy_store
         await shared_docs_store.init()
         app.state.shared_docs_store = shared_docs_store
         await coding_session_store.init()
@@ -1465,6 +1469,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.desktop_command_broker = desktop_command_broker
     app.state.project_canvas_store = project_canvas_store
     app.state.decision_store = decision_store
+    app.state.execution_policies = execution_policy_store
     app.state.shared_docs_store = shared_docs_store
     app.state.coding_session_store = coding_session_store
     app.state.beads_bridge = None
