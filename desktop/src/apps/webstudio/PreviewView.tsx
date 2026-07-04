@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Monitor, Tablet, Smartphone } from "lucide-react";
-import { SectionBlock } from "./SectionBlock";
-import { PALETTES, FONTS, type Site, type DevicePreview } from "./types";
+import { exportSiteHtml } from "./export";
+import { sitePreviewUrl } from "./web-sites-api";
+import type { Site, DevicePreview } from "./types";
 
 const DEVICES: { id: DevicePreview; label: string; icon: typeof Monitor; maxW: number | null }[] = [
   { id: "desktop", label: "Desktop", icon: Monitor, maxW: null },
@@ -9,11 +10,18 @@ const DEVICES: { id: DevicePreview; label: string; icon: typeof Monitor; maxW: n
   { id: "mobile", label: "Mobile", icon: Smartphone, maxW: 380 },
 ];
 
-export function PreviewView({ site }: { site: Site }) {
+/** siteId is the saved site's id (activeId), dirty is true when the in-memory
+ *  `site` has unsaved edits. Preview is served two ways, both opaque-origin
+ *  (`sandbox="allow-scripts"`, no allow-same-origin -- the one real security
+ *  upgrade over the old direct-React render):
+ *   - saved + clean: an iframe pointed at the real, backend-rendered
+ *     `/api/web/sites/{id}/preview` (also carries the CSP in routes/web.py).
+ *   - unsaved or never-saved: `srcDoc` of a fresh client-side export, so the
+ *     preview always reflects the current edits without a round-trip. */
+export function PreviewView({ site, siteId, dirty }: { site: Site; siteId: string | null; dirty: boolean }) {
   const [device, setDevice] = useState<DevicePreview>("desktop");
-  const colors = PALETTES[site.theme.palette].colors;
-  const fontStack = FONTS[site.theme.font].stack;
   const maxW = DEVICES.find((d) => d.id === device)?.maxW ?? undefined;
+  const useLiveUrl = Boolean(siteId) && !dirty;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -46,9 +54,23 @@ export function PreviewView({ site }: { site: Site }) {
           className="mx-auto overflow-hidden rounded-xl border border-shell-border transition-all"
           style={{ maxWidth: maxW }}
         >
-          {site.sections.map((s) => (
-            <SectionBlock key={s.id} section={s} colors={colors} fontStack={fontStack} editable={false} />
-          ))}
+          {useLiveUrl ? (
+            <iframe
+              key={siteId}
+              title="Site preview"
+              src={sitePreviewUrl(siteId!)}
+              sandbox="allow-scripts"
+              className="h-[70vh] w-full border-0 bg-white"
+            />
+          ) : (
+            <iframe
+              key="unsaved-preview"
+              title="Site preview (unsaved)"
+              srcDoc={exportSiteHtml(site)}
+              sandbox="allow-scripts"
+              className="h-[70vh] w-full border-0 bg-white"
+            />
+          )}
         </div>
       </div>
     </div>

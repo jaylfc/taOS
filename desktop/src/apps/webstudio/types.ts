@@ -1,14 +1,13 @@
 /* ------------------------------------------------------------------ */
-/*  Web Studio - shared types (phase 1)                                */
+/*  Web Studio - shared types                                          */
 /*                                                                     */
-/*  A section-based website builder. Phase 1 ships a genuinely usable  */
-/*  editor: template-matched scaffolding, a visual sections editor,    */
-/*  a live device preview and a self-contained static-HTML export.     */
-/*  Full offline-LLM generation and publish-to-host are later phases,  */
-/*  surfaced as honest "coming" affordances, never faked.              */
+/*  A section-based website builder: real AI generation (streamed via   */
+/*  the taos-agent, with an honest template-match fallback), a visual   */
+/*  sections editor, a sandboxed live device preview, a self-contained  */
+/*  static-HTML export and install-as-a-taOS-app packaging.             */
 /* ------------------------------------------------------------------ */
 
-export type StudioView = "generate" | "templates" | "edit" | "preview" | "export";
+export type StudioView = "generate" | "templates" | "edit" | "preview" | "export" | "share";
 
 /** Device the preview stage emulates. All three resize the same render. */
 export type DevicePreview = "desktop" | "tablet" | "mobile";

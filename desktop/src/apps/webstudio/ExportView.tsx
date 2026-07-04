@@ -47,8 +47,8 @@ export function ExportView({ site }: { site: Site }) {
           <div className="mt-3 flex items-start gap-2 rounded-xl border border-shell-border bg-shell-surface px-3.5 py-3 text-[12px] text-shell-text-tertiary">
             <Globe size={15} className="mt-0.5 shrink-0" />
             <span>
-              One-click publish to a taOS-hosted address on your LAN is coming in a later phase. Nothing is published
-              yet; only the download above is live.
+              To install this site as a real taOS app (or export it as a shareable .taosapp package), save it first,
+              then open the Share view.
             </span>
           </div>
         </div>

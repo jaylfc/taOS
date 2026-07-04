@@ -38,6 +38,22 @@ async def test_create_happy_path(web_site_store):
 
 
 @pytest.mark.asyncio
+async def test_create_defaults_index_html_to_empty(web_site_store):
+    row = await web_site_store.create(title="My Site", content="{}")
+    assert row["index_html"] == ""
+
+
+@pytest.mark.asyncio
+async def test_create_stores_index_html(web_site_store):
+    html = "<!doctype html><html><body>Hi</body></html>"
+    row = await web_site_store.create(title="My Site", content="{}", index_html=html)
+    assert row["index_html"] == html
+    fetched = await web_site_store.get(row["id"])
+    assert fetched is not None
+    assert fetched["index_html"] == html
+
+
+@pytest.mark.asyncio
 async def test_list_excludes_content(web_site_store):
     await web_site_store.create(title="T", content='{"secret": true}')
     rows = await web_site_store.list()
@@ -69,6 +85,14 @@ async def test_update_changes_content_and_timestamp(web_site_store):
     assert updated["title"] == "T2"
     assert updated["content"] == '{"sections": [1]}'
     assert updated["updated_at"] >= created["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_update_changes_index_html(web_site_store):
+    created = await web_site_store.create(title="T", content="{}", index_html="<p>v1</p>")
+    updated = await web_site_store.update(created["id"], title="T", content="{}", index_html="<p>v2</p>")
+    assert updated is not None
+    assert updated["index_html"] == "<p>v2</p>"
 
 
 @pytest.mark.asyncio

@@ -29,11 +29,25 @@ def _new_site_id() -> str:
     return f"site-{suffix}"
 
 
+async def _migration_add_index_html(conn: aiosqlite.Connection) -> None:
+    """Add the `index_html` column (idempotent). Added after initial release,
+    so existing databases must be migrated rather than assumed to have it --
+    see base_store.py's warning about SCHEMA vs. later columns."""
+    existing_cols = {row[1] for row in await (await conn.execute("PRAGMA table_info(sites)")).fetchall()}
+    if "index_html" not in existing_cols:
+        await conn.execute("ALTER TABLE sites ADD COLUMN index_html TEXT NOT NULL DEFAULT ''")
+        await conn.commit()
+
+
 class WebSiteStore(BaseStore):
     """Persists website-builder documents.
 
-    ``content`` holds the site model serialized as JSON. The store treats it
-    as an opaque TEXT blob; validation of the model lives in the frontend.
+    ``content`` holds the site model serialized as JSON -- the editable
+    source of truth; the store treats it as an opaque TEXT blob, validation
+    of the model lives in the frontend. ``index_html`` holds the exported,
+    self-contained static HTML rendered from that model (export.ts's
+    exportSiteHtml), a derived artifact kept alongside it so the preview and
+    package routes have something servable without re-rendering client-side.
     """
 
     SCHEMA = WEB_SITES_SCHEMA
@@ -41,7 +55,10 @@ class WebSiteStore(BaseStore):
     def __init__(self, db_path: Path):
         super().__init__(db_path)
 
-    async def create(self, title: str, content: str) -> dict:
+    async def _post_init(self) -> None:
+        await _migration_add_index_html(self._db)
+
+    async def create(self, title: str, content: str, index_html: str = "") -> dict:
         now = int(time.time())
         # The id is generated and inserted speculatively; the PRIMARY KEY
         # constraint is the actual source of truth for uniqueness, not a
@@ -55,14 +72,22 @@ class WebSiteStore(BaseStore):
                 "id": site_id,
                 "title": title,
                 "content": content,
+                "index_html": index_html,
                 "created_at": now,
                 "updated_at": now,
             }
             try:
                 await self._db.execute(
-                    """INSERT INTO sites (id, title, content, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (row["id"], row["title"], row["content"], row["created_at"], row["updated_at"]),
+                    """INSERT INTO sites (id, title, content, index_html, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["id"],
+                        row["title"],
+                        row["content"],
+                        row["index_html"],
+                        row["created_at"],
+                        row["updated_at"],
+                    ),
                 )
                 await self._db.commit()
                 return row
@@ -85,7 +110,7 @@ class WebSiteStore(BaseStore):
 
     async def get(self, site_id: str) -> dict | None:
         async with self._db.execute(
-            "SELECT id, title, content, created_at, updated_at FROM sites WHERE id = ?",
+            "SELECT id, title, content, index_html, created_at, updated_at FROM sites WHERE id = ?",
             (site_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -95,15 +120,16 @@ class WebSiteStore(BaseStore):
             "id": row[0],
             "title": row[1],
             "content": row[2],
-            "created_at": row[3],
-            "updated_at": row[4],
+            "index_html": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
         }
 
-    async def update(self, site_id: str, title: str, content: str) -> dict | None:
+    async def update(self, site_id: str, title: str, content: str, index_html: str = "") -> dict | None:
         now = int(time.time())
         await self._db.execute(
-            "UPDATE sites SET title = ?, content = ?, updated_at = ? WHERE id = ?",
-            (title, content, now, site_id),
+            "UPDATE sites SET title = ?, content = ?, index_html = ?, updated_at = ? WHERE id = ?",
+            (title, content, index_html, now, site_id),
         )
         await self._db.commit()
         return await self.get(site_id)

@@ -1,26 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
-import { Wand2, LayoutGrid, Pencil, Eye, Download } from "lucide-react";
+import { Wand2, LayoutGrid, Pencil, Eye, Download, Share2 } from "lucide-react";
 import { GenerateView } from "./webstudio/GenerateView";
 import { TemplatesView } from "./webstudio/TemplatesView";
 import { EditView, type SavedSite } from "./webstudio/EditView";
 import { PreviewView } from "./webstudio/PreviewView";
 import { ExportView } from "./webstudio/ExportView";
+import { ShareView } from "./webstudio/ShareView";
+import { exportSiteHtml } from "./webstudio/export";
 import { emptySite } from "./webstudio/templates";
 import { isValidSite, MAX_CONTENT_BYTES, type Site, type StudioView } from "./webstudio/types";
 
 /* ------------------------------------------------------------------ */
-/*  Web Studio - shell (phase 1)                                       */
+/*  Web Studio - shell                                                  */
 /*                                                                     */
 /*  A Wix-style, section-based website builder. Left icon rail         */
-/*  (Generate / Templates / Edit / Preview / Export) + the active      */
-/*  surface, the same shape as the other taOS studios.                 */
+/*  (Generate / Templates / Edit / Preview / Export / Share) + the      */
+/*  active surface, the same shape as the other taOS studios.           */
 /*                                                                     */
-/*  Phase 1 ships a genuinely usable editor: template-matched          */
-/*  scaffolding, a visual sections editor with inline text + image     */
-/*  swap, live device preview, a self-contained static-HTML export     */
-/*  and backend persistence (/api/web/sites). Full offline-LLM         */
-/*  generation and publish-to-host are later phases, surfaced as       */
-/*  honest "coming" affordances, never faked.                          */
+/*  Generate streams the taos-agent for a real, bespoke Site (with an   */
+/*  honest template-match fallback if that fails); Edit is a visual     */
+/*  sections editor; Preview is a sandboxed iframe (either the saved,    */
+/*  backend-rendered page or a srcDoc of the live in-memory edits);      */
+/*  Export downloads the self-contained static HTML; Share installs the  */
+/*  site as a real taOS app (or exports the same .taosapp package).      */
+/*  Saving also persists the rendered index.html alongside the editable  */
+/*  Site JSON, so Preview/Share have something servable.                 */
 /* ------------------------------------------------------------------ */
 
 const RAIL: { id: StudioView; label: string; icon: typeof Wand2 }[] = [
@@ -29,6 +33,7 @@ const RAIL: { id: StudioView; label: string; icon: typeof Wand2 }[] = [
   { id: "edit", label: "Edit", icon: Pencil },
   { id: "preview", label: "Preview", icon: Eye },
   { id: "export", label: "Export", icon: Download },
+  { id: "share", label: "Share", icon: Share2 },
 ];
 
 export function WebStudioApp(_props: { windowId: string }) {
@@ -126,7 +131,10 @@ export function WebStudioApp(_props: { windowId: string }) {
           "This site is too large to save (over 5 MB). Remove or shrink some images and try again.",
         );
       }
-      const payload = { title: site.title.trim() || "Untitled site", content };
+      // Persist the rendered static HTML alongside the editable Site JSON --
+      // the derived artifact the preview/package routes serve, so Preview
+      // and Share never have to re-render the site server-side.
+      const payload = { title: site.title.trim() || "Untitled site", content, index_html: exportSiteHtml(site) };
       const url = activeId ? `/api/web/sites/${encodeURIComponent(activeId)}` : "/api/web/sites";
       const res = await fetch(url, {
         method: activeId ? "PUT" : "POST",
@@ -212,8 +220,9 @@ export function WebStudioApp(_props: { windowId: string }) {
               onDelete={deleteSite}
             />
           )}
-          {view === "preview" && <PreviewView site={site} />}
+          {view === "preview" && <PreviewView site={site} siteId={activeId} dirty={dirty} />}
           {view === "export" && <ExportView site={site} />}
+          {view === "share" && <ShareView siteId={activeId} />}
         </div>
       </div>
     </div>

@@ -39,30 +39,50 @@ function sectionTypes(container: HTMLElement): string[] {
   );
 }
 
+/** A /api/taos-agent/chat NDJSON stream whose deltas concatenate to `text`. */
+function chatStreamResponse(text: string): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(JSON.stringify({ delta: text }) + "\n"));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
 describe("WebStudioApp shell", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ ok: true, json: async () => [] })),
+      vi.fn(async (url: string) => {
+        if (url === "/api/taos-agent/chat") {
+          // No real agent in tests: an unparsable reply exercises the same
+          // honest matchTemplate() fallback a real agent failure would.
+          return chatStreamResponse("Sorry, I can't help with that request.");
+        }
+        return { ok: true, json: async () => [] };
+      }),
     );
   });
 
-  it("renders the five studio views in the rail", () => {
+  it("renders the six studio views in the rail", () => {
     render(<WebStudioApp windowId="w1" />);
     const nav = screen.getByRole("navigation", { name: "Web Studio views" });
     const labels = within(nav)
       .getAllByRole("button")
       .map((b) => b.getAttribute("aria-label"));
-    expect(labels).toEqual(["Generate", "Templates", "Edit", "Preview", "Export"]);
+    expect(labels).toEqual(["Generate", "Templates", "Edit", "Preview", "Export", "Share"]);
   });
 
-  it("generate seeds a multi-section site into the Edit view", () => {
+  it("generate seeds a multi-section site into the Edit view, falling back to a template", async () => {
     const { container } = render(<WebStudioApp windowId="w1" />);
-    // Pick a prompt idea, then generate.
+    // Pick a prompt idea, then generate. No real agent in tests, so this
+    // exercises the honest matchTemplate() fallback path.
     fireEvent.click(screen.getByRole("button", { name: "A cafe with a menu and bookings" }));
     fireEvent.click(screen.getByRole("button", { name: /Generate site/i }));
     // Now on the Edit view with real sections rendered.
-    expect(screen.getByLabelText("Site title")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Site title")).toBeInTheDocument());
     expect(sectionTypes(container).length).toBeGreaterThan(1);
     expect(sectionTypes(container)).toContain("hero");
   });
