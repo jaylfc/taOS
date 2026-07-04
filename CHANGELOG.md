@@ -7,6 +7,15 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.28] - 2026-07-05
+
+### Added
+- App Studio is now real: describe an app in plain words and the taOS agent generates it, packages it, runs it through the security analyzer, installs it, and shows it running live in a sandboxed window, all in one flow. Generated apps ship as sandboxed web apps with no elevated permissions.
+- Licensing transparency: services whose model weights are non-commercial (MusicGen, MusicGPT, FLUX-Fill) now carry accurate weight-license metadata (the code license was already MIT, but the weights are CC-BY-NC), the Store shows a "Non-commercial weights" badge, and installing such a service now requires a one-time license acceptance. Nothing non-commercial installs silently.
+
+### Fixed
+- Video Studio generation is no longer a multi-minute blocking request that could time out or fail on a disconnect. Generation now runs as a background job: you get an immediate job id, the UI polls for progress, and a failed job always ends in a clear error state instead of hanging.
+
 ## [1.0.0-beta.27] - 2026-07-04
 
 ### Added
