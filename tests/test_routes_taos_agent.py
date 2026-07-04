@@ -191,6 +191,32 @@ async def test_put_permitted_models_unreachable_returns_409(client, app, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_put_permitted_models_downloaded_backend_down_returns_actionable_409(client, app, monkeypatch):
+    """A downloaded model whose backend is confirmed down must return the
+    specific "downloaded but backend not running" message (#1599), not the
+    generic "not reachable anywhere" text."""
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+
+    monkeypatch.setattr(
+        _model_resolver_mod, "resolve_model_location",
+        lambda request, model_id: ModelLocation(
+            kind="downloaded_backend_down", backend_id="rkllama",
+        ),
+    )
+
+    resp = await client.put(
+        "/api/taos-agent/permitted-models",
+        json={"models": ["qwen2.5-3b-rkllm"]},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert "downloaded" in body["error"].lower()
+    assert "rkllama" in body["error"]
+    assert "not running" in body["error"]
+    assert body["backend"] == "rkllama"
+
+
+@pytest.mark.asyncio
 async def test_put_permitted_models_prepends_current_model(client, app, monkeypatch):
     """The current primary model is always included even if not in the list."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})

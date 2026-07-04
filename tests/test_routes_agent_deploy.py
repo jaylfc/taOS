@@ -200,6 +200,26 @@ class TestResolveDeployRouting:
         assert "nonexistent-model" in body["error"]
 
     @pytest.mark.asyncio
+    async def test_model_downloaded_backend_down_returns_actionable_404(self, client):
+        """A downloaded model whose backend is confirmed not running must
+        return a specific, actionable error — not the generic "not found
+        anywhere" message (#1600)."""
+        with patch(
+            "tinyagentos.cluster.model_resolver.resolve_model_location",
+            return_value=ModelLocation(kind="downloaded_backend_down", backend_id="rkllama"),
+        ):
+            r = await client.post(
+                "/api/agents/deploy",
+                json={"name": "test-agent", "model": "qwen2.5-3b-rkllm"},
+            )
+        assert r.status_code == 404
+        body = r.json()
+        assert "downloaded" in body["error"]
+        assert "rkllama" in body["error"]
+        assert "not running" in body["error"]
+        assert body["backend"] == "rkllama"
+
+    @pytest.mark.asyncio
     async def test_model_routed_to_worker_returns_202(self, client):
         """A model on a worker (no pin) must return 202 with routing info."""
         with patch(

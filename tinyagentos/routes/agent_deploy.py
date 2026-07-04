@@ -61,6 +61,7 @@ def resolve_deploy_routing(request: Request, body: "DeployAgentRequest") -> "JSO
     """Resolve cross-worker deploy routing for the requested model.
 
     Resolution order (task #176 stub):
+    - downloaded_backend_down: 404 (actionable — start the backend)
     - not_found: 404
     - worker + pin conflict: 409
     - worker (no conflict or no pin): 202 routed
@@ -70,9 +71,22 @@ def resolve_deploy_routing(request: Request, body: "DeployAgentRequest") -> "JSO
     controller-local deploy path.
     """
     if body.model:
-        from tinyagentos.cluster.model_resolver import resolve_model_location
+        from tinyagentos.cluster.model_resolver import (
+            describe_downloaded_backend_down,
+            resolve_model_location,
+        )
 
         location = resolve_model_location(request, body.model)
+
+        if location.kind == "downloaded_backend_down":
+            return JSONResponse(
+                {
+                    "error": describe_downloaded_backend_down(location, body.model),
+                    "model": body.model,
+                    "backend": location.backend_id,
+                },
+                status_code=404,
+            )
 
         if location.kind == "not_found":
             return JSONResponse(

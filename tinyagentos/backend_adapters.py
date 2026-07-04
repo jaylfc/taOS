@@ -6,6 +6,27 @@ from abc import ABC, abstractmethod
 import httpx
 
 
+def _describe_health_error(exc: Exception, url: str) -> str:
+    """Human-readable reason a health probe against *url* failed.
+
+    Every adapter below used to swallow the real exception and report a
+    bare ``{"status": "error"}`` — the Providers "Test" button then had
+    nothing to show but a hardcoded "unknown error" (#1614). This gives
+    each caught exception a specific, actionable description instead.
+    """
+    if isinstance(exc, httpx.ConnectError):
+        return f"Connection refused connecting to {url} — is the service running?"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return f"Connection to {url} timed out"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{url} did not respond in time"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{url} returned HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.HTTPError):
+        return f"could not reach {url}: {exc}"
+    return str(exc) or repr(exc)
+
+
 class BackendAdapter(ABC):
     @abstractmethod
     async def health(self, client: httpx.AsyncClient, url: str) -> dict:
@@ -30,9 +51,14 @@ class OllamaCompatAdapter(BackendAdapter):
                 for m in data.get("models", [])
             ]
             return {"status": "ok", "response_ms": elapsed_ms, "models": models}
-        except Exception:
+        except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, url),
+            }
 
 
 class StableDiffusionCppAdapter(BackendAdapter):
@@ -51,9 +77,14 @@ class StableDiffusionCppAdapter(BackendAdapter):
             resp = await client.get(f"{base}/sdapi/v1/options", timeout=10)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             resp.raise_for_status()
-        except Exception:
+        except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
 
         # Server is alive — fetch model list best-effort; empty list is fine.
         models = []
@@ -88,9 +119,14 @@ class IOPaintAdapter(BackendAdapter):
             resp = await client.get(f"{base}/api/v1/server-config", timeout=10)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             resp.raise_for_status()
-        except Exception:
+        except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
 
         models = []
         try:
@@ -130,9 +166,14 @@ class OpenAICompatAdapter(BackendAdapter):
             except Exception:
                 pass
             return {"status": "ok", "response_ms": elapsed_ms, "models": models}
-        except Exception:
+        except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
 
 
 class CloudAPIAdapter(BackendAdapter):
@@ -164,10 +205,20 @@ class CloudAPIAdapter(BackendAdapter):
                     except Exception:
                         pass
                 return {"status": "ok", "response_ms": elapsed_ms, "models": models}
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
-        except Exception:
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": f"{base}/models returned HTTP {resp.status_code}",
+            }
+        except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            return {"status": "error", "response_ms": elapsed_ms, "models": []}
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
 
 
 # Type aliases for backwards compatibility with tests

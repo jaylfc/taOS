@@ -300,9 +300,21 @@ async def put_permitted_models(request: Request, body: PermittedModelsUpdate):
         permitted = [current_model, *permitted]
 
     # Validate every model is reachable.
-    from tinyagentos.cluster.model_resolver import resolve_model_location
+    from tinyagentos.cluster.model_resolver import (
+        describe_downloaded_backend_down,
+        resolve_model_location,
+    )
     for model_id in permitted:
         location = resolve_model_location(request, model_id)
+        if location.kind == "downloaded_backend_down":
+            return JSONResponse(
+                {
+                    "error": describe_downloaded_backend_down(location, model_id),
+                    "model": model_id,
+                    "backend": location.backend_id,
+                },
+                status_code=409,
+            )
         if location.kind == "not_found":
             return JSONResponse(
                 {

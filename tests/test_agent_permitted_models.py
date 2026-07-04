@@ -90,8 +90,12 @@ def _patch_save(monkeypatch):
     monkeypatch.setattr(mod, "save_config_locked", _noop_save)
 
 
-def _make_location(kind):
-    return ModelLocation(kind=kind)
+def _make_location(kind_or_tuple):
+    """kind_or_tuple is either a bare kind string, or (kind, backend_id)."""
+    if isinstance(kind_or_tuple, tuple):
+        kind, backend_id = kind_or_tuple
+        return ModelLocation(kind=kind, backend_id=backend_id)
+    return ModelLocation(kind=kind_or_tuple)
 
 
 def _patch_resolver(monkeypatch, mapping: dict):
@@ -197,6 +201,26 @@ async def test_put_permitted_unreachable_model_returns_409(monkeypatch):
     import json
     data = json.loads(resp.body)
     assert data["model"] == "bad-model"
+
+
+@pytest.mark.asyncio
+async def test_put_permitted_downloaded_backend_down_returns_actionable_409(monkeypatch):
+    """A downloaded model whose backend is confirmed not running must get
+    the specific actionable message, not the generic "not reachable" one."""
+    _patch_save(monkeypatch)
+    _patch_resolver(monkeypatch, {"qwen2.5-3b-rkllm": ("downloaded_backend_down", "rkllama")})
+    from tinyagentos.routes.agents import set_permitted_models, PermittedModelsUpdate
+    agents = [{"name": "alpha", "model": "llama3"}]
+    req = _FakeRequest(agents)
+    body = PermittedModelsUpdate(models=["llama3", "qwen2.5-3b-rkllm"])
+    resp = await set_permitted_models(req, "alpha", body)
+    assert resp.status_code == 409
+    import json
+    data = json.loads(resp.body)
+    assert data["model"] == "qwen2.5-3b-rkllm"
+    assert data["backend"] == "rkllama"
+    assert "downloaded" in data["error"]
+    assert "not running" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -319,6 +343,26 @@ async def test_update_agent_model_adds_new_model_to_permitted(monkeypatch):
     assert rescope_calls
     models_sent = rescope_calls[-1]["json"]["models"]
     assert "qwen3" in models_sent
+
+
+@pytest.mark.asyncio
+async def test_update_agent_model_downloaded_backend_down_returns_actionable_409(monkeypatch):
+    """A downloaded model whose backend is confirmed not running must get
+    the specific actionable message (#1600), not a generic not-reachable one."""
+    _patch_save(monkeypatch)
+    _patch_resolver(monkeypatch, {"qwen2.5-3b-rkllm": ("downloaded_backend_down", "rkllama")})
+    from tinyagentos.routes.agents import update_agent_model, AgentModelUpdate
+    agents = [{"name": "alpha", "model": "llama3", "llm_key": "sk-a"}]
+    req = _FakeRequest(agents)
+    body = AgentModelUpdate(model="qwen2.5-3b-rkllm")
+    resp = await update_agent_model(req, "alpha", body)
+    assert resp.status_code == 409
+    import json
+    data = json.loads(resp.body)
+    assert data["model"] == "qwen2.5-3b-rkllm"
+    assert data["backend"] == "rkllama"
+    assert "downloaded" in data["error"]
+    assert "not running" in data["error"]
 
 
 # ---------------------------------------------------------------------------

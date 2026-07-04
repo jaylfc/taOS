@@ -94,6 +94,28 @@ class TestRkLlamaAdapter:
         assert result["status"] == "error"
         assert result["models"] == []
 
+    @pytest.mark.asyncio
+    async def test_unreachable_surfaces_real_connection_error(self):
+        """#1614: a connection failure must carry a specific, actionable
+        reason — not just a bare status the caller has to guess at."""
+        adapter = RkLlamaAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.side_effect = httpx.ConnectError("Connection refused")
+        result = await adapter.health(mock_client, "http://localhost:7833")
+        assert result["status"] == "error"
+        assert "error" in result
+        assert "http://localhost:7833" in result["error"]
+        assert "Connection refused" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_surfaces_timeout_error(self):
+        adapter = RkLlamaAdapter()
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.side_effect = httpx.ConnectTimeout("timed out")
+        result = await adapter.health(mock_client, "http://localhost:7833")
+        assert result["status"] == "error"
+        assert "timed out" in result["error"]
+
 class TestOllamaAdapter:
     @pytest.mark.asyncio
     async def test_parse_tags_response(self):
@@ -155,6 +177,7 @@ class TestCloudAPIAdapter:
         mock_client.get.return_value = resp
         result = await adapter.health(mock_client, "https://api.openai.com/v1")
         assert result["status"] == "error"
+        assert "500" in result["error"]
 
     @pytest.mark.asyncio
     async def test_connection_error_is_error(self):
@@ -165,6 +188,7 @@ class TestCloudAPIAdapter:
         mock_client.get.assert_called_once_with("https://api.openai.com/v1/models", timeout=10)
         assert result["status"] == "error"
         assert result["models"] == []
+        assert "Connection refused" in result["error"]
 
     def test_get_adapter_openai_uses_cloud(self):
         assert isinstance(get_adapter("openai"), CloudAPIAdapter)

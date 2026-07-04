@@ -1075,9 +1075,22 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         return JSONResponse({"error": "model must not be empty"}, status_code=400)
 
     # Validate reachability against the live cluster state.
-    from tinyagentos.cluster.model_resolver import resolve_model_location
+    from tinyagentos.cluster.model_resolver import (
+        describe_downloaded_backend_down,
+        resolve_model_location,
+    )
 
     location = resolve_model_location(request, model_id)
+
+    if location.kind == "downloaded_backend_down":
+        return JSONResponse(
+            {
+                "error": describe_downloaded_backend_down(location, model_id),
+                "model": model_id,
+                "backend": location.backend_id,
+            },
+            status_code=409,
+        )
 
     if location.kind == "not_found":
         return JSONResponse(
@@ -1175,10 +1188,22 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
     if current and current not in permitted:
         permitted = [current, *permitted]
 
-    from tinyagentos.cluster.model_resolver import resolve_model_location
+    from tinyagentos.cluster.model_resolver import (
+        describe_downloaded_backend_down,
+        resolve_model_location,
+    )
 
     for model_id in permitted:
         location = resolve_model_location(request, model_id)
+        if location.kind == "downloaded_backend_down":
+            return JSONResponse(
+                {
+                    "error": describe_downloaded_backend_down(location, model_id),
+                    "model": model_id,
+                    "backend": location.backend_id,
+                },
+                status_code=409,
+            )
         if location.kind == "not_found":
             return JSONResponse(
                 {"error": f"model '{model_id}' is not reachable anywhere in the cluster right now.", "model": model_id},

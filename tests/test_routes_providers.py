@@ -14,6 +14,51 @@ class TestProviderAPI:
         resp = await client.post("/api/providers/test", json={"type": "ollama"})
         assert resp.status_code == 422  # Pydantic validation requires url field
 
+    async def test_test_connection_surfaces_real_error(self, client):
+        """#1614: the Test button must show the actual failure reason, not
+        a hardcoded "unknown error" — the adapter's health() result carries
+        a specific message now that it no longer swallows the exception."""
+        class _FailingAdapter:
+            async def health(self, *_a, **_k):
+                return {
+                    "status": "error",
+                    "response_ms": 3,
+                    "models": [],
+                    "error": "Connection refused connecting to http://localhost:7833 — is the service running?",
+                }
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_FailingAdapter(),
+        ):
+            resp = await client.post(
+                "/api/providers/test",
+                json={"type": "rkllama", "url": "http://localhost:7833"},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["reachable"] is False
+        assert "Connection refused" in body["error"]
+        assert body["error"] != "unknown error"
+
+    async def test_test_connection_success_has_no_error(self, client):
+        class _HealthyAdapter:
+            async def health(self, *_a, **_k):
+                return {"status": "ok", "response_ms": 12, "models": []}
+
+        with patch(
+            "tinyagentos.routes.providers.get_adapter",
+            return_value=_HealthyAdapter(),
+        ):
+            resp = await client.post(
+                "/api/providers/test",
+                json={"type": "ollama", "url": "http://localhost:11434"},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["reachable"] is True
+        assert body.get("error") is None
+
     async def test_add_provider(self, client):
         resp = await client.post("/api/providers", json={
             "name": "test-ollama", "type": "ollama",

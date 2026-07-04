@@ -30,17 +30,23 @@ class ModelLocation:
     """Result of :func:`find_model_hosts`.
 
     Attributes:
-        kind: One of ``controller`` | ``worker`` | ``cloud`` | ``not_found``.
+        kind: One of ``controller`` | ``worker`` | ``cloud`` | ``not_found``
+            | ``downloaded_backend_down``.
         hosts: Worker names that report the model (empty unless
             ``kind == "worker"``).
         canonical_host: The worker chosen when multiple have the model.
             Stubbed as alphabetical pick — Phase 1.5 will consider load
             and hardware.
+        backend_id: Set only when ``kind == "downloaded_backend_down"`` —
+            the manifest-declared backend (e.g. ``"rkllama"``) that this
+            model needs, confirmed not running right now (see
+            :func:`_check_downloaded_backend_down`).
     """
 
     kind: str
     hosts: list[str] = field(default_factory=list)
     canonical_host: str | None = None
+    backend_id: str | None = None
 
 
 def _normalise(model_id: str) -> str:
@@ -200,6 +206,131 @@ def find_model_hosts(
     return ModelLocation(kind="not_found")
 
 
+# Maps a manifest's ``requires.backends[].id`` to the probe that answers
+# "is this backend actually running on this host right now?" and to the
+# human-facing copy used in actionable error messages. Reuses the exact
+# probes the Setup checklist already relies on (#1535/#1597/#1598) so a
+# model resolver failure and the checklist agree on backend liveness.
+_BACKEND_LABELS: dict[str, str] = {
+    "rkllama": "rkllama NPU backend",
+    "rk-llama-cpp": "rk-llama.cpp NPU backend",
+    "llama-cpp": "llama.cpp backend",
+}
+
+_BACKEND_INSTALL_HINTS: dict[str, str] = {
+    "rkllama": "Install/start it from Setup > Install NPU backend",
+    "rk-llama-cpp": "Install/start it from Setup > Install NPU backend",
+    "llama-cpp": "Install/start it from Setup > Install llama.cpp server",
+}
+
+
+def _backend_is_running(backend_id: str) -> bool | None:
+    """True/False if we can positively probe *backend_id*, else None.
+
+    None means "we don't know how to check this backend" — callers must
+    NOT report it as down on an unknown answer, only on a confirmed-False
+    probe. Never raises: an import or probe error is treated as unknown.
+    """
+    try:
+        if backend_id == "rkllama":
+            from tinyagentos.installers.rkllama_installer import rkllama_is_running
+
+            return rkllama_is_running()
+        if backend_id == "rk-llama-cpp":
+            from tinyagentos.installers.rkllamacpp_installer import rkllamacpp_is_running
+
+            return rkllamacpp_is_running()
+        if backend_id == "llama-cpp":
+            from tinyagentos.installers.llamacpp_installer import llamacpp_is_running
+
+            return llamacpp_is_running()
+    except Exception:  # noqa: BLE001 — probe is best-effort, never break resolution
+        return None
+    return None
+
+
+def _find_model_manifest(registry, model_id: str):
+    """Best-effort manifest lookup for *model_id* against the app registry.
+
+    Tries an exact id match first (the common case — manifest ids like
+    ``qwen2.5-3b-rkllm`` are exactly what wizards/pickers pass through),
+    then falls back to the same loose :func:`_model_matches` used
+    elsewhere in this module. Returns ``None`` on any error or when the
+    registry doesn't know this model at all.
+    """
+    if registry is None:
+        return None
+    try:
+        manifest = registry.get(model_id)
+        if manifest is not None and manifest.type == "model":
+            return manifest
+        for m in registry.list_available(type_filter="model"):
+            if _model_matches(model_id, m.id):
+                return m
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _required_backend_ids(manifest) -> list[str]:
+    """Unique ``requires.backends[].id`` values declared across all variants."""
+    ids: list[str] = []
+    for v in getattr(manifest, "variants", None) or []:
+        for b in (v.get("requires") or {}).get("backends") or []:
+            bid = b.get("id") if isinstance(b, dict) else None
+            if bid and bid not in ids:
+                ids.append(bid)
+    return ids
+
+
+def _check_downloaded_backend_down(request, model_id: str) -> ModelLocation | None:
+    """When *model_id* resolved to ``not_found``, check whether it is a
+    known, downloaded model whose required backend we can positively
+    confirm is not running — the real cause behind #1599/#1600 (an
+    rkllama-backed model that shows as downloaded and selectable but the
+    rkllama server itself isn't up right now).
+
+    Returns a ``downloaded_backend_down`` :class:`ModelLocation` only when
+    every backend the manifest requires is confirmed down. Returns
+    ``None`` (defer to the generic "not found" message) when the manifest
+    is unknown, declares no backend requirement, or we can't positively
+    confirm any required backend is down (never claim a backend is down
+    on an inconclusive probe).
+    """
+    registry = getattr(request.app.state, "registry", None)
+    manifest = _find_model_manifest(registry, model_id)
+    if manifest is None:
+        return None
+    backend_ids = _required_backend_ids(manifest)
+    if not backend_ids:
+        return None
+    down: list[str] = []
+    for backend_id in backend_ids:
+        running = _backend_is_running(backend_id)
+        if running is None:
+            return None
+        if not running:
+            down.append(backend_id)
+    if not down:
+        return None
+    return ModelLocation(kind="downloaded_backend_down", backend_id=down[0])
+
+
+def describe_downloaded_backend_down(location: ModelLocation, model_id: str) -> str:
+    """Actionable error text for a ``downloaded_backend_down`` location.
+
+    Shared by every route that reports model reachability so the wording
+    — and any future fix to it — lives in one place.
+    """
+    backend_id = location.backend_id or ""
+    label = _BACKEND_LABELS.get(backend_id, f"{backend_id} backend" if backend_id else "backend")
+    hint = _BACKEND_INSTALL_HINTS.get(backend_id, f"Install/start the {label}")
+    return (
+        f"model '{model_id}' is downloaded but the {label} that serves it is not "
+        f"running. {hint} and try again."
+    )
+
+
 def collect_cloud_model_ids(config) -> list[str]:
     """Best-effort list of cloud-provider model ids advertised in config.backends.
 
@@ -234,9 +365,14 @@ def resolve_model_location(request, model_id: str) -> ModelLocation:
     local_models = catalog.all_models() if catalog is not None else []
     config = getattr(state, "config", None)
     cloud_models = collect_cloud_model_ids(config) if config is not None else []
-    return find_model_hosts(
+    location = find_model_hosts(
         model_id,
         cluster_state=cluster,
         local_models=local_models,
         cloud_models=cloud_models,
     )
+    if location.kind == "not_found":
+        downloaded_backend_down = _check_downloaded_backend_down(request, model_id)
+        if downloaded_backend_down is not None:
+            return downloaded_backend_down
+    return location

@@ -528,10 +528,17 @@ async def test_provider(request: Request, body: ProviderTest):
         adapter = get_adapter(body.type)
         http_client = request.app.state.http_client
         result = await adapter.health(http_client, body.url)
+        reachable = result["status"] == "ok"
         return {
-            "reachable": result["status"] == "ok",
+            "reachable": reachable,
             "response_ms": result.get("response_ms", 0),
             "models": result.get("models", []),
+            # adapter.health() never raises (see backend_adapters.py) — a
+            # failed probe carries the real reason in result["error"].
+            # Surfacing it here is the actual fix for #1614: the Test
+            # button previously always fell back to "unknown error"
+            # because this response dropped the field entirely.
+            "error": None if reachable else result.get("error", "unknown error"),
         }
     except Exception as e:
         return {"reachable": False, "error": str(e)}
