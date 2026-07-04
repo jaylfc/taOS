@@ -369,7 +369,11 @@ async def api_restore_trash_item(request: Request, item_id: str):
 async def api_purge_trash_item(request: Request, item_id: str):
     """Permanently delete one item from the trash."""
     trash_dir = _get_workspace_trash_dir(request)
-    if not purge_trash_item(trash_dir, item_id):
+    try:
+        found = purge_trash_item(trash_dir, item_id)
+    except TrashItemNotFound:
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    if not found:
         return JSONResponse({"error": "item not found"}, status_code=404)
     return {"status": "purged", "id": item_id}
 

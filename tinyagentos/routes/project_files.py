@@ -252,7 +252,11 @@ async def api_project_purge_trash_item(request: Request, slug: str, item_id: str
     if _get_project_files_root(request, slug) is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
     trash_dir = _get_project_trash_dir(request, slug)
-    if not purge_trash_item(trash_dir, item_id):
+    try:
+        found = purge_trash_item(trash_dir, item_id)
+    except TrashItemNotFound:
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    if not found:
         return JSONResponse({"error": "item not found"}, status_code=404)
     return {"status": "purged", "id": item_id}
 

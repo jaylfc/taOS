@@ -267,7 +267,11 @@ async def api_purge_trash_item(request: Request, agent_name: str, item_id: str):
     if not _agent_exists(request, agent_name):
         return JSONResponse({"error": f"Agent '{agent_name}' not found"}, status_code=404)
     trash_dir = _get_agent_trash_dir(request, agent_name)
-    if not purge_trash_item(trash_dir, item_id):
+    try:
+        found = purge_trash_item(trash_dir, item_id)
+    except TrashItemNotFound:
+        return JSONResponse({"error": "item not found"}, status_code=404)
+    if not found:
         return JSONResponse({"error": "item not found"}, status_code=404)
     return {"status": "purged", "id": item_id}
 

@@ -19,12 +19,45 @@ without requiring a container / trash-cli dependency for host-side folders.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 TRASH_DIRNAME = ".taos-trash"
+
+# Item ids are minted as uuid4().hex (32 lowercase hex chars). Anything else —
+# ``..``, a slash, an absolute path — is rejected before it is ever used to
+# build a filesystem path, so a crafted id cannot escape the trash directory
+# and rmtree/rename something outside it.
+_ITEM_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+class TrashItemNotFound(Exception):
+    """Raised when a trash item id has no matching metadata/contents (or is
+    not a well-formed item id)."""
+
+
+class TrashRestoreConflict(Exception):
+    """Raised when restoring would overwrite an existing file/directory."""
+
+
+def _validate_item_id(item_id: str) -> None:
+    """Reject any id that is not a canonical 32-char hex token.
+
+    Raises ``TrashItemNotFound`` so callers/routes surface a 404 rather than
+    leaking whether the rejection was a bad shape or a genuine miss.
+    """
+    if not _ITEM_ID_RE.fullmatch(item_id):
+        raise TrashItemNotFound(item_id)
+
+
+def _assert_within(child: Path, parent: Path) -> None:
+    """Defense-in-depth: fail loudly if a resolved item path is not contained
+    by the trash dir, instead of performing a destructive op outside it."""
+    if not child.resolve().is_relative_to(parent.resolve()):
+        raise TrashItemNotFound(child.name)
 
 
 def get_trash_dir(data_dir: Path, scope: str) -> Path:
@@ -40,10 +73,12 @@ def get_trash_dir(data_dir: Path, scope: str) -> Path:
 
 
 def _meta_path(trash_dir: Path, item_id: str) -> Path:
+    _validate_item_id(item_id)
     return trash_dir / f"{item_id}.json"
 
 
 def _item_dir(trash_dir: Path, item_id: str) -> Path:
+    _validate_item_id(item_id)
     return trash_dir / item_id
 
 
@@ -91,26 +126,23 @@ def list_trash_items(trash_dir: Path) -> list[dict]:
     return items
 
 
-class TrashItemNotFound(Exception):
-    """Raised when a trash item id has no matching metadata/contents."""
-
-
-class TrashRestoreConflict(Exception):
-    """Raised when restoring would overwrite an existing file/directory."""
-
-
 def restore_trash_item(trash_dir: Path, workspace_root: Path, item_id: str) -> dict:
     """Move a trashed item back to its original path under *workspace_root*.
 
-    Raises ``TrashItemNotFound`` if the id is unknown, or
+    Raises ``TrashItemNotFound`` if the id is malformed or unknown, or
     ``TrashRestoreConflict`` if something already exists at the destination.
     """
+    _validate_item_id(item_id)
     meta_file = _meta_path(trash_dir, item_id)
     if not meta_file.exists():
         raise TrashItemNotFound(item_id)
     metadata = json.loads(meta_file.read_text())
 
     holder = _item_dir(trash_dir, item_id)
+    # The holder is built from a validated hex id, but assert containment
+    # before touching anything so a resolution mistake can never delete
+    # outside the trash dir.
+    _assert_within(holder, trash_dir)
     source = holder / metadata["name"]
     if not source.exists():
         raise TrashItemNotFound(item_id)
@@ -121,18 +153,25 @@ def restore_trash_item(trash_dir: Path, workspace_root: Path, item_id: str) -> d
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(dest))
-    shutil.rmtree(holder, ignore_errors=True)
+    shutil.rmtree(holder)
     meta_file.unlink(missing_ok=True)
     return metadata
 
 
 def purge_trash_item(trash_dir: Path, item_id: str) -> bool:
-    """Permanently delete one trashed item. Returns False if it doesn't exist."""
+    """Permanently delete one trashed item. Returns False if it doesn't exist.
+
+    Raises ``TrashItemNotFound`` if *item_id* is not a well-formed id, so a
+    traversal attempt is rejected before any destructive op.
+    """
+    _validate_item_id(item_id)
     meta_file = _meta_path(trash_dir, item_id)
     holder = _item_dir(trash_dir, item_id)
     if not meta_file.exists() and not holder.exists():
         return False
-    shutil.rmtree(holder, ignore_errors=True)
+    _assert_within(holder, trash_dir)
+    if holder.exists():
+        shutil.rmtree(holder)
     meta_file.unlink(missing_ok=True)
     return True
 
@@ -142,6 +181,8 @@ def empty_trash(trash_dir: Path) -> int:
     count = 0
     for meta_file in trash_dir.glob("*.json"):
         item_id = meta_file.stem
+        if not _ITEM_ID_RE.fullmatch(item_id):
+            continue  # ignore anything not minted by move_to_trash
         if purge_trash_item(trash_dir, item_id):
             count += 1
     return count

@@ -124,8 +124,48 @@ class TestWorkspaceTrashHelper:
         assert not (trash_dir / metadata["id"]).exists()
 
     def test_purge_unknown_item_returns_false(self, tmp_path):
+        # A well-formed id that simply doesn't exist returns False; malformed
+        # ids raise TrashItemNotFound (covered separately).
         trash_dir = get_trash_dir(tmp_path, "workspace")
-        assert purge_trash_item(trash_dir, "ghost") is False
+        assert purge_trash_item(trash_dir, "0" * 32) is False
+
+    @pytest.mark.parametrize("bad_id", ["../../etc", "..", "../x", "a/b", "foo", "", "ABCDEF" * 5 + "AB", "g" * 32])
+    def test_purge_rejects_traversal_and_malformed_ids(self, tmp_path, bad_id):
+        """A crafted item_id must never let purge escape the trash dir."""
+        trash_dir = get_trash_dir(tmp_path, "workspace")
+        # A canary living OUTSIDE the trash dir that a traversal id would hit.
+        canary = tmp_path / "canary.txt"
+        canary.write_bytes(b"do not touch")
+
+        with pytest.raises(TrashItemNotFound):
+            purge_trash_item(trash_dir, bad_id)
+
+        assert canary.exists()
+        assert canary.read_bytes() == b"do not touch"
+
+    @pytest.mark.parametrize("bad_id", ["../../etc", "..", "../x", "a/b", "foo"])
+    def test_restore_rejects_traversal_ids(self, tmp_path, bad_id):
+        """Restore must reject malformed ids before touching the filesystem."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        trash_dir = get_trash_dir(tmp_path, "workspace")
+        with pytest.raises(TrashItemNotFound):
+            restore_trash_item(trash_dir, workspace, bad_id)
+
+    def test_empty_trash_ignores_non_hex_sidecars(self, tmp_path):
+        """A stray non-item .json in the trash dir does not abort empty_trash."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        trash_dir = get_trash_dir(tmp_path, "workspace")
+        f = workspace / "real.txt"
+        f.write_bytes(b"x")
+        move_to_trash(trash_dir, f, "real.txt")
+        # Drop a bogus sidecar whose stem is not a valid item id.
+        (trash_dir / "notanid.json").write_text("{}")
+
+        count = empty_trash(trash_dir)
+        assert count == 1
+        assert (trash_dir / "notanid.json").exists()  # left untouched
 
     def test_empty_trash_purges_everything(self, tmp_path):
         workspace = tmp_path / "workspace"
@@ -206,6 +246,27 @@ class TestUserWorkspaceTrashRoutes:
     async def test_restore_nonexistent_item_returns_404(self, client, app):
         resp = await client.post("/api/workspace/trash/ghost-id/restore")
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_id", ["..", "%2e%2e", "not-hex", "deadbeef"])
+    async def test_traversal_ids_are_rejected_by_routes(self, client, app, bad_id):
+        """Purge/restore with a malformed or traversal id returns 404 and
+        removes nothing outside the trash dir."""
+        # Seed one real trashed item as a canary in the trash listing.
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("keep.txt", io.BytesIO(b"keep"), "text/plain")},
+        )
+        await client.delete("/api/workspace/files/keep.txt")
+
+        purge = await client.delete(f"/api/workspace/trash/{bad_id}")
+        assert purge.status_code == 404
+        restore = await client.post(f"/api/workspace/trash/{bad_id}/restore")
+        assert restore.status_code == 404
+
+        # The genuine item is still present — nothing was clobbered.
+        items = (await client.get("/api/workspace/trash")).json()["items"]
+        assert len(items) == 1
 
     @pytest.mark.asyncio
     async def test_purge_single_item(self, client, app):
