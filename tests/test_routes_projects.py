@@ -430,3 +430,36 @@ async def test_create_project_duplicate_slug_via_store_concurrent(client):
     await store.create_project(name="A", slug="race", created_by="u")
     with pytest.raises(ValueError, match="slug already used"):
         await store.create_project(name="B", slug="race", created_by="u")
+
+
+@pytest.mark.asyncio
+async def test_task_context_route_shape(client):
+    pid = (await client.post(
+        "/api/projects", json={"name": "Alpha", "slug": "alpha", "description": "Ship v2"},
+    )).json()["id"]
+    root = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "Epic"})).json()
+    leaf = (await client.post(
+        f"/api/projects/{pid}/tasks",
+        json={"title": "Subtask", "parent_task_id": root["id"]},
+    )).json()
+    blocker = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "Blocker"})).json()
+    await client.post(
+        f"/api/projects/{pid}/tasks/{leaf['id']}/relationships",
+        json={"to_task_id": blocker["id"], "kind": "blocks"},
+    )
+
+    resp = await client.get(f"/api/projects/tasks/{leaf['id']}/context")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project"]["id"] == pid
+    assert body["project"]["name"] == "Alpha"
+    assert body["project"]["description"] == "Ship v2"
+    assert [a["id"] for a in body["ancestry"]] == [root["id"]]
+    assert [b["id"] for b in body["blockers"]] == [blocker["id"]]
+    assert body["is_blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_task_context_route_unknown_task_returns_404(client):
+    resp = await client.get("/api/projects/tasks/tsk-nope/context")
+    assert resp.status_code == 404

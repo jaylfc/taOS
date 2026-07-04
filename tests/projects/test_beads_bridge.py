@@ -29,6 +29,14 @@ def _make_bridge(tmp_path: Path, **overrides) -> BeadsBridge:
     task_store.create_task = AsyncMock(
         return_value={"id": "tsk_new1", "project_id": "prj_1", "title": "New task"}
     )
+    task_store.get_task_context = AsyncMock(
+        return_value={
+            "project": {"id": "prj_1", "name": None, "description": None},
+            "ancestry": [],
+            "blockers": [],
+            "is_blocked": False,
+        }
+    )
 
     channel_store = MagicMock()
     channel_store.list_channels = AsyncMock(return_value=[])
@@ -1100,3 +1108,119 @@ async def test_resolve_assignee_config_none_falls_back_to_member_id(tmp_path):
     await bridge.on_chat_message("prj_1", "ch_1", _msg('/new "T" @john'))
     kwargs = bridge._task_store.create_task.await_args.kwargs
     assert kwargs["assignee_id"] == "john"
+
+
+# ---------------------------------------------------------------------------
+# "Why" line injection (relational task context)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_event_claimed_appends_why_line_when_ancestry_exists(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_a", "title": "Hello", "status": "claimed"}
+    )
+    bridge._task_store.get_task_context = AsyncMock(
+        return_value={
+            "project": {"id": "prj_1", "name": "Launch", "description": "Ship the v2 release"},
+            "ancestry": [{"id": "tsk_root", "title": "Epic: onboarding", "status": "open"}],
+            "blockers": [],
+            "is_blocked": False,
+        }
+    )
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.claimed", "payload": {"id": "tsk_a", "claimed_by": "alice"}},
+    )
+    content = bridge._msg_store.send_message.await_args.kwargs["content"]
+    assert "alice claimed tsk_a" in content
+    assert "Why: Launch → Epic: onboarding (goal: Ship the v2 release)" in content
+
+
+@pytest.mark.asyncio
+async def test_on_event_claimed_no_why_line_when_no_ancestry_or_description(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_a", "title": "Hello", "status": "claimed"}
+    )
+    # Default get_task_context mock from _make_bridge: empty ancestry, no description.
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.claimed", "payload": {"id": "tsk_a", "claimed_by": "alice"}},
+    )
+    content = bridge._msg_store.send_message.await_args.kwargs["content"]
+    assert content == "🤚 alice claimed tsk_a — \"Hello\""
+    assert "Why:" not in content
+
+
+@pytest.mark.asyncio
+async def test_on_event_claimed_why_line_survives_context_fetch_failure(tmp_path):
+    """A context-fetch failure must not break the base claimed announce."""
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(return_value=[_a2a_ch()])
+    bridge._task_store.get_task = AsyncMock(
+        return_value={"id": "tsk_a", "title": "Hello", "status": "claimed"}
+    )
+    bridge._task_store.get_task_context = AsyncMock(side_effect=RuntimeError("boom"))
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.claimed", "payload": {"id": "tsk_a", "claimed_by": "alice"}},
+    )
+    content = bridge._msg_store.send_message.await_args.kwargs["content"]
+    assert "alice claimed tsk_a" in content
+    assert "Why:" not in content
+
+
+@pytest.mark.asyncio
+async def test_announce_newly_ready_appends_why_line(tmp_path):
+    bridge = _make_bridge(tmp_path)
+    bridge._channel_store.list_channels = AsyncMock(
+        return_value=[_a2a_ch()]
+    )
+
+    async def _get_task(task_id):
+        if task_id == "tsk_a":
+            return {"id": "tsk_a", "title": "A", "status": "closed", "closed_by": "alice"}
+        if task_id == "tsk_b":
+            return {"id": "tsk_b", "title": "B", "status": "open", "labels": []}
+        return None
+
+    bridge._task_store.get_task = AsyncMock(side_effect=_get_task)
+
+    async def _list_rels(task_id, direction="from"):
+        if task_id == "tsk_a" and direction == "from":
+            return [{"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}]
+        if task_id == "tsk_b" and direction == "to":
+            return [{"from_task_id": "tsk_a", "to_task_id": "tsk_b", "kind": "blocks"}]
+        return []
+
+    bridge._task_store.list_relationships = AsyncMock(side_effect=_list_rels)
+
+    async def _get_context(task_id):
+        if task_id == "tsk_b":
+            return {
+                "project": {"id": "prj_1", "name": "Launch", "description": ""},
+                "ancestry": [{"id": "tsk_root", "title": "Epic", "status": "open"}],
+                "blockers": [],
+                "is_blocked": False,
+            }
+        return {
+            "project": {"id": "prj_1", "name": None, "description": None},
+            "ancestry": [],
+            "blockers": [],
+            "is_blocked": False,
+        }
+
+    bridge._task_store.get_task_context = AsyncMock(side_effect=_get_context)
+
+    await bridge.on_event(
+        "prj_1",
+        {"kind": "task.closed", "payload": {"id": "tsk_a", "closed_by": "alice"}},
+    )
+
+    bodies = [
+        c.kwargs["content"] for c in bridge._msg_store.send_message.await_args_list
+    ]
+    assert any("tsk_b ready" in b and "Why: Launch → Epic" in b for b in bodies)

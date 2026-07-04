@@ -709,6 +709,26 @@ async def task_audit_history(
     return {"task_id": task_id, "events": events}
 
 
+@router.get("/api/projects/tasks/{task_id}/context")
+async def task_context(
+    task_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Relational context for a task: its goal (project + ancestry) and
+    blockers. Project-agnostic path — task_id alone resolves the project
+    for the ownership check, since task ids are globally unique."""
+    store = request.app.state.project_task_store
+    task = await store.get_task(task_id)
+    if task is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    pstore = request.app.state.project_store
+    project_or_err = await _get_owned_project(pstore, task["project_id"], user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
+    return await store.get_task_context(task_id)
+
+
 @router.post("/api/projects/{project_id}/tasks/{task_id}/relationships")
 async def add_relationship(
     project_id: str,

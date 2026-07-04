@@ -260,6 +260,21 @@ class BeadsBridge:
         except Exception:
             logger.exception("beads bridge: send_message failed for %s", channel_id)
 
+    async def _why_suffix(self, task_id: str) -> str:
+        """Best-effort 'Why: ...' breadcrumb line to append to an announce
+        message (goal ancestry / project description). Never raises — a
+        context-fetch failure just means no suffix is added."""
+        from tinyagentos.projects.beads_format import format_why
+        try:
+            context = await self._task_store.get_task_context(task_id)
+        except Exception:
+            logger.warning(
+                "beads bridge: get_task_context failed for %s", task_id, exc_info=True
+            )
+            return ""
+        why = format_why(context["project"], context["ancestry"])
+        return f"\n{why}" if why else ""
+
     async def on_event(self, project_id: str, event: dict) -> None:
         try:
             kind = event.get("kind")
@@ -283,9 +298,8 @@ class BeadsBridge:
             )
             if kind == "task.claimed":
                 actor = payload.get("claimed_by") or task.get("claimed_by") or "agent"
-                await self._post_system(
-                    channel["id"], format_claimed(actor, tsk_id, title)
-                )
+                msg = format_claimed(actor, tsk_id, title) + await self._why_suffix(tsk_id)
+                await self._post_system(channel["id"], msg)
             elif kind == "task.released":
                 # release_task clears claimed_by before publishing the event,
                 # so prefer payload.releaser_id (the user/agent who released)
@@ -346,10 +360,10 @@ class BeadsBridge:
                     break
             if still_blocked:
                 continue
-            await self._post_system(
-                channel_id,
-                format_ready(dependent_id, dep.get("title", ""), list(dep.get("labels") or [])),
-            )
+            msg = format_ready(
+                dependent_id, dep.get("title", ""), list(dep.get("labels") or [])
+            ) + await self._why_suffix(dependent_id)
+            await self._post_system(channel_id, msg)
 
     async def on_chat_message(
         self, project_id: str, channel_id: str, message: dict

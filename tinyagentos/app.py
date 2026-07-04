@@ -371,7 +371,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.receipt_store import ReceiptStore
     receipt_store = ReceiptStore(data_dir / "receipts.db")
     project_task_store = ProjectTaskStore(
-        data_dir / "projects.db", broker=project_event_broker, audit=board_audit_store
+        data_dir / "projects.db",
+        broker=project_event_broker,
+        audit=board_audit_store,
+        project_store=project_store,
     )
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
     from tinyagentos.decisions.decision_store import DecisionStore

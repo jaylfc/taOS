@@ -75,6 +75,16 @@ export type ProjectEvent = {
   ts: number;
 };
 
+export type TaskContextAncestor = { id: string; title: string; status: string };
+export type TaskContextBlocker = { id: string; title: string; status: string };
+
+export type TaskContext = {
+  project: { id: string; name: string | null; description: string | null };
+  ancestry: TaskContextAncestor[];
+  blockers: TaskContextBlocker[];
+  is_blocked: boolean;
+};
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     credentials: "include",
@@ -179,6 +189,8 @@ export const projectsApi = {
         method: "POST",
         body: JSON.stringify(input),
       }),
+    getContext: (tid: string) =>
+      http<TaskContext>(`/api/projects/tasks/${tid}/context`),
   },
 
   activity: (pid: string) =>

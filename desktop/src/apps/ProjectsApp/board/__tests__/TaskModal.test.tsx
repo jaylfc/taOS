@@ -16,6 +16,12 @@ beforeEach(() => {
   vi.spyOn(projectsApi.tasks, "list").mockResolvedValue([]);
   vi.spyOn(projectsApi.tasks, "listRelationships").mockResolvedValue([]);
   vi.spyOn(projectsApi.tasks, "listComments").mockResolvedValue([]);
+  vi.spyOn(projectsApi.tasks, "getContext").mockResolvedValue({
+    project: { id: "p1", name: null, description: null },
+    ancestry: [],
+    blockers: [],
+    is_blocked: false,
+  });
 });
 
 describe("TaskModal", () => {

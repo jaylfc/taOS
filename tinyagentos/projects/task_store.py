@@ -12,8 +12,13 @@ from tinyagentos.projects.ids import new_id
 if TYPE_CHECKING:
     from tinyagentos.board_audit import BoardAuditLog
     from tinyagentos.projects.events import ProjectEventBroker
+    from tinyagentos.projects.project_store import ProjectStore
 
 logger = logging.getLogger(__name__)
+
+# Ancestor-walk depth cap for get_task_context — mirrors the cycle guard in
+# routes/projects.py's parent-chain check.
+_MAX_ANCESTRY_DEPTH = 50
 
 TASK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_tasks (
@@ -96,10 +101,12 @@ class ProjectTaskStore(BaseStore):
         *,
         broker: "ProjectEventBroker | None" = None,
         audit: "BoardAuditLog | None" = None,
+        project_store: "ProjectStore | None" = None,
     ) -> None:
         super().__init__(db_path)
         self._broker = broker
         self._audit = audit
+        self._project_store = project_store
 
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
         if self._broker is not None:
@@ -409,6 +416,70 @@ class ProjectTaskStore(BaseStore):
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_task(r, desc) for r in rows]
+
+    async def get_task_context(self, task_id: str) -> dict:
+        """Relational context for a task: its goal (project + parent-task
+        ancestry) and what's blocking it.
+
+        Ancestry is ordered root -> leaf (the task's immediate parent last),
+        excluding the task itself. The walk is capped at
+        _MAX_ANCESTRY_DEPTH and guards against cycles via a visited set.
+
+        Blockers are read via `direction="from"` on this task: a `blocks`
+        relationship is stored as (from=dependent, to=blocker) — see
+        ready_tasks / test_closing_blocker_unblocks_ready_view, where a task
+        with an outbound `blocks` edge to an open task is excluded from the
+        ready set until that target closes.
+        """
+        task = await self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"task not found: {task_id}")
+
+        ancestry: list[dict] = []
+        seen = {task_id}
+        parent_id = task.get("parent_task_id")
+        depth = 0
+        while parent_id and depth < _MAX_ANCESTRY_DEPTH:
+            if parent_id in seen:
+                break
+            seen.add(parent_id)
+            parent = await self.get_task(parent_id)
+            if parent is None:
+                break
+            ancestry.append({
+                "id": parent["id"], "title": parent["title"], "status": parent["status"],
+            })
+            parent_id = parent.get("parent_task_id")
+            depth += 1
+        ancestry.reverse()
+
+        project_id = task["project_id"]
+        project: dict = {"id": project_id, "name": None, "description": None}
+        if self._project_store is not None:
+            proj = await self._project_store.get_project(project_id)
+            if proj is not None:
+                project = {
+                    "id": proj["id"],
+                    "name": proj.get("name"),
+                    "description": proj.get("description", ""),
+                }
+
+        outbound = await self.list_relationships(task_id, direction="from")
+        blockers: list[dict] = []
+        for rel in outbound:
+            if rel.get("kind") != "blocks":
+                continue
+            blocker = await self.get_task(rel["to_task_id"])
+            if blocker is not None:
+                blockers.append({"id": blocker["id"], "title": blocker["title"], "status": blocker["status"]})
+        is_blocked = any(b["status"] not in ("closed", "cancelled") for b in blockers)
+
+        return {
+            "project": project,
+            "ancestry": ancestry,
+            "blockers": blockers,
+            "is_blocked": is_blocked,
+        }
 
     async def add_comment(
         self,

@@ -95,6 +95,30 @@ def format_created(author: str, tsk_id: str, title: str) -> str:
     return f'✨ {author} created {tsk_id} — "{title}"'
 
 
+_WHY_GOAL_MAX = 120
+
+
+def format_why(project: dict, ancestry: list[dict]) -> str | None:
+    """One-line 'why this task exists' breadcrumb: project name -> ancestor
+    chain (root first) -> ... (goal: <project description, truncated>).
+
+    Returns None when there's nothing worth surfacing (no ancestry and no
+    project description) so callers can leave the announce message unchanged.
+    """
+    description = (project.get("description") or "").strip()
+    if not ancestry and not description:
+        return None
+    parts = [project.get("name") or project.get("id") or "project"]
+    parts.extend(a["title"] for a in ancestry)
+    chain = " → ".join(parts)
+    if description:
+        goal = description[:_WHY_GOAL_MAX]
+        if len(description) > _WHY_GOAL_MAX:
+            goal += "…"
+        return f"Why: {chain} (goal: {goal})"
+    return f"Why: {chain}"
+
+
 Verb = Literal["claim", "release", "close"]
 
 

@@ -229,3 +229,115 @@ async def test_closing_blocker_unblocks_ready_view(store):
     await store.close_task(c["id"], closed_by="u")
     ready = await store.list_ready_tasks(project_id="p")
     assert {t["id"] for t in ready} == {a["id"]}
+
+
+# ---------------------------------------------------------------------------
+# get_task_context — goal ancestry + blocker graph
+# ---------------------------------------------------------------------------
+
+class _FakeProjectStore:
+    def __init__(self, projects: dict):
+        self._projects = projects
+
+    async def get_project(self, project_id: str):
+        return self._projects.get(project_id)
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_not_found(store):
+    with pytest.raises(ValueError):
+        await store.get_task_context("tsk-nope")
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_ancestry_order(store):
+    root = await store.create_task(project_id="p", title="Root", created_by="u")
+    mid = await store.create_task(
+        project_id="p", title="Mid", created_by="u", parent_task_id=root["id"]
+    )
+    leaf = await store.create_task(
+        project_id="p", title="Leaf", created_by="u", parent_task_id=mid["id"]
+    )
+
+    ctx = await store.get_task_context(leaf["id"])
+    assert [a["id"] for a in ctx["ancestry"]] == [root["id"], mid["id"]]
+    assert ctx["ancestry"][0]["title"] == "Root"
+    assert ctx["ancestry"][1]["title"] == "Mid"
+    # The task itself is excluded from its own ancestry.
+    assert leaf["id"] not in [a["id"] for a in ctx["ancestry"]]
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_no_ancestry_for_root_task(store):
+    root = await store.create_task(project_id="p", title="Root", created_by="u")
+    ctx = await store.get_task_context(root["id"])
+    assert ctx["ancestry"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_cycle_guard(store):
+    a = await store.create_task(project_id="p", title="A", created_by="u")
+    b = await store.create_task(
+        project_id="p", title="B", created_by="u", parent_task_id=a["id"]
+    )
+    # Force a cycle: a's parent becomes b, so a -> b -> a.
+    await store.update_task(a["id"], parent_task_id=b["id"])
+
+    ctx = await store.get_task_context(a["id"])
+    # Must terminate (no infinite loop / crash) and not include a itself.
+    assert a["id"] not in [x["id"] for x in ctx["ancestry"]]
+    assert len(ctx["ancestry"]) <= 2
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_blockers_and_is_blocked(store):
+    dependent = await store.create_task(project_id="p", title="Dependent", created_by="u")
+    blocker = await store.create_task(project_id="p", title="Blocker", created_by="u")
+    await store.add_relationship(
+        project_id="p", from_task_id=dependent["id"], to_task_id=blocker["id"],
+        kind="blocks", created_by="u",
+    )
+
+    ctx = await store.get_task_context(dependent["id"])
+    assert [b["id"] for b in ctx["blockers"]] == [blocker["id"]]
+    assert ctx["is_blocked"] is True
+
+    await store.close_task(blocker["id"], closed_by="u")
+    ctx = await store.get_task_context(dependent["id"])
+    assert ctx["is_blocked"] is False
+    assert ctx["blockers"][0]["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_ignores_non_blocks_relationships(store):
+    a = await store.create_task(project_id="p", title="A", created_by="u")
+    b = await store.create_task(project_id="p", title="B", created_by="u")
+    await store.add_relationship(
+        project_id="p", from_task_id=a["id"], to_task_id=b["id"],
+        kind="relates_to", created_by="u",
+    )
+    ctx = await store.get_task_context(a["id"])
+    assert ctx["blockers"] == []
+    assert ctx["is_blocked"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_project_enrichment(tmp_path):
+    fake_project_store = _FakeProjectStore(
+        {"prj-1": {"id": "prj-1", "name": "Alpha", "description": "Ship the thing"}}
+    )
+    s = ProjectTaskStore(tmp_path / "tasks2.db", project_store=fake_project_store)
+    await s.init()
+    try:
+        t = await s.create_task(project_id="prj-1", title="T", created_by="u")
+        ctx = await s.get_task_context(t["id"])
+        assert ctx["project"] == {"id": "prj-1", "name": "Alpha", "description": "Ship the thing"}
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_get_task_context_project_falls_back_without_project_store(store):
+    t = await store.create_task(project_id="p", title="T", created_by="u")
+    ctx = await store.get_task_context(t["id"])
+    assert ctx["project"]["id"] == "p"
