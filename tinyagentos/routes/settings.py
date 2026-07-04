@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 import yaml
-from fastapi import APIRouter, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
@@ -21,7 +21,28 @@ from tinyagentos.restart_orchestrator import write_pending_restart
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+async def _require_admin_or_local_token(request: Request) -> None:
+    """Gate the entire system-settings router to admin or the host local token.
+
+    This router reads/overwrites system config and triggers updates/restarts
+    (GHSA-47g9-fwwp-hrfp): a plain non-admin user session must never reach any
+    handler below. Mirrors ``tinyagentos.routes.skill_exec._is_admin_or_local_token``
+    -- see that function's docstring for why both signals (``is_admin`` and
+    ``via == "local_token"``) are checked; ``AuthMiddleware``
+    (tinyagentos/auth_middleware.py) sets both on ``request.state``.
+
+    Attached as a router-level dependency so every route in this module is
+    covered without each handler repeating the check.
+    """
+    if getattr(request.state, "is_admin", False):
+        return
+    if getattr(request.state, "via", None) == "local_token":
+        return
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
+router = APIRouter(dependencies=[Depends(_require_admin_or_local_token)])
 
 
 async def _run_capture(
