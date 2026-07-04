@@ -1,7 +1,18 @@
 # tinyagentos/routes/video.py
+"""Video generation routes.
+
+POST /api/video/generate used to block for the full multi-minute generation
+(no job id, no progress, dead on any client timeout/disconnect). It now
+enqueues a VideoJobStore row, runs the actual backend call in a background
+task (tracked in app.state._background_tasks, same pattern as
+agent_chat_router.py's dispatch()), and returns {job_id, status: "queued"}
+immediately. Callers poll GET /api/video/jobs/{job_id} for status/result.
+"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import random
 import time
 from pathlib import Path
@@ -10,6 +21,11 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+
+from tinyagentos.task_utils import _create_supervised_task
+from tinyagentos.video_jobs import VideoJobStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -24,15 +40,46 @@ class VideoGenerateRequest(BaseModel):
     seed: int | None = None
 
 
-def _videos_dir(request: Request) -> Path:
-    """Return the videos directory, creating it if needed."""
-    data_dir = getattr(request.app.state, "data_dir", None)
+class _VideoGenerationError(Exception):
+    """Raised by _generate_and_save for known failure modes; the message is
+    surfaced verbatim as the job's error field."""
+
+
+def _videos_dir_from_app(app) -> Path:
+    """Return the videos directory, creating it if needed.
+
+    Takes the FastAPI ``app`` directly (rather than a Request) so the
+    background generation task -- which outlives the originating request --
+    can resolve the same directory.
+    """
+    data_dir = getattr(app.state, "data_dir", None)
     if data_dir:
         d = Path(data_dir) / VIDEOS_DIR_NAME
     else:
         d = Path(__file__).parent.parent.parent / "data" / VIDEOS_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _videos_dir(request: Request) -> Path:
+    """Return the videos directory, creating it if needed."""
+    return _videos_dir_from_app(request.app)
+
+
+async def _get_video_job_store(app) -> VideoJobStore:
+    """Get or create the VideoJobStore singleton on app.state.
+
+    Mirrors routes/jobs.py's ``_get_queue`` -- a lazily-created, request-scoped
+    singleton so no lifespan wiring is needed in app.py.
+    """
+    store = getattr(app.state, "video_jobs", None)
+    if store is None:
+        data_dir = getattr(app.state, "data_dir", None)
+        base = Path(data_dir) if data_dir else Path(__file__).parent.parent.parent / "data"
+        store = VideoJobStore(base / "video_jobs.db")
+        await store.init()
+        app.state.video_jobs = store
+    return store
 
 
 def _get_video_backend(request: Request) -> str | None:
@@ -81,18 +128,11 @@ def _list_videos(videos_dir: Path) -> list[dict]:
     return results
 
 
-@router.post("/api/video/generate")
-async def generate_video(request: Request, body: VideoGenerateRequest):
-    """Generate a video from a text prompt using any configured video backend."""
-    backend_url = _get_video_backend(request)
-    if not backend_url:
-        return JSONResponse(
-            {"error": "No video generation backend configured. Connect a GPU worker or set video_backend_url in config."},
-            status_code=503,
-        )
-
-    seed = body.seed if body.seed is not None else random.randint(0, 2**32 - 1)
-
+async def _generate_and_save(app, body: VideoGenerateRequest, seed: int, backend_url: str) -> dict:
+    """Call the video backend, save the resulting clip + metadata sidecar, and
+    return the same result shape the old synchronous endpoint used to return.
+    Raises _VideoGenerationError on any known failure mode; the message is
+    used verbatim as the job's error field."""
     # Generic OpenAI-compatible video generation endpoint
     payload = {
         "prompt": body.prompt,
@@ -111,24 +151,16 @@ async def generate_video(request: Request, body: VideoGenerateRequest):
             resp.raise_for_status()
             data = resp.json()
     except httpx.ConnectError:
-        return JSONResponse(
-            {"error": f"Cannot connect to video backend at {backend_url}. Is it running?"},
-            status_code=503,
+        raise _VideoGenerationError(
+            f"Cannot connect to video backend at {backend_url}. Is it running?"
         )
     except httpx.TimeoutException:
-        return JSONResponse(
-            {"error": "Video generation timed out (>300s). The backend may be busy or overloaded."},
-            status_code=504,
+        raise _VideoGenerationError(
+            "Video generation timed out (>300s). The backend may be busy or overloaded."
         )
     except httpx.HTTPStatusError as e:
-        return JSONResponse(
-            {"error": f"Video backend returned error: {e.response.status_code}"},
-            status_code=502,
-        )
-    except Exception as e:
-        return JSONResponse(
-            {"error": f"Unexpected error: {str(e)}"},
-            status_code=500,
+        raise _VideoGenerationError(
+            f"Video backend returned error: {e.response.status_code}"
         )
 
     # Expect response with video URL or base64 data
@@ -137,12 +169,9 @@ async def generate_video(request: Request, body: VideoGenerateRequest):
         video_url = video_entry.get("url")
         video_b64 = video_entry.get("b64_mp4") or video_entry.get("b64_json")
     except (KeyError, IndexError):
-        return JSONResponse(
-            {"error": "Unexpected response format from video backend"},
-            status_code=502,
-        )
+        raise _VideoGenerationError("Unexpected response format from video backend")
 
-    videos_dir = _videos_dir(request)
+    videos_dir = _videos_dir_from_app(app)
     timestamp = int(time.time())
     filename = f"{timestamp}_{seed}.mp4"
     video_path = videos_dir / filename
@@ -158,15 +187,9 @@ async def generate_video(request: Request, body: VideoGenerateRequest):
                 dl_resp.raise_for_status()
                 video_path.write_bytes(dl_resp.content)
         except Exception as e:
-            return JSONResponse(
-                {"error": f"Failed to download generated video: {str(e)}"},
-                status_code=502,
-            )
+            raise _VideoGenerationError(f"Failed to download generated video: {str(e)}")
     else:
-        return JSONResponse(
-            {"error": "Video backend returned neither url nor b64 data"},
-            status_code=502,
-        )
+        raise _VideoGenerationError("Video backend returned neither url nor b64 data")
 
     metadata = {
         "prompt": body.prompt,
@@ -179,11 +202,87 @@ async def generate_video(request: Request, body: VideoGenerateRequest):
     meta_path.write_text(json.dumps(metadata, indent=2))
 
     return {
-        "status": "generated",
         "filename": filename,
         "path": f"/data/videos/{filename}",
         **metadata,
     }
+
+
+async def _run_generation_job(app, job_id: str, body: VideoGenerateRequest, seed: int, backend_url: str) -> None:
+    """Background task: run the generation and record the outcome on the job.
+    Never raises -- every failure mode (known or not) is recorded as the
+    job's error status so a poller always sees a terminal state."""
+    store = await _get_video_job_store(app)
+    await store.update_job(job_id, status="running")
+    try:
+        result = await _generate_and_save(app, body, seed, backend_url)
+    except _VideoGenerationError as exc:
+        await store.update_job(job_id, status="error", error=str(exc), completed_at=time.time())
+        return
+    except Exception as exc:
+        logger.exception("video generation job %s crashed", job_id)
+        await store.update_job(
+            job_id, status="error", error=f"Unexpected error: {exc}", completed_at=time.time()
+        )
+        return
+    await store.update_job(
+        job_id, status="done", progress=1.0, result_json=json.dumps(result), completed_at=time.time()
+    )
+
+
+@router.post("/api/video/generate")
+async def generate_video(request: Request, body: VideoGenerateRequest):
+    """Enqueue a video generation job and return its id immediately.
+
+    Fails fast with the existing 503 when no backend is configured at all --
+    there's nothing to enqueue in that case. Once a backend is configured,
+    the actual generation (and any backend-side failure) happens in a
+    background task; poll GET /api/video/jobs/{job_id} for the outcome.
+    """
+    backend_url = _get_video_backend(request)
+    if not backend_url:
+        return JSONResponse(
+            {"error": "No video generation backend configured. Connect a GPU worker or set video_backend_url in config."},
+            status_code=503,
+        )
+
+    seed = body.seed if body.seed is not None else random.randint(0, 2**32 - 1)
+
+    store = await _get_video_job_store(request.app)
+    job_id = await store.create_job()
+
+    task_set = getattr(request.app.state, "_background_tasks", None)
+    coro = _run_generation_job(request.app, job_id, body, seed, backend_url)
+    if task_set is None:
+        asyncio.create_task(coro)
+    else:
+        _create_supervised_task(coro, task_set)
+
+    return JSONResponse({"job_id": job_id, "status": "queued"}, status_code=202)
+
+
+@router.get("/api/video/jobs/{job_id}")
+async def get_video_job(request: Request, job_id: str):
+    """Poll a video generation job's status.
+
+    Returns ``{status: queued|running|done|error, progress?, result?, error?}``.
+    ``result`` (present when done) is the same shape the old synchronous
+    endpoint used to return -- the video is already saved to the library by
+    the time status flips to "done".
+    """
+    store = await _get_video_job_store(request.app)
+    job = await store.get_job(job_id)
+    if not job:
+        return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
+
+    response: dict = {"job_id": job["id"], "status": job["status"]}
+    if job.get("progress") is not None:
+        response["progress"] = job["progress"]
+    if job["status"] == "done" and job.get("result_json"):
+        response["result"] = json.loads(job["result_json"])
+    if job["status"] == "error" and job.get("error"):
+        response["error"] = job["error"]
+    return response
 
 
 @router.get("/api/video")

@@ -32,6 +32,14 @@ function randomSeed(): number {
 // random.randint(0, 2**32 - 1) range).
 const MAX_SEED = 2 ** 32 - 1;
 
+// Generation is an async job now: POST /api/video/generate enqueues and
+// returns a job id immediately, and GET /api/video/jobs/{job_id} is polled
+// until it reports done/error. POLL_INTERVAL_MS/MAX_POLL_ATTEMPTS bound how
+// long the UI keeps polling before giving up (the video still finishes and
+// lands in the Library -- the user can find it there).
+const POLL_INTERVAL_MS = 2000;
+const MAX_POLL_ATTEMPTS = 600; // ~20 minutes at POLL_INTERVAL_MS
+
 function toGeneratedVideo(raw: Record<string, unknown>): GeneratedVideo {
   const filename = (raw.filename as string) ?? "";
   return {
@@ -73,6 +81,8 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [needsBackend, setNeedsBackend] = useState(false);
   const [latest, setLatest] = useState<GeneratedVideo | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   /* ----------------------------- videos --------------------------- */
 
@@ -107,6 +117,21 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
 
   /* ----------------------------- generate ------------------------- */
 
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
+  }, []);
+
+  const finishGenerating = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    stopPolling();
+    setGenerating(false);
+  }, [stopPolling]);
+
   const runGenerate = useCallback(async () => {
     const usePrompt = prompt.trim();
     if (!usePrompt) return;
@@ -116,6 +141,7 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
     setNeedsBackend(false);
     setElapsedSeconds(0);
     setLatest(null);
+    stopPolling();
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
       setElapsedSeconds((s) => s + 1);
@@ -142,12 +168,8 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
         body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.filename) {
-        const video = toGeneratedVideo(data);
-        setLatest(video);
-        await fetchVideos();
-        setSelectedLibraryId(video.filename);
-      } else {
+
+      if (!res.ok || !data.job_id) {
         const message =
           (data as { error?: string }).error ??
           `Generation failed (${res.status})`;
@@ -155,21 +177,81 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
         // The backend returns 503 specifically when no video backend is
         // configured or reachable -- that's the "install a backend" case.
         setNeedsBackend(res.status === 503);
+        finishGenerating();
+        return;
+      }
+
+      const jobId = data.job_id as string;
+      const abortController = new AbortController();
+      pollAbortRef.current = abortController;
+      let attempts = 0;
+
+      const poll = async () => {
+        attempts += 1;
+        try {
+          const statusRes = await fetch(
+            `/api/video/jobs/${encodeURIComponent(jobId)}`,
+            { headers: { Accept: "application/json" }, signal: abortController.signal },
+          );
+          const statusData = await statusRes.json().catch(() => ({}));
+
+          if (!statusRes.ok) {
+            setGenerateError(
+              (statusData as { error?: string }).error ??
+                `Job status failed (${statusRes.status})`,
+            );
+            finishGenerating();
+            return;
+          }
+
+          if (statusData.status === "done") {
+            const video = toGeneratedVideo(statusData.result ?? {});
+            setLatest(video);
+            await fetchVideos();
+            setSelectedLibraryId(video.filename);
+            finishGenerating();
+            return;
+          }
+
+          if (statusData.status === "error") {
+            setGenerateError(statusData.error ?? "Video generation failed");
+            finishGenerating();
+            return;
+          }
+
+          // Still queued/running -- keep polling until the attempt cap.
+          if (attempts >= MAX_POLL_ATTEMPTS) {
+            setGenerateError(
+              "Video generation is taking longer than expected. Check the Library later.",
+            );
+            finishGenerating();
+          }
+        } catch (e) {
+          if ((e as Error).name === "AbortError") return;
+          setGenerateError(`Generation error: ${(e as Error).message}`);
+          finishGenerating();
+        }
+      };
+
+      await poll();
+      // Only arm the interval if the first poll didn't already resolve
+      // (finishGenerating clears pollAbortRef.current on any terminal state).
+      if (pollAbortRef.current) {
+        pollTimerRef.current = setInterval(poll, POLL_INTERVAL_MS);
       }
     } catch (e) {
       setGenerateError(`Generation error: ${(e as Error).message}`);
       setNeedsBackend(false);
+      finishGenerating();
     }
-
-    if (timerRef.current) clearInterval(timerRef.current);
-    setGenerating(false);
-  }, [prompt, modelId, duration, resolution, seed, fetchVideos]);
+  }, [prompt, modelId, duration, resolution, seed, fetchVideos, stopPolling, finishGenerating]);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      stopPolling();
     };
-  }, []);
+  }, [stopPolling]);
 
   const handleReroll = useCallback(() => {
     setSeed(String(randomSeed()));

@@ -18,10 +18,10 @@ import {
 /* ------------------------------------------------------------------ */
 /*  CreateView — prompt bar + controls + latest result                 */
 /*                                                                     */
-/*  The backend (routes/video.py) generates synchronously: the POST    */
-/*  resolves only once the clip is done (or errors), with no job id or  */
-/*  status endpoint to poll. So instead of faking a progress bar, the   */
-/*  stage shows a spinner with a real elapsed-time counter.             */
+/*  Generation is an async job: VideoStudioApp posts to enqueue, then   */
+/*  polls the job's status until done/error. There's no real progress   */
+/*  percentage from the backend, so instead of faking a progress bar,   */
+/*  the stage shows a spinner with a real elapsed-time counter.         */
 /* ------------------------------------------------------------------ */
 
 export interface CreateViewProps {

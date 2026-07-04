@@ -54,20 +54,28 @@ describe("VideoStudioApp", () => {
     expect(screen.getByPlaceholderText(/describe the video/i)).toBeTruthy();
   });
 
-  it("posts the prompt and generation params to /api/video/generate", async () => {
+  it("posts the prompt, enqueues a job, and polls it to done", async () => {
     const fetchMock = mockFetch({
       "GET /api/video": { ok: true, body: { videos: [] } },
       "POST /api/video/generate": {
         ok: true,
+        status: 202,
+        body: { job_id: "job-1", status: "queued" },
+      },
+      "GET /api/video/jobs/job-1": {
+        ok: true,
         body: {
-          status: "generated",
-          filename: "123_456.mp4",
-          path: "/data/videos/123_456.mp4",
-          prompt: "a cat riding a skateboard",
-          model: "wan2.1-1.3b",
-          duration: 5,
-          resolution: "480x832",
-          seed: 456,
+          job_id: "job-1",
+          status: "done",
+          result: {
+            filename: "123_456.mp4",
+            path: "/data/videos/123_456.mp4",
+            prompt: "a cat riding a skateboard",
+            model: "wan2.1-1.3b",
+            duration: 5,
+            resolution: "480x832",
+            seed: 456,
+          },
         },
       },
     });
@@ -96,6 +104,50 @@ describe("VideoStudioApp", () => {
     // No seed pinned by the user, so it should be omitted (backend randomizes).
     expect(body.seed).toBeUndefined();
 
+    // The job endpoint was polled.
+    expect(
+      fetchMock.mock.calls.some(([url]: [string]) => url === "/api/video/jobs/job-1"),
+    ).toBe(true);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Generate$/)).toBeTruthy();
+    });
+
+    // The completed result is rendered in the stage.
+    const video = document.querySelector("video");
+    expect(video?.getAttribute("src")).toBe("/api/video/123_456.mp4");
+  });
+
+  it("shows the job's error message when the poll reports a failure", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/video": { ok: true, body: { videos: [] } },
+      "POST /api/video/generate": {
+        ok: true,
+        status: 202,
+        body: { job_id: "job-2", status: "queued" },
+      },
+      "GET /api/video/jobs/job-2": {
+        ok: true,
+        body: {
+          job_id: "job-2",
+          status: "error",
+          error: "Cannot connect to video backend at http://localhost:9000. Is it running?",
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderApp();
+    await flush();
+
+    fireEvent.change(screen.getByPlaceholderText(/describe the video/i), {
+      target: { value: "a dog surfing" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Generate$/ }));
+    await flush();
+
+    expect(
+      await screen.findByText(/Cannot connect to video backend/),
+    ).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByText(/Generate$/)).toBeTruthy();
     });
