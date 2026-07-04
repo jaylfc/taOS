@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createElement, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
@@ -202,6 +202,7 @@ describe("DesignStudioApp", () => {
     expect(screen.getByRole("button", { name: "Templates" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Elements" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Magic" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Library" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Brand" })).toBeDefined();
   });
 
@@ -416,5 +417,160 @@ describe("DesignStudioApp", () => {
     expect(screen.getByRole("button", { name: "Generate" })).toBeDefined();
     expect(screen.getByPlaceholderText(/launch poster/i)).toBeDefined();
     expect(screen.getAllByText("Editorial").length).toBeGreaterThan(0);
+  });
+});
+
+describe("DesignStudioApp persistence", () => {
+  const originalResizeObserver = globalThis.ResizeObserver;
+
+  beforeEach(() => {
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+  });
+
+  afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver;
+    vi.unstubAllGlobals();
+  });
+
+  /** Routes fetch by URL/method so a single mock can stand in for the
+   *  models probe and the /api/designs persistence endpoints. */
+  function stubFetch(overrides: {
+    listDesigns?: unknown[];
+    getDesignContent?: string;
+    onCreate?: (body: { name: string; content: string }) => void;
+    onUpdate?: (id: string, body: { name?: string; content?: string }) => void;
+  }) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url === "/api/models") {
+        return { ok: true, json: async () => ({ models: [] }) } as Response;
+      }
+      if (url === "/api/designs" && method === "GET") {
+        return { ok: true, json: async () => overrides.listDesigns ?? [] } as Response;
+      }
+      if (url === "/api/designs" && method === "POST") {
+        const body = JSON.parse(String(init?.body)) as { name: string; content: string };
+        overrides.onCreate?.(body);
+        return {
+          ok: true,
+          json: async () => ({
+            id: "design-created",
+            name: body.name,
+            content: body.content,
+            created_at: 1000,
+            updated_at: 1000,
+          }),
+        } as Response;
+      }
+      if (url.startsWith("/api/designs/") && method === "GET") {
+        const id = url.split("/").pop()!;
+        return {
+          ok: true,
+          json: async () => ({
+            id,
+            name: "My Poster",
+            content: overrides.getDesignContent ?? "{}",
+            created_at: 1000,
+            updated_at: 1000,
+          }),
+        } as Response;
+      }
+      if (url.startsWith("/api/designs/") && method === "PUT") {
+        const id = url.split("/").pop()!;
+        const body = JSON.parse(String(init?.body)) as { name?: string; content?: string };
+        overrides.onUpdate?.(id, body);
+        return {
+          ok: true,
+          json: async () => ({
+            id,
+            name: body.name ?? "My Poster",
+            content: body.content ?? "{}",
+            created_at: 1000,
+            updated_at: 1000,
+          }),
+        } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("adding an element marks the design dirty, and Save persists the current canvas", async () => {
+    let created: { name: string; content: string } | null = null;
+    stubFetch({ onCreate: (body) => (created = body) });
+
+    const { container } = renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Text" }));
+    expect(countCanvasElements(container)).toBe(1);
+    expect(screen.getByText("Unsaved changes")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+
+    await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
+    expect(created).not.toBeNull();
+    const savedContent = JSON.parse(created!.content) as { elements: unknown[] };
+    expect(savedContent.elements.length).toBe(1);
+  });
+
+  it("New confirms discard when there are unsaved changes", () => {
+    stubFetch({});
+    const { container } = renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Text" }));
+    expect(countCanvasElements(container)).toBe(1);
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(countCanvasElements(container)).toBe(1);
+
+    confirmSpy.mockReturnValueOnce(true);
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    expect(countCanvasElements(container)).toBe(0);
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    confirmSpy.mockRestore();
+  });
+
+  it("Library lists saved designs, and opening one hydrates the canvas and name", async () => {
+    stubFetch({
+      listDesigns: [{ id: "design-1", name: "My Poster", updated_at: 1700000000 }],
+      getDesignContent: JSON.stringify({
+        artboard: { name: "My Poster", width: 800, height: 600 },
+        elements: [
+          {
+            id: "text-1",
+            type: "text",
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+            rotation: 0,
+            zIndex: 0,
+            visible: true,
+            text: "Hi",
+            fontSize: 20,
+            fontFamily: "Inter",
+            fill: "#ffffff",
+            align: "left",
+          },
+        ],
+      }),
+    });
+
+    const { container } = renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    expect(await screen.findByText("My Poster")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open My Poster" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Design" }).getAttribute("aria-current")).toBe(
+        "page",
+      ),
+    );
+    expect(countCanvasElements(container)).toBe(1);
+    expect(screen.getByLabelText("Design name")).toHaveValue("My Poster");
   });
 });

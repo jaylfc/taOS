@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { PenLine, LayoutGrid, Plus, Sparkles, Circle } from "lucide-react";
+import { PenLine, LayoutGrid, Plus, Sparkles, Circle, FolderOpen, Save, FilePlus2 } from "lucide-react";
 import { ModelBrowser } from "@/components/ModelBrowser";
 import { DesignView } from "./designstudio/DesignView";
 import { TemplatesView, type TemplateChoice } from "./designstudio/TemplatesView";
 import { MagicView } from "./designstudio/MagicView";
+import { LibraryView } from "./designstudio/LibraryView";
 import { createImageElement } from "./designstudio/elementFactory";
+import { createDesign, getDesign, updateDesign, MAX_CONTENT_BYTES } from "./designstudio/designs-api";
 import {
   DEFAULT_ARTBOARD,
+  isValidDesignContent,
   type Artboard,
   type CanvasElement,
+  type DesignContent,
   type DesignStudioView,
   type GeneratedImage,
 } from "./designstudio/types";
@@ -19,6 +23,7 @@ const RAIL: { id: DesignStudioView; label: string; icon: typeof PenLine }[] = [
   { id: "templates", label: "Templates", icon: LayoutGrid },
   { id: "elements", label: "Elements", icon: Plus },
   { id: "magic", label: "Magic", icon: Sparkles },
+  { id: "library", label: "Library", icon: FolderOpen },
 ];
 
 function randomSeed(): number {
@@ -41,6 +46,14 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedVariantId, setSelectedVariantId] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
+
+  // Persistence: the currently-open saved design (if any), whether the
+  // canvas has changes since the last save/open, and in-flight save/open
+  // status. New designs start blank and unsaved.
+  const [activeDesignId, setActiveDesignId] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const refreshModels = useCallback(async () => {
     try {
@@ -95,6 +108,7 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
         ...prev,
         createImageElement(prev, img.url, artboard.width, artboard.height, img.prompt),
       ]);
+      setDirty(true);
       setView("design");
     },
     [artboard.width, artboard.height],
@@ -103,7 +117,7 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
   const handleSelectTemplate = useCallback(
     (template: TemplateChoice) => {
       // Picking a template resets the canvas; confirm first so an accidental
-      // click doesn't wipe unsaved work. (Persistence is a later phase.)
+      // click doesn't wipe unsaved work.
       if (
         canvasElements.length > 0 &&
         !window.confirm("Start from this template? Your current design will be cleared.")
@@ -112,10 +126,87 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
       }
       setArtboard({ name: template.name, width: template.width, height: template.height });
       setCanvasElements([]);
+      setActiveDesignId(null);
+      setSaveError(null);
+      setDirty(false);
       setView("design");
     },
     [canvasElements.length],
   );
+
+  /** True if the user should be prompted before discarding in-memory edits. */
+  const confirmDiscard = () =>
+    !dirty || window.confirm("Discard unsaved changes to the current design?");
+
+  const handleElementsChange = (next: CanvasElement[]) => {
+    setCanvasElements(next);
+    setDirty(true);
+  };
+
+  const newDesign = () => {
+    if (!confirmDiscard()) return;
+    setCanvasElements([]);
+    setArtboard(DEFAULT_ARTBOARD);
+    setActiveDesignId(null);
+    setSaveError(null);
+    setDirty(false);
+  };
+
+  const openDesign = async (id: string) => {
+    if (!confirmDiscard()) return;
+    setSaveError(null);
+    try {
+      const doc = await getDesign(id);
+      let content: DesignContent;
+      try {
+        const parsed: unknown = JSON.parse(doc.content);
+        if (!isValidDesignContent(parsed)) throw new Error("malformed design data");
+        content = parsed;
+      } catch {
+        setSaveError("This design's saved data is corrupted; opened a blank design instead.");
+        content = { artboard: DEFAULT_ARTBOARD, elements: [] };
+      }
+      setArtboard(content.artboard);
+      setCanvasElements(content.elements);
+      setActiveDesignId(doc.id);
+      setDirty(false);
+      setView("design");
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Open failed");
+    }
+  };
+
+  const saveDesign = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const content = JSON.stringify({ artboard, elements: canvasElements });
+      // Catch an over-cap design (usually too many/too-large inlined images)
+      // here with a clear message rather than letting it fail only at PUT
+      // time with a raw 413. The cap mirrors the backend's MAX_CONTENT_BYTES.
+      if (new Blob([content]).size > MAX_CONTENT_BYTES) {
+        throw new Error(
+          "This design is too large to save (over 5 MB). Remove or shrink some images and try again.",
+        );
+      }
+      const name = artboard.name.trim() || "Untitled design";
+      const saved = activeDesignId
+        ? await updateDesign(activeDesignId, name, content)
+        : await createDesign(name, content);
+      setActiveDesignId(saved.id);
+      setDirty(false);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRenamed = (id: string, name: string) => {
+    if (activeDesignId === id) {
+      setArtboard((prev) => ({ ...prev, name }));
+    }
+  };
 
   const runGenerate = useCallback(async () => {
     const usePrompt = magicPrompt.trim();
@@ -194,6 +285,42 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-shell-bg text-shell-text select-none">
+      {/* persistence bar -- name / dirty state / New / Save, shared across all views */}
+      <div className="flex h-11 flex-none items-center gap-2.5 border-b border-shell-border bg-shell-bg-deep px-4">
+        <input
+          aria-label="Design name"
+          value={artboard.name}
+          onChange={(e) => {
+            setArtboard((prev) => ({ ...prev, name: e.target.value }));
+            setDirty(true);
+          }}
+          className="h-8 w-[220px] rounded-lg border border-shell-border bg-shell-surface px-3 text-[12.5px] font-semibold text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        />
+        {dirty && <span className="text-[11px] text-shell-text-tertiary">Unsaved changes</span>}
+        {saveError && (
+          <span role="alert" className="truncate text-[11px] text-red-400">
+            {saveError}
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={newDesign}
+            className="flex h-8 items-center gap-1.5 rounded-[9px] border border-shell-border px-3 text-[12px] font-semibold text-shell-text-secondary hover:bg-shell-surface-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <FilePlus2 size={14} /> New
+          </button>
+          <button
+            type="button"
+            onClick={() => void saveDesign()}
+            disabled={saving}
+            className="flex h-8 items-center gap-1.5 rounded-[9px] bg-gradient-to-br from-accent to-accent/70 px-3.5 text-[12px] font-bold text-white disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <Save size={14} /> {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Design Studio views"
@@ -235,7 +362,7 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
           {view === "design" && (
             <DesignView
               elements={canvasElements}
-              onElementsChange={setCanvasElements}
+              onElementsChange={handleElementsChange}
               artboard={artboard}
             />
           )}
@@ -243,7 +370,7 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
           {view === "elements" && (
             <DesignView
               elements={canvasElements}
-              onElementsChange={setCanvasElements}
+              onElementsChange={handleElementsChange}
               artboard={artboard}
             />
           )}
@@ -263,6 +390,9 @@ export function DesignStudioApp({ windowId: _windowId }: { windowId: string }) {
               onPickModel={() => setBrowserOpen(true)}
               onUseResult={placeOnCanvas}
             />
+          )}
+          {view === "library" && (
+            <LibraryView onOpenDesign={(id) => void openDesign(id)} onRenamed={handleRenamed} />
           )}
         </div>
       </div>

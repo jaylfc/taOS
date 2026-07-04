@@ -98,6 +98,7 @@ from tinyagentos.skills import SkillStore
 from tinyagentos.office_docs import OfficeDocStore
 from tinyagentos.web_sites import WebSiteStore
 from tinyagentos.music_songs import SongStore
+from tinyagentos.design_docs import DesignStore
 from tinyagentos.knowledge_store import KnowledgeStore
 from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_categories import CategoryEngine
@@ -406,6 +407,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     office_docs = OfficeDocStore(data_dir / "office_docs.db")
     web_sites = WebSiteStore(data_dir / "web_sites.db")
     song_store = SongStore(data_dir / "songs.db")
+    design_docs = DesignStore(data_dir / "design_docs.db")
     coding_workspaces_store = CodingWorkspaceStore(
         data_dir / "coding_workspaces.db",
         data_dir / "coding-workspaces",
@@ -528,6 +530,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.web_sites = web_sites
         await song_store.init()
         app.state.song_store = song_store
+        await design_docs.init()
+        app.state.design_docs = design_docs
         await coding_workspaces_store.init()
         app.state.coding_workspaces = coding_workspaces_store
         await install_registry_store.init()
@@ -835,6 +839,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.office_docs = office_docs
         app.state.web_sites = web_sites
         app.state.song_store = song_store
+        app.state.design_docs = design_docs
         app.state.coding_workspaces = coding_workspaces_store
         app.state.install_registry = install_registry_store
         app.state.store_submissions = store_submissions
@@ -1319,6 +1324,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await office_docs.close()
         await web_sites.close()
         await song_store.close()
+        await design_docs.close()
         await coding_workspaces_store.close()
         await install_registry_store.close()
         await user_memory.close()
@@ -1513,6 +1519,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.office_docs = office_docs
     app.state.web_sites = web_sites
     app.state.song_store = song_store
+    app.state.design_docs = design_docs
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
     app.state.store_submissions = store_submissions

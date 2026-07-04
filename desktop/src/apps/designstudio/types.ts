@@ -2,7 +2,7 @@
 /*  Design Studio -- shared types                                      */
 /* ------------------------------------------------------------------ */
 
-export type DesignStudioView = "design" | "templates" | "elements" | "magic";
+export type DesignStudioView = "design" | "templates" | "elements" | "magic" | "library";
 
 export interface GeneratedImage {
   id: string;
@@ -85,6 +85,35 @@ export function hasStroke(
   el: CanvasElement,
 ): el is RectElementData | EllipseElementData | LineElementData {
   return el.type === "rect" || el.type === "ellipse" || el.type === "line";
+}
+
+/** The shape persisted for a saved design: the artboard plus its elements. */
+export interface DesignContent {
+  artboard: Artboard;
+  elements: CanvasElement[];
+}
+
+/** Shallow validation of a design's saved content, mirroring the WebStudio
+ *  and Office pattern: a corrupted row must not slip through and crash the
+ *  canvas -- fall back to a blank design instead. */
+export function isValidDesignContent(value: unknown): value is DesignContent {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  if (!v.artboard || typeof v.artboard !== "object") return false;
+  const artboard = v.artboard as Record<string, unknown>;
+  if (
+    typeof artboard.name !== "string" ||
+    typeof artboard.width !== "number" ||
+    typeof artboard.height !== "number"
+  ) {
+    return false;
+  }
+  if (!Array.isArray(v.elements)) return false;
+  return v.elements.every((el) => {
+    if (!el || typeof el !== "object") return false;
+    const e = el as Record<string, unknown>;
+    return typeof e.id === "string" && typeof e.type === "string";
+  });
 }
 
 export const MAGIC_STYLE_CHIPS = [

@@ -336,6 +336,8 @@ def register_all_routers(app):
     app.include_router(songs_router)
     from tinyagentos.routes.web import router as web_router
     app.include_router(web_router)
+    from tinyagentos.routes.designs import router as designs_router
+    app.include_router(designs_router)
     from tinyagentos.routes.coding import router as coding_router
     app.include_router(coding_router)
     from tinyagentos.routes.store_submissions import router as store_submissions_router
