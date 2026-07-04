@@ -6,12 +6,14 @@ import {
   ArrowDownZA,
   ArrowUpAZ,
   Download,
+  Loader2,
   Plus,
   Save,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
+import { streamTaosAgentChat } from "../appstudio/stream-chat";
 import { cellAddress } from "./calc/address";
 import { parseCsv, sheetToCsv } from "./calc/csv";
 import { compareCellValues } from "./calc/sort";
@@ -62,6 +64,20 @@ export function CalcView() {
   const [filterValue, setFilterValue] = useState("");
   const [hiddenRows, setHiddenRows] = useState<string[]>([]);
   const [rowCount, setRowCount] = useState<number>(() => workbookData[0]?.row ?? DEFAULT_SHEET_ROWS);
+
+  const [askQuestion, setAskQuestion] = useState("");
+  const [askBusy, setAskBusy] = useState(false);
+  const [askAnswer, setAskAnswer] = useState("");
+  const [askError, setAskError] = useState<string | null>(null);
+  const askAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      askAbortRef.current?.abort();
+    };
+  }, []);
 
   const workbookRef = useRef<WorkbookInstance>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -352,6 +368,75 @@ export function CalcView() {
     },
     [importCsv],
   );
+
+  /* ------------------------------- ask your data ------------------------ */
+  // Read-only: this panel only answers questions about the sheet, it never
+  // writes cell values back. Any computation the agent is asked for it does
+  // itself from the CSV snapshot and explains in its answer.
+
+  const cancelAsk = useCallback(() => {
+    askAbortRef.current?.abort();
+  }, []);
+
+  const askData = useCallback(async () => {
+    const wb = workbookRef.current;
+    const question = askQuestion.trim();
+    if (!wb || !question || askBusy) return;
+
+    const csv = sheetToCsv(wb.getSheet().celldata ?? []);
+    if (!csv.trim()) {
+      setAskError("This sheet has no data yet.");
+      return;
+    }
+
+    setAskError(null);
+    setAskAnswer("");
+    setAskBusy(true);
+    askAbortRef.current?.abort();
+    const controller = new AbortController();
+    askAbortRef.current = controller;
+
+    let raw = "";
+    let streamErr: string | null = null;
+    try {
+      await streamTaosAgentChat(
+        [
+          {
+            role: "system",
+            content:
+              "You are a data analyst. Answer the user's question about the spreadsheet data below (given as CSV). " +
+              "If the question requires a calculation, compute it yourself from the data and briefly explain how you got the answer. " +
+              "Be concise and reference concrete values from the data. Reply in plain text, no markdown.\n\nCSV data:\n" +
+              csv,
+          },
+          { role: "user", content: question },
+        ],
+        (delta) => {
+          raw += delta;
+          if (mountedRef.current) setAskAnswer(raw);
+        },
+        (message) => {
+          streamErr = message;
+        },
+        { signal: controller.signal },
+      );
+    } catch (e) {
+      streamErr = e instanceof Error ? e.message : String(e);
+    }
+
+    if (askAbortRef.current === controller) askAbortRef.current = null;
+    if (!mountedRef.current) return;
+
+    if (controller.signal.aborted) {
+      setAskBusy(false);
+      return;
+    }
+    if (streamErr) {
+      setAskError(streamErr);
+      setAskAnswer("");
+    }
+    setAskBusy(false);
+  }, [askQuestion, askBusy]);
 
   /* ------------------------------------- hooks -------------------------- */
 
@@ -676,6 +761,57 @@ export function CalcView() {
               &ldquo;Which month had the best margin?&rdquo; taOS reads the sheet and answers, on
               your hardware.
             </p>
+            <label htmlFor="calc-ask-input" className="sr-only">
+              Ask a question about this sheet
+            </label>
+            <textarea
+              id="calc-ask-input"
+              value={askQuestion}
+              onChange={(e) => setAskQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  void askData();
+                }
+              }}
+              disabled={askBusy}
+              rows={2}
+              placeholder="Ask a question about this sheet..."
+              className="mt-2.5 w-full resize-none rounded-lg border border-shell-border bg-shell-surface px-2.5 py-2 text-[12px] text-shell-text outline-none placeholder:text-shell-text-tertiary focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void askData()}
+                disabled={askBusy || !askQuestion.trim()}
+                className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-[11.5px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {askBusy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                {askBusy ? "Thinking..." : "Ask"}
+              </button>
+              {askBusy && (
+                <button
+                  type="button"
+                  onClick={cancelAsk}
+                  className="text-[11.5px] font-semibold text-shell-text-secondary hover:text-shell-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            {askError && (
+              <p role="alert" className="mt-2 text-[11.5px] text-red-400">
+                {askError}
+              </p>
+            )}
+            {askAnswer && (
+              <div
+                role="status"
+                className="mt-2 max-h-40 overflow-auto rounded-lg border border-shell-border bg-shell-bg-deep p-2 text-[11.5px] leading-[1.5] text-shell-text-secondary"
+              >
+                {askAnswer}
+              </div>
+            )}
           </div>
         </aside>
       </div>

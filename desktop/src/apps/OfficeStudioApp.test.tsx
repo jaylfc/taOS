@@ -16,7 +16,17 @@ describe("OfficeStudioApp", () => {
     expect(nav.querySelector('[aria-label="Calc"]')).toBeTruthy();
     expect(nav.querySelector('[aria-label="Database"]')).toBeTruthy();
     expect(nav.querySelector('[aria-label="Slides"]')).toBeTruthy();
-    expect(nav.querySelector('[aria-label="Assist"]')).toBeTruthy();
+    expect(nav.querySelector('[aria-label="Where AI Assist lives"]')).toBeTruthy();
+  });
+
+  it("toggles the Assist hint panel", () => {
+    renderApp();
+    const hintBtn = screen.getByRole("button", { name: "Where AI Assist lives" });
+    expect(screen.queryByRole("note")).toBeNull();
+    fireEvent.click(hintBtn);
+    expect(screen.getByRole("note").textContent).toMatch(/Ask your data/);
+    fireEvent.click(hintBtn);
+    expect(screen.queryByRole("note")).toBeNull();
   });
 
   it("shows Write view by default with Write rail item active", () => {
