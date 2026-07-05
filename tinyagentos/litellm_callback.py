@@ -47,6 +47,20 @@ def _read_local_token() -> str:
     return ""
 
 
+_budget_store = None
+_budget_store_path = None
+
+
+def _budget_store_for(path: str) -> Any:
+    """Lazily open (and cache) the budget store from the env-provided path."""
+    global _budget_store, _budget_store_path
+    if _budget_store is None or _budget_store_path != path:
+        from tinyagentos.agent_budget_store import AgentBudgetStore
+        _budget_store = AgentBudgetStore(path)
+        _budget_store_path = path
+    return _budget_store
+
+
 def _slug_from_alias(key_alias: str | None) -> str:
     """Extract agent slug from ``taos-<slug>`` key alias."""
     if key_alias and key_alias.startswith("taos-"):
@@ -166,6 +180,16 @@ try:
             slug = _slug_from_alias(key_alias)
             return slug, str(kwargs.get("model") or "")
 
+        def _record_spend(self, agent: str, cost_usd: float) -> None:
+            """Best-effort spend increment; never raises into the caller."""
+            path = os.environ.get("TAOS_AGENT_BUDGETS")
+            if not path:
+                return
+            try:
+                _budget_store_for(path).add_spend(agent, cost_usd)
+            except Exception as exc:
+                logger.warning("litellm_callback: budget spend increment failed: %s", exc)
+
         async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
             try:
                 slug, model = self._extract_slug_and_model(kwargs)
@@ -199,6 +223,8 @@ try:
                 })
                 if backend_name:
                     await self._post(self._notify_url, {"backend_name": backend_name})
+                if cost_usd and cost_usd > 0 and slug:
+                    self._record_spend(slug, cost_usd)
             except Exception as exc:
                 logger.warning("litellm_callback: success handler error: %s", exc)
 

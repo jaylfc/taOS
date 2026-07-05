@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 _store = None
 _store_path = None
+_budget_store_cache = None
+_budget_store_cache_path = None
 
 
 def _keystore():
@@ -39,6 +41,24 @@ def _keystore():
         _store = LiteLLMKeyStore(path)
         _store_path = path
     return _store
+
+
+def _budget_store():
+    """Lazily open (and cache) the budget store from the env-provided path.
+
+    Returns None when the env var is unset — budgets are opt-in, so a
+    deploy that never configured them fails OPEN (no check at all) rather
+    than rejecting every call.
+    """
+    global _budget_store_cache, _budget_store_cache_path
+    path = os.environ.get("TAOS_AGENT_BUDGETS")
+    if not path:
+        return None
+    if _budget_store_cache is None or _budget_store_cache_path != path:
+        from tinyagentos.agent_budget_store import AgentBudgetStore
+        _budget_store_cache = AgentBudgetStore(path)
+        _budget_store_cache_path = path
+    return _budget_store_cache
 
 
 async def _requested_model(request) -> str | None:
@@ -84,6 +104,17 @@ async def user_api_key_auth(request, api_key: str):
 
     agent = rec["agent"]
     allowed = rec["allowed_models"] or []
+
+    # Hard-stop: reject calls for an agent that has exceeded its LLM
+    # budget. Fails open (no check) when budgets are not configured at all
+    # (env var unset), but once TAOS_AGENT_BUDGETS is set, an over-budget
+    # agent is blocked before a completion is ever dispatched.
+    budget_store = _budget_store()
+    if budget_store is not None and budget_store.is_over_budget(agent):
+        raise HTTPException(
+            status_code=429,
+            detail=f"agent '{agent}' has exceeded its LLM budget",
+        )
 
     # Defense in depth: enforce the per-agent model allowlist in-hook so
     # correctness does not depend on LiteLLM's post-auth enforcement (which

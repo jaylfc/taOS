@@ -1391,3 +1391,60 @@ class TestDeployRamPreflight:
         assert resp.status_code == 400
         body = resp.json()
         assert "Unknown framework" in body["error"]
+
+
+@pytest.mark.asyncio
+class TestAgentBudgetRoutes:
+    """Agent governance Slice 2 — per-agent LLM budget admin API."""
+
+    async def test_get_budget_defaults_when_unset(self, client):
+        resp = await client.get("/api/agents/test-agent/budget")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["max_budget_usd"] is None
+        assert data["spend_usd"] == 0
+
+    async def test_get_budget_not_found_agent(self, client):
+        resp = await client.get("/api/agents/no-such-agent/budget")
+        assert resp.status_code == 404
+
+    async def test_put_budget_sets_cap(self, client):
+        resp = await client.put("/api/agents/test-agent/budget", json={"max_budget_usd": 25.0})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["max_budget_usd"] == 25.0
+        assert data["spend_usd"] == 0
+
+        resp2 = await client.get("/api/agents/test-agent/budget")
+        assert resp2.json()["max_budget_usd"] == 25.0
+
+    async def test_put_budget_null_clears_cap(self, client):
+        await client.put("/api/agents/test-agent/budget", json={"max_budget_usd": 25.0})
+        resp = await client.put("/api/agents/test-agent/budget", json={"max_budget_usd": None})
+        assert resp.status_code == 200
+        assert resp.json()["max_budget_usd"] is None
+
+    async def test_put_budget_rejects_negative(self, client):
+        resp = await client.put("/api/agents/test-agent/budget", json={"max_budget_usd": -5.0})
+        assert resp.status_code == 400
+
+    async def test_put_budget_not_found_agent(self, client):
+        resp = await client.put("/api/agents/no-such-agent/budget", json={"max_budget_usd": 10.0})
+        assert resp.status_code == 404
+
+    async def test_reset_zeroes_spend_keeps_cap(self, client, app, tmp_data_dir):
+        await client.put("/api/agents/test-agent/budget", json={"max_budget_usd": 10.0})
+
+        from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
+        store = AgentBudgetStore(default_budget_path(tmp_data_dir))
+        store.add_spend("test-agent", 7.5)
+
+        resp = await client.post("/api/agents/test-agent/budget/reset")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["spend_usd"] == 0
+        assert data["max_budget_usd"] == 10.0
+
+    async def test_reset_not_found_agent(self, client):
+        resp = await client.post("/api/agents/no-such-agent/budget/reset")
+        assert resp.status_code == 404

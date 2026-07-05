@@ -278,3 +278,67 @@ async def test_callback_never_raises_on_bad_input():
 def test_taos_callback_importable():
     from tinyagentos.litellm_callback import taos_callback
     assert taos_callback is not None
+
+
+# ---------------------------------------------------------------------------
+# TaosLiteLLMCallback — budget spend increment (agent governance Slice 2)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_budget_store_cache(monkeypatch):
+    """Isolate the callback's lazily-cached budget store handle."""
+    import tinyagentos.litellm_callback as cb_mod
+    monkeypatch.setattr(cb_mod, "_budget_store", None)
+    monkeypatch.setattr(cb_mod, "_budget_store_path", None)
+    monkeypatch.delenv("TAOS_AGENT_BUDGETS", raising=False)
+    yield
+
+
+@pytest.mark.asyncio
+async def test_success_event_with_positive_cost_increments_spend(tmp_path, monkeypatch):
+    try:
+        from tinyagentos.litellm_callback import TaosLiteLLMCallback
+    except ImportError:
+        pytest.skip("litellm not installed")
+
+    from tinyagentos.agent_budget_store import AgentBudgetStore
+    budget_path = tmp_path / "budgets.db"
+    monkeypatch.setenv("TAOS_AGENT_BUDGETS", str(budget_path))
+
+    cb = TaosLiteLLMCallback()
+    cb._post = AsyncMock()
+
+    from datetime import datetime, timezone
+    t0 = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 1, 1, 10, 0, 1, tzinfo=timezone.utc)
+    resp = _make_response()
+    kwargs = _make_kwargs(key_alias="taos-spend-agent")
+
+    await cb.async_log_success_event(kwargs, resp, t0, t1)
+
+    store = AgentBudgetStore(budget_path)
+    rec = store.get("spend-agent")
+    assert rec is not None
+    assert rec["spend_usd"] == pytest.approx(0.001)
+
+
+@pytest.mark.asyncio
+async def test_success_event_without_budget_env_does_not_crash(monkeypatch):
+    try:
+        from tinyagentos.litellm_callback import TaosLiteLLMCallback
+    except ImportError:
+        pytest.skip("litellm not installed")
+
+    monkeypatch.delenv("TAOS_AGENT_BUDGETS", raising=False)
+
+    cb = TaosLiteLLMCallback()
+    cb._post = AsyncMock()
+
+    from datetime import datetime, timezone
+    t0 = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t1 = datetime(2024, 1, 1, 10, 0, 1, tzinfo=timezone.utc)
+    resp = _make_response()
+    kwargs = _make_kwargs(key_alias="taos-spend-agent-2")
+
+    # Must not raise even though TAOS_AGENT_BUDGETS is unset.
+    await cb.async_log_success_event(kwargs, resp, t0, t1)

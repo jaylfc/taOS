@@ -1237,3 +1237,59 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
         "current": agent.get("model"),
         "key_rescoped": key_rescoped,
     }
+
+
+def _budget_store_for_request(request: Request):
+    from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
+    data_dir = request.app.state.data_dir
+    return AgentBudgetStore(default_budget_path(data_dir))
+
+
+def _budget_response(agent_name: str, rec: dict | None) -> dict:
+    if rec is None:
+        return {"agent": agent_name, "max_budget_usd": None, "spend_usd": 0}
+    return {"agent": rec["agent"], "max_budget_usd": rec["max_budget_usd"], "spend_usd": rec["spend_usd"]}
+
+
+@router.get("/api/agents/{name}/budget")
+async def get_agent_budget(request: Request, name: str):
+    """Return an agent's LLM budget cap and current spend."""
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    store = _budget_store_for_request(request)
+    return _budget_response(name, store.get(name))
+
+
+class AgentBudgetUpdate(BaseModel):
+    max_budget_usd: float | None
+
+
+@router.put("/api/agents/{name}/budget")
+async def set_agent_budget(request: Request, name: str, body: AgentBudgetUpdate):
+    """Set (or clear, with null) an agent's LLM budget cap."""
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    if body.max_budget_usd is not None and body.max_budget_usd < 0:
+        return JSONResponse(
+            {"error": "max_budget_usd must be null or a non-negative number"},
+            status_code=400,
+        )
+    store = _budget_store_for_request(request)
+    store.set_budget(name, body.max_budget_usd)
+    return _budget_response(name, store.get(name))
+
+
+@router.post("/api/agents/{name}/budget/reset")
+async def reset_agent_budget(request: Request, name: str):
+    """Zero an agent's recorded spend, keeping its cap in place."""
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
+    store = _budget_store_for_request(request)
+    store.reset_spend(name)
+    return _budget_response(name, store.get(name))

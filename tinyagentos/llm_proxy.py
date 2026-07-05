@@ -113,6 +113,7 @@ class LLMProxy:
         self._data_dir = data_dir
         self._process: subprocess.Popen | None = None
         self._keystore_cache = None
+        self._budget_store_cache = None
         # One-shot guard: if litellm is missing at start() (e.g. a pre-fix
         # update stripped the proxy extra), self-install it once per process
         # rather than retry the slow install on every start() call.
@@ -128,6 +129,17 @@ class LLMProxy:
             base = self._data_dir or self.config_dir
             self._keystore_cache = LiteLLMKeyStore(default_keystore_path(base))
         return self._keystore_cache
+
+    def _budget_store(self):
+        """Lazily open the in-house budget store (controller side)."""
+        if self._budget_store_cache is None:
+            from tinyagentos.agent_budget_store import (
+                AgentBudgetStore,
+                default_budget_path,
+            )
+            base = self._data_dir or self.config_dir
+            self._budget_store_cache = AgentBudgetStore(default_budget_path(base))
+        return self._budget_store_cache
 
     @property
     def url(self) -> str:
@@ -452,6 +464,8 @@ class LLMProxy:
             from tinyagentos.litellm_keystore import default_keystore_path
             base = self._data_dir or self.config_dir
             env["TAOS_LITELLM_KEYSTORE"] = str(default_keystore_path(base))
+            from tinyagentos.agent_budget_store import default_budget_path
+            env["TAOS_AGENT_BUDGETS"] = str(default_budget_path(base))
         elif self.database_url:
             # DATABASE_URL enables Postgres-backed virtual keys. Without it
             # LiteLLM still routes chat/embeddings fine but /key/generate
@@ -548,10 +562,16 @@ class LLMProxy:
                 # agent deployed without an explicit model is scoped to the
                 # default chat alias (still usable), not minted with an empty
                 # allowlist that the auth hook would then deny-all.
-                return self._keystore().mint(agent_name, models or ["default"])
+                token = self._keystore().mint(agent_name, models or ["default"])
             except Exception as e:
                 logger.warning("inhouse key mint failed for %s: %s", agent_name, e)
                 return None
+            if max_budget is not None:
+                try:
+                    self._budget_store().set_budget(agent_name, max_budget)
+                except Exception as e:
+                    logger.warning("inhouse budget set failed for %s: %s", agent_name, e)
+            return token
         if not self.is_running():
             return None
         # LiteLLM virtual keys require a Postgres DB. Without one,
