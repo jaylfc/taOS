@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -484,3 +486,185 @@ async def run_coding_tool(request: Request, workspace_id: str, body: ToolCallBod
     if err is not None:
         return err
     return dispatch(root, body.name, body.arguments)
+
+
+# ---------------------------------------------------------------------------
+# Live preview (#86)
+#
+# Assembles the workspace's root index.html into a single self-contained HTML
+# document by inlining local CSS/JS/image references, so it can be dropped
+# straight into a sandboxed iframe (srcDoc) with no further network fetches.
+# ---------------------------------------------------------------------------
+
+_MAX_ASSET_BYTES = 2_000_000  # skip inlining any single asset bigger than this
+_MAX_PREVIEW_BYTES = 5_000_000  # cap on the total assembled document
+
+_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def _is_external_ref(ref: str) -> bool:
+    """True for anything that must never be fetched: absolute URLs, protocol-
+    relative URLs, data URIs, mailto links, and same-page anchors."""
+    ref = ref.strip()
+    if not ref:
+        return True
+    lower = ref.lower()
+    return lower.startswith(("http://", "https://", "//", "data:", "mailto:", "#"))
+
+
+def _strip_query_and_fragment(ref: str) -> str:
+    return ref.split("#", 1)[0].split("?", 1)[0]
+
+
+def _read_local_asset(root: Path, ref: str) -> bytes | None:
+    """Read a local, jailed asset relative to *root*. None if unsafe, missing,
+    or larger than the per-asset size guard."""
+    clean = _strip_query_and_fragment(ref)
+    target = _resolve_jailed(root, clean)
+    if target is None or not target.is_file():
+        return None
+    try:
+        if target.stat().st_size > _MAX_ASSET_BYTES:
+            return None
+        return target.read_bytes()
+    except OSError:
+        return None
+
+
+def _data_uri(root: Path, ref: str) -> str | None:
+    ext = Path(_strip_query_and_fragment(ref)).suffix.lower()
+    mime = _MIME_BY_EXT.get(ext)
+    if mime is None:
+        return None
+    data = _read_local_asset(root, ref)
+    if data is None:
+        return None
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+_LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+_SCRIPT_TAG_RE = re.compile(r"<script\b[^>]*>\s*</script>", re.IGNORECASE)
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
+_ATTR_RE = re.compile(r'\b(\w+)=(["\'])([^"\']*)\2', re.IGNORECASE)
+_CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)([^'\")]+)\1\s*\)", re.IGNORECASE)
+
+
+def _assemble_preview_html(root: Path, html: str) -> str:
+    remaining = [_MAX_PREVIEW_BYTES - len(html.encode("utf-8"))]
+
+    def consume(n: int) -> bool:
+        if n > remaining[0]:
+            return False
+        remaining[0] -= n
+        return True
+
+    def replace_link(m: re.Match) -> str:
+        tag = m.group(0)
+        attrs = {a: v for a, _q, v in _ATTR_RE.findall(tag)}
+        if attrs.get("rel", "").strip().lower() != "stylesheet":
+            return tag
+        href = attrs.get("href")
+        if href is None or _is_external_ref(href):
+            return tag
+        data = _read_local_asset(root, href)
+        if data is None:
+            return tag
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return tag
+        replacement = f"<style>{text}</style>"
+        return replacement if consume(len(replacement.encode("utf-8"))) else tag
+
+    def replace_script(m: re.Match) -> str:
+        tag = m.group(0)
+        attrs = {a: v for a, _q, v in _ATTR_RE.findall(tag)}
+        src = attrs.get("src")
+        if src is None or _is_external_ref(src):
+            return tag
+        data = _read_local_asset(root, src)
+        if data is None:
+            return tag
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return tag
+        open_tag_m = re.match(r"<script\b([^>]*)>", tag, re.IGNORECASE)
+        remaining_attrs = open_tag_m.group(1) if open_tag_m else ""
+        remaining_attrs = re.sub(r'\s*\bsrc=["\'][^"\']*["\']', "", remaining_attrs, flags=re.IGNORECASE)
+        replacement = f"<script{remaining_attrs}>{text}</script>"
+        return replacement if consume(len(replacement.encode("utf-8"))) else tag
+
+    def replace_img(m: re.Match) -> str:
+        tag = m.group(0)
+        src_m = re.search(r'\bsrc=(["\'])([^"\']*)\1', tag, re.IGNORECASE)
+        if src_m is None:
+            return tag
+        src = src_m.group(2)
+        if _is_external_ref(src):
+            return tag
+        uri = _data_uri(root, src)
+        if uri is None:
+            return tag
+        replacement = tag[: src_m.start(2)] + uri + tag[src_m.end(2) :]
+        return replacement if consume(len(replacement.encode("utf-8")) - len(tag.encode("utf-8"))) else tag
+
+    def replace_style_block(m: re.Match) -> str:
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+
+        def replace_url(um: re.Match) -> str:
+            ref = um.group(2)
+            if _is_external_ref(ref):
+                return um.group(0)
+            uri = _data_uri(root, ref)
+            if uri is None:
+                return um.group(0)
+            replacement = f"url({uri})"
+            return replacement if consume(len(replacement.encode("utf-8"))) else um.group(0)
+
+        new_body = _CSS_URL_RE.sub(replace_url, body)
+        return f"{open_tag}{new_body}{close_tag}"
+
+    html = _LINK_TAG_RE.sub(replace_link, html)
+    html = _SCRIPT_TAG_RE.sub(replace_script, html)
+    html = _IMG_TAG_RE.sub(replace_img, html)
+    html = _STYLE_BLOCK_RE.sub(replace_style_block, html)
+    return html
+
+
+@router.get("/api/coding/workspaces/{workspace_id}/preview")
+async def preview_workspace(request: Request, workspace_id: str):
+    """Assemble a self-contained preview document from the workspace's root
+    index.html for the sandboxed preview iframe.
+
+    Only local, relative asset references are inlined (CSS, JS, images/fonts
+    via data URIs); every referenced path is jailed with _resolve_jailed, and
+    anything external (absolute URL, protocol-relative, data:, mailto:,
+    anchor) is left untouched. No network fetches are ever made.
+    """
+    root, err = await _workspace_root(request, workspace_id)
+    if err is not None:
+        return err
+
+    index_path = root / "index.html"
+    if not index_path.is_file():
+        return JSONResponse({"error": "no_index"}, status_code=404)
+
+    try:
+        html = index_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return JSONResponse({"error": "no_index"}, status_code=404)
+
+    assembled = _assemble_preview_html(root, html)
+    return Response(content=assembled, media_type="text/html")

@@ -19,7 +19,7 @@ import { streamTaosAgentChat } from "../appstudio/stream-chat";
 /*  Types                                                               */
 /* ------------------------------------------------------------------ */
 
-interface Workspace {
+export interface Workspace {
   id: string;
   name: string;
   path: string;
@@ -465,12 +465,21 @@ function ApplyBlocksPanel({
 let _stepId = 0;
 const nextId = () => ++_stepId;
 
-export function BuildView() {
+export function BuildView({
+  onActiveWorkspaceChange,
+}: {
+  onActiveWorkspaceChange?: (ws: Workspace | null) => void;
+} = {}) {
   // Workspaces
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [wsLoading, setWsLoading] = useState(true);
   const [wsError, setWsError] = useState<string | null>(null);
   const [activeWs, setActiveWs] = useState<Workspace | null>(null);
+
+  // Surface the active workspace up to the parent (e.g. so Preview can load it).
+  useEffect(() => {
+    onActiveWorkspaceChange?.(activeWs);
+  }, [activeWs, onActiveWorkspaceChange]);
 
   // Build
   const [prompt, setPrompt] = useState("");

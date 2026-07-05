@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Sparkles, Code2, Play, LayoutGrid, Settings2 } from "lucide-react";
-import { BuildView } from "./codingstudio/BuildView";
+import { BuildView, type Workspace } from "./codingstudio/BuildView";
 import { CodeView } from "./codingstudio/CodeView";
 import { TemplatesView } from "./codingstudio/TemplatesView";
 import { PreviewView } from "./codingstudio/PreviewView";
@@ -16,6 +16,7 @@ const RAIL: { id: CodingView; label: string; icon: typeof Sparkles }[] = [
 
 export function CodingStudioApp({ windowId: _windowId }: { windowId: string }) {
   const [view, setView] = useState<CodingView>("build");
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-shell-bg text-shell-text select-none">
@@ -59,9 +60,14 @@ export function CodingStudioApp({ windowId: _windowId }: { windowId: string }) {
 
         {/* active surface */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {view === "build" && <BuildView />}
+          {view === "build" && <BuildView onActiveWorkspaceChange={setActiveWorkspace} />}
           {view === "code" && <CodeView />}
-          {view === "preview" && <PreviewView />}
+          {view === "preview" && (
+            <PreviewView
+              workspaceId={activeWorkspace?.id ?? null}
+              workspaceName={activeWorkspace?.name}
+            />
+          )}
           {view === "templates" && <TemplatesView />}
         </div>
       </div>
