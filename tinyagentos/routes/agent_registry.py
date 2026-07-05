@@ -70,6 +70,19 @@ class PatchRegistryRequest(BaseModel):
     capabilities: Optional[list[str]] = None
 
 
+class OrgUpdateRequest(BaseModel):
+    """Body for PUT /api/agents/{canonical_id}/org.
+
+    ``reports_to`` follows the same clear-with-empty-string convention as
+    ``emoji`` elsewhere in the agent routes: omit the field (None) to leave
+    the manager untouched, pass "" to clear it (make the agent an org-tree
+    root), or pass a canonical_id to set/change it.
+    """
+    role: Optional[str] = None
+    title: Optional[str] = None
+    reports_to: Optional[str] = None
+
+
 # Scopes an operator may grant when minting an internal agent. Mirrors the
 # consent-flow VALID_SCOPES; the mint route must not be a back door to invent
 # arbitrary scopes that the rest of the system does not understand.
@@ -691,3 +704,60 @@ async def reactivate_agent(
 ):
     """Reactivate a suspended agent (suspended → active). Admin only."""
     return await _transition(request, canonical_id, "reactivate", "active", user)
+
+
+# ---------------------------------------------------------------------------
+# Org model (#161): reporting lines, roles/titles, org tree
+#
+# Registered here (not routes/agents.py) so this file remains the single
+# owner of the registry's read/write surface. Both routes live under
+# /api/agents/... but this router is included before the generic
+# /api/agents/{name} route in routes/__init__.py, so /api/agents/org is not
+# shadowed (same reasoning as /api/agents/registry/*).
+# ---------------------------------------------------------------------------
+
+@router.get("/api/agents/org")
+async def get_org_chart(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Return the full reporting forest (org chart). Admin only — the tree
+    spans every agent's manager regardless of owner, which is an operator/
+    admin concern (mirrors the admin-only registry feeds above)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+    store = _get_store(request)
+    return {"tree": await store.get_org_tree()}
+
+
+@router.put("/api/agents/{canonical_id}/org")
+async def update_org_fields(
+    request: Request,
+    canonical_id: str,
+    body: OrgUpdateRequest,
+    user: CurrentUser = Depends(current_user),
+):
+    """Set role/title and/or reporting line on a registry entry.
+
+    Only the owning user or an admin may update an entry (mirrors PATCH
+    /api/agents/registry/{canonical_id}). ``reports_to`` is validated via
+    ``set_reporting`` — 400 on a nonexistent manager, self-report, or a
+    reporting cycle.
+    """
+    store = _get_store(request)
+    record = await store.get(canonical_id)
+    if record is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, record["user_id"])
+
+    if body.role is not None or body.title is not None:
+        await store.set_role_title(canonical_id, role=body.role, title=body.title)
+
+    if body.reports_to is not None:
+        manager_id = body.reports_to or None  # "" clears the manager
+        try:
+            await store.set_reporting(canonical_id, manager_id)
+        except (ValueError, KeyError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return await store.get(canonical_id)

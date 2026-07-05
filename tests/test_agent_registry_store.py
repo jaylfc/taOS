@@ -11,6 +11,7 @@ from tinyagentos.agent_registry_store import (
     _b64url_decode,
     _b64url_encode,
     _migration_v2_strip_at_display_name,
+    _migration_v3_add_org_fields,
     _row_to_dict,
     _slugify,
     load_or_create_signing_keypair,
@@ -885,3 +886,254 @@ class TestMigrationV2StripAtDisplayName:
         after = await s2.get(row["canonical_id"])
         assert after["display_name"] == "auto-migrated"
         await s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration v3: add title + reports_to columns (#161 org model)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV3AddOrgFields:
+    @pytest.mark.asyncio
+    async def test_columns_added_without_data_loss(self, store):
+        """Running the guarded migration on an existing DB adds title +
+        reports_to without touching any pre-existing row data."""
+        row = await store.register(
+            framework="openclaw",
+            display_name="Pre-existing Agent",
+            user_id="user-1",
+            capabilities=["read"],
+        )
+        cid = row["canonical_id"]
+
+        # The migration already ran once via _post_init on store init; run it
+        # again directly to prove it's idempotent and non-destructive.
+        await _migration_v3_add_org_fields(store._db)
+
+        after = await store.get(cid)
+        assert after["display_name"] == "Pre-existing Agent"
+        assert after["user_id"] == "user-1"
+        assert after["capabilities"] == ["read"]
+        assert after["title"] is None
+        assert after["reports_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_adds_columns_on_reopen(self, tmp_path):
+        """A pre-existing DB (created before title/reports_to existed)
+        gains both columns on the next store init with no data loss."""
+        db_path = tmp_path / "reopen_test.db"
+        s1 = AgentRegistryStore(db_path)
+        await s1.init()
+        row = await s1.register(framework="openclaw", display_name="Survivor")
+        await s1.close()
+
+        s2 = AgentRegistryStore(db_path)
+        await s2.init()
+        after = await s2.get(row["canonical_id"])
+        assert after["display_name"] == "Survivor"
+        assert "title" in after
+        assert "reports_to" in after
+        await s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Org model: register/update accept title + reports_to
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterAndUpdateOrgFields:
+    @pytest.mark.asyncio
+    async def test_register_with_title_and_reports_to(self, store):
+        manager = await store.register(framework="openclaw", display_name="Manager")
+        row = await store.register(
+            framework="openclaw",
+            display_name="Report",
+            title="Staff Engineer",
+            reports_to=manager["canonical_id"],
+        )
+        assert row["title"] == "Staff Engineer"
+        assert row["reports_to"] == manager["canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_update_title(self, store):
+        row = await store.register(framework="openclaw", display_name="Titled")
+        updated = await store.update(row["canonical_id"], title="Lead")
+        assert updated["title"] == "Lead"
+
+
+# ---------------------------------------------------------------------------
+# set_role_title
+# ---------------------------------------------------------------------------
+
+
+class TestSetRoleTitle:
+    @pytest.mark.asyncio
+    async def test_sets_role_and_title(self, store):
+        row = await store.register(framework="openclaw", display_name="A")
+        updated = await store.set_role_title(row["canonical_id"], role="manager", title="VP")
+        assert updated["role"] == "manager"
+        assert updated["title"] == "VP"
+
+    @pytest.mark.asyncio
+    async def test_sets_only_title(self, store):
+        row = await store.register(framework="openclaw", display_name="A", role="worker")
+        updated = await store.set_role_title(row["canonical_id"], title="Senior Worker")
+        assert updated["role"] == "worker"
+        assert updated["title"] == "Senior Worker"
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_returns_none(self, store):
+        result = await store.set_role_title("no-such-20260101-000000", title="X")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# set_reporting
+# ---------------------------------------------------------------------------
+
+
+class TestSetReporting:
+    @pytest.mark.asyncio
+    async def test_sets_manager(self, store):
+        manager = await store.register(framework="openclaw", display_name="Manager")
+        report = await store.register(framework="openclaw", display_name="Report")
+        updated = await store.set_reporting(report["canonical_id"], manager["canonical_id"])
+        assert updated["reports_to"] == manager["canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_clears_manager_with_none(self, store):
+        manager = await store.register(framework="openclaw", display_name="Manager")
+        report = await store.register(framework="openclaw", display_name="Report")
+        await store.set_reporting(report["canonical_id"], manager["canonical_id"])
+        cleared = await store.set_reporting(report["canonical_id"], None)
+        assert cleared["reports_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_agent_raises_key_error(self, store):
+        manager = await store.register(framework="openclaw", display_name="Manager")
+        with pytest.raises(KeyError):
+            await store.set_reporting("no-such-20260101-000000", manager["canonical_id"])
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_manager_raises_value_error(self, store):
+        report = await store.register(framework="openclaw", display_name="Report")
+        with pytest.raises(ValueError, match="reports_to manager not found"):
+            await store.set_reporting(report["canonical_id"], "no-such-manager-20260101-000000")
+
+    @pytest.mark.asyncio
+    async def test_self_report_raises_value_error(self, store):
+        row = await store.register(framework="openclaw", display_name="Solo")
+        with pytest.raises(ValueError, match="cannot report to itself"):
+            await store.set_reporting(row["canonical_id"], row["canonical_id"])
+
+    @pytest.mark.asyncio
+    async def test_direct_cycle_raises_value_error(self, store):
+        """A -> B, then trying B -> A must be rejected (2-node cycle)."""
+        a = await store.register(framework="openclaw", display_name="A")
+        b = await store.register(framework="openclaw", display_name="B")
+        await store.set_reporting(a["canonical_id"], b["canonical_id"])
+        with pytest.raises(ValueError, match="reporting cycle"):
+            await store.set_reporting(b["canonical_id"], a["canonical_id"])
+
+    @pytest.mark.asyncio
+    async def test_longer_cycle_raises_value_error(self, store):
+        """A -> B -> C, then trying C -> A must be rejected (3-node cycle)."""
+        a = await store.register(framework="openclaw", display_name="A")
+        b = await store.register(framework="openclaw", display_name="B")
+        c = await store.register(framework="openclaw", display_name="C")
+        await store.set_reporting(a["canonical_id"], b["canonical_id"])
+        await store.set_reporting(b["canonical_id"], c["canonical_id"])
+        with pytest.raises(ValueError, match="reporting cycle"):
+            await store.set_reporting(c["canonical_id"], a["canonical_id"])
+
+    @pytest.mark.asyncio
+    async def test_reassign_manager_is_allowed(self, store):
+        """Changing an existing manager (no cycle involved) succeeds."""
+        m1 = await store.register(framework="openclaw", display_name="M1")
+        m2 = await store.register(framework="openclaw", display_name="M2")
+        report = await store.register(framework="openclaw", display_name="Report")
+        await store.set_reporting(report["canonical_id"], m1["canonical_id"])
+        updated = await store.set_reporting(report["canonical_id"], m2["canonical_id"])
+        assert updated["reports_to"] == m2["canonical_id"]
+
+
+# ---------------------------------------------------------------------------
+# direct_reports / get_org_tree
+# ---------------------------------------------------------------------------
+
+
+class TestDirectReportsAndOrgTree:
+    @pytest.mark.asyncio
+    async def test_direct_reports_empty(self, store):
+        row = await store.register(framework="openclaw", display_name="Lonely")
+        assert await store.direct_reports(row["canonical_id"]) == []
+
+    @pytest.mark.asyncio
+    async def test_direct_reports_returns_children(self, store):
+        manager = await store.register(framework="openclaw", display_name="Manager")
+        r1 = await store.register(framework="openclaw", display_name="R1")
+        r2 = await store.register(framework="openclaw", display_name="R2")
+        await store.set_reporting(r1["canonical_id"], manager["canonical_id"])
+        await store.set_reporting(r2["canonical_id"], manager["canonical_id"])
+        reports = await store.direct_reports(manager["canonical_id"])
+        ids = {r["canonical_id"] for r in reports}
+        assert ids == {r1["canonical_id"], r2["canonical_id"]}
+
+    @pytest.mark.asyncio
+    async def test_org_tree_flat_when_no_managers(self, store):
+        await store.register(framework="openclaw", display_name="A")
+        await store.register(framework="openclaw", display_name="B")
+        tree = await store.get_org_tree()
+        assert len(tree) == 2
+        assert all(node["reports"] == [] for node in tree)
+
+    @pytest.mark.asyncio
+    async def test_org_tree_nests_reports(self, store):
+        manager = await store.register(
+            framework="openclaw", display_name="Manager", role="lead", title="Team Lead"
+        )
+        report = await store.register(framework="openclaw", display_name="Report")
+        await store.set_reporting(report["canonical_id"], manager["canonical_id"])
+
+        tree = await store.get_org_tree()
+        assert len(tree) == 1
+        root = tree[0]
+        assert root["canonical_id"] == manager["canonical_id"]
+        assert root["display_name"] == "Manager"
+        assert root["role"] == "lead"
+        assert root["title"] == "Team Lead"
+        assert len(root["reports"]) == 1
+        assert root["reports"][0]["canonical_id"] == report["canonical_id"]
+        assert root["reports"][0]["reports"] == []
+
+    @pytest.mark.asyncio
+    async def test_org_tree_multi_level(self, store):
+        top = await store.register(framework="openclaw", display_name="Top")
+        mid = await store.register(framework="openclaw", display_name="Mid")
+        leaf = await store.register(framework="openclaw", display_name="Leaf")
+        await store.set_reporting(mid["canonical_id"], top["canonical_id"])
+        await store.set_reporting(leaf["canonical_id"], mid["canonical_id"])
+
+        tree = await store.get_org_tree()
+        assert len(tree) == 1
+        root = tree[0]
+        assert root["canonical_id"] == top["canonical_id"]
+        assert len(root["reports"]) == 1
+        mid_node = root["reports"][0]
+        assert mid_node["canonical_id"] == mid["canonical_id"]
+        assert len(mid_node["reports"]) == 1
+        assert mid_node["reports"][0]["canonical_id"] == leaf["canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_org_tree_dangling_reports_to_becomes_root(self, store):
+        """A row whose reports_to points at a non-existent/removed manager is
+        treated as a root rather than dropped or crashing the tree build."""
+        row = await store.register(framework="openclaw", display_name="Orphan")
+        await store._db.execute(
+            "UPDATE agent_registry SET reports_to = ? WHERE canonical_id = ?",
+            ("no-such-manager-20260101-000000", row["canonical_id"]),
+        )
+        await store._db.commit()
+        tree = await store.get_org_tree()
+        ids = {node["canonical_id"] for node in tree}
+        assert row["canonical_id"] in ids

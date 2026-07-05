@@ -119,6 +119,25 @@ async def _migration_v2_strip_at_display_name(conn) -> None:
     )
     await conn.commit()
 
+
+async def _migration_v3_add_org_fields(conn) -> None:
+    """Add title + reports_to columns (idempotent) for the org model (#161).
+
+    ``reports_to`` references another row's canonical_id (the agent's
+    manager); NULL means the agent has no manager (an org-tree root).
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "title" not in existing_cols:
+        await conn.execute("ALTER TABLE agent_registry ADD COLUMN title TEXT")
+    if "reports_to" not in existing_cols:
+        await conn.execute("ALTER TABLE agent_registry ADD COLUMN reports_to TEXT")
+    await conn.commit()
+
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
 # ---------------------------------------------------------------------------
@@ -317,6 +336,7 @@ class AgentRegistryStore(BaseStore):
         """Idempotently ensure the status column exists and is backfilled."""
         await _migration_v1_add_status(self._db)
         await _migration_v2_strip_at_display_name(self._db)
+        await _migration_v3_add_org_fields(self._db)
 
     # ------------------------------------------------------------------
     # Registration
@@ -331,9 +351,15 @@ class AgentRegistryStore(BaseStore):
         origin: str = "taos-deployed",
         handle: str = "",
         role: Optional[str] = None,
+        title: Optional[str] = None,
+        reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
     ) -> dict:
         """Mint a canonical_id, persist the record, and return it.
+
+        ``reports_to`` is stored as-is with no validation here (the row does
+        not exist yet, so it cannot be part of an existing cycle) — use
+        ``set_reporting`` after registration to validate a manager change.
 
         Raises ``RuntimeError`` if the store is not initialised.
         """
@@ -368,11 +394,11 @@ class AgentRegistryStore(BaseStore):
             """
             INSERT INTO agent_registry
                 (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, capabilities, created_ts, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 handle, role, title, reports_to, capabilities, created_ts, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (canonical_id, display_name, framework, user_id, origin,
-             handle, role, caps_json, created_ts, initial_status),
+             handle, role, title, reports_to, caps_json, created_ts, initial_status),
         )
         await self._db.commit()
 
@@ -540,12 +566,17 @@ class AgentRegistryStore(BaseStore):
         display_name: Optional[str] = None,
         handle: Optional[str] = None,
         role: Optional[str] = None,
+        title: Optional[str] = None,
+        reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
     ) -> Optional[dict]:
         """Update mutable metadata fields on *canonical_id*.
 
         Only the provided (non-None) fields are changed.
         Status, user_id, framework, canonical_id, and timestamps are immutable.
+        ``reports_to`` here is a raw setter with no validation (mirroring the
+        other plain fields) — use ``set_reporting`` when the caller needs the
+        self-report/cycle/manager-exists checks.
         Returns the updated record, or None if *canonical_id* does not exist.
         """
         if self._db is None:
@@ -565,6 +596,12 @@ class AgentRegistryStore(BaseStore):
         if role is not None:
             cols.append("role = ?")
             vals.append(role)
+        if title is not None:
+            cols.append("title = ?")
+            vals.append(title)
+        if reports_to is not None:
+            cols.append("reports_to = ?")
+            vals.append(reports_to)
         if capabilities is not None:
             cols.append("capabilities = ?")
             vals.append(json.dumps(capabilities))
@@ -598,3 +635,134 @@ class AgentRegistryStore(BaseStore):
         )
         await self._db.commit()
         return await self.get(canonical_id)
+
+    # ------------------------------------------------------------------
+    # Org model (#161): reporting lines, roles/titles, org tree
+    # ------------------------------------------------------------------
+
+    # Cap on the reports_to chain walk used by both the cycle guard in
+    # set_reporting and the tree-building recursion in get_org_tree — bounds
+    # the cost of a corrupt or pathological chain instead of looping forever.
+    _MAX_REPORTS_TO_WALK = 50
+
+    async def set_role_title(
+        self,
+        canonical_id: str,
+        *,
+        role: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Set *role* and/or *title* on *canonical_id* (free-form strings).
+
+        Only the provided (non-None) fields are changed.  Returns the updated
+        record, or None if *canonical_id* does not exist.
+        """
+        return await self.update(canonical_id, role=role, title=title)
+
+    async def set_reporting(
+        self, canonical_id: str, reports_to: Optional[str]
+    ) -> dict:
+        """Set (or, with ``None``, clear) *canonical_id*'s manager.
+
+        Validates:
+          - *canonical_id* exists (``KeyError`` otherwise)
+          - *reports_to* (when not ``None``) refers to an existing agent
+            (``ValueError`` otherwise)
+          - *reports_to* is not *canonical_id* itself (no self-report)
+          - assigning *reports_to* does not create a reporting cycle — walked
+            by following the candidate manager's own reports_to chain and
+            checking whether it ever reaches back to *canonical_id*
+
+        Returns the updated record.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            raise KeyError(canonical_id)
+
+        if reports_to is not None:
+            if reports_to == canonical_id:
+                raise ValueError("an agent cannot report to itself")
+            manager = await self.get(reports_to)
+            if manager is None:
+                raise ValueError(f"reports_to manager not found: {reports_to!r}")
+
+            # Cycle guard: walk the candidate manager's existing reports_to
+            # chain; if it ever reaches canonical_id, this edge would close a
+            # loop. `seen` guards against looping forever on an already-
+            # corrupt chain independent of the depth cap.
+            seen: set[str] = set()
+            current: Optional[str] = reports_to
+            depth = 0
+            while current is not None and depth < self._MAX_REPORTS_TO_WALK:
+                if current == canonical_id:
+                    raise ValueError(
+                        f"assigning reports_to={reports_to!r} would create "
+                        f"a reporting cycle"
+                    )
+                if current in seen:
+                    break
+                seen.add(current)
+                current_record = await self.get(current)
+                current = current_record.get("reports_to") if current_record else None
+                depth += 1
+
+        await self._db.execute(
+            "UPDATE agent_registry SET reports_to = ? WHERE canonical_id = ?",
+            (reports_to, canonical_id),
+        )
+        await self._db.commit()
+        return await self.get(canonical_id)  # type: ignore[return-value]
+
+    async def direct_reports(self, canonical_id: str) -> list[dict]:
+        """Return the agents whose reports_to is *canonical_id*, oldest first."""
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_registry WHERE reports_to = ? ORDER BY id",
+            (canonical_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def get_org_tree(self) -> list[dict]:
+        """Return the reporting forest: agents with no manager (or whose
+        manager row does not exist) are roots; each node nests its direct
+        reports recursively.
+
+        Each node: {canonical_id, display_name, role, title, reports_to,
+        reports: [...]}.  Depth-capped and cycle-guarded so a corrupt chain
+        (written outside ``set_reporting``) cannot recurse forever.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        all_rows = await self.list_all()
+        by_id = {r["canonical_id"]: r for r in all_rows}
+        children: dict[str, list[dict]] = {}
+        roots: list[dict] = []
+        for row in all_rows:
+            reports_to = row.get("reports_to")
+            if reports_to and reports_to in by_id:
+                children.setdefault(reports_to, []).append(row)
+            else:
+                roots.append(row)
+
+        def _node(row: dict, depth: int, seen: frozenset) -> dict:
+            cid = row["canonical_id"]
+            seen = seen | {cid}
+            kids: list[dict] = []
+            if depth < self._MAX_REPORTS_TO_WALK:
+                for child in children.get(cid, []):
+                    if child["canonical_id"] not in seen:
+                        kids.append(_node(child, depth + 1, seen))
+            return {
+                "canonical_id": cid,
+                "display_name": row.get("display_name"),
+                "role": row.get("role"),
+                "title": row.get("title"),
+                "reports_to": row.get("reports_to"),
+                "reports": kids,
+            }
+
+        return [_node(r, 0, frozenset()) for r in roots]

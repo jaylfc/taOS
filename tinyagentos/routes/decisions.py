@@ -251,6 +251,7 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
     await _apply_app_grant(request, updated, body.value)
     await _apply_execution_grant(request, updated, body.value)
+    await _apply_delegation_grant(request, updated, body.value)
     await _route_answer_to_agent(updated, body.value)
     return updated
 
@@ -289,6 +290,53 @@ async def _apply_execution_grant(request: Request, decision: dict, value) -> Non
     await _route_answer_to_agent(
         decision,
         "you may retry the action now" if approved else "your action was denied",
+    )
+
+
+async def _apply_delegation_grant(request: Request, decision: dict, value) -> None:
+    """Side effect for a delegation-gate Decision (#161 gated delegation): the
+    decision's metadata carries {kind: "delegation_gate", from_agent, to_agent,
+    task_id, task_title, note}. Approving it writes a short-lived delegate
+    grant (so a future delegation by the same agent doesn't re-ask until the
+    grant expires) AND completes THIS delegation (assign the task + notify
+    to_agent); denying just routes the answer. Mirrors
+    ``_apply_execution_grant``: the answer is already persisted, so a
+    grant-store or delegation-completion hiccup must not fail the answer."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "delegation_gate":
+        return
+    policies = getattr(request.app.state, "execution_policies", None)
+    from_agent = meta.get("from_agent")
+    to_agent = meta.get("to_agent")
+    if policies is None or not from_agent or not to_agent:
+        return
+    approved = value == "approve"
+    if approved:
+        try:
+            await policies.add_grant(from_agent, "delegate", decision.get("id"))
+        except Exception:
+            logger.warning(
+                "delegate grant write failed for agent %s (decision %s)",
+                from_agent, decision.get("id"), exc_info=True,
+            )
+        try:
+            from tinyagentos.routes.delegation import complete_delegation
+            await complete_delegation(
+                request,
+                from_agent=from_agent,
+                to_agent=to_agent,
+                task_id=meta.get("task_id"),
+                task_title=meta.get("task_title"),
+                project_id=decision.get("project_id"),
+                note=meta.get("note") or "",
+            )
+        except Exception:
+            logger.warning(
+                "delegation completion failed for decision %s", decision.get("id"), exc_info=True,
+            )
+    await _route_answer_to_agent(
+        decision,
+        "delegation approved — the task has been assigned" if approved else "delegation denied",
     )
 
 

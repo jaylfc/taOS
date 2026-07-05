@@ -24,6 +24,9 @@ class TestActionClasses:
         assert classify("file_read") is None
         assert classify("nonexistent_tool") is None
 
+    def test_delegate_classified(self):
+        assert classify("delegate") == "delegate"
+
 
 @pytest.mark.asyncio
 class TestConservativeSeed:
@@ -39,6 +42,12 @@ class TestConservativeSeed:
 
     async def test_unclassified_action_class_defaults_to_allow(self, store):
         assert await store.effective_effect("agent-a", "some-harmless-class") == "allow"
+
+    async def test_delegate_is_sensitive_and_defaults_to_require_approval(self, store):
+        """#161 gated delegation: the delegate action class is part of the
+        conservative default posture, same as code-exec/deploy/etc."""
+        assert "delegate" in SENSITIVE_ACTION_CLASSES
+        assert await store.effective_effect("agent-a", "delegate") == "require_approval"
 
     async def test_reinit_does_not_duplicate_seed(self, tmp_path):
         db_path = tmp_path / "policies.db"

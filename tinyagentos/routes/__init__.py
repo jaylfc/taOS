@@ -24,6 +24,13 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_auth_requests import router as agent_auth_requests_router
     app.include_router(agent_auth_requests_router)
 
+    # Gated delegation (#161) — registered before /api/agents/{name} so that
+    # /api/agents/{from_agent}/delegate is unambiguous even though it shares
+    # the {name} path segment (path length differs so this isn't strictly
+    # required, but it keeps every /api/agents/... override grouped here).
+    from tinyagentos.routes.delegation import router as delegation_router
+    app.include_router(delegation_router)
+
     from tinyagentos.routes.agents import router as agents_router
     app.include_router(agents_router)
 
