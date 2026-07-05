@@ -7,6 +7,13 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.29] - 2026-07-05
+
+### Added
+- Coding Studio has a real live preview: it renders your workspace's actual index.html in a sandboxed iframe, with local CSS, JS and images inlined and nothing fetched over the network, plus working desktop/tablet/phone size toggles. This replaces the old static mock.
+- Music Studio can bounce a song to a downloadable WAV file, rendered offline via Tone.Offline so the export matches what you hear.
+- Game Studio ships four new playable starter templates (endless runner, neon snake, sky tapper, asteroid miner), each a self-contained canvas game you can generate from, edit and share.
+
 ## [1.0.0-beta.28] - 2026-07-05
 
 ### Added
