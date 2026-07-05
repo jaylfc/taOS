@@ -6,7 +6,7 @@ const HINTS: Record<string, string[]> = {
   "top-down-collector": ["top-down", "top down", "collect", "collector", "gem", "arena", "dodge", "2d"],
   breakout: ["breakout", "arkanoid", "brick", "paddle", "ball", "puzzle"],
   "orbit-shooter": ["shooter", "shoot", "turret", "orbit", "enemy", "enemies", "space", "blaster"],
-  "endless-runner": ["runner", "run", "endless", "dodge", "obstacle", "side-scroller", "sidescroller"],
+  "endless-runner": ["runner", "endless", "obstacle", "side-scroller", "sidescroller"],
   "neon-snake": ["snake", "grid", "worm", "food", "grow"],
   "sky-tapper": ["flappy", "tapper", "tap", "flap", "bird", "pipe", "pipes"],
   "asteroid-miner": ["asteroid", "asteroids", "miner", "spaceship", "rotate", "thrust", "twin-stick"],

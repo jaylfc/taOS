@@ -31,7 +31,7 @@ let gameOver;
 let started;
 
 function resetGame() {
-  bird = { y: window.innerHeight / 2, vy: 0 };
+  bird = { y: canvas.height / 2, vy: 0 };
   pipes = [];
   score = 0;
   gameOver = false;

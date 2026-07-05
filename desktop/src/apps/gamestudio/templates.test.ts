@@ -19,7 +19,6 @@ describe("TEMPLATES", () => {
     expect(t.desc.length).toBeGreaterThan(0);
     expect(t.cover.length).toBeGreaterThan(0);
     expect(t.files).toContain("index.html");
-    expect(t.files.length).toBeGreaterThan(0);
   });
 
   it.each(TEMPLATES)("$id's seed files exist on disk under gamestudio-seeds/", (t) => {

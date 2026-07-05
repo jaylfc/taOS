@@ -116,6 +116,7 @@ function checkCollisions() {
     const oy1 = oy2 - o.height;
     if (px2 > o.x && px1 < o.x + o.width && py2 > oy1 && py1 < oy2) {
       gameOver = true;
+      break;
     }
   }
 }
