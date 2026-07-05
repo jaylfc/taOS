@@ -1428,6 +1428,17 @@ class TestAgentBudgetRoutes:
         resp = await client.put("/api/agents/test-agent/budget", json={"max_budget_usd": -5.0})
         assert resp.status_code == 400
 
+    async def test_put_budget_rejects_non_finite(self, client):
+        # NaN/Infinity would slip past a bare "< 0" check and disable the cap
+        # (spend >= NaN is always False), so they must be rejected with 400.
+        for bad in ("NaN", "Infinity", "-Infinity"):
+            resp = await client.put(
+                "/api/agents/test-agent/budget",
+                content=f'{{"max_budget_usd": {bad}}}',
+                headers={"content-type": "application/json"},
+            )
+            assert resp.status_code == 400, f"{bad} was not rejected"
+
     async def test_put_budget_not_found_agent(self, client):
         resp = await client.put("/api/agents/no-such-agent/budget", json={"max_budget_usd": 10.0})
         assert resp.status_code == 404

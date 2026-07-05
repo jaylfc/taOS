@@ -14,6 +14,7 @@ are explicit follow-ups.
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -72,8 +73,12 @@ class AgentBudgetStore:
         """Upsert an agent's cap. ``None`` clears it (unlimited).
 
         Preserves existing spend_usd; creates the row with spend_usd=0 if
-        the agent has no row yet.
+        the agent has no row yet. A non-finite cap (NaN/inf) is rejected: a
+        NaN cap would make ``is_over_budget`` always False and silently
+        disable enforcement, so the store refuses to persist one.
         """
+        if max_budget_usd is not None and not math.isfinite(max_budget_usd):
+            raise ValueError("max_budget_usd must be finite or None")
         now = time.time()
         with self._connect() as conn:
             conn.execute(

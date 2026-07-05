@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import OrderedDict
 
@@ -1247,7 +1248,7 @@ def _budget_store_for_request(request: Request):
 
 def _budget_response(agent_name: str, rec: dict | None) -> dict:
     if rec is None:
-        return {"agent": agent_name, "max_budget_usd": None, "spend_usd": 0}
+        return {"agent": agent_name, "max_budget_usd": None, "spend_usd": 0.0}
     return {"agent": rec["agent"], "max_budget_usd": rec["max_budget_usd"], "spend_usd": rec["spend_usd"]}
 
 
@@ -1273,9 +1274,11 @@ async def set_agent_budget(request: Request, name: str, body: AgentBudgetUpdate)
     agent = find_agent(config, name)
     if not agent:
         return JSONResponse({"error": f"Agent '{name}' not found"}, status_code=404)
-    if body.max_budget_usd is not None and body.max_budget_usd < 0:
+    if body.max_budget_usd is not None and (
+        not math.isfinite(body.max_budget_usd) or body.max_budget_usd < 0
+    ):
         return JSONResponse(
-            {"error": "max_budget_usd must be null or a non-negative number"},
+            {"error": "max_budget_usd must be null or a finite non-negative number"},
             status_code=400,
         )
     store = _budget_store_for_request(request)

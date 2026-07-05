@@ -1,12 +1,25 @@
 """Tests for the cross-process per-agent LLM budget store."""
 from __future__ import annotations
 
+import pytest
+
 from tinyagentos.agent_budget_store import AgentBudgetStore, default_budget_path
 
 
 def test_get_missing_returns_none(tmp_path):
     store = AgentBudgetStore(tmp_path / "budgets.db")
     assert store.get("agent-a") is None
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_set_budget_rejects_non_finite(tmp_path, bad):
+    # A NaN cap would make is_over_budget always False and silently disable
+    # enforcement, so the store must refuse to persist a non-finite cap.
+    store = AgentBudgetStore(tmp_path / "budgets.db")
+    with pytest.raises(ValueError):
+        store.set_budget("agent-a", bad)
+    assert store.get("agent-a") is None
+    assert store.is_over_budget("agent-a") is False
 
 
 def test_set_budget_then_get(tmp_path):
