@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Agent Registry store — canonical agent-identity persistence.
+"""Agent Registry store - canonical agent-identity persistence.
 
 Each registered agent gets a unique canonical_id minted once (immutable) and
 a signed JWT-style token issued at registration time.  The signing key is an
@@ -63,7 +63,7 @@ _VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
     ("active",    "revoked"),     # revoke (terminal)
     ("suspended", "revoked"),     # revoke (terminal)
     ("pending",   "revoked"),     # revoke (terminal)
-    ("rejected",  "revoked"),     # revoke (terminal) — any non-terminal → revoked
+    ("rejected",  "revoked"),     # revoke (terminal) - any non-terminal → revoked
     ("rejected",  "pending"),     # undo denial → re-open
     ("rejected",  "active"),      # undo denial → directly approve
 })
@@ -86,7 +86,7 @@ def _assert_valid_transition(before: str, after: str) -> None:
 async def _migration_v1_add_status(conn) -> None:
     """Add status column (idempotent) and backfill existing rows."""
     # Check if the column already exists (SQLite has no IF NOT EXISTS for ADD COLUMN
-    # prior to 3.37 — use PRAGMA instead for broad compatibility).
+    # prior to 3.37 - use PRAGMA instead for broad compatibility).
     existing_cols = {
         row[1]
         for row in await (
@@ -108,7 +108,7 @@ async def _migration_v2_strip_at_display_name(conn) -> None:
     """Strip a leading '@' from display_name for all rows (idempotent).
 
     The '@' sigil is bus-addressing syntax only; it must never be stored
-    in display_name.  Safe to run every startup — rows without a leading
+    in display_name.  Safe to run every startup - rows without a leading
     '@' are untouched by the WHERE clause.
     """
     # '@_%' requires at least one character after '@', so bare '@'-only rows
@@ -151,7 +151,7 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
     Generates an Ed25519 keypair on first call and persists the private key
     PEM to ``<data_dir>/agent_registry_signing.pem`` with mode 0600.
     Subsequent calls load and return the same keypair.  Idempotent under
-    concurrent processes — the writer uses O_EXCL so only one process
+    concurrent processes - the writer uses O_EXCL so only one process
     creates the file.
     """
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -180,7 +180,7 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
             finally:
                 os.close(fd)
         except FileExistsError:
-            # Lost the race — load the winner's key instead.
+            # Lost the race - load the winner's key instead.
             private_key = load_pem_private_key(pem_path.read_bytes(), password=None)
 
     private_pem = private_key.private_bytes(
@@ -193,7 +193,7 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
 
 
 # ---------------------------------------------------------------------------
-# Token minting (compact JWT-style — header.payload.signature, base64url)
+# Token minting (compact JWT-style - header.payload.signature, base64url)
 # ---------------------------------------------------------------------------
 
 def _b64url_encode(data: bytes) -> str:
@@ -224,12 +224,12 @@ def mint_registry_token(
     can verify it without importing tinyagentos code.
 
     Claims:
-      sub        — canonical_id (immutable agent identity)
-      iss        — "taos-registry"
-      iat        — unix timestamp of issuance
-      user_id    — owning user_id at registration time
-      framework  — agent framework at registration time
-      project_id — project binding, present only when non-empty; absent means
+      sub        - canonical_id (immutable agent identity)
+      iss        - "taos-registry"
+      iat        - unix timestamp of issuance
+      user_id    - owning user_id at registration time
+      framework  - agent framework at registration time
+      project_id - project binding, present only when non-empty; absent means
                    the token is global (not bound to any project)
 
     Signed with Ed25519 over the UTF-8 bytes of ``<header_b64url>.<payload_b64url>``.
@@ -358,13 +358,13 @@ class AgentRegistryStore(BaseStore):
         """Mint a canonical_id, persist the record, and return it.
 
         ``reports_to`` is stored as-is with no validation here (the row does
-        not exist yet, so it cannot be part of an existing cycle) — use
+        not exist yet, so it cannot be part of an existing cycle) - use
         ``set_reporting`` after registration to validate a manager change.
 
         Raises ``RuntimeError`` if the store is not initialised.
         """
         if self._db is None:
-            raise RuntimeError("AgentRegistryStore not initialised — call init() first")
+            raise RuntimeError("AgentRegistryStore not initialised - call init() first")
 
         capabilities = capabilities or []
         now_utc = datetime.now(timezone.utc)
@@ -532,7 +532,7 @@ class AgentRegistryStore(BaseStore):
         now = datetime.now(timezone.utc).isoformat()
         # Atomic: the UPDATE is conditional on the status still being
         # ``before_status``, so two concurrent transitions cannot both win a
-        # read/validate/write race — the loser's WHERE matches 0 rows. This
+        # read/validate/write race - the loser's WHERE matches 0 rows. This
         # also guarantees the returned/audited before_status is accurate.
         if new_status == "revoked":
             cur = await self._db.execute(
@@ -575,7 +575,7 @@ class AgentRegistryStore(BaseStore):
         Only the provided (non-None) fields are changed.
         Status, user_id, framework, canonical_id, and timestamps are immutable.
         ``reports_to`` here is a raw setter with no validation (mirroring the
-        other plain fields) — use ``set_reporting`` when the caller needs the
+        other plain fields) - use ``set_reporting`` when the caller needs the
         self-report/cycle/manager-exists checks.
         Returns the updated record, or None if *canonical_id* does not exist.
         """
@@ -623,7 +623,7 @@ class AgentRegistryStore(BaseStore):
         if record is None:
             return None
         if record.get("revoked_at"):
-            # Already revoked — return the existing record unchanged.
+            # Already revoked - return the existing record unchanged.
             return record
         now = datetime.now(timezone.utc).isoformat()
         # Atomic: only the first concurrent revoke matches (revoked_at IS NULL);
@@ -641,7 +641,7 @@ class AgentRegistryStore(BaseStore):
     # ------------------------------------------------------------------
 
     # Cap on the reports_to chain walk used by both the cycle guard in
-    # set_reporting and the tree-building recursion in get_org_tree — bounds
+    # set_reporting and the tree-building recursion in get_org_tree - bounds
     # the cost of a corrupt or pathological chain instead of looping forever.
     _MAX_REPORTS_TO_WALK = 50
 
@@ -669,7 +669,7 @@ class AgentRegistryStore(BaseStore):
           - *reports_to* (when not ``None``) refers to an existing agent
             (``ValueError`` otherwise)
           - *reports_to* is not *canonical_id* itself (no self-report)
-          - assigning *reports_to* does not create a reporting cycle — walked
+          - assigning *reports_to* does not create a reporting cycle - walked
             by following the candidate manager's own reports_to chain and
             checking whether it ever reaches back to *canonical_id*
 

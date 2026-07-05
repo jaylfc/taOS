@@ -25,7 +25,7 @@ TOOL_ACTION_CLASSES: dict[str, str] = {
     "code_exec": "code-exec",
     "http_request": "external-network",
     # Not a skill-exec tool today (delegation has its own dedicated route,
-    # routes/delegation.py) — listed here so a future skill wrapping the same
+    # routes/delegation.py) - listed here so a future skill wrapping the same
     # capability inherits the conservative default automatically.
     "delegate": "delegate",
 }

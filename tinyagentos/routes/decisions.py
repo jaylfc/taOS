@@ -336,7 +336,7 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> No
             )
     await _route_answer_to_agent(
         decision,
-        "delegation approved — the task has been assigned" if approved else "delegation denied",
+        "delegation approved - the task has been assigned" if approved else "delegation denied",
     )
 
 

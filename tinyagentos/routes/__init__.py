@@ -19,12 +19,12 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_registry import router as agent_registry_router
     app.include_router(agent_registry_router)
 
-    # Consent loop — registered before /api/agents/{name} so that
+    # Consent loop - registered before /api/agents/{name} so that
     # /api/agents/auth-requests/* paths are not captured as an agent name.
     from tinyagentos.routes.agent_auth_requests import router as agent_auth_requests_router
     app.include_router(agent_auth_requests_router)
 
-    # Gated delegation (#161) — registered before /api/agents/{name} so that
+    # Gated delegation (#161) - registered before /api/agents/{name} so that
     # /api/agents/{from_agent}/delegate is unambiguous even though it shares
     # the {name} path segment (path length differs so this isn't strictly
     # required, but it keeps every /api/agents/... override grouped here).
@@ -281,7 +281,7 @@ def register_all_routers(app):
     from tinyagentos.routes import framework as framework_routes
     app.include_router(framework_routes.router)
 
-    # Lobby demo (internal only — not included in public builds)
+    # Lobby demo (internal only - not included in public builds)
     try:
         from tinyagentos.lobby.routes import router as lobby_router
         app.include_router(lobby_router)

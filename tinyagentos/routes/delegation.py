@@ -5,7 +5,7 @@ delegation, no approval rerouting).
 
 ``POST /api/agents/{from_agent}/delegate`` lets one agent hand a task to
 another. The reporting line on the agent registry (see
-``agent_registry_store.set_reporting``) is org metadata only here — it does
+``agent_registry_store.set_reporting``) is org metadata only here - it does
 NOT change who approves a delegation. Every delegation is gated by the same
 governance layer as ``routes/skill_exec.py``'s tool-execution gate: the
 ``delegate`` action class defaults to ``require_approval`` (see
@@ -14,7 +14,7 @@ delegation queues a blocking Decision instead of running immediately.
 
 The gate/decision-creation flow below mirrors
 ``routes.skill_exec._check_execution_policy`` closely but is not a direct
-call into it — that function is keyed on a ``skill_id`` classified via
+call into it - that function is keyed on a ``skill_id`` classified via
 ``governance.action_classes.classify``, whereas delegation is not a skill
 call. Keeping a small, self-contained mirror here avoids reshaping the
 well-tested skill-exec gate for a caller it was never designed around.
@@ -37,7 +37,7 @@ ACTION_CLASS = "delegate"
 
 def _is_admin_or_local_token(request: Request) -> bool:
     """True if the caller is an admin session or presented the host's local
-    token. Mirrors ``routes.skill_exec._is_admin_or_local_token`` — delegation
+    token. Mirrors ``routes.skill_exec._is_admin_or_local_token`` - delegation
     is an agent action, gated the same way skill execution is."""
     if getattr(request.state, "is_admin", False):
         return True
@@ -83,7 +83,7 @@ class DelegateRequest(BaseModel):
     # Required only when creating a brand-new task from task_title (an
     # existing task_id already carries its project). Not part of the
     # original design note's body shape, but tasks cannot exist outside a
-    # project in this codebase — see projects/task_store.py.
+    # project in this codebase - see projects/task_store.py.
     project_id: str | None = None
     note: str = ""
 
@@ -192,7 +192,7 @@ async def _notify_delegate(
     request: Request, *, from_agent: str, to_agent: str, task: dict, note: str
 ) -> None:
     """Best-effort: post a mention in the project's A2A channel so to_agent
-    sees the handoff. Never raises — the delegation has already completed
+    sees the handoff. Never raises - the delegation has already completed
     (task assigned) by the time this is called."""
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
@@ -236,7 +236,7 @@ async def complete_delegation(
     ``delegate_task`` below and from the approved-decision path in
     ``routes.decisions._apply_delegation_grant``.
 
-    Raises ``ValueError`` on a bad task reference — the caller maps that to a
+    Raises ``ValueError`` on a bad task reference - the caller maps that to a
     4xx in the direct path; the approval path logs it (the answer is already
     persisted by then).
     """

@@ -2,19 +2,19 @@ from __future__ import annotations
 
 """Routes for the Agent Registry (SP-A, taOS side).
 
-POST   /api/agents/registry/register         — register an agent, mint canonical_id, issue token
-GET    /api/agents/registry/pubkey           — public key for token verification (exempt, no auth)
-GET    /api/agents/registry/revoked          — global revocation feed (admin/local-token only)
-GET    /api/agents/registry/inactive         — all non-active entries for the bus (admin only)
-GET    /api/agents/registry/grants           — active grant feed for @taOSmd enforcement (admin only)
-GET    /api/agents/registry                  — list registry entries (admin: all; member: own)
-GET    /api/agents/registry/{id}             — read a single entry (owner or admin; else 404)
-PATCH  /api/agents/registry/{id}             — update mutable fields (owner or admin)
-DELETE /api/agents/registry/{id}             — revoke an entry (owner or admin)
-POST   /api/agents/registry/{id}/approve     — lifecycle: pending → active (admin only)
-POST   /api/agents/registry/{id}/reject      — lifecycle: pending → rejected (admin only)
-POST   /api/agents/registry/{id}/suspend     — lifecycle: active → suspended (admin only)
-POST   /api/agents/registry/{id}/reactivate  — lifecycle: suspended → active (admin only)
+POST   /api/agents/registry/register         - register an agent, mint canonical_id, issue token
+GET    /api/agents/registry/pubkey           - public key for token verification (exempt, no auth)
+GET    /api/agents/registry/revoked          - global revocation feed (admin/local-token only)
+GET    /api/agents/registry/inactive         - all non-active entries for the bus (admin only)
+GET    /api/agents/registry/grants           - active grant feed for @taOSmd enforcement (admin only)
+GET    /api/agents/registry                  - list registry entries (admin: all; member: own)
+GET    /api/agents/registry/{id}             - read a single entry (owner or admin; else 404)
+PATCH  /api/agents/registry/{id}             - update mutable fields (owner or admin)
+DELETE /api/agents/registry/{id}             - revoke an entry (owner or admin)
+POST   /api/agents/registry/{id}/approve     - lifecycle: pending → active (admin only)
+POST   /api/agents/registry/{id}/reject      - lifecycle: pending → rejected (admin only)
+POST   /api/agents/registry/{id}/suspend     - lifecycle: active → suspended (admin only)
+POST   /api/agents/registry/{id}/reactivate  - lifecycle: suspended → active (admin only)
 
 Route ordering matters: /pubkey, /revoked, and /inactive are declared before
 /{canonical_id} so the literal strings are not captured as a path parameter.
@@ -227,7 +227,7 @@ async def register_agent(
 ):
     """Register an agent and issue a signed identity token.
 
-    The minted token's user_id is the authenticated caller's id — not
+    The minted token's user_id is the authenticated caller's id - not
     a value from the request body, so identity cannot be spoofed.
     """
     store = _get_store(request)
@@ -464,7 +464,7 @@ async def list_inactive_entries(
 
     Response: {"inactive": [{canonical_id, status}, ...]}
 
-    Admin only — covers pending/suspended/rejected/revoked.
+    Admin only - covers pending/suspended/rejected/revoked.
     The bus polls this to reject any canonical_id present.
     """
     if not user.is_admin:
@@ -542,7 +542,7 @@ async def get_registry_entry(
     """Fetch a single registry entry by canonical_id.
 
     Returns 404 for unknown entries and for entries the caller does not own
-    (existence-hiding — avoids disclosing whether an id exists to non-owners).
+    (existence-hiding - avoids disclosing whether an id exists to non-owners).
     """
     store = _get_store(request)
     record = await store.get(canonical_id)
@@ -721,7 +721,7 @@ async def get_org_chart(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    """Return the full reporting forest (org chart). Admin only — the tree
+    """Return the full reporting forest (org chart). Admin only - the tree
     spans every agent's manager regardless of owner, which is an operator/
     admin concern (mirrors the admin-only registry feeds above)."""
     if not user.is_admin:
@@ -741,7 +741,7 @@ async def update_org_fields(
 
     Only the owning user or an admin may update an entry (mirrors PATCH
     /api/agents/registry/{canonical_id}). ``reports_to`` is validated via
-    ``set_reporting`` — 400 on a nonexistent manager, self-report, or a
+    ``set_reporting`` - 400 on a nonexistent manager, self-report, or a
     reporting cycle.
     """
     store = _get_store(request)
