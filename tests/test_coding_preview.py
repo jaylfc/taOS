@@ -91,6 +91,25 @@ async def test_traversal_ref_not_inlined(ws):
 
 
 @pytest.mark.asyncio
+async def test_oversized_asset_not_inlined(ws):
+    client, ws_id, ws_dir = ws
+    # A stylesheet over the 2 MB per-asset cap must be skipped (left as a
+    # <link>), not inlined into the assembled document.
+    big_css = "a{color:red}\n" + ("/* pad */\n" * 200_000)
+    assert len(big_css.encode("utf-8")) > 2_000_000
+    (ws_dir / "big.css").write_text(big_css)
+    (ws_dir / "index.html").write_text(
+        '<html><head><link rel="stylesheet" href="big.css"></head>'
+        "<body></body></html>"
+    )
+
+    r = await client.get(f"/api/coding/workspaces/{ws_id}/preview")
+    assert r.status_code == 200, r.text
+    assert '<link rel="stylesheet" href="big.css">' in r.text
+    assert "<style>" not in r.text
+
+
+@pytest.mark.asyncio
 async def test_unknown_workspace_returns_404(ws):
     client, _ws_id, _ws_dir = ws
     r = await client.get("/api/coding/workspaces/cws-notreal/preview")

@@ -553,6 +553,9 @@ def _data_uri(root: Path, ref: str) -> str | None:
 
 
 _LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+# Matches only empty script tags (external `<script src=...></script>`), which
+# is all that needs inlining. Inline scripts (a non-empty body) are left
+# untouched so they render in the sandbox unchanged.
 _SCRIPT_TAG_RE = re.compile(r"<script\b[^>]*>\s*</script>", re.IGNORECASE)
 _IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 _STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
@@ -585,7 +588,8 @@ def _assemble_preview_html(root: Path, html: str) -> str:
         except UnicodeDecodeError:
             return tag
         replacement = f"<style>{text}</style>"
-        return replacement if consume(len(replacement.encode("utf-8"))) else tag
+        delta = len(replacement.encode("utf-8")) - len(tag.encode("utf-8"))
+        return replacement if consume(delta) else tag
 
     def replace_script(m: re.Match) -> str:
         tag = m.group(0)
@@ -604,7 +608,8 @@ def _assemble_preview_html(root: Path, html: str) -> str:
         remaining_attrs = open_tag_m.group(1) if open_tag_m else ""
         remaining_attrs = re.sub(r'\s*\bsrc=["\'][^"\']*["\']', "", remaining_attrs, flags=re.IGNORECASE)
         replacement = f"<script{remaining_attrs}>{text}</script>"
-        return replacement if consume(len(replacement.encode("utf-8"))) else tag
+        delta = len(replacement.encode("utf-8")) - len(tag.encode("utf-8"))
+        return replacement if consume(delta) else tag
 
     def replace_img(m: re.Match) -> str:
         tag = m.group(0)
@@ -631,7 +636,8 @@ def _assemble_preview_html(root: Path, html: str) -> str:
             if uri is None:
                 return um.group(0)
             replacement = f"url({uri})"
-            return replacement if consume(len(replacement.encode("utf-8"))) else um.group(0)
+            delta = len(replacement.encode("utf-8")) - len(um.group(0).encode("utf-8"))
+            return replacement if consume(delta) else um.group(0)
 
         new_body = _CSS_URL_RE.sub(replace_url, body)
         return f"{open_tag}{new_body}{close_tag}"

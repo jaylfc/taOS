@@ -5,7 +5,6 @@ import {
   Tablet,
   Smartphone,
   RotateCcw,
-  ExternalLink,
   Loader2,
   AlertCircle,
 } from "lucide-react";
@@ -31,43 +30,51 @@ export function PreviewView({
   const [noIndex, setNoIndex] = useState(false);
   const [html, setHtml] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!workspaceId) {
-      setHtml(null);
-      setNoIndex(false);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!workspaceId) {
+        setHtml(null);
+        setNoIndex(false);
+        setError(null);
+        return;
+      }
+      setLoading(true);
       setError(null);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    setNoIndex(false);
-    try {
-      const res = await fetch(`/api/coding/workspaces/${workspaceId}/preview`);
-      if (res.status === 404) {
-        const data = await res.json().catch(() => ({}));
-        if ((data as { error?: string }).error === "no_index") {
-          setNoIndex(true);
-          setHtml(null);
+      setNoIndex(false);
+      try {
+        const res = await fetch(`/api/coding/workspaces/${workspaceId}/preview`, { signal });
+        if (res.status === 404) {
+          const data = await res.json().catch(() => ({}));
+          if ((data as { error?: string }).error === "no_index") {
+            setNoIndex(true);
+            setHtml(null);
+            return;
+          }
+          throw new Error(`HTTP ${res.status}`);
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        setHtml(text);
+      } catch (err) {
+        // A superseded request (workspace switched, or Refresh re-fired) aborts
+        // the in-flight fetch; ignore it so it can't overwrite fresher state.
+        if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
           return;
         }
-        throw new Error(`HTTP ${res.status}`);
+        setError(err instanceof Error ? err.message : "Failed to load preview");
+        setHtml(null);
+      } finally {
+        if (!signal?.aborted) setLoading(false);
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      setHtml(text);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load preview");
-      setHtml(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [workspaceId]);
+    },
+    [workspaceId],
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
-
-  const previewUrl = workspaceId ? `/api/coding/workspaces/${workspaceId}/preview` : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -165,17 +172,6 @@ export function PreviewView({
           {loading ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
           Refresh
         </button>
-        {previewUrl && (
-          <a
-            href={previewUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="flex h-10 cursor-pointer items-center gap-2 rounded-[12px] border border-shell-border bg-shell-surface px-4 text-[12.5px] font-semibold hover:bg-shell-surface-active"
-          >
-            <ExternalLink size={15} />
-            Open in new tab
-          </a>
-        )}
       </div>
     </div>
   );
