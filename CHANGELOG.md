@@ -7,6 +7,17 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.30] - 2026-07-05
+
+### Fixed
+- Model downloads on RK3588 (rkllama backend) no longer sit at 0% forever. Downloads that install through rkllama now report real progress as the weight is pulled, and a completed model is recorded and shown as installed immediately instead of looking stuck. Reported by @mandresve (#1648).
+
+### Added
+- Agent governance: per-agent LLM budget hard-stops. You can set a spend cap per agent; once an agent reaches its cap its model calls are rejected with a clear over-budget error before any request is dispatched. Spend accrues from real usage and the cap is settable and resettable via an admin API (#160).
+
+### Security
+- Updated frontend dependencies to clear known advisories (lodash-es code-injection and prototype-pollution, uuid, nanoid) via a grouped lockfile bump (#1655).
+
 ## [1.0.0-beta.29] - 2026-07-05
 
 ### Added
