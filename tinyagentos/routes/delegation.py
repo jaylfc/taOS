@@ -155,35 +155,44 @@ async def _check_delegation_policy(
     if await policies.has_live_grant(from_agent, ACTION_CLASS):
         return None
 
-    decision_id = ""
     decision_store = getattr(request.app.state, "decision_store", None)
-    if decision_store is not None:
-        try:
-            target = f'"{task_title}"' if task_title else (task_id or "")
-            decision = await decision_store.create(
-                from_agent=from_agent,
-                question=f"Agent {from_agent} wants to delegate {target} to {to_agent}".strip(),
-                type="approve_deny",
-                priority="blocking",
-                project_id=project_id,
-                metadata={
-                    "kind": "delegation_gate",
-                    "from_agent": from_agent,
-                    "to_agent": to_agent,
-                    "task_id": task_id,
-                    "task_title": task_title,
-                    "note": note,
-                },
-            )
-            decision_id = decision["id"]
-        except Exception:
-            logger.warning(
-                "decision create failed for delegation gate (%s -> %s)",
-                from_agent, to_agent, exc_info=True,
-            )
+    if decision_store is None:
+        # The action needs approval but there is no inbox to raise it in; fail
+        # loud rather than returning a fake pending_approval the caller cannot
+        # poll.
+        return JSONResponse(
+            {"error": "approval required but no decision store is available"},
+            status_code=503,
+        )
+    try:
+        target = f'"{task_title}"' if task_title else (task_id or "")
+        decision = await decision_store.create(
+            from_agent=from_agent,
+            question=f"Agent {from_agent} wants to delegate {target} to {to_agent}".strip(),
+            type="approve_deny",
+            priority="blocking",
+            project_id=project_id,
+            metadata={
+                "kind": "delegation_gate",
+                "from_agent": from_agent,
+                "to_agent": to_agent,
+                "task_id": task_id,
+                "task_title": task_title,
+                "note": note,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "decision create failed for delegation gate (%s -> %s)",
+            from_agent, to_agent, exc_info=True,
+        )
+        return JSONResponse(
+            {"error": "failed to create the delegation approval request"},
+            status_code=503,
+        )
 
     return JSONResponse(
-        {"status": "pending_approval", "decision_id": decision_id, "action_class": ACTION_CLASS},
+        {"status": "pending_approval", "decision_id": decision["id"], "action_class": ACTION_CLASS},
         status_code=202,
     )
 

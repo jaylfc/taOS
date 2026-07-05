@@ -567,16 +567,15 @@ class AgentRegistryStore(BaseStore):
         handle: Optional[str] = None,
         role: Optional[str] = None,
         title: Optional[str] = None,
-        reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
     ) -> Optional[dict]:
         """Update mutable metadata fields on *canonical_id*.
 
         Only the provided (non-None) fields are changed.
         Status, user_id, framework, canonical_id, and timestamps are immutable.
-        ``reports_to`` here is a raw setter with no validation (mirroring the
-        other plain fields) - use ``set_reporting`` when the caller needs the
-        self-report/cycle/manager-exists checks.
+        ``reports_to`` is deliberately NOT settable here: all reporting-line
+        changes must go through ``set_reporting`` so the self-report, cycle,
+        and manager-exists checks can never be bypassed.
         Returns the updated record, or None if *canonical_id* does not exist.
         """
         if self._db is None:
@@ -599,9 +598,6 @@ class AgentRegistryStore(BaseStore):
         if title is not None:
             cols.append("title = ?")
             vals.append(title)
-        if reports_to is not None:
-            cols.append("reports_to = ?")
-            vals.append(reports_to)
         if capabilities is not None:
             cols.append("capabilities = ?")
             vals.append(json.dumps(capabilities))
