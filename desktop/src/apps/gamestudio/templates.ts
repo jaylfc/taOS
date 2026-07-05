@@ -47,6 +47,42 @@ export const TEMPLATES: Template[] = [
       "radial-gradient(120% 120% at 40% 30%, #16607a, transparent 60%), linear-gradient(140deg,#0e2230,#0a1620)",
     files: ["index.html", "game.js", "three.module.js"],
   },
+  {
+    id: "endless-runner",
+    title: "Endless Runner",
+    genre: "Runner",
+    desc: "Jump over obstacles as the pace keeps climbing in an endless 2D side-scroller. Real canvas physics, no libraries.",
+    cover:
+      "radial-gradient(120% 120% at 35% 25%, #6a2fa0, transparent 60%), linear-gradient(140deg,#1c1430,#120c1f)",
+    files: ["index.html", "game.js"],
+  },
+  {
+    id: "neon-snake",
+    title: "Neon Snake",
+    genre: "Snake",
+    desc: "Classic grid snake with neon styling. Steer with arrows or a swipe, eat food to grow, don't hit yourself or the wall.",
+    cover:
+      "radial-gradient(120% 120% at 55% 25%, #1f8a4a, transparent 60%), linear-gradient(140deg,#0d1f14,#05100a)",
+    files: ["index.html", "game.js"],
+  },
+  {
+    id: "sky-tapper",
+    title: "Sky Tapper",
+    genre: "Tapper",
+    desc: "Flap through the gap in every pipe. One tap or key at a time, real gravity, pixel-precise collision.",
+    cover:
+      "radial-gradient(120% 120% at 45% 25%, #1f6a8a, transparent 60%), linear-gradient(140deg,#0e2233,#081420)",
+    files: ["index.html", "game.js"],
+  },
+  {
+    id: "asteroid-miner",
+    title: "Asteroid Miner",
+    genre: "Space",
+    desc: "Rotate, thrust and blast drifting asteroids in a wraparound 2D arena. Keyboard or on-screen touch controls.",
+    cover:
+      "radial-gradient(120% 120% at 40% 25%, #5a2a6a, transparent 60%), linear-gradient(140deg,#1c1226,#100a17)",
+    files: ["index.html", "game.js"],
+  },
 ];
 
 export const DEFAULT_TEMPLATE: Template = TEMPLATES[0]!;

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Neon Snake</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05070a; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; color: #fff; touch-action: none; }
+      body { display: flex; align-items: center; justify-content: center; }
+      #game { display: block; box-shadow: 0 0 40px rgba(80, 255, 170, 0.15); }
+      #help { position: absolute; bottom: 12px; left: 12px; font-size: 13px; opacity: 0.75; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="help">Arrow keys / WASD or swipe to steer &middot; eat the pink food, don't hit yourself or the wall</div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>

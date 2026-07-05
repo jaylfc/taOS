@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Asteroid Miner</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0a0a14; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; color: #fff; touch-action: none; }
+      #scene { position: absolute; inset: 0; }
+      #hud { position: absolute; top: 12px; left: 12px; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.8); font-size: 18px; font-weight: 600; }
+      #help { position: absolute; bottom: 12px; left: 12px; font-size: 13px; opacity: 0.75; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+      #overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: rgba(0,0,0,0.6); text-align: center; }
+      #overlay h1 { margin: 0; font-size: 30px; }
+      #restartBtn { pointer-events: auto; padding: 10px 22px; border-radius: 999px; border: none; background: #7dc3ff; color: #071018; font-weight: 700; font-size: 15px; cursor: pointer; }
+
+      /* Touch controls: hidden HUD layer with individually-interactive buttons,
+         so mouse/keyboard play is unaffected while touch devices get real controls. */
+      #touch-controls { position: absolute; inset: 0; pointer-events: none; }
+      .touch-btn { position: absolute; width: 64px; height: 64px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.35); background: rgba(255,255,255,0.08); color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; pointer-events: auto; user-select: none; -webkit-user-select: none; }
+      .touch-btn:active { background: rgba(255,255,255,0.22); }
+      #btn-left { left: 16px; bottom: 24px; }
+      #btn-right { left: 92px; bottom: 24px; }
+      #btn-thrust { left: 54px; bottom: 100px; }
+      #btn-fire { right: 24px; bottom: 40px; width: 80px; height: 80px; font-size: 16px; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <div id="scene"></div>
+    <div id="hud"><span id="score">Score: 0</span> &nbsp; <span id="lives">Lives: 3</span></div>
+    <div id="help">A/D or Left/Right to rotate &middot; W/Up to thrust &middot; Space or click to fire</div>
+    <div id="touch-controls">
+      <div id="btn-left" class="touch-btn">&#8630;</div>
+      <div id="btn-right" class="touch-btn">&#8631;</div>
+      <div id="btn-thrust" class="touch-btn">&#9650;</div>
+      <div id="btn-fire" class="touch-btn">FIRE</div>
+    </div>
+    <div id="overlay">
+      <h1>Game Over</h1>
+      <button id="restartBtn" type="button">Restart</button>
+    </div>
+    <script type="module" src="./game.js"></script>
+  </body>
+</html>
