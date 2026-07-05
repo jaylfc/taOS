@@ -477,6 +477,60 @@ async def test_list_ready_tasks_limit_clamped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_ready_tasks_for_assignee_matches_only_that_assignee(tmp_path):
+    s = await _store(tmp_path)
+    mine = await s.create_task("prj-1", "Mine", "alice", assignee_id="agent-1")
+    theirs = await s.create_task("prj-1", "Theirs", "alice", assignee_id="agent-2")
+    unassigned = await s.create_task("prj-1", "Unassigned", "alice")
+    result = await s.list_ready_tasks_for_assignee("agent-1")
+    ids = [t["id"] for t in result]
+    assert ids == [mine["id"]]
+    assert theirs["id"] not in ids
+    assert unassigned["id"] not in ids
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_for_assignee_excludes_claimed(tmp_path):
+    s = await _store(tmp_path)
+    free = await s.create_task("prj-1", "Free", "alice", assignee_id="agent-1")
+    claimed = await s.create_task("prj-1", "Claimed", "alice", assignee_id="agent-1")
+    await s.claim_task(claimed["id"], "agent-1")
+    result = await s.list_ready_tasks_for_assignee("agent-1")
+    ids = [t["id"] for t in result]
+    assert free["id"] in ids
+    assert claimed["id"] not in ids
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_for_assignee_excludes_blocked(tmp_path):
+    s = await _store(tmp_path)
+    ready = await s.create_task("prj-1", "Ready", "alice", assignee_id="agent-1")
+    blocked = await s.create_task("prj-1", "Blocked", "alice", assignee_id="agent-1")
+    blocker = await s.create_task("prj-1", "Blocker", "alice", assignee_id="agent-1")
+    await s.add_relationship("prj-1", blocked["id"], blocker["id"], "blocks", "alice")
+    result = await s.list_ready_tasks_for_assignee("agent-1")
+    ids = [t["id"] for t in result]
+    assert ready["id"] in ids
+    assert blocked["id"] not in ids
+    assert blocker["id"] in ids
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_list_ready_tasks_for_assignee_ordered_by_priority_then_created(tmp_path):
+    s = await _store(tmp_path)
+    low = await s.create_task("prj-1", "Low", "alice", priority=1, assignee_id="agent-1")
+    high = await s.create_task("prj-1", "High", "alice", priority=10, assignee_id="agent-1")
+    mid = await s.create_task("prj-1", "Mid", "alice", priority=5, assignee_id="agent-1")
+    result = await s.list_ready_tasks_for_assignee("agent-1")
+    ids = [t["id"] for t in result]
+    assert ids == [high["id"], mid["id"], low["id"]]
+    await s.close()
+
+
+@pytest.mark.asyncio
 async def test_add_and_list_comments(tmp_path):
     s = await _store(tmp_path)
     task = await s.create_task("prj-1", "Task", "alice")

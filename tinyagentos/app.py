@@ -1190,6 +1190,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.projects.routine_runner import routine_tick_loop
         _create_supervised_task(routine_tick_loop(app.state), app.state._background_tasks)
 
+        # Agent heartbeat: every 60s, wakes each idle running agent with its
+        # next ready task (opt-in via config.server["agent_heartbeat_enabled"],
+        # default off). Same supervised-loop pattern as routine_tick_loop above.
+        from tinyagentos.agent_heartbeat import agent_heartbeat_loop
+        _create_supervised_task(agent_heartbeat_loop(app.state), app.state._background_tasks)
+
         try:
             canvas_snapshotter = CanvasSnapshotter(
                 project_store=project_store,

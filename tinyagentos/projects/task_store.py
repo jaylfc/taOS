@@ -417,6 +417,23 @@ class ProjectTaskStore(BaseStore):
             desc = cur.description
         return [_row_to_task(r, desc) for r in rows]
 
+    async def list_ready_tasks_for_assignee(self, assignee_id: str, limit: int = 5) -> list[dict]:
+        """Ready tasks (open, unclaimed, unblocked) assigned to *assignee_id*,
+        across all projects. Mirrors list_ready_tasks's ordering but scopes by
+        assignee instead of project - used by the agent heartbeat loop to find
+        an idle agent's next task without a per-project scan."""
+        limit = max(1, min(limit, 200))
+        async with self._db.execute(
+            """SELECT * FROM ready_tasks
+               WHERE assignee_id = ?
+               ORDER BY priority DESC, created_at ASC
+               LIMIT ?""",
+            (assignee_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+            desc = cur.description
+        return [_row_to_task(r, desc) for r in rows]
+
     async def get_task_context(self, task_id: str) -> dict:
         """Relational context for a task: its goal (project + parent-task
         ancestry) and what's blocking it.
