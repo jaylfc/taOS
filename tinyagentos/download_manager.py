@@ -93,12 +93,25 @@ class DownloadManager:
         coroutine (e.g. ``RkllamaInstaller.install()``, which pulls the
         weight via the backend's own ``/api/pull`` instead of a raw HTTP/
         torrent transfer) using the same DownloadTask the caller already
-        polls via :meth:`get_progress`. These installers don't report
-        incremental byte progress, so ``percent`` stays at 0 until the
-        task finishes.
+        polls via :meth:`get_progress`.
+
+        ``coro`` is either a plain coroutine (no progress reporting -- the
+        task's ``percent`` stays at 0 until it finishes), or a callable
+        accepting a single ``on_progress(completed, total)`` callback and
+        returning the coroutine to run. The callable form lets an installer
+        that streams incremental progress (e.g. rkllama's ndjson ``/api/pull``)
+        update this task's ``downloaded_bytes``/``total_bytes`` as it goes.
         """
         task = DownloadTask(id=download_id, url="", dest=Path())
         self._tasks[download_id] = task
+
+        def _on_progress(completed: int, total: int) -> None:
+            task.downloaded_bytes = completed
+            task.total_bytes = total
+
+        if callable(coro) and not asyncio.iscoroutine(coro):
+            coro = coro(_on_progress)
+
         self._running[download_id] = asyncio.create_task(self._run_installer(task, coro))
         return task
 

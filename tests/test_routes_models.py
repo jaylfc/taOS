@@ -328,6 +328,65 @@ class TestModelDownload:
         assert task.status == "error"
         assert task.error == "pull failed"
 
+    async def test_rkllama_variant_success_records_registry_and_refreshes_catalog(
+        self, models_app, models_client
+    ):
+        """rkllama pulls the weight into its own model store, not
+        models_dir, so a successful install must leave a breadcrumb (the
+        install registry) and force an immediate catalog refresh -- otherwise
+        the model would show as not-downloaded until the next 30s poll tick
+        (#1648).
+        """
+        fake_catalog = MagicMock()
+        fake_catalog.refresh = AsyncMock()
+        # Live evidence for the manifest id only (not the full variant id) so
+        # this exercises registry_corroborated's has_live_evidence path
+        # rather than the pre-existing _matches_live_backend exact match.
+        fake_catalog.all_models = MagicMock(return_value=[{"name": "test-model:latest"}])
+        models_app.state.backend_catalog = fake_catalog
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        download_id = resp.json()["download_id"]
+        await models_app.state.download_manager._running[download_id]
+
+        fake_catalog.refresh.assert_awaited_once()
+        installed = models_app.state.registry.list_installed()
+        assert any(row["id"] == "test-model" for row in installed)
+
+        list_resp = await models_client.get("/api/models")
+        model = next(m for m in list_resp.json()["models"] if m["id"] == "test-model")
+        npu_variant = next(v for v in model["variants"] if v["id"] == "npu")
+        assert npu_variant["downloaded"] is True
+
+    async def test_rkllama_variant_failure_skips_registry_and_catalog_refresh(
+        self, models_app, models_client
+    ):
+        fake_catalog = MagicMock()
+        fake_catalog.refresh = AsyncMock()
+        models_app.state.backend_catalog = fake_catalog
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": False, "error": "pull failed"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        download_id = resp.json()["download_id"]
+        await models_app.state.download_manager._running[download_id]
+
+        fake_catalog.refresh.assert_not_awaited()
+        installed = models_app.state.registry.list_installed()
+        assert not any(row["id"] == "test-model" for row in installed)
+
 
 @pytest.mark.asyncio
 class TestModelRecommendations:

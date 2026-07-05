@@ -365,10 +365,40 @@ async def download_model(request: Request, body: DownloadRequest):
         )
 
         installer = RkllamaInstaller(rkllama_url=resolve_rkllama_url(None))
-        dm.start_installer_task(
-            download_id,
-            installer.install(body.app_id, {}, variant=variant),
-        )
+        catalog = getattr(request.app.state, "backend_catalog", None)
+
+        async def _install_and_record(on_progress):
+            result = await installer.install(
+                body.app_id, {}, variant=variant, on_progress=on_progress
+            )
+            if result.get("success"):
+                # rkllama pulls the weight into its own model store, not
+                # models_dir, so the disk scan in list_models() never sees it.
+                # Record the install as a registry breadcrumb (corroborated by
+                # live-backend evidence, see _model_to_dict) and force an
+                # immediate catalog refresh so the newly pulled model shows up
+                # in all_models() right away instead of waiting for the next
+                # poll tick.
+                try:
+                    registry.mark_installed(
+                        body.app_id, variant.get("id") or "latest", state="installed"
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to record rkllama install for %s in registry",
+                        body.app_id, exc_info=True,
+                    )
+                if catalog is not None:
+                    try:
+                        await catalog.refresh()
+                    except Exception:
+                        logger.warning(
+                            "Backend catalog refresh after rkllama install failed for %s",
+                            body.app_id, exc_info=True,
+                        )
+            return result
+
+        dm.start_installer_task(download_id, _install_and_record)
         return {
             "status": "started",
             "download_id": download_id,

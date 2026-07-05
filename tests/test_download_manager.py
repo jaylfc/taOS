@@ -600,3 +600,42 @@ class TestStartInstallerTask:
         await dm._running["dl-installer"]
         assert task.status == "error"
         assert task.error == "connection refused"
+
+    @pytest.mark.asyncio
+    async def test_progress_callback_updates_task_bytes(self):
+        # A caller may pass a factory (callable taking on_progress) instead
+        # of a bare coroutine, so an installer that streams incremental
+        # progress (e.g. RkllamaInstaller.install()) can update this task's
+        # downloaded_bytes/total_bytes as it goes, instead of leaving
+        # percent stuck at 0 until the task finishes.
+        dm = DownloadManager()
+
+        def _install_factory(on_progress):
+            async def _run():
+                on_progress(50, 200)
+                on_progress(200, 200)
+                return {"success": True}
+            return _run()
+
+        task = dm.start_installer_task("dl-installer", _install_factory)
+        assert task.downloaded_bytes == 0
+        assert task.total_bytes == 0
+        await dm._running["dl-installer"]
+        assert task.status == "complete"
+        assert task.downloaded_bytes == 200
+        assert task.total_bytes == 200
+
+    @pytest.mark.asyncio
+    async def test_bare_coroutine_without_progress_still_works(self):
+        # Backward compatibility: a plain coroutine (no progress reporting)
+        # must keep working exactly as before.
+        dm = DownloadManager()
+
+        async def _install():
+            return {"success": True}
+
+        task = dm.start_installer_task("dl-installer", _install())
+        await dm._running["dl-installer"]
+        assert task.status == "complete"
+        assert task.downloaded_bytes == 0
+        assert task.total_bytes == 0

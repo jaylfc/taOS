@@ -15,11 +15,12 @@ URL), so we don't need any extra fields on the manifest.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import socket
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -95,6 +96,28 @@ def default_rkllama_url() -> str:
     return f"http://localhost:{_DEFAULT_RKLLAMA_PORT}"
 
 
+def _report_pull_progress(line: str, on_progress: Callable[[int, int], None]) -> None:
+    """Parse one ndjson line from rkllama's /api/pull stream and forward
+    ``(completed, total)`` to ``on_progress``.
+
+    rkllama's pull endpoint is Ollama-style ndjson, e.g.
+    ``{"status":"downloading","completed":1234,"total":56789}``. Lines
+    without both numeric fields (status-only messages, blank keepalives) are
+    silently ignored -- a stray or malformed line must never abort the
+    install.
+    """
+    try:
+        data = json.loads(line)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    completed = data.get("completed")
+    total = data.get("total")
+    if isinstance(completed, (int, float)) and isinstance(total, (int, float)) and total > 0:
+        on_progress(int(completed), int(total))
+
+
 def parse_hf_resolve_url(url: str) -> tuple[str, str, str]:
     """Return (user, repo, filename) for an HF resolve URL.
 
@@ -130,6 +153,7 @@ class RkllamaInstaller(AppInstaller):
         app_id: str,
         install_config: dict,
         variant: dict | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
         **_: Any,
     ) -> dict:
         if not variant:
@@ -174,6 +198,8 @@ class RkllamaInstaller(AppInstaller):
                     async for line in resp.aiter_lines():
                         if line:
                             last_line = line
+                            if on_progress is not None:
+                                _report_pull_progress(line, on_progress)
                     logger.info(
                         "rkllama install: pull complete for %s (last line: %s)",
                         app_id, last_line[:200],

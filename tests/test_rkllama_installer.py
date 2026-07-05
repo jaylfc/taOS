@@ -225,6 +225,74 @@ async def _no_sleep(*_a, **_k):
     return None
 
 
+class TestInstallProgress:
+    """install() must forward /api/pull's ndjson progress lines to an
+    optional on_progress callback, and never let a malformed line raise.
+    """
+
+    def _installer(self):
+        return RkllamaInstaller(rkllama_url="http://localhost:7833")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_progress_lines_forwarded_to_callback(self):
+        pull_body = (
+            '{"status":"downloading","completed":1000,"total":10000}\n'
+            '{"status":"downloading","completed":5000,"total":10000}\n'
+            '{"status":"downloading","completed":10000,"total":10000}\n'
+            '{"status":"success"}\n'
+        )
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text=pull_body)
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})
+        )
+        calls = []
+        res = await self._installer().install(
+            "rkllama-x", {}, variant=_VARIANT, on_progress=lambda c, t: calls.append((c, t))
+        )
+        assert res["success"] is True
+        assert calls == [(1000, 10000), (5000, 10000), (10000, 10000)]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_malformed_lines_ignored_not_raised(self):
+        pull_body = (
+            "not json at all\n"
+            '{"status":"downloading"}\n'
+            '{"status":"downloading","completed":"oops","total":10000}\n'
+            '{"status":"downloading","completed":250,"total":1000}\n'
+        )
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text=pull_body)
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})
+        )
+        calls = []
+        res = await self._installer().install(
+            "rkllama-x", {}, variant=_VARIANT, on_progress=lambda c, t: calls.append((c, t))
+        )
+        assert res["success"] is True
+        assert calls == [(250, 1000)]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_no_callback_still_works(self):
+        # Default on_progress=None must not change existing behaviour.
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(
+                200, text='{"status":"downloading","completed":1,"total":2}\n'
+            )
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})
+        )
+        res = await self._installer().install("rkllama-x", {}, variant=_VARIANT)
+        assert res["success"] is True
+
+
 class TestRkllamaServiceManifest:
     """The rkllama service manifest (install.method: script) must point at a
     script that actually exists. ScriptInstaller resolves install.script
