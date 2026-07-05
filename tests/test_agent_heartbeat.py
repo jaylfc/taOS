@@ -153,9 +153,12 @@ async def test_debounce_same_task_within_cooldown_wakes_only_once(monkeypatch):
     task = _task()
     state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[task])
 
+    # next(times, default): logging (LogRecord creation) can also call
+    # time.time() under CI, so extra calls must not exhaust the iterator.
     times = iter([1_000.0, 1_000.0 + REWAKE_COOLDOWN / 2])
     monkeypatch.setattr(
-        "tinyagentos.agent_heartbeat.time.time", lambda: next(times)
+        "tinyagentos.agent_heartbeat.time.time",
+        lambda: next(times, 1_000.0 + REWAKE_COOLDOWN / 2),
     )
 
     await _heartbeat_tick(state)
@@ -174,8 +177,12 @@ async def test_failed_wake_is_not_debounced_and_retries_next_tick(monkeypatch):
     state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[task])
     state.bridge_sessions.enqueue_user_message = AsyncMock(side_effect=RuntimeError("queue down"))
 
-    times = iter([1_000.0, 1_000.0 + 60.0])  # two ticks well within cooldown
-    monkeypatch.setattr("tinyagentos.agent_heartbeat.time.time", lambda: next(times))
+    # Two ticks well within cooldown; the warning log's LogRecord also calls
+    # time.time(), so the patch must tolerate extra calls (next default).
+    times = iter([1_000.0, 1_000.0 + 60.0])
+    monkeypatch.setattr(
+        "tinyagentos.agent_heartbeat.time.time", lambda: next(times, 1_000.0 + 60.0)
+    )
 
     await _heartbeat_tick(state)
     await _heartbeat_tick(state)
@@ -193,7 +200,8 @@ async def test_debounce_expires_after_cooldown_rewakes(monkeypatch):
 
     times = iter([1_000.0, 1_000.0 + REWAKE_COOLDOWN + 1])
     monkeypatch.setattr(
-        "tinyagentos.agent_heartbeat.time.time", lambda: next(times)
+        "tinyagentos.agent_heartbeat.time.time",
+        lambda: next(times, 1_000.0 + REWAKE_COOLDOWN + 1),
     )
 
     await _heartbeat_tick(state)
