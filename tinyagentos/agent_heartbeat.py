@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,15 @@ def _should_wake(debounce: dict, agent_id: str, task_id: str, now: float) -> boo
     return True
 
 
-async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> None:
+async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
     """Best-effort wake: enqueue a user_message to the agent's bridge session
     and post a system message into the project's a2a channel. Mirrors
     tinyagentos.projects.routine_runner._wake_and_announce -- each sub-step
-    degrades independently so one failure doesn't skip the other."""
+    degrades independently so one failure doesn't skip the other.
+
+    Returns True only when the primary enqueue reached the agent's queue, so
+    the caller debounces successful wakes and retries failed ones next tick
+    instead of silencing the agent for the whole cooldown."""
     project_task_store = app_state.project_task_store
     config = getattr(app_state, "config", None)
 
@@ -77,14 +82,18 @@ async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> None:
     if why:
         text = f"{text}\n{why}"
 
+    enqueued = False
     bridge_sessions = getattr(app_state, "bridge_sessions", None)
     if bridge_sessions is not None:
         try:
             await bridge_sessions.enqueue_user_message(
                 agent["name"],
                 {
-                    "id": task["id"],
-                    "trace_id": task["id"],
+                    # A fresh message id: reusing the task id would collide in
+                    # any consumer that keys by message id (a task can be
+                    # announced more than once).
+                    "id": uuid.uuid4().hex,
+                    "trace_id": f"heartbeat-{task['id']}",
                     "channel_id": None,
                     "from": "heartbeat",
                     "text": text,
@@ -92,6 +101,7 @@ async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> None:
                     "hops_since_user": 0,
                 },
             )
+            enqueued = True
         except Exception:
             logger.warning(
                 "heartbeat: wake enqueue failed for agent %s", agent.get("name"), exc_info=True,
@@ -118,6 +128,8 @@ async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> None:
             logger.warning(
                 "heartbeat: a2a announce failed for task %s", task["id"], exc_info=True,
             )
+
+    return enqueued
 
 
 async def _heartbeat_tick(app_state) -> None:
@@ -147,8 +159,11 @@ async def _heartbeat_tick(app_state) -> None:
             task = ready[0]
             if not _should_wake(debounce, agent_id, task["id"], now):
                 continue
-            await _wake_agent_with_task(app_state, agent, task)
-            debounce[agent_id] = (task["id"], now)
+            # Debounce only a wake that actually reached the agent's queue; a
+            # failed enqueue retries next tick instead of silencing the agent
+            # for the whole cooldown.
+            if await _wake_agent_with_task(app_state, agent, task):
+                debounce[agent_id] = (task["id"], now)
         except Exception:
             logger.exception("heartbeat: tick failed for agent %s", agent.get("name"))
 

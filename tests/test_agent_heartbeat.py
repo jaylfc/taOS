@@ -95,7 +95,10 @@ async def test_enabled_idle_running_agent_with_ready_task_wakes_once():
     state.bridge_sessions.enqueue_user_message.assert_awaited_once()
     args = state.bridge_sessions.enqueue_user_message.call_args.args
     assert args[0] == "worker-agent"
-    assert args[1]["id"] == "tsk-1"
+    # Message id is a fresh uuid (NOT the task id, which would collide across
+    # repeated announcements); the task stays traceable via trace_id.
+    assert args[1]["id"] != "tsk-1"
+    assert args[1]["trace_id"] == "heartbeat-tsk-1"
     assert "tsk-1" in args[1]["text"]
 
     state.chat_messages.send_message.assert_awaited_once()
@@ -159,6 +162,26 @@ async def test_debounce_same_task_within_cooldown_wakes_only_once(monkeypatch):
     await _heartbeat_tick(state)
 
     state.bridge_sessions.enqueue_user_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_wake_is_not_debounced_and_retries_next_tick(monkeypatch):
+    # A wake whose enqueue fails must NOT stamp the debounce; the next tick
+    # retries instead of silencing the agent for the whole cooldown.
+    config = SimpleNamespace(agents=[_agent()], server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config)
+    task = _task()
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[task])
+    state.bridge_sessions.enqueue_user_message = AsyncMock(side_effect=RuntimeError("queue down"))
+
+    times = iter([1_000.0, 1_000.0 + 60.0])  # two ticks well within cooldown
+    monkeypatch.setattr("tinyagentos.agent_heartbeat.time.time", lambda: next(times))
+
+    await _heartbeat_tick(state)
+    await _heartbeat_tick(state)
+
+    # Both ticks attempted the wake (no silencing after the failure).
+    assert state.bridge_sessions.enqueue_user_message.await_count == 2
 
 
 @pytest.mark.asyncio
