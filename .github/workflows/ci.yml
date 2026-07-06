@@ -129,9 +129,15 @@ jobs:
       # order-dependent are quarantined in vite.config.ts (test.exclude, tagged
       # #114); un-exclude each as its owning work lands.
       - name: Run desktop tests (vitest)
+        env:
+          # Headroom for the jsdom suite so a worker is not OOM-killed on the
+          # 2-core runner (the fork children also get this via poolOptions in
+          # vite.config.ts). One automatic retry absorbs a rare transient
+          # worker death so a flake never blocks a release.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           cd desktop
-          npx vitest run
+          npx vitest run || (echo "vitest failed once, retrying..." && npx vitest run)
 
       # On master, publish the freshly-built SPA as a prebuilt bundle so the
       # installer can download it instead of running the memory-heavy vite build

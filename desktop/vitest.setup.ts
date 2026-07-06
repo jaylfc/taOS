@@ -58,3 +58,29 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
     }),
   });
 }
+
+// JSDOM does not implement HTMLCanvasElement.getContext (it logs a noisy "Not
+// implemented" line and returns null). Components that touch a canvas (charts,
+// game/wallpaper previews) would otherwise crash or spam the log. Return a
+// minimal no-op 2D context so those tests render without a native canvas dep.
+if (typeof HTMLCanvasElement !== "undefined") {
+  const noop = () => {};
+  const stub2d = () =>
+    new Proxy(
+      {
+        canvas: null as unknown,
+        measureText: () => ({ width: 0 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+        createImageData: () => ({ data: new Uint8ClampedArray(0), width: 0, height: 0 }),
+        createLinearGradient: () => ({ addColorStop: noop }),
+        createRadialGradient: () => ({ addColorStop: noop }),
+        createPattern: () => null,
+      },
+      // Any unknown drawing method (fillRect, arc, beginPath, ...) is a no-op.
+      { get: (target, prop) => (prop in target ? (target as Record<string, unknown>)[prop as string] : noop) },
+    );
+  HTMLCanvasElement.prototype.getContext = function (type: string) {
+    return type === "2d" ? (stub2d() as unknown as CanvasRenderingContext2D) : null;
+  } as HTMLCanvasElement["getContext"];
+  HTMLCanvasElement.prototype.toDataURL = () => "data:image/png;base64,";
+}

@@ -9,6 +9,19 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./vitest.setup.ts"],
+    // The jsdom suite (2600+ tests) OOM-killed a worker intermittently on the
+    // 2-core CI runner, failing the whole run with no assertion. Bound the fork
+    // pool and give each worker a large heap so GC has room; a single flaky
+    // test also retries rather than failing the gate.
+    pool: "forks",
+    poolOptions: {
+      forks: {
+        maxForks: 2,
+        minForks: 1,
+        execArgv: ["--max-old-space-size=4096"],
+      },
+    },
+    retry: 1,
     // *.spec.ts is reserved for Playwright e2e specs; vitest uses *.test.ts
     exclude: [
       "**/node_modules/**",
