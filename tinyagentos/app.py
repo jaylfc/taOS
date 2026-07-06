@@ -57,7 +57,7 @@ from tinyagentos.qmd_client import QmdClient
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.benchmark import BenchmarkStore
 from tinyagentos.installation_state import InstallationState
-from tinyagentos.scheduler import BackendCatalog, HistoryStore, ScoreCache, TaskScheduler
+from tinyagentos.scheduler import BackendCatalog, GpuArbiter, HistoryStore, ScoreCache, TaskScheduler
 from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
 from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
@@ -1124,6 +1124,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # Build the resource scheduler from hardware profile + live catalog.
         # Phase 1: local resources only (NPU + CPU), capability-based routing
         # with fallback and priority. Cluster-aware dispatch is Phase 3.
+        resource_scheduler = None
         try:
             resource_scheduler = build_resource_scheduler(
                 hardware_profile,
@@ -1140,6 +1141,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("resource scheduler failed to build — routes will use static config")
             app.state.resource_scheduler = None
+
+        # Build the GPU arbiter — wraps the resource scheduler with VRAM-accounted
+        # admission control, queuing, and eviction for GPU-bound workloads.
+        try:
+            gpu_arbiter = GpuArbiter(
+                scheduler=resource_scheduler if resource_scheduler is not None else None,
+                cluster_manager=cluster_manager,
+                max_queue_size=100,
+                eviction_enabled=True,
+            )
+            await gpu_arbiter.start()
+            app.state.gpu_arbiter = gpu_arbiter
+            logger.info("GPU arbiter ready (queue size=100, eviction=enabled)")
+        except Exception:
+            logger.exception("GPU arbiter failed to start — GPU tasks will use vanilla scheduler")
+            app.state.gpu_arbiter = None
         # Detect and set container runtime
         from tinyagentos.containers.backend import configure_container_runtime
         configure_container_runtime(config)
