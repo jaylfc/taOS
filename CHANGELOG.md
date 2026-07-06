@@ -7,6 +7,18 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.31] - 2026-07-06
+
+### Fixed
+- Model downloads on RK3588 (rkllama backend) really do show progress now. The earlier fix assumed the rkllama pull stream was JSON, but it streams plain-text percentage lines; taOS now parses those (and still handles the JSON form), so the bar advances instead of sitting at 0%. Reported by @mandresve (#1648).
+
+### Added
+- Agent org model: agents can carry a role and title and a reporting line (who reports to whom), viewable as an org tree, with cycle-safe validation. Agents can delegate a task to another agent through the existing governance gate, so a delegation is allowed, denied, or sent to the Decisions inbox for approval like any other gated action (#161).
+- Agent heartbeat loop (opt-in, off by default): when enabled, taOS periodically wakes each idle running agent with its next ready task and that task's goal context, so agents pull and act on their queue on a schedule. Enable it with the `agent_heartbeat_enabled` setting (#164).
+
+### Security
+- Bumped cryptography to 48.0.1 to clear a high-severity OpenSSL advisory in the bundled wheels; the new version keeps wheels for every supported platform (including Intel Mac and 32-bit Windows), so no platform loses coverage (#1653).
+
 ## [1.0.0-beta.30] - 2026-07-05
 
 ### Fixed
