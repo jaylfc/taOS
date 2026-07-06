@@ -15,6 +15,7 @@ from typing import Optional
 
 from tinyagentos.scheduler.backend_catalog import BackendCatalog
 from tinyagentos.scheduler.history_store import HistoryStore
+from tinyagentos.scheduler.gpu_arbiter import _probe_nvidia_vram
 from tinyagentos.scheduler.resource import Resource, Tier
 from tinyagentos.scheduler.scheduler import Scheduler
 from tinyagentos.scheduler.score_cache import ScoreCache
@@ -42,6 +43,20 @@ CPU_POTENTIAL_CAPABILITIES: set[str] = {
 # The potential set matches the CPU's; ``capabilities`` (the live view) is
 # still filtered to what's actually loaded on a backend right now.
 NPU_RK3588_POTENTIAL_CAPABILITIES: set[str] = {
+    "llm-chat",
+    "embedding",
+    "reranking",
+    "image-generation",
+    "speech-to-text",
+    "text-to-speech",
+    "vision",
+}
+
+# Every capability a GPU can run given the right backend. GPU is the
+# fastest tier; the potential set mirrors CPU/NPU because any inference
+# task that can run on CPU can also run (faster) on GPU. Live capabilities
+# are still filtered to what backends actually have loaded right now.
+GPU_POTENTIAL_CAPABILITIES: set[str] = {
     "llm-chat",
     "embedding",
     "reranking",
@@ -171,6 +186,70 @@ def build_scheduler(
                 score_lookup=_make_score_lookup("npu-rk3588"),
             )
         )
+
+    # GPU (CUDA/ROCm/Vulkan/Metal), only if a healthy GPU-capable backend exists.
+    # GPU backends: vllm, llama-cpp (when built with CUDA), ollama (GPU mode),
+    # exo, mlx (Apple Silicon GPU). Also sd-cpp/sd-gpu for image-generation.
+    gpu_backend_types = {"vllm", "ollama", "exo", "mlx"}
+    gpu_backends = [
+        b for b in catalog.backends()
+        if b.status == "ok" and b.type in gpu_backend_types
+    ]
+    gpu_info = getattr(hardware_profile, "gpu", None)
+    gpu_type = getattr(gpu_info, "type", None) if gpu_info else None
+    has_gpu_hardware = gpu_type not in (None, "", "none")
+
+    if gpu_backends or has_gpu_hardware:
+        gpu_count = 1  # Default single-GPU; multi-GPU is Phase 2
+        gpu_signature = ResourceSignature(
+            platform="cuda" if gpu_type in ("cuda", "nvidia") else (
+                "rocm" if gpu_type == "rocm" else (
+                    "metal" if gpu_type == "apple" else "gpu"
+                )
+            ),
+            runtime="cuda" if gpu_type in ("cuda", "nvidia") else (
+                "rocm" if gpu_type == "rocm" else "native"
+            ),
+            runtime_version="",
+        )
+
+        def _gpu_vram_probe() -> int:
+            free, _total = _probe_nvidia_vram()
+            return free if free > 0 else 999_999  # optimistic
+
+        def _gpu_capabilities() -> set[str]:
+            caps: set[str] = set()
+            for b in catalog.backends():
+                if b.status == "ok" and b.type in gpu_backend_types:
+                    caps |= b.capabilities
+            return caps
+
+        def _gpu_backend_for(capability: str):
+            for b in catalog.backends_with_capability(capability):
+                if b.type in gpu_backend_types:
+                    return b.url
+            return None
+
+        for gpu_idx in range(gpu_count):
+            gpu_name = f"gpu-cuda-{gpu_idx}"
+            scheduler.register(
+                Resource(
+                    name=gpu_name,
+                    signature=gpu_signature,
+                    concurrency=1,
+                    tier=Tier.GPU,
+                    potential_capabilities=GPU_POTENTIAL_CAPABILITIES,
+                    get_capabilities=_gpu_capabilities,
+                    backend_lookup=_gpu_backend_for,
+                    score_lookup=_make_score_lookup(gpu_name),
+                    memory_probe=_gpu_vram_probe,
+                )
+            )
+            logger.info(
+                "discovery: registered GPU resource %s (%s, concurrency=1)",
+                gpu_name,
+                gpu_signature.platform,
+            )
 
     # CPU inference, always register. Backend-driven: only advertises the
     # capabilities that some CPU backend currently serves (sd-cpp, llama-cpp, etc.)

@@ -87,6 +87,7 @@ class Task:
     submitter: str = "unknown"
     estimated_seconds: float = 1.0
     estimated_memory_mb: int = 0
+    estimated_vram_mb: int = 0
     required_signatures: list[ResourceSignature] = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     submitted_at: float = field(default_factory=time.time)
