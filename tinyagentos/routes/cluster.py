@@ -1101,3 +1101,77 @@ async def list_leases(request: Request):
         ],
         "count": len(leases),
     }
+
+
+# ── taOS #796: GPU queue pause/resume ──────────────────────────────────
+
+
+@router.post("/api/cluster/gpu-queue/pause")
+async def pause_gpu_queue(request: Request):
+    """Pause the GPU arbiter queue — running tasks finish, queued tasks wait."""
+    arbiter = getattr(request.app.state, "gpu_arbiter", None)
+    if arbiter is None:
+        return JSONResponse({"error": "GPU arbiter not configured"}, status_code=404)
+    changed = arbiter.pause()
+    return {"status": "paused" if changed else "already_paused", "paused": arbiter.paused}
+
+
+@router.post("/api/cluster/gpu-queue/resume")
+async def resume_gpu_queue(request: Request):
+    """Resume the GPU arbiter queue after a pause."""
+    arbiter = getattr(request.app.state, "gpu_arbiter", None)
+    if arbiter is None:
+        return JSONResponse({"error": "GPU arbiter not configured"}, status_code=404)
+    changed = arbiter.resume()
+    return {"status": "resumed" if changed else "already_running", "paused": arbiter.paused}
+
+
+@router.get("/api/cluster/gpu-queue/stats")
+async def gpu_queue_stats(request: Request):
+    """Return GPU arbiter queue statistics."""
+    arbiter = getattr(request.app.state, "gpu_arbiter", None)
+    if arbiter is None:
+        return JSONResponse({"error": "GPU arbiter not configured"}, status_code=404)
+    stats = arbiter.stats()
+    stats["running_tasks"] = arbiter.running_tasks()
+    stats["queue_snapshot"] = arbiter.queue_snapshot()
+    return stats
+
+
+# ── taOS #796: graceful worker detach ──────────────────────────────────
+
+
+@router.post("/api/cluster/workers/{name}/drain")
+async def drain_worker(request: Request, name: str):
+    """Begin draining a worker — gracefully detach without dropping tasks.
+
+    When ``graceful=true`` (the default), the worker enters "draining" status:
+    no new tasks are routed to it, but existing leases run to completion.
+    The monitor loop auto-completes the drain when all leases are released.
+
+    When ``graceful=false``, all leases are force-released and the worker
+    is marked offline immediately.
+    """
+    cluster = request.app.state.cluster_manager
+    # Read graceful flag from query param or JSON body
+    graceful = True
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            graceful = body.get("graceful", True)
+    except Exception:
+        pass
+    result = cluster.drain_worker(name, graceful=graceful)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    return result
+
+
+@router.post("/api/cluster/workers/{name}/cancel-drain")
+async def cancel_drain(request: Request, name: str):
+    """Cancel an in-progress drain and return the worker to online status."""
+    cluster = request.app.state.cluster_manager
+    result = cluster.cancel_drain(name)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    return result
