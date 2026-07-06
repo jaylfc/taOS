@@ -13,12 +13,8 @@ requires:
   python: ">=3.10"
 
 install:
-  method: script
-  script: scripts/install.sh
-  note: |
-    Installs hermes-agent from PyPI inside the agent container.
-    Configures the Hermes → TAOS bridge adapter (hermes_adapter.py)
-    and a systemd unit that connects to TAOS channels via SSE.
+  method: pip
+  package: hermes-agent
 
 config_schema:
   - name: model

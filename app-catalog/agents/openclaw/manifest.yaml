@@ -12,8 +12,8 @@ requires:
   disk_mb: 2000
 
 install:
-  method: script
-  script: scripts/install.sh
+  method: pip
+  package: openclaw
 
 config_schema:
   - name: model
