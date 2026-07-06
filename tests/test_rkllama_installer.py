@@ -226,8 +226,14 @@ async def _no_sleep(*_a, **_k):
 
 
 class TestInstallProgress:
-    """install() must forward /api/pull's ndjson progress lines to an
-    optional on_progress callback, and never let a malformed line raise.
+    """install() must forward /api/pull's progress lines to an optional
+    on_progress callback, and never let a malformed line raise.
+
+    The jaylfc/rkllama fork actually installed on taOS streams plain-text
+    lines (a "Downloading ... (N MB)..." banner followed by repeated bare
+    "NN%" lines), not Ollama-style JSON -- that's the real cause of #1648
+    (downloads stuck at 0%). The parser stays tolerant of a hypothetical
+    future JSON-emitting build too.
     """
 
     def _installer(self):
@@ -235,7 +241,60 @@ class TestInstallProgress:
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_progress_lines_forwarded_to_callback(self):
+    async def test_plain_text_percent_lines_forwarded_to_callback(self):
+        # Real shape of the fork's /api/pull stream: a banner line, then
+        # repeated bare-percent lines with no JSON at all.
+        pull_body = (
+            "Downloading foo (3500.00 MB)...\n"
+            "0%\n"
+            "13%\n"
+            "47%\n"
+            "100%\n"
+        )
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text=pull_body)
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})
+        )
+        calls = []
+        res = await self._installer().install(
+            "rkllama-x", {}, variant=_VARIANT, on_progress=lambda c, t: calls.append((c, t))
+        )
+        assert res["success"] is True
+        assert calls == [(0, 100), (13, 100), (47, 100), (100, 100)]
+        # Percent-of-100 reporting means the task's percent goes 0 -> 100.
+        assert calls[0][0] == 0
+        assert calls[-1] == (100, 100)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_error_and_blank_lines_ignored_not_raised(self):
+        pull_body = (
+            "Downloading foo (100.00 MB)...\n"
+            "\n"
+            "Error: boom\n"
+            "50%\n"
+        )
+        respx.post("http://localhost:7833/api/pull").mock(
+            return_value=httpx.Response(200, text=pull_body)
+        )
+        respx.get("http://localhost:7833/api/tags").mock(
+            return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})
+        )
+        calls = []
+        res = await self._installer().install(
+            "rkllama-x", {}, variant=_VARIANT, on_progress=lambda c, t: calls.append((c, t))
+        )
+        assert res["success"] is True
+        # Only the "50%" line produces a callback; the banner, blank line,
+        # and "Error: ..." line must never be mistaken for progress.
+        assert calls == [(50, 100)]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_json_completed_total_lines_still_supported(self):
+        # A hypothetical future Ollama-compatible build should still work.
         pull_body = (
             '{"status":"downloading","completed":1000,"total":10000}\n'
             '{"status":"downloading","completed":5000,"total":10000}\n'
@@ -257,9 +316,8 @@ class TestInstallProgress:
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_malformed_lines_ignored_not_raised(self):
+    async def test_malformed_json_lines_ignored_not_raised(self):
         pull_body = (
-            "not json at all\n"
             '{"status":"downloading"}\n'
             '{"status":"downloading","completed":"oops","total":10000}\n'
             '{"status":"downloading","completed":250,"total":1000}\n'
@@ -282,9 +340,7 @@ class TestInstallProgress:
     async def test_no_callback_still_works(self):
         # Default on_progress=None must not change existing behaviour.
         respx.post("http://localhost:7833/api/pull").mock(
-            return_value=httpx.Response(
-                200, text='{"status":"downloading","completed":1,"total":2}\n'
-            )
+            return_value=httpx.Response(200, text="50%\n")
         )
         respx.get("http://localhost:7833/api/tags").mock(
             return_value=httpx.Response(200, json={"models": [{"name": "rkllama-x"}]})

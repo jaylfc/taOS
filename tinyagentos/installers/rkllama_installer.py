@@ -96,26 +96,42 @@ def default_rkllama_url() -> str:
     return f"http://localhost:{_DEFAULT_RKLLAMA_PORT}"
 
 
+_PLAIN_PERCENT_RE = re.compile(r"^\s*(\d{1,3})(?:\.\d+)?\s*%\s*$")
+
+
 def _report_pull_progress(line: str, on_progress: Callable[[int, int], None]) -> None:
-    """Parse one ndjson line from rkllama's /api/pull stream and forward
+    """Parse one line from rkllama's /api/pull stream and forward
     ``(completed, total)`` to ``on_progress``.
 
-    rkllama's pull endpoint is Ollama-style ndjson, e.g.
-    ``{"status":"downloading","completed":1234,"total":56789}``. Lines
-    without both numeric fields (status-only messages, blank keepalives) are
-    silently ignored -- a stray or malformed line must never abort the
+    The jaylfc/rkllama fork actually installed on taOS does NOT stream
+    Ollama-style ndjson. ``generate_progress()`` yields plain-text lines
+    like ``"Downloading <repo> (<size> MB)...\n"`` followed by repeated
+    bare-percent lines like ``"45%\n"``, and ``"Error: <msg>\n"`` on
+    failure -- there are no ``completed``/``total`` JSON fields at all.
+
+    We stay tolerant of both shapes: if a line happens to be JSON with
+    numeric ``completed``/``total`` (e.g. a future Ollama-compatible
+    build), use those directly; otherwise look for a bare percent and
+    report it as completed-of-100. Any other line (banners, "Error: ...",
+    blanks) is ignored -- a stray or malformed line must never abort the
     install.
     """
     try:
         data = json.loads(line)
     except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        completed = data.get("completed")
+        total = data.get("total")
+        if isinstance(completed, (int, float)) and isinstance(total, (int, float)) and total > 0:
+            on_progress(int(completed), int(total))
         return
-    if not isinstance(data, dict):
+
+    m = _PLAIN_PERCENT_RE.match(line)
+    if not m:
         return
-    completed = data.get("completed")
-    total = data.get("total")
-    if isinstance(completed, (int, float)) and isinstance(total, (int, float)) and total > 0:
-        on_progress(int(completed), int(total))
+    percent = max(0, min(100, int(m.group(1))))
+    on_progress(percent, 100)
 
 
 def parse_hf_resolve_url(url: str) -> tuple[str, str, str]:
@@ -185,8 +201,9 @@ class RkllamaInstaller(AppInstaller):
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                # /api/pull streams ndjson progress; we drain the stream until
-                # close. Any non-2xx status is an install failure.
+                # /api/pull streams plain-text progress lines (see
+                # _report_pull_progress); we drain the stream until close.
+                # Any non-2xx status is an install failure.
                 async with client.stream("POST", endpoint, json=body) as resp:
                     if resp.status_code >= 400:
                         text = (await resp.aread()).decode("utf-8", errors="replace")
