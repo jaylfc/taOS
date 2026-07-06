@@ -14,10 +14,9 @@ license = { file = "LICENSE" }
 # supported interpreter; this cap makes the constraint explicit to pip and uv.
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    # Cap below 0.137: fastapi 0.137.0 regressed include_router so that a
-    # mounted APIRouter contributes none of its routes to the app, leaving
-    # create_app() with an empty API surface. 0.136.3 is the last good release.
-    "fastapi>=0.115.0,<0.137",
+    # include_router regression in 0.137.0 (empty API surface) was fixed upstream.
+    # Cap removed as of 0.139.0.
+    "fastapi>=0.115.0",
     "uvicorn[standard]>=0.50.0",
     "httpx>=0.27.0",
     "jinja2>=3.1.0",
