@@ -1135,6 +1135,17 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
             key_rescoped = await proxy.update_agent_key(llm_key, permitted)
         except Exception:
             logger.exception("update_agent_model: re-scoping key for %s failed", name)
+        if not key_rescoped:
+            # Key re-scope failed (e.g. provider type mismatch after model
+            # change).  Discard the stale per-agent key so the deployer
+            # falls back to the master key on the next deploy — a stale
+            # scope would cause LiteLLM to 403 the new model.
+            logger.warning(
+                "update_agent_model: re-scope failed for %s — "
+                "discarding stale per-agent key (will fall back to master key)",
+                name,
+            )
+            agent["llm_key"] = None
 
     framework = agent.get("framework")
     if framework in ("openclaw", "hermes"):

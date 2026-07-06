@@ -365,6 +365,35 @@ async def test_update_agent_model_downloaded_backend_down_returns_actionable_409
     assert "not running" in data["error"]
 
 
+@pytest.mark.asyncio
+async def test_update_agent_model_discards_stale_key_on_re_scope_failure(monkeypatch):
+    """When update_agent_key returns False (e.g. routing-only mode or provider
+    type mismatch), the stale per-agent key must be discarded so the deployer
+    falls back to the master key on the next deploy."""
+    _patch_save(monkeypatch)
+    _patch_resolver(monkeypatch, {})
+    # routing-only proxy (no database_url) — update_agent_key returns False
+    proxy = _FakeProxy(db=False)
+    import tinyagentos.llm_proxy as M
+    monkeypatch.setattr(M.httpx, "AsyncClient", lambda **k: _Client(200))
+    from tinyagentos.routes.agents import update_agent_model, AgentModelUpdate
+    agents = [
+        {
+            "name": "alpha",
+            "model": "llama3",
+            "llm_key": "sk-stale",
+            "permitted_models": ["llama3"],
+        }
+    ]
+    req = _FakeRequest(agents, proxy=proxy)
+    body = AgentModelUpdate(model="qwen3")
+    resp = await update_agent_model(req, "alpha", body)
+    assert resp["status"] == "updated"
+    assert resp["key_rescoped"] is False
+    # The stale key must be discarded
+    assert agents[0].get("llm_key") is None
+
+
 # ---------------------------------------------------------------------------
 # Piece 3 — GET /api/agents/me/models (agent-facing, bearer auth)
 # ---------------------------------------------------------------------------
