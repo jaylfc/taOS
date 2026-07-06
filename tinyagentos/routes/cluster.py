@@ -1101,3 +1101,96 @@ async def list_leases(request: Request):
         ],
         "count": len(leases),
     }
+
+
+# ── taOS #890: worker auto-update with graceful drain ────────────────────
+
+
+class DrainRequest(BaseModel):
+    graceful: bool = True
+
+
+@router.post("/api/cluster/workers/{name}/drain")
+async def drain_worker(request: Request, name: str, body: DrainRequest = DrainRequest()):
+    """Begin draining a worker — gracefully detach without dropping tasks.
+
+    When ``graceful=true`` (the default), the worker enters "draining" status:
+    no new tasks are routed to it, but existing leases run to completion.
+    The monitor loop auto-completes the drain when all leases are released.
+
+    When ``graceful=false``, all leases are force-released and the worker
+    is marked offline immediately.
+    """
+    cluster = request.app.state.cluster_manager
+    result = cluster.drain_worker(name, graceful=body.graceful)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    return result
+
+
+@router.post("/api/cluster/workers/{name}/cancel-drain")
+async def cancel_drain(request: Request, name: str):
+    """Cancel an in-progress drain and return the worker to online status."""
+    cluster = request.app.state.cluster_manager
+    result = cluster.cancel_drain(name)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    return result
+
+
+@router.post("/api/cluster/workers/{name}/update")
+async def update_worker(request: Request, name: str):
+    """Trigger a full auto-update sequence on a worker.
+
+    Orchestrates the graceful update sequence:
+    1. Pause incoming tasks — worker enters "draining" status.
+    2. Inflight leases run to completion (drain).
+    3. Send ``update-worker`` deploy command to the worker.
+    4. Worker restarts, re-registers, returns to "online".
+    5. Routing resumes automatically once the worker is back online.
+    """
+    cluster = request.app.state.cluster_manager
+    worker = cluster.get_worker(name)
+    if not worker:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+    if worker.status not in ("online", "draining"):
+        return JSONResponse(
+            {"error": f"Worker '{name}' is not online (status={worker.status})"},
+            status_code=400,
+        )
+
+    # Step 1: Begin draining
+    drain_result = cluster.drain_worker(name, graceful=True)
+    if "error" in drain_result:
+        return JSONResponse(drain_result, status_code=404)
+
+    # Step 2: Trigger the update-worker deploy command on the worker
+    import httpx
+    deploy_result = None
+    try:
+        async with httpx.AsyncClient(timeout=620) as client:
+            resp = await client.post(
+                f"{worker.url}/api/worker/deploy",
+                json={"command": "update-worker"},
+            )
+            deploy_result = resp.json()
+    except Exception as exc:
+        # Deploy failed — cancel drain so worker can still serve traffic
+        cluster.cancel_drain(name)
+        return JSONResponse(
+            {"error": f"Worker update deploy failed: {exc}", "drain_cancelled": True},
+            status_code=502,
+        )
+
+    return {
+        "worker": name,
+        "status": "updating",
+        "previous_status": drain_result["previous_status"],
+        "drain": drain_result,
+        "deploy": deploy_result,
+        "message": (
+            "Worker is draining and updating. It will restart and re-register. "
+            "The controller monitor loop will auto-complete the drain once "
+            "all leases are released and the new worker process heartbeats."
+        ),
+    }
