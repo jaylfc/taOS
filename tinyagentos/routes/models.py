@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -109,6 +110,25 @@ def _scan_all_roots(roots: list[Path]) -> list[dict]:
     return merged
 
 
+def _scan_sidecar_evidence(models_dir: Path) -> set[str]:
+    """Return the set of app_ids that have rkllama sidecar marker files.
+
+    Checks ``models_dir/.taos-installed/<app_id>/`` for any ``*.json``
+    marker files written by ``_install_and_record`` after a successful
+    rkllama pull.  These are NOT model files — they are metadata markers
+    that provide disk evidence for registry corroboration without appearing
+    as phantom 0 MB downloaded files in the UI (#1548).
+    """
+    sidecar_root = models_dir / ".taos-installed"
+    if not sidecar_root.is_dir():
+        return set()
+    ids: set[str] = set()
+    for child in sidecar_root.iterdir():
+        if child.is_dir() and any(child.glob("*.json")):
+            ids.add(child.name)
+    return ids
+
+
 def _attach_model_ids(downloaded_files: list[dict], models) -> None:
     """Attach the catalog manifest id to each downloaded file entry.
 
@@ -214,6 +234,7 @@ def _model_to_dict(
     live_models: list[dict] | None = None,
     *,
     registry_installed: bool = False,
+    sidecar_installed: bool = False,
 ) -> dict:
     """Convert an AppManifest to a model dict with compatibility info.
 
@@ -232,9 +253,10 @@ def _model_to_dict(
       ``~/models/<backend>/<family>/<manifest_id>/`` — any file there is
       strong evidence the install really happened)
     - a live backend that advertises this manifest id
+    - a sidecar marker written by rkllama installer (``sidecar_installed``)
 
-    Pure registry breadcrumbs without disk or live-backend evidence are
-    treated as stale and NOT marked downloaded. johny saw a bunch of
+    Pure registry breadcrumbs without disk, live-backend, or sidecar evidence
+    are treated as stale and NOT marked downloaded. johny saw a bunch of
     models showing as installed on a fresh install because the registry
     had stale entries from earlier sessions; that bypass is closed here.
     """
@@ -242,10 +264,10 @@ def _model_to_dict(
     live_models = live_models or []
 
     # Corroboration check for registry_installed — does this manifest have
-    # at least one file on disk or one live-backend hit somewhere? Used
-    # below in place of an unconditional registry_installed OR.
+    # at least one file on disk, a live-backend hit, or a sidecar marker?
+    # Used below in place of an unconditional registry_installed OR.
     manifest_id_lower = (manifest.id or "").lower()
-    has_disk_evidence = any(
+    has_disk_evidence = sidecar_installed or any(
         manifest_id_lower in (d.get("relative_path", d.get("filename", "")) or "").lower()
         for d in downloaded_files
     )
@@ -307,6 +329,9 @@ async def list_models(request: Request):
     downloaded = _scan_all_roots(_scan_roots(request))
     _attach_model_ids(downloaded, models)
     live_models = catalog.all_models() if catalog is not None else []
+    # Sidecar evidence: rkllama writes metadata markers in
+    # .taos-installed/<app_id>/ after successful pulls (#1548).
+    sidecar_ids = _scan_sidecar_evidence(_models_dir(request))
     # Build {app_id: True} from the install registry so backend-installed
     # models (e.g. rk-llama.cpp GGUFs at ~/rk-llama.cpp/models/) still show
     # up as downloaded in /api/models even though they're not under data/.
@@ -323,6 +348,7 @@ async def list_models(request: Request):
                 downloaded,
                 live_models,
                 registry_installed=(m.id in installed_ids),
+                sidecar_installed=(m.id in sidecar_ids),
             )
             for m in models
         ],
@@ -387,6 +413,53 @@ async def download_model(request: Request, body: DownloadRequest):
                     logger.warning(
                         "Failed to record rkllama install for %s in registry",
                         body.app_id, exc_info=True,
+                    )
+                # Write a sidecar metadata marker in
+                # models_dir/.taos-installed/<app_id>/<variant_id>.json so
+                # _scan_sidecar_evidence() can provide disk evidence for
+                # registry corroboration even when the live catalog refresh
+                # below fails (#1548).  The sidecar is NOT a model file — it
+                # is an opaque metadata marker that never appears in the
+                # downloaded-files list, so the UI shows no phantom 0 MB
+                # entry and deletes don't touch the real rkllama model.
+                _models_dir_val = _models_dir(request)
+                variant_fmt = variant.get("format", "rkllm")
+                # Sanitise: reject path separators and traversal to prevent
+                # writing outside models_dir even with mkdir(parents=True).
+                for field_name, value in [
+                    ("app_id", body.app_id),
+                    ("variant_id", body.variant_id),
+                ]:
+                    if "/" in value or "\\" in value or ".." in value:
+                        logger.error(
+                            "Rejected path-traversal %s in rkllama marker: %s",
+                            field_name, value,
+                        )
+                        result["success"] = False
+                        result.setdefault("errors", []).append(
+                            f"Invalid {field_name}: path separators not allowed"
+                        )
+                        return result
+                try:
+                    marker_dir = _models_dir_val / ".taos-installed" / body.app_id
+                    marker_dir.mkdir(parents=True, exist_ok=True)
+                    marker = marker_dir / f"{body.variant_id}.json"
+                    marker.write_text(
+                        json.dumps({
+                            "source": "rkllama",
+                            "app_id": body.app_id,
+                            "variant_id": body.variant_id,
+                            "format": variant_fmt,
+                        }) + "\n"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to write rkllama sidecar marker for %s in %s",
+                        body.app_id, _models_dir_val, exc_info=True,
+                    )
+                    # Surface the failure so callers know the marker is missing
+                    result.setdefault("warnings", []).append(
+                        f"Sidecar marker write failed: {exc}"
                     )
                 if catalog is not None:
                     try:
