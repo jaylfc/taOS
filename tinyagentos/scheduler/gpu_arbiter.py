@@ -247,10 +247,14 @@ class GpuArbiter:
                     l.required_vram_mb for l in leases
                     if l.resource_id.startswith(worker.name + ":") and l.required_vram_mb > 0
                 )
-                if worker.free_vram_mb - worker_leases >= required_vram_mb:
+                # Subtract in-flight reservations as well — the cluster-mode
+                # path must also account for tasks whose models are still
+                # loading (taOS #1705).
+                available = worker.free_vram_mb - worker_leases - self._reserved_vram_mb
+                if available >= required_vram_mb:
                     return GpuAdmission(
                         admitted=True,
-                        free_vram_mb=worker.free_vram_mb - worker_leases,
+                        free_vram_mb=available,
                         required_vram_mb=required_vram_mb,
                     )
             return GpuAdmission(
@@ -267,24 +271,28 @@ class GpuArbiter:
         The caller (submit_gpu or _drain_queue) must have already reserved
         VRAM via _reserve_and_check.  This method releases the reservation
         in its finally block.
+
+        The lease claim and _running registration are inside the try block
+        so that the finally always releases the reservation, even when
+        claim_lease fails (taOS #1705 — reservation leak fix).
         """
         lease_id: str | None = None
-        if self._cluster_manager is not None and resource_id is not None:
-            lease = self._cluster_manager.claim_lease(
-                resource_id=resource_id, caller=task.submitter,
-                ttl_seconds=300, required_vram_mb=required_vram_mb,
-            )
-            if lease is None:
-                raise NoResourceAvailableError(
-                    f"GPU lease claim failed for {resource_id} (task {task.id})"
-                )
-            lease_id = lease.lease_id
-        current = asyncio.current_task()
-        async with self._running_lock:
-            self._running[task.id] = (task, lease_id, int(task.priority), required_vram_mb)
-            if current is not None:
-                self._running_tasks[task.id] = current
         try:
+            if self._cluster_manager is not None and resource_id is not None:
+                lease = await self._cluster_manager.claim_lease(
+                    resource_id=resource_id, caller=task.submitter,
+                    ttl_seconds=300, required_vram_mb=required_vram_mb,
+                )
+                if lease is None:
+                    raise NoResourceAvailableError(
+                        f"GPU lease claim failed for {resource_id} (task {task.id})"
+                    )
+                lease_id = lease.lease_id
+            current = asyncio.current_task()
+            async with self._running_lock:
+                self._running[task.id] = (task, lease_id, int(task.priority), required_vram_mb)
+                if current is not None:
+                    self._running_tasks[task.id] = current
             if self._scheduler is not None:
                 result = await self._scheduler.submit(task)
             else:
@@ -309,9 +317,9 @@ class GpuArbiter:
             if entry is not None:
                 _task, _lid, _pri, _vram = entry
                 if _lid is not None and self._cluster_manager is not None:
-                    self._cluster_manager.release_lease(_lid)
+                    await self._cluster_manager.release_lease(_lid)
 
-    def evict_lowest_priority(self, min_priority: int | None = None) -> int:
+    async def evict_lowest_priority(self, min_priority: int | None = None) -> int:
         if not self._eviction_enabled:
             return 0
         victim_id, victim_priority = None, -1
@@ -322,9 +330,9 @@ class GpuArbiter:
                 victim_priority, victim_id = pri, tid
         if victim_id is None:
             return 0
-        return self._evict_task(victim_id)
+        return await self._evict_task(victim_id)
 
-    def _evict_task(self, task_id: str) -> int:
+    async def _evict_task(self, task_id: str) -> int:
         # Atomically pop from _running — whoever pops first owns the lease
         # release.  If _run_gpu_task's finally beat us here the entry is
         # already gone; it will handle the lease itself for normal completion.
@@ -338,7 +346,7 @@ class GpuArbiter:
         # We are the sole lease releaser for evicted tasks.  _run_gpu_task's
         # finally block will see entry=None on its own pop and skip the release.
         if lease_id is not None and self._cluster_manager is not None:
-            self._cluster_manager.release_lease(lease_id)
+            await self._cluster_manager.release_lease(lease_id)
         # Cancel the running asyncio Task — stops _run_gpu_task and frees VRAM
         asyncio_task = self._running_tasks.pop(task_id, None)
         if asyncio_task is not None and not asyncio_task.done():

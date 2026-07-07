@@ -109,7 +109,7 @@ class TestToctouReservation:
         assert arbiter._reserved_vram_mb == 4096
 
         # Evict
-        arbiter._evict_task("t-evict")
+        await arbiter._evict_task("t-evict")
         await runner_task
 
         # After eviction, reservation should be released.

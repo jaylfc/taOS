@@ -124,3 +124,4 @@ docs/STATUS.md
 data/pending-restart.json
 # Stray dev screenshot artifacts
 desktop-initial.png
+venv/
