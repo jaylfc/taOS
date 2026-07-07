@@ -1121,8 +1121,11 @@ async def drain_worker(request: Request, name: str, body: DrainRequest = DrainRe
     When ``graceful=false``, all leases are force-released and the worker
     is marked offline immediately.
     """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     cluster = request.app.state.cluster_manager
-    result = cluster.drain_worker(name, graceful=body.graceful)
+    result = await cluster.drain_worker(name, graceful=body.graceful)
     if "error" in result:
         return JSONResponse(result, status_code=404)
     return result
@@ -1131,8 +1134,11 @@ async def drain_worker(request: Request, name: str, body: DrainRequest = DrainRe
 @router.post("/api/cluster/workers/{name}/cancel-drain")
 async def cancel_drain(request: Request, name: str):
     """Cancel an in-progress drain and return the worker to online status."""
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     cluster = request.app.state.cluster_manager
-    result = cluster.cancel_drain(name)
+    result = await cluster.cancel_drain(name)
     if "error" in result:
         return JSONResponse(result, status_code=404)
     return result
@@ -1149,6 +1155,9 @@ async def update_worker(request: Request, name: str):
     4. Worker restarts, re-registers, returns to "online".
     5. Routing resumes automatically once the worker is back online.
     """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
     if not worker:
@@ -1160,7 +1169,7 @@ async def update_worker(request: Request, name: str):
         )
 
     # Step 1: Begin draining
-    drain_result = cluster.drain_worker(name, graceful=True)
+    drain_result = await cluster.drain_worker(name, graceful=True)
     if "error" in drain_result:
         return JSONResponse(drain_result, status_code=404)
 
@@ -1176,7 +1185,7 @@ async def update_worker(request: Request, name: str):
             deploy_result = resp.json()
     except Exception as exc:
         # Deploy failed — cancel drain so worker can still serve traffic
-        cluster.cancel_drain(name)
+        await cluster.cancel_drain(name)
         return JSONResponse(
             {"error": f"Worker update deploy failed: {exc}", "drain_cancelled": True},
             status_code=502,

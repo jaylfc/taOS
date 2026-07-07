@@ -270,7 +270,7 @@ class TestWorkerDrain:
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("gpu-box", capabilities=["chat"]))
 
-        result = mgr.drain_worker("gpu-box", graceful=True)
+        result = await mgr.drain_worker("gpu-box", graceful=True)
         assert result["worker"] == "gpu-box"
         assert result["previous_status"] == "online"
         assert result["status"] == "draining"
@@ -294,7 +294,7 @@ class TestWorkerDrain:
         )
         mgr._leases["l_test1"] = lease
 
-        result = mgr.drain_worker("gpu-box", graceful=False)
+        result = await mgr.drain_worker("gpu-box", graceful=False)
         assert result["released_leases"] == 1
         assert result["status"] == "offline"
         assert mgr.get_worker("gpu-box").status == "offline"
@@ -303,7 +303,7 @@ class TestWorkerDrain:
     async def test_drain_worker_unknown_returns_error(self):
         """Draining a non-existent worker returns error dict."""
         mgr = ClusterManager()
-        result = mgr.drain_worker("nonexistent")
+        result = await mgr.drain_worker("nonexistent")
         assert "error" in result
         assert result["worker"] == "nonexistent"
 
@@ -311,10 +311,10 @@ class TestWorkerDrain:
         """Cancel drain returns a draining worker back to online."""
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("gpu-box", capabilities=["chat"]))
-        mgr.drain_worker("gpu-box", graceful=True)
+        await mgr.drain_worker("gpu-box", graceful=True)
         assert mgr.get_worker("gpu-box").status == "draining"
 
-        result = mgr.cancel_drain("gpu-box")
+        result = await mgr.cancel_drain("gpu-box")
         assert result["worker"] == "gpu-box"
         assert result["status"] == "online"
         assert mgr.get_worker("gpu-box").status == "online"
@@ -324,14 +324,14 @@ class TestWorkerDrain:
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("gpu-box"))
 
-        result = mgr.cancel_drain("gpu-box")
+        result = await mgr.cancel_drain("gpu-box")
         assert "error" in result
         assert "not draining" in result["error"]
 
     async def test_cancel_drain_unknown_returns_error(self):
         """Cancel drain on unknown worker returns error."""
         mgr = ClusterManager()
-        result = mgr.cancel_drain("nonexistent")
+        result = await mgr.cancel_drain("nonexistent")
         assert "error" in result
 
     async def test_draining_workers_excluded_from_routing(self):
@@ -339,7 +339,7 @@ class TestWorkerDrain:
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("online-gpu", capabilities=["chat"], load=0.1))
         await mgr.register_worker(_make_worker("draining-gpu", capabilities=["chat"], load=0.0))
-        mgr.drain_worker("draining-gpu", graceful=True)
+        await mgr.drain_worker("draining-gpu", graceful=True)
 
         result = mgr.get_workers_for_capability("chat")
         assert len(result) == 1
@@ -354,7 +354,7 @@ class TestWorkerDrain:
         draining.backends = [{"name": "b2", "type": "ollama", "url": "u", "capabilities": ["chat"], "models": [{"name": "m2"}]}]
         await mgr.register_worker(online)
         await mgr.register_worker(draining)
-        mgr.drain_worker("draining", graceful=True)
+        await mgr.drain_worker("draining", graceful=True)
 
         out = mgr.aggregate_catalog()
         assert [w["name"] for w in out["workers"]] == ["online"]
@@ -369,7 +369,7 @@ class TestWorkerDrain:
         worker = mgr.get_worker("draining-gpu")
         worker.free_vram_mb = 8000
 
-        mgr.drain_worker("draining-gpu", graceful=True)
+        await mgr.drain_worker("draining-gpu", graceful=True)
 
         lease = await mgr.claim_lease(
             resource_id="draining-gpu:gpu-cuda-0",

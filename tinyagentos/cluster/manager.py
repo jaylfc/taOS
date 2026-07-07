@@ -3,7 +3,12 @@ import asyncio
 import logging
 import secrets
 import time
+from typing import TYPE_CHECKING
+
 from tinyagentos.cluster.worker_protocol import GpuLease, WorkerInfo
+
+if TYPE_CHECKING:
+    from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +44,7 @@ class ClusterManager:
         self._monitor_task: asyncio.Task | None = None
         self._notifications = notifications  # NotificationStore, optional
         self._capabilities = capabilities    # CapabilityChecker, optional
-        self._gpu_arbiter: object = None       # GpuArbiter, wired in app.py
+        self._gpu_arbiter: GpuArbiter | None = None       # GpuArbiter, wired in app.py
         # Track worker names seen at least once so we only fire worker.join
         # on the very first appearance within this process lifetime.
         self._ever_seen: set[str] = set()
@@ -398,7 +403,7 @@ class ClusterManager:
 
     # ── taOS #890: graceful worker drain for auto-update ───────────────
 
-    def drain_worker(self, name: str, graceful: bool = True) -> dict:
+    async def drain_worker(self, name: str, graceful: bool = True) -> dict:
         """Begin draining a worker — gracefully detach without dropping tasks.
 
         When ``graceful=True`` (the default):
@@ -410,7 +415,8 @@ class ClusterManager:
         When ``graceful=False``:
         1. Worker enters ``"draining"`` status.
         2. All active leases for this worker are released immediately.
-        3. Worker is marked ``"offline"`` immediately.
+        3. Any running GPU arbiter tasks are cancelled.
+        4. Worker is marked ``"offline"`` immediately.
 
         Returns a dict with ``worker``, ``previous_status``, ``released_leases``,
         and ``status``.
@@ -426,17 +432,27 @@ class ClusterManager:
         released = 0
 
         if not graceful:
-            # Force-release all leases for this worker
-            lids = [
-                lid for lid, lease in self._leases.items()
-                if (parsed := self._parse_resource_id(lease.resource_id))
-                and parsed[0] == name
-            ]
-            for lid in lids:
-                self._leases.pop(lid, None)
-                released += 1
+            # Force-release all leases for this worker, holding _lease_lock
+            # so the mutation is serialized with claim/release/sweep.
+            async with self._lease_lock:
+                lids: list[str] = [
+                    lid for lid, lease in self._leases.items()
+                    if (parsed := self._parse_resource_id(lease.resource_id))
+                    and parsed[0] == name
+                ]
+                for lid in lids:
+                    self._leases.pop(lid, None)
+                    released += 1
             logger.info("Worker '%s' drain: force-released %d leases", name, released)
             worker.status = "offline"
+
+            # Cancel any running GPU arbiter tasks for the released leases
+            # so eviction isn't a prod no-op (taOS cross-cutting wiring).
+            if released > 0 and self._gpu_arbiter is not None:
+                try:
+                    await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                except Exception:
+                    logger.exception("gpu-arbiter: cancel for drain of '%s' failed", name)
 
         if self._notifications:
             detail = (
@@ -462,7 +478,7 @@ class ClusterManager:
             "released_leases": released,
         }
 
-    def cancel_drain(self, name: str) -> dict:
+    async def cancel_drain(self, name: str) -> dict:
         """Cancel an in-progress drain and return the worker to online.
 
         Only works when the worker is in ``"draining"`` status and has
@@ -636,20 +652,32 @@ class ClusterManager:
                                 level="info",
                             )
                     elif (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                        # Draining worker went stale — force-finish the drain
-                        lids = [
-                            lid for lid, lease in self._leases.items()
-                            if (parsed := self._parse_resource_id(lease.resource_id))
-                            and parsed[0] == worker.name
-                        ]
-                        for lid in lids:
-                            self._leases.pop(lid, None)
+                        # Draining worker went stale — force-finish the drain.
+                        # Hold _lease_lock so mutation is serialized with
+                        # claim/release/sweep (taOS #1690 lock fix).
+                        async with self._lease_lock:
+                            lids = [
+                                lid for lid, lease in self._leases.items()
+                                if (parsed := self._parse_resource_id(lease.resource_id))
+                                and parsed[0] == worker.name
+                            ]
+                            for lid in lids:
+                                self._leases.pop(lid, None)
                         worker.status = "offline"
                         logger.warning(
                             "Worker '%s' drain timed out (no heartbeat for %ds) — "
                             "force-released %d leases, marked offline",
                             worker.name, HEARTBEAT_TIMEOUT, len(lids),
                         )
+                        # Cancel any running GPU arbiter tasks for the
+                        # released leases (taOS cross-cutting wiring).
+                        if lids and self._gpu_arbiter is not None:
+                            try:
+                                await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                            except Exception:
+                                logger.exception(
+                                    "gpu-arbiter: cancel for stale-drain of '%s' failed",
+                                    worker.name)
             async with self._lease_lock:
                 self._sweep_expired_leases()
             await asyncio.sleep(5)
