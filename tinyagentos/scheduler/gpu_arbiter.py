@@ -413,29 +413,34 @@ class GpuArbiter:
                 if _lid is not None and self._cluster_manager is not None:
                     await self._cluster_manager.release_lease(_lid)
 
-    async def cancel_running_for_leases(self, lease_ids: set[str]) -> int:
+    async def cancel_running_for_leases(self, lease_ids: set[str]) -> tuple[int, int]:
         """Cancel all running GPU tasks whose leases are in *lease_ids*.
 
         Called from ClusterManager drain paths when a worker's leases are
         force-released — the running GPU task must be evicted so its VRAM
         and asyncio resources are freed.
 
-        Returns the number of tasks cancelled.
+        Returns (cancelled, already_completed) so operators can distinguish
+        force-kills from natural completions.
         """
         if not lease_ids:
-            return 0
+            return 0, 0
         victim_ids: list[str] = []
         async with self._running_lock:
             for task_id, (_task, lease_id, _pri, _vram) in self._running.items():
                 if lease_id in lease_ids:
                     victim_ids.append(task_id)
         cancelled = 0
+        already_completed = 0
         for task_id in victim_ids:
-            cancelled += await self._evict_task(task_id)
-        if cancelled:
-            logger.info("gpu-arbiter: cancelled %d running task(s) for %d drained lease(s)",
-                         cancelled, len(lease_ids))
-        return cancelled
+            if await self._evict_task(task_id):
+                cancelled += 1
+            else:
+                already_completed += 1
+        if cancelled or already_completed:
+            logger.info("gpu-arbiter: drain cancelled %d, already-done %d (leases=%d)",
+                         cancelled, already_completed, len(lease_ids))
+        return cancelled, already_completed
 
     async def evict_lowest_priority(self, min_priority: int | None = None) -> int:
         if not self._eviction_enabled:

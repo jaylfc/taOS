@@ -443,14 +443,17 @@ class ClusterManager:
                 for lid in lids:
                     self._leases.pop(lid, None)
                     released += 1
+                worker.status = "offline"
             logger.info("Worker '%s' drain: force-released %d leases", name, released)
-            worker.status = "offline"
 
             # Cancel any running GPU arbiter tasks for the released leases
             # so eviction isn't a prod no-op (taOS cross-cutting wiring).
             if released > 0 and self._gpu_arbiter is not None:
                 try:
-                    await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                    cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                    logger.info(
+                        "Worker '%s' drain: arbiter cancelled %d tasks, %d already done",
+                        name, cancelled, already_done)
                 except Exception:
                     logger.exception("gpu-arbiter: cancel for drain of '%s' failed", name)
 
@@ -663,7 +666,7 @@ class ClusterManager:
                             ]
                             for lid in lids:
                                 self._leases.pop(lid, None)
-                        worker.status = "offline"
+                            worker.status = "offline"
                         logger.warning(
                             "Worker '%s' drain timed out (no heartbeat for %ds) — "
                             "force-released %d leases, marked offline",
@@ -673,7 +676,10 @@ class ClusterManager:
                         # released leases (taOS cross-cutting wiring).
                         if lids and self._gpu_arbiter is not None:
                             try:
-                                await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                                cancelled, already_done = await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                                logger.info(
+                                    "Worker '%s' stale-drain: arbiter cancelled %d tasks, %d already done",
+                                    worker.name, cancelled, already_done)
                             except Exception:
                                 logger.exception(
                                     "gpu-arbiter: cancel for stale-drain of '%s' failed",
