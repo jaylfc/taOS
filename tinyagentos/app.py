@@ -1153,6 +1153,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
             await gpu_arbiter.start()
             app.state.gpu_arbiter = gpu_arbiter
+            cluster_manager._gpu_arbiter = gpu_arbiter  # wire for eviction paths
             logger.info("GPU arbiter ready (queue size=100, eviction=enabled)")
         except Exception:
             logger.exception("GPU arbiter failed to start — GPU tasks will use vanilla scheduler")

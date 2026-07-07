@@ -39,6 +39,7 @@ class ClusterManager:
         self._monitor_task: asyncio.Task | None = None
         self._notifications = notifications  # NotificationStore, optional
         self._capabilities = capabilities    # CapabilityChecker, optional
+        self._gpu_arbiter = None      # GpuArbiter, wired after creation in app.py
         # Track worker names seen at least once so we only fire worker.join
         # on the very first appearance within this process lifetime.
         self._ever_seen: set[str] = set()
