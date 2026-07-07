@@ -92,6 +92,7 @@ class GpuArbiter:
         self._queue: asyncio.PriorityQueue[_QueuedGpuTask] = asyncio.PriorityQueue(maxsize=max_queue_size)
         self._seq = 0
         self._running: dict[str, tuple[Task, str | None, int, int]] = {}
+        self._running_tasks: dict[str, asyncio.Task] = {}
         self._running_lock = asyncio.Lock()
         self._queue_processor_task: asyncio.Task | None = None
         self._submitted = 0
@@ -188,8 +189,11 @@ class GpuArbiter:
                     f"GPU lease claim failed for {resource_id} (task {task.id})"
                 )
             lease_id = lease.lease_id
+        current = asyncio.current_task()
         async with self._running_lock:
             self._running[task.id] = (task, lease_id, int(task.priority), required_vram_mb)
+            if current is not None:
+                self._running_tasks[task.id] = current
         try:
             if self._scheduler is not None:
                 result = await self._scheduler.submit(task)
@@ -197,11 +201,19 @@ class GpuArbiter:
                 result = await task.payload(None)
             self._admitted += 1
             return result
+        except asyncio.CancelledError:
+            logger.info("gpu-arbiter: task %s preempted via CancelledError (pri=%d, vram=%d)",
+                         task.id, task.priority, required_vram_mb)
+            raise
         finally:
             async with self._running_lock:
-                self._running.pop(task.id, None)
-            if lease_id is not None and self._cluster_manager is not None:
-                self._cluster_manager.release_lease(lease_id)
+                entry = self._running.pop(task.id, None)
+                self._running_tasks.pop(task.id, None)
+            # Only release lease if task wasn't already evicted (entry still present)
+            if entry is not None:
+                _task, _lid, _pri, _vram = entry
+                if _lid is not None and self._cluster_manager is not None:
+                    self._cluster_manager.release_lease(_lid)
 
     def evict_lowest_priority(self, min_priority: int | None = None) -> int:
         if not self._eviction_enabled:
@@ -222,11 +234,17 @@ class GpuArbiter:
         task, lease_id, _pri, _vram = self._running.pop(task_id)
         if lease_id is not None and self._cluster_manager is not None:
             self._cluster_manager.release_lease(lease_id)
+        # Cancel the running asyncio Task — stops _run_gpu_task and frees VRAM
+        asyncio_task = self._running_tasks.pop(task_id, None)
+        if asyncio_task is not None and not asyncio_task.done():
+            asyncio_task.cancel()
+        # Also cancel the arbiter future for queued tasks (belt-and-suspenders)
         future = getattr(task, "_arbiter_future", None)
         if future is not None and not future.done():
             future.cancel()
         self._evicted += 1
-        logger.info("gpu-arbiter: evicted task %s (pri=%d)", task_id, _pri)
+        logger.info("gpu-arbiter: evicted task %s (pri=%d, vram=%d, task_cancelled=%s)",
+                     task_id, _pri, _vram, asyncio_task is not None)
         return 1
 
     async def _process_queue(self) -> None:
@@ -247,6 +265,11 @@ class GpuArbiter:
                     future = getattr(entry.task, "_arbiter_future", None)
                     if future is not None and not future.done():
                         future.set_result(result)
+                except asyncio.CancelledError:
+                    # Task was evicted by the arbiter — arbiter_future already
+                    # cancelled by _evict_task, so the submitter got the signal.
+                    # Just move on; the queue processor stays alive.
+                    logger.debug("gpu-arbiter: drain cancelled — task %s evicted", entry.task.id)
                 except Exception as exc:
                     future = getattr(entry.task, "_arbiter_future", None)
                     if future is not None and not future.done():
