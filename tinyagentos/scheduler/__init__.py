@@ -32,6 +32,8 @@ from tinyagentos.scheduler.types import (
 _LAZY_EXPORTS = {
     "BackendCatalog": "backend_catalog",
     "BackendEntry": "backend_catalog",
+    "GpuArbiter": "gpu_arbiter",
+    "GpuAdmission": "gpu_arbiter",
     "HistoryStore": "history_store",
     "Resource": "resource",
     "Scheduler": "scheduler",
@@ -58,6 +60,8 @@ __all__ = [
     "BackendCatalog",
     "BackendEntry",
     "Capability",
+    "GpuAdmission",
+    "GpuArbiter",
     "HistoryStore",
     "NoResourceAvailableError",
     "Priority",

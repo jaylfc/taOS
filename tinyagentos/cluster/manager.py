@@ -252,6 +252,132 @@ class ClusterManager:
     def get_worker(self, name: str) -> WorkerInfo | None:
         return self._workers.get(name)
 
+    # ── GPU arbiter cross-wiring ───────────────────────────────────────
+
+    def set_gpu_arbiter(self, arbiter) -> None:
+        """Wire a :class:`GpuArbiter` into the cluster manager so drain
+        operations can cancel running GPU tasks for evicted workers."""
+        self._gpu_arbiter = arbiter
+
+    # ── Worker drain (taOS #1707) ──────────────────────────────────────
+
+    async def drain_worker(self, name: str, graceful: bool = True) -> dict:
+        """Begin draining a worker — gracefully detach without dropping tasks.
+
+        When ``graceful=True`` (default):
+        1. Worker enters ``\"draining\"`` — no new tasks routed to it.
+        2. Existing leases run to completion (TTL not touched).
+        3. The monitor loop sweeps expired leases and marks the worker
+           ``\"offline\"`` once all leases are released.
+
+        When ``graceful=False``:
+        1. Worker enters ``\"draining\"``.
+        2. All active leases for this worker are released immediately.
+        3. Running GPU arbiter tasks for those leases are cancelled.
+        4. Worker is marked ``\"offline\"`` immediately.
+
+        Returns a dict with ``worker``, ``previous_status``,
+        ``released_leases``, and ``status``.
+        """
+        worker = self._workers.get(name)
+        if worker is None:
+            return {"worker": name, "error": "worker not found"}
+        prev_status = worker.status
+        worker.status = "draining"
+        logger.info(
+            "Worker '%s' entering drain (was %s, graceful=%s)",
+            name, prev_status, graceful,
+        )
+
+        released = 0
+
+        if not graceful:
+            async with self._lease_lock:
+                lids: list[str] = [
+                    lid for lid, lease in self._leases.items()
+                    if (parsed := self._parse_resource_id(lease.resource_id))
+                    and parsed[0] == name
+                ]
+                for lid in lids:
+                    self._leases.pop(lid, None)
+                    released += 1
+                worker.status = "offline"
+            logger.info(
+                "Worker '%s' drain: force-released %d leases", name, released,
+            )
+
+            # Cancel running GPU arbiter tasks for the released leases
+            # so eviction isn't a no-op (taOS #1707 cross-wiring).
+            if released > 0 and getattr(self, "_gpu_arbiter", None) is not None:
+                try:
+                    cancelled, already_done = (
+                        await self._gpu_arbiter.cancel_running_for_leases(set(lids))
+                    )
+                    logger.info(
+                        "Worker '%s' drain: arbiter cancelled %d tasks, %d already done",
+                        name, cancelled, already_done,
+                    )
+                except Exception:
+                    logger.exception(
+                        "gpu-arbiter: cancel for drain of '%s' failed", name,
+                    )
+
+        if self._notifications:
+            detail = (
+                f"Worker '{name}' is draining. "
+                f"{'Tasks will complete before detach.' if graceful else 'All leases released immediately.'}"
+            )
+            try:
+                asyncio.get_running_loop().create_task(
+                    self._notifications.emit_event(
+                        "worker.drain",
+                        f"Worker '{name}' draining",
+                        detail,
+                        level="info",
+                    )
+                )
+            except RuntimeError:
+                pass
+
+        return {
+            "worker": name,
+            "previous_status": prev_status,
+            "status": worker.status,
+            "released_leases": released,
+        }
+
+    async def cancel_drain(self, name: str) -> dict:
+        """Cancel an in-progress drain and return the worker to online.
+
+        Only works when the worker is in ``\"draining\"`` status and has
+        not yet been marked offline.
+        """
+        worker = self._workers.get(name)
+        if worker is None:
+            return {"worker": name, "error": "worker not found"}
+        if worker.status != "draining":
+            return {
+                "worker": name,
+                "error": f"worker is not draining (status={worker.status})",
+            }
+        worker.status = "online"
+        logger.info("Worker '%s' drain cancelled — back online", name)
+
+        if self._notifications:
+            try:
+                asyncio.get_running_loop().create_task(
+                    self._notifications.emit_event(
+                        "worker.online",
+                        f"Worker '{name}' drain cancelled",
+                        f"Worker '{name}' is back online after drain was cancelled.",
+                        level="info",
+                    )
+                )
+            except RuntimeError:
+                pass
+
+        return {"worker": name, "status": "online"}
+
     def find_worker_by_host_lan_ip(self, host_lan_ip: str) -> WorkerInfo | None:
         """Return the worker registered for this bare host's LAN IP, or None.
 
@@ -396,7 +522,9 @@ class ClusterManager:
     # ── Capability routing ─────────────────────────────────────────────
 
     def get_workers_for_capability(self, capability: str) -> list[WorkerInfo]:
-        """Get online workers that support a capability, sorted by priority (lowest load first)."""
+        """Get online workers that support a capability, sorted by priority (lowest load first).
+
+        Draining workers are excluded (taOS #1707)."""
         eligible = [
             w for w in self._workers.values()
             if w.status == "online" and capability in w.capabilities
@@ -516,6 +644,21 @@ class ClusterManager:
                         for lid in offline_lids:
                             self._leases.pop(lid, None)
                             logger.debug("Lease %s released — worker %s went offline", lid, worker.name)
+                # taOS #1707: gracefully drained workers with no remaining
+                # leases can now be marked fully offline.
+                if worker.status == "draining":
+                    active_leases = any(
+                        (parsed := self._parse_resource_id(lease.resource_id))
+                        and parsed[0] == worker.name
+                        for lease in self._leases.values()
+                        if lease.expires_at > now
+                    )
+                    if not active_leases:
+                        worker.status = "offline"
+                        logger.info(
+                            "Worker '%s' drain complete — marked offline (no active leases)",
+                            worker.name,
+                        )
             async with self._lease_lock:
                 self._sweep_expired_leases()
             await asyncio.sleep(5)

@@ -259,3 +259,133 @@ class TestTaskRouter:
         data, worker_name = await router.route_request("chat", "POST", "/v1/chat/completions", {})
         assert data is None
         assert worker_name is None
+
+
+# ---------------------------------------------------------------------------
+# ClusterManager — drain_worker / cancel_drain (taOS #1707)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestClusterManagerDrain:
+    async def test_drain_worker_graceful_marks_draining(self):
+        mgr = ClusterManager()
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        result = await mgr.drain_worker("gpu-box", graceful=True)
+        assert result["worker"] == "gpu-box"
+        assert result["previous_status"] == "online"
+        assert result["status"] == "draining"
+        assert result["released_leases"] == 0
+
+        worker = mgr.get_worker("gpu-box")
+        assert worker.status == "draining"
+
+    async def test_drain_worker_not_found(self):
+        mgr = ClusterManager()
+        result = await mgr.drain_worker("nonexistent")
+        assert result["error"] == "worker not found"
+
+    async def test_drain_worker_force_releases_leases(self):
+        mgr = ClusterManager()
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        # Create a lease for this worker
+        lease = await mgr.claim_lease(
+            resource_id="gpu-box:gpu-cuda-0",
+            caller="test",
+            ttl_seconds=300,
+            required_vram_mb=1024,
+        )
+        assert lease is not None
+
+        result = await mgr.drain_worker("gpu-box", graceful=False)
+        assert result["worker"] == "gpu-box"
+        assert result["status"] == "offline"
+        assert result["released_leases"] == 1
+
+        worker = mgr.get_worker("gpu-box")
+        assert worker.status == "offline"
+
+        # Lease should be gone
+        leases = mgr.get_leases()
+        assert len(leases) == 0
+
+    async def test_cancel_drain_puts_worker_back_online(self):
+        mgr = ClusterManager()
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        await mgr.drain_worker("gpu-box", graceful=True)
+        assert mgr.get_worker("gpu-box").status == "draining"
+
+        result = await mgr.cancel_drain("gpu-box")
+        assert result["status"] == "online"
+        assert mgr.get_worker("gpu-box").status == "online"
+
+    async def test_cancel_drain_not_draining(self):
+        mgr = ClusterManager()
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        result = await mgr.cancel_drain("gpu-box")
+        assert "error" in result
+        assert "not draining" in result["error"]
+
+    async def test_cancel_drain_not_found(self):
+        mgr = ClusterManager()
+        result = await mgr.cancel_drain("nonexistent")
+        assert result["error"] == "worker not found"
+
+    async def test_draining_workers_excluded_from_routing(self):
+        mgr = ClusterManager()
+        await mgr.register_worker(
+            _make_worker("online-w", capabilities=["chat"], load=0.1)
+        )
+        await mgr.register_worker(
+            _make_worker("draining-w", capabilities=["chat"], load=0.1)
+        )
+        await mgr.drain_worker("draining-w", graceful=True)
+
+        workers = mgr.get_workers_for_capability("chat")
+        worker_names = [w.name for w in workers]
+        assert "online-w" in worker_names
+        assert "draining-w" not in worker_names
+
+    async def test_set_gpu_arbiter_cross_wiring(self):
+        mgr = ClusterManager()
+        # set_gpu_arbiter is called by application wiring code;
+        # verify it doesn't crash and stores the reference.
+        mock_arbiter = MagicMock()
+        mgr.set_gpu_arbiter(mock_arbiter)
+        assert mgr._gpu_arbiter is mock_arbiter
+
+    async def test_drain_force_calls_arbiter_cancel(self):
+        from unittest.mock import AsyncMock
+
+        mgr = ClusterManager()
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        mock_arbiter = MagicMock()
+        mock_arbiter.cancel_running_for_leases = AsyncMock(
+            return_value=(2, 0)
+        )
+        mgr.set_gpu_arbiter(mock_arbiter)
+
+        # Create leases
+        await mgr.claim_lease(
+            resource_id="gpu-box:gpu-cuda-0", caller="test",
+            ttl_seconds=300, required_vram_mb=1024,
+        )
+        await mgr.claim_lease(
+            resource_id="gpu-box:gpu-cuda-1", caller="test",
+            ttl_seconds=300, required_vram_mb=2048,
+        )
+
+        result = await mgr.drain_worker("gpu-box", graceful=False)
+        assert result["released_leases"] == 2
+        mock_arbiter.cancel_running_for_leases.assert_called_once()
+        call_args = mock_arbiter.cancel_running_for_leases.call_args[0][0]
+        assert len(call_args) == 2  # two lease IDs
