@@ -52,6 +52,7 @@ class _QueuedGpuTask:
     task: Task = field(compare=False)
     required_vram_mb: int = field(compare=False)
     evictable: bool = field(compare=False)
+    required_gpu_arch: str | None = field(default=None, compare=False)
     queued_at: float = field(default_factory=time.time, compare=False)
 
 
@@ -114,10 +115,14 @@ class GpuArbiter:
         self._queued = 0
         self._evicted = 0
         self._dropped = 0
+        # ── taOS #796: pause/resume queue control ────────────────────────
+        self._paused: bool = False
+        self._paused_at: float | None = None
 
     async def start(self) -> None:
         if self._queue_processor_task is not None:
             return
+        self._paused = False
         self._queue_processor_task = asyncio.create_task(self._process_queue(), name="gpu-arbiter-queue")
 
     async def stop(self) -> None:
@@ -128,6 +133,72 @@ class GpuArbiter:
             except asyncio.CancelledError:
                 pass
             self._queue_processor_task = None
+
+    # ── taOS #796: pause/resume queue control ──────────────────────────
+
+    @property
+    def paused(self) -> bool:
+        """Whether the queue processor is currently paused."""
+        return self._paused
+
+    def pause(self) -> bool:
+        """Pause queue processing. New tasks still queue; running tasks finish.
+
+        Returns True if paused, False if already paused.
+        """
+        if self._paused:
+            return False
+        self._paused = True
+        self._paused_at = time.time()
+        logger.info("gpu-arbiter: queue processing paused (queue_depth=%d, running=%d)",
+                     self._queue.qsize(), len(self._running))
+        return True
+
+    def resume(self) -> bool:
+        """Resume queue processing after a pause.
+
+        Returns True if resumed, False if not paused.
+        """
+        if not self._paused:
+            return False
+        self._paused = False
+        paused_for = time.time() - (self._paused_at or time.time())
+        logger.info("gpu-arbiter: queue processing resumed (was paused for %.1fs, queue_depth=%d)",
+                     paused_for, self._queue.qsize())
+        self._paused_at = None
+        return True
+
+    # ── taOS #796: hardware-aware LLM admission ────────────────────────
+
+    def _check_gpu_arch_compatibility(
+        self, required_gpu_arch: str | None, resource_id: str | None = None,
+    ) -> tuple[bool, str | None]:
+        """Check if a worker's GPU architecture satisfies the requirement.
+
+        ``required_gpu_arch`` is a CUDA compute-capability string like
+        ``"sm_86"`` or ``"sm_75"``.  When the caller specifies this, the
+        arbiter checks that at least one online cluster worker has a
+        compatible GPU.  Without a cluster_manager, the check is skipped
+        (standalone mode trusts the local GPU).
+
+        Returns ``(True, None)`` if compatible or no arch requirement,
+        ``(False, reason)`` if incompatible.
+        """
+        if not required_gpu_arch:
+            return True, None
+        if self._cluster_manager is None:
+            return True, None
+
+        for worker in self._cluster_manager.get_workers():
+            if worker.status not in ("online", "draining"):
+                continue
+            gpu_info = worker.hardware.get("gpu", {}) if isinstance(worker.hardware, dict) else {}
+            gpu_model = gpu_info.get("model", "") or ""
+            cc = gpu_info.get("compute_cap", "") or ""
+            if required_gpu_arch in gpu_model or required_gpu_arch in cc:
+                if resource_id is None or resource_id.startswith(worker.name + ":"):
+                    return True, None
+        return False, f"no online worker with GPU architecture {required_gpu_arch}"
 
     # ── Reservation helpers (TOCTOU fix) ──────────────────────────────
 
@@ -172,8 +243,30 @@ class GpuArbiter:
     async def submit_gpu(
         self, task: Task, required_vram_mb: int = 0,
         evictable: bool = False, resource_id: str | None = None,
+        required_gpu_arch: str | None = None,
     ) -> object:
+        """Submit a GPU task with optional hardware-architecture requirements.
+
+        Args:
+            task: The Task to run.
+            required_vram_mb: VRAM needed in MiB (0 = no VRAM check).
+            evictable: Whether lower-priority tasks can be evicted for this.
+            resource_id: Specific cluster resource to target.
+            required_gpu_arch: CUDA compute capability required (e.g. ``"sm_86"``).
+        """
         self._submitted += 1
+
+        # Hardware architecture check (taOS #796)
+        if required_gpu_arch:
+            arch_ok, arch_reason = self._check_gpu_arch_compatibility(
+                required_gpu_arch, resource_id,
+            )
+            if not arch_ok:
+                raise NoResourceAvailableError(
+                    f"GPU architecture requirement not met: {arch_reason} "
+                    f"(task {task.id})"
+                )
+
         if required_vram_mb > 0:
             admission = await self._reserve_and_check(task.id, required_vram_mb)
             if not admission.admitted:
@@ -190,6 +283,7 @@ class GpuArbiter:
                 entry = _QueuedGpuTask(
                     priority=int(task.priority), seq=self._seq, task=task,
                     required_vram_mb=required_vram_mb, evictable=evictable,
+                    required_gpu_arch=required_gpu_arch,
                 )
                 await self._queue.put(entry)
                 self._queued += 1
@@ -360,7 +454,8 @@ class GpuArbiter:
         try:
             while True:
                 await asyncio.sleep(2)
-                await self._drain_queue()
+                if not self._paused:  # taOS #796: skip drain while paused
+                    await self._drain_queue()
         except asyncio.CancelledError:
             raise
 
