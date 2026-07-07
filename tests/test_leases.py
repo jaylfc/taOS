@@ -338,6 +338,52 @@ async def test_claim_rejects_negative_vram(client, app):
     assert resp.status_code == 422
 
 
+# ── taOS #1705: DELETE /worker endpoint leases ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_unregister_worker_releases_leases(client, app):
+    """DELETE /api/cluster/workers/{name} releases all GPU leases held
+    by that worker (taOS #1705)."""
+    # Register a worker with enough VRAM
+    key = await _register_worker(
+        client, app, "gpu-node", "http://10.0.0.1:9000",
+        capabilities=["llm-chat"],
+        hardware={"gpu": {"model": "GTX 1080", "vram_mb": 8192}},
+    )
+    await _heartbeat(client, key, "gpu-node", free_vram_mb=8000, used_vram_mb=0)
+
+    # Claim two leases
+    claim1 = await client.post("/api/cluster/leases/claim", headers=_auth(app), json={
+        "resource_id": "gpu-node:gpu-cuda-0",
+        "caller": "test",
+        "ttl_seconds": 60,
+    })
+    assert claim1.status_code == 200
+
+    claim2 = await client.post("/api/cluster/leases/claim", headers=_auth(app), json={
+        "resource_id": "gpu-node:gpu-cuda-1",
+        "caller": "test",
+        "ttl_seconds": 60,
+    })
+    assert claim2.status_code == 200
+
+    # Verify both leases are present
+    list_resp = await client.get("/api/cluster/leases", headers=_auth(app))
+    assert list_resp.json()["count"] == 2
+
+    # Unregister the worker — this must release its leases
+    resp = await client.delete("/api/cluster/workers/gpu-node")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "removed"
+
+    # Verify all leases are gone
+    list_resp = await client.get("/api/cluster/leases", headers=_auth(app))
+    assert list_resp.json()["count"] == 0
+
+    await app.state.cluster_pairing.close()
+
+
 # ── ClusterManager unit tests ──────────────────────────────────────────
 
 
@@ -530,3 +576,81 @@ class TestClusterManagerLeases:
 
         result = await task
         assert result is not None
+
+    # ── taOS #1705: unregister releases leases ─────────────────────────
+
+    async def test_unregister_releases_all_leases(self):
+        """Unregistering a worker releases all of its active GPU leases."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        # Claim several leases
+        lease1 = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="test")
+        lease2 = await mgr.claim_lease("gpu-node:gpu-cuda-1", caller="test")
+        assert lease1 is not None
+        assert lease2 is not None
+        assert len(mgr.get_leases()) == 2
+
+        # Unregister — all leases must be gone
+        assert await mgr.unregister_worker("gpu-node") is True
+        assert len(mgr.get_leases()) == 0
+        assert lease1.lease_id not in mgr._leases
+        assert lease2.lease_id not in mgr._leases
+
+    async def test_unregister_unknown_worker_noop(self):
+        """Unregistering an unknown worker returns False and touches no leases."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+        await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="test")
+        assert len(mgr.get_leases()) == 1
+
+        assert await mgr.unregister_worker("ghost") is False
+        assert len(mgr.get_leases()) == 1  # existing lease untouched
+
+    async def test_unregister_one_worker_spares_another(self):
+        """Unregistering worker A leaves worker B's leases untouched."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-a"] = _worker("gpu-a", free_vram=8000)
+        mgr._workers["gpu-b"] = _worker("gpu-b", free_vram=8000)
+
+        lease_a = await mgr.claim_lease("gpu-a:gpu-cuda-0", caller="test")
+        lease_b = await mgr.claim_lease("gpu-b:gpu-cuda-0", caller="test")
+        assert lease_a is not None
+        assert lease_b is not None
+
+        assert await mgr.unregister_worker("gpu-a") is True
+        assert len(mgr.get_leases()) == 1
+        assert lease_b.lease_id in mgr._leases
+        assert lease_a.lease_id not in mgr._leases
+
+    async def test_reclaim_after_unregister(self):
+        """After unregister releases leases, a new claim succeeds."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="first")
+        assert await mgr.unregister_worker("gpu-node") is True
+
+        # Re-register and claim again
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+        lease = await mgr.claim_lease("gpu-node:gpu-cuda-0", caller="second")
+        assert lease is not None
+        assert lease.caller == "second"
+
+    async def test_unregister_releases_leases_atomically(self):
+        """Unregister holds _lease_lock so concurrent claims see a
+        consistent view — they cannot race with the lease release."""
+        mgr = ClusterManager()
+        mgr._workers["gpu-node"] = _worker("gpu-node", free_vram=8000)
+
+        # Hold the lock so unregister blocks on it
+        async with mgr._lease_lock:
+            unregister_task = asyncio.create_task(
+                mgr.unregister_worker("gpu-node")
+            )
+            await asyncio.sleep(0.05)
+            assert not unregister_task.done()
+
+        # Lock released — unregister completes
+        assert await unregister_task
+        assert len(mgr.get_leases()) == 0

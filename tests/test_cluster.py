@@ -43,9 +43,9 @@ class TestClusterManager:
     async def test_unregister_worker(self):
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("gpu-box"))
-        assert mgr.unregister_worker("gpu-box") is True
+        assert await mgr.unregister_worker("gpu-box") is True
         assert mgr.get_workers() == []
-        assert mgr.unregister_worker("gpu-box") is False
+        assert await mgr.unregister_worker("gpu-box") is False
 
     async def test_heartbeat_updates_load_and_status(self):
         mgr = ClusterManager()

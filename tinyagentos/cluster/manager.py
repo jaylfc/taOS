@@ -259,8 +259,36 @@ class ClusterManager:
                 pass  # No running loop (e.g. in sync tests) — skip gracefully
         return True
 
-    def unregister_worker(self, name: str) -> bool:
-        return self._workers.pop(name, None) is not None
+    async def unregister_worker(self, name: str) -> bool:
+        """Remove a worker and all of its active GPU leases.
+
+        When a worker is explicitly unregistered (admin action), every
+        active lease tied to the worker's resources is released so that
+        those resource slots become available for new claims immediately.
+        This mirrors the lease-release logic in ``_monitor_loop`` for the
+        heartbeat-timeout path (taOS #1705).
+        """
+        worker = self._workers.get(name)
+        if worker is None:
+            return False
+
+        # Release all active leases for this worker's resources.
+        async with self._lease_lock:
+            lids: list[str] = [
+                lid for lid, lease in self._leases.items()
+                if (parsed := self._parse_resource_id(lease.resource_id))
+                and parsed[0] == name
+            ]
+            for lid in lids:
+                self._leases.pop(lid, None)
+                logger.debug(
+                    "Lease %s released — worker '%s' unregistered",
+                    lid, name,
+                )
+
+            self._workers.pop(name, None)
+        logger.info("Worker '%s' unregistered — %d leases released", name, len(lids))
+        return True
 
     def get_workers(self) -> list[WorkerInfo]:
         return list(self._workers.values())

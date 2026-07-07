@@ -515,7 +515,7 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
 @router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
     cluster = request.app.state.cluster_manager
-    removed = cluster.unregister_worker(name)
+    removed = await cluster.unregister_worker(name)
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
     return {"status": "removed", "name": name}
