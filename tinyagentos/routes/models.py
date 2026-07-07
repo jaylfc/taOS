@@ -33,6 +33,7 @@ class DeleteRequest(BaseModel):
 
 class PullRequest(BaseModel):
     model_name: str
+    required_vram_mb: int = 0
 
 
 router = APIRouter()
@@ -367,36 +368,64 @@ async def download_model(request: Request, body: DownloadRequest):
         installer = RkllamaInstaller(rkllama_url=resolve_rkllama_url(None))
         catalog = getattr(request.app.state, "backend_catalog", None)
 
-        async def _install_and_record(on_progress):
-            result = await installer.install(
-                body.app_id, {}, variant=variant, on_progress=on_progress
+        # Atomic VRAM check-and-reserve (TOCTOU fix, taOS #1706).
+        # rkllama pulls the model into its backend, which loads it
+        # into VRAM — two concurrent pulls could both pass the VRAM
+        # check and OOM.
+        vram_mgr = getattr(request.app.state, "vram_reservation", None)
+        reservation = None
+        estimated_vram = int(variant.get("min_ram_mb", 0) or 0)  # heuristic
+        if vram_mgr is not None and estimated_vram > 0:
+            reservation = await vram_mgr.reserve(
+                estimated_vram, caller=f"rkllama-pull:{body.app_id}",
             )
-            if result.get("success"):
-                # rkllama pulls the weight into its own model store, not
-                # models_dir, so the disk scan in list_models() never sees it.
-                # Record the install as a registry breadcrumb (corroborated by
-                # live-backend evidence, see _model_to_dict) and force an
-                # immediate catalog refresh so the newly pulled model shows up
-                # in all_models() right away instead of waiting for the next
-                # poll tick.
-                try:
-                    registry.mark_installed(
-                        body.app_id, variant.get("id") or "latest", state="installed"
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to record rkllama install for %s in registry",
-                        body.app_id, exc_info=True,
-                    )
-                if catalog is not None:
+            if reservation is None:
+                effective_free, _total = vram_mgr.available_vram()
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"Insufficient VRAM: need ~{estimated_vram} MiB, "
+                            f"have {effective_free} MiB available. "
+                            f"Try a smaller model or free VRAM first."
+                        ),
+                    },
+                    status_code=503,
+                )
+
+        async def _install_and_record(on_progress):
+            try:
+                result = await installer.install(
+                    body.app_id, {}, variant=variant, on_progress=on_progress
+                )
+                if result.get("success"):
+                    # rkllama pulls the weight into its own model store, not
+                    # models_dir, so the disk scan in list_models() never sees it.
+                    # Record the install as a registry breadcrumb (corroborated by
+                    # live-backend evidence, see _model_to_dict) and force an
+                    # immediate catalog refresh so the newly pulled model shows up
+                    # in all_models() right away instead of waiting for the next
+                    # poll tick.
                     try:
-                        await catalog.refresh()
+                        registry.mark_installed(
+                            body.app_id, variant.get("id") or "latest", state="installed"
+                        )
                     except Exception:
                         logger.warning(
-                            "Backend catalog refresh after rkllama install failed for %s",
+                            "Failed to record rkllama install for %s in registry",
                             body.app_id, exc_info=True,
                         )
-            return result
+                    if catalog is not None:
+                        try:
+                            await catalog.refresh()
+                        except Exception:
+                            logger.warning(
+                                "Backend catalog refresh after rkllama install failed for %s",
+                                body.app_id, exc_info=True,
+                            )
+                return result
+            finally:
+                if vram_mgr is not None and reservation is not None:
+                    vram_mgr.release(reservation.reservation_id)
 
         dm.start_installer_task(download_id, _install_and_record)
         return {
@@ -602,6 +631,28 @@ async def pull_model(request: Request, body: PullRequest):
     model_name = body.model_name.strip()
     if not model_name:
         return JSONResponse({"error": "model_name is required"}, status_code=400)
+
+    # Atomic VRAM check-and-reserve (TOCTOU fix, taOS #1706) —
+    # two concurrent pulls could both see free VRAM and OOM.
+    vram_mgr = getattr(request.app.state, "vram_reservation", None)
+    reservation = None
+    if vram_mgr is not None and body.required_vram_mb > 0:
+        reservation = await vram_mgr.reserve(
+            body.required_vram_mb, caller=f"ollama-pull:{model_name}",
+        )
+        if reservation is None:
+            effective_free, _total = vram_mgr.available_vram()
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Insufficient VRAM: need {body.required_vram_mb} MiB, "
+                        f"have {effective_free} MiB available. "
+                        f"Try a smaller model or free VRAM first."
+                    ),
+                },
+                status_code=503,
+            )
+
     try:
         http_client = request.app.state.http_client
         config = request.app.state.config
@@ -626,6 +677,22 @@ async def pull_model(request: Request, body: PullRequest):
     except Exception as e:
         logger.warning(f"Ollama pull failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=502)
+    finally:
+        if vram_mgr is not None and reservation is not None:
+            vram_mgr.release(reservation.reservation_id)
+
+
+@router.get("/api/models/vram-reservations")
+async def vram_reservation_stats(request: Request):
+    """Return VRAM reservation manager stats for monitoring.
+
+    Includes real-time free/total VRAM from nvidia-smi, in-flight
+    reservations, and effective free VRAM after subtracting reservations.
+    """
+    vram_mgr = getattr(request.app.state, "vram_reservation", None)
+    if vram_mgr is None:
+        return {"available": False}
+    return vram_mgr.stats()
 
 
 @router.get("/api/models/recommended")

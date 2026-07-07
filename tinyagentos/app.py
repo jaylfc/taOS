@@ -43,6 +43,7 @@ from tinyagentos.auth import AuthManager
 from tinyagentos.backend_fallback import BackendFallback
 from tinyagentos.capabilities import CapabilityChecker
 from tinyagentos.cluster.manager import ClusterManager
+from tinyagentos.vram_reservation import VramReservationManager
 from tinyagentos.cluster.router import TaskRouter
 from tinyagentos.config import auto_register_from_manifest, load_config, save_config, save_config_locked
 from tinyagentos.lifecycle_manager import LifecycleManager
@@ -1140,6 +1141,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("resource scheduler failed to build — routes will use static config")
             app.state.resource_scheduler = None
+
+        # VRAM reservation manager — atomic check-and-reserve so two
+        # concurrent model loads cannot both pass a VRAM check before
+        # either consumes physical VRAM (TOCTOU race, taOS #1706).
+        app.state.vram_reservation = VramReservationManager()
+
         # Detect and set container runtime
         from tinyagentos.containers.backend import configure_container_runtime
         configure_container_runtime(config)
