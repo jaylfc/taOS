@@ -94,6 +94,20 @@ class GpuArbiter:
         self._running: dict[str, tuple[Task, str | None, int, int]] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._running_lock = asyncio.Lock()
+
+        # --- TOCTOU-race fix (taOS #894 review feedback #2) ---
+        # _check_admission reads live nvidia-smi free VRAM with no reservation.
+        # Two concurrent submit_gpu calls can both pass before either model loads
+        # — the exact concurrent-load crash the arbiter exists to prevent.
+        # _reserved_vram_mb tracks in-flight admissions that haven't yet
+        # consumed physical VRAM (model still loading).  _reserve_and_check()
+        # atomically checks admission against (probe - _reserved_vram_mb) and
+        # reserves the VRAM if admitted.  _release_reservation() is called in
+        # _run_gpu_task's finally and in _evict_task.
+        self._reserved_vram_mb: int = 0
+        self._pending_reservations: dict[str, int] = {}
+        self._reservation_lock = asyncio.Lock()
+
         self._queue_processor_task: asyncio.Task | None = None
         self._submitted = 0
         self._admitted = 0
@@ -115,14 +129,57 @@ class GpuArbiter:
                 pass
             self._queue_processor_task = None
 
+    # ── Reservation helpers (TOCTOU fix) ──────────────────────────────
+
+    def _release_reservation(self, task_id: str) -> None:
+        """Release an in-flight VRAM reservation for *task_id*.
+
+        Idempotent — safe to call on a task that was never reserved (e.g.
+        a zero-VRAM task or eviction of a queued-but-not-yet-admitted entry).
+        """
+        vram = self._pending_reservations.pop(task_id, None)
+        if vram is not None:
+            self._reserved_vram_mb -= vram
+            logger.debug("gpu-arbiter: released reservation %d MiB for task %s", vram, task_id)
+
+    async def _reserve_and_check(self, task_id: str, required_vram_mb: int) -> GpuAdmission:
+        """Atomically check admission and reserve VRAM if admitted.
+
+        Acquires _reservation_lock, calls _check_admission (which subtracts
+        _reserved_vram_mb from the hardware probe), and if admitted
+        immediately adds required_vram_mb to _reserved_vram_mb so
+        concurrent callers see the reduced capacity.
+
+        Returns the GpuAdmission.  The caller MUST call _release_reservation
+        when the task finishes or is evicted.
+        """
+        if required_vram_mb <= 0:
+            return GpuAdmission(admitted=True)
+
+        async with self._reservation_lock:
+            # Build a synthetic task just for the admission check.  The
+            # reservation-aware check uses _reserved_vram_mb internally.
+            admission = self._check_admission(None, required_vram_mb)
+            if admission.admitted:
+                self._reserved_vram_mb += required_vram_mb
+                self._pending_reservations[task_id] = required_vram_mb
+                logger.debug("gpu-arbiter: reserved %d MiB for task %s (total reserved: %d)",
+                             required_vram_mb, task_id, self._reserved_vram_mb)
+            return admission
+
+    # ── Public API ────────────────────────────────────────────────────
+
     async def submit_gpu(
         self, task: Task, required_vram_mb: int = 0,
         evictable: bool = False, resource_id: str | None = None,
     ) -> object:
         self._submitted += 1
         if required_vram_mb > 0:
-            admission = self._check_admission(task, required_vram_mb)
+            admission = await self._reserve_and_check(task.id, required_vram_mb)
             if not admission.admitted:
+                # Not admitted — release the reservation (belt-and-suspenders:
+                # _reserve_and_check only reserves on admit, but be safe).
+                self._release_reservation(task.id)
                 if self._queue.full():
                     self._dropped += 1
                     raise NoResourceAvailableError(
@@ -144,19 +201,43 @@ class GpuArbiter:
                 except asyncio.CancelledError:
                     self._evicted += 1
                     raise
+            # Admitted — reservation already held by _reserve_and_check, so
+            # _run_gpu_task can proceed safely.
         return await self._run_gpu_task(task, required_vram_mb, evictable, resource_id)
 
-    def _check_admission(self, task: Task, required_vram_mb: int) -> GpuAdmission:
+    def _check_admission(self, task: Task | None, required_vram_mb: int) -> GpuAdmission:
+        """Check whether *required_vram_mb* can be admitted right now.
+
+        Subtracts in-flight reservations (_reserved_vram_mb) from the
+        hardware probe so that concurrent admission attempts see the
+        capacity already promised to other tasks whose models are still
+        loading.
+
+        *task* may be None when called from _reserve_and_check (which
+        doesn't need the full Task — just the VRAM budget).
+        """
         if required_vram_mb <= 0:
             return GpuAdmission(admitted=True)
         free_vram, _total = self._vram_probe()
+        # Subtract in-flight reservations from the probe to close the
+        # TOCTOU window between two concurrent submit_gpu calls.
+        effective_free = max(0, free_vram - self._reserved_vram_mb)
         if free_vram > 0:
-            if free_vram < required_vram_mb:
+            if effective_free < required_vram_mb:
                 return GpuAdmission(
-                    admitted=False, free_vram_mb=free_vram, required_vram_mb=required_vram_mb,
-                    reason=f"insufficient local VRAM: need {required_vram_mb} MiB, have {free_vram} MiB free",
+                    admitted=False,
+                    free_vram_mb=effective_free,
+                    required_vram_mb=required_vram_mb,
+                    reason=(
+                        f"insufficient local VRAM: need {required_vram_mb} MiB, "
+                        f"have {effective_free} MiB available "
+                        f"({free_vram} MiB free - {self._reserved_vram_mb} MiB reserved)"
+                    ),
                 )
-            return GpuAdmission(admitted=True, free_vram_mb=free_vram, required_vram_mb=required_vram_mb)
+            return GpuAdmission(
+                admitted=True, free_vram_mb=effective_free,
+                required_vram_mb=required_vram_mb,
+            )
         if self._cluster_manager is not None:
             leases = self._cluster_manager.get_leases()
             for worker in self._cluster_manager.get_workers():
@@ -168,7 +249,8 @@ class GpuArbiter:
                 )
                 if worker.free_vram_mb - worker_leases >= required_vram_mb:
                     return GpuAdmission(
-                        admitted=True, free_vram_mb=worker.free_vram_mb - worker_leases,
+                        admitted=True,
+                        free_vram_mb=worker.free_vram_mb - worker_leases,
                         required_vram_mb=required_vram_mb,
                     )
             return GpuAdmission(
@@ -177,7 +259,15 @@ class GpuArbiter:
             )
         return GpuAdmission(admitted=True, required_vram_mb=required_vram_mb)
 
-    async def _run_gpu_task(self, task: Task, required_vram_mb: int, evictable: bool, resource_id: str | None) -> object:
+    async def _run_gpu_task(
+        self, task: Task, required_vram_mb: int, evictable: bool, resource_id: str | None,
+    ) -> object:
+        """Execute a GPU task, holding a VRAM reservation for its duration.
+
+        The caller (submit_gpu or _drain_queue) must have already reserved
+        VRAM via _reserve_and_check.  This method releases the reservation
+        in its finally block.
+        """
         lease_id: str | None = None
         if self._cluster_manager is not None and resource_id is not None:
             lease = self._cluster_manager.claim_lease(
@@ -206,6 +296,10 @@ class GpuArbiter:
                          task.id, task.priority, required_vram_mb)
             raise
         finally:
+            # Release the VRAM reservation whether we completed, errored,
+            # or were cancelled.  _evict_task handles its own reservation
+            # release so idempotency matters.
+            self._release_reservation(task.id)
             async with self._running_lock:
                 entry = self._running.pop(task.id, None)
                 self._running_tasks.pop(task.id, None)
@@ -238,6 +332,9 @@ class GpuArbiter:
         if entry is None:
             return 0
         task, lease_id, _pri, _vram = entry
+        # Release the VRAM reservation — the task is being preempted and
+        # its reserved VRAM should be returned to the pool immediately.
+        self._release_reservation(task_id)
         # We are the sole lease releaser for evicted tasks.  _run_gpu_task's
         # finally block will see entry=None on its own pop and skip the release.
         if lease_id is not None and self._cluster_manager is not None:
@@ -264,12 +361,21 @@ class GpuArbiter:
             raise
 
     async def _drain_queue(self) -> None:
+        """Process one queued task if VRAM is available.
+
+        Uses _reserve_and_check so the queue processor doesn't race with
+        concurrent submit_gpu calls — the reservation is atomic with the
+        admission check.
+        """
         retry: list[_QueuedGpuTask] = []
         while not self._queue.empty():
             entry = self._queue.get_nowait()
-            if self._check_admission(entry.task, entry.required_vram_mb).admitted:
+            admission = await self._reserve_and_check(entry.task.id, entry.required_vram_mb)
+            if admission.admitted:
                 try:
-                    result = await self._run_gpu_task(entry.task, entry.required_vram_mb, entry.evictable, None)
+                    result = await self._run_gpu_task(
+                        entry.task, entry.required_vram_mb, entry.evictable, None,
+                    )
                     future = getattr(entry.task, "_arbiter_future", None)
                     if future is not None and not future.done():
                         future.set_result(result)
@@ -282,8 +388,13 @@ class GpuArbiter:
                     future = getattr(entry.task, "_arbiter_future", None)
                     if future is not None and not future.done():
                         future.set_exception(exc)
+                # Only admit one task per drain cycle — the reservation
+                # prevents over-commit.  Subsequent tasks are re-queued and
+                # will be retried on the next tick.
                 break
             else:
+                # Not admitted — release reservation (idempotent) and retry later.
+                self._release_reservation(entry.task.id)
                 retry.append(entry)
         for entry in retry:
             if not self._queue.full():
@@ -301,6 +412,8 @@ class GpuArbiter:
             "dropped": self._dropped, "queue_depth": self._queue.qsize(),
             "running": len(self._running), "max_queue_size": self._max_queue_size,
             "eviction_enabled": self._eviction_enabled,
+            "reserved_vram_mb": self._reserved_vram_mb,
+            "pending_reservations": len(self._pending_reservations),
         }
 
     def running_tasks(self) -> list[dict]:
