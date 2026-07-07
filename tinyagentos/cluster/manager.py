@@ -429,7 +429,8 @@ class ClusterManager:
             # Force-release all leases for this worker
             lids = [
                 lid for lid, lease in self._leases.items()
-                if lease.resource_id.startswith(name + ":")
+                if (parsed := self._parse_resource_id(lease.resource_id))
+                and parsed[0] == name
             ]
             for lid in lids:
                 self._leases.pop(lid, None)
@@ -618,7 +619,8 @@ class ClusterManager:
                 elif worker.status == "draining":
                     active_leases = [
                         lid for lid, lease in self._leases.items()
-                        if lease.resource_id.startswith(worker.name + ":")
+                        if (parsed := self._parse_resource_id(lease.resource_id))
+                        and parsed[0] == worker.name
                     ]
                     if not active_leases:
                         worker.status = "offline"
@@ -637,7 +639,8 @@ class ClusterManager:
                         # Draining worker went stale — force-finish the drain
                         lids = [
                             lid for lid, lease in self._leases.items()
-                            if lease.resource_id.startswith(worker.name + ":")
+                            if (parsed := self._parse_resource_id(lease.resource_id))
+                            and parsed[0] == worker.name
                         ]
                         for lid in lids:
                             self._leases.pop(lid, None)
