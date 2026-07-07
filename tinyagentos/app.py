@@ -57,8 +57,9 @@ from tinyagentos.qmd_client import QmdClient
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.benchmark import BenchmarkStore
 from tinyagentos.installation_state import InstallationState
-from tinyagentos.scheduler import BackendCatalog, GpuArbiter, HistoryStore, ScoreCache, TaskScheduler
+from tinyagentos.scheduler import BackendCatalog, HistoryStore, ScoreCache, TaskScheduler
 from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
+from tinyagentos.scheduler.gpu_arbiter import GpuArbiter, _probe_nvidia_vram
 from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
 from tinyagentos.github_identities import GitHubIdentitiesStore
@@ -1148,11 +1149,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             gpu_arbiter = GpuArbiter(
                 scheduler=resource_scheduler if resource_scheduler is not None else None,
                 cluster_manager=cluster_manager,
+                vram_probe=_probe_nvidia_vram,
                 max_queue_size=100,
                 eviction_enabled=True,
             )
             await gpu_arbiter.start()
             app.state.gpu_arbiter = gpu_arbiter
+            cluster_manager._gpu_arbiter = gpu_arbiter
             logger.info("GPU arbiter ready (queue size=100, eviction=enabled)")
         except Exception:
             logger.exception("GPU arbiter failed to start — GPU tasks will use vanilla scheduler")
@@ -1311,6 +1314,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # local_heartbeat_task is cancelled+awaited above under the bounded
         # cancel_and_wait budget alongside the supervised background tasks.
         await cluster_manager.stop()
+        if app.state.gpu_arbiter is not None:
+            await app.state.gpu_arbiter.stop()
         llm_proxy.stop()
         try:
             from tinyagentos.taos_agent_runtime import stop_taos_opencode_server
