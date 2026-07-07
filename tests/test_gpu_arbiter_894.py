@@ -473,7 +473,7 @@ class TestDrainQueueNonBlocking:
         # Actually, with the new async model, _run_gpu_task removes itself from _running
         # on completion, so let's check:
         if "t-drain-fast" in arbiter._running:
-            arbiter._evict_task("t-drain-fast")
+            await arbiter._evict_task("t-drain-fast")
 
     @pytest.mark.asyncio
     async def test_done_callback_sets_arbiter_future_result(self):
