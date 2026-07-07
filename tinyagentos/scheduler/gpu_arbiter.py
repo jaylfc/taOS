@@ -392,9 +392,9 @@ class GpuArbiter:
                 # whose priority value is *lower* than N (i.e. tasks that are
                 # actually higher priority), so only lower-or-equal priority
                 # running tasks are candidates for eviction.
-                evicted = self.evict_lowest_priority(min_priority=int(entry.task.priority))
+                evicted = await self.evict_lowest_priority(min_priority=int(entry.task.priority))
                 if evicted > 0:
-                    admission = self._check_admission(entry.task, entry.required_vram_mb)
+                    admission = await self._reserve_and_check(entry.task.id, entry.required_vram_mb)
             if admission.admitted:
                 future = getattr(entry.task, "_arbiter_future", None)
                 # Spawn as background task so drain doesn't block and

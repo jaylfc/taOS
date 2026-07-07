@@ -633,7 +633,7 @@ class TestEvictionToMakeRoom:
         assert re_queued.task.id == "lo-queued"
 
         # Cleanup
-        arbiter._evict_task("hi-running")
+        await arbiter._evict_task("hi-running")
 
     @pytest.mark.asyncio
     async def test_eviction_disabled_no_eviction(self):
@@ -672,4 +672,4 @@ class TestEvictionToMakeRoom:
         assert not arbiter._queue.empty()
 
         # Cleanup
-        arbiter._evict_task("running")
+        await arbiter._evict_task("running")
