@@ -369,41 +369,63 @@ class GpuArbiter:
             raise
 
     async def _drain_queue(self) -> None:
-        """Process one queued task if VRAM is available.
+        """Drain the admission queue one task at a time.
+
+        Queue processing is intentionally serial — only one queued task is
+        admitted per drain cycle to avoid flooding the GPU with concurrent
+        loads.  The admitted task is spawned as a background asyncio Task so
+        the drain loop can continue on the next tick and handle
+        eviction-to-make-room for higher-priority arrivals.
 
         Uses _reserve_and_check so the queue processor doesn't race with
         concurrent submit_gpu calls — the reservation is atomic with the
-        admission check.
+        admission check (TOCTOU-safe).
         """
         retry: list[_QueuedGpuTask] = []
-        while not self._queue.empty():
+        drained = False
+        while not self._queue.empty() and not drained:
             entry = self._queue.get_nowait()
             admission = await self._reserve_and_check(entry.task.id, entry.required_vram_mb)
+            if not admission.admitted:
+                # Try eviction-to-make-room for higher-priority queued tasks.
+                # evict_lowest_priority(min_priority=N) skips running tasks
+                # whose priority value is *lower* than N (i.e. tasks that are
+                # actually higher priority), so only lower-or-equal priority
+                # running tasks are candidates for eviction.
+                evicted = self.evict_lowest_priority(min_priority=int(entry.task.priority))
+                if evicted > 0:
+                    admission = self._check_admission(entry.task, entry.required_vram_mb)
             if admission.admitted:
-                try:
-                    result = await self._run_gpu_task(
-                        entry.task, entry.required_vram_mb, entry.evictable, None,
-                    )
-                    future = getattr(entry.task, "_arbiter_future", None)
-                    if future is not None and not future.done():
-                        future.set_result(result)
-                except asyncio.CancelledError:
-                    # Task was evicted by the arbiter — arbiter_future already
-                    # cancelled by _evict_task, so the submitter got the signal.
-                    # Just move on; the queue processor stays alive.
-                    logger.debug("gpu-arbiter: drain cancelled — task %s evicted", entry.task.id)
-                except Exception as exc:
-                    future = getattr(entry.task, "_arbiter_future", None)
-                    if future is not None and not future.done():
-                        future.set_exception(exc)
-                # Only admit one task per drain cycle — the reservation
-                # prevents over-commit.  Subsequent tasks are re-queued and
-                # will be retried on the next tick.
-                break
+                future = getattr(entry.task, "_arbiter_future", None)
+                # Spawn as background task so drain doesn't block and
+                # eviction-to-make-room stays responsive on subsequent ticks.
+                t = asyncio.create_task(
+                    self._run_gpu_task(entry.task, entry.required_vram_mb, entry.evictable, None),
+                    name=f"gpu-arbiter-drain-{entry.task.id}",
+                )
+
+                # Wire result / exception from the background task back to the
+                # submitter's _arbiter_future once it finishes (or fails).
+                if future is not None:
+                    def _propagate(ct: asyncio.Task, f: asyncio.Future = future) -> None:
+                        if f.done():
+                            return
+                        if ct.cancelled():
+                            return  # _evict_task already cancelled the future
+                        exc = ct.exception()
+                        if exc is not None:
+                            f.set_exception(exc)
+                        else:
+                            f.set_result(ct.result())
+
+                    t.add_done_callback(_propagate)
+
+                drained = True
             else:
                 # Not admitted — release reservation (idempotent) and retry later.
                 self._release_reservation(entry.task.id)
                 retry.append(entry)
+        # Re-queue tasks that still can't be admitted
         for entry in retry:
             if not self._queue.full():
                 self._queue.put_nowait(entry)
