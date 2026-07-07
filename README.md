@@ -578,6 +578,18 @@ curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-
 
 See [docs/mirror-policy.md](docs/mirror-policy.md) for the mirror governance policy, what is mirrored, when it updates, how to verify integrity independently, and how to self-host the mirror for air-gapped deployments. The same policy will extend to RK3576, Raspberry Pi 4, Mac mini / Apple Silicon, and x86 classes as those verified install paths land.
 
+## Agent Framework Install Scripts
+
+Several agent frameworks ship with dedicated install scripts under `scripts/install-*.sh` that are invoked automatically by the catalog installer when deploying the corresponding framework:
+
+| Script | Framework | Build toolchain |
+|---|---|---|
+| `scripts/install-deer-flow.sh` | [DeerFlow](https://github.com/bytedance/deer-flow) | Clones repo to `/opt/deer-flow` and provisions with `uv` (Python 3.12) |
+| `scripts/install-moltis.sh` | [Moltis](https://github.com/moltis-org/moltis) | Installs via `cargo install` from crates.io (or git tag) |
+| `scripts/install-picoclaw.sh` | [PicoClaw](https://github.com/sipeed/picoclaw) | Clones repo to `/opt/picoclaw` and builds with `cmake` |
+
+Frameworks available on PyPI (agent-zero, Hermes Agent, OpenClaw) use `install: {method: pip}` in their catalog manifests and do not need a separate install script.
+
 ## TurboQuant KV cache compression
 
 **768K context window on a single RTX 3060 (12 GB).** taOS integrates Google's TurboQuant (ICLR 2026) KV cache quantization via TheTom/llama-cpp-turboquant. Unlike weight quantization, which compresses model files, TurboQuant compresses the per-request KV cache -- the per-token memory that scales with context length and is the actual bottleneck on consumer hardware.
