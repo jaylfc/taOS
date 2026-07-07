@@ -322,33 +322,29 @@ class GpuArbiter:
     async def evict_lowest_priority(self, min_priority: int | None = None) -> int:
         if not self._eviction_enabled:
             return 0
-        victim_id, victim_priority = None, -1
-        for tid, (_t, _lid, pri, _vram) in self._running.items():
-            if min_priority is not None and pri < min_priority:
-                continue
-            if pri > victim_priority:
-                victim_priority, victim_id = pri, tid
+        async with self._running_lock:
+            victim_id, victim_priority = None, -1
+            for tid, (_t, _lid, pri, _vram) in self._running.items():
+                if min_priority is not None and pri < min_priority:
+                    continue
+                if pri > victim_priority:
+                    victim_priority, victim_id = pri, tid
         if victim_id is None:
             return 0
         return await self._evict_task(victim_id)
 
     async def _evict_task(self, task_id: str) -> int:
-        # Atomically pop from _running — whoever pops first owns the lease
-        # release.  If _run_gpu_task's finally beat us here the entry is
-        # already gone; it will handle the lease itself for normal completion.
-        entry = self._running.pop(task_id, None)
-        if entry is None:
-            return 0
-        task, lease_id, _pri, _vram = entry
+        async with self._running_lock:
+            if task_id not in self._running:
+                return 0
+            task, lease_id, _pri, _vram = self._running.pop(task_id)
+            asyncio_task = self._running_tasks.pop(task_id, None)
         # Release the VRAM reservation — the task is being preempted and
         # its reserved VRAM should be returned to the pool immediately.
         self._release_reservation(task_id)
-        # We are the sole lease releaser for evicted tasks.  _run_gpu_task's
-        # finally block will see entry=None on its own pop and skip the release.
         if lease_id is not None and self._cluster_manager is not None:
             await self._cluster_manager.release_lease(lease_id)
         # Cancel the running asyncio Task — stops _run_gpu_task and frees VRAM
-        asyncio_task = self._running_tasks.pop(task_id, None)
         if asyncio_task is not None and not asyncio_task.done():
             asyncio_task.cancel()
         # Also cancel the arbiter future for queued tasks (belt-and-suspenders)
@@ -435,24 +431,27 @@ class GpuArbiter:
                 if future is not None and not future.done():
                     future.set_exception(NoResourceAvailableError("queue full, task dropped"))
 
-    def stats(self) -> dict:
+    async def stats(self) -> dict:
+        async with self._running_lock:
+            running_count = len(self._running)
         return {
             "submitted": self._submitted, "admitted": self._admitted,
             "queued": self._queued, "evicted": self._evicted,
             "dropped": self._dropped, "queue_depth": self._queue.qsize(),
-            "running": len(self._running), "max_queue_size": self._max_queue_size,
+            "running": running_count, "max_queue_size": self._max_queue_size,
             "eviction_enabled": self._eviction_enabled,
             "reserved_vram_mb": self._reserved_vram_mb,
             "pending_reservations": len(self._pending_reservations),
         }
 
-    def running_tasks(self) -> list[dict]:
-        return [
-            {"task_id": tid, "capability": task.capability.value,
-             "submitter": task.submitter, "priority": pri,
-             "vram_mb": vram, "lease_id": lid}
-            for tid, (task, lid, pri, vram) in self._running.items()
-        ]
+    async def running_tasks(self) -> list[dict]:
+        async with self._running_lock:
+            return [
+                {"task_id": tid, "capability": task.capability.value,
+                 "submitter": task.submitter, "priority": pri,
+                 "vram_mb": vram, "lease_id": lid}
+                for tid, (task, lid, pri, vram) in self._running.items()
+            ]
 
     def queue_snapshot(self) -> list[dict]:
         items: list[_QueuedGpuTask] = []
