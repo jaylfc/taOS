@@ -44,4 +44,15 @@ else
     die "no recognized build system found in ${PICOCLAW_HOME}"
 fi
 
+# --- install ----------------------------------------------------------------
+log "installing picoclaw to system"
+if [[ -d build ]]; then
+    cd "$PICOCLAW_HOME/build"
+fi
+if grep -q 'install' Makefile 2>/dev/null || grep -q 'install' ../Makefile 2>/dev/null; then
+    sudo make install || log "make install failed — binary may need manual PATH setup"
+else
+    log "no install target in Makefile — picoclaw binary at ${PICOCLAW_HOME}/build"
+fi
+
 log "picoclaw ${PICOCLAW_VERSION} built at ${PICOCLAW_HOME}"

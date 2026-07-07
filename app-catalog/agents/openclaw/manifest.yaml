@@ -12,8 +12,12 @@ requires:
   disk_mb: 2000
 
 install:
-  method: pip
-  package: openclaw
+  method: script
+  script: scripts/install-openclaw.sh
+  note: |
+    Clones openclaw/openclaw into /opt/openclaw and installs with pip.
+    No PyPI package — `openclaw` on PyPI resolves to an unrelated CMDOP
+    plugin. OpenClaw is clone-and-run only.
 
 config_schema:
   - name: model

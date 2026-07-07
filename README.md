@@ -584,11 +584,13 @@ Several agent frameworks ship with dedicated install scripts under `scripts/inst
 
 | Script | Framework | Build toolchain |
 |---|---|---|
+| `scripts/install-agent-zero.sh` | [Agent Zero](https://github.com/frdel/agent-zero) | Clones repo to `/opt/agent-zero` and installs with pip |
 | `scripts/install-deer-flow.sh` | [DeerFlow](https://github.com/bytedance/deer-flow) | Clones repo to `/opt/deer-flow` and provisions with `uv` (Python 3.12) |
 | `scripts/install-moltis.sh` | [Moltis](https://github.com/moltis-org/moltis) | Installs via `cargo install` from crates.io (or git tag) |
+| `scripts/install-openclaw.sh` | [OpenClaw](https://github.com/openclaw/openclaw) | Clones repo to `/opt/openclaw` and installs with pip |
 | `scripts/install-picoclaw.sh` | [PicoClaw](https://github.com/sipeed/picoclaw) | Clones repo to `/opt/picoclaw` and builds with `cmake` |
 
-Frameworks available on PyPI (agent-zero, Hermes Agent, OpenClaw) use `install: {method: pip}` in their catalog manifests and do not need a separate install script.
+Hermes Agent uses `install: {method: pip, package: hermes-agent}` in its catalog manifest (available on PyPI from Nous Research) and does not need a separate install script.
 
 ## TurboQuant KV cache compression
 
