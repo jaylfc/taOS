@@ -198,13 +198,13 @@ class TestToctouReservation:
             max_queue_size=10,
         )
 
-        stats = arbiter.stats()
+        stats = await arbiter.stats()
         assert stats["reserved_vram_mb"] == 0
         assert stats["pending_reservations"] == 0
 
         arbiter._reserved_vram_mb = 2048
         arbiter._pending_reservations["t-stats"] = 2048
 
-        stats = arbiter.stats()
+        stats = await arbiter.stats()
         assert stats["reserved_vram_mb"] == 2048
         assert stats["pending_reservations"] == 1
