@@ -32,13 +32,14 @@ class TestDrainWorker:
         assert result["status"] == "draining"
         assert w.status == "draining"
 
-    def test_drain_force_releases_leases(self):
+    @pytest.mark.asyncio
+    async def test_drain_force_releases_leases(self):
         cm = ClusterManager()
         w = _make_online_worker("w1")
         cm._workers["w1"] = w
 
         # Give the worker active leases
-        lease = cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
+        lease = await cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
         assert lease is not None
         assert len(cm.get_leases()) == 1
 
@@ -48,12 +49,13 @@ class TestDrainWorker:
         assert w.status == "offline"
         assert len(cm.get_leases()) == 0
 
-    def test_drain_graceful_keeps_leases(self):
+    @pytest.mark.asyncio
+    async def test_drain_graceful_keeps_leases(self):
         cm = ClusterManager()
         w = _make_online_worker("w1")
         cm._workers["w1"] = w
 
-        lease = cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
+        lease = await cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
         assert lease is not None
 
         result = cm.drain_worker("w1", graceful=True)
@@ -195,7 +197,7 @@ class TestMonitorDrainCompletion:
         w.last_heartbeat = time.time()
         cm._workers["w1"] = w
 
-        lease = cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
+        lease = await cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
         assert lease is not None
 
         cm.drain_worker("w1", graceful=True)
@@ -213,7 +215,8 @@ class TestMonitorDrainCompletion:
 # ── GpuArbiter integration ──────────────────────────────────────────────
 
 class TestDrainWithArbiter:
-    def test_drain_force_with_arbiter_evicts_tasks(self):
+    @pytest.mark.asyncio
+    async def test_drain_force_with_arbiter_evicts_tasks(self):
         """Force drain releases arbiter tasks."""
         from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
 
@@ -224,7 +227,7 @@ class TestDrainWithArbiter:
         arbiter = GpuArbiter(cluster_manager=cm)
         cm._gpu_arbiter = arbiter
 
-        lease = cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
+        lease = await cm.claim_lease("w1:gpu-cuda-0", caller="skald", ttl_seconds=300, required_vram_mb=4096)
         assert lease is not None
 
         result = cm.drain_worker("w1", graceful=False)

@@ -274,7 +274,8 @@ class TestReleaseTasksForWorker:
         count = arbiter.release_tasks_for_worker("w1")
         assert count == 0
 
-    def test_running_task_not_matching_worker(self):
+    @pytest.mark.asyncio
+    async def test_running_task_not_matching_worker(self):
         """Task with lease on different worker is not released."""
         from tinyagentos.cluster.manager import ClusterManager
         from tinyagentos.cluster.worker_protocol import WorkerInfo
@@ -291,7 +292,7 @@ class TestReleaseTasksForWorker:
 
         arbiter = GpuArbiter(cluster_manager=cm)
         # Insert a fake running task with a lease on a different worker
-        lease = cm.claim_lease("w1:gpu-cuda-0", caller="test", ttl_seconds=60)
+        lease = await cm.claim_lease("w1:gpu-cuda-0", caller="test", ttl_seconds=60)
         assert lease is not None
 
         count = arbiter.release_tasks_for_worker("w2")  # Different worker
