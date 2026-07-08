@@ -7,6 +7,16 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.37] - 2026-07-08
+
+### Fixed
+- An embedding model can no longer be assigned as an agent's chat model. Assigning one (for example qwen3-embedding-0.6b) now returns a clear error instead of silently accepting it and producing repeating, off-topic output, because an embedding model cannot do chat completion. Reported by @mandresve (#1740).
+- A local RK3588 (RKLLM) model whose context window is too small for the agent harness now surfaces a non-blocking warning when it is assigned, so an over-small context (for example 4096 tokens) is flagged rather than silently truncating the agent prompt and looping (#1740).
+- The RK3588 (RKLLM) backend now returns a structured context-overflow error when a prompt exceeds the model context, so a client can tell a context overflow apart from invalid input or a server fault instead of getting a bare 400. Reported by @mandresve (#1738).
+
+### Added
+- A `taos recover-password` command for offline recovery of a local account password when the admin is locked out of the web login. It resets the password directly in the auth store (single-user, named multi-user, pending, or legacy) and revokes that account's sessions.
+
 ## [1.0.0-beta.36] - 2026-07-08
 
 ### Fixed
