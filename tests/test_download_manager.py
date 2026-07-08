@@ -415,7 +415,7 @@ class TestDownloadWithFallback:
         fake_progress_task.total_bytes = 999
         fake_progress_task.downloaded_bytes = 999
 
-        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb):
+        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb, passkey=None, web_seeds=None):
             dest.write_bytes(data)
             progress_cb(fake_progress_task)
 
@@ -448,7 +448,7 @@ class TestDownloadWithFallback:
         fake_progress_task.total_bytes = 999
         fake_progress_task.downloaded_bytes = 999
 
-        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb):
+        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb, passkey=None, web_seeds=None):
             # never writes dest, just reports progress as if it finished
             progress_cb(fake_progress_task)
 
@@ -473,7 +473,7 @@ class TestDownloadWithFallback:
 
         fake_torrent = AsyncMock()
 
-        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb):
+        async def mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb, passkey=None, web_seeds=None):
             dest.write_bytes(b"")
 
         fake_torrent.download = mock_download
