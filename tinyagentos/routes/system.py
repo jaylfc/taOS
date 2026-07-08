@@ -121,8 +121,8 @@ async def _do_restart(app_state) -> None:
 
 # AI-stack services a recovery action restarts (issue #1743). These are the
 # local inference backends that can stall independently of the controller:
-# rkllama (NPU model server, installed as a user unit) and qmd (shared model
-# provider, a system unit). The controller itself is deliberately NOT here --
+# rkllama (NPU model server, a system unit per install-rknpu.sh) and qmd (shared
+# model provider, a system unit). The controller itself is deliberately NOT here --
 # bouncing it is the separate /api/system/restart/prepare path.
 AI_STACK_UNITS = ("rkllama.service", "qmd.service")
 
