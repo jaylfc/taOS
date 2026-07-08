@@ -66,6 +66,7 @@ class DownloadManager:
         expected_sha256: str | None = None,
         magnet: str | None = None,
         license_allows_redistribution: bool = False,
+        web_seeds: list[str] | None = None,
     ) -> DownloadTask:
         """Start a model download.
 
@@ -75,6 +76,10 @@ class DownloadManager:
         torrent error the download falls back transparently to HTTP
         using ``url``. The caller sees a single DownloadTask either
         way and never has to branch on transport.
+
+        ``web_seeds`` are the manifest's BEP-19 HTTP seeds (typically the
+        HuggingFace resolve URLs) that the swarm rides as a correctness
+        fallback. They are passed straight through to the torrent path.
         """
         task = DownloadTask(id=download_id, url=url, dest=dest)
         self._tasks[download_id] = task
@@ -84,6 +89,7 @@ class DownloadManager:
                 expected_sha256=expected_sha256,
                 magnet=magnet,
                 license_allows_redistribution=license_allows_redistribution,
+                web_seeds=web_seeds,
             )
         )
         return task
@@ -180,6 +186,7 @@ class DownloadManager:
         expected_sha256: str | None = None,
         magnet: str | None = None,
         license_allows_redistribution: bool = False,
+        web_seeds: list[str] | None = None,
     ) -> None:
         """Hybrid download path: swarm first, HTTP fallback.
 
@@ -195,6 +202,16 @@ class DownloadManager:
             and license_allows_redistribution
             and (torrent := self._get_torrent_downloader()) is not None
         ):
+            # Headless passkey fetch: if this host has joined an account mesh,
+            # the controller token unlocks the private taOSnet tracker. A null
+            # passkey (not joined, no passkey yet, revoked, or offline) leaves
+            # the download on the web-seed baseline. Never raises.
+            from tinyagentos.taosnet.passkey_client import (
+                fetch_passkey,
+                get_controller_token,
+            )
+
+            passkey = await fetch_passkey(get_controller_token())
             task.status = "downloading"
             task.started_at = time.time()
             try:
@@ -208,6 +225,8 @@ class DownloadManager:
                     dest=task.dest,
                     expected_sha256=expected_sha256,
                     progress_cb=_progress,
+                    passkey=passkey,
+                    web_seeds=web_seeds,
                 )
                 # torrent.download() already SHA-verified the file internally
                 # (and raised on mismatch), so re-hashing here would just re-read
