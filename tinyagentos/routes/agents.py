@@ -1235,7 +1235,7 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         "location": location.kind,
         "key_rescoped": key_rescoped,
     }
-    warning = _small_context_warning(request.app.state.registry, model_id)
+    warning = _small_context_warning(getattr(request.app.state, "registry", None), model_id)
     if warning:
         result["warning"] = warning
     return result
