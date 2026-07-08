@@ -1622,6 +1622,59 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     return app
 
 
+def _recover_password_cli(argv) -> int:
+    """``taos recover-password`` -- offline reset of a local account password.
+
+    For when the admin is locked out of the web login. Runs directly against
+    the auth store (no server, no token) using the same data directory the
+    controller uses, then revokes that account's sessions. Restart the
+    controller afterwards so open sessions re-authenticate.
+    """
+    import argparse
+    import getpass
+    import os
+    import sys
+
+    from tinyagentos.auth import AuthManager
+
+    parser = argparse.ArgumentParser(
+        prog="taos recover-password",
+        description="Reset a local taOS account password (offline recovery).",
+    )
+    parser.add_argument(
+        "--username", help="Username to reset (default: the only user, single-user mode)."
+    )
+    parser.add_argument(
+        "--password", help="New password (min 8 chars). Omit to be prompted without echo."
+    )
+    parser.add_argument(
+        "--data-dir", help="Data directory (default: TAOS_DATA_DIR env, else <project>/data)."
+    )
+    ns = parser.parse_args(argv)
+
+    override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
+    data_dir = Path(override) if override else (PROJECT_DIR / "data")
+
+    new_password = ns.password
+    if not new_password:
+        new_password = getpass.getpass("New password: ")
+        if new_password != getpass.getpass("Confirm password: "):
+            print("passwords do not match", file=sys.stderr)
+            return 1
+    if len(new_password) < 8:
+        print("password must be at least 8 characters", file=sys.stderr)
+        return 1
+
+    try:
+        who = AuthManager(data_dir).recover_password(new_password, username=ns.username)
+    except ValueError as exc:
+        print(f"recovery failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Password reset for '{who}' in {data_dir}.")
+    print("Restart the taOS controller so open sessions re-authenticate.")
+    return 0
+
+
 def main():
     import sys
     # `taos rollback [ref]` -- undo the last update (restore branch + version) and
@@ -1631,6 +1684,12 @@ def main():
         import subprocess
         script = PROJECT_DIR / "scripts" / "rollback.sh"
         raise SystemExit(subprocess.call(["bash", str(script), *sys.argv[2:]]))
+
+    # `taos recover-password [--username U] [--password P]` -- offline recovery
+    # of a local account when the admin is locked out of the web login. Resets
+    # the auth store directly (no running server needed).
+    if len(sys.argv) > 1 and sys.argv[1] == "recover-password":
+        raise SystemExit(_recover_password_cli(sys.argv[2:]))
 
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")
