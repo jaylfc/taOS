@@ -25,7 +25,7 @@
 #     TAOS_RKNPU_SETUP        set to 1/true to skip interactive confirmation
 #     TAOS_RKLLAMA_DIR        install dir (default: ~<user>/rkllama)
 #     TAOS_RKLLAMA_REPO       git remote (default: https://github.com/jaylfc/rkllama.git)
-#     TAOS_RKLLAMA_REF        git ref  (default: 5e38bd250b68b34278845ba23f507514d2fcf474)
+#     TAOS_RKLLAMA_REF        git ref  (default: 58038c956623e9e18eb39f1ef089f812dd82b6bc)
 #     TAOS_RKLLAMA_PORT       HTTP port (default: 7833)
 #     TAOS_QMD_EXPANSION_URL  override URL for qmd-query-expansion-1.7B-rk3588.rkllm
 #                             (default is the TAOS HF mirror at
@@ -63,7 +63,7 @@ LIBRKNNRT_DEST="/usr/lib/librknnrt.so"
 LIBRKNNRT_EXPECTED_VERSION="2.3.0"
 
 RKLLAMA_REPO="${TAOS_RKLLAMA_REPO:-https://github.com/jaylfc/rkllama.git}"
-RKLLAMA_REF="${TAOS_RKLLAMA_REF:-5e38bd250b68b34278845ba23f507514d2fcf474}"
+RKLLAMA_REF="${TAOS_RKLLAMA_REF:-58038c956623e9e18eb39f1ef089f812dd82b6bc}"
 RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-7833}"
 
 # Qwen3-Embedding-0.6B rk3588 rkllm weights.
