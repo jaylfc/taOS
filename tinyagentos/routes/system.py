@@ -119,6 +119,106 @@ async def _do_restart(app_state) -> None:
         await _emit_fail(str(exc))
 
 
+# AI-stack services a recovery action restarts (issue #1743). These are the
+# local inference backends that can stall independently of the controller:
+# rkllama (NPU model server, installed as a user unit) and qmd (shared model
+# provider, a system unit). The controller itself is deliberately NOT here --
+# bouncing it is the separate /api/system/restart/prepare path.
+AI_STACK_UNITS = ("rkllama.service", "qmd.service")
+
+
+def _is_admin_or_local_token(request: Request) -> bool:
+    """True if the caller is an admin session or presented the host local token.
+
+    Restarting host services is privileged (it runs ``systemctl restart``), so
+    a plain non-admin user session must never reach it. ``AuthMiddleware`` sets
+    both signals on ``request.state`` (see
+    ``tinyagentos/routes/skill_exec.py::_is_admin_or_local_token`` for the full
+    rationale). The ``system`` router is not gated at the router level, so this
+    handler guards itself.
+    """
+    if getattr(request.state, "is_admin", False):
+        return True
+    return getattr(request.state, "via", None) == "local_token"
+
+
+async def _systemctl_rc(args: list[str]) -> int:
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    return proc.returncode
+
+
+async def _restart_ai_unit(unit: str) -> dict:
+    """Restart one AI-stack systemd unit, resolving user vs system scope.
+
+    Fails soft: a unit that is not installed, or that the service user lacks
+    rights to restart (polkit / interactive auth), is reported rather than
+    raised, so restarting one backend still helps when the other cannot be
+    touched. Scope is resolved with ``systemctl [--user] cat`` (returns 0 iff
+    the unit file exists) so a dead/crashed unit -- exactly what recovery
+    targets -- is still restarted, unlike an is-active probe.
+    """
+    if not (os.environ.get("INVOCATION_ID") or os.path.exists("/run/systemd/system")):
+        return {"unit": unit, "ok": False, "detail": "systemd not available on host"}
+
+    scope_flag: list[str] | None = None
+    for candidate in (["--user"], []):
+        if await _systemctl_rc(["systemctl", *candidate, "cat", unit]) == 0:
+            scope_flag = candidate
+            break
+    if scope_flag is None:
+        return {"unit": unit, "ok": False, "detail": "not installed"}
+
+    scope_name = "user" if scope_flag else "system"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            *scope_flag,
+            "restart",
+            unit,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+    except asyncio.TimeoutError:
+        return {"unit": unit, "ok": False, "scope": scope_name, "detail": "restart timed out"}
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"unit": unit, "ok": False, "scope": scope_name, "detail": str(exc)[:200]}
+
+    if proc.returncode == 0:
+        return {"unit": unit, "ok": True, "scope": scope_name}
+    detail = (stderr.decode(errors="replace").strip() or f"exit code {proc.returncode}")[:200]
+    return {"unit": unit, "ok": False, "scope": scope_name, "detail": detail}
+
+
+@router.post("/api/system/ai-stack/restart")
+async def restart_ai_stack(request: Request):
+    """Restart the local AI inference stack (rkllama + qmd) -- issue #1743.
+
+    A recovery action for edge devices where a model stalls (endless NPU
+    generation, unresponsive inference) while the controller itself stays up.
+    Restarts the backend services without bouncing the controller or agents.
+    Admin (or host local token) only. Fails soft per service so a partial
+    recovery still reports what was restarted.
+    """
+    if not _is_admin_or_local_token(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    results = [await _restart_ai_unit(unit) for unit in AI_STACK_UNITS]
+    restarted = [r["unit"] for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    return {
+        "status": "ok" if restarted else "failed",
+        "restarted": restarted,
+        "failed": failed,
+        "results": results,
+    }
+
+
 @router.post("/api/system/hardware/refresh")
 async def hardware_refresh(request: Request):
     """Re-probe hardware and update the cached profile.

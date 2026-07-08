@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.restart_orchestrator import RestartOrchestrator
+from tinyagentos.routes import system as system_routes
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +237,136 @@ class TestRestartStatus:
         assert resp.status_code == 503
         data = resp.json()
         assert "error" in data
+
+
+class _FakeProc:
+    """Minimal asyncio subprocess stand-in for _restart_ai_unit tests."""
+
+    def __init__(self, returncode: int, stderr: bytes = b""):
+        self.returncode = returncode
+        self._stderr = stderr
+
+    async def communicate(self):
+        return (b"", self._stderr)
+
+
+async def _member_client(app) -> AsyncClient:
+    """Cookie'd client for a non-admin member session (mirrors settings authz)."""
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite("member", invite_code, "Test Member", "", "memberpass123456")
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+    )
+
+
+class TestRestartAiStack:
+    """POST /api/system/ai-stack/restart -- issue #1743 backend recovery."""
+
+    @pytest.mark.asyncio
+    async def test_all_ok(self, client, monkeypatch):
+        monkeypatch.setattr(
+            system_routes,
+            "_restart_ai_unit",
+            AsyncMock(side_effect=[
+                {"unit": "rkllama.service", "ok": True, "scope": "user"},
+                {"unit": "qmd.service", "ok": True, "scope": "system"},
+            ]),
+        )
+        resp = await client.post("/api/system/ai-stack/restart")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["restarted"] == ["rkllama.service", "qmd.service"]
+        assert data["failed"] == []
+
+    @pytest.mark.asyncio
+    async def test_partial_recovery_still_ok(self, client, monkeypatch):
+        monkeypatch.setattr(
+            system_routes,
+            "_restart_ai_unit",
+            AsyncMock(side_effect=[
+                {"unit": "rkllama.service", "ok": True, "scope": "user"},
+                {"unit": "qmd.service", "ok": False, "detail": "not installed"},
+            ]),
+        )
+        data = (await client.post("/api/system/ai-stack/restart")).json()
+        assert data["status"] == "ok"
+        assert data["restarted"] == ["rkllama.service"]
+        assert len(data["failed"]) == 1
+        assert data["failed"][0]["unit"] == "qmd.service"
+
+    @pytest.mark.asyncio
+    async def test_all_fail_reports_failed(self, client, monkeypatch):
+        monkeypatch.setattr(
+            system_routes,
+            "_restart_ai_unit",
+            AsyncMock(side_effect=[
+                {"unit": "rkllama.service", "ok": False, "detail": "auth required"},
+                {"unit": "qmd.service", "ok": False, "detail": "auth required"},
+            ]),
+        )
+        data = (await client.post("/api/system/ai-stack/restart")).json()
+        assert data["status"] == "failed"
+        assert data["restarted"] == []
+        assert len(data["failed"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_non_admin_rejected_403(self, client, app, monkeypatch):
+        # Guard should reject before any restart is attempted.
+        monkeypatch.setattr(
+            system_routes, "_restart_ai_unit", AsyncMock(return_value={"ok": True})
+        )
+        member_client = await _member_client(app)
+        try:
+            resp = await member_client.post("/api/system/ai-stack/restart")
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 403
+
+
+class TestRestartAiUnit:
+    """_restart_ai_unit scope resolution + fail-soft behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_restart_user_scope_ok(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "test")  # force systemd-present path
+        # cat finds the unit in --user scope (rc 0), so restart uses --user.
+        monkeypatch.setattr(system_routes, "_systemctl_rc", AsyncMock(return_value=0))
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", AsyncMock(return_value=_FakeProc(0))
+        )
+        result = await system_routes._restart_ai_unit("rkllama.service")
+        assert result == {"unit": "rkllama.service", "ok": True, "scope": "user"}
+
+    @pytest.mark.asyncio
+    async def test_restart_failure_captures_stderr(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "test")
+        monkeypatch.setattr(system_routes, "_systemctl_rc", AsyncMock(return_value=0))
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            AsyncMock(return_value=_FakeProc(1, b"Interactive authentication required")),
+        )
+        result = await system_routes._restart_ai_unit("qmd.service")
+        assert result["ok"] is False
+        assert "Interactive authentication required" in result["detail"]
+
+    @pytest.mark.asyncio
+    async def test_not_installed_when_cat_fails_both_scopes(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "test")
+        monkeypatch.setattr(system_routes, "_systemctl_rc", AsyncMock(return_value=1))
+        result = await system_routes._restart_ai_unit("rkllama.service")
+        assert result == {"unit": "rkllama.service", "ok": False, "detail": "not installed"}
+
+    @pytest.mark.asyncio
+    async def test_no_systemd_fails_soft(self, monkeypatch):
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setattr(system_routes.os.path, "exists", lambda p: False)
+        result = await system_routes._restart_ai_unit("qmd.service")
+        assert result["ok"] is False
+        assert "systemd not available" in result["detail"]
