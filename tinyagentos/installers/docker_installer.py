@@ -65,14 +65,18 @@ class DockerInstaller(AppInstaller):
                     f"config_files[{i}].path resolves outside app_dir: {path!r}"
                 )
 
-        # Persist secret_key per app so re-installs don't rotate it.
+        # Persist secret_key per app so re-installs don't rotate it. It signs
+        # sessions, so keep it owner-only and regenerate if a prior write left
+        # it empty or malformed.
         secret_key_path = app_dir / ".secret_key"
+        secret_key = ""
         if secret_key_path.exists():
             secret_key = secret_key_path.read_text().strip()
-        else:
+        if len(secret_key) != 64 or not all(c in "0123456789abcdef" for c in secret_key):
             secret_key = secrets.token_hex(32)
             app_dir.mkdir(parents=True, exist_ok=True)
             secret_key_path.write_text(secret_key)
+            secret_key_path.chmod(0o600)
 
         for entry in config_files:
             path = entry["path"]

@@ -121,6 +121,27 @@ class TestDockerInstaller:
 
         assert deep_yml.read_text() == "key: static"
 
+    def test_secret_key_file_is_owner_only(self, tmp_path):
+        installer = DockerInstaller(apps_dir=tmp_path)
+        installer._write_config_files("searxng", {
+            "config_files": [{"path": "settings.yml", "content": '{secret_key}'}]
+        })
+        secret_path = tmp_path / "searxng" / ".secret_key"
+        assert secret_path.exists()
+        assert (secret_path.stat().st_mode & 0o777) == 0o600
+
+    def test_empty_or_malformed_persisted_secret_is_regenerated(self, tmp_path):
+        installer = DockerInstaller(apps_dir=tmp_path)
+        app_dir = tmp_path / "searxng"
+        app_dir.mkdir(parents=True)
+        (app_dir / ".secret_key").write_text("   ")  # empty/whitespace from a prior bad write
+        installer._write_config_files("searxng", {
+            "config_files": [{"path": "settings.yml", "content": 'k: "{secret_key}"'}]
+        })
+        key_val = (app_dir / "settings.yml").read_text().split('"')[1]
+        assert len(key_val) == 64
+        assert all(c in "0123456789abcdef" for c in key_val)
+
     def test_write_config_files_noop_when_no_config_files(self, tmp_path):
         installer = DockerInstaller(apps_dir=tmp_path)
         installer._write_config_files("app", {"image": "x:1"})
