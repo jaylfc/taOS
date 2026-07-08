@@ -618,9 +618,11 @@ install_systemd_unit() {
     local exec_start
     # This ExecStart line is copy-of-truth from the live orange pi:
     #   rkllama_server --processor rk3588 --port 8080 \
-    #     --models /home/jay/rkllama/models \
-    #     --preload qwen3-embedding-0.6b,qwen3-reranker-0.6b,qmd-query-expansion
-    exec_start="$RKLLAMA_VENV/bin/python $RKLLAMA_VENV/bin/rkllama_server --processor $SOC --port $RKLLAMA_PORT --models $RKLLAMA_MODELS --preload qwen3-embedding-0.6b,qwen3-reranker-0.6b,qmd-query-expansion"
+    #     --models /home/jay/rkllama/models
+    # Note: --preload was removed because the current rkllama server
+    # no longer supports it. Models load lazily on first inference
+    # request (see scripts/systemd/rkllama.service for rationale).
+    exec_start="$RKLLAMA_VENV/bin/python $RKLLAMA_VENV/bin/rkllama_server --processor $SOC --port $RKLLAMA_PORT --models $RKLLAMA_MODELS"
 
     log "installing $unit"
     sudo tee "$unit" >/dev/null <<EOF
@@ -679,9 +681,9 @@ verify_models() {
         fi
     done
     if (( missing )); then
-        die "one or more preloaded models are missing — see list above"
+        die "one or more required models are missing — see list above"
     fi
-    log "all three preloaded models are present"
+    log "all three required models are present"
 }
 
 # -------- (8) summary + idempotency check --------------------------------
@@ -719,7 +721,7 @@ print_summary() {
     rkllama dir:   $RKLLAMA_DIR
     rkllama ref:   ${RKLLAMA_REF:0:12}
     models dir:    $RKLLAMA_MODELS
-    preloaded:     qwen3-embedding-0.6b, qwen3-reranker-0.6b, qmd-query-expansion
+    preloaded:     qwen3-embedding-0.6b, qwen3-reranker-0.6b, qmd-query-expansion (lazy-load mode)
     HTTP endpoint: http://localhost:$RKLLAMA_PORT
     systemd unit:  /etc/systemd/system/rkllama.service
 
