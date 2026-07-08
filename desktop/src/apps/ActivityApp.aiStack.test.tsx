@@ -53,7 +53,7 @@ describe("AiStackRecovery", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
-          status: "ok",
+          status: "partial",
           restarted: ["rkllama.service"],
           failed: [{ unit: "qmd.service", ok: false, detail: "Interactive authentication required" }],
           results: [
@@ -67,9 +67,13 @@ describe("AiStackRecovery", () => {
     render(<AiStackRecovery />);
     fireEvent.click(screen.getByRole("button", { name: /restart ai services/i }));
     fireEvent.click(screen.getByRole("button", { name: /^restart$/i }));
+    // Partial recovery must not read as full success: amber heading + the
+    // per-service failure detail + the "could not be restarted" note.
     await waitFor(() =>
-      expect(screen.getByText(/interactive authentication required/i)).toBeInTheDocument(),
+      expect(screen.getByText(/some ai services restarted/i)).toBeInTheDocument(),
     );
+    expect(screen.getByText(/interactive authentication required/i)).toBeInTheDocument();
+    expect(screen.getByText(/some services could not be restarted/i)).toBeInTheDocument();
   });
 
   it("shows an admin-only message on 403", async () => {

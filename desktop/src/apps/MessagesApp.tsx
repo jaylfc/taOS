@@ -628,8 +628,12 @@ export function MessagesApp({
           return;
         }
         if (data.type === "thinking") {
-          // #1741: any thinking frame is live activity — keep the watch fresh.
-          setResponseWatch((w) => (w ? { ...w, lastActivityAt: Date.now() } : w));
+          // #1741: a thinking frame from the waited-on agent is live activity.
+          // Scope to that agent so a concurrent generation by another agent
+          // cannot keep a stalled watch fresh.
+          setResponseWatch((w) =>
+            w && data.slug === w.agent ? { ...w, lastActivityAt: Date.now() } : w,
+          );
           if (data.state === "start") {
             setTypingAgents((prev) => {
               const without = prev.filter((a) => a.slug !== data.slug);
@@ -663,12 +667,16 @@ export function MessagesApp({
                 notify(`${data.author_id} in #${chName}`, data.content ?? "", () => setSelectedChannel(data.channel_id));
               }
             }
-            // #1741: an agent's reply frame in the watched channel is activity.
-            if (data.author_id && data.author_id !== "user") {
-              setResponseWatch((w) =>
-                w && w.channelId === data.channel_id ? { ...w, lastActivityAt: Date.now() } : w,
-              );
-            }
+            // #1741: the waited-on agent's reply frame in the watched channel
+            // is activity. Scope to that agent (not any non-user author) so a
+            // message from another speaker in a group channel cannot mask a
+            // real stall, and record the reply id so subsequent deltas (which
+            // carry no channel_id) can be matched to this stream.
+            setResponseWatch((w) =>
+              w && w.channelId === data.channel_id && data.author_id === w.agent
+                ? { ...w, lastActivityAt: Date.now(), streamId: data.id }
+                : w,
+            );
             break;
 
           case "message_delta":
@@ -679,9 +687,14 @@ export function MessagesApp({
                   : m,
               ),
             );
-            // #1741: deltas carry no channel_id, but a delta only flows for an
-            // in-flight generation — bump the watch so streaming never trips it.
-            setResponseWatch((w) => (w ? { ...w, lastActivityAt: Date.now() } : w));
+            // #1741: bump only for the reply we are waiting on (matched by the
+            // stream id captured above), so a concurrent generation in another
+            // open channel cannot keep this watch alive.
+            setResponseWatch((w) =>
+              w && w.streamId && data.message_id === w.streamId
+                ? { ...w, lastActivityAt: Date.now() }
+                : w,
+            );
             break;
 
           case "message_state":
@@ -690,9 +703,13 @@ export function MessagesApp({
                 m.id === data.message_id ? { ...m, state: data.state } : m,
               ),
             );
-            // #1741: a terminal state means the response resolved — stop watching.
+            // #1741: a terminal state on the watched reply means it resolved.
+            // Clear only for our stream (or before any stream id was captured,
+            // as a defensive fallback), not for an unrelated channel's finish.
             if (data.state === "complete" || data.state === "error") {
-              setResponseWatch((w) => (w ? null : w));
+              setResponseWatch((w) =>
+                w && (!w.streamId || data.message_id === w.streamId) ? null : w,
+              );
             }
             break;
 

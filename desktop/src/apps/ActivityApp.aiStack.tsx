@@ -114,10 +114,15 @@ export function AiStackRecovery({ onRecovered }: { onRecovered?: () => void }) {
             {phase === "done" && result && (
               <>
                 <h3 className="text-base font-semibold flex items-center gap-2">
-                  {result.status === "ok" ? (
+                  {result.failed.length === 0 ? (
                     <>
                       <CheckCircle2 size={16} className="text-emerald-400" aria-hidden="true" />
                       AI services restarted
+                    </>
+                  ) : result.restarted.length > 0 ? (
+                    <>
+                      <AlertTriangle size={16} className="text-amber-400" aria-hidden="true" />
+                      Some AI services restarted
                     </>
                   ) : (
                     <>
@@ -142,9 +147,9 @@ export function AiStackRecovery({ onRecovered }: { onRecovered?: () => void }) {
                     </li>
                   ))}
                 </ul>
-                {result.status !== "ok" && (
+                {result.failed.length > 0 && (
                   <p className="text-xs text-shell-text-tertiary">
-                    Some services could not be restarted automatically — they may need permissions
+                    Some services could not be restarted automatically. They may need permissions
                     this device has not granted yet.
                   </p>
                 )}

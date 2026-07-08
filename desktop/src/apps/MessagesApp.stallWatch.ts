@@ -13,6 +13,11 @@ export interface StallWatch {
   channelId: string;
   agent: string;
   lastActivityAt: number;
+  // Id of the agent's in-flight reply message, set when its placeholder frame
+  // arrives. Deltas carry no channel_id, so this is how we scope delta bumps to
+  // the reply we are actually waiting on rather than any concurrent generation
+  // in another open channel.
+  streamId?: string;
 }
 
 export interface StallWatchChannel {

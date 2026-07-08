@@ -165,15 +165,21 @@ async def _restart_ai_unit(unit: str) -> dict:
     if not (os.environ.get("INVOCATION_ID") or os.path.exists("/run/systemd/system")):
         return {"unit": unit, "ok": False, "detail": "systemd not available on host"}
 
+    # Resolve scope. Guarded so a missing/unusable systemctl is reported rather
+    # than raised (keeps the documented "reported, not raised" contract).
     scope_flag: list[str] | None = None
-    for candidate in (["--user"], []):
-        if await _systemctl_rc(["systemctl", *candidate, "cat", unit]) == 0:
-            scope_flag = candidate
-            break
+    try:
+        for candidate in (["--user"], []):
+            if await _systemctl_rc(["systemctl", *candidate, "cat", unit]) == 0:
+                scope_flag = candidate
+                break
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"unit": unit, "ok": False, "detail": f"systemctl unavailable: {str(exc)[:160]}"}
     if scope_flag is None:
         return {"unit": unit, "ok": False, "detail": "not installed"}
 
     scope_name = "user" if scope_flag else "system"
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
@@ -185,6 +191,13 @@ async def _restart_ai_unit(unit: str) -> dict:
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
     except asyncio.TimeoutError:
+        # Kill and reap the child so a hung systemctl is not orphaned.
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:  # pragma: no cover - defensive
+                pass
         return {"unit": unit, "ok": False, "scope": scope_name, "detail": "restart timed out"}
     except Exception as exc:  # pragma: no cover - defensive
         return {"unit": unit, "ok": False, "scope": scope_name, "detail": str(exc)[:200]}
@@ -203,16 +216,17 @@ async def restart_ai_stack(request: Request):
     generation, unresponsive inference) while the controller itself stays up.
     Restarts the backend services without bouncing the controller or agents.
     Admin (or host local token) only. Fails soft per service so a partial
-    recovery still reports what was restarted.
+    recovery still reports what was restarted. The units are restarted
+    concurrently so worst-case latency is one unit's timeout, not their sum.
     """
     if not _is_admin_or_local_token(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
-    results = [await _restart_ai_unit(unit) for unit in AI_STACK_UNITS]
+    results = list(await asyncio.gather(*(_restart_ai_unit(u) for u in AI_STACK_UNITS)))
     restarted = [r["unit"] for r in results if r.get("ok")]
     failed = [r for r in results if not r.get("ok")]
     return {
-        "status": "ok" if restarted else "failed",
+        "status": "ok" if restarted and not failed else "partial" if restarted else "failed",
         "restarted": restarted,
         "failed": failed,
         "results": results,

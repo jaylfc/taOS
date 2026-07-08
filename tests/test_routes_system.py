@@ -285,7 +285,7 @@ class TestRestartAiStack:
         assert data["failed"] == []
 
     @pytest.mark.asyncio
-    async def test_partial_recovery_still_ok(self, client, monkeypatch):
+    async def test_partial_recovery_reports_partial(self, client, monkeypatch):
         monkeypatch.setattr(
             system_routes,
             "_restart_ai_unit",
@@ -295,7 +295,8 @@ class TestRestartAiStack:
             ]),
         )
         data = (await client.post("/api/system/ai-stack/restart")).json()
-        assert data["status"] == "ok"
+        # A mixed result is "partial" (not "ok"), so the UI can flag it.
+        assert data["status"] == "partial"
         assert data["restarted"] == ["rkllama.service"]
         assert len(data["failed"]) == 1
         assert data["failed"][0]["unit"] == "qmd.service"
