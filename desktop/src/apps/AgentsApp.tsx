@@ -494,7 +494,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
             onClick={() => setImportWizardOpen(true)}
             size={isMobile ? "icon" : "sm"}
             variant="outline"
-            className={isMobile ? "h-10 w-10" : undefined}
+            className={isMobile ? "h-11 w-11" : undefined}
             aria-label="Import an existing agent"
           >
             <Upload size={isMobile ? 18 : 14} />
@@ -503,7 +503,7 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           <Button
             onClick={() => setWizardOpen(true)}
             size={isMobile ? "icon" : "sm"}
-            className={`text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0${isMobile ? " h-10 w-10" : ""}`}
+            className={`text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0${isMobile ? " h-11 w-11" : ""}`}
             style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
             aria-label="Deploy new agent"
           >
