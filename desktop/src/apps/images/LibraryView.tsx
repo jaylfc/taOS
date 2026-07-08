@@ -82,11 +82,11 @@ export function LibraryView({
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         {/* grid */}
         <div
-          className={`grid flex-1 content-start gap-3.5 overflow-auto p-[22px] ${
-            selected ? "grid-cols-3" : "grid-cols-4"
+          className={`grid flex-1 content-start gap-3.5 overflow-auto p-[22px] grid-cols-2 sm:grid-cols-3 ${
+            selected ? "md:grid-cols-3" : "md:grid-cols-4"
           }`}
         >
           {loading ? (
@@ -137,7 +137,7 @@ export function LibraryView({
 
         {/* detail pane */}
         {selected && (
-          <div className="flex w-[300px] flex-none flex-col gap-4 overflow-auto border-l border-shell-border p-[18px]">
+          <div className="flex w-full md:w-[300px] flex-none flex-col gap-4 overflow-auto border-t md:border-t-0 md:border-l border-shell-border p-[18px]">
             <div className="aspect-square overflow-hidden rounded-2xl border border-shell-border bg-shell-bg-deep">
               {selected.url ? (
                 <img

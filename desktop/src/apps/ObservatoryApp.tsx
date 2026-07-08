@@ -251,7 +251,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-shell-bg">
       {/* Header + global steer */}
-      <div className="flex items-center gap-2 border-b border-shell-border px-5 py-4">
+      <div className="flex flex-wrap items-center gap-2 gap-y-2 border-b border-shell-border px-5 py-4">
         <Radar size={18} className="text-accent" />
         <h1 className="text-base font-semibold text-shell-text">Observatory</h1>
         {health && health.total > 0 && (
@@ -318,7 +318,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
       )}
 
       {/* Steer: global concurrency cap (volume knob alongside the pause switch) */}
-      <div className="flex items-center gap-3 border-b border-shell-border px-5 py-2.5">
+      <div className="flex flex-wrap items-center gap-3 gap-y-1.5 border-b border-shell-border px-5 py-2.5">
         <span className="text-xs font-medium uppercase tracking-wide text-shell-text-tertiary">
           Concurrency cap
         </span>
@@ -365,7 +365,7 @@ export function ObservatoryApp({ windowId: _windowId }: { windowId: string }) {
               return (
                 <li
                   key={a.handle + (a.holds?.task_id ?? "")}
-                  className="flex items-center gap-3 rounded-xl border border-shell-border bg-shell-surface px-4 py-3"
+                  className="flex flex-wrap items-center gap-3 gap-y-2 rounded-xl border border-shell-border bg-shell-surface px-4 py-3"
                 >
                   <CircleDot
                     size={14}

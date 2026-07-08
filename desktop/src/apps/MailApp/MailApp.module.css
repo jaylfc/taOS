@@ -589,6 +589,15 @@
   padding: 0 16px;
   border-bottom: 1px solid var(--ml-border);
 }
+/* On a phone the full action set (back/reply/reply-all/forward/archive/delete/
+   share/more) overflows one 48px row, so allow it to wrap. */
+@media (max-width: 767px) {
+  .readToolbar {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 6px 12px;
+  }
+}
 .tbtn {
   display: flex;
   align-items: center;
