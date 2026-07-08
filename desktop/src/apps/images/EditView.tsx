@@ -464,7 +464,7 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
         </div>
 
         {/* options panel */}
-        <div className="flex w-[286px] flex-none flex-col gap-[18px] overflow-auto border-l border-shell-border p-[18px]">
+        <div className="flex w-full md:w-[286px] flex-none flex-col gap-[18px] overflow-auto border-t md:border-t-0 md:border-l border-shell-border p-[18px]">
           <div className="flex items-center gap-2.5 text-[15px] font-bold tracking-[-0.01em]">
             <def.icon size={18} className="text-accent" />
             {def.title}
