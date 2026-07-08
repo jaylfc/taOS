@@ -7,6 +7,19 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.36] - 2026-07-08
+
+### Fixed
+- The RK3588 (RKLLM) install path no longer produces a broken rkllama service after an update. A previous pin bumped the rkllama server to a build that had dropped its startup preload flag, so the service failed to start on existing installs. The pin now points at a server that restores preload and adds a pre-flight context-length check, so a prompt longer than the model context returns a clear error instead of crashing the worker. Reported by @mandresve (#1730, #1732).
+- SearXNG installs now enable the JSON output format by default, so an agent can use the local SearXNG as a search backend without hand-editing its settings (#969).
+- Fixed a chat initialization error where a temporal-dead-zone reference could stop the conversation view from loading (#1720).
+
+### Security
+- Per-app secret files created during install are now written owner-only (0600) and regenerated if a prior write left them empty or malformed, so a session-signing key can no longer be left world-readable on disk (#1734).
+
+### Changed
+- taOS is now dual-licensed as AGPL-3.0-or-later plus a commercial option. The public core is AGPL-3.0, an OSI-approved license, with a separate commercial license available for uses that need different terms (#1721).
+
 ## [1.0.0-beta.35] - 2026-07-07
 
 ### Fixed
