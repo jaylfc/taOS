@@ -10,7 +10,10 @@ import json
 
 import pytest
 
-from tinyagentos.routes.agents import _reject_non_chat_model
+from tinyagentos.routes.agents import (
+    _reject_non_chat_model,
+    _small_context_warning,
+)
 
 
 @pytest.mark.parametrize(
@@ -45,3 +48,40 @@ def test_embedding_models_are_rejected(model_id):
 def test_chat_capable_models_pass(model_id):
     # None means "allowed"; the empty string is a no-op (validated elsewhere).
     assert _reject_non_chat_model(model_id) is None
+
+
+class _FakeManifest:
+    def __init__(self, context_window):
+        self.id = "m"
+        self.type = "model"
+        self.context_window = context_window
+
+
+class _FakeRegistry:
+    def __init__(self, manifest):
+        self._manifest = manifest
+
+    def get(self, model_id):
+        return self._manifest
+
+    def list_available(self, type_filter=None):
+        return []
+
+
+def test_small_context_model_warns():
+    warning = _small_context_warning(_FakeRegistry(_FakeManifest(4096)), "qwen2.5-1.5b-rkllm")
+    assert warning is not None
+    assert "4096" in warning
+
+
+def test_adequate_context_model_does_not_warn():
+    assert _small_context_warning(_FakeRegistry(_FakeManifest(32768)), "gemma-4-e4b") is None
+
+
+def test_unknown_model_does_not_warn():
+    # A cloud/aliased model resolves to no local manifest -> no advisory.
+    assert _small_context_warning(_FakeRegistry(None), "gpt-4o") is None
+
+
+def test_missing_registry_does_not_warn():
+    assert _small_context_warning(None, "anything") is None

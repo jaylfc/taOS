@@ -268,6 +268,37 @@ def _reject_non_chat_model(model_id: str):
     return None
 
 
+RECOMMENDED_AGENT_CONTEXT = 8192
+
+
+def _small_context_warning(registry, model_id: str) -> str | None:
+    """Advisory when a model's context window is too small for the agent harness.
+
+    The agent system prompt plus tool definitions are large (order of 10k
+    tokens), so a model with a small context window (e.g. a 4096-token RK
+    model) receives a truncated prompt and can degenerate into looping or
+    off-topic output rather than a coherent reply (#1740). Returns a warning
+    string, or None when the context is adequate or unknown (a cloud or
+    aliased model has no local manifest to read a context window from). This
+    is advisory only and must never block or break an assignment.
+    """
+    try:
+        from tinyagentos.cluster.model_resolver import _find_model_manifest
+
+        manifest = _find_model_manifest(registry, model_id)
+        ctx = int(getattr(manifest, "context_window", 0) or 0) if manifest else 0
+    except Exception:  # noqa: BLE001 - an advisory must never break assignment
+        return None
+    if 0 < ctx < RECOMMENDED_AGENT_CONTEXT:
+        return (
+            f"'{model_id}' has a {ctx}-token context window, smaller than the "
+            f"{RECOMMENDED_AGENT_CONTEXT} tokens recommended for agent use. The "
+            "agent system prompt may be truncated, which can cause looping or "
+            "off-topic output. Consider a model with a larger context window."
+        )
+    return None
+
+
 @router.get("/api/agents/{name}/deploy-status")
 async def get_deploy_status(request: Request, name: str):
     """Get the background deploy task status for an agent."""
@@ -1195,7 +1226,7 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         except Exception:
             logger.exception("model sync: pushing framework config for %s failed", name)
 
-    return {
+    result = {
         "status": "updated",
         "name": name,
         "model": model_id,
@@ -1204,6 +1235,10 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         "location": location.kind,
         "key_rescoped": key_rescoped,
     }
+    warning = _small_context_warning(request.app.state.registry, model_id)
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @router.get("/api/agents/{name}/permitted-models")
