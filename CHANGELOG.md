@@ -7,6 +7,17 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.38] - 2026-07-08
+
+### Added
+- The Agent conversation window now shows a live activity banner when a response is slow or has stalled. If no output arrives for a while it surfaces a "taking longer than usual" hint, escalating to a "may be stalled" warning with a shortcut to restart the AI services, so a stuck generation no longer looks like a frozen window. Requested by @mandresve (#1741).
+- A "Restart AI Services" action in the Activity tab restarts the local inference backends (rkllama and qmd) without bouncing the controller or your agents, for recovering a stalled model on an edge device without a terminal. It asks for confirmation first and reports the result per service. Requested by @mandresve (#1743).
+
+### Fixed
+- The Agent conversation window now scrolls when a conversation is longer than the visible area, so long responses and logs stay reachable instead of pushing earlier content out of view. Reported by @mandresve (#1742).
+- The Agents view is now readable on a phone. Archived agent rows stack so the agent name is no longer squeezed to a single character, and the header condenses so nothing truncates.
+- Several other app views now reflow correctly on a phone instead of overflowing: the Images studio edit and library panels, the Tasks and Observatory lists, the add-agent dialog, and the Mail reading toolbar.
+
 ## [1.0.0-beta.37] - 2026-07-08
 
 ### Fixed
