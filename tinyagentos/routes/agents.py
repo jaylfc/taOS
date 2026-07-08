@@ -241,6 +241,33 @@ async def agent_set_own_model(request: Request, body: AgentSelfModelUpdate):
     return {"status": "updated", "current": model}
 
 
+def _reject_non_chat_model(model_id: str):
+    """Reject a non-chat model being assigned as an agent's chat model.
+
+    An embedding or reranker model cannot do chat completion, so assigning it
+    as an agent's model produces undefined, looping output instead of a reply
+    (reported by @mandresve in #1740, where a 0.6B embedding model was
+    selectable as an agent model and generated endless "analysis" text).
+    Returns a 400 JSONResponse to hand back, or None when the model is
+    chat-capable and may be assigned.
+    """
+    from tinyagentos.litellm_config import _is_embedding_model
+
+    if model_id and _is_embedding_model(model_id):
+        return JSONResponse(
+            {
+                "error": (
+                    f"'{model_id}' is an embedding model and cannot be used as an "
+                    "agent chat model. Choose a chat-capable model."
+                ),
+                "model": model_id,
+                "reason": "not_chat_capable",
+            },
+            status_code=400,
+        )
+    return None
+
+
 @router.get("/api/agents/{name}/deploy-status")
 async def get_deploy_status(request: Request, name: str):
     """Get the background deploy task status for an agent."""
@@ -436,6 +463,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
        We never silently retarget a pinned deploy.
     6. Model not found anywhere in the cluster — 404.
     """
+    # Reject a non-chat model (e.g. embedding) before any side effects (#1740).
+    rejection = _reject_non_chat_model((body.model or "").strip())
+    if rejection is not None:
+        return rejection
+
     # --- Idempotency guard ---
     idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
     idempotency_key = request.headers.get("Idempotency-Key")
@@ -1075,6 +1107,10 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     if not model_id:
         return JSONResponse({"error": "model must not be empty"}, status_code=400)
 
+    rejection = _reject_non_chat_model(model_id)
+    if rejection is not None:
+        return rejection
+
     # Validate reachability against the live cluster state.
     from tinyagentos.cluster.model_resolver import (
         describe_downloaded_backend_down,
@@ -1195,6 +1231,11 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
 
     if not body.models:
         return JSONResponse({"error": "models must not be empty"}, status_code=400)
+
+    for _requested in body.models:
+        rejection = _reject_non_chat_model((_requested or "").strip())
+        if rejection is not None:
+            return rejection
 
     # Build the final set up front — the current primary must always be a
     # member — so it is validated alongside the requested models. Otherwise an
