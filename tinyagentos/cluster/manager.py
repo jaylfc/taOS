@@ -213,6 +213,18 @@ class ClusterManager:
                     if name_m and name_m not in flat_models:
                         flat_models.append(name_m)
             worker.models = flat_models
+            # Derive available_models from the live backend catalog.
+            # Each backend may carry a sidecar-manifest-enriched
+            # available_models list; flatten across all backends.
+            flat_available: list[dict] = []
+            seen_ids: set[str] = set()
+            for b in backends:
+                for m in b.get("available_models") or []:
+                    model_id = m.get("model_id") or ""
+                    if model_id and model_id not in seen_ids:
+                        seen_ids.add(model_id)
+                        flat_available.append(m)
+            worker.available_models = flat_available
         if capabilities is not None:
             worker.capabilities = list(capabilities)
         if kv_cache_quant_support is not None:

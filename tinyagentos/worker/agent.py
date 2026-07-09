@@ -161,6 +161,42 @@ class WorkerAgent:
                     # its cluster-level kv_cache_quant_support advertisement.
                     "kv_quant_support": kv_quant,
                 })
+
+        # Enrich each backend with available models from the Skald sidecar
+        # manifest.  The manifest declares which models this machine *can*
+        # run (per the GPU catalog), independently of what is currently
+        # loaded.  The controller then sees both "loaded" and "available"
+        # states so the cluster-wide view reflects total capacity.
+        from tinyagentos.worker.skald_manifest import (
+            load_manifest,
+            SOFTWARE_TO_BACKEND_TYPE,
+        )
+
+        manifest = load_manifest()
+        if manifest.get("models"):
+            for backend in backends:
+                backend_type = backend["type"]
+                probed_names = {
+                    m.get("name", "") for m in backend.get("models", [])
+                }
+                available = []
+                for m in manifest["models"]:
+                    if SOFTWARE_TO_BACKEND_TYPE.get(m.get("software", "")) != backend_type:
+                        continue
+                    model_id = m["model_id"]
+                    status = "loaded" if model_id in probed_names else "available"
+                    available.append({
+                        "model_id": model_id,
+                        "capability": m.get("capability", ""),
+                        "software": m.get("software", ""),
+                        "port": m.get("port", 0),
+                        "vram_required_gb": m.get("vram_required_gb", 0.0),
+                        "health_url": m.get("health_url", ""),
+                        "status": status,
+                    })
+                if available:
+                    backend["available_models"] = available
+
         return backends
 
     async def _probe_kv_quant(
