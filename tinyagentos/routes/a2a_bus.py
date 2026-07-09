@@ -193,7 +193,10 @@ async def bus_send(request: Request, body: BusSendBody):
     text = body.body.strip()
     if not thread or not text:
         return JSONResponse({"error": "thread and body required"}, status_code=400)
-    if body.reply_to is not None and body.reply_to <= 0:
+    # reply_to is a bus message id (a SQLite rowid): must be a positive integer
+    # within the signed-64-bit id space. The bus owns id existence; the proxy
+    # only rejects values that could never be a real id.
+    if body.reply_to is not None and not (0 < body.reply_to <= 2**63 - 1):
         return JSONResponse(
             {"error": "reply_to must be a positive message id"}, status_code=400
         )
