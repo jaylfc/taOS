@@ -5,10 +5,12 @@ import logging
 import os
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos.cluster import backend_services
 from tinyagentos.restart_orchestrator import write_pending_restart, read_pending_restart
 
 logger = logging.getLogger(__name__)
@@ -119,12 +121,52 @@ async def _do_restart(app_state) -> None:
         await _emit_fail(str(exc))
 
 
-# AI-stack services a recovery action restarts (issue #1743). These are the
-# local inference backends that can stall independently of the controller:
-# rkllama (NPU model server, a system unit per install-rknpu.sh) and qmd (shared
-# model provider, a system unit). The controller itself is deliberately NOT here --
-# bouncing it is the separate /api/system/restart/prepare path.
-AI_STACK_UNITS = ("rkllama.service", "qmd.service")
+# Core AI backends taOS manages as systemd services that have NO store manifest
+# (installed by install-server.sh, not via the store): qmd, the shared model
+# provider. Store-installed managed backends (rkllama and any future NPU/GPU
+# runtime) are discovered from their catalog manifests instead
+# (lifecycle.auto_manage), so new managed backends join #1743 recovery
+# automatically without editing this list. The controller itself is deliberately
+# NOT here -- bouncing it is the separate /api/system/restart/prepare path.
+# Value is the preferred systemctl scope for scope resolution.
+CORE_MANAGED_UNITS: dict[str, str] = {"qmd.service": "system"}
+
+
+def _catalog_root(request: Request) -> Path:
+    """Locate the app-catalog root the same way the app wires the registry."""
+    registry = getattr(request.app.state, "registry", None)
+    catalog_dir = getattr(registry, "catalog_dir", None)
+    if catalog_dir is not None:
+        return Path(catalog_dir)
+    return Path(__file__).resolve().parent.parent.parent / "app-catalog"
+
+
+async def _managed_ai_units(request: Request) -> list[tuple[str, str | None]]:
+    """Return (unit, prefer_scope) for every managed AI backend installed here.
+
+    The target set for #1743 recovery is the core-managed units (no store
+    manifest) unioned with the store-declared managed backends
+    (lifecycle.auto_manage in their catalog manifest), then narrowed to units
+    whose systemd file actually exists on THIS node. A backend that has migrated
+    to another cluster node is skipped rather than reported as a spurious
+    failure, and a newly installed managed backend is picked up with no code
+    change. Membership is resolved with ``systemctl cat`` (via
+    ``backend_services.unit_state``) so a dead/crashed unit -- exactly what
+    recovery targets -- still counts as installed.
+    """
+    prefer: dict[str, str | None] = dict(CORE_MANAGED_UNITS)
+    try:
+        for mb in backend_services.load_managed_backends(_catalog_root(request)):
+            prefer.setdefault(mb.unit, mb.scope)
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("failed to load managed backends from catalog")
+
+    async def _installed(unit: str, scope: str | None):
+        state = await backend_services.unit_state(unit, scope)
+        return (unit, scope) if state.get("installed") else None
+
+    checks = await asyncio.gather(*(_installed(u, s) for u, s in prefer.items()))
+    return [c for c in checks if c is not None]
 
 
 def _is_admin_or_local_token(request: Request) -> bool:
@@ -142,87 +184,37 @@ def _is_admin_or_local_token(request: Request) -> bool:
     return getattr(request.state, "via", None) == "local_token"
 
 
-async def _systemctl_rc(args: list[str]) -> int:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.wait()
-    return proc.returncode
-
-
-async def _restart_ai_unit(unit: str) -> dict:
-    """Restart one AI-stack systemd unit, resolving user vs system scope.
-
-    Fails soft: a unit that is not installed, or that the service user lacks
-    rights to restart (polkit / interactive auth), is reported rather than
-    raised, so restarting one backend still helps when the other cannot be
-    touched. Scope is resolved with ``systemctl [--user] cat`` (returns 0 iff
-    the unit file exists) so a dead/crashed unit -- exactly what recovery
-    targets -- is still restarted, unlike an is-active probe.
-    """
-    if not (os.environ.get("INVOCATION_ID") or os.path.exists("/run/systemd/system")):
-        return {"unit": unit, "ok": False, "detail": "systemd not available on host"}
-
-    # Resolve scope. Guarded so a missing/unusable systemctl is reported rather
-    # than raised (keeps the documented "reported, not raised" contract).
-    scope_flag: list[str] | None = None
-    try:
-        for candidate in (["--user"], []):
-            if await _systemctl_rc(["systemctl", *candidate, "cat", unit]) == 0:
-                scope_flag = candidate
-                break
-    except Exception as exc:  # pragma: no cover - defensive
-        return {"unit": unit, "ok": False, "detail": f"systemctl unavailable: {str(exc)[:160]}"}
-    if scope_flag is None:
-        return {"unit": unit, "ok": False, "detail": "not installed"}
-
-    scope_name = "user" if scope_flag else "system"
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl",
-            *scope_flag,
-            "restart",
-            unit,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
-    except asyncio.TimeoutError:
-        # Kill and reap the child so a hung systemctl is not orphaned.
-        if proc is not None:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:  # pragma: no cover - defensive
-                pass
-        return {"unit": unit, "ok": False, "scope": scope_name, "detail": "restart timed out"}
-    except Exception as exc:  # pragma: no cover - defensive
-        return {"unit": unit, "ok": False, "scope": scope_name, "detail": str(exc)[:200]}
-
-    if proc.returncode == 0:
-        return {"unit": unit, "ok": True, "scope": scope_name}
-    detail = (stderr.decode(errors="replace").strip() or f"exit code {proc.returncode}")[:200]
-    return {"unit": unit, "ok": False, "scope": scope_name, "detail": detail}
-
-
 @router.post("/api/system/ai-stack/restart")
 async def restart_ai_stack(request: Request):
-    """Restart the local AI inference stack (rkllama + qmd) -- issue #1743.
+    """Restart the local AI inference stack -- issue #1743.
 
     A recovery action for edge devices where a model stalls (endless NPU
     generation, unresponsive inference) while the controller itself stays up.
-    Restarts the backend services without bouncing the controller or agents.
-    Admin (or host local token) only. Fails soft per service so a partial
-    recovery still reports what was restarted. The units are restarted
+    Restarts the managed backend services without bouncing the controller or
+    agents. The target set is derived from the managed-backend contract (core
+    units plus store manifests) and narrowed to backends actually installed on
+    this node, so it stays correct as backends are added or migrated across
+    cluster nodes. Admin (or host local token) only. Fails soft per service so a
+    partial recovery still reports what was restarted. Units are restarted
     concurrently so worst-case latency is one unit's timeout, not their sum.
     """
     if not _is_admin_or_local_token(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
-    results = list(await asyncio.gather(*(_restart_ai_unit(u) for u in AI_STACK_UNITS)))
+    targets = await _managed_ai_units(request)
+    if not targets:
+        return {
+            "status": "noop",
+            "restarted": [],
+            "failed": [],
+            "results": [],
+            "detail": "no managed AI backends installed on this node",
+        }
+
+    results = list(await asyncio.gather(
+        *(backend_services.service_action(unit, "restart", prefer)
+          for unit, prefer in targets)
+    ))
     restarted = [r["unit"] for r in results if r.get("ok")]
     failed = [r for r in results if not r.get("ok")]
     return {
