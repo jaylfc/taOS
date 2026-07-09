@@ -374,6 +374,10 @@ async def download_model(request: Request, body: DownloadRequest):
         # check and OOM.
         vram_mgr = getattr(request.app.state, "vram_reservation", None)
         reservation = None
+        # TODO(#1725): replace min_ram_mb heuristic with a real per-model VRAM
+        # estimate.  On CUDA GGUF the host-RAM floor over-reserves and causes
+        # occasional false 503s in multi-model setups.  Safe for v1 (fails
+        # closed), but a model-card estimate would be more accurate.
         estimated_vram = int(variant.get("min_ram_mb", 0) or 0)  # heuristic
         if vram_mgr is not None and estimated_vram > 0:
             reservation = await vram_mgr.reserve(
