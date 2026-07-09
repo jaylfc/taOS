@@ -93,6 +93,39 @@ def test_grandfathered_service_is_skipped(tmp_path: Path, monkeypatch) -> None:
     assert check_manifests.lint_managed(tmp_path) == []
 
 
+def test_non_bool_auto_manage_is_flagged_and_enforced(tmp_path: Path) -> None:
+    # A quoted "true" must not slip past the identity check.
+    m = _managed_ok()
+    m["lifecycle"]["auto_manage"] = "true"
+    _write(tmp_path, "rkllama", m)
+    errors = check_manifests.lint_managed(tmp_path)
+    assert any("must be a boolean true" in e for e in errors)
+
+
+def test_unparseable_yaml_is_an_error(tmp_path: Path) -> None:
+    d = tmp_path / "services" / "broken"
+    d.mkdir(parents=True)
+    (d / "manifest.yaml").write_text("id: broken\nlifecycle: {: bad")
+    errors = check_manifests.lint_managed(tmp_path)
+    assert any("not valid YAML" in e for e in errors)
+
+
+def test_unit_without_service_suffix_is_flagged(tmp_path: Path) -> None:
+    m = _managed_ok()
+    m["lifecycle"]["unit"] = "rkllama"  # missing .service
+    _write(tmp_path, "rkllama", m)
+    errors = check_manifests.lint_managed(tmp_path)
+    assert any("ending in .service" in e for e in errors)
+
+
+def test_non_string_expect_is_flagged(tmp_path: Path) -> None:
+    m = _managed_ok()
+    m["lifecycle"]["health"]["expect"] = ["models"]
+    _write(tmp_path, "rkllama", m)
+    errors = check_manifests.lint_managed(tmp_path)
+    assert any("expect must be a string" in e for e in errors)
+
+
 def test_real_catalog_is_clean() -> None:
     """The shipped app-catalog must pass the managed-service lint."""
     root = Path(__file__).resolve().parent.parent / "app-catalog"

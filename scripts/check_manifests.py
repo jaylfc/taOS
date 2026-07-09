@@ -34,34 +34,56 @@ GRANDFATHER: dict[str, str] = {}
 VALID_SCOPES = {"system", "user"}
 
 
-def _load(path: Path) -> dict | None:
-    try:
-        data = yaml.safe_load(path.read_text())
-    except yaml.YAMLError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def lint_managed(root: Path) -> list[str]:
-    """Return a list of human-readable errors for the managed-service contract."""
+    """Return a list of human-readable errors for the managed-service contract.
+
+    ``lifecycle.health.expect`` is a literal substring matched against the
+    backend's health-endpoint response body (a 200 body must contain it).
+    """
     errors: list[str] = []
     services_dir = root / "services"
     for manifest in sorted(services_dir.glob("*/manifest.yaml")):
-        data = _load(manifest)
-        if data is None:
+        sid_dir = manifest.parent.name
+        # An unparseable or non-mapping manifest is an error, not a silent skip
+        # (silently skipping gave a false "clean").
+        try:
+            data = yaml.safe_load(manifest.read_text())
+        except yaml.YAMLError as exc:
+            first = str(exc).splitlines()[0] if str(exc) else "parse error"
+            errors.append(f"{sid_dir}: manifest.yaml is not valid YAML ({first[:120]})")
             continue
-        sid = str(data.get("id") or manifest.parent.name)
+        if not isinstance(data, dict):
+            errors.append(f"{sid_dir}: manifest.yaml top-level is not a mapping")
+            continue
+
+        sid = str(data.get("id") or sid_dir)
         lifecycle = data.get("lifecycle")
         if not isinstance(lifecycle, dict):
             continue
-        if lifecycle.get("auto_manage") is not True:
-            continue  # not claiming to be a managed service
+
+        auto_manage = lifecycle.get("auto_manage")
+        if not auto_manage:
+            continue  # None / False / 0 / "" -> not claiming to be managed
+
         if sid in GRANDFATHER:
             continue
 
+        # Truthy but not a real bool (e.g. quoted "true", 1) would otherwise slip
+        # past an identity check and bypass the contract -- flag it, and still
+        # enforce the rest since it is clearly meant to be managed.
+        if auto_manage is not True:
+            errors.append(
+                f"{sid}: lifecycle.auto_manage must be a boolean true, got {auto_manage!r}"
+            )
+
         missing: list[str] = []
-        if not lifecycle.get("unit"):
+        unit = lifecycle.get("unit")
+        if not unit:
             missing.append("lifecycle.unit")
+        elif not str(unit).endswith(".service"):
+            errors.append(
+                f"{sid}: lifecycle.unit '{unit}' should be a systemd unit name ending in .service"
+            )
 
         scope = lifecycle.get("scope")
         if not scope:
@@ -77,8 +99,14 @@ def lint_managed(root: Path) -> list[str]:
         else:
             if not health.get("url"):
                 missing.append("lifecycle.health.url")
-            if not health.get("expect"):
+            expect = health.get("expect")
+            if not expect:
                 missing.append("lifecycle.health.expect")
+            elif not isinstance(expect, str):
+                errors.append(
+                    f"{sid}: lifecycle.health.expect must be a string (a substring "
+                    f"matched against the health response body), got {type(expect).__name__}"
+                )
 
         if missing:
             errors.append(
