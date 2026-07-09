@@ -38,6 +38,7 @@ _LAZY_EXPORTS = {
     "Scheduler": "scheduler",
     "ScoreCache": "score_cache",
     "TaskScheduler": "task_scheduler",
+    "VramReservationManager": "gpu_arbiter",
 }
 
 
@@ -72,4 +73,5 @@ __all__ = [
     "TaskRecord",
     "TaskScheduler",
     "TaskStatus",
+    "VramReservationManager",
 ]

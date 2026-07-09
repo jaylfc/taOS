@@ -3,6 +3,12 @@
 Slice 2 of taOS #894 — builds on Slice 1 (VRAM endpoint) and the lease
 system (#893). Provides admission control, queuing, and priority-based
 eviction to prevent concurrent-load driver crashes (NVIDIA Xid 62).
+
+The VramReservationManager is the arbiter's INTERNAL reservation
+bookkeeping — it tracks reserved VRAM per-resource with atomic
+check-and-reserve so the arbiter is the single VRAM authority.
+External callers go through GpuArbiter.submit_gpu, never through
+VramReservationManager directly.
 """
 from __future__ import annotations
 
@@ -20,6 +26,72 @@ from tinyagentos.scheduler.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── VRAM Reservation Manager (internal) ─────────────────────────────────
+
+
+class VramReservationManager:
+    """Internal VRAM reservation bookkeeping for the GpuArbiter.
+
+    Tracks reserved VRAM per-resource with atomic check-and-reserve under
+    an asyncio.Lock.  The arbiter uses this internally; external callers
+    go through :meth:`GpuArbiter.submit_gpu`, never through this class
+    directly.
+    """
+
+    def __init__(self, vram_probe: Callable[[], tuple[int, int]] | None = None):
+        self._vram_probe = vram_probe or _default_vram_probe
+        self._reserved: dict[str, int] = {}  # resource_key -> reserved_mb
+        self._lock = asyncio.Lock()
+
+    # ── sync helpers (best-effort, no lock) ──────────────────────────
+
+    def available(self, resource_key: str = "local") -> int:
+        """Best-effort available VRAM (probed minus reserved).
+
+        Not atomic — for admission *checks* (the actual reserve happens
+        later under the lock).  A stale read here is safe because
+        :meth:`reserve` double-checks atomically.
+        """
+        free, _total = self._vram_probe()
+        reserved = self._reserved.get(resource_key, 0)
+        return max(0, free - reserved)
+
+    def total_reserved(self, resource_key: str = "local") -> int:
+        """Return currently reserved VRAM for *resource_key*."""
+        return self._reserved.get(resource_key, 0)
+
+    # ── async atomic operations ──────────────────────────────────────
+
+    async def reserve(self, resource_key: str, vram_mb: int) -> bool:
+        """Atomically check *and* reserve VRAM.  Returns ``True`` on success."""
+        if vram_mb <= 0:
+            return True
+        async with self._lock:
+            free, _total = self._vram_probe()
+            reserved = self._reserved.get(resource_key, 0)
+            if free - reserved >= vram_mb:
+                self._reserved[resource_key] = reserved + vram_mb
+                return True
+            return False
+
+    async def release(self, resource_key: str, vram_mb: int) -> None:
+        """Release a reservation.  Idempotent — never goes below zero."""
+        if vram_mb <= 0:
+            return
+        async with self._lock:
+            current = self._reserved.get(resource_key, 0)
+            self._reserved[resource_key] = max(0, current - vram_mb)
+
+    def stats(self) -> dict:
+        """Snapshot of reservation state (for observability)."""
+        free, total = self._vram_probe()
+        return {
+            "free_vram_mb": free,
+            "total_vram_mb": total,
+            "reserved_by_resource": dict(self._reserved),
+        }
 
 
 def _default_vram_probe() -> tuple[int, int]:
@@ -74,6 +146,10 @@ class GpuArbiter:
         await arbiter.start()
         result = await arbiter.submit_gpu(task, required_vram_mb=4096)
         await arbiter.stop()
+
+    ``submit_gpu`` is the **single public admission API** — all GPU work
+    must route through it.  :class:`VramReservationManager` is internal
+    bookkeeping; external callers never touch it directly.
     """
 
     def __init__(
@@ -100,6 +176,10 @@ class GpuArbiter:
         self._queued = 0
         self._evicted = 0
         self._dropped = 0
+        # Internal VRAM reservation bookkeeping — atomic check-and-reserve
+        # so the arbiter is the single VRAM authority.  External callers
+        # go through submit_gpu, never through this directly.
+        self._vram_reservations = VramReservationManager(self._vram_probe)
 
     async def start(self) -> None:
         if self._queue_processor_task is not None:
@@ -149,12 +229,16 @@ class GpuArbiter:
     def _check_admission(self, task: Task, required_vram_mb: int) -> GpuAdmission:
         if required_vram_mb <= 0:
             return GpuAdmission(admitted=True)
-        free_vram, _total = self._vram_probe()
-        if free_vram > 0:
+        # Local GPU: check against probed VRAM minus reserved (best-effort
+        # read; the actual reserve happens atomically in _run_gpu_task).
+        free_vram = self._vram_reservations.available("local")
+        _free_raw, total = self._vram_probe()
+        if total > 0:
             if free_vram < required_vram_mb:
                 return GpuAdmission(
                     admitted=False, free_vram_mb=free_vram, required_vram_mb=required_vram_mb,
-                    reason=f"insufficient local VRAM: need {required_vram_mb} MiB, have {free_vram} MiB free",
+                    reason=f"insufficient local VRAM: need {required_vram_mb} MiB, "
+                           f"have {free_vram} MiB free ({self._vram_reservations.total_reserved('local')} MiB reserved)",
                 )
             return GpuAdmission(admitted=True, free_vram_mb=free_vram, required_vram_mb=required_vram_mb)
         if self._cluster_manager is not None:
@@ -179,7 +263,10 @@ class GpuArbiter:
 
     async def _run_gpu_task(self, task: Task, required_vram_mb: int, evictable: bool, resource_id: str | None) -> object:
         lease_id: str | None = None
+        vram_reserved_local: bool = False
+
         if self._cluster_manager is not None and resource_id is not None:
+            # Cluster path: claim a lease on the remote worker (VRAM checked by the lease system).
             lease = self._cluster_manager.claim_lease(
                 resource_id=resource_id, caller=task.submitter,
                 ttl_seconds=300, required_vram_mb=required_vram_mb,
@@ -189,6 +276,16 @@ class GpuArbiter:
                     f"GPU lease claim failed for {resource_id} (task {task.id})"
                 )
             lease_id = lease.lease_id
+        elif required_vram_mb > 0:
+            # Local GPU path: atomically reserve VRAM through the reservation manager.
+            if not await self._vram_reservations.reserve("local", required_vram_mb):
+                raise NoResourceAvailableError(
+                    f"GPU VRAM reservation failed: need {required_vram_mb} MiB, "
+                    f"have {self._vram_reservations.available('local')} MiB available "
+                    f"(task {task.id})"
+                )
+            vram_reserved_local = True
+
         current = asyncio.current_task()
         async with self._running_lock:
             self._running[task.id] = (task, lease_id, int(task.priority), required_vram_mb)
@@ -216,6 +313,10 @@ class GpuArbiter:
                 _task, _lid, _pri, _vram = entry
                 if _lid is not None and self._cluster_manager is not None:
                     self._cluster_manager.release_lease(_lid)
+            # Release local VRAM reservation on normal completion.
+            # On eviction, _evict_task handles this via the reservation manager.
+            if vram_reserved_local and entry is not None:
+                await self._vram_reservations.release("local", required_vram_mb)
 
     def evict_lowest_priority(self, min_priority: int | None = None) -> int:
         if not self._eviction_enabled:
@@ -242,6 +343,15 @@ class GpuArbiter:
         # finally block will see entry=None on its own pop and skip the release.
         if lease_id is not None and self._cluster_manager is not None:
             self._cluster_manager.release_lease(lease_id)
+        else:
+            # Local GPU task — release the VRAM reservation.  We cannot
+            # await here (sync method), so schedule the release as a
+            # background task that will run promptly on the event loop.
+            if _vram > 0:
+                asyncio.create_task(
+                    self._vram_reservations.release("local", _vram),
+                    name=f"vram-release-{task_id}",
+                )
         # Cancel the running asyncio Task — stops _run_gpu_task and frees VRAM
         asyncio_task = self._running_tasks.pop(task_id, None)
         if asyncio_task is not None and not asyncio_task.done():
@@ -295,12 +405,14 @@ class GpuArbiter:
                     future.set_exception(NoResourceAvailableError("queue full, task dropped"))
 
     def stats(self) -> dict:
+        vram_stats = self._vram_reservations.stats()
         return {
             "submitted": self._submitted, "admitted": self._admitted,
             "queued": self._queued, "evicted": self._evicted,
             "dropped": self._dropped, "queue_depth": self._queue.qsize(),
             "running": len(self._running), "max_queue_size": self._max_queue_size,
             "eviction_enabled": self._eviction_enabled,
+            "vram": vram_stats,
         }
 
     def running_tasks(self) -> list[dict]:
