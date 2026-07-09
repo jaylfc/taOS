@@ -35,21 +35,26 @@ Installing a model-inference backend (rkllama, qmd, llama.cpp, vllm, ollama, ...
 
 ### A. The managed-service manifest contract
 
-Every host-service backend manifest declares a `managed` block (replaces ad-hoc `auto_manage`/`start_cmd`/`stop_cmd`):
+Service manifests already carry a `lifecycle:` block (`backend_type`, `default_url`, `auto_manage`, `start_cmd`, `stop_cmd`, `startup_timeout_seconds`). We EXTEND that block (do not invent a new one) with `unit`, `scope`, and `health`, and require it on host-managed backends:
 
 ```yaml
-managed:
+lifecycle:
+  backend_type: rkllama
+  default_url: http://localhost:7833
   auto_manage: true
   unit: rkllama.service        # systemd unit name (must match the installer's unit)
   scope: system                # system | user
   health:
     url: "http://localhost:7833/api/tags"
-    expect: '"models"'         # substring or json-path assertion on a 200 body
-  # start/stop/restart default to `systemctl <verb> <unit>`; override only if non-systemd
+    expect: '"models"'         # substring assertion on a 200 body
+  # start/stop/restart default to `systemctl <verb> <unit>`; keep start_cmd/stop_cmd only for non-systemd
+  startup_timeout_seconds: 60
 ```
 
 - The installer that provisions the backend MUST create a unit whose name/port match the manifest.
-- Applies to model-inference backends first (rkllama, rk-llama-cpp, qmd, llama.cpp, vllm, ollama). App/tool services (TTS/OCR/etc.) join by opt-in; a grandfather allowlist covers not-yet-migrated ones.
+- **Current state (audit):** of the 10 `category: llm-runtime` service manifests, only rkllama sets `auto_manage: true`; llama-cpp/mlc-llm/openllm/rk-llama-cpp set `false`; exo/ezrknpu/litellm/ollama/vllm set none; NONE declare a `unit`.
+- **Rule:** any `llm-runtime` service with `auto_manage: true` MUST declare `unit` + `scope` + `health`. A grandfather allowlist covers `auto_manage: false` / not-yet-migrated ones. Normalize the host-managed backends first (rkllama, qmd, rk-llama-cpp), which already ship real systemd units (`rkllama.service`, `qmd.service`, `rkllamacpp.service`).
+- **CI:** a new `scripts/check_manifests.py managed-lint` (the existing `scripts/audit-manifests.py` is not run in CI) added as a step to `.github/workflows/doc-gate.yml`.
 
 ### B. Phase 1 — node-local Backend Service Manager (in the worker agent)
 
