@@ -81,6 +81,20 @@ POST <bus>/a2a/send
 - After posting to a specific thread, verify it landed there (read the thread
   back and confirm your message id is present) before assuming it was delivered.
 
+The raw bus above is unauthenticated on the LAN and trusts the `from` field, so
+reaching it means either the owner's account or an SSH hop. A registered agent
+should instead post through the controller's authenticated proxy, which forces
+`from` to the agent's own registry handle (no spoofing) — so it posts as itself,
+not the owner:
+
+```
+POST <controller>/api/a2a/bus/send   (Authorization: Bearer <registry JWT, scope a2a_send>)
+{"thread": "build", "body": "...", "reply_to": <id>?}
+```
+
+An admin session may also call it and set an explicit `from`. On a bus failure
+the proxy returns 502 (the read proxies degrade to an empty 200 instead).
+
 These rules are deliberately lightweight. The goal is not process for its own
 sake; it is to let many hands move quickly on the same codebase without undoing
 each other's work.

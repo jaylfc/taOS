@@ -23,10 +23,16 @@ _A2A_BUS_READ_PATHS = frozenset({
     "/api/a2a/bus/channels",
     "/api/a2a/bus/messages",
 })
+# Authenticated A2A bus WRITE path: an agent may POST here with its own registry
+# JWT (scope a2a_send, verified by the route, which forces the bus `from` to the
+# agent's own handle so it posts as itself instead of the owner's account).
+_A2A_BUS_WRITE_PATHS = frozenset({
+    "/api/a2a/bus/send",
+})
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate an arbitrary route (no skeleton key).
-_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS
+_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE_PATHS
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
