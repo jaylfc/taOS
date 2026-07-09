@@ -35,3 +35,8 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: python scripts/check_doc_gate.py diff-gate --base "origin/$BASE_REF"
+
+      - name: Managed backend manifest lint
+        run: |
+          python -m pip install --quiet pyyaml
+          python scripts/check_manifests.py managed-lint
