@@ -99,8 +99,9 @@ class TestLoadManifest:
         finally:
             os.unlink(tmp_path)
 
-    def test_invalid_json_raises(self):
-        """Invalid JSON raises json.JSONDecodeError."""
+    def test_invalid_json_degrades_to_empty(self):
+        """Invalid JSON is external input: it must degrade to the empty
+        manifest (logged), never raise and take the worker down."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as f:
@@ -108,8 +109,22 @@ class TestLoadManifest:
             tmp_path = f.name
 
         try:
-            with pytest.raises(json.JSONDecodeError):
-                load_manifest(tmp_path)
+            result = load_manifest(tmp_path)
+            assert result == {"resource_id": "", "models": []}
+        finally:
+            os.unlink(tmp_path)
+
+    def test_non_object_top_level_degrades_to_empty(self):
+        """A JSON array / scalar top level degrades to the empty manifest."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            f.write('["not", "an", "object"]')
+            tmp_path = f.name
+
+        try:
+            result = load_manifest(tmp_path)
+            assert result == {"resource_id": "", "models": []}
         finally:
             os.unlink(tmp_path)
 
@@ -169,8 +184,9 @@ class TestLoadManifest:
 
 
 class TestLoadManifestEdgeCases:
-    def test_empty_file_raises(self):
-        """An empty file is not valid JSON."""
+    def test_empty_file_degrades_to_empty(self):
+        """An empty file is not valid JSON; it degrades to the empty
+        manifest rather than raising (bad input must not brick the worker)."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as f:
@@ -178,8 +194,8 @@ class TestLoadManifestEdgeCases:
             tmp_path = f.name
 
         try:
-            with pytest.raises(json.JSONDecodeError):
-                load_manifest(tmp_path)
+            result = load_manifest(tmp_path)
+            assert result == {"resource_id": "", "models": []}
         finally:
             os.unlink(tmp_path)
 

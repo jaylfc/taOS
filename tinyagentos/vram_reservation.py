@@ -87,16 +87,32 @@ class VramReservationManager:
             )
 
         async with self._lock:
-            free_mb, total_mb = self._probe_vram()
-            effective_free = max(0, free_mb - self._reserved_vram_mb)
-
-            if effective_free < vram_mb:
-                logger.debug(
-                    "vram-reservation: denied — need %d MiB, have %d MiB "
-                    "(%d free − %d reserved)",
-                    vram_mb, effective_free, free_mb, self._reserved_vram_mb,
+            # Probe in a thread: nvidia-smi is a blocking subprocess and this
+            # runs on a request hot path while holding the lock.
+            probe = await asyncio.to_thread(self._probe_vram)
+            if probe is None:
+                # No VRAM probe on this hardware (AMD/Apple/Rockchip or a
+                # failed nvidia-smi). Fail OPEN, matching the cluster lease
+                # ledger's convention (manager.claim_lease): we cannot prove
+                # insufficiency, so admit and keep bookkeeping only. A closed
+                # fail here would 503 every model pull on non-NVIDIA hosts.
+                free_mb, total_mb = 0, 0
+                effective_free = vram_mb  # unknown; grant-log then shows 0
+                logger.info(
+                    "vram-reservation: no VRAM probe available; admitting %d "
+                    "MiB for %r unenforced (bookkeeping only)", vram_mb, caller,
                 )
-                return None
+            else:
+                free_mb, total_mb = probe
+                effective_free = max(0, free_mb - self._reserved_vram_mb)
+
+                if effective_free < vram_mb:
+                    logger.debug(
+                        "vram-reservation: denied — need %d MiB, have %d MiB "
+                        "(%d free − %d reserved)",
+                        vram_mb, effective_free, free_mb, self._reserved_vram_mb,
+                    )
+                    return None
 
             reservation_id = f"vr_{secrets.token_hex(4)}"
             reservation = VramReservation(
@@ -148,15 +164,25 @@ class VramReservationManager:
 
     def available_vram(self) -> tuple[int, int]:
         """Return ``(effective_free_mb, total_mb)`` after subtracting
-        in-flight reservations from the hardware probe."""
-        free_mb, total_mb = self._probe_vram()
+        in-flight reservations from the hardware probe.
+
+        When no probe is available, returns ``(0, 0)``; callers on that
+        path should already have been admitted fail-open by :meth:`reserve`
+        (a deny message never reports these zeros as real capacity).
+        """
+        probe = self._probe_vram()
+        if probe is None:
+            return 0, 0
+        free_mb, total_mb = probe
         effective_free = max(0, free_mb - self._reserved_vram_mb)
         return effective_free, total_mb
 
     def stats(self) -> dict:
         """Return a snapshot for monitoring / debug endpoints."""
-        free_mb, total_mb = self._probe_vram()
+        probe = self._probe_vram()
+        free_mb, total_mb = probe if probe is not None else (0, 0)
         return {
+            "probe_available": probe is not None,
             "free_vram_mb": free_mb,
             "total_vram_mb": total_mb,
             "reserved_vram_mb": self._reserved_vram_mb,
@@ -167,11 +193,13 @@ class VramReservationManager:
     # ── internal ────────────────────────────────────────────────────
 
     @staticmethod
-    def _probe_vram() -> tuple[int, int]:
+    def _probe_vram() -> tuple[int, int] | None:
         """Probe real-time free/total VRAM via nvidia-smi.
 
-        Returns ``(free_mb, total_mb)``, or ``(0, 0)`` when no
-        nvidia-smi is available or the probe fails.
+        Returns ``(free_mb, total_mb)``, or ``None`` when no nvidia-smi
+        is available or the probe fails. ``None`` (cannot know) is
+        deliberately distinct from ``(0, 0)`` (known-full): admission
+        fails open on ``None``, matching cluster claim_lease semantics.
         """
         try:
             from tinyagentos.system_stats import read_nvidia_vram
@@ -183,4 +211,4 @@ class VramReservationManager:
                 return free_mb, total_mb
         except Exception:
             logger.debug("vram-reservation: probe failed", exc_info=True)
-        return 0, 0
+        return None

@@ -172,30 +172,44 @@ class WorkerAgent:
             SOFTWARE_TO_BACKEND_TYPE,
         )
 
-        manifest = load_manifest()
-        if manifest.get("models"):
-            for backend in backends:
-                backend_type = backend["type"]
-                probed_names = {
-                    m.get("name", "") for m in backend.get("models", [])
-                }
-                available = []
-                for m in manifest["models"]:
-                    if SOFTWARE_TO_BACKEND_TYPE.get(m.get("software", "")) != backend_type:
-                        continue
-                    model_id = m["model_id"]
-                    status = "loaded" if model_id in probed_names else "available"
-                    available.append({
-                        "model_id": model_id,
-                        "capability": m.get("capability", ""),
-                        "software": m.get("software", ""),
-                        "port": m.get("port", 0),
-                        "vram_required_gb": m.get("vram_required_gb", 0.0),
-                        "health_url": m.get("health_url", ""),
-                        "status": status,
-                    })
-                if available:
-                    backend["available_models"] = available
+        # The manifest is external input: a malformed file or entry must
+        # degrade to "no manifest" (logged), never crash detect_backends()
+        # and take the whole worker down with it.
+        try:
+            manifest = load_manifest()
+            if manifest.get("models"):
+                for backend in backends:
+                    backend_type = backend["type"]
+                    probed_names = {
+                        m.get("name", "") for m in backend.get("models", [])
+                    }
+                    available = []
+                    for m in manifest["models"]:
+                        if not isinstance(m, dict):
+                            continue
+                        if SOFTWARE_TO_BACKEND_TYPE.get(m.get("software", "")) != backend_type:
+                            continue
+                        model_id = m.get("model_id")
+                        if not model_id:
+                            logger.warning(
+                                "skipping worker-manifest entry without model_id: %r", m
+                            )
+                            continue
+                        status = "loaded" if model_id in probed_names else "available"
+                        available.append({
+                            "model_id": model_id,
+                            "capability": m.get("capability", ""),
+                            "software": m.get("software", ""),
+                            "port": m.get("port", 0),
+                            "vram_required_gb": m.get("vram_required_gb", 0.0),
+                            "health_url": m.get("health_url", ""),
+                            "status": status,
+                        })
+                    if available:
+                        backend["available_models"] = available
+        except Exception:  # noqa: BLE001 - manifest must never brick the worker
+            logger.warning("worker-manifest enrichment failed; continuing without it",
+                           exc_info=True)
 
         return backends
 
@@ -567,7 +581,11 @@ class WorkerAgent:
                     headers=auth_headers,
                 )
                 return resp.status_code
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Log before swallowing: a payload-build bug (not just a network
+            # blip) would otherwise drop the worker offline with zero
+            # diagnostics, masquerading as controller unreachability.
+            logger.warning("heartbeat send failed: %s: %s", type(exc).__name__, exc)
             return 0
 
     def _log_repair_instruction(self) -> None:

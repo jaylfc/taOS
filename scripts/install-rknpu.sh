@@ -631,10 +631,11 @@ pull_models() {
 install_systemd_unit() {
     local unit="/etc/systemd/system/rkllama.service"
     local exec_start
-    # This ExecStart line is copy-of-truth from the live orange pi:
-    #   rkllama_server --processor rk3588 --port 8080 \
-    #     --models /home/jay/rkllama/models \
-    #     --preload qwen3-embedding-0.6b,qwen3-reranker-0.6b,qmd-query-expansion
+    # Matches the unit shape running on the reference RK3588 deployment
+    # (port 7833, unified models root, --preload of the three shared
+    # models). Kept in sync with the live Pi unit as of the 1.3.0 deploy;
+    # the audit flagged the previous comment as stale (it referenced the
+    # old port 8080 and the pre-consolidation models path).
     exec_start="$RKLLAMA_VENV/bin/python $RKLLAMA_VENV/bin/rkllama_server --processor $SOC --port $RKLLAMA_PORT --models $RKLLAMA_MODELS --preload qwen3-embedding-0.6b,qwen3-reranker-0.6b,qmd-query-expansion"
 
     log "installing $unit"

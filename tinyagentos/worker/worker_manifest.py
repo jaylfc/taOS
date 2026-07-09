@@ -33,9 +33,12 @@ feature.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MANIFEST_PATH = "/etc/taos/worker-models.json"
 
@@ -58,10 +61,26 @@ def load_manifest(path: str | None = None) -> dict[str, Any]:
 
     Returns:
         Dict with keys ``resource_id`` (str) and ``models`` (list of dicts).
-        Returns an empty manifest when the file is absent (the worker may
-        not run with a manifest).
+        Returns an empty manifest when the file is absent OR unreadable/
+        malformed. The manifest is external input (any platform may write
+        it), so a typo in it must never take the worker down -- a bad file
+        is logged and treated as no-manifest rather than raised.
     """
     manifest_path = Path(path or os.getenv("TAOS_WORKER_MANIFEST", DEFAULT_MANIFEST_PATH))
+    empty: dict[str, Any] = {"resource_id": "", "models": []}
     if not manifest_path.exists():
-        return {"resource_id": "", "models": []}
-    return json.loads(manifest_path.read_text())
+        return empty
+    try:
+        data = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "ignoring malformed worker manifest %s: %s", manifest_path, exc
+        )
+        return empty
+    if not isinstance(data, dict) or not isinstance(data.get("models", []), list):
+        logger.warning(
+            "ignoring worker manifest %s: top level must be an object with a "
+            "'models' list", manifest_path,
+        )
+        return empty
+    return data

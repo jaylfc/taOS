@@ -18,12 +18,15 @@ does not change any existing behaviour on its own.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 import yaml
+
+logger = logging.getLogger(__name__)
 
 VALID_SCOPES = {"system", "user"}
 
@@ -54,8 +57,10 @@ def load_managed_backends(catalog_root: Path) -> list[ManagedBackend]:
         try:
             data = yaml.safe_load(manifest.read_text())
         except yaml.YAMLError:
+            logger.warning("skipping unparseable service manifest %s", manifest)
             continue
         if not isinstance(data, dict):
+            logger.warning("skipping non-mapping service manifest %s", manifest)
             continue
         lifecycle = data.get("lifecycle")
         if not isinstance(lifecycle, dict) or lifecycle.get("auto_manage") is not True:
@@ -63,6 +68,13 @@ def load_managed_backends(catalog_root: Path) -> list[ManagedBackend]:
         unit = lifecycle.get("unit")
         scope = lifecycle.get("scope")
         if not unit or scope not in VALID_SCOPES:
+            # The CI lint guarantees these fields for auto-managed services;
+            # a device-side catalog edit that breaks the contract would
+            # silently drop the backend out of recovery, so say so.
+            logger.warning(
+                "skipping managed backend %s: lifecycle.unit/scope invalid "
+                "(unit=%r scope=%r)", manifest, unit, scope,
+            )
             continue
         health = lifecycle.get("health") if isinstance(lifecycle.get("health"), dict) else {}
         out.append(

@@ -385,9 +385,18 @@ async def download_model(request: Request, body: DownloadRequest):
         reservation = None
         # TODO(#1725): replace min_ram_mb heuristic with a real per-model VRAM
         # estimate.  On CUDA GGUF the host-RAM floor over-reserves and causes
-        # occasional false 503s in multi-model setups.  Safe for v1 (fails
-        # closed), but a model-card estimate would be more accurate.
-        estimated_vram = int(variant.get("min_ram_mb", 0) or 0)  # heuristic
+        # occasional false 503s in multi-model setups.
+        # The real requirement lives on the backend requirements, not the
+        # variant top level: every rkllm variant in the catalog has
+        # variant-level min_ram_mb 0 with the true value (e.g. 2048) under
+        # requires.backends[].min_ram_mb, so reading only the variant key made
+        # this gate dead code (audit follow-up, #1766). Take the max across
+        # required backends, falling back to the variant-level key.
+        _backend_reqs = (variant.get("requires") or {}).get("backends") or []
+        estimated_vram = max(
+            [int(b.get("min_ram_mb", 0) or 0) for b in _backend_reqs if isinstance(b, dict)]
+            + [int(variant.get("min_ram_mb", 0) or 0)]
+        )
         if vram_mgr is not None and estimated_vram > 0:
             reservation = await vram_mgr.reserve(
                 estimated_vram, caller=f"rkllama-pull:{body.app_id}",

@@ -236,3 +236,46 @@ class TestRealProbe:
         # this will fail — that's fine, the test is a best-effort smoke.
         if res is not None:
             mgr.release(res.reservation_id)
+
+
+# ── no-probe hardware (AMD / Apple / Rockchip): fail open ────────────
+
+
+def _manager_without_probe() -> VramReservationManager:
+    """Return a manager whose probe reports no VRAM visibility (None)."""
+    mgr = VramReservationManager()
+    mgr._probe_vram = staticmethod(lambda: None)  # type: ignore[method-assign]
+    return mgr
+
+
+class TestNoProbeFailOpen:
+    """Without a VRAM probe we cannot prove insufficiency, so admission
+    fails OPEN (bookkeeping only), matching cluster claim_lease semantics.
+    A closed fail here 503s every model pull on non-NVIDIA hosts."""
+
+    @pytest.mark.asyncio
+    async def test_reserve_admits_without_probe(self):
+        mgr = _manager_without_probe()
+        res = await mgr.reserve(4096, caller="rkllama-pull:test")
+        assert res is not None
+        assert res.vram_mb == 4096
+        # Bookkeeping still recorded so a future probe-aware path sees it.
+        assert mgr.reserved_vram_mb == 4096
+        assert mgr.pending_count == 1
+        mgr.release(res.reservation_id)
+        assert mgr.reserved_vram_mb == 0
+
+    @pytest.mark.asyncio
+    async def test_stats_reports_probe_unavailable(self):
+        mgr = _manager_without_probe()
+        s = mgr.stats()
+        assert s["probe_available"] is False
+        assert s["free_vram_mb"] == 0 and s["total_vram_mb"] == 0
+
+    @pytest.mark.asyncio
+    async def test_probe_present_still_denies_real_insufficiency(self):
+        # Regression guard: fail-open applies ONLY to the no-probe case; a
+        # real probe showing insufficient VRAM must still deny.
+        mgr = _manager_with_probe(free_mb=1024, total_mb=8192)
+        res = await mgr.reserve(4096, caller="too-big")
+        assert res is None
