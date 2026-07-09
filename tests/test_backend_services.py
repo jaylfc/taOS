@@ -140,6 +140,40 @@ async def test_service_action_rejects_bad_verb() -> None:
         await bs.service_action("x.service", "nuke")
 
 
+@pytest.mark.asyncio
+async def test_service_action_timeout_kills_and_drains(monkeypatch) -> None:
+    monkeypatch.setenv("INVOCATION_ID", "test")
+    monkeypatch.setattr(bs, "_rc", lambda args: _coro(0))
+
+    class _RecProc:
+        def __init__(self) -> None:
+            self.killed = False
+            self.communicated = 0
+
+        async def communicate(self):
+            self.communicated += 1
+            return (b"", b"")
+
+        def kill(self):
+            self.killed = True
+
+    proc = _RecProc()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: _coro(proc))
+
+    async def fake_wait_for(coro, timeout):
+        coro.close()  # like the real wait_for cancelling the awaited coroutine
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    result = await bs.service_action("slow.service", "restart")
+    assert result["ok"] is False
+    assert "timed out" in result["detail"]
+    assert proc.killed is True
+    # communicate() is called once AFTER kill to drain + close the pipe transports.
+    assert proc.communicated == 1
+
+
 # --------------------------------------------------------------------------
 # health_probe (mocked httpx)
 # --------------------------------------------------------------------------

@@ -161,7 +161,11 @@ async def service_action(unit: str, verb: str, prefer: str | None = None,
         if proc is not None:
             try:
                 proc.kill()
-                await proc.wait()
+                # communicate() (not just wait()) after kill drains and closes the
+                # stdout/stderr pipe transports. wait_for cancelled the earlier
+                # communicate(), so wait() alone reaps the child but leaks those
+                # pipe FDs (ResourceWarning) in a long-running server.
+                await proc.communicate()
             except Exception:  # pragma: no cover - defensive
                 pass
         return {"unit": unit, "ok": False, "scope": scope, "detail": f"{verb} timed out"}
