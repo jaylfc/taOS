@@ -25,7 +25,7 @@
 #     TAOS_RKNPU_SETUP        set to 1/true to skip interactive confirmation
 #     TAOS_RKLLAMA_DIR        install dir (default: ~<user>/rkllama)
 #     TAOS_RKLLAMA_REPO       git remote (default: https://github.com/jaylfc/rkllama.git)
-#     TAOS_RKLLAMA_REF        git ref  (default: 58038c956623e9e18eb39f1ef089f812dd82b6bc)
+#     TAOS_RKLLAMA_REF        git ref  (default: dadea413fb38bc28000f18ed7b1d529bb3d18db7)
 #     TAOS_RKLLAMA_PORT       HTTP port (default: 7833)
 #     TAOS_QMD_EXPANSION_URL  override URL for qmd-query-expansion-1.7B-rk3588.rkllm
 #                             (default is the TAOS HF mirror at
@@ -63,7 +63,10 @@ LIBRKNNRT_DEST="/usr/lib/librknnrt.so"
 LIBRKNNRT_EXPECTED_VERSION="2.3.0"
 
 RKLLAMA_REPO="${TAOS_RKLLAMA_REPO:-https://github.com/jaylfc/rkllama.git}"
-RKLLAMA_REF="${TAOS_RKLLAMA_REF:-58038c956623e9e18eb39f1ef089f812dd82b6bc}"
+# rknn-llm 1.3.0: feat/rknpu-1.3.0 @ dadea41 (upstream 1.3.0 base + the 6 fork
+# patches + the rerank-ABI adaptation for 1.3.0). Deployed + smoke-verified on
+# RK3588 2026-07-09. Was 58038c95 (1.2.3).
+RKLLAMA_REF="${TAOS_RKLLAMA_REF:-dadea413fb38bc28000f18ed7b1d529bb3d18db7}"
 RKLLAMA_PORT="${TAOS_RKLLAMA_PORT:-7833}"
 
 # Qwen3-Embedding-0.6B rk3588 rkllm weights.
@@ -447,6 +450,18 @@ install_rkllama() {
     fi
     run_as_user git -C "$RKLLAMA_DIR" checkout --quiet "$RKLLAMA_REF"
     log "rkllama pinned to $(run_as_user git -C "$RKLLAMA_DIR" rev-parse --short HEAD)"
+
+    # Guard (issue #1730): a past ref bump silently dropped the --preload flag,
+    # which broke the preloaded embed/rerank/expand models. Refuse to build
+    # against any ref that is missing the taOS fork patches we rely on. Static
+    # source check, so it fails fast before the venv install and service start.
+    local _missing_patch=()
+    grep -rqs -- '--preload' "$RKLLAMA_DIR/src" || _missing_patch+=("--preload flag")
+    grep -rqs 'context_length_exceeded' "$RKLLAMA_DIR/src" || _missing_patch+=("context-overflow payload")
+    if (( ${#_missing_patch[@]} )); then
+        die "pinned rkllama ref ${RKLLAMA_REF:0:12} is missing required taOS fork patches: ${_missing_patch[*]}. Refusing to install a ref that dropped them (issue #1730). Update taOS for a current pin."
+    fi
+    log "rkllama fork patches present (--preload, context-overflow)"
 
     # rkllama's transitive deps (notably webrtcvad) need a C toolchain to
     # build wheels from source — Pi images often ship without these. Pull
