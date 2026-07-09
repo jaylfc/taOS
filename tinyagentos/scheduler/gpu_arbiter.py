@@ -194,6 +194,20 @@ class GpuArbiter:
             except asyncio.CancelledError:
                 pass
             self._queue_processor_task = None
+        # Release any queued callers blocked on submit_gpu — they would
+        # otherwise hang forever waiting for a queue processor that's gone.
+        cancelled = 0
+        while not self._queue.empty():
+            try:
+                entry = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            future = getattr(entry.task, "_arbiter_future", None)
+            if future is not None and not future.done():
+                future.cancel()
+                cancelled += 1
+        if cancelled:
+            logger.info("gpu-arbiter: stop cancelled %d queued submit_gpu callers", cancelled)
 
     async def submit_gpu(
         self, task: Task, required_vram_mb: int = 0,
@@ -232,7 +246,7 @@ class GpuArbiter:
         # Local GPU: check against probed VRAM minus reserved (best-effort
         # read; the actual reserve happens atomically in _run_gpu_task).
         free_vram = self._vram_reservations.available("local")
-        _free_raw, total = self._vram_probe()
+        _, total = self._vram_probe()
         if total > 0:
             if free_vram < required_vram_mb:
                 return GpuAdmission(

@@ -58,6 +58,7 @@ from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.benchmark import BenchmarkStore
 from tinyagentos.installation_state import InstallationState
 from tinyagentos.scheduler import BackendCatalog, GpuArbiter, HistoryStore, ScoreCache, TaskScheduler
+from tinyagentos.scheduler.gpu_arbiter import _probe_nvidia_vram
 from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
 from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
@@ -1148,6 +1149,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             gpu_arbiter = GpuArbiter(
                 scheduler=resource_scheduler if resource_scheduler is not None else None,
                 cluster_manager=cluster_manager,
+                vram_probe=_probe_nvidia_vram,
                 max_queue_size=100,
                 eviction_enabled=True,
             )
@@ -1585,6 +1587,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     import platform as _platform
     app.state.host_arch = _platform.machine()
     app.state.trace_registry = None
+    app.state.gpu_arbiter = None
     app.state.otel_emitter = None
     app.state.span_store_registry = None
     app.state.bridge_sessions = None
