@@ -64,7 +64,7 @@ class TestDirectAdmissionEviction:
         await asyncio.wait_for(payload_started.wait(), timeout=5)
 
         # Evict the running task
-        evicted = arbiter._evict_task("t-direct")
+        evicted = await arbiter._evict_task("t-direct")
         assert evicted == 1
 
         # Submitter should get CancelledError
@@ -107,7 +107,7 @@ class TestDirectAdmissionEviction:
         assert "t-slot" in arbiter._running
         assert len(arbiter._running) == 1
 
-        arbiter._evict_task("t-slot")
+        await arbiter._evict_task("t-slot")
 
         await submit_coro
         assert "t-slot" not in arbiter._running
@@ -116,7 +116,7 @@ class TestDirectAdmissionEviction:
     async def test_evict_nonexistent_task_returns_zero(self):
         """Evicting a non-existent task returns 0."""
         arbiter = GpuArbiter()
-        assert arbiter._evict_task("nonexistent") == 0
+        assert await arbiter._evict_task("nonexistent") == 0
 
     @pytest.mark.asyncio
     async def test_evict_eviction_disabled_returns_zero(self):
@@ -144,7 +144,7 @@ class TestDirectAdmissionEviction:
         submit_coro = asyncio.create_task(submitter())
         await asyncio.wait_for(started.wait(), timeout=5)
 
-        assert arbiter.evict_lowest_priority() == 0
+        assert await arbiter.evict_lowest_priority() == 0
         assert "t-noevict" in arbiter._running
 
         # Clean up
@@ -200,7 +200,7 @@ class TestQueuedTaskEviction:
         assert "t-queued" in arbiter._running
 
         # Evict
-        evicted = arbiter._evict_task("t-queued")
+        evicted = await arbiter._evict_task("t-queued")
         assert evicted == 1
 
         result = await runner_task
@@ -239,7 +239,7 @@ class TestQueuedTaskEviction:
         await asyncio.wait_for(started.wait(), timeout=5)
 
         # Evict
-        arbiter._evict_task("t-future")
+        await arbiter._evict_task("t-future")
 
         # The arbiter future should be cancelled
         assert arb_future.cancelled() is True
@@ -263,14 +263,14 @@ class FakeClusterManager:
             self.lease_id = lease_id
             self.resource_id = resource_id
 
-    def claim_lease(self, resource_id, caller, ttl_seconds, required_vram_mb):
+    async def claim_lease(self, resource_id, caller, ttl_seconds, required_vram_mb):
         lease_id = f"lease-{resource_id}"
         lease = self.FakeLease(lease_id, resource_id)
         self._leases[lease_id] = lease
         self.claim_calls.append(resource_id)
         return lease
 
-    def release_lease(self, lease_id):
+    async def release_lease(self, lease_id):
         self._leases.pop(lease_id, None)
         self.release_calls.append(lease_id)
 
@@ -314,7 +314,7 @@ class TestLeaseHandling:
 
         assert len(cm.claim_calls) == 1
 
-        arbiter._evict_task("t-lease")
+        await arbiter._evict_task("t-lease")
 
         # Lease should be released exactly once by eviction
         # (the finally block in _run_gpu_task should NOT double-release
@@ -351,7 +351,7 @@ class TestLeaseHandling:
         await asyncio.wait_for(started.wait(), timeout=5)
 
         # Should not raise
-        arbiter._evict_task("t-nolease")
+        await arbiter._evict_task("t-nolease")
         await runner_task
 
 
@@ -400,7 +400,7 @@ class TestEvictLowestPriority:
         assert len(arbiter._running) == 2
 
         # Evict lowest priority (BATCH > INTERACTIVE_USER in numeric value)
-        evicted = arbiter.evict_lowest_priority()
+        evicted = await arbiter.evict_lowest_priority()
         assert evicted == 1
 
         # Low-priority (BATCH=50) should be evicted, high (INTERACTIVE_USER=10) stays
@@ -408,6 +408,6 @@ class TestEvictLowestPriority:
         assert "high" in arbiter._running
 
         # Cleanup
-        arbiter._evict_task("high")
+        await arbiter._evict_task("high")
         await runner_high
         await runner_low

@@ -243,7 +243,7 @@ class TestGpuArbiterVramIntegration:
         assert arbiter._vram_reservations.total_reserved("local") == 4096
 
         # Evict
-        arbiter._evict_task("t-evict")
+        await arbiter._evict_task("t-evict")
         await submit_coro
 
         # Give the background release task time to run

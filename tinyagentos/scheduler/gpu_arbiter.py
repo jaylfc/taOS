@@ -281,7 +281,7 @@ class GpuArbiter:
 
         if self._cluster_manager is not None and resource_id is not None:
             # Cluster path: claim a lease on the remote worker (VRAM checked by the lease system).
-            lease = self._cluster_manager.claim_lease(
+            lease = await self._cluster_manager.claim_lease(
                 resource_id=resource_id, caller=task.submitter,
                 ttl_seconds=300, required_vram_mb=required_vram_mb,
             )
@@ -326,13 +326,13 @@ class GpuArbiter:
             if entry is not None:
                 _task, _lid, _pri, _vram = entry
                 if _lid is not None and self._cluster_manager is not None:
-                    self._cluster_manager.release_lease(_lid)
+                    await self._cluster_manager.release_lease(_lid)
             # Release local VRAM reservation on normal completion.
             # On eviction, _evict_task handles this via the reservation manager.
             if vram_reserved_local and entry is not None:
                 await self._vram_reservations.release("local", required_vram_mb)
 
-    def evict_lowest_priority(self, min_priority: int | None = None) -> int:
+    async def evict_lowest_priority(self, min_priority: int | None = None) -> int:
         if not self._eviction_enabled:
             return 0
         victim_id, victim_priority = None, -1
@@ -343,9 +343,9 @@ class GpuArbiter:
                 victim_priority, victim_id = pri, tid
         if victim_id is None:
             return 0
-        return self._evict_task(victim_id)
+        return await self._evict_task(victim_id)
 
-    def _evict_task(self, task_id: str) -> int:
+    async def _evict_task(self, task_id: str) -> int:
         # Atomically pop from _running — whoever pops first owns the lease
         # release.  If _run_gpu_task's finally beat us here the entry is
         # already gone; it will handle the lease itself for normal completion.
@@ -356,7 +356,7 @@ class GpuArbiter:
         # We are the sole lease releaser for evicted tasks.  _run_gpu_task's
         # finally block will see entry=None on its own pop and skip the release.
         if lease_id is not None and self._cluster_manager is not None:
-            self._cluster_manager.release_lease(lease_id)
+            await self._cluster_manager.release_lease(lease_id)
         else:
             # Local GPU task — release the VRAM reservation.  We cannot
             # await here (sync method), so schedule the release as a
