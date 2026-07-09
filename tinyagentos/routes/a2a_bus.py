@@ -156,7 +156,11 @@ async def _resolve_send_identity(request: Request, body_from: str | None) -> str
       Bearer header returns None and is rejected here as 403 (fail closed).
     """
     if getattr(request.state, "is_admin", False):
-        return (body_from or "").strip() or "@operator"
+        # Admin may post as an explicit handle, but keep it a single clean token
+        # so it cannot inject newlines/control chars into the bus record or logs.
+        handle = (body_from or "").strip()
+        handle = "".join(c for c in handle if c.isprintable())[:64].strip()
+        return handle or "@operator"
 
     caller = await check_agent_scope(request, "a2a_send")
     if caller is None:
@@ -186,10 +190,15 @@ async def bus_send(request: Request, body: BusSendBody):
     from_handle = await _resolve_send_identity(request, body.from_)
 
     thread = body.thread.strip()
-    if not thread or not body.body.strip():
+    text = body.body.strip()
+    if not thread or not text:
         return JSONResponse({"error": "thread and body required"}, status_code=400)
+    if body.reply_to is not None and body.reply_to <= 0:
+        return JSONResponse(
+            {"error": "reply_to must be a positive message id"}, status_code=400
+        )
 
-    payload: dict = {"from": from_handle, "thread": thread, "body": body.body}
+    payload: dict = {"from": from_handle, "thread": thread, "body": text}
     if body.reply_to is not None:
         payload["reply_to"] = body.reply_to
 

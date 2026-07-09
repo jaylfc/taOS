@@ -359,6 +359,40 @@ class TestBusAgentSend:
             )
         assert resp.status_code == 400
 
+    async def test_reply_to_must_be_positive(self, bus_client):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/send",
+                json={"thread": "build", "body": "hi", "reply_to": 0},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 400
+
+    async def test_body_is_trimmed_before_forwarding(self, bus_client):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        ctx, client = _mock_bus_post({"id": 9, "from": "@bus-reader", "thread": "build"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "build", "body": "  padded  "},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert client.post.call_args.kwargs["json"]["body"] == "padded"
+
+    async def test_admin_from_control_chars_stripped(self, bus_client):
+        ctx, client = _mock_bus_post({"id": 10, "from": "@x", "thread": "general"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            resp = await bus_client.post(
+                "/api/a2a/bus/send",
+                json={"thread": "general", "body": "hi", "from": "@evil\nInjected: x"},
+            )
+        assert resp.status_code == 200
+        # Newline/control chars removed so nothing can be injected downstream.
+        assert "\n" not in client.post.call_args.kwargs["json"]["from"]
+
     async def test_bus_error_surfaces_502(self, bus_client):
         _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
         ctx, _client = _mock_bus_post({}, raise_on_status=True)
