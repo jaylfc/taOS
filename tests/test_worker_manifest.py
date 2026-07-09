@@ -1,4 +1,4 @@
-"""Tests for tinyagentos.worker.skald_manifest — sidecar manifest parser."""
+"""Tests for tinyagentos.worker.worker_manifest — local manifest parser."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tinyagentos.worker.skald_manifest import (
+from tinyagentos.worker.worker_manifest import (
     DEFAULT_MANIFEST_PATH,
     SOFTWARE_TO_BACKEND_TYPE,
     load_manifest,
@@ -42,7 +42,7 @@ class TestSoftwareMapping:
 class TestLoadManifest:
     def test_returns_empty_on_missing_file(self):
         """When the manifest file does not exist, return an empty manifest."""
-        result = load_manifest("/nonexistent/path/skald-models.json")
+        result = load_manifest("/nonexistent/path/worker-models.json")
         assert result == {"resource_id": "", "models": []}
 
     def test_parses_valid_manifest(self):
@@ -114,7 +114,7 @@ class TestLoadManifest:
             os.unlink(tmp_path)
 
     def test_env_var_overrides_path(self, monkeypatch):
-        """TAOS_SKALD_MANIFEST env var overrides the default path."""
+        """TAOS_WORKER_MANIFEST env var overrides the default path."""
         manifest = {"resource_id": "custom-path", "models": []}
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
@@ -123,7 +123,7 @@ class TestLoadManifest:
             tmp_path = f.name
 
         try:
-            monkeypatch.setenv("TAOS_SKALD_MANIFEST", tmp_path)
+            monkeypatch.setenv("TAOS_WORKER_MANIFEST", tmp_path)
             result = load_manifest()
             assert result["resource_id"] == "custom-path"
         finally:
@@ -146,7 +146,7 @@ class TestLoadManifest:
             arg_path = f.name
 
         try:
-            monkeypatch.setenv("TAOS_SKALD_MANIFEST", env_path)
+            monkeypatch.setenv("TAOS_WORKER_MANIFEST", env_path)
             result = load_manifest(arg_path)
             assert result["resource_id"] == "from-arg"
         finally:
@@ -155,12 +155,12 @@ class TestLoadManifest:
 
     def test_default_path_fallback(self, monkeypatch):
         """Without env var or explicit path, DEFAULT_MANIFEST_PATH is used."""
-        monkeypatch.delenv("TAOS_SKALD_MANIFEST", raising=False)
+        monkeypatch.delenv("TAOS_WORKER_MANIFEST", raising=False)
         # The default path won't exist in test, so we get empty manifest.
         result = load_manifest()
         assert result == {"resource_id": "", "models": []}
         # Verify the constant is what we expect.
-        assert DEFAULT_MANIFEST_PATH == "/etc/taos/skald-models.json"
+        assert DEFAULT_MANIFEST_PATH == "/etc/taos/worker-models.json"
 
 
 # ---------------------------------------------------------------------------

@@ -162,12 +162,12 @@ class WorkerAgent:
                     "kv_quant_support": kv_quant,
                 })
 
-        # Enrich each backend with available models from the Skald sidecar
+        # Enrich each backend with available models from the local worker
         # manifest.  The manifest declares which models this machine *can*
         # run (per the GPU catalog), independently of what is currently
         # loaded.  The controller then sees both "loaded" and "available"
         # states so the cluster-wide view reflects total capacity.
-        from tinyagentos.worker.skald_manifest import (
+        from tinyagentos.worker.worker_manifest import (
             load_manifest,
             SOFTWARE_TO_BACKEND_TYPE,
         )

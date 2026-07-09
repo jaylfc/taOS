@@ -204,7 +204,7 @@ class TestHeartbeatVram:
 
 
 # ---------------------------------------------------------------------------
-# WorkerInfo available_models field (Skald sidecar manifest)
+# WorkerInfo available_models field (local worker manifest)
 # ---------------------------------------------------------------------------
 
 

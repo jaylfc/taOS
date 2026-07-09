@@ -214,7 +214,7 @@ class ClusterManager:
                         flat_models.append(name_m)
             worker.models = flat_models
             # Derive available_models from the live backend catalog.
-            # Each backend may carry a sidecar-manifest-enriched
+            # Each backend may carry a manifest-enriched
             # available_models list; flatten across all backends.
             flat_available: list[dict] = []
             seen_ids: set[str] = set()
