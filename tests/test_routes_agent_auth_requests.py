@@ -9,6 +9,56 @@ class _FakeAuthRequestsStore:
         return None
 
 
+class TestRequestableScopes:
+    """The project_tasks scope must be requestable through the consent loop, and
+    unknown scopes must still be rejected up front (they can never be enforced)."""
+
+    def test_project_tasks_is_a_valid_scope(self):
+        from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
+        assert "project_tasks" in VALID_SCOPES
+
+    @pytest.mark.asyncio
+    async def test_create_accepts_project_tasks(self, client, monkeypatch):
+        class _Store(_FakeAuthRequestsStore):
+            async def count_pending_for(self, identity_claim, framework):
+                return 0
+
+            async def create(self, **kwargs):
+                return {
+                    "id": "req-1",
+                    "identity_claim": kwargs["identity_claim"],
+                    "requested_scopes": kwargs["requested_scopes"],
+                }
+
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", _Store())
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "grok",
+                "framework": "grok-cli",
+                "requested_scopes": ["project_tasks"],
+                "project_id": "prj-1",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_unknown_scope(self, client, monkeypatch):
+        monkeypatch.setattr(
+            client._transport.app.state, "auth_requests", _FakeAuthRequestsStore()
+        )
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "grok",
+                "framework": "grok-cli",
+                "requested_scopes": ["not_a_real_scope"],
+            },
+        )
+        assert resp.status_code == 400
+
+
 class TestAgentAuthRequestsList:
     @pytest.mark.asyncio
     async def test_list_returns_200_with_requests_key(self, client, monkeypatch):

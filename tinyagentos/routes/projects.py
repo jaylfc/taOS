@@ -7,10 +7,14 @@ import time as _time
 import asyncio as _asyncio
 import json as _json
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from tinyagentos.agent_token_auth import (
+    PROJECT_SCOPE_MISMATCH_DETAIL,
+    check_agent_scope_for_project,
+)
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.projects.folders import ensure_project_layout, write_project_yaml
 
@@ -419,6 +423,71 @@ async def _require_task_in_project(
     return task
 
 
+async def _authorize_task_actor(
+    request: Request, pstore, project_id: str
+) -> "tuple[str, bool, dict] | JSONResponse":
+    """Resolve the actor for a task route that accepts EITHER a session
+    owner/admin OR an approved external agent's registry JWT (scope
+    project_tasks) bound to THIS project.
+
+    Returns ``(actor_id, is_agent, project)`` on success, or a JSONResponse to
+    return directly.  These routes take ``request: Request`` and auth INSIDE the
+    handler (mirroring routes/a2a_bus.py) because ``Depends(current_user)`` would
+    401 an agent that has no session before the handler runs.
+
+    Security:
+      * A session non-owner gets the existence-hiding 404 from _get_owned_project.
+      * An agent token bound to a DIFFERENT project is collapsed into the SAME
+        existence-hiding 404, so it is indistinguishable from a non-owner and
+        never confirms another project's existence (invariant 1).
+      * A malformed / inactive / missing-scope token keeps its 401/403.
+    """
+    uid = getattr(request.state, "user_id", None)
+    if uid:
+        user = CurrentUser(
+            user_id=uid, is_admin=bool(getattr(request.state, "is_admin", False))
+        )
+        project_or_err = await _get_owned_project(pstore, project_id, user)
+        if isinstance(project_or_err, JSONResponse):
+            return project_or_err
+        return (user.user_id, False, project_or_err)
+
+    try:
+        caller = await check_agent_scope_for_project(
+            request, "project_tasks", project_id
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403 and exc.detail == PROJECT_SCOPE_MISMATCH_DETAIL:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        raise
+    if caller is None:
+        # No session and no Bearer token: fail closed with existence-hiding 404.
+        return JSONResponse({"error": "not found"}, status_code=404)
+    project = await pstore.get_project(project_id)
+    if project is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return (caller, True, project)
+
+
+def _resolve_actor(
+    is_agent: bool, actor_id: str, body_actor: "str | None"
+) -> "str | None | JSONResponse":
+    """Bind a lifecycle actor id to the verified token when the caller is an agent.
+
+    Invariant 3: an agent must act only as itself.  If a lifecycle body names an
+    actor id (claimer_id / releaser_id / closed_by / reopened_by) that differs
+    from the token's canonical_id, reject 403; otherwise the token id is
+    authoritative.  A session caller keeps its provided actor id unchanged (an
+    owner/admin may still record an action on behalf of any worker id)."""
+    if is_agent:
+        if body_actor and body_actor != actor_id:
+            return JSONResponse(
+                {"error": "agent may only act as itself"}, status_code=403
+            )
+        return actor_id
+    return body_actor
+
+
 # ---------------------------------------------------------------------------
 # Task routes — order matters: /tasks/ready before /tasks/{task_id}
 # ---------------------------------------------------------------------------
@@ -459,12 +528,11 @@ async def list_tasks(
     project_id: str,
     request: Request,
     status: str | None = None,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
     store = request.app.state.project_task_store
     return {"items": await store.list_tasks(project_id=project_id, status=status)}
 
@@ -473,12 +541,11 @@ async def list_tasks(
 async def ready_tasks(
     project_id: str,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
     store = request.app.state.project_task_store
     return {"items": await store.list_ready_tasks(project_id=project_id)}
 
@@ -488,12 +555,11 @@ async def get_task(
     project_id: str,
     task_id: str,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
     store = request.app.state.project_task_store
     t = await store.get_task(task_id)
     if t is None or t["project_id"] != project_id:
@@ -507,12 +573,11 @@ async def update_task(
     task_id: str,
     payload: UpdateTaskIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
@@ -544,21 +609,24 @@ async def claim_task(
     task_id: str,
     payload: ClaimIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, is_agent, _project = auth
+    claimer_id = _resolve_actor(is_agent, actor_id, payload.claimer_id)
+    if isinstance(claimer_id, JSONResponse):
+        return claimer_id
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
-    ok = await store.claim_task(task_id, payload.claimer_id)
+    ok = await store.claim_task(task_id, claimer_id)
     if not ok:
         # Distinguish "task taken by someone else" from "you already hold an
         # active task" so the agent knows to finish or release it first.
-        held = await store.held_task(payload.claimer_id)
+        held = await store.held_task(claimer_id)
         if held is not None and held != task_id:
             return JSONResponse(
                 {
@@ -570,10 +638,10 @@ async def claim_task(
             )
         return JSONResponse({"error": "already claimed"}, status_code=409)
     _beads_mark_dirty(request, project_id)
-    await pstore.log_activity(project_id, payload.claimer_id, "task.claimed", {"task_id": task_id})
+    await pstore.log_activity(project_id, claimer_id, "task.claimed", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.claimed", "Task claimed", f"{task_id} claimed by {payload.claimer_id}")
+        await notifs.emit_event("task.claimed", "Task claimed", f"{task_id} claimed by {claimer_id}")
     return await store.get_task(task_id)
 
 
@@ -583,17 +651,20 @@ async def release_task(
     task_id: str,
     payload: ReleaseIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, is_agent, _project = auth
+    releaser_id = _resolve_actor(is_agent, actor_id, payload.releaser_id)
+    if isinstance(releaser_id, JSONResponse):
+        return releaser_id
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
-    ok = await store.release_task(task_id, payload.releaser_id)
+    ok = await store.release_task(task_id, releaser_id)
     if not ok:
         return JSONResponse({"error": "not claimed by releaser"}, status_code=409)
     _beads_mark_dirty(request, project_id)
@@ -606,25 +677,27 @@ async def close_task(
     task_id: str,
     payload: CloseIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, is_agent, project = auth
+    closed_by = _resolve_actor(is_agent, actor_id, payload.closed_by)
+    if isinstance(closed_by, JSONResponse):
+        return closed_by
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
-    ok = await store.close_task(task_id, closed_by=payload.closed_by, reason=payload.reason)
+    ok = await store.close_task(task_id, closed_by=closed_by, reason=payload.reason)
     if not ok:
         return JSONResponse({"error": "cannot close"}, status_code=409)
     _beads_mark_dirty(request, project_id)
-    await pstore.log_activity(project_id, payload.closed_by, "task.closed", {"task_id": task_id})
+    await pstore.log_activity(project_id, closed_by, "task.closed", {"task_id": task_id})
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
-        await notifs.emit_event("task.closed", "Task closed", f"{task_id} closed by {payload.closed_by}")
-    project = project_or_err
+        await notifs.emit_event("task.closed", "Task closed", f"{task_id} closed by {closed_by}")
     task = await store.get_task(task_id)
     qmd = getattr(request.app.state, "qmd_client", None)
     if qmd is not None and task is not None:
@@ -633,7 +706,7 @@ async def close_task(
             await index_closed_task(qmd, project, task)
         except Exception:
             await pstore.log_activity(
-                project_id, payload.closed_by, "task.qmd_index_failed", {"task_id": task_id}
+                project_id, closed_by, "task.qmd_index_failed", {"task_id": task_id}
             )
     return task
 
@@ -643,18 +716,22 @@ async def reopen_task(
     project_id: str,
     task_id: str,
     request: Request,
-    user: CurrentUser = Depends(current_user),
     payload: ReopenIn | None = None,
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, is_agent, _project = auth
+    body_actor = payload.reopened_by if payload and payload.reopened_by else None
+    resolved = _resolve_actor(is_agent, actor_id, body_actor)
+    if isinstance(resolved, JSONResponse):
+        return resolved
+    actor = resolved or "user"
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
-    actor = (payload.reopened_by if payload and payload.reopened_by else None) or "user"
     ok = await store.reopen_task(task_id, reopened_by=actor)
     if not ok:
         return JSONResponse({"error": "task is not closed"}, status_code=409)
@@ -713,7 +790,6 @@ async def task_audit_history(
 async def task_context(
     task_id: str,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     """Relational context for a task: its goal (project + ancestry) and
     blockers. Project-agnostic path — task_id alone resolves the project
@@ -723,9 +799,9 @@ async def task_context(
     if task is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, task["project_id"], user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, task["project_id"])
+    if isinstance(auth, JSONResponse):
+        return auth
     return await store.get_task_context(task_id)
 
 
@@ -771,12 +847,11 @@ async def add_comment(
     task_id: str,
     payload: AddCommentIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
@@ -797,12 +872,11 @@ async def list_comments(
     project_id: str,
     task_id: str,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):

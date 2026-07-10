@@ -50,6 +50,10 @@ VALID_SCOPES = frozenset({
     "files_write",
     "tools_execute",
     "registry_feeds_read",
+    # Least-privilege kanban access: task read + lifecycle + comments for the
+    # agent's OWN project only (bound by the token's project_id claim). Does NOT
+    # grant task create, member management, or project lifecycle.
+    "project_tasks",
 })
 
 
