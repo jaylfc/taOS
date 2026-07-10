@@ -64,6 +64,7 @@ interface AuthRequest {
   requested_scopes: string[];
   reason?: string;
   created_ts?: string;
+  project_id?: string;
 }
 
 // created_at is stored as an epoch-seconds REAL on the backend, but the API
@@ -493,6 +494,7 @@ function AuthRequestCard({
       <ConsentActions
         requestId={req.id}
         scopes={req.requested_scopes}
+        requestedProjectId={req.project_id}
         onResolved={onResolved}
       />
     </li>

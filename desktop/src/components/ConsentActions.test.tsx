@@ -79,4 +79,56 @@ describe("ConsentActions", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("forbidden"));
     expect(onResolved).not.toHaveBeenCalled();
   });
+
+  it("shows a project picker for a project_tasks request and sends the chosen project_id", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).startsWith("/api/projects")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ items: [{ id: "p1", name: "taOS Core" }] }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ status: "ok" }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onResolved = vi.fn();
+    render(
+      <ConsentActions requestId="req-p" scopes={["project_tasks", "a2a_send"]} onResolved={onResolved} />,
+    );
+    // The picker appears and the single project is auto-selected.
+    await screen.findByLabelText(/Grant project_tasks for project/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+
+    const approveCall = fetchMock.mock.calls.find((c) => String(c[0]).includes("/approve"));
+    expect(approveCall).toBeTruthy();
+    expect(JSON.parse((approveCall![1] as RequestInit).body as string)).toEqual({
+      granted_scopes: ["project_tasks", "a2a_send"],
+      project_id: "p1",
+    });
+  });
+
+  it("gates Allow until a project is chosen when several projects exist", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).startsWith("/api/projects")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ items: [{ id: "p1", name: "Alpha" }, { id: "p2", name: "Bravo" }] }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ status: "ok" }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsentActions requestId="req-m" scopes={["project_tasks"]} />);
+
+    const select = await screen.findByLabelText(/Grant project_tasks for project/i);
+    expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
+
+    fireEvent.change(select, { target: { value: "p2" } });
+    expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled();
+  });
 });
