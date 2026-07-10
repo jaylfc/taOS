@@ -590,6 +590,11 @@ class ClusterManager:
         while True:
             now = time.time()
             for worker in list(self._workers.values()):
+                # The local worker (controller itself) must never be marked
+                # offline by the monitor loop — doing so would drop the
+                # controller's own leases and break local routing.
+                if worker.name == "local":
+                    continue
                 # Handle online workers that haven't heartbeated
                 if worker.status == "online" and (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
                     worker.status = "offline"
@@ -635,14 +640,18 @@ class ClusterManager:
                                 level="info",
                             )
                     elif (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                        # Draining worker went stale — force-finish the drain
-                        lids = [
-                            lid for lid, lease in self._leases.items()
-                            if (parsed := self._parse_resource_id(lease.resource_id))
-                            and parsed[0] == worker.name
-                        ]
-                        for lid in lids:
-                            self._leases.pop(lid, None)
+                        # Draining worker went stale — force-finish the drain.
+                        # Lease pops must be serialised under _lease_lock so
+                        # concurrent claim/release operations see a consistent
+                        # view of the lease table.
+                        async with self._lease_lock:
+                            lids = [
+                                lid for lid, lease in self._leases.items()
+                                if (parsed := self._parse_resource_id(lease.resource_id))
+                                and parsed[0] == worker.name
+                            ]
+                            for lid in lids:
+                                self._leases.pop(lid, None)
                         worker.status = "offline"
                         logger.warning(
                             "Worker '%s' drain timed out (no heartbeat for %ds) — "

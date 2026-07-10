@@ -520,3 +520,166 @@ async def test_install_targets_matches_remote_to_worker_by_url_host(app, client,
     assert fedora is not None
     assert fedora["hardware_known"] is True, fedora
     assert fedora["tier_id"] not in ("", "unknown"), fedora
+
+
+# ── update_worker endpoint tests (taOS #890) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_worker_not_found(client):
+    """404 when worker does not exist."""
+    resp = await client.post("/api/cluster/workers/nonexistent/update")
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_worker_already_draining(client, app):
+    """409 Conflict when worker is already draining (idempotency guard)."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="draining",
+    )
+    resp = await client.post("/api/cluster/workers/gpu-box/update")
+    assert resp.status_code == 409
+    assert "already updating" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_worker_offline(client, app):
+    """400 when worker is offline."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="offline",
+    )
+    resp = await client.post("/api/cluster/workers/gpu-box/update")
+    assert resp.status_code == 400
+    assert "not online" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_worker_success(client, app):
+    """Happy path: drain succeeds, deploy returns 200."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    from unittest.mock import MagicMock
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"ok": True, "command": "update-worker"}
+    mock_resp.raise_for_status = lambda: None
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post.return_value = mock_resp
+
+    with patch("tinyagentos.routes.cluster.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/cluster/workers/gpu-box/update")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["worker"] == "gpu-box"
+    assert data["status"] == "updating"
+    assert data["drain"]["status"] == "draining"
+    assert data["deploy"]["ok"] is True
+
+    # Worker should be draining after the call
+    assert cluster.get_worker("gpu-box").status == "draining"
+
+
+@pytest.mark.asyncio
+async def test_update_worker_deploy_http_error(client, app):
+    """502 when deploy endpoint returns a non-2xx status — drain cancelled."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    from unittest.mock import MagicMock
+    import httpx as _httpx
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.raise_for_status = lambda: (_ for _ in ()).throw(
+        _httpx.HTTPStatusError("Server error", request=MagicMock(), response=mock_resp)
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post.return_value = mock_resp
+
+    with patch("tinyagentos.routes.cluster.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/cluster/workers/gpu-box/update")
+
+    assert resp.status_code == 502
+    data = resp.json()
+    assert "rejected by worker" in data["error"]
+    assert data["drain_cancelled"] is True
+
+    # Drain should be cancelled — worker back online
+    assert cluster.get_worker("gpu-box").status == "online"
+
+
+@pytest.mark.asyncio
+async def test_update_worker_deploy_disconnect_during_restart(client, app):
+    """200 when worker disconnects mid-update (expected restart).  Drain
+    stays active — the worker will re-register and the monitor loop
+    will auto-complete the drain once all leases are released."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    import httpx as _httpx
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post.side_effect = _httpx.RemoteProtocolError(
+        "Server disconnected", request=AsyncMock()
+    )
+
+    with patch("tinyagentos.routes.cluster.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/cluster/workers/gpu-box/update")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["worker"] == "gpu-box"
+    assert data["status"] == "updating"
+    assert data["deploy"]["status"] == "acknowledged"
+    assert "restart expected" in data["deploy"]["note"]
+
+    # Drain must NOT be cancelled — worker should still be draining
+    assert cluster.get_worker("gpu-box").status == "draining"
+
+
+@pytest.mark.asyncio
+async def test_update_worker_deploy_unexpected_error(client, app):
+    """502 on unexpected exception — drain cancelled."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post.side_effect = OSError("Network unreachable")
+
+    with patch("tinyagentos.routes.cluster.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/cluster/workers/gpu-box/update")
+
+    assert resp.status_code == 502
+    data = resp.json()
+    assert "deploy failed" in data["error"]
+    assert data["drain_cancelled"] is True
+    assert cluster.get_worker("gpu-box").status == "online"

@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 from dataclasses import asdict
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
-
-import re
 
 from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
@@ -900,7 +900,6 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
             status_code=400,
         )
 
-    import httpx
     try:
         async with httpx.AsyncClient(timeout=620) as client:
             resp = await client.post(
@@ -935,7 +934,6 @@ async def worker_remote_command(request: Request, name: str, body: WorkerRemoteR
             status_code=403,
         )
 
-    import httpx
     try:
         async with httpx.AsyncClient(timeout=body.timeout + 5) as client:
             resp = await client.post(
@@ -1153,7 +1151,12 @@ async def update_worker(request: Request, name: str):
     worker = cluster.get_worker(name)
     if not worker:
         return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
-    if worker.status not in ("online", "draining"):
+    if worker.status == "draining":
+        return JSONResponse(
+            {"error": f"Worker '{name}' is already updating (status=draining)"},
+            status_code=409,
+        )
+    if worker.status != "online":
         return JSONResponse(
             {"error": f"Worker '{name}' is not online (status={worker.status})"},
             status_code=400,
@@ -1164,8 +1167,10 @@ async def update_worker(request: Request, name: str):
     if "error" in drain_result:
         return JSONResponse(drain_result, status_code=404)
 
-    # Step 2: Trigger the update-worker deploy command on the worker
-    import httpx
+    # Step 2: Trigger the update-worker deploy command on the worker.
+    # The deploy script runs the update and then restarts the worker
+    # service.  The HTTP connection will break when the worker restarts
+    # — that is expected and must not cancel the drain.
     deploy_result = None
     try:
         async with httpx.AsyncClient(timeout=620) as client:
@@ -1173,10 +1178,31 @@ async def update_worker(request: Request, name: str):
                 f"{worker.url}/api/worker/deploy",
                 json={"command": "update-worker"},
             )
+            resp.raise_for_status()
             deploy_result = resp.json()
-    except Exception as exc:
-        # Deploy failed — cancel drain so worker can still serve traffic
+    except httpx.HTTPStatusError:
+        # The deploy endpoint returned a non-2xx status — real failure.
         cluster.cancel_drain(name)
+        logger.exception("Worker '%s' update deploy returned HTTP error", name)
+        return JSONResponse(
+            {"error": f"Worker update deploy rejected by worker", "drain_cancelled": True},
+            status_code=502,
+        )
+    except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+        # Worker restarted mid-request — the connection dropped because
+        # the worker service stopped.  This is the normal update path.
+        # Keep the drain active; the worker will re-register and the
+        # monitor loop will auto-complete the drain when all leases
+        # are released (taOS #890).
+        logger.info(
+            "Worker '%s' disconnected during update — restart expected, "
+            "drain stays active until re-registration", name,
+        )
+        deploy_result = {"status": "acknowledged", "note": "worker disconnected — restart expected"}
+    except Exception as exc:
+        # Unexpected failure — cancel drain so worker can still serve traffic.
+        cluster.cancel_drain(name)
+        logger.exception("Worker '%s' update deploy failed unexpectedly", name)
         return JSONResponse(
             {"error": f"Worker update deploy failed: {exc}", "drain_cancelled": True},
             status_code=502,
