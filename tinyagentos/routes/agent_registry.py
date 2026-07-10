@@ -91,6 +91,7 @@ _ALLOWED_SCOPES = frozenset({
     "a2a_send", "a2a_receive",
     "files_read", "files_write",
     "tools_execute", "registry_feeds_read",
+    "project_tasks",
 })
 
 
