@@ -197,6 +197,9 @@ def register_all_routers(app):
     from tinyagentos.routes.games import router as games_router
     app.include_router(games_router)
 
+    from tinyagentos.routes.game_assets import router as game_assets_router
+    app.include_router(game_assets_router)
+
     from tinyagentos.routes.terminal import router as terminal_router
     app.include_router(terminal_router)
 

@@ -199,6 +199,26 @@ class TestGamesCrud:
         resp = await client.get("/api/games/my-game")
         assert resp.json()["files"] == {"index.html": GAME_FILES["index.html"]}
 
+    async def test_save_preserves_binary_assets(self, client):
+        """Generated binary assets (textures/sprites) live in the game dir but
+        never appear in the text file set the editor PUTs. A save must not sweep
+        them, or a generated texture would vanish on the next edit."""
+        app = client._transport.app
+        await client.put("/api/games/asset-game", json={"name": "A", "files": GAME_FILES})
+        # Simulate a generated PNG written into the game dir out-of-band.
+        game_dir = app.state.data_dir / "games" / "asset-game"
+        png = b"\x89PNG\r\n\x1a\n\x00binary-not-utf8\xff\xfe"
+        (game_dir / "texture-1.png").write_bytes(png)
+        # A subsequent text-only save (full-replace) must leave the PNG intact.
+        resp = await client.put(
+            "/api/games/asset-game",
+            json={"files": {"index.html": GAME_FILES["index.html"]}},
+        )
+        assert resp.status_code == 200
+        assert (game_dir / "texture-1.png").read_bytes() == png
+        # The stale text file game.js was still swept as before.
+        assert not (game_dir / "game.js").exists()
+
     async def test_list_after_save(self, client):
         await client.put("/api/games/game-a", json={"name": "A", "files": GAME_FILES})
         await client.put("/api/games/game-b", json={"name": "B", "files": GAME_FILES})

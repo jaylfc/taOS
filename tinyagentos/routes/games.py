@@ -129,8 +129,18 @@ async def save_game(request: Request, game_id: str, body: GameSaveRequest):
     game_dir.mkdir(parents=True, exist_ok=True)
 
     for p in game_dir.iterdir():
-        if p.is_file() and p.name != "game.json" and p.name not in body.files:
-            p.unlink()
+        if not (p.is_file() and p.name != "game.json" and p.name not in body.files):
+            continue
+        # The editor's file set is text-only (_list_game_files skips undecodable
+        # files), so generated binary assets (textures/sprites written by
+        # routes/game_assets.py) never appear in `body.files`. Preserve them
+        # instead of sweeping them: full-replace semantics apply only to the
+        # text files the editor actually manages.
+        try:
+            p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        p.unlink()
     for name, content in body.files.items():
         (game_dir / name).write_text(content, encoding="utf-8")
 
