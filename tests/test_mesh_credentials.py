@@ -168,6 +168,18 @@ class TestPollIntercept:
         assert "headscale_preauth_key" not in browser
         assert join_intent == {"preauth_key": "SINGLE-USE-SECRET", "hostname": "host_9"}
 
+    def test_preauth_only_no_service_token_still_stripped(self, data_dir):
+        # A ready payload carrying ONLY the preauth key (no service tokens) must
+        # still fire + strip it -- the "ALWAYS strip" guarantee cannot hinge on a
+        # service token being present.
+        from tinyagentos.routes.account_proxy import _persist_join_credentials
+
+        pre_only = {"status": "ready", "host_id": "h", "headscale_preauth_key": "PK"}
+        out, join_intent = _persist_join_credentials(self._resp(pre_only))
+        assert "headscale_preauth_key" not in json.loads(out.body)
+        assert join_intent == {"preauth_key": "PK", "hostname": "h"}
+        assert mesh_credentials.has_mesh_credentials() is False  # no controller token
+
     def test_no_preauth_means_no_join_intent(self, data_dir):
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 

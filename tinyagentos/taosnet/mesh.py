@@ -101,9 +101,10 @@ async def mesh_up(
 
 
 async def mesh_status() -> dict:
-    """Report ``{joined, tailnet, node_ip, hostname, detail}`` from
-    ``tailscale status --json``. Fail-soft: not-installed / not-up returns
-    ``joined=False`` with a detail, never raises."""
+    """Report mesh membership from ``tailscale status --json``. On success:
+    ``{joined, online, tailnet, node_ip, hostname}``. On the not-available /
+    error path: ``{joined: False, detail}``. Fail-soft: not-installed / not-up
+    returns ``joined=False`` with a detail, never raises."""
     if not is_tailscale_installed():
         return {"joined": False, "detail": "tailscale not installed"}
     rc, out, err = await _run(["tailscale", "status", "--json"], timeout=10.0)

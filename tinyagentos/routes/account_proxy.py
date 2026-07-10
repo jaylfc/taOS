@@ -242,13 +242,18 @@ def _persist_join_credentials(resp: Response) -> tuple[Response, dict | None]:
         body = json.loads(resp.body)
     except (ValueError, TypeError):
         return resp, None
-    if not isinstance(body, dict) or not any(body.get(k) for k in _JOIN_SERVICE_TOKENS):
+    # Fire whenever the body carries ANY secret (a service token or the preauth
+    # key), so a ready payload with only a preauth key is still stripped -- the
+    # "ALWAYS strip" guarantee must not hinge on a service token being present.
+    if not isinstance(body, dict) or not any(body.get(k) for k in _STRIP_KEYS):
         return resp, None
-    # Persist best-effort; never let a save error keep the token in the body.
-    try:
-        mesh_credentials.save_mesh_credentials(body)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("cluster-join: could not persist mesh credentials: %s", exc)
+    # Persist best-effort (only possible when a controller token is present);
+    # never let a save error keep a secret in the body.
+    if body.get("controller_token"):
+        try:
+            mesh_credentials.save_mesh_credentials(body)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cluster-join: could not persist mesh credentials: %s", exc)
 
     preauth = body.get("headscale_preauth_key")
     join_intent = None
@@ -270,6 +275,18 @@ def _persist_join_credentials(resp: Response) -> tuple[Response, dict | None]:
     return out, join_intent
 
 
+# Preauth keys are single-use: once a join has been attempted for one it cannot
+# be retried, so we do not re-fire on every re-delivered ready poll. In-memory is
+# sufficient (a process restart that loses this simply means a fresh join
+# opportunity, and the key is stale by then anyway).
+_attempted_preauth: set[str] = set()
+
+# Keep a strong reference to in-flight background tasks so they are not
+# garbage-collected mid-run (a bare create_task() can be dropped -> "coroutine
+# was never awaited").
+_mesh_join_tasks: set = set()
+
+
 async def _run_mesh_join(intent: dict) -> None:
     """Background task: consume the single-use preauth key to join the mesh.
     Fail-soft; a host without tailscale (or a failed join) is logged, never
@@ -285,9 +302,18 @@ async def cluster_join_poll(request: Request, rid: str):
         return JSONResponse({"error": "invalid request id"}, status_code=400)
     resp = await _forward_to(request, "GET", f"{_JOIN_BASE}/requests/{rid}/poll")
     out, join_intent = _persist_join_credentials(resp)
-    if join_intent and not await mesh.is_joined():
-        # Fire-and-forget so the slow `tailscale up` never blocks the poll.
-        asyncio.create_task(_run_mesh_join(join_intent))
+    if (
+        join_intent
+        and join_intent["preauth_key"] not in _attempted_preauth
+        and not await mesh.is_joined()
+    ):
+        # A single-use key: mark it attempted so a re-delivered ready poll does
+        # not re-fire a doomed re-join. Fire-and-forget (a slow `tailscale up`
+        # must never block the poll), holding a reference so it is not GC'd.
+        _attempted_preauth.add(join_intent["preauth_key"])
+        task = asyncio.create_task(_run_mesh_join(join_intent))
+        _mesh_join_tasks.add(task)
+        task.add_done_callback(_mesh_join_tasks.discard)
     return out
 
 
