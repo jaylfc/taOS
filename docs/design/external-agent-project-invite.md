@@ -25,6 +25,9 @@ order), and HOW do I become someone there (the consent flow, pre-filled). It
 must not become a second identity system: everything after redemption flows
 through the existing registry + grants + consent machinery.
 
+Who owns the agent's WORKING COPY also differs between the two cases; the
+workspace-isolation section below draws that boundary.
+
 ## What already exists (verified in code)
 
 - Consent backbone: `POST /api/agents/auth-requests` (unauthenticated) creates
@@ -517,6 +520,54 @@ of a channel sees everything on it. Options:
   query flag on the proxy is a cheap follow-up once real traffic shows the
   need.
 
+## Agent workspace isolation (taOS owns the isolation layer)
+
+Invite and create differ in who owns the workspace the agent works in.
+
+**Invited agents (this doc's subject): isolation is not ours to own.** An
+invited agent already runs on ITS OWN machine, with its own repo clone and
+cwd. taOS cannot own that filesystem. Enforcement lives at the INTEGRATION
+boundary only: a per-agent revocable push identity, branch-and-PR-only,
+nothing auto-merges, CI plus human review as the gate (join kit #95,
+coordination discipline #96). Worst case is a bad PR that review rejects.
+
+**Created agents: taOS provisions the workspace, so isolation is
+enforceable.** When taOS SPAWNS a coding CLI (grok, kilo, opencode) on the Pi
+or a cluster node for a project (executor lane #94, spawn-from-Projects
+#101), taOS owns the workspace it hands the process. A shared cwd is a real
+hazard here: an agent in the project root, the orchestrator's cwd, or worse
+the live `/opt/taos` install means concurrent edits racing, one agent's dirty
+tree bleeding into another's, commits landing on the wrong branch, and a weak
+model editing or deleting the running OS. Today the grok CLI already runs in
+a separate git worktree on its own branch while the orchestrator stays in the
+main checkout, but that isolation is hand-built; taOS does not own it yet.
+
+The proposal, layered and model-independent:
+
+- **Container tier (strongest, default for created agents):** spawn the CLI
+  inside an LXC/incus container (Apple Containerization on macOS) whose only
+  mount is a fresh repo clone plus a scoped push token. `cd ..` gets it
+  nowhere; blast radius is its own branch. Reuses the existing Hermes/LXC
+  agent-deploy machinery.
+- **Worktree tier (lighter, trusted/local):** taOS creates an
+  `agent/{agent-id}/{task-id}` branch plus a dedicated git worktree and
+  spawns the agent with cwd pinned there.
+- **The key move: the agent is NOT the git operator.** taOS owns
+  branch/commit/push/PR; the agent only edits files inside its sandbox. taOS
+  diffs the sandbox on task-close, creates the branch, and opens the PR. "A
+  dumb model does not follow the branch rule" becomes impossible, because
+  there is no branch for it to get wrong. An onboarding "stay on your
+  worktree" instruction is then a courtesy, not the safety mechanism.
+
+The unifying principle: the working copy is a resource taOS hands out per
+task, not a folder agents cooperate in, and git operations belong to the OS,
+not the model. Two enforcement boundaries fall out: the filesystem boundary
+(container or worktree; ours only for created agents) and the integration
+boundary (scoped revocable push identity, branch-and-PR-only, review gate),
+which applies to BOTH kinds of agent and is the sole backstop for invited
+ones. None of this changes the invite slices below; the created-agent side
+lands with the spawn work (#101).
+
 ## 9. Slice plan
 
 Each slice independently shippable and testable; foundation first.
@@ -607,6 +658,11 @@ agents get grants but no Members row.
 10. **Missed check-ins:** should the Members row surface "last checked in"
     against `check_interval_secs` and warn when an agent goes quiet for N
     intervals (observability tie-in), or is that Observatory's job?
+11. **Default isolation tier on low-RAM hosts:** for a CREATED agent on a
+    4GB Pi, is the container tier (stronger, but per-agent LXC overhead) or
+    the worktree tier (near-free, weaker walls) the right default? taOS also
+    runs on 4GB hosts, so the strongest tier cannot be the unconditional
+    default.
 
 ## Non-goals (v1)
 
