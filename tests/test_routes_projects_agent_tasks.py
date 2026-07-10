@@ -117,7 +117,10 @@ class TestAgentCanDriveOwnBoard:
         assert resp.status_code == 200
         assert resp.json()["id"] == tid
 
-    async def test_patch_task(self, ctx):
+    async def test_patch_task_is_session_only(self, ctx):
+        """PATCH free-mutates task fields (title/assignee_id/parent), broader than
+        the project_tasks scope, so it is NOT on the agent allowlist: an agent
+        token is rejected. Lifecycle is driven via claim/close/reopen instead."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
         _cid, token = await _mint_agent(ctx, pid)
@@ -127,8 +130,7 @@ class TestAgentCanDriveOwnBoard:
                 json={"priority": 5},
                 headers=_hdr(token),
             )
-        assert resp.status_code == 200
-        assert resp.json()["priority"] == 5
+        assert resp.status_code in (401, 403, 404)
 
     async def test_claim_own_task_as_self(self, ctx):
         pid = await _new_project(ctx, "alpha")

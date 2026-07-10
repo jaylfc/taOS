@@ -53,7 +53,8 @@ _AGENT_TASK_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/tasks/{_SEG}/context$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
     ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
-    ("PATCH", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}$")),
+    # PATCH (free task-field mutation) is intentionally NOT here: it is broader
+    # than the "read + lifecycle + comments" the project_tasks scope documents.
     ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/(claim|release|close|reopen)$")),
 )
 

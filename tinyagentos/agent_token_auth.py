@@ -172,4 +172,19 @@ async def check_agent_scope_for_project(
     token_project = payload.get("project_id")
     if not token_project or token_project != project_id:
         raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
+    # Defense in depth: the token's project_id claim agreeing is not enough; the
+    # underlying grant must itself be bound to this project. A claim and a grant
+    # could diverge (re-mint against a stale claim, a hand-edited grant row), so
+    # require an active grant whose own project_id matches before authorizing.
+    grants_store = _get_grants_store(request)
+    now = datetime.now(timezone.utc)
+    grants = await grants_store.list_grants(canonical_id)
+    grant_ok = any(
+        g["scope"] == required_scope
+        and g.get("project_id") == project_id
+        and _grant_unexpired(g.get("expires_at"), now)
+        for g in grants
+    )
+    if not grant_ok:
+        raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
     return canonical_id

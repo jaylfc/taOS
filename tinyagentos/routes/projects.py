@@ -573,11 +573,16 @@ async def update_task(
     task_id: str,
     payload: UpdateTaskIn,
     request: Request,
+    user: CurrentUser = Depends(current_user),
 ):
+    # Session owner/admin only. A project_tasks agent drives its board through
+    # read + the lifecycle actions (claim/release/close/reopen) + comments; free
+    # PATCH of title/body/assignee_id/parent is a broader mutation than that
+    # scope grants, so it stays off the agent allowlist (Kilo review on #1774).
     pstore = request.app.state.project_store
-    auth = await _authorize_task_actor(request, pstore, project_id)
-    if isinstance(auth, JSONResponse):
-        return auth
+    project_or_err = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project_or_err, JSONResponse):
+        return project_or_err
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
