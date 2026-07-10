@@ -93,9 +93,14 @@ def save_mesh_credentials(payload: dict) -> None:
 
 def _load() -> Optional[dict]:
     try:
-        return json.loads(_path().read_text())
+        data = json.loads(_path().read_text())
     except (OSError, ValueError):
         return None
+    # A corrupt or externally-edited file could parse to a non-object (list,
+    # string, number); the getters do ``(_load() or {}).get(...)`` so a non-dict
+    # would raise AttributeError and break the headless passkey fetch. Treat any
+    # non-object as absent (fail closed to "not joined").
+    return data if isinstance(data, dict) else None
 
 
 def get_controller_token() -> Optional[str]:

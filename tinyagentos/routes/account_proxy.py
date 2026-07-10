@@ -216,28 +216,32 @@ async def cluster_join_deny(request: Request, rid: str):
 
 
 def _persist_join_credentials(resp: Response) -> Response:
-    """When a poll response is the ``ready`` payload carrying the per-host service
-    tokens, persist them server-side (host-bound) and return a copy with those
-    tokens stripped, so the credentials never reach browser JavaScript.
+    """When a poll response carries the per-host service tokens, persist them
+    server-side (host-bound) and return a copy with those tokens ALWAYS stripped,
+    so a bearer credential never reaches browser JavaScript.
 
-    Fail-soft: any non-200, non-JSON, or unparseable body is returned untouched;
-    if persistence fails the body is returned as-is (tokens NOT stripped) rather
-    than dropping credentials the controller could not save. Relayed headers
+    Security ordering: stripping is decoupled from persistence. Once a 200 JSON
+    body is seen to contain a service token it is always stripped, whether or not
+    the save succeeds (a save failure is logged; the credentials are re-delivered
+    on the next poll -- but they are never leaked to the browser to compensate).
+    A non-200 body, or one that does not parse to a dict carrying a service token,
+    is returned untouched. Parsing does not depend on the Content-Type header (a
+    JSON body served without one must not bypass stripping). Relayed headers
     (Set-Cookie etc.) are preserved.
     """
-    if resp.status_code != 200 or "json" not in (resp.media_type or "").lower():
+    if resp.status_code != 200:
         return resp
     try:
         body = json.loads(resp.body)
     except (ValueError, TypeError):
         return resp
-    if not isinstance(body, dict) or not body.get("controller_token"):
+    if not isinstance(body, dict) or not any(body.get(k) for k in _JOIN_SERVICE_TOKENS):
         return resp
+    # Persist best-effort; never let a save error keep the token in the body.
     try:
         mesh_credentials.save_mesh_credentials(body)
-    except Exception as exc:  # noqa: BLE001 - never break the poll on a save error
+    except Exception as exc:  # noqa: BLE001
         logger.warning("cluster-join: could not persist mesh credentials: %s", exc)
-        return resp
     stripped = {k: v for k, v in body.items() if k not in _JOIN_SERVICE_TOKENS}
     out = Response(
         content=json.dumps(stripped).encode("utf-8"),

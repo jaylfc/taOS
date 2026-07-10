@@ -79,6 +79,14 @@ class TestStore:
         assert mesh_credentials.get_controller_token() is None
         mesh_credentials.clear()  # no-op when already gone
 
+    def test_corrupt_non_dict_file_is_treated_as_absent(self, data_dir):
+        # An external edit / corruption leaving a non-object must not raise from
+        # the getters (which would break the headless passkey fetch).
+        (data_dir / "mesh_credentials.json").write_text("[1, 2, 3]")
+        assert mesh_credentials.get_controller_token() is None
+        assert mesh_credentials.get_sites_token() is None
+        assert mesh_credentials.has_mesh_credentials() is False
+
     def test_passkey_client_delegates(self, data_dir):
         mesh_credentials.save_mesh_credentials(_READY)
         # The download-manager import path reads the persisted token now.
@@ -128,3 +136,24 @@ class TestPollIntercept:
         out = _persist_join_credentials(self._resp(b"<html>oops</html>", media="text/html"))
         assert out.body == b"<html>oops</html>"
         assert mesh_credentials.has_mesh_credentials() is False
+
+    def test_tokens_stripped_even_when_save_fails(self, data_dir):
+        # controller_token present but host_id missing -> save_mesh_credentials
+        # raises. The token must STILL be stripped (never leaked to compensate).
+        from tinyagentos.routes.account_proxy import _persist_join_credentials
+
+        bad = {"status": "ready", "controller_token": "ctl.leak", "sites_token": "s.leak"}
+        out = _persist_join_credentials(self._resp(bad))
+        browser = json.loads(out.body)
+        assert "controller_token" not in browser and "sites_token" not in browser
+        assert mesh_credentials.has_mesh_credentials() is False  # save did fail
+
+    def test_json_without_content_type_is_still_stripped(self, data_dir):
+        # A JSON body served without a Content-Type header must not bypass
+        # stripping (parsing does not depend on media_type).
+        from tinyagentos.routes.account_proxy import _persist_join_credentials
+
+        out = _persist_join_credentials(self._resp(_READY, media=None))
+        browser = json.loads(out.body)
+        assert "controller_token" not in browser
+        assert mesh_credentials.get_controller_token() == "ctl.jwt.aaa"
