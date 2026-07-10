@@ -8,9 +8,10 @@ storage is invented.
 Tier resolution mirrors the Images Studio (routes/images_edit.py): the concrete
 backend is resolved from the live backend catalog first, falling back to the
 host hardware profile. A discrete GPU (e.g. the RTX 3060 worker) serves the SDXL
-tier; an NPU host (RK3588) serves a low SD-1.5 placeholder tier; a host with no
-accelerator has no capable backend, so the route returns ``{available: false}``
-(HTTP 200) and the UI shows a "needs a GPU worker" state instead of a crash.
+tier; a host with no discrete-GPU texture backend has no capable pipeline (RK
+NPU SD tiling is a documented follow-up, not yet wired), so the route returns
+``{available: false}`` (HTTP 200) and the UI shows a "needs a GPU worker" state
+instead of a crash or an always-failing tier.
 """
 from __future__ import annotations
 
@@ -44,10 +45,14 @@ _MIN_SIZE = 64
 _MAX_SIZE = 2048
 _SIZE_MULTIPLE = 8
 
-# Per-tier checkpoint. SDXL is the discrete-GPU tier; SD 1.5 is the NPU
-# low/placeholder tier (see the design doc — real RK NPU tiling is a follow-up).
+# The discrete-GPU tier checkpoint. (RK NPU SD is a documented follow-up; there
+# is no wired NPU texture backend yet, so it is not resolved here.)
 _SDXL_CHECKPOINT = "sd_xl_base_1.0.safetensors"
-_SD15_CHECKPOINT = "v1-5-pruned-emaonly.safetensors"
+
+# Generated PNGs share the game's flat file set. Cap both the per-image size and
+# the number of assets so a runaway/loop request can't fill the disk.
+_MAX_ASSET_BYTES = 12 * 1024 * 1024  # a 2048x2048 PNG fits comfortably
+_MAX_ASSET_FILES = 200
 
 
 class TextureRequest(BaseModel):
@@ -76,8 +81,8 @@ def resolve_texture_backend(request: Request) -> Optional[TextureBackend]:
       1. A live ComfyUI backend advertised in the catalog (e.g. the RTX 3060
          worker) — the SDXL/GPU tier.
       2. A local discrete GPU (CUDA/ROCm) — SDXL at the local ComfyUI URL.
-      3. A local NPU (RK3588) — the SD-1.5 low/placeholder tier.
-      4. Otherwise unavailable.
+      3. Otherwise unavailable. (An NPU-only host has no wired texture backend
+         yet, so it resolves to unavailable rather than an always-failing tier.)
     """
     catalog = getattr(request.app.state, "backend_catalog", None)
     if catalog is not None:
@@ -92,9 +97,6 @@ def resolve_texture_backend(request: Request) -> Optional[TextureBackend]:
     gpu = getattr(hw, "gpu", None)
     if gpu is not None and (getattr(gpu, "cuda", False) or getattr(gpu, "rocm", False)):
         return TextureBackend(default_base_url(), "sdxl", _SDXL_CHECKPOINT, "texture_sdxl")
-    npu = getattr(hw, "npu", None)
-    if npu is not None and getattr(npu, "type", "none") not in ("none", None):
-        return TextureBackend(default_base_url(), "sd15", _SD15_CHECKPOINT, "texture_sdxl")
 
     return None
 
@@ -143,8 +145,19 @@ async def generate_texture(request: Request, game_id: str, body: TextureRequest)
         # "needs a GPU worker" state, so answer 200 with a clear reason.
         return {
             "available": False,
-            "reason": "No GPU or NPU worker available for texture generation.",
+            "reason": "No GPU worker available for texture generation.",
         }
+
+    # Refuse before spending a GPU call if the game is already at the asset cap.
+    try:
+        asset_count = sum(1 for p in game_dir.iterdir() if p.is_file() and p.suffix == ".png")
+    except OSError:
+        asset_count = 0
+    if asset_count >= _MAX_ASSET_FILES:
+        return JSONResponse(
+            {"available": True, "error": f"asset limit reached (max {_MAX_ASSET_FILES})"},
+            status_code=409,
+        )
 
     seed = random.randint(0, 2**32 - 1)
     workflow = build_texture_workflow(
@@ -163,11 +176,14 @@ async def generate_texture(request: Request, game_id: str, body: TextureRequest)
         # Fail-soft: the client swallowed the underlying error and returned
         # None. Surface a clean 502 (not a 500 crash) so the UI can retry.
         return JSONResponse(
-            {
-                "available": True,
-                "error": "Texture generation failed. Is the ComfyUI backend running?",
-            },
+            {"error": "Texture generation failed. Is the ComfyUI backend running?"},
             status_code=502,
+        )
+
+    if len(result.image_bytes) > _MAX_ASSET_BYTES:
+        logger.warning("generated texture exceeded size cap: %d bytes", len(result.image_bytes))
+        return JSONResponse(
+            {"error": "generated image exceeded the size limit"}, status_code=502
         )
 
     filename = _asset_filename(body.kind)

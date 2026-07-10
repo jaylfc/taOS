@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -31,8 +32,14 @@ _CHECKPOINT_NODE = "4"
 _DEFAULT_NEGATIVE = "blurry, low quality, watermark, text, signature"
 
 
+@lru_cache(maxsize=None)
 def load_template(name: str) -> dict:
-    """Load a checked-in workflow template by name (without the .json suffix)."""
+    """Load a checked-in workflow template by name (without the .json suffix).
+
+    Cached: the set of templates is fixed and small, and every caller goes
+    through ``build_texture_workflow``, which deep-copies before mutating, so
+    the cached dict is never mutated in place.
+    """
     path = _WORKFLOWS_DIR / f"{name}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 

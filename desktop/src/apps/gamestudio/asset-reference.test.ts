@@ -8,9 +8,17 @@ describe("buildAssetReference", () => {
     );
   });
 
-  it("emits a JS const for js files", () => {
+  it("emits a JS const for js files with a filename-derived name", () => {
     const ref = buildAssetReference("game.js", "sprite-2.png");
-    expect(ref).toContain('const assetUrl = "./sprite-2.png";');
+    expect(ref).toContain('const sprite_2Url = "./sprite-2.png";');
+  });
+
+  it("derives distinct const names so repeated inserts don't collide", () => {
+    const a = buildAssetReference("game.js", "texture-a.png");
+    const b = buildAssetReference("game.js", "texture-b.png");
+    expect(a).toContain("const texture_aUrl =");
+    expect(b).toContain("const texture_bUrl =");
+    expect(a).not.toEqual(b);
   });
 
   it("emits a CSS background rule for css files", () => {

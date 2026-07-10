@@ -114,8 +114,28 @@ class TestGenerateTexture:
             )
         assert resp.status_code == 502
         data = resp.json()
-        assert data["available"] is True
         assert "error" in data
+        # `available` is a 200-only tier-gate signal; a 502 error body omits it
+        # (the client throws on non-2xx and reads only `.error`).
+        assert "available" not in data
+
+    async def test_asset_count_cap_returns_409(self, client, monkeypatch):
+        import tinyagentos.routes.game_assets as ga
+
+        monkeypatch.setattr(ga, "_MAX_ASSET_FILES", 1)
+        app = client._transport.app
+        _set_gpu_tier(app)
+        gid = await _save_game(client, "cap-game")
+        with _patch_client(ComfyUIResult(image_bytes=PNG_BYTES, prompt_id="p1")):
+            first = await client.post(
+                f"/api/games/{gid}/assets/texture", json={"prompt": "one"}
+            )
+            assert first.status_code == 200  # wrote the 1st (and only allowed) asset
+            second = await client.post(
+                f"/api/games/{gid}/assets/texture", json={"prompt": "two"}
+            )
+        assert second.status_code == 409
+        assert "error" in second.json()
 
     async def test_empty_prompt_rejected(self, client):
         app = client._transport.app
