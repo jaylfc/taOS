@@ -41,12 +41,14 @@ def get_controller_token() -> Optional[str]:
     """The controller token persisted when this host joined an account mesh,
     or None if it has not joined one.
 
-    Read from ``TAOS_CONTROLLER_TOKEN`` for now; this is the seam the
-    cluster-join client writes to (alongside the Headscale key) once that
-    client lands. None means the headless passkey fetch is skipped and the
-    download stays on the web-seed baseline.
+    Delegates to ``mesh_credentials`` (the writer for this seam, populated by the
+    cluster-join poll-intercept); the ``TAOS_CONTROLLER_TOKEN`` env override still
+    wins there. None means the headless passkey fetch is skipped and the download
+    stays on the web-seed baseline.
     """
-    return os.getenv("TAOS_CONTROLLER_TOKEN") or None
+    from tinyagentos.taosnet import mesh_credentials
+
+    return mesh_credentials.get_controller_token()
 
 
 async def fetch_passkey(

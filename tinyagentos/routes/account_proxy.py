@@ -11,6 +11,8 @@ staging testing. (A blank override still yields a 503 'service unavailable'.)
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 
@@ -18,7 +20,16 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from tinyagentos.taosnet import mesh_credentials
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Per-host service tokens the join ready payload carries. They are persisted
+# server-side and stripped from the browser-facing poll body so a bearer
+# credential never sits in browser JavaScript.
+_JOIN_SERVICE_TOKENS = ("controller_token", "sites_token")
 
 # Only these account actions are proxied. The upstream base is operator config
 # (env), never user input, so there is no open-proxy / SSRF surface.
@@ -204,8 +215,44 @@ async def cluster_join_deny(request: Request, rid: str):
     return await _forward_to(request, "POST", f"{_JOIN_BASE}/requests/{rid}/deny")
 
 
+def _persist_join_credentials(resp: Response) -> Response:
+    """When a poll response is the ``ready`` payload carrying the per-host service
+    tokens, persist them server-side (host-bound) and return a copy with those
+    tokens stripped, so the credentials never reach browser JavaScript.
+
+    Fail-soft: any non-200, non-JSON, or unparseable body is returned untouched;
+    if persistence fails the body is returned as-is (tokens NOT stripped) rather
+    than dropping credentials the controller could not save. Relayed headers
+    (Set-Cookie etc.) are preserved.
+    """
+    if resp.status_code != 200 or "json" not in (resp.media_type or "").lower():
+        return resp
+    try:
+        body = json.loads(resp.body)
+    except (ValueError, TypeError):
+        return resp
+    if not isinstance(body, dict) or not body.get("controller_token"):
+        return resp
+    try:
+        mesh_credentials.save_mesh_credentials(body)
+    except Exception as exc:  # noqa: BLE001 - never break the poll on a save error
+        logger.warning("cluster-join: could not persist mesh credentials: %s", exc)
+        return resp
+    stripped = {k: v for k, v in body.items() if k not in _JOIN_SERVICE_TOKENS}
+    out = Response(
+        content=json.dumps(stripped).encode("utf-8"),
+        status_code=200,
+        media_type="application/json",
+    )
+    for raw in resp.raw_headers:
+        if raw[0].decode("latin-1").lower() in ("set-cookie", "location", "cache-control"):
+            out.raw_headers.append(raw)
+    return out
+
+
 @router.get("/api/account/cluster/join/requests/{rid}/poll")
 async def cluster_join_poll(request: Request, rid: str):
     if not _valid_rid(rid):
         return JSONResponse({"error": "invalid request id"}, status_code=400)
-    return await _forward_to(request, "GET", f"{_JOIN_BASE}/requests/{rid}/poll")
+    resp = await _forward_to(request, "GET", f"{_JOIN_BASE}/requests/{rid}/poll")
+    return _persist_join_credentials(resp)
