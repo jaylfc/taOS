@@ -122,5 +122,18 @@ describe("useElementHistory", () => {
     // corrupted/evicted one.
     act(() => hook.result.current.undo());
     expect(onChange).toHaveBeenLastCalledWith([el("v129")]);
+
+    // Eviction branch: walk undo to exhaustion. Because the history is capped,
+    // the oldest snapshots (including the original v0) were evicted, so we can
+    // never restore v0 and the undo depth is bounded by the cap, not by the 130
+    // commits pushed.
+    let undos = 1; // the undo above
+    while (hook.result.current.canUndo) {
+      act(() => hook.result.current.undo());
+      undos++;
+      if (undos > 200) break; // safety: never loop forever if the cap regressed
+    }
+    expect(undos).toBeLessThanOrEqual(100);
+    expect(onChange).not.toHaveBeenLastCalledWith([el("v0")]);
   });
 });
