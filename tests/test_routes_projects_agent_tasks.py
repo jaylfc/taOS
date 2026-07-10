@@ -274,6 +274,21 @@ class TestActorBinding:
         assert resp.status_code == 200
         assert resp.json()["author_id"] == cid
 
+    async def test_comment_author_pinned_to_token_when_omitted(self, ctx):
+        """An agent may omit author_id; the route pins the comment to its own
+        canonical id rather than storing a null or caller-supplied author."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/comments",
+                json={"body": "on it"},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["author_id"] == cid
+
 
 @pytest.mark.asyncio
 class TestExcludedRoutes:

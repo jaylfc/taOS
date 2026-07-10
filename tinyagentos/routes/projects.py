@@ -837,7 +837,9 @@ async def add_relationship(
 
 class AddCommentIn(BaseModel):
     body: str
-    author_id: str
+    # Optional: an agent caller may omit it and the route pins it to the token
+    # canonical_id. A session caller must still supply it (route enforces).
+    author_id: str | None = None
     replies_to_comment_id: str | None = None
 
 
@@ -859,6 +861,8 @@ async def add_comment(
     author_id = _resolve_actor(is_agent, actor_id, payload.author_id)
     if isinstance(author_id, JSONResponse):
         return author_id
+    if author_id is None:
+        return JSONResponse({"error": "author_id required"}, status_code=400)
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
