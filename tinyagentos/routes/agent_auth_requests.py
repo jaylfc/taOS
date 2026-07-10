@@ -298,6 +298,19 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
             ),
         )
 
+    # project_tasks binds the token to a specific project and adds a membership
+    # row, so require the human to pick that project explicitly in the consent
+    # card. Never fall back to the agent-supplied project_id for a task grant:
+    # POST /api/agents/auth-requests is unauthenticated, so the request could
+    # name any existing project the operator never validated. Other scopes keep
+    # the fallback so global tokens still work. Checked before any registration
+    # so a rejected approval never leaves an orphaned agent.
+    if "project_tasks" in body.granted_scopes and body.project_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="project_id is required when granting project_tasks",
+        )
+
     registry = _get_registry_store(request)
     private_pem, _public_pem = _get_keypair(request)
     grants_store = _get_grants_store(request)
@@ -373,7 +386,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
                 )
         except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
             logger.warning(
-                "auth-approve: could not add %s as a member of project %s",
+                "auth-approve: could not sync %s membership/a2a channel for project %s",
                 canonical_id,
                 effective_project,
                 exc_info=True,

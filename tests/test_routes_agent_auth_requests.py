@@ -161,6 +161,60 @@ class TestApproveDisplayNameNormalization:
         await grants.close()
 
     @pytest.mark.asyncio
+    async def test_approve_project_tasks_requires_explicit_project_id(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Granting project_tasks without a picked project_id is rejected, so an
+        unauthenticated request cannot bind a task token to a project the
+        operator never validated in the picker."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants.db")
+        await grants.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys")
+
+        # The request names a project, but the picker did not send one on approve.
+        record = await auth_store.create(
+            identity_claim="grok",
+            framework="grok",
+            requested_scopes=["project_tasks"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id="prj-agent-named",
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["project_tasks"]},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "project_id" in resp.text
+
+        # No agent should have been registered by the rejected approval.
+        assert await registry.list_all() == []
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+
+    @pytest.mark.asyncio
     async def test_approve_preserves_name_without_at(
         self, client, monkeypatch, tmp_path
     ):

@@ -162,7 +162,7 @@ export function ConsentActions({
   }
 
   const allowDisabled =
-    busy || (needsProject && !selectedProjectId && !(creating && newName.trim().length > 0));
+    busy || (needsProject && (creating ? !newName.trim() : !selectedProjectId));
 
   return (
     <div className="mt-2" role="group" aria-label="Consent actions">
