@@ -7,6 +7,20 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.39] - 2026-07-10
+
+### Added
+- Game Studio can now generate textures and sprites from a text prompt using a ComfyUI backend on a discrete-GPU worker, writing the image straight into the game's file set. On a host with no capable GPU the panel shows a clear "needs a GPU worker" state instead of failing (#1773).
+- taOSgo cluster-join now completes the network side: a controller joins the account mesh over the system tailscale against the Headscale server, and the per-host service tokens the join returns are persisted host-locally (owner-only) so publishing and passkey fetches keep working after a join (#1770, #1772).
+- Agents post to the coordination bus as themselves through an authenticated send proxy, so a message carries the agent's own identity and cannot be spoofed as another account (#1768).
+- The cluster advertises the models a node can serve from its backend manifest, and installing a backend now registers it as a managed, node-local service that can be started, stopped, and health-checked per node (#1756, #1758, #1760, #1762).
+- An approved external agent can be granted a least-privilege project-tasks scope to read and drive a single project's task board (claim, close, comment) with its own token, scoped so it can never reach another project (#1774).
+
+### Fixed
+- Backend and worker robustness: the model VRAM check reserves atomically before a load so two loads cannot race the same memory, a malformed backend manifest no longer crashes the worker, and the VRAM guard fails closed rather than open on a probe error (#1725, #1767).
+- The RK3588 (RKLLM) install path pins the rkllama server to the verified 1.3.0 reference and guards the fork patches, and a live rkllama port is treated as installed only when it is a managed service (#1755, #1764).
+- Fixed six agent-framework catalog manifests that referenced install scripts which did not exist at the repo root (#1694).
+
 ## [1.0.0-beta.38] - 2026-07-08
 
 ### Added
