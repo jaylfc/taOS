@@ -1,7 +1,24 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from tinyagentos.chat.reactions import maybe_trigger_semantic, WantsReplyRegistry
+
+
+class _FakeManifest:
+    def __init__(self, context_window):
+        self.type = "model"
+        self.context_window = context_window
+
+
+class _FakeRegistry:
+    def __init__(self, by_id):
+        self._by_id = by_id
+
+    def get(self, model_id):
+        return self._by_id.get(model_id)
+
+    def list_available(self, type_filter=None):
+        return list(self._by_id.values())
 
 
 @pytest.mark.asyncio
@@ -37,6 +54,48 @@ async def test_regenerate_triggered_for_thumbs_down_on_agent_reply():
     assert call.args[1]["text"] == "what's 2+2?"
     assert call.args[1]["trace_id"] == "user-msg-1"
     assert len(call.args[1]["context"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_regenerate_uses_agent_model_history_budget():
+    """Small-context agent model floors history max_tokens at 512 (#1740)."""
+    bridge = MagicMock()
+    bridge.enqueue_user_message = AsyncMock()
+    msg_store = MagicMock()
+    msg_store.get_message = AsyncMock(return_value={
+        "id": "user-msg-1", "channel_id": "c1", "content": "hi",
+    })
+    msg_store.get_messages = AsyncMock(return_value=[
+        {"author_id": "user", "author_type": "user", "content": "hi"},
+        {"author_id": "tom", "author_type": "agent", "content": "nope"},
+    ])
+    config = MagicMock()
+    config.agents = [{"name": "tom", "model": "tiny-rkllm"}]
+    registry = _FakeRegistry({"tiny-rkllm": _FakeManifest(4096)})
+    state = MagicMock(
+        bridge_sessions=bridge,
+        chat_messages=msg_store,
+        config=config,
+        registry=registry,
+    )
+    state.wants_reply = WantsReplyRegistry()
+    message = {
+        "id": "m1", "channel_id": "c1", "author_id": "tom",
+        "author_type": "agent", "content": "nope",
+        "metadata": {"trace_id": "user-msg-1"},
+    }
+    channel = {"id": "c1", "members": ["user", "tom"], "type": "dm", "settings": {}}
+
+    with patch(
+        "tinyagentos.chat.context_window.build_context_window",
+        return_value=[{"author_id": "user", "author_type": "user", "content": "hi"}],
+    ) as build:
+        await maybe_trigger_semantic(
+            emoji="👎", message=message, reactor_id="user", reactor_type="user",
+            channel=channel, state=state,
+        )
+    build.assert_called_once()
+    assert build.call_args.kwargs["max_tokens"] == 512
 
 
 @pytest.mark.asyncio
