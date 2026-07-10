@@ -175,6 +175,59 @@ class TestAgentChatRouter:
         assert build.call_args.kwargs["max_tokens"] == 4000
 
     @pytest.mark.asyncio
+    async def test_context_budget_capped_when_a_recipient_window_is_unknown(self):
+        """A mix of known-large and unknown-window recipients never budgets
+        above the historical default, so the unknown recipient cannot be
+        overflowed by the larger one (#1740 follow-up)."""
+        bridge = _FakeBridge()
+        agents = [
+            {"name": "big", "status": "running", "model": "big-model"},
+            {"name": "cloud", "status": "running", "model": "gpt-4o"},
+        ]
+        state = MagicMock()
+        state.config = MagicMock()
+        state.config.agents = agents
+        state.chat_messages = MagicMock()
+        state.chat_messages.send_message = AsyncMock(return_value={
+            "id": "m1", "channel_id": "c1", "author_id": "big",
+            "author_type": "agent", "content": "", "created_at": 1.0,
+        })
+        state.chat_messages.get_messages = AsyncMock(return_value=[
+            {"author_id": "user", "author_type": "user", "content": "hello"},
+        ])
+        state.chat_channels = MagicMock()
+        state.chat_channels.update_last_message_at = AsyncMock()
+        state.chat_hub = MagicMock()
+        state.chat_hub.broadcast = AsyncMock()
+        state.chat_hub.next_seq = MagicMock(return_value=1)
+        state.bridge_sessions = bridge
+        # "big-model" resolves to a 32768 window; "gpt-4o" is not in the
+        # registry, so its real window is unknown.
+        state.registry = _FakeRegistry({
+            "big-model": _FakeManifest("big-model", 32768),
+        })
+        channel = {
+            "id": "c1", "type": "group",
+            "members": ["user", "big", "cloud"],
+            "settings": {
+                "response_mode": "lively", "max_hops": 3,
+                "cooldown_seconds": 0, "rate_cap_per_minute": 100, "muted": [],
+            },
+        }
+        message = {
+            "id": "m1", "channel_id": "c1", "author_id": "user",
+            "author_type": "user", "content": "hello", "created_at": 1.0,
+        }
+        with patch(
+            "tinyagentos.chat.context_window.build_context_window",
+            return_value=[],
+        ) as build:
+            await AgentChatRouter(state)._route(message, channel)
+        build.assert_called_once()
+        # 32768 alone would give 21744; the unknown recipient caps it at 4000.
+        assert build.call_args.kwargs["max_tokens"] == 4000
+
+    @pytest.mark.asyncio
     async def test_skips_non_user_messages(self):
         bridge = _FakeBridge()
         state = _state_for({"name": "openclaw", "status": "running"}, bridge=bridge)
