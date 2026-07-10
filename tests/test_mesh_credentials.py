@@ -103,7 +103,7 @@ class TestPollIntercept:
     def test_ready_payload_persists_and_strips_tokens(self, data_dir):
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 
-        out = _persist_join_credentials(self._resp(_READY))
+        out, _ji = _persist_join_credentials(self._resp(_READY))
         # Persisted server-side.
         assert mesh_credentials.get_controller_token() == "ctl.jwt.aaa"
         assert mesh_credentials.get_sites_token() == "sites.jwt.bbb"
@@ -119,21 +119,21 @@ class TestPollIntercept:
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 
         pending = {"status": "pending"}
-        out = _persist_join_credentials(self._resp(pending))
+        out, _ji = _persist_join_credentials(self._resp(pending))
         assert json.loads(out.body) == pending
         assert mesh_credentials.has_mesh_credentials() is False
 
     def test_non_200_untouched(self, data_dir):
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 
-        out = _persist_join_credentials(self._resp({"error": "nope"}, status=403))
+        out, _ji = _persist_join_credentials(self._resp({"error": "nope"}, status=403))
         assert out.status_code == 403
         assert mesh_credentials.has_mesh_credentials() is False
 
     def test_non_json_untouched(self, data_dir):
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 
-        out = _persist_join_credentials(self._resp(b"<html>oops</html>", media="text/html"))
+        out, _ji = _persist_join_credentials(self._resp(b"<html>oops</html>", media="text/html"))
         assert out.body == b"<html>oops</html>"
         assert mesh_credentials.has_mesh_credentials() is False
 
@@ -143,7 +143,7 @@ class TestPollIntercept:
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 
         bad = {"status": "ready", "controller_token": "ctl.leak", "sites_token": "s.leak"}
-        out = _persist_join_credentials(self._resp(bad))
+        out, _ji = _persist_join_credentials(self._resp(bad))
         browser = json.loads(out.body)
         assert "controller_token" not in browser and "sites_token" not in browser
         assert mesh_credentials.has_mesh_credentials() is False  # save did fail
@@ -153,7 +153,24 @@ class TestPollIntercept:
         # stripping (parsing does not depend on media_type).
         from tinyagentos.routes.account_proxy import _persist_join_credentials
 
-        out = _persist_join_credentials(self._resp(_READY, media=None))
+        out, _ji = _persist_join_credentials(self._resp(_READY, media=None))
         browser = json.loads(out.body)
         assert "controller_token" not in browser
         assert mesh_credentials.get_controller_token() == "ctl.jwt.aaa"
+
+    def test_preauth_key_stripped_and_join_intent_returned(self, data_dir):
+        # Slice 2: the single-use preauth key is stripped from the browser body
+        # (consumed server-side) and surfaced as a join intent for the caller.
+        from tinyagentos.routes.account_proxy import _persist_join_credentials
+
+        out, join_intent = _persist_join_credentials(self._resp(_READY))
+        browser = json.loads(out.body)
+        assert "headscale_preauth_key" not in browser
+        assert join_intent == {"preauth_key": "SINGLE-USE-SECRET", "hostname": "host_9"}
+
+    def test_no_preauth_means_no_join_intent(self, data_dir):
+        from tinyagentos.routes.account_proxy import _persist_join_credentials
+
+        no_pre = {k: v for k, v in _READY.items() if k != "headscale_preauth_key"}
+        _out, join_intent = _persist_join_credentials(self._resp(no_pre))
+        assert join_intent is None

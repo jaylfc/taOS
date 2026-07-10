@@ -11,6 +11,7 @@ staging testing. (A blank override still yields a 503 'service unavailable'.)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from tinyagentos.taosnet import mesh_credentials
+from tinyagentos.taosnet import mesh, mesh_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ router = APIRouter()
 # server-side and stripped from the browser-facing poll body so a bearer
 # credential never sits in browser JavaScript.
 _JOIN_SERVICE_TOKENS = ("controller_token", "sites_token")
+# Everything stripped from the browser body: the service tokens plus the
+# single-use Headscale preauth key, which the controller consumes server-side to
+# join the mesh (Slice 2). None of these should ever reach browser JavaScript.
+_STRIP_KEYS = _JOIN_SERVICE_TOKENS + ("headscale_preauth_key",)
 
 # Only these account actions are proxied. The upstream base is operator config
 # (env), never user input, so there is no open-proxy / SSRF surface.
@@ -215,34 +220,45 @@ async def cluster_join_deny(request: Request, rid: str):
     return await _forward_to(request, "POST", f"{_JOIN_BASE}/requests/{rid}/deny")
 
 
-def _persist_join_credentials(resp: Response) -> Response:
+def _persist_join_credentials(resp: Response) -> tuple[Response, dict | None]:
     """When a poll response carries the per-host service tokens, persist them
-    server-side (host-bound) and return a copy with those tokens ALWAYS stripped,
-    so a bearer credential never reaches browser JavaScript.
+    server-side (host-bound) and return a copy with those tokens + the single-use
+    preauth key ALWAYS stripped, so nothing secret reaches browser JavaScript.
 
-    Security ordering: stripping is decoupled from persistence. Once a 200 JSON
-    body is seen to contain a service token it is always stripped, whether or not
-    the save succeeds (a save failure is logged; the credentials are re-delivered
-    on the next poll -- but they are never leaked to the browser to compensate).
-    A non-200 body, or one that does not parse to a dict carrying a service token,
-    is returned untouched. Parsing does not depend on the Content-Type header (a
-    JSON body served without one must not bypass stripping). Relayed headers
+    Returns ``(browser_response, join_intent)``. ``join_intent`` is
+    ``{"preauth_key", "hostname"}`` when the ready payload carried a preauth key
+    for the caller to consume server-side (trigger the mesh-join), else None.
+
+    Security ordering: stripping is decoupled from persistence and from the join.
+    Once a 200 JSON body is seen to contain a service token, the secrets are
+    always stripped, whether or not the save/join succeeds. A non-200 body, or one
+    that does not parse to a dict carrying a service token, is returned untouched.
+    Parsing does not depend on the Content-Type header. Relayed headers
     (Set-Cookie etc.) are preserved.
     """
     if resp.status_code != 200:
-        return resp
+        return resp, None
     try:
         body = json.loads(resp.body)
     except (ValueError, TypeError):
-        return resp
+        return resp, None
     if not isinstance(body, dict) or not any(body.get(k) for k in _JOIN_SERVICE_TOKENS):
-        return resp
+        return resp, None
     # Persist best-effort; never let a save error keep the token in the body.
     try:
         mesh_credentials.save_mesh_credentials(body)
     except Exception as exc:  # noqa: BLE001
         logger.warning("cluster-join: could not persist mesh credentials: %s", exc)
-    stripped = {k: v for k, v in body.items() if k not in _JOIN_SERVICE_TOKENS}
+
+    preauth = body.get("headscale_preauth_key")
+    join_intent = None
+    if preauth:
+        # The Headscale node hostname; the exact value taos.my routes on is the
+        # host row identity, so prefer an explicit hostname field, else host_id.
+        hostname = body.get("hostname") or body.get("host_id") or "taos-host"
+        join_intent = {"preauth_key": preauth, "hostname": str(hostname)}
+
+    stripped = {k: v for k, v in body.items() if k not in _STRIP_KEYS}
     out = Response(
         content=json.dumps(stripped).encode("utf-8"),
         status_code=200,
@@ -251,7 +267,16 @@ def _persist_join_credentials(resp: Response) -> Response:
     for raw in resp.raw_headers:
         if raw[0].decode("latin-1").lower() in ("set-cookie", "location", "cache-control"):
             out.raw_headers.append(raw)
-    return out
+    return out, join_intent
+
+
+async def _run_mesh_join(intent: dict) -> None:
+    """Background task: consume the single-use preauth key to join the mesh.
+    Fail-soft; a host without tailscale (or a failed join) is logged, never
+    raised, so the poll it was triggered from is unaffected."""
+    result = await mesh.mesh_up(intent["preauth_key"], intent["hostname"])
+    if not result.get("ok"):
+        logger.warning("taosgo: background mesh join did not complete: %s", result.get("detail"))
 
 
 @router.get("/api/account/cluster/join/requests/{rid}/poll")
@@ -259,4 +284,15 @@ async def cluster_join_poll(request: Request, rid: str):
     if not _valid_rid(rid):
         return JSONResponse({"error": "invalid request id"}, status_code=400)
     resp = await _forward_to(request, "GET", f"{_JOIN_BASE}/requests/{rid}/poll")
-    return _persist_join_credentials(resp)
+    out, join_intent = _persist_join_credentials(resp)
+    if join_intent and not await mesh.is_joined():
+        # Fire-and-forget so the slow `tailscale up` never blocks the poll.
+        asyncio.create_task(_run_mesh_join(join_intent))
+    return out
+
+
+@router.get("/api/account/mesh/status")
+async def mesh_status(request: Request):
+    """Report this host's mesh membership for the Account pane
+    ({joined, tailnet, node_ip, ...}). Fail-soft (never raises)."""
+    return JSONResponse(await mesh.mesh_status())
