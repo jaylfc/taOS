@@ -131,4 +131,39 @@ describe("ConsentActions", () => {
     fireEvent.change(select, { target: { value: "p2" } });
     expect(screen.getByRole("button", { name: /allow/i })).not.toBeDisabled();
   });
+
+  it("creates a project inline and grants project_tasks against the new project", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u === "/api/projects?status=active") {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ items: [] }) });
+      }
+      if (u === "/api/projects" && init?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ id: "pnew", name: "Fresh" }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ status: "ok" }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onResolved = vi.fn();
+    render(<ConsentActions requestId="req-c" scopes={["project_tasks"]} onResolved={onResolved} />);
+
+    await screen.findByLabelText(/Grant project_tasks for project/i);
+    expect(screen.getByRole("button", { name: /allow/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /new/i }));
+    fireEvent.change(screen.getByLabelText(/New project name/i), { target: { value: "Fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: /allow/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+
+    const approve = fetchMock.mock.calls.find((c) => String(c[0]).includes("/approve"));
+    expect(approve).toBeTruthy();
+    expect(JSON.parse((approve![1] as RequestInit).body as string)).toEqual({
+      granted_scopes: ["project_tasks"],
+      project_id: "pnew",
+    });
+  });
 });

@@ -48,7 +48,10 @@ export function ConsentActions({
   const [error, setError] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(requestedProjectId ?? "");
+  // Start empty on purpose: a requestedProjectId is only adopted after it is
+  // verified to exist in the fetched project list (below), so a stale or
+  // unowned id from the request can never be sent to approve.
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -97,12 +100,18 @@ export function ConsentActions({
       setError((d as { error?: string }).error ?? `Could not create project (${res.status})`);
       return null;
     }
-    const p = (await res.json()) as ProjectOption;
-    setProjects((prev) => [p, ...prev]);
-    setSelectedProjectId(p.id);
+    const p = (await res.json().catch(() => null)) as Partial<ProjectOption> | null;
+    const id = typeof p?.id === "string" ? p.id : "";
+    if (!id) {
+      setError("Project created but the response was unexpected; reload and pick it from the list.");
+      return null;
+    }
+    const created: ProjectOption = { id, name: typeof p?.name === "string" ? p.name : id };
+    setProjects((prev) => [created, ...prev]);
+    setSelectedProjectId(id);
     setCreating(false);
     setNewName("");
-    return p.id;
+    return id;
   }
 
   async function decide(approved: boolean) {
