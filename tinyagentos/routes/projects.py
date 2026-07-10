@@ -852,6 +852,13 @@ async def add_comment(
     auth = await _authorize_task_actor(request, pstore, project_id)
     if isinstance(auth, JSONResponse):
         return auth
+    actor_id, is_agent, _project = auth
+    # Invariant 3: an agent authors a comment only as itself. A comment author is
+    # an actor id just like the lifecycle fields, so bind it to the token id and
+    # 403 a mismatched body value (a session owner keeps its provided author_id).
+    author_id = _resolve_actor(is_agent, actor_id, payload.author_id)
+    if isinstance(author_id, JSONResponse):
+        return author_id
     store = request.app.state.project_task_store
     guard = await _require_task_in_project(store, project_id, task_id)
     if isinstance(guard, JSONResponse):
@@ -859,7 +866,7 @@ async def add_comment(
     try:
         return await store.add_comment(
             task_id=task_id,
-            author_id=payload.author_id,
+            author_id=author_id,
             body=payload.body,
             replies_to_comment_id=payload.replies_to_comment_id,
         )

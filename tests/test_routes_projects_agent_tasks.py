@@ -244,6 +244,36 @@ class TestActorBinding:
             )
         assert resp.status_code == 403
 
+    async def test_comment_as_someone_else_is_403(self, ctx):
+        """Invariant 3: a comment author is an actor id; an agent may not post a
+        comment authored as another identity."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/comments",
+                json={"body": "spoofed", "author_id": "some-other-agent"},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 403
+        assert cid != "some-other-agent"
+
+    async def test_comment_as_self_succeeds_and_stores_token_id(self, ctx):
+        """The mirror of the 403 case: an agent commenting as its own canonical
+        id is accepted and the stored author is that id."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/comments",
+                json={"body": "on it", "author_id": cid},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["author_id"] == cid
+
 
 @pytest.mark.asyncio
 class TestExcludedRoutes:
