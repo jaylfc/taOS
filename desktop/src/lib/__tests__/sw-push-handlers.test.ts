@@ -58,6 +58,17 @@ async function handleNotificationClick(
   openWindow: ((url: string) => Promise<null>) | null,
 ): Promise<unknown> {
   const data = notificationData || {};
+  // Same-origin guard mirroring sw.ts: resolve the deep link against our own
+  // origin and refuse anything cross-origin before openWindow.
+  let target = typeof data["url"] === "string" && data["url"] ? (data["url"] as string) : "/";
+  try {
+    const u = new URL(target, origin);
+    target = u.origin === origin && u.pathname.startsWith("/")
+      ? u.pathname + u.search
+      : "/";
+  } catch {
+    target = "/";
+  }
   for (const client of clients) {
     if (client.url && new URL(client.url).origin === origin) {
       client.postMessage({ type: "taos-push:click", data });
@@ -65,7 +76,7 @@ async function handleNotificationClick(
     }
   }
   if (openWindow) {
-    return openWindow("/");
+    return openWindow(target);
   }
   return null;
 }
@@ -150,6 +161,24 @@ describe("sw notificationclick handler — handleNotificationClick", () => {
   it("calls openWindow('/') when no matching client exists", async () => {
     const openWindow = vi.fn().mockResolvedValue(null);
     await handleNotificationClick({}, [], origin, openWindow);
+    expect(openWindow).toHaveBeenCalledWith("/");
+  });
+
+  it("opens the notification's deep link (data.url) when no client is open", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick({ url: "/desktop" }, [], origin, openWindow);
+    expect(openWindow).toHaveBeenCalledWith("/desktop");
+  });
+
+  it("refuses a cross-origin url and opens '/' instead", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick({ url: "https://evil.example.com/phish" }, [], origin, openWindow);
+    expect(openWindow).toHaveBeenCalledWith("/");
+  });
+
+  it("refuses a protocol-relative //host url and opens '/' instead", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick({ url: "//evil.example.com/phish" }, [], origin, openWindow);
     expect(openWindow).toHaveBeenCalledWith("/");
   });
 

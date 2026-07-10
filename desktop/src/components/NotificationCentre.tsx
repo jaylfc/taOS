@@ -1,9 +1,15 @@
-import { useState } from "react";
-import { X, Bell, CheckCheck, Trash2, History } from "lucide-react";
+import { useState, useEffect } from "react";
+import { X, Bell, BellOff, CheckCheck, Trash2, History } from "lucide-react";
 import { useNotificationStore, type Notification } from "@/stores/notification-store";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { markServerRead, markAllServerRead } from "@/lib/server-notifications";
+import {
+  getPushState,
+  enableNotificationsPush,
+  disableNotificationsPush,
+  type PushState,
+} from "@/lib/notifications-push";
 import { SetupChecklist } from "./SetupChecklist";
 import { ConsentActions, consentPayload } from "./ConsentActions";
 
@@ -74,6 +80,78 @@ function NotificationItem({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+// "Enable notifications on this device" control. Registers a PWA web-push
+// subscription so OS notifications (e.g. agent access-requests) reach this
+// device even when taOS is closed. On iOS the PWA must be added to the Home
+// Screen before push can be enabled (Safari limitation).
+function PushToggle() {
+  const [state, setState] = useState<PushState | "loading" | "working">("loading");
+
+  useEffect(() => {
+    let alive = true;
+    getPushState()
+      .then((s) => alive && setState(s))
+      .catch(() => alive && setState("disabled"));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (state === "loading" || state === "unsupported") return null;
+
+  if (state === "needs-install") {
+    return (
+      <div className="flex items-start gap-2 px-4 py-2.5 border-b border-white/5 text-[11px] text-shell-text-tertiary">
+        <Bell size={13} className="mt-0.5 shrink-0" />
+        <span>Add taOS to your Home Screen to get notifications on this device.</span>
+      </div>
+    );
+  }
+
+  if (state === "denied") {
+    return (
+      <div className="flex items-start gap-2 px-4 py-2.5 border-b border-white/5 text-[11px] text-shell-text-tertiary">
+        <BellOff size={13} className="mt-0.5 shrink-0" />
+        <span>Notifications are blocked. Enable them for taOS in your browser settings.</span>
+      </div>
+    );
+  }
+
+  const enabled = state === "enabled";
+  const busy = state === "working";
+  const toggle = async () => {
+    setState("working");
+    try {
+      const next = enabled ? await disableNotificationsPush() : await enableNotificationsPush();
+      setState(next);
+    } catch {
+      setState(await getPushState().catch(() => "disabled"));
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-white/5">
+      <div className="flex items-center gap-2 min-w-0">
+        {enabled ? (
+          <Bell size={13} className="text-accent shrink-0" />
+        ) : (
+          <BellOff size={13} className="text-shell-text-tertiary shrink-0" />
+        )}
+        <span className="text-[11px] text-shell-text-secondary truncate">
+          {enabled ? "Notifications on this device" : "Enable notifications on this device"}
+        </span>
+      </div>
+      <button
+        onClick={toggle}
+        disabled={busy}
+        className="text-[11px] font-medium text-accent hover:underline disabled:opacity-50 shrink-0"
+      >
+        {busy ? "..." : enabled ? "Turn off" : "Enable"}
+      </button>
     </div>
   );
 }
@@ -206,6 +284,7 @@ export function NotificationCentre() {
         <div className="flex-1 overflow-y-auto">
           {tab === "inbox" && (
             <>
+              <PushToggle />
               {!checklistDismissed && (
                 <SetupChecklist onDismissed={() => setChecklistDismissed(true)} />
               )}

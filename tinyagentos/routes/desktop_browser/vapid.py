@@ -20,18 +20,24 @@ from py_vapid import Vapid01
 _VAPID_FILENAME = "vapid.pem"
 
 
-def load_or_create_vapid_keypair(data_dir: pathlib.Path) -> tuple[str, str]:
+def load_or_create_vapid_keypair(
+    data_dir: pathlib.Path, filename: str = _VAPID_FILENAME
+) -> tuple[str, str]:
     """Return (public_key_b64url, private_key_pem_str).
 
-    Loads from <data_dir>/vapid.pem if present; otherwise generates a fresh
+    Loads from <data_dir>/<filename> if present; otherwise generates a fresh
     P-256 keypair, persists the private key PEM to disk with mode 0600, and
     returns both keys. Idempotent — second call returns same keys.
+
+    ``filename`` lets callers persist independent keypairs side by side (e.g.
+    the OS notification push key vs the Browser copilot push key), each with
+    its own purpose and audience.
 
     The public key is returned in uncompressed-point base64url-without-padding
     form (the format applicationServerKey expects in PushManager.subscribe).
     """
     data_dir.mkdir(parents=True, exist_ok=True)
-    pem_path = data_dir / _VAPID_FILENAME
+    pem_path = data_dir / filename
 
     if pem_path.exists():
         vapid = Vapid01.from_pem(pem_path.read_bytes())

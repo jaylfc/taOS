@@ -51,6 +51,7 @@ from tinyagentos.channels import ChannelStore
 from tinyagentos.download_manager import DownloadManager
 from tinyagentos.metrics import MetricsStore
 from tinyagentos.notifications import NotificationStore
+from tinyagentos.notifications_push import NotificationPushStore
 from tinyagentos.coding_workspaces import CodingWorkspaceStore
 from tinyagentos.install_registry import InstallRegistryStore
 from tinyagentos.store_submissions import StoreSubmissionStore
@@ -276,6 +277,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     metrics_store = MetricsStore(data_dir / "metrics.db")
     notif_store = NotificationStore(data_dir / "notifications.db")
+    notif_push_store = NotificationPushStore(data_dir / "notif_push.db")
     mcp_store = MCPServerStore(data_dir / "mcp.db")
     qmd_client = QmdClient(config.qmd.get("url", "http://localhost:7832"))
     http_client = httpx.AsyncClient(timeout=30)
@@ -485,6 +487,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.capability_map = capability_map_store
         await metrics_store.init()
         await notif_store.init()
+        await notif_push_store.init()
         await qmd_client.init()
         await secrets_store.init()
         await broker_store.init()
@@ -781,6 +784,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.models_root.mkdir(parents=True, exist_ok=True)
         app.state.metrics = metrics_store
         app.state.notifications = notif_store
+        app.state.notif_push_store = notif_push_store
         app.state.qmd_client = qmd_client
         app.state.http_client = http_client
         app.state.download_manager = download_manager
@@ -1263,6 +1267,31 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         notif_store.set_event_emitter(_notify_emitter)
 
+        # Wire NotificationStore -> OS-level PWA web-push so notifications reach
+        # an installed PWA even when taOS is closed. Uses its own VAPID keypair
+        # (separate file + purpose from the Browser copilot push). Strictly
+        # best-effort: keypair-load failure disables push but never blocks
+        # startup, and the sender itself is dispatched off-loop inside add().
+        try:
+            from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+            from tinyagentos.notifications_push import send_web_push
+
+            app.state.notif_vapid_keypair = load_or_create_vapid_keypair(
+                data_dir, filename="notif_vapid.pem"
+            )
+
+            async def _web_push_sender(row: dict) -> None:
+                await send_web_push(
+                    row,
+                    store=app.state.notif_push_store,
+                    vapid=app.state.notif_vapid_keypair,
+                )
+
+            notif_store.set_push_sender(_web_push_sender)
+        except Exception:
+            app.state.notif_vapid_keypair = None
+            logger.warning("notif web-push disabled: VAPID keypair unavailable", exc_info=True)
+
         # All startup init complete — allow requests through.
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")
@@ -1402,6 +1431,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await broker_store.close()
         await mail_store.close()
         await notif_store.close()
+        await notif_push_store.close()
         await app.state.system_events.close()
         await metrics_store.close()
         await qmd_client.close()
@@ -1491,6 +1521,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.agent_memory_dir.mkdir(parents=True, exist_ok=True)
     app.state.metrics = metrics_store
     app.state.notifications = notif_store
+    app.state.notif_push_store = notif_push_store
+    app.state.notif_vapid_keypair = None
     app.state.qmd_client = qmd_client
     app.state.http_client = http_client
     app.state.download_manager = download_manager

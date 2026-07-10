@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -64,6 +65,8 @@ class NotificationStore(BaseStore):
         super().__init__(*args, **kwargs)
         self._webhook_notifier = None
         self._event_emitter = None  # async callable: (row: dict) -> None
+        self._push_sender = None  # async callable: (row: dict) -> None
+        self._push_tasks: set = set()  # strong refs so fire-and-forget tasks aren't GC'd
 
     def set_webhook_notifier(self, notifier) -> None:
         """Attach a WebhookNotifier to fire on every notification."""
@@ -78,6 +81,24 @@ class NotificationStore(BaseStore):
         a failing emitter never breaks add().
         """
         self._event_emitter = emitter
+
+    def set_push_sender(self, sender) -> None:
+        """Attach an async callable called with each new notification row dict.
+
+        The sender delivers the notification as an OS-level PWA web-push so a
+        user gets the banner even when the taOS app is closed. It receives the
+        same row shape as the event emitter. Strictly best-effort and off the
+        event loop: it is dispatched as a background task, and any error is
+        swallowed so a push failure or a missing VAPID key never breaks add().
+        """
+        self._push_sender = sender
+
+    async def _dispatch_push(self, row: dict) -> None:
+        """Run the web-push sender, isolating every failure from add()."""
+        try:
+            await self._push_sender(row)
+        except Exception:
+            logger.warning("NotificationStore: web-push sender failed", exc_info=True)
 
     async def _post_init(self) -> None:
         # `archived` was added after the initial notifications ship. Guarded
@@ -121,21 +142,33 @@ class NotificationStore(BaseStore):
             except Exception as e:
                 logger.warning(f"Webhook notification error: {e}")
         # Push to EventBus broadcast for SSE delivery — best-effort, never breaks add()
+        row = {
+            "id": cursor.lastrowid,
+            "timestamp": ts,
+            "level": level,
+            "title": title,
+            "message": message,
+            "read": False,
+            "source": source,
+            "data": data,
+        }
         if self._event_emitter:
             try:
-                row = {
-                    "id": cursor.lastrowid,
-                    "timestamp": ts,
-                    "level": level,
-                    "title": title,
-                    "message": message,
-                    "read": False,
-                    "source": source,
-                    "data": data,
-                }
                 await self._event_emitter(row)
             except Exception:
                 logger.warning("NotificationStore: event emitter failed", exc_info=True)
+        # Fire the OS-level PWA web-push off the event loop: strictly
+        # best-effort. Scheduled as a background task so a slow or failing push
+        # (network round-trip) never stalls or breaks add().
+        if self._push_sender:
+            try:
+                task = asyncio.create_task(self._dispatch_push(row))
+                # Hold a strong ref until done: a bare create_task() can be
+                # garbage-collected mid-flight (see asyncio.create_task docs).
+                self._push_tasks.add(task)
+                task.add_done_callback(self._push_tasks.discard)
+            except Exception:
+                logger.warning("NotificationStore: could not schedule web-push", exc_info=True)
 
     async def list(self, limit: int = 20, unread_only: bool = False) -> list[dict]:
         # Active feed: archived (dismissed) notifications are excluded.

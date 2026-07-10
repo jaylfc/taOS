@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, field_validator
+
+from tinyagentos.auth import get_current_user
 
 router = APIRouter()
 
@@ -109,3 +113,99 @@ async def set_notification_pref(request: Request, event_type: str):
     muted = bool(muted_raw)
     await store.set_event_muted(event_type, muted)
     return {"event_type": event_type, "muted": muted}
+
+
+# ---------------------------------------------------------------------------
+# OS-level PWA web-push (VAPID). Separate key + store from the Browser copilot
+# push. All three routes require a session (the auth middleware also gates
+# /api/*), so the public key is only handed to a logged-in user.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/notifications/push/vapid-public-key")
+async def get_notifications_vapid_public_key(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
+) -> dict[str, str]:
+    """Return the server's VAPID public key for PushManager.subscribe()."""
+    keypair = getattr(request.app.state, "notif_vapid_keypair", None)
+    if not keypair:
+        return JSONResponse({"error": "web push not available"}, status_code=503)
+    public_key, _ = keypair
+    return {"public_key": public_key}
+
+
+class _NotifSubscribeKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+    @field_validator("p256dh", "auth")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("key must not be empty")
+        return v
+
+
+class _NotifSubscription(BaseModel):
+    endpoint: str
+    keys: _NotifSubscribeKeys
+
+    @field_validator("endpoint")
+    @classmethod
+    def _https(cls, v: str) -> str:
+        if not v.startswith("https://"):
+            raise ValueError("endpoint must start with https://")
+        return v
+
+
+class NotifSubscribeRequest(BaseModel):
+    subscription: _NotifSubscription
+
+
+@router.post("/api/notifications/push/subscribe")
+async def subscribe_notifications_push(
+    request: Request,
+    body: NotifSubscribeRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
+):
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+    store = getattr(request.app.state, "notif_push_store", None)
+    if store is None:
+        return JSONResponse({"error": "web push not available"}, status_code=503)
+    sub = body.subscription
+    await store.upsert(
+        user_id=user_id,
+        endpoint=sub.endpoint,
+        p256dh=sub.keys.p256dh,
+        auth=sub.keys.auth,
+    )
+    return {"ok": True}
+
+
+class NotifUnsubscribeRequest(BaseModel):
+    endpoint: str
+
+
+@router.post("/api/notifications/push/unsubscribe")
+async def unsubscribe_notifications_push(
+    request: Request,
+    body: NotifUnsubscribeRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),  # noqa: B008
+):
+    user_id = str(current_user.get("id") or "")
+    if not user_id:
+        return JSONResponse({"error": "session has no user id"}, status_code=401)
+    store = getattr(request.app.state, "notif_push_store", None)
+    if store is None:
+        return JSONResponse({"error": "web push not available"}, status_code=503)
+    # Ownership-scoped: a user can only unsubscribe their own endpoint. Deleting
+    # by endpoint alone would let any authed user drop (or probe) another user's
+    # subscription. Return 404 when nothing was deleted so the endpoint cannot
+    # be used as an ownership oracle.
+    deleted = await store.delete_for_user(user_id, body.endpoint)
+    if deleted == 0:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True}
