@@ -683,3 +683,119 @@ async def test_update_worker_deploy_unexpected_error(client, app):
     assert "deploy failed" in data["error"]
     assert data["drain_cancelled"] is True
     assert cluster.get_worker("gpu-box").status == "online"
+
+
+# ── update_worker auth gate tests ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_drain_requires_admin(app):
+    """403 when drain endpoint is called without an admin session."""
+    from httpx import ASGITransport
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as noauth_client:
+        resp = await noauth_client.post("/api/cluster/workers/gpu-box/drain", json={})
+    assert resp.status_code in (401, 403), f"got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_cancel_drain_requires_admin(app):
+    """403 when cancel-drain endpoint is called without an admin session."""
+    from httpx import ASGITransport
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as noauth_client:
+        resp = await noauth_client.post("/api/cluster/workers/gpu-box/cancel-drain")
+    assert resp.status_code in (401, 403), f"got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_update_worker_requires_admin(app):
+    """403 when update endpoint is called without an admin session."""
+    from httpx import ASGITransport
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as noauth_client:
+        resp = await noauth_client.post("/api/cluster/workers/gpu-box/update")
+    assert resp.status_code in (401, 403), f"got {resp.status_code}: {resp.text}"
+
+
+# ── update_worker disconnect classification tests ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_worker_deploy_connect_error(client, app):
+    """502 when deploy endpoint raises ConnectError — connection refused means
+    the worker is genuinely unreachable, not restarting.  Drain is cancelled."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    import httpx as _httpx
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post.side_effect = _httpx.ConnectError(
+        "Connection refused"
+    )
+
+    with patch("tinyagentos.routes.cluster.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/cluster/workers/gpu-box/update")
+
+    assert resp.status_code == 502
+    data = resp.json()
+    assert "connection refused" in data["error"].lower()
+    assert data["drain_cancelled"] is True
+    # Drain must be cancelled — worker back online
+    assert cluster.get_worker("gpu-box").status == "online"
+
+
+@pytest.mark.asyncio
+async def test_update_worker_deploy_read_timeout(client, app):
+    """200 when deploy endpoint raises ReadTimeout — worker restarted
+    mid-request, which is the normal update path.  Drain stays active."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    import httpx as _httpx
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post.side_effect = _httpx.ReadTimeout(
+        "Read timed out", request=AsyncMock()
+    )
+
+    with patch("tinyagentos.routes.cluster.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/cluster/workers/gpu-box/update")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["worker"] == "gpu-box"
+    assert data["status"] == "updating"
+    assert data["deploy"]["status"] == "acknowledged"
+    assert "restart expected" in data["deploy"]["note"]
+    # Drain must NOT be cancelled — worker should still be draining
+    assert cluster.get_worker("gpu-box").status == "draining"
+
+
+@pytest.mark.asyncio
+async def test_cancel_drain_state_conflict_returns_409(client, app):
+    """409 when cancel-drain is called on a worker not in draining state."""
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    cluster._workers["gpu-box"] = WorkerInfo(  # noqa: SLF001
+        name="gpu-box", url="http://gpu:9000", status="online",
+    )
+
+    resp = await client.post("/api/cluster/workers/gpu-box/cancel-drain")
+    assert resp.status_code == 409
+    assert "not draining" in resp.json()["error"]

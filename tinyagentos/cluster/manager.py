@@ -397,7 +397,7 @@ class ClusterManager:
 
     # ── taOS #890: graceful worker drain for auto-update ───────────────
 
-    def drain_worker(self, name: str, graceful: bool = True) -> dict:
+    async def drain_worker(self, name: str, graceful: bool = True) -> dict:
         """Begin draining a worker — gracefully detach without dropping tasks.
 
         When ``graceful=True`` (the default):
@@ -425,15 +425,18 @@ class ClusterManager:
         released = 0
 
         if not graceful:
-            # Force-release all leases for this worker
-            lids = [
-                lid for lid, lease in self._leases.items()
-                if (parsed := self._parse_resource_id(lease.resource_id))
-                and parsed[0] == name
-            ]
-            for lid in lids:
-                self._leases.pop(lid, None)
-                released += 1
+            # Force-release all leases for this worker.
+            # Lease pops must be serialised under _lease_lock so concurrent
+            # claim/release operations see a consistent view (taOS #1690).
+            async with self._lease_lock:
+                lids = [
+                    lid for lid, lease in self._leases.items()
+                    if (parsed := self._parse_resource_id(lease.resource_id))
+                    and parsed[0] == name
+                ]
+                for lid in lids:
+                    self._leases.pop(lid, None)
+                    released += 1
             logger.info("Worker '%s' drain: force-released %d leases", name, released)
             worker.status = "offline"
 
@@ -443,7 +446,7 @@ class ClusterManager:
                 f"{'Tasks will complete before detach.' if graceful else 'All leases released immediately.'}"
             )
             try:
-                asyncio.get_running_loop().create_task(
+                task = asyncio.create_task(
                     self._notifications.emit_event(
                         "worker.drain",
                         f"Worker '{name}' draining",
@@ -451,6 +454,8 @@ class ClusterManager:
                         level="info",
                     )
                 )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
@@ -477,7 +482,7 @@ class ClusterManager:
 
         if self._notifications:
             try:
-                asyncio.get_running_loop().create_task(
+                task = asyncio.create_task(
                     self._notifications.emit_event(
                         "worker.online",
                         f"Worker '{name}' drain cancelled",
@@ -485,6 +490,8 @@ class ClusterManager:
                         level="info",
                     )
                 )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 

@@ -1119,8 +1119,11 @@ async def drain_worker(request: Request, name: str, body: DrainRequest = DrainRe
     When ``graceful=false``, all leases are force-released and the worker
     is marked offline immediately.
     """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     cluster = request.app.state.cluster_manager
-    result = cluster.drain_worker(name, graceful=body.graceful)
+    result = await cluster.drain_worker(name, graceful=body.graceful)
     if "error" in result:
         return JSONResponse(result, status_code=404)
     return result
@@ -1129,10 +1132,13 @@ async def drain_worker(request: Request, name: str, body: DrainRequest = DrainRe
 @router.post("/api/cluster/workers/{name}/cancel-drain")
 async def cancel_drain(request: Request, name: str):
     """Cancel an in-progress drain and return the worker to online status."""
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     cluster = request.app.state.cluster_manager
     result = cluster.cancel_drain(name)
     if "error" in result:
-        return JSONResponse(result, status_code=404)
+        return JSONResponse(result, status_code=409)
     return result
 
 
@@ -1147,6 +1153,9 @@ async def update_worker(request: Request, name: str):
     4. Worker restarts, re-registers, returns to "online".
     5. Routing resumes automatically once the worker is back online.
     """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
     if not worker:
@@ -1163,7 +1172,7 @@ async def update_worker(request: Request, name: str):
         )
 
     # Step 1: Begin draining
-    drain_result = cluster.drain_worker(name, graceful=True)
+    drain_result = await cluster.drain_worker(name, graceful=True)
     if "error" in drain_result:
         return JSONResponse(drain_result, status_code=404)
 
@@ -1185,10 +1194,10 @@ async def update_worker(request: Request, name: str):
         cluster.cancel_drain(name)
         logger.exception("Worker '%s' update deploy returned HTTP error", name)
         return JSONResponse(
-            {"error": f"Worker update deploy rejected by worker", "drain_cancelled": True},
+            {"error": "Worker update deploy rejected by worker", "drain_cancelled": True},
             status_code=502,
         )
-    except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout):
         # Worker restarted mid-request — the connection dropped because
         # the worker service stopped.  This is the normal update path.
         # Keep the drain active; the worker will re-register and the
@@ -1199,6 +1208,16 @@ async def update_worker(request: Request, name: str):
             "drain stays active until re-registration", name,
         )
         deploy_result = {"status": "acknowledged", "note": "worker disconnected — restart expected"}
+    except httpx.ConnectError:
+        # Connection-refused / DNS failure — the worker is genuinely
+        # unreachable, not restarting.  Cancel the drain so the worker
+        # can be retried.
+        cluster.cancel_drain(name)
+        logger.exception("Worker '%s' update deploy failed — connection refused", name)
+        return JSONResponse(
+            {"error": "Worker unreachable — connection refused", "drain_cancelled": True},
+            status_code=502,
+        )
     except Exception as exc:
         # Unexpected failure — cancel drain so worker can still serve traffic.
         cluster.cancel_drain(name)
