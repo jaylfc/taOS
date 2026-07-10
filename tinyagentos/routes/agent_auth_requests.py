@@ -348,6 +348,37 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         # permission-check path (can_communicate etc.) is aware of the agent.
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
 
+    # If the agent was granted project_tasks and bound to a project, add it as a
+    # member of that project so it shows up in the project's Members and joins the
+    # project a2a channel (membership is synced into the channel). Best-effort: a
+    # membership failure never blocks the approval, which the token + grant already
+    # authorize.
+    if effective_project and "project_tasks" in body.granted_scopes:
+        try:
+            pstore = getattr(request.app.state, "project_store", None)
+            if pstore is not None:
+                await pstore.add_member(
+                    project_id=effective_project,
+                    member_id=canonical_id,
+                    member_kind="native",
+                    role="member",
+                )
+                from tinyagentos.projects.a2a import ensure_a2a_channel
+
+                await ensure_a2a_channel(
+                    request.app.state.chat_channels,
+                    pstore,
+                    effective_project,
+                    config=getattr(request.app.state, "config", None),
+                )
+        except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
+            logger.warning(
+                "auth-approve: could not add %s as a member of project %s",
+                canonical_id,
+                effective_project,
+                exc_info=True,
+            )
+
     # Atomically commit the decision.
     result = await auth_store.set_decision(
         request_id,
