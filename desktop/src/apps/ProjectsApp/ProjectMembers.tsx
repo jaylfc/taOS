@@ -13,6 +13,7 @@ interface AgentSummary {
 
 interface ExternalAgentSummary {
   handle: string;
+  canonical_id?: string;
   display_name?: string;
   framework?: string;
 }
@@ -26,6 +27,7 @@ function frameworkLabel(fw?: string): string {
     opencode: "opencode",
     hermes: "Hermes",
     "grok-build": "Grok",
+    grok: "Grok",
   };
   return map[fw] || fw;
 }
@@ -229,8 +231,14 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
           );
           setExternalAgents(
             active.map(
-              (entry: { handle?: string; display_name?: string; framework?: string }) => ({
+              (entry: {
+                handle?: string;
+                canonical_id?: string;
+                display_name?: string;
+                framework?: string;
+              }) => ({
                 handle: entry.handle || "",
+                canonical_id: entry.canonical_id,
                 display_name: entry.display_name,
                 framework: entry.framework,
               }),
@@ -256,6 +264,11 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   const byHandle = useMemo(() => {
     const m = new Map<string, ExternalAgentSummary>();
     for (const a of externalAgents) {
+      // A project member references an external agent by its canonical id
+      // (consent-flow agents), while older identities like @taOS-dev reference
+      // it by handle. Key on both so an approved agent lands in the External
+      // section either way.
+      if (a.canonical_id) m.set(a.canonical_id, a);
       if (a.handle) m.set(a.handle, a);
     }
     return m;
