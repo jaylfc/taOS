@@ -1,6 +1,11 @@
 import { render, screen, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { stripAt, RegistryPanel, type RegistryEntry } from "./RegistryPanel";
+import {
+  stripAt,
+  registryEntriesEqual,
+  RegistryPanel,
+  type RegistryEntry,
+} from "./RegistryPanel";
 
 /* ------------------------------------------------------------------ */
 /*  stripAt — pure unit tests (no timers needed)                       */
@@ -25,6 +30,47 @@ describe("stripAt", () => {
 
   it("handles string that is just @", () => {
     expect(stripAt("@")).toBe("");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  registryEntriesEqual — poll no-op comparison                       */
+/* ------------------------------------------------------------------ */
+
+describe("registryEntriesEqual", () => {
+  const base: RegistryEntry = {
+    canonical_id: "id-1",
+    framework: "openclaw",
+    display_name: "Agent",
+    user_id: "user-1",
+    origin: "external-selfjoin",
+    handle: "",
+    role: null,
+    capabilities: ["a2a_send"],
+    status: "active",
+    registered_at: "2026-01-01T00:00:00Z",
+    updated_at: null,
+    revoked_at: null,
+  };
+
+  it("returns true for identical snapshots", () => {
+    expect(registryEntriesEqual([base], [{ ...base, capabilities: ["a2a_send"] }])).toBe(true);
+  });
+
+  it("returns false when status changes", () => {
+    expect(
+      registryEntriesEqual([base], [{ ...base, status: "suspended" }]),
+    ).toBe(false);
+  });
+
+  it("returns false when length differs", () => {
+    expect(registryEntriesEqual([base], [])).toBe(false);
+  });
+
+  it("returns false when capabilities differ", () => {
+    expect(
+      registryEntriesEqual([base], [{ ...base, capabilities: ["a2a_send", "memory_read"] }]),
+    ).toBe(false);
   });
 });
 
@@ -197,5 +243,33 @@ describe("RegistryPanel polling", () => {
     });
     // Should have triggered an additional registry fetch (post-action reload)
     expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBeforeAction);
+  });
+
+  it("unchanged poll does not show loading spinner (scroll stays mounted)", async () => {
+    const mockFetch = makeFetch();
+    vi.stubGlobal("fetch", mockFetch);
+
+    render(<RegistryPanel />);
+
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => { toggle.click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // Initial load finished; row is visible
+    expect(screen.getByText("taOSmd-dev")).toBeInTheDocument();
+    expect(screen.queryByText(/Loading registry/i)).not.toBeInTheDocument();
+
+    const callsBefore = mockFetch.mock.calls.length;
+
+    // Quiet poll with identical payload must not flash the loading UI
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(screen.queryByText(/Loading registry/i)).not.toBeInTheDocument();
+    expect(screen.getByText("taOSmd-dev")).toBeInTheDocument();
   });
 });
