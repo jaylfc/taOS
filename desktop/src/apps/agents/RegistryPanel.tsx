@@ -43,7 +43,7 @@ export interface RegistryEntry {
 /*  Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-/** Strip a leading "@" for display only — "@" is bus-addressing syntax, not a name. */
+/** Strip a leading "@" for display only, "@" is bus-addressing syntax, not a name. */
 export function stripAt(s: string): string {
   return s.startsWith("@") ? s.slice(1) : s;
 }
@@ -55,6 +55,7 @@ export function registryEntriesEqual(a: RegistryEntry[], b: RegistryEntry[]): bo
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
+    if (!x || !y) return false;
     if (
       x.canonical_id !== y.canonical_id ||
       x.framework !== y.framework ||
@@ -399,7 +400,7 @@ export function RegistryPanel() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Monotonic counter — only the latest in-flight response is applied.
+  // Monotonic counter, only the latest in-flight response is applied.
   const loadSeq = useRef(0);
 
   /** Load registry. quiet=true skips the loading spinner so polls do not unmount the list. */
@@ -414,7 +415,7 @@ export function RegistryPanel() {
         fetch("/auth/status", { credentials: "include" }),
         fetch("/api/agents/registry", { credentials: "include" }),
       ]);
-      if (seq !== loadSeq.current) return; // stale — a newer load fired; discard
+      if (seq !== loadSeq.current) return; // stale, a newer load fired; discard
       if (statusResp.ok) {
         const s = await statusResp.json();
         const nextAdmin = !!s.user?.is_admin;
