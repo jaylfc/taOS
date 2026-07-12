@@ -1,7 +1,17 @@
 from __future__ import annotations
 import asyncio
 import pytest
-from tinyagentos.scheduler.backend_catalog import BackendCatalog, BackendEntry
+from tinyagentos.scheduler.backend_catalog import (
+    BACKEND_CAPABILITIES,
+    BackendCatalog,
+    BackendEntry,
+)
+
+
+def test_hailo_ollama_capability_entry_exists():
+    """Hailo-10H backend claims llm-chat only in v1 (design slice S1)."""
+    assert "hailo-ollama" in BACKEND_CAPABILITIES
+    assert BACKEND_CAPABILITIES["hailo-ollama"] == {"llm-chat"}
 
 
 @pytest.mark.asyncio

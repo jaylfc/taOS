@@ -39,6 +39,7 @@ BACKEND_CAPABILITIES: dict[str, set[str]] = {
     "mlx": {"llm-chat"},
     "openai": {"llm-chat", "embedding"},
     "anthropic": {"llm-chat"},
+    "hailo-ollama": {"llm-chat"},
     "sd-cpp": {"image-generation"},
     # ComfyUI: node-graph diffusion server — the Game Studio texture/sprite tier.
     "comfyui": {"image-generation"},
