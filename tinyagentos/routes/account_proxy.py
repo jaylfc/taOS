@@ -167,6 +167,58 @@ def _valid_rid(rid: str) -> bool:
     return bool(_RID_RE.match(rid))
 
 
+# --- Account subdomain actions (account model slice 3) ---
+# Proxy to the taos.my subdomain claims service (slices 1 and 2 of the account
+# model). The client calls same-origin /api/account/subdomains/*; we forward to
+# {base}/api/subdomains/* with the session cookie pass-through, exactly like the
+# auth and cluster-join actions above. The `name` field is validated as a simple
+# rid-style token before it can reach the upstream URL, so a crafted name can
+# never inject path segments or query (../, %2f, ?) into the forwarded request.
+@router.get("/api/account/subdomains/check")
+async def subdomains_check(request: Request):
+    name, err = await _validate_subdomain_name(request)
+    if err is not None:
+        return err
+    return await _forward_to(request, "GET", f"/api/subdomains/check?name={name}")
+
+
+@router.post("/api/account/subdomains/claim")
+async def subdomains_claim(request: Request):
+    name, err = await _validate_subdomain_name(request)
+    if err is not None:
+        return err
+    return await _forward_to(request, "POST", "/api/subdomains/claim")
+
+
+@router.post("/api/account/subdomains/release")
+async def subdomains_release(request: Request):
+    name, err = await _validate_subdomain_name(request)
+    if err is not None:
+        return err
+    return await _forward_to(request, "POST", "/api/subdomains/release")
+
+
+async def _validate_subdomain_name(request: Request) -> tuple[str | None, Response | None]:
+    """Validate a subdomain `name` (query param for GET, JSON `name` in the body
+    for POST) as a simple rid-style token. Returns ``(name, None)`` on success,
+    or ``(None, error_response)`` when the name is missing or malformed. A bad
+    name must never reach the upstream, so it is rejected here with 400 and no
+    forwarding happens."""
+    if request.method == "GET":
+        name = request.query_params.get("name", "")
+    else:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return None, JSONResponse({"error": "invalid body"}, status_code=400)
+        if not isinstance(payload, dict):
+            return None, JSONResponse({"error": "invalid body"}, status_code=400)
+        name = payload.get("name", "")
+    if not _valid_rid(str(name)):
+        return None, JSONResponse({"error": "invalid name"}, status_code=400)
+    return str(name), None
+
+
 @router.get("/api/account/me")
 async def account_me(request: Request):
     return await _forward(request, "me")
