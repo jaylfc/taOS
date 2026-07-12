@@ -149,6 +149,24 @@ def _is_service_installed(variant: dict) -> bool:
     return False
 
 
+def _estimated_vram_mb(variant: dict) -> int:
+    """VRAM floor for the pull TOCTOU gate (#1706 / #1766).
+
+    Every rkllm variant in the catalog has variant-level ``min_ram_mb: 0``;
+    the real requirement (e.g. 2048) lives under
+    ``requires.backends[].min_ram_mb``. Take the max across required
+    backends, falling back to the variant-level key.
+    """
+    backend_reqs = (variant.get("requires") or {}).get("backends") or []
+    candidates = [
+        int(b.get("min_ram_mb", 0) or 0)
+        for b in backend_reqs
+        if isinstance(b, dict)
+    ]
+    candidates.append(int(variant.get("min_ram_mb", 0) or 0))
+    return max(candidates) if candidates else 0
+
+
 def _variant_compatibility(variant: dict, hardware_profile) -> str:
     """Return green/yellow/red based on hardware compatibility."""
     ram_mb = hardware_profile.ram_mb
@@ -386,17 +404,7 @@ async def download_model(request: Request, body: DownloadRequest):
         # TODO(#1725): replace min_ram_mb heuristic with a real per-model VRAM
         # estimate.  On CUDA GGUF the host-RAM floor over-reserves and causes
         # occasional false 503s in multi-model setups.
-        # The real requirement lives on the backend requirements, not the
-        # variant top level: every rkllm variant in the catalog has
-        # variant-level min_ram_mb 0 with the true value (e.g. 2048) under
-        # requires.backends[].min_ram_mb, so reading only the variant key made
-        # this gate dead code (audit follow-up, #1766). Take the max across
-        # required backends, falling back to the variant-level key.
-        _backend_reqs = (variant.get("requires") or {}).get("backends") or []
-        estimated_vram = max(
-            [int(b.get("min_ram_mb", 0) or 0) for b in _backend_reqs if isinstance(b, dict)]
-            + [int(variant.get("min_ram_mb", 0) or 0)]
-        )
+        estimated_vram = _estimated_vram_mb(variant)
         if vram_mgr is not None and estimated_vram > 0:
             reservation = await vram_mgr.reserve(
                 estimated_vram, caller=f"rkllama-pull:{body.app_id}",
