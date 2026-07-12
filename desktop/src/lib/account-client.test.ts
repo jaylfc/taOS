@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAccount, login, register, logout, isAuthError } from "./account-client";
+import {
+  fetchAccount,
+  login,
+  register,
+  logout,
+  isAuthError,
+  checkSubdomain,
+  claimSubdomain,
+  releaseSubdomain,
+} from "./account-client";
 
 const originalFetch = global.fetch;
 
@@ -243,5 +252,114 @@ describe("logout", () => {
   it("does not throw on non-ok response", async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
     await expect(logout()).resolves.toBeUndefined();
+  });
+});
+
+describe("checkSubdomain", () => {
+  it("returns the availability result on 200", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ available: true }),
+    });
+    global.fetch = fetchMock;
+
+    const result = await checkSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(false);
+    if (!isAuthError(result)) {
+      expect(result).toEqual({ available: true });
+    }
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/account/subdomains/check?name=mybiz");
+    expect(opts.method).toBe("GET");
+    expect(opts.credentials).toBe("include");
+  });
+
+  it("returns AuthError on 503 (service not live)", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    const result = await checkSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(true);
+    if (isAuthError(result)) {
+      expect(result.message).toBe("The account service is not available yet.");
+    }
+  });
+
+  it("returns AuthError on network error", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("offline"));
+    const result = await checkSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(true);
+    if (isAuthError(result)) {
+      expect(result.message).toBe("Could not reach the account service. Check your connection.");
+    }
+  });
+});
+
+describe("claimSubdomain", () => {
+  it("returns the new claim on 200", async () => {
+    const claim = { id: "s1", account_id: "u1", name: "mybiz", status: "active" as const };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => claim,
+    });
+    global.fetch = fetchMock;
+
+    const result = await claimSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(false);
+    if (!isAuthError(result)) {
+      expect(result).toEqual(claim);
+    }
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/account/subdomains/claim");
+    expect(opts.method).toBe("POST");
+    expect(opts.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(opts.body)).toEqual({ name: "mybiz" });
+  });
+
+  it("returns AuthError with the server message on refusal", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: "name taken" }),
+    });
+    const result = await claimSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(true);
+    if (isAuthError(result)) {
+      expect(result.message).toBe("name taken");
+    }
+  });
+});
+
+describe("releaseSubdomain", () => {
+  it("returns the released marker on 200", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ released: true }),
+    });
+    global.fetch = fetchMock;
+
+    const result = await releaseSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(false);
+    if (!isAuthError(result)) {
+      expect(result).toEqual({ released: true });
+    }
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/account/subdomains/release");
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body)).toEqual({ name: "mybiz" });
+  });
+
+  it("returns AuthError on 404", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: "not found" }),
+    });
+    const result = await releaseSubdomain("mybiz");
+    expect(isAuthError(result)).toBe(true);
+    if (isAuthError(result)) {
+      expect(result.message).toBe("The account service is not available yet.");
+    }
   });
 });
