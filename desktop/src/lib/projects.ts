@@ -36,9 +36,37 @@ export type ProjectTask = {
   closed_at: number | null;
   closed_by: string | null;
   close_reason: string | null;
+  element_id: string | null;
   created_by: string;
   created_at: number;
   updated_at: number;
+};
+
+export type ElementType =
+  | "generic"
+  | "code"
+  | "website"
+  | "design"
+  | "docs"
+  | "marketing"
+  | "business"
+  | (string & {});
+
+export type ProjectElement = {
+  id: string;
+  project_id: string;
+  name: string;
+  slug: string;
+  type: ElementType;
+  description: string;
+  assignee_id: string | null;
+  settings: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  archived_at: number | null;
+  open_tasks?: number;
+  total_tasks?: number;
+  canvas_items?: number;
 };
 
 export type ProjectActivity = {
@@ -208,6 +236,50 @@ export const projectsApi = {
       }),
     getContext: (tid: string) =>
       http<TaskContext>(`/api/projects/tasks/${tid}/context`),
+  },
+
+  elements: {
+    list: (pid: string) =>
+      http<{ items: ProjectElement[] }>(`/api/projects/${pid}/elements`).then((r) => r.items),
+    get: (pid: string, eid: string) =>
+      http<ProjectElement>(`/api/projects/${pid}/elements/${eid}`),
+    create: (
+      pid: string,
+      input: {
+        name: string;
+        slug?: string;
+        type?: ElementType;
+        description?: string;
+        assignee_id?: string | null;
+        settings?: Record<string, unknown>;
+      },
+    ) =>
+      http<ProjectElement>(`/api/projects/${pid}/elements`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    update: (
+      pid: string,
+      eid: string,
+      patch: {
+        name?: string;
+        type?: ElementType;
+        description?: string;
+        assignee_id?: string | null;
+        settings?: Record<string, unknown>;
+      },
+    ) =>
+      http<ProjectElement>(`/api/projects/${pid}/elements/${eid}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    archive: (pid: string, eid: string) =>
+      http<ProjectElement>(`/api/projects/${pid}/elements/${eid}/archive`, { method: "POST" }),
+    remove: (pid: string, eid: string, mode?: "untag") =>
+      http<{ ok: boolean }>(
+        `/api/projects/${pid}/elements/${eid}${mode ? `?mode=${mode}` : ""}`,
+        { method: "DELETE" },
+      ),
   },
 
   routines: {

@@ -14,10 +14,16 @@ export interface Task {
   claimed_at: string | null;
   closed_at: string | null;
   closed_by: string | null;
+  element_id: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
 }
+
+// Element filter axis. null = no element filter (all tasks, tagged or not).
+// "none" = only untagged (project-level) tasks. A specific element id scopes
+// to that element.
+export type ElementFilter = string | "none" | null;
 
 export type ViewMode = "lanes" | "kanban" | "timeline";
 export type GroupBy = "assignee" | "parent" | "label" | "priority";
@@ -43,9 +49,10 @@ export interface Filters {
   hasAttachments: boolean;
   hideClosed: boolean;
   search: string;
+  elementId: ElementFilter;
 }
 
 export const EMPTY_FILTERS: Filters = {
   assignees: [], labels: [], priorities: [], parentTaskId: null,
-  hasAttachments: false, hideClosed: false, search: "",
+  hasAttachments: false, hideClosed: false, search: "", elementId: null,
 };

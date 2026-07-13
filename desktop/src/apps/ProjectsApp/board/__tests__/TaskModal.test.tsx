@@ -9,6 +9,7 @@ const sampleTask: ProjectTask = {
   title: "Spec the kanban", body: "Body text",
   status: "open", priority: 0, labels: [], assignee_id: null,
   claimed_by: null, claimed_at: null, closed_at: null, closed_by: null, close_reason: null,
+  element_id: null,
   created_by: "u", created_at: 0, updated_at: 0,
 };
 

@@ -7,6 +7,7 @@ const t: Task = {
   id: "t1", project_id: "p1", parent_task_id: null, title: "Wire up auth",
   body: "", status: "claimed", priority: 1, labels: ["feature"], assignee_id: "alice",
   claimed_by: "alice", claimed_at: "2026-04-26T00:00:00Z", closed_at: null, closed_by: null,
+  element_id: null,
   created_by: "u", created_at: "2026-04-26T00:00:00Z", updated_at: "2026-04-26T00:00:00Z",
 };
 

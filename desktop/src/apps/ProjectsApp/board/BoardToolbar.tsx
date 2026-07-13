@@ -3,12 +3,15 @@ import { createPortal } from "react-dom";
 import styles from "./BoardToolbar.module.css";
 import type { ViewMode, GroupBy, Filters } from "./types";
 import { BoardFilters } from "./BoardFilters";
+import { ElementFilterBar } from "./ElementFilterBar";
+import type { ProjectElement } from "../../../lib/projects";
 import { useIsMobile } from "../../../hooks/use-is-mobile";
 
 export interface BoardToolbarProps {
   viewMode: ViewMode;
   groupBy: GroupBy;
   filters: Filters;
+  elements: ProjectElement[];
   live: boolean;
   onChangeView: (m: ViewMode) => void;
   onChangeGroup: (g: GroupBy) => void;
@@ -93,6 +96,12 @@ export function BoardToolbar(p: BoardToolbarProps) {
 
               <BoardFilters value={p.filters} onChange={p.onChangeFilters} />
 
+              <ElementFilterBar
+                elements={p.elements}
+                value={p.filters.elementId}
+                onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
+              />
+
               <button
                 type="button"
                 onClick={() => setSheetOpen(false)}
@@ -109,6 +118,7 @@ export function BoardToolbar(p: BoardToolbarProps) {
   }
 
   return (
+    <>
     <div className={styles.bar}>
       <div className={styles.crumb}>Board</div>
       <div className={styles.grow} />
@@ -154,5 +164,11 @@ export function BoardToolbar(p: BoardToolbarProps) {
         <button type="button" className={styles.add} onClick={p.onAddTask}>＋ Task</button>
       )}
     </div>
+    <ElementFilterBar
+      elements={p.elements}
+      value={p.filters.elementId}
+      onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
+    />
+    </>
   );
 }

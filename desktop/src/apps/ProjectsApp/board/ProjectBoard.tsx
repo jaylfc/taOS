@@ -59,7 +59,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
     localStorage.setItem(PERSIST_KEY(projectId), JSON.stringify({ viewMode, groupBy }));
   }, [projectId, viewMode, groupBy]);
 
-  const { tasks, applyEvent, setTasks } = useBoardData(projectId);
+  const { tasks, elements, applyEvent, setTasks } = useBoardData(projectId);
   const { connected } = useBoardLive(projectId, (e) => {
     if (e.kind === "task.claimed") {
       const id = String((e.payload as { id?: string }).id ?? "");
@@ -92,6 +92,12 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
     claimed: filtered.filter(t => t.status === "claimed").length,
     closed: filtered.filter(t => t.status === "closed").length,
   }), [filtered]);
+
+  const elementNameById = useMemo(
+    () => Object.fromEntries(elements.map(e => [e.id, e.name])),
+    [elements],
+  );
+  const showElementBadge = filters.elementId === null;
 
   const onCardDragStart = (e: DragEvent<HTMLButtonElement>, task: Task) => {
     e.dataTransfer.setData("text/plain", task.id);
@@ -138,6 +144,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
       onMove={(id) => setMovePopover(id)}
       justClaimed={justClaimed === t.id}
       draggable={drag}
+      elementName={showElementBadge && t.element_id ? (elementNameById[t.element_id] ?? null) : null}
       onDragStart={drag ? onCardDragStart : undefined}
     />
   );
@@ -149,6 +156,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
           viewMode={viewMode}
           groupBy={groupBy}
           filters={filters}
+          elements={elements}
           live={connected}
           onChangeView={setViewMode}
           onChangeGroup={setGroupBy}
@@ -171,6 +179,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
         viewMode={viewMode}
         groupBy={groupBy}
         filters={filters}
+        elements={elements}
         live={connected}
         onChangeView={setViewMode}
         onChangeGroup={setGroupBy}

@@ -9,10 +9,11 @@ export interface TaskCardProps {
   onMove?: (id: string) => void;
   justClaimed?: boolean;
   draggable?: boolean;
+  elementName?: string | null;
   onDragStart?: (e: DragEvent<HTMLButtonElement>, t: Task) => void;
 }
 
-export function TaskCard({ task, onOpen, onMove, justClaimed, draggable, onDragStart }: TaskCardProps) {
+export function TaskCard({ task, onOpen, onMove, justClaimed, draggable, elementName, onDragStart }: TaskCardProps) {
   const cover = inferCoverKind(task);
   const pri = task.priority === 0 ? "p0" : task.priority === 1 ? "p1" : "p2";
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
@@ -43,6 +44,7 @@ export function TaskCard({ task, onOpen, onMove, justClaimed, draggable, onDragS
           {task.parent_task_id && <span className={styles.parent}>↳</span>}
         </div>
         <div className={styles.title}>{task.title}</div>
+        {elementName && <span className={styles.elBadge}>{elementName}</span>}
         {task.labels.length > 0 && (
           <div className={styles.labels}>
             {task.labels.filter(l => !l.startsWith("cover:")).map(l => (

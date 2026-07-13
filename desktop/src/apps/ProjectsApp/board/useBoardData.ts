@@ -1,20 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { projectsApi } from "../../../lib/projects";
+import type { ProjectElement } from "../../../lib/projects";
 import type { Task } from "./types";
 import type { BoardLiveEvent } from "./useBoardLive";
 
 export function useBoardData(projectId: string) {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [elements, setElements] = useState<ProjectElement[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     (async () => {
-      const [open, claimed, closed] = await Promise.all([
+      const [open, claimed, closed, els] = await Promise.all([
         projectsApi.tasks.list(projectId, "open"),
         projectsApi.tasks.list(projectId, "claimed"),
         projectsApi.tasks.list(projectId, "closed"),
+        projectsApi.elements.list(projectId).catch(() => [] as ProjectElement[]),
       ]);
       if (!cancelled) {
         const seen = new Set<string>();
@@ -24,6 +27,7 @@ export function useBoardData(projectId: string) {
           return true;
         });
         setTasks(all as unknown as Task[]);
+        setElements(els);
         setLoading(false);
       }
     })();
@@ -53,5 +57,5 @@ export function useBoardData(projectId: string) {
     });
   }, []);
 
-  return { tasks, loading, setTasks, applyEvent };
+  return { tasks, elements, loading, setTasks, applyEvent };
 }
