@@ -17,6 +17,9 @@ export interface BoardToolbarProps {
   onChangeGroup: (g: GroupBy) => void;
   onChangeFilters: (f: Filters) => void;
   onAddTask?: () => void;
+  /** When scoped to a single element (element drill-in), the filter bar is
+   *  hidden because the element is already the active filter. */
+  hideElementFilter?: boolean;
 }
 
 const VIEWS: ViewMode[] = ["lanes", "kanban", "timeline"];
@@ -96,11 +99,13 @@ export function BoardToolbar(p: BoardToolbarProps) {
 
               <BoardFilters value={p.filters} onChange={p.onChangeFilters} />
 
-              <ElementFilterBar
-                elements={p.elements}
-                value={p.filters.elementId}
-                onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
-              />
+              {!p.hideElementFilter && (
+                <ElementFilterBar
+                  elements={p.elements}
+                  value={p.filters.elementId}
+                  onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
+                />
+              )}
 
               <button
                 type="button"
@@ -159,16 +164,25 @@ export function BoardToolbar(p: BoardToolbarProps) {
         aria-label="Search tasks"
       />
       <BoardFilters value={p.filters} onChange={p.onChangeFilters} />
+      {!p.hideElementFilter && (
+        <ElementFilterBar
+          elements={p.elements}
+          value={p.filters.elementId}
+          onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
+        />
+      )}
       <span className={`${styles.pill} ${p.live ? styles.live : styles.dead}`}>● Live</span>
       {p.onAddTask && (
         <button type="button" className={styles.add} onClick={p.onAddTask}>＋ Task</button>
       )}
     </div>
-    <ElementFilterBar
-      elements={p.elements}
-      value={p.filters.elementId}
-      onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
-    />
+    {!p.hideElementFilter && (
+      <ElementFilterBar
+        elements={p.elements}
+        value={p.filters.elementId}
+        onChange={(v) => p.onChangeFilters({ ...p.filters, elementId: v })}
+      />
+    )}
     </>
   );
 }

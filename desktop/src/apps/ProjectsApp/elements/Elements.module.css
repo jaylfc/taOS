@@ -1,0 +1,117 @@
+.gridWrap {
+  padding: 16px 22px;
+}
+
+.gridHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.gridTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-shell-text);
+}
+
+.addBtn {
+  background: var(--color-accent-strong);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.addBtn:hover {
+  filter: brightness(1.08);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  gap: 12px;
+  text-align: left;
+  align-items: flex-start;
+  background: var(--color-shell-surface, #1c1d22);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 12px;
+  padding: 14px;
+  cursor: pointer;
+  color: var(--color-shell-text);
+  font: inherit;
+}
+
+.card:hover {
+  border-color: var(--color-accent-strong);
+}
+
+.cardIcon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cardName {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--color-shell-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardType {
+  font-size: 11.5px;
+  color: var(--color-shell-text-tertiary);
+  font-weight: 600;
+}
+
+.cardAssignee {
+  font-size: 11.5px;
+  color: var(--color-shell-text-secondary);
+}
+
+.cardMeta {
+  font-size: 12px;
+  color: var(--color-shell-text-secondary);
+}
+
+.cardActivity {
+  font-size: 11px;
+  color: var(--color-shell-text-tertiary);
+}
+
+.projectCard {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.addTile {
+  border-style: dashed;
+  align-items: center;
+}
+
+.addTile .cardName {
+  color: var(--color-accent-strong);
+}
