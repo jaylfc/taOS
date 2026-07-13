@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { elementToShape, shapeType } from "../canvas/element-to-shape";
 import { CanvasElement } from "../canvas/canvas-api";
+import { COLOR_MAP } from "../canvas/shapes/NoteShape";
 
 function makeElement(over: Partial<CanvasElement>): CanvasElement {
   return {
@@ -115,5 +116,23 @@ describe("elementToShape", () => {
       const s = elementToShape(makeElement({ kind: "note", author_kind: "system" as unknown as "user", payload: {} }), "slug");
       expect(s.props.taos_author_kind).toBe("user");
     });
+  });
+
+  it("note: preserves violet color in payload (no fallback to yellow)", () => {
+    const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "violet", font_size: 14 } }), "slug");
+    expect(s.props.taos_payload.color).toBe("violet");
+    expect(COLOR_MAP["violet"]).toBeDefined();
+  });
+
+  it("note: preserves red color in payload (no fallback to yellow)", () => {
+    const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "red", font_size: 14 } }), "slug");
+    expect(s.props.taos_payload.color).toBe("red");
+    expect(COLOR_MAP["red"]).toBeDefined();
+  });
+
+  it("note: preserves light-blue color in payload", () => {
+    const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "light-blue", font_size: 14 } }), "slug");
+    expect(s.props.taos_payload.color).toBe("light-blue");
+    expect(COLOR_MAP["light-blue"]).toBeDefined();
   });
 });

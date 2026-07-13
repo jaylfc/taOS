@@ -72,5 +72,7 @@ export class TaosNoteShapeUtil extends ShapeUtil<any> {
 
 const COLOR_MAP: Record<string, string> = {
   yellow: "#FFF3A1", blue: "#BEDDFF", green: "#C8F0BE",
+  violet: "#D0BFFF", red: "#FFC9C9", "light-blue": "#C8E0FF",
   pink: "#FFC8E0", grey: "#E0E0E0",
 };
+export { COLOR_MAP };
