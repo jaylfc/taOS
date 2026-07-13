@@ -210,3 +210,25 @@ class TestImageIngest:
     def test_ingest_rejects_non_image(self, data_dir):
         with pytest.raises(ValueError):
             posts.ingest_image(b"this is not an image", "text/plain")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
+    """Two racing appends must both land on the chain with distinct seqs.
+
+    Regression: next_chain_position read the head and put_chain_object used
+    INSERT OR IGNORE, so racing appends computed the same seq and the loser
+    was silently dropped from the chain index (orphaned body).
+    """
+    import asyncio as _asyncio
+    from tinyagentos.hub import posts as hub_posts
+
+    results = await _asyncio.gather(
+        hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
+        hub_posts.append_post(store, visibility="circle", text="two", author="racer"),
+        hub_posts.append_post(store, visibility="circle", text="three", author="racer"),
+    )
+    seqs = sorted(p["seq"] for p in results)
+    assert seqs == [1, 2, 3]
+    head = await store.get_chain_head("racer")
+    assert head["seq"] == 3

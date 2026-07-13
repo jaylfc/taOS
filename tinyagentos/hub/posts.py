@@ -30,6 +30,8 @@ is plaintext here and slice 7 wraps it.
 """
 from __future__ import annotations
 
+import asyncio
+
 import base64
 import hashlib
 import io
@@ -125,6 +127,19 @@ async def next_chain_position(store: hub_store.HubStore, author: str) -> tuple[i
     return head["seq"] + 1, head["hash"]
 
 
+# Serialize chain appends per process: next_chain_position reads the chain head
+# and put_chain_object inserts the next entry, and hub_chain inserts use
+# INSERT OR IGNORE, so two concurrent appends for the same author would both
+# compute the same seq and the loser would be silently dropped from the chain
+# index while its body stayed in hub_objects (orphaned). The local node is the
+# only writer of its own chain, so a per-store asyncio lock closes the race.
+_append_locks: dict[int, asyncio.Lock] = {}
+
+
+def _append_lock(store: "hub_store.HubStore") -> asyncio.Lock:
+    return _append_locks.setdefault(id(store), asyncio.Lock())
+
+
 async def append_post(
     store: hub_store.HubStore,
     *,
@@ -140,14 +155,15 @@ async def append_post(
     store and the permanent chain index.
     """
     author = author or identity.signing_fingerprint()
-    seq, prev = await next_chain_position(store, author)
-    post = build_post(
-        visibility=visibility, text=text, attachments=attachments, author=author
-    )
-    post["seq"] = seq
-    post["prev"] = prev
-    signed = hub_store.sign_object(post)
-    await store.put_chain_object(signed)
+    async with _append_lock(store):
+        seq, prev = await next_chain_position(store, author)
+        post = build_post(
+            visibility=visibility, text=text, attachments=attachments, author=author
+        )
+        post["seq"] = seq
+        post["prev"] = prev
+        signed = hub_store.sign_object(post)
+        await store.put_chain_object(signed)
     return signed
 
 
@@ -166,10 +182,11 @@ async def delete_post(
     post = await store.get_object(post_hash)
     if post is None:
         raise ValueError("post not found")
-    seq, prev = await next_chain_position(store, author)
-    tomb = build_tombstone(author, post_hash, seq, prev)
-    signed_tomb = hub_store.sign_object(tomb)
-    await store.put_chain_object(signed_tomb)
+    async with _append_lock(store):
+        seq, prev = await next_chain_position(store, author)
+        tomb = build_tombstone(author, post_hash, seq, prev)
+        signed_tomb = hub_store.sign_object(tomb)
+        await store.put_chain_object(signed_tomb)
     # Drop the post body and every blob it referenced. The tombstone's index row
     # survives, so the chain head advances and stays verifiable.
     for att in post.get("attachments") or []:
