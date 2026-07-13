@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
-from tinyagentos.hub import identity, relationships, store as hub_store
+from tinyagentos.hub import identity, posts, relationships, store as hub_store
 from tinyagentos.routes.account_proxy import _forward_to
 
 logger = logging.getLogger(__name__)
@@ -500,3 +500,107 @@ async def lookup_presence(
         status_code=upstream.status_code,
         media_type=upstream.media_type,
     )
+
+
+# --- slice 4: posts, own timeline, tombstone -----------------------------------
+
+
+class PostIn(BaseModel):
+    visibility: str = "circle"  # friends-only by default (design: composer default)
+    text: str = ""
+    # Optional inline attachments, each {"data": <base64|data URI>, "mime": str}.
+    # The server re-encodes (strips EXIF, caps dimensions) and stores the blob.
+    attachments: list | None = None
+
+
+@router.post("/api/hub/posts")
+async def create_post(
+    body: PostIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Publish a signed post to this node's own chain (design "Post", slice 4).
+
+    The visibility switch defaults to ``circle`` (friends-only), the design's
+    loud default. Inline image attachments are re-encoded and their EXIF stripped
+    (``posts.ingest_image``) before the blob is stored and referenced by hash;
+    the post body itself only ever carries the blob hash, never the bytes. The
+    post is chain-positioned and signed before it lands in the store, so it is
+    self-verifying the moment it is created.
+    """
+    identity.load_or_create()
+    store = await _get_store(request)
+    attachments: list[dict] = []
+    if body.attachments:
+        for att in body.attachments:
+            if not isinstance(att, dict) or not att.get("data"):
+                return JSONResponse(
+                    {"error": "each attachment needs base64 'data'"},
+                    status_code=400,
+                )
+            try:
+                raw = posts.decode_attachment_data(str(att["data"]))
+                ingested = posts.ingest_image(raw, att.get("mime"))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            await store.put_blob(ingested["data"], mime=ingested["mime"])
+            attachments.append(
+                {"blob": ingested["blob"], "size": ingested["size"], "mime": ingested["mime"]}
+            )
+    try:
+        post = await posts.append_post(
+            store,
+            visibility=body.visibility,
+            text=body.text,
+            attachments=attachments or None,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    # Include the content address so a client can reference the post (e.g. to
+    # delete it) without recomputing the SHA-256 of the canonical bytes.
+    post = {**post, "hash": hub_store.object_hash(post)}
+    return {"state": "ok", "post": post}
+
+
+@router.get("/api/hub/timeline")
+async def own_timeline(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """The node's own posts, assembled from the local store (design slice 4).
+
+    Slice 4 is single-author only (no peer sync yet): the timeline is every post
+    this node has published that still has a body, in chain (seq) order, with
+    ``created_at`` as the display sort. Degrade states mirror the profile routes:
+    ``no-identity`` before the node has minted a hub identity, else ``ok`` with
+    the posts. The timeline works fully offline from the local store.
+    """
+    if not identity.exists():
+        return {"state": "no-identity"}
+    store = await _get_store(request)
+    fingerprint = identity.signing_fingerprint()
+    posts_list = await store.list_posts(fingerprint)
+    posts_list.sort(key=lambda p: (p.get("created_at", ""), p.get("seq", 0)))
+    return {"state": "ok", "posts": posts_list}
+
+
+@router.post("/api/hub/posts/{post_hash}/delete")
+async def delete_post_route(
+    post_hash: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Delete a post via a signed tombstone (design "Deletion", slice 4).
+
+    Appends a tombstone to the chain (advancing the head) and drops the post body
+    and its blobs from the local store; the tombstone's chain-index row survives
+    so the chain stays verifiable. Best-effort: a peer that later pulls will see
+    the tombstone and drop its copy too. Returns the tombstone statement.
+    """
+    identity.load_or_create()
+    store = await _get_store(request)
+    try:
+        tomb = await posts.delete_post(store, post_hash)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    return {"state": "ok", "tombstone": tomb}

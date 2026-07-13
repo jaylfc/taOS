@@ -165,6 +165,19 @@ CREATE TABLE IF NOT EXISTS hub_blobs (
     created_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hub_chain (
+    author    TEXT NOT NULL,
+    seq       INTEGER NOT NULL,
+    hash      TEXT NOT NULL,   -- content address of the chain entry (post or tombstone)
+    prev_hash TEXT,           -- previous chain entry hash (NULL for seq 1)
+    type      TEXT NOT NULL,  -- "post" | "tombstone"
+    target    TEXT,           -- tombstone target post hash
+    created_at REAL NOT NULL,
+    PRIMARY KEY (author, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_hub_chain_author_seq
+    ON hub_chain(author, seq);
+
 CREATE TABLE IF NOT EXISTS hub_relationships (
     peer        TEXT NOT NULL,   -- the other party's signing fingerprint
     kind        TEXT NOT NULL,   -- follow_out/follow_in/friend/cache_grant/
@@ -405,6 +418,90 @@ class HubStore(BaseStore):
     async def has_edge(self, peer: str, kind: str) -> bool:
         """True when a relationship row exists for ``(peer, kind)``."""
         return await self.get_relationship(peer, kind) is not None
+
+    # ---------------------------------------------------------------- chain
+    async def put_chain_object(self, obj: dict) -> str:
+        """Store a signed chain entry (post or tombstone) and record it in the
+        per-author chain index.
+
+        The index (``hub_chain``) outlives the object body: when a post is
+        tombstoned its body is dropped but its index row (hash, prev, seq)
+        remains, so the chain stays verifiable after deletion (design "Deletion").
+        """
+        for field in ("author", "type", "sig", "seq"):
+            if obj.get(field) in (None, ""):
+                raise ValueError(f"chain object missing required field {field!r}")
+        h = object_hash(obj)
+        await self.put_object(obj)
+        await self._db.execute(
+            "INSERT OR IGNORE INTO hub_chain "
+            "(author, seq, hash, prev_hash, type, target, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                obj["author"],
+                obj["seq"],
+                h,
+                obj.get("prev"),
+                obj["type"],
+                obj.get("target"),
+                time.time(),
+            ),
+        )
+        await self._db.commit()
+        return h
+
+    async def get_chain_head(self, author: str) -> dict | None:
+        """The last chain entry for ``author`` by seq (None if the chain is empty)."""
+        cur = await self._db.execute(
+            "SELECT author, seq, hash, prev_hash, type, target FROM hub_chain "
+            "WHERE author = ? ORDER BY seq DESC LIMIT 1",
+            (author,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return _row(cur.description, row)
+
+    async def list_chain_entries(self, author: str) -> list[dict]:
+        """All chain entries for ``author`` in seq order (posts and tombstones)."""
+        cur = await self._db.execute(
+            "SELECT author, seq, hash, prev_hash, type, target FROM hub_chain "
+            "WHERE author = ? ORDER BY seq ASC",
+            (author,),
+        )
+        rows = await cur.fetchall()
+        return [_row(cur.description, r) for r in rows]
+
+    async def list_posts(self, author: str) -> list[dict]:
+        """The author's own posts that still have a body, in chain (seq) order.
+
+        Tombstoned posts (body dropped) do not appear here, so this is exactly
+        the own-timeline (design, slice 4). Each returned post is augmented with
+        its content-address ``hash`` (the ``hub_objects`` primary key) so a
+        client can reference it for deletion.
+        """
+        cur = await self._db.execute(
+            "SELECT hash, body FROM hub_objects WHERE author = ? AND type = 'post' "
+            "ORDER BY seq ASC",
+            (author,),
+        )
+        rows = await cur.fetchall()
+        out = []
+        for h, body in rows:
+            post = json.loads(body)
+            post["hash"] = h
+            out.append(post)
+        return out
+
+    async def drop_object(self, obj_hash: str) -> None:
+        """Delete an object body from ``hub_objects`` (tombstone drops content)."""
+        await self._db.execute("DELETE FROM hub_objects WHERE hash = ?", (obj_hash,))
+        await self._db.commit()
+
+    async def drop_blob(self, blob_hash: str) -> None:
+        """Delete a blob from ``hub_blobs`` (tombstone drops cached media)."""
+        await self._db.execute("DELETE FROM hub_blobs WHERE hash = ?", (blob_hash,))
+        await self._db.commit()
 
     # ---------------------------------------------------------------- profiles
     async def get_profile(self, author: str) -> dict | None:
