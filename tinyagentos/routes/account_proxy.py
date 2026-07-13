@@ -51,6 +51,21 @@ _ACTIONS: dict[str, tuple[str, str]] = {
     "hub_identity_register": ("POST", "/api/hub/identity/register"),
     "hub_identity_lookup": ("GET", "/api/hub/identity/lookup"),
     "hub_identity_rotate": ("POST", "/api/hub/identity/rotate"),
+    # Hub social slice 3: friend-request brokering, accepted-edge rows, and
+    # presence heartbeat/lookup along edges (design "Directory API surface").
+    # The client calls same-origin /api/account/hub/* and we forward to
+    # {base}/api/hub/* with the session cookie pass-through, exactly like the
+    # identity actions above. The taos.my side (requests inbox, accepted-edge
+    # rows, presence TTL) is the contract; these are its controller-side entries.
+    "hub_requests_post": ("POST", "/api/hub/requests"),
+    "hub_requests_get": ("GET", "/api/hub/requests"),
+    # hub_request_accept/decline carry a {id} segment appended in the handler.
+    "hub_request_accept": ("POST", "/api/hub/requests"),
+    "hub_request_decline": ("POST", "/api/hub/requests"),
+    "hub_presence_post": ("POST", "/api/hub/presence"),
+    "hub_presence_get": ("GET", "/api/hub/presence"),
+    # Block asks the hub to sever the accepted edge (no more presence/hints).
+    "hub_edge_revoke": ("POST", "/api/hub/edges/revoke"),
 }
 
 _TIMEOUT = httpx.Timeout(15.0)
@@ -110,7 +125,9 @@ def _rewrite_set_cookie(value: str, secure_ok: bool) -> str:
     return "; ".join(kept)
 
 
-async def _forward_to(request: Request, method: str, path: str) -> Response:
+async def _forward_to(
+    request: Request, method: str, path: str, *, body: bytes | None = None
+) -> Response:
     base = _base_url()
     if base is None:
         return JSONResponse(
@@ -120,12 +137,16 @@ async def _forward_to(request: Request, method: str, path: str) -> Response:
     cookie = request.headers.get("cookie")
     if cookie:
         headers["Cookie"] = cookie
-    body: bytes | None = None
-    if method == "POST":
+    if body is None and method == "POST":
+        # Default: relay the incoming request body verbatim (slice 1/2 actions).
         body = await request.body()
         ctype = request.headers.get("content-type")
         if ctype:
             headers["Content-Type"] = ctype
+    elif body is not None:
+        # Caller-supplied body (e.g. a signed statement the controller built):
+        # always JSON, so set the content type for it.
+        headers["Content-Type"] = "application/json"
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as http:
             upstream = await http.request(
@@ -252,6 +273,52 @@ async def hub_identity_lookup(request: Request):
 @router.post("/api/account/hub/identity/rotate")
 async def hub_identity_rotate(request: Request):
     return await _forward(request, "hub_identity_rotate")
+
+# --- Hub social slice 3: friend-request brokering + presence (directory) ---
+# Same cookie-passthrough pattern as the identity actions above. The client calls
+# same-origin /api/account/hub/requests* and /api/account/hub/presence*; we
+# forward to {base}/api/hub/* with the session cookie relayed, so no new auth
+# surface appears on the client and the taos.my base URL stays server-side.
+# `rid` on dispositions is validated as a rid-style token before it can reach the
+# upstream URL; `username` on presence lookup is likewise validated so a crafted
+# username can never inject path segments or query (../, %2f, ?).
+@router.post("/api/account/hub/requests")
+async def hub_requests_post(request: Request):
+    return await _forward(request, "hub_requests_post")
+
+@router.get("/api/account/hub/requests")
+async def hub_requests_get(request: Request):
+    return await _forward(request, "hub_requests_get")
+
+@router.post("/api/account/hub/requests/{rid}/accept")
+async def hub_request_accept(request: Request, rid: str):
+    if not _valid_rid(rid):
+        return JSONResponse({"error": "invalid request id"}, status_code=400)
+    _method, path = _ACTIONS["hub_request_accept"]
+    return await _forward_to(request, "POST", f"{path}/{rid}/accept")
+
+@router.post("/api/account/hub/requests/{rid}/decline")
+async def hub_request_decline(request: Request, rid: str):
+    if not _valid_rid(rid):
+        return JSONResponse({"error": "invalid request id"}, status_code=400)
+    _method, path = _ACTIONS["hub_request_decline"]
+    return await _forward_to(request, "POST", f"{path}/{rid}/decline")
+
+@router.post("/api/account/hub/presence")
+async def hub_presence_post(request: Request):
+    return await _forward(request, "hub_presence_post")
+
+@router.get("/api/account/hub/presence")
+async def hub_presence_get(request: Request):
+    username = request.query_params.get("username", "")
+    if not _valid_rid(str(username)):
+        return JSONResponse({"error": "invalid username"}, status_code=400)
+    _method, path = _ACTIONS["hub_presence_get"]
+    return await _forward_to(request, "GET", f"{path}?username={username}")
+
+@router.post("/api/account/hub/edges/revoke")
+async def hub_edge_revoke(request: Request):
+    return await _forward(request, "hub_edge_revoke")
 
 
 @router.get("/api/account/me")

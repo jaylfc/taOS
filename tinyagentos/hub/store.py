@@ -164,6 +164,18 @@ CREATE TABLE IF NOT EXISTS hub_blobs (
     data       BLOB NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS hub_relationships (
+    peer        TEXT NOT NULL,   -- the other party's signing fingerprint
+    kind        TEXT NOT NULL,   -- follow_out/follow_in/friend/cache_grant/
+                                  -- block/mute/friend_request_out/in/declined
+    statement   TEXT,            -- the signed statement JSON (follow/cache-grant/friend)
+    quota_hint  INTEGER,        -- cache-grant suggested per-friend quota (bytes)
+    updated_at  REAL NOT NULL,
+    PRIMARY KEY (peer, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_hub_relationships_kind
+    ON hub_relationships(kind);
 """
 
 
@@ -277,6 +289,122 @@ class HubStore(BaseStore):
         if row is None:
             return None
         return _row(cur.description, row)
+
+    async def get_author_by_username(self, username: str) -> dict | None:
+        cur = await self._db.execute(
+            "SELECT * FROM hub_authors WHERE username = ?", (username,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return _row(cur.description, row)
+
+    # ---------------------------------------------------------- relationships
+    async def put_relationship(
+        self,
+        peer: str,
+        kind: str,
+        *,
+        statement: dict | None = None,
+        quota_hint: int | None = None,
+    ) -> None:
+        """Store or refresh a local relationship row for ``peer`` of ``kind``.
+
+        Idempotent (upsert on the ``(peer, kind)`` key). ``statement`` holds the
+        signed object (follow / cache-grant / friend); ``quota_hint`` is the
+        cache-grant budget in bytes. Block and mute are pure local markers that
+        need neither field.
+        """
+        await self._db.execute(
+            "INSERT INTO hub_relationships (peer, kind, statement, quota_hint, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(peer, kind) DO UPDATE SET "
+            "statement=excluded.statement, "
+            "quota_hint=excluded.quota_hint, "
+            "updated_at=excluded.updated_at",
+            (
+                peer,
+                kind,
+                canonical_json(statement) if statement is not None else None,
+                quota_hint,
+                time.time(),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_relationship(self, peer: str, kind: str) -> dict | None:
+        """The local relationship row for ``(peer, kind)``, or None."""
+        cur = await self._db.execute(
+            "SELECT peer, kind, statement, quota_hint FROM hub_relationships "
+            "WHERE peer = ? AND kind = ?",
+            (peer, kind),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "peer": row[0],
+            "kind": row[1],
+            "statement": json.loads(row[2]) if row[2] is not None else None,
+            "quota_hint": row[3],
+        }
+
+    async def delete_relationship(self, peer: str, kind: str) -> None:
+        await self._db.execute(
+            "DELETE FROM hub_relationships WHERE peer = ? AND kind = ?", (peer, kind)
+        )
+        await self._db.commit()
+
+    async def sever_edges(self, peer: str, *, keep: set[str] | None = None) -> list[str]:
+        """Delete every relationship row for ``peer`` (block severs the edge).
+
+        Returns the kinds that were removed, so a caller can report what was
+        severed. ``keep`` (e.g. ``{"block"}``) survives the purge so a block
+        marker set immediately before the sever is not wiped by it.
+        """
+        keep_sql = ""
+        params: tuple = (peer,)
+        if keep:
+            placeholders = ",".join("?" for _ in keep)
+            keep_sql = f" AND kind NOT IN ({placeholders})"
+            params = (peer, *keep)
+        cur = await self._db.execute(
+            f"SELECT kind FROM hub_relationships WHERE peer = ?{keep_sql}", params
+        )
+        removed = [r[0] for r in await cur.fetchall()]
+        await self._db.execute(
+            f"DELETE FROM hub_relationships WHERE peer = ?{keep_sql}", params
+        )
+        await self._db.commit()
+        return removed
+
+    async def list_relationships(self, kind: str | None = None) -> list[dict]:
+        """All relationship rows, optionally filtered by ``kind``."""
+        if kind is None:
+            cur = await self._db.execute(
+                "SELECT peer, kind, statement, quota_hint FROM hub_relationships "
+                "ORDER BY kind, peer"
+            )
+        else:
+            cur = await self._db.execute(
+                "SELECT peer, kind, statement, quota_hint FROM hub_relationships "
+                "WHERE kind = ? ORDER BY peer",
+                (kind,),
+            )
+        rows = await cur.fetchall()
+        return [
+            {
+                "peer": r[0],
+                "kind": r[1],
+                "statement": json.loads(r[2]) if r[2] is not None else None,
+                "quota_hint": r[3],
+            }
+            for r in rows
+        ]
+
+    async def has_edge(self, peer: str, kind: str) -> bool:
+        """True when a relationship row exists for ``(peer, kind)``."""
+        return await self.get_relationship(peer, kind) is not None
 
     # ---------------------------------------------------------------- profiles
     async def get_profile(self, author: str) -> dict | None:

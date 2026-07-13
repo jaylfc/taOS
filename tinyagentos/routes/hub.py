@@ -1,38 +1,49 @@
-"""Local hub API the Hub app consumes -- hub social slice 2.
+"""Local hub API the Hub app consumes -- hub social slices 2 and 3.
 
 See ``docs/design/hub-social-network-foundation.md`` ("The Hub app (client)").
 This is the controller-side local API, mirroring how the chat routes wrap the
 chat stores: it reads and writes the node's own signed objects in the local hub
 store (``tinyagentos/hub/store.py``) and mints/uses the node's identity keypair
-(slice 1). Directory calls stay in ``account_proxy.py``; peer traffic is a later
-slice. Nothing here talks to a peer.
+(slice 1). Directory calls (identity, friend-request brokering, presence along
+edges) reach taos.my through ``tinyagentos/routes/account_proxy.py`` additions;
+peer traffic is a later slice. Nothing here talks to a peer.
 
 Slice 2 surfaces the node's own profile: render it and create/update it with a
-version bump. Every response carries an explicit ``state`` so the app can render
-the standard degrade states (design "Client resilience") without guessing:
+version bump. Slice 3 adds the social-graph surface: signed follow and
+cache-grant statements (stored locally; caching itself is a later slice), the
+friend-request send/accept/decline flows that broker through the directory,
+and the local block/mute operations. Every response carries an explicit ``state``
+so the app can render the standard degrade states (design "Client resilience")
+without guessing:
 
 - ``no-identity``: the node has not minted a hub identity yet.
 - ``no-profile``: identity exists but no profile has been published.
-- ``ok``: a profile is present (returned under ``profile``).
+- ``ok``: data is present (returned under the relevant key).
 
 The account signed-out state is handled one layer up by the ``current_user``
 dependency (401), exactly like every other local app route.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
-from tinyagentos.hub import identity, store as hub_store
+from tinyagentos.hub import identity, relationships, store as hub_store
+from tinyagentos.routes.account_proxy import _forward_to
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# --- request bodies ----------------------------------------------------------
 
 
 class ProfileIn(BaseModel):
@@ -42,6 +53,30 @@ class ProfileIn(BaseModel):
     avatar: str | None = None
     links: list | None = None
 
+
+class FollowIn(BaseModel):
+    target_fingerprint: str
+
+
+class CacheGrantIn(BaseModel):
+    grantee_fingerprint: str
+    quota_hint: Optional[int] = None
+
+
+class FriendRequestIn(BaseModel):
+    target_fingerprint: str
+    intro: str = ""
+
+
+class PeerIn(BaseModel):
+    peer_fingerprint: str
+
+
+class AcceptIn(BaseModel):
+    peer_fingerprint: Optional[str] = None
+
+
+# --- shared helpers -----------------------------------------------------------
 
 async def _get_store(request: Request) -> hub_store.HubStore:
     """Return the node's hub store, opening it lazily on first use.
@@ -58,6 +93,9 @@ async def _get_store(request: Request) -> hub_store.HubStore:
     await store.init()
     request.app.state.hub_store = store
     return store
+
+
+# --- slice 2: own profile ---------------------------------------------------
 
 
 @router.get("/api/hub/profile")
@@ -109,3 +147,356 @@ async def put_own_profile(
     signed = hub_store.sign_object(profile)
     stored = await store.put_profile(signed)
     return {"state": "ok", "profile": stored}
+
+
+# --- slice 3: follow / friend / circle ----------------------------------------
+
+
+@router.put("/api/hub/follow")
+async def follow_peer(
+    body: FollowIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Publish a signed one-way follow of ``target_fingerprint`` (design "Follow").
+
+    A follow grants nothing beyond subscribing to the target's public posts; the
+    target need not approve it (they can block). The signed statement is stored
+    locally as an out-follow and is what this node later publishes to peers.
+    """
+    identity.load_or_create()
+    store = await _get_store(request)
+    fingerprint = identity.signing_fingerprint()
+    statement = relationships.sign_statement(
+        relationships.build_follow_statement(body.target_fingerprint, author=fingerprint)
+    )
+    await store.put_relationship(
+        body.target_fingerprint, relationships.REL_FOLLOW_OUT, statement=statement
+    )
+    return {
+        "state": "following",
+        "target": body.target_fingerprint,
+        "statement": statement,
+    }
+
+
+@router.put("/api/hub/cache-grant")
+async def grant_cache(
+    body: CacheGrantIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Publish a signed cache-grant to ``grantee_fingerprint`` (design "circle").
+
+    The grant sits on top of friendship: it authorizes the friend to cache the
+    author's recent content and to serve it when the author is offline. Slice 3
+    stores the signed statement but does NOT yet act on it (the cache worker and
+    quotas are slice 6); the Friends view surfaces the grant so the UI ships
+    ahead of the cache engine. ``quota_hint`` is the suggested per-friend budget
+    in bytes (defaults to a few hundred MB per design open-question 4).
+    """
+    identity.load_or_create()
+    store = await _get_store(request)
+    fingerprint = identity.signing_fingerprint()
+    quota = (
+        body.quota_hint
+        if body.quota_hint is not None
+        else relationships.DEFAULT_CACHE_QUOTA_BYTES
+    )
+    statement = relationships.sign_statement(
+        relationships.build_cache_grant_statement(
+            body.grantee_fingerprint, quota, author=fingerprint
+        )
+    )
+    await store.put_relationship(
+        body.grantee_fingerprint,
+        relationships.REL_CACHE_GRANT,
+        statement=statement,
+        quota_hint=quota,
+    )
+    return {
+        "state": "granted",
+        "grantee": body.grantee_fingerprint,
+        "quota_hint": quota,
+        "statement": statement,
+        "note": "stored, not yet acted on (cache worker lands in slice 6)",
+    }
+
+
+@router.post("/api/hub/friends/request")
+async def send_friend_request(
+    body: FriendRequestIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Send a brokered friend request (design "Friend" + "Directory API surface").
+
+    Builds a signed intro ``{to, author, intro, sig}`` and brokers it through
+    the directory (``POST /api/hub/requests``) so the target can accept out of
+    band. The directory is the only place the signed request envelope rests (it is
+    a request, not content). We record the outgoing request locally so the Friends
+    view can show the pending state; the directory's own response (e.g. a request
+    id) passes through verbatim.
+    """
+    identity.load_or_create()
+    store = await _get_store(request)
+    fingerprint = identity.signing_fingerprint()
+    intro = relationships.sign_statement(
+        {"type": "friend-request", "author": fingerprint, "to": body.target_fingerprint,
+         "intro": body.intro}
+    )
+    # Record locally before brokering so a later failure still leaves the UI state.
+    await store.put_relationship(
+        body.target_fingerprint, relationships.REL_REQUEST_OUT, statement=intro
+    )
+    upstream = await _forward_to(
+        request, "POST", "/api/hub/requests", body=json.dumps(intro).encode("utf-8")
+    )
+    if upstream.status_code < 200 or upstream.status_code >= 300:
+        # Directory rejected (rate-limited, target unknown, ...): surface it without
+        # pretending the request landed. The local pending marker stays so the user
+        # can retry; nothing was revoked.
+        return JSONResponse(
+            {"state": "rejected", "target": body.target_fingerprint,
+             "directory": upstream.status_code},
+            status_code=upstream.status_code,
+        )
+    try:
+        directory = json.loads(upstream.body)
+    except (ValueError, TypeError):
+        directory = None
+    return {
+        "state": "sent",
+        "target": body.target_fingerprint,
+        "directory": directory,
+    }
+
+
+@router.get("/api/hub/friends/requests")
+async def inbox_friend_requests(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Read the directory's friend-request inbox (the brokered request envelope)."""
+    upstream = await _forward_to(request, "GET", "/api/hub/requests")
+    return JSONResponse(
+        json.loads(upstream.body) if upstream.body else {},
+        status_code=upstream.status_code,
+        media_type=upstream.media_type,
+    )
+
+
+@router.post("/api/hub/friends/requests/{rid}/accept")
+async def accept_friend_request(
+    rid: str,
+    body: AcceptIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Accept a brokered friend request and record the local accepted edge.
+
+    The directory accept records the server-side authorization edge (who may query
+    whose presence / leave hints) and returns the parties' endpoints so the nodes
+    complete the handshake directly. On a 2xx we record the mutual ``friend``
+    edge locally so this node's own presence gate and sync worker treat the peer as
+    an accepted edge (design: presence requires "an accepted edge"). The peer
+    fingerprint comes from the directory response when present, else the body.
+    """
+    upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/accept")
+    if upstream.status_code < 200 or upstream.status_code >= 300:
+        return JSONResponse(
+            {"state": "rejected"}, status_code=upstream.status_code
+        )
+    try:
+        resp = json.loads(upstream.body) if upstream.body else {}
+    except (ValueError, TypeError):
+        resp = {}
+    peer = body.peer_fingerprint or resp.get("peer") or resp.get("target") or resp.get(
+        "username"
+    )
+    store = await _get_store(request)
+    fingerprint = identity.signing_fingerprint()
+    if peer:
+        statement = relationships.sign_statement(
+            relationships.build_friend_statement(peer, author=fingerprint)
+        )
+        await store.put_relationship(
+            peer, relationships.REL_FRIEND, statement=statement
+        )
+    return {"state": "accepted", "peer": peer, "directory": resp}
+
+
+@router.post("/api/hub/friends/requests/{rid}/decline")
+async def decline_friend_request(
+    rid: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Decline a brokered friend request; record it locally as declined."""
+    upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/decline")
+    if upstream.status_code < 200 or upstream.status_code >= 300:
+        return JSONResponse(
+            {"state": "rejected"}, status_code=upstream.status_code
+        )
+    # A social action implies this node has an identity (its fingerprint is the
+    # local party); mint it if this is the first act.
+    identity.load_or_create()
+    store = await _get_store(request)
+    # The directory owns the target's fingerprint; if it echoed it back we record
+    # the decline against that peer, else just pass the directory response through.
+    try:
+        resp = json.loads(upstream.body) if upstream.body else {}
+    except (ValueError, TypeError):
+        resp = {}
+    peer = resp.get("peer") or resp.get("target") or resp.get("username")
+    if peer:
+        await store.put_relationship(peer, relationships.REL_REQUEST_DECLINED)
+    return {"state": "declined", "peer": peer, "directory": resp}
+
+
+@router.post("/api/hub/friends/block")
+async def block_peer(
+    body: PeerIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Block a peer: strong, local-first (design "Abuse and safety").
+
+    Blocking unfollows, removes the peer from friendship and circle, and severs
+    every local edge to them (follow / friend / cache-grant / pending requests)
+    so nothing about them is rendered or cached. It also asks the hub to sever the
+    server-side accepted edge (no more presence visibility or hints either way);
+    that directory call is best-effort and its result never blocks the local op.
+    """
+    store = await _get_store(request)
+    # A social action implies this node has an identity (its fingerprint is the
+    # local party in every relationship), so mint it if this is the first act.
+    identity.load_or_create()
+    peer = body.peer_fingerprint
+    # Sever first, then record the block so the purge does not wipe the marker.
+    severed = await store.sever_edges(peer, keep={relationships.REL_BLOCK})
+    await store.put_relationship(peer, relationships.REL_BLOCK)
+    # Best-effort: tell the hub to drop the accepted edge. Never let a directory
+    # failure (or an unconfigured proxy -> 503) block the local operation.
+    try:
+        await _forward_to(
+            request,
+            "POST",
+            "/api/hub/edges/revoke",
+            body=json.dumps({"peer": peer}).encode("utf-8"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hub block: directory edge revoke failed: %s", exc)
+    return {"state": "blocked", "peer": peer, "severed": severed}
+
+
+@router.post("/api/hub/friends/mute")
+async def mute_peer(
+    body: PeerIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Mute a peer locally: stop rendering, keep the edge (design "block and mute
+    are local + circle operations"; mute is the local-only subset)."""
+    identity.load_or_create()
+    store = await _get_store(request)
+    await store.put_relationship(body.peer_fingerprint, relationships.REL_MUTE)
+    return {"state": "muted", "peer": body.peer_fingerprint}
+
+
+@router.post("/api/hub/friends/unmute")
+async def unmute_peer(
+    body: PeerIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Unmute a previously muted peer (local-only operation)."""
+    identity.load_or_create()
+    store = await _get_store(request)
+    await store.delete_relationship(body.peer_fingerprint, relationships.REL_MUTE)
+    return {"state": "unmuted", "peer": body.peer_fingerprint}
+
+
+@router.get("/api/hub/friends")
+async def list_friends(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """The local social-graph view for the Friends pane (not the directory inbox).
+
+    Returns the node's own follows, accepted friends, cache grants, blocks, mutes,
+    and pending/declined requests. Presence and the directory request inbox are
+    separate calls (``GET /api/hub/presence``, ``GET /api/hub/friends/requests``).
+    """
+    if not identity.exists():
+        return {"state": "no-identity"}
+    store = await _get_store(request)
+
+    async def _peers(kind: str) -> list[str]:
+        return [r["peer"] for r in await store.list_relationships(kind)]
+
+    grants = [
+        {"peer": r["peer"], "quota_hint": r["quota_hint"]}
+        for r in await store.list_relationships(relationships.REL_CACHE_GRANT)
+    ]
+    return {
+        "state": "ok",
+        "identity": identity.public_identity(),
+        "follows_out": await _peers(relationships.REL_FOLLOW_OUT),
+        "friends": await _peers(relationships.REL_FRIEND),
+        "cache_grants": grants,
+        "blocks": await _peers(relationships.REL_BLOCK),
+        "mutes": await _peers(relationships.REL_MUTE),
+        "requests_out": await _peers(relationships.REL_REQUEST_OUT),
+        "requests_in": await _peers(relationships.REL_REQUEST_IN),
+        "requests_declined": await _peers(relationships.REL_REQUEST_DECLINED),
+    }
+
+
+@router.get("/api/hub/presence")
+async def lookup_presence(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Look up a peer's presence endpoints, gated on an accepted edge.
+
+    Design "Directory API surface": ``GET /api/hub/presence`` returns endpoints
+    only if the requester's identity is authorized (an accepted edge exists). We
+    enforce that locally first (the node must hold a ``friend`` edge to the peer)
+    and, when authorized, forward to the directory, which enforces the same rule
+    server-side; either way, no accepted edge means no endpoints. The peer is
+    identified by signing fingerprint (``peer``); a ``username`` is resolved to a
+    fingerprint via the locally cached author map when only the username is known.
+    """
+    if not identity.exists():
+        return {"state": "no-identity"}
+    store = await _get_store(request)
+    peer = request.query_params.get("peer", "")
+    username = request.query_params.get("username", "")
+    if peer:
+        target_fp = peer
+    elif username:
+        author = await store.get_author_by_username(username)
+        if author is None:
+            return JSONResponse(
+                {"error": "unknown username", "username": username}, status_code=404
+            )
+        target_fp = author["fingerprint"]
+    else:
+        return JSONResponse(
+            {"error": "peer or username required"}, status_code=400
+        )
+    # Edge authorization: presence requires an accepted (mutual friend) edge.
+    if not await store.has_edge(target_fp, relationships.REL_FRIEND):
+        return JSONResponse(
+            {"error": "not authorized", "reason": "no accepted edge", "peer": target_fp},
+            status_code=403,
+        )
+    upstream = await _forward_to(
+        request, "GET", f"/api/hub/presence?username={username or target_fp}"
+    )
+    return JSONResponse(
+        json.loads(upstream.body) if upstream.body else {},
+        status_code=upstream.status_code,
+        media_type=upstream.media_type,
+    )
