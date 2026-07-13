@@ -1,5 +1,6 @@
 import pytest
 import yaml
+from pathlib import Path
 from tinyagentos.config import AppConfig, load_config, save_config, validate_config, normalize_agent, _LITELLM_PORT_NEW, _LITELLM_PORT_LEGACY
 
 class TestLoadConfig:
@@ -407,3 +408,60 @@ def test_load_config_migrates_legacy_rkllama_backend_name(tmp_path):
     # A non-rkllama backend that happens to be named local-npu is untouched.
     ollama = [b for b in cfg.backends if b["type"] == "ollama"][0]
     assert ollama["name"] == "local-npu"
+
+
+_HAILO_MANIFEST = (
+    Path(__file__).resolve().parent.parent
+    / "app-catalog" / "services" / "hailo-ollama" / "manifest.yaml"
+)
+
+
+def _hailo10h_profile(ram_gb: int = 8):
+    """Hardware profile for a Raspberry Pi 5 + Hailo-10H AI HAT+2."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(hardware={
+        "cpu": {"arch": "aarch64"},
+        "npu": {"type": "hailo10h"},
+        "ram_mb": ram_gb * 1024,
+    })
+
+
+def _cpu_profile(ram_gb: int = 8):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(hardware={
+        "cpu": {"arch": "x86_64"},
+        "npu": {"type": "none"},
+        "ram_mb": ram_gb * 1024,
+    })
+
+
+def test_auto_register_hailo_ollama_seeds_local_backend_on_hailo10h(tmp_path):
+    """S5: on a Hailo-10H host the hailo-ollama manifest seeds a
+    local-hailo-ollama backend of type hailo-ollama (the local-<service-id>
+    rule, mirroring rkllama's local-rkllama)."""
+    from tinyagentos.config import AppConfig, auto_register_from_manifest
+
+    cfg = AppConfig(config_path=tmp_path / "config.yaml")
+    added = auto_register_from_manifest(
+        _HAILO_MANIFEST, cfg, hardware_profile=_hailo10h_profile(),
+    )
+    assert added is True
+    seeded = [b for b in cfg.backends if b["name"] == "local-hailo-ollama"]
+    assert len(seeded) == 1
+    assert seeded[0]["type"] == "hailo-ollama"
+    assert seeded[0]["url"] == "http://localhost:7836"
+
+
+def test_auto_register_hailo_ollama_skipped_without_hailo10h(tmp_path):
+    """S5: on non-Hailo hardware (cpu-only tier) the manifest's
+    cpu-only: unsupported tier must keep local-hailo-ollama unregistered."""
+    from tinyagentos.config import AppConfig, auto_register_from_manifest
+
+    cfg = AppConfig(config_path=tmp_path / "config.yaml")
+    added = auto_register_from_manifest(
+        _HAILO_MANIFEST, cfg, hardware_profile=_cpu_profile(),
+    )
+    assert added is False
+    assert [b for b in cfg.backends if b["type"] == "hailo-ollama"] == []

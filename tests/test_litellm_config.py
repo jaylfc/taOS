@@ -309,6 +309,37 @@ class TestGenerateLiteLLMRkllamaBackend:
 
 
 # ---------------------------------------------------------------------------
+# generate_litellm_config -- hailo-ollama backend (S5)
+# ---------------------------------------------------------------------------
+
+class TestGenerateLiteLLMHailoOllamaBackend:
+
+    def test_hailo_ollama_uses_ollama_chat_prefix(self):
+        """hailo-ollama is Ollama-compatible, so the default chat entry must use
+        the ollama_chat prefix and point at the remapped port 7836."""
+        backends = [
+            {"name": "hailo-box", "type": "hailo-ollama", "url": "http://localhost:7836"}
+        ]
+        config = generate_litellm_config(backends)
+        entry = config["model_list"][0]
+        assert entry["litellm_params"]["model"] == "ollama_chat/default"
+        assert entry["litellm_params"]["api_base"] == "http://localhost:7836"
+
+    def test_hailo_ollama_discovered_embedding_emits_ollama_prefix(self):
+        """Registered models keep the ollama/<name> LiteLLM prefix, identical to
+        rkllama (S5)."""
+        backends = [
+            {"name": "hailo-box", "type": "hailo-ollama", "url": "http://h:7836"}
+        ]
+        discovered = {"http://h:7836": ["nomic-embed-text"]}
+        config = generate_litellm_config(backends, discovered=discovered)
+        ml = config["model_list"]
+        embed_entries = [e for e in ml if e.get("model_info", {}).get("mode") == "embedding"]
+        assert len(embed_entries) >= 1
+        assert embed_entries[0]["litellm_params"]["model"] == "ollama/nomic-embed-text"
+
+
+# ---------------------------------------------------------------------------
 # generate_litellm_config -- cloud backends
 # ---------------------------------------------------------------------------
 

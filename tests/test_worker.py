@@ -615,6 +615,36 @@ class TestDetectBackends:
         for name in names:
             assert "@" not in name, f"backend name must not embed URL: {name!r}"
 
+    async def test_hailo_ollama_running(self):
+        """A Hailo-10H host running hailo-ollama on the taOS remap port 7836
+        must be detected as a live hailo-ollama backend (S5)."""
+        agent = WorkerAgent("http://localhost:6969")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"models": []}
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "7836" in url:
+                    return mock_response
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        hailo = [b for b in backends if b["type"] == "hailo-ollama"]
+        assert len(hailo) == 1
+        assert hailo[0]["url"] == "http://localhost:7836"
+        assert hailo[0]["name"] == "hailo-ollama:7836"
+        # Capability map entry from S1 must surface in the probe.
+        assert "llm-chat" in hailo[0]["capabilities"]
+
     async def test_backend_name_portless_url(self):
         """When a candidate URL has no explicit port, name falls back to bare backend_type."""
         agent = WorkerAgent("http://localhost:6969")

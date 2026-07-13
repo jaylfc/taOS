@@ -34,7 +34,7 @@ class BackendAdapter(ABC):
 
 
 class OllamaCompatAdapter(BackendAdapter):
-    """Adapter for Ollama-compatible APIs (rkllama, ollama).
+    """Adapter for Ollama-compatible APIs (rkllama, hailo-ollama, ollama).
 
     Uses GET /api/tags to list models and check health.
     """
@@ -231,6 +231,7 @@ ExoAdapter = OpenAICompatAdapter  # Exo exposes OpenAI-compatible API
 
 _ADAPTERS: dict[str, BackendAdapter] = {
     "rkllama": OllamaCompatAdapter(),
+    "hailo-ollama": OllamaCompatAdapter(),
     "ollama": OllamaCompatAdapter(),
     "llama-cpp": OpenAICompatAdapter(),
     "vllm": OpenAICompatAdapter(),

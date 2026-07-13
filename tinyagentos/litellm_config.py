@@ -144,7 +144,7 @@ async def _discover_ollama_backends_concurrent(
     ollama_urls = [
         b.get("url", "").rstrip("/")
         for b in backends
-        if b.get("type", "ollama") in ("ollama", "rkllama") and b.get("url")
+        if b.get("type", "ollama") in ("ollama", "rkllama", "hailo-ollama") and b.get("url")
     ]
     if not ollama_urls:
         return {}
@@ -356,7 +356,7 @@ def generate_litellm_config(
         # found across all backends also claims the stable
         # ``taos-embedding-default`` alias so containers have one name to
         # inject regardless of which rkllama box holds the model.
-        if backend_type in ("ollama", "rkllama"):
+        if backend_type in ("ollama", "rkllama", "hailo-ollama"):
             _probed = (discovered or {}).get(url)
             if _probed is None:
                 _probed = _discover_ollama_models(url)

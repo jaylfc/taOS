@@ -127,6 +127,7 @@ class WorkerAgent:
         candidates = [
             ("rkllama", "http://localhost:7833"),
             ("rkllama", "http://localhost:8080"),         # legacy port; existing installs
+            ("hailo-ollama", "http://localhost:7836"),    # Hailo-10H NPU LLM (taOS remap; upstream 8000 banned)
             ("ollama", "http://localhost:11434"),         # user / system Ollama (default port)
             ("ollama", "http://localhost:21434"),         # TAOS-bundled Ollama (taos-ollama.service)
             ("llama-cpp", "http://localhost:8000"),
@@ -266,7 +267,7 @@ class WorkerAgent:
         signal and should never break heartbeat.
         """
         try:
-            if backend_type in ("rkllama", "ollama"):
+            if backend_type in ("rkllama", "ollama", "hailo-ollama"):
                 resp = await client.get(f"{base_url}/api/ps")
                 if resp.status_code != 200:
                     return []
@@ -293,7 +294,7 @@ class WorkerAgent:
         """Ask a backend what models it has loaded. Returns None if the
         backend isn't reachable (not running on this host)."""
         try:
-            if backend_type in ("rkllama", "ollama"):
+            if backend_type in ("rkllama", "ollama", "hailo-ollama"):
                 resp = await client.get(f"{base_url}/api/tags")
                 if resp.status_code != 200:
                     return None
