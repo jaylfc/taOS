@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { Sparkles, AtSign, Check } from "lucide-react";
 
 interface Props {
   onDone: () => void;
@@ -10,6 +10,8 @@ interface Props {
   defaultAutoLogin?: boolean;
 }
 
+type Step = "account" | "username";
+
 /**
  * First-run onboarding (no props) or invite completion (invitedUsername + inviteCode).
  *
@@ -18,6 +20,11 @@ interface Props {
  * - Username field is read-only
  * - Submit POSTs to /auth/complete instead of /auth/setup
  * - auto-login defaults to false
+ *
+ * After the local account is created the flow advances to the free taOS username
+ * step (slice 5 of the account model). The username is free and optional here, so
+ * the user can always finish without touching the paid taOSgo path (subdomain
+ * publishing is deferred to Settings and never blocks onboarding).
  */
 export function OnboardingScreen({
   onDone,
@@ -26,6 +33,7 @@ export function OnboardingScreen({
   defaultAutoLogin,
 }: Props) {
   const isInvite = Boolean(invitedUsername && inviteCode);
+  const [step, setStep] = useState<Step>("account");
 
   const [username, setUsername] = useState(invitedUsername ?? "");
   const [fullName, setFullName] = useState("");
@@ -44,7 +52,7 @@ export function OnboardingScreen({
     passwordOk &&
     matches;
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!valid) return;
     setLoading(true);
@@ -73,11 +81,17 @@ export function OnboardingScreen({
         setLoading(false);
         return;
       }
-      onDone();
+      // Account created: move on to the free username step rather than leaving
+      // onboarding. The username is optional, so this step can never dead-end.
+      setStep("username");
     } catch {
       setError("Network error — please try again");
       setLoading(false);
     }
+  }
+
+  if (step === "username") {
+    return <UsernameStep defaultName={username} onDone={onDone} />;
   }
 
   return (
@@ -246,6 +260,154 @@ export function OnboardingScreen({
           }
         `}</style>
       </form>
+    </div>
+  );
+}
+
+/**
+ * The free taOS username step (slice 5). The username is free and never gated
+ * behind taOSgo, so the user can always finish via "Finish" even if the claim
+ * fails or they skip it. Public subdomain publishing is a taOSgo perk and is
+ * intentionally deferred to Settings, not offered here.
+ */
+function UsernameStep({
+  defaultName,
+  onDone,
+}: {
+  defaultName: string;
+  onDone: () => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const [claiming, setClaiming] = useState(false);
+  const [claimed, setClaimed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function claim() {
+    const trimmed = name.trim();
+    if (!trimmed || claiming) return;
+    setClaiming(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/account/username", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username: trimmed }),
+      });
+      if (res.ok) {
+        setClaimed(true);
+      } else {
+        // Degrade to a non-blocking message; the user finishes in Settings.
+        setError("We couldn't save that username right now. You can claim it later in Settings.");
+      }
+    } catch {
+      setError("We couldn't reach the account service. You can claim your username later in Settings.");
+    } finally {
+      setClaiming(false);
+    }
+  }
+
+  return (
+    <div
+      className="h-screen w-screen flex items-center justify-center overflow-y-auto"
+      style={{
+        background: "var(--color-shell-bg)",
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+        paddingLeft: "calc(env(safe-area-inset-left, 0px) + 16px)",
+        paddingRight: "calc(env(safe-area-inset-right, 0px) + 16px)",
+      }}
+    >
+      <div
+        className="w-full max-w-md p-6 rounded-2xl border border-white/10"
+        style={{
+          backgroundColor: "rgba(255,255,255,0.04)",
+          backdropFilter: "blur(20px)",
+        }}
+        aria-label="Claim your free taOS username"
+      >
+        <div className="flex flex-col items-center gap-3 mb-6">
+          <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center"
+            style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
+          >
+            <AtSign size={24} className="text-white" />
+          </div>
+          <h1 className="text-lg font-semibold text-shell-text">Claim your free taOS username</h1>
+          <p className="text-xs text-shell-text-secondary text-center">
+            Your username is free. It is your identity across taOS, so people can find you in the
+            community, the apps you share, and your profile.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <Field label="Username" id="onb-cloud-username" hint="Free. No subscription needed.">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-shell-text-tertiary select-none">@</span>
+              <input
+                id="onb-cloud-username"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value.replace(/\s+/g, "").toLowerCase())}
+                autoFocus
+                placeholder="jay"
+                aria-label="taOS username"
+                className="onb-input"
+              />
+            </div>
+          </Field>
+
+          {claimed && (
+            <p className="text-xs text-emerald-400 flex items-center gap-1.5" role="status">
+              <Check size={12} /> You're @{name.trim()} on taOS.
+            </p>
+          )}
+
+          {error && (
+            <p className="text-xs text-amber-400 flex items-center gap-1.5" role="alert">
+              <AtSign size={12} /> {error}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void claim()}
+            disabled={claiming || claimed || name.trim().length === 0}
+            className="w-full px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            {claiming ? "Claiming..." : claimed ? "Claimed" : "Claim username"}
+          </button>
+
+          <button
+            type="button"
+            onClick={onDone}
+            className="w-full px-4 py-2.5 rounded-lg border border-white/10 text-shell-text-secondary text-sm font-medium hover:brightness-110 transition-all"
+          >
+            Finish
+          </button>
+
+          <p className="text-[11px] text-shell-text-tertiary text-center mt-2">
+            Claiming is optional. Public subdomains are set up later in Settings.
+          </p>
+        </div>
+
+        <style>{`
+          .onb-input {
+            width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            background: var(--color-shell-bg-deep);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            color: var(--color-shell-text);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s;
+          }
+          .onb-input:focus {
+            border-color: rgba(139, 146, 163, 0.45);
+          }
+        `}</style>
+      </div>
     </div>
   );
 }
