@@ -43,6 +43,14 @@ _ACTIONS: dict[str, tuple[str, str]] = {
     "login": ("POST", "/api/auth/login"),
     "register": ("POST", "/api/auth/register"),
     "logout": ("POST", "/api/auth/logout"),
+    # Hub identity directory (hub social slice 1). The client calls same-origin
+    # /api/account/hub/identity/* and we forward to {base}/api/hub/identity/*
+    # with the session cookie pass-through, exactly like the auth and subdomain
+    # actions above. The taos.my side (tables + register/lookup/rotate with
+    # challenge proof) is the contract; these are its controller-side entries.
+    "hub_identity_register": ("POST", "/api/hub/identity/register"),
+    "hub_identity_lookup": ("GET", "/api/hub/identity/lookup"),
+    "hub_identity_rotate": ("POST", "/api/hub/identity/rotate"),
 }
 
 _TIMEOUT = httpx.Timeout(15.0)
@@ -217,6 +225,33 @@ async def _validate_subdomain_name(request: Request) -> tuple[str | None, Respon
     if not _valid_rid(str(name)):
         return None, JSONResponse({"error": "invalid name"}, status_code=400)
     return str(name), None
+
+
+# --- Hub identity directory actions (hub social slice 1) ---
+# Anchor the node's minted keypairs to the account's username, look an identity's
+# keys + key log up, and rotate keys. The client calls same-origin
+# /api/account/hub/identity/*; we forward to {base}/api/hub/identity/* with the
+# session cookie pass-through, so no new auth surface appears on the client and
+# the taos.my base URL stays server-side. `username` on lookup is validated as a
+# simple rid-style token before it can reach the upstream URL, so a crafted
+# username can never inject path segments or query (../, %2f, ?).
+@router.post("/api/account/hub/identity/register")
+async def hub_identity_register(request: Request):
+    return await _forward(request, "hub_identity_register")
+
+
+@router.get("/api/account/hub/identity/lookup")
+async def hub_identity_lookup(request: Request):
+    username = request.query_params.get("username", "")
+    if not _valid_rid(str(username)):
+        return JSONResponse({"error": "invalid username"}, status_code=400)
+    _method, path = _ACTIONS["hub_identity_lookup"]
+    return await _forward_to(request, "GET", f"{path}?username={username}")
+
+
+@router.post("/api/account/hub/identity/rotate")
+async def hub_identity_rotate(request: Request):
+    return await _forward(request, "hub_identity_rotate")
 
 
 @router.get("/api/account/me")

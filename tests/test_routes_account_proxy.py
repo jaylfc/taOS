@@ -403,3 +403,155 @@ async def test_subdomains_release_rejects_invalid_name(client, monkeypatch):
     r = await client.post("/api/account/subdomains/release", json={"name": "a/b"})
     assert r.status_code == 400
     assert called["n"] == 0
+
+
+# --- Hub identity directory actions (hub social slice 1) ---
+# The taos.my side (hub_identities/hub_key_log tables + register/lookup/rotate
+# with challenge proof) is the contract; here we assert the controller proxy
+# forwards to the right upstream path, relays the session cookie, and degrades to
+# 503 when the account service is unconfigured.
+@pytest.mark.asyncio
+async def test_hub_identity_register_forwards_body(client, monkeypatch):
+    """POST /api/account/hub/identity/register forwards to
+    {base}/api/hub/identity/register with the keys + proof body and the session
+    cookie passed through."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"username":"alice","status":"registered"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "registered"
+    assert captured["url"] == "https://taos.my/api/hub/identity/register"
+    assert captured["method"] == "POST"
+    assert captured["cookie"]  # session cookie passed through
+    assert "signing_pubkey" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_lookup_forwards_username_and_returns_key_log(client, monkeypatch):
+    """GET /api/account/hub/identity/lookup?username=alice forwards to
+    {base}/api/hub/identity/lookup?username=alice and relays the directory's
+    keys + append-only key log verbatim."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        return _FakeResp(
+            content=(
+                b'{"username":"alice","signing_pubkey":"aa","encryption_pubkey":"bb",'
+                b'"key_log":[{"signing_pubkey":"aa","recovery":false}]}'
+            ),
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.get("/api/account/hub/identity/lookup?username=alice")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["signing_pubkey"] == "aa"
+    assert body["key_log"] == [{"signing_pubkey": "aa", "recovery": False}]
+    assert captured["url"] == "https://taos.my/api/hub/identity/lookup?username=alice"
+    assert captured["method"] == "GET"
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_rotate_forwards_body(client, monkeypatch):
+    """POST /api/account/hub/identity/rotate forwards to
+    {base}/api/hub/identity/rotate with the rotation statement body."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["body"] = kw.get("content", b"").decode("utf-8")
+        return _FakeResp(
+            content=b'{"status":"rotated"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/rotate",
+        json={"new_keys": {"signing_pubkey": "dd"}, "old_key_sig": "ee"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "rotated"
+    assert captured["url"] == "https://taos.my/api/hub/identity/rotate"
+    assert captured["method"] == "POST"
+    assert "new_keys" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_lookup_rejects_invalid_username(client, monkeypatch):
+    """A username that could inject path/query never reaches the upstream: it is
+    rejected at the validator (400) and no upstream call is made."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    for bad in ["a/b", "a?x=1", "../auth/me", "a;b", "x" * 65, ""]:
+        r = await client.get(f"/api/account/hub/identity/lookup?username={bad}")
+        assert r.status_code == 400, bad
+        assert "invalid username" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_503_when_unconfigured(client, monkeypatch):
+    """An explicit blank override disables the proxy; every hub identity action
+    returns 503 without contacting the upstream."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "")
+    called = {"n": 0}
+
+    async def handler(method, url, **kw):
+        called["n"] += 1
+        return _FakeResp()
+
+    _patch_upstream(monkeypatch, handler)
+    r1 = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+    )
+    r2 = await client.get("/api/account/hub/identity/lookup?username=alice")
+    r3 = await client.post("/api/account/hub/identity/rotate", json={"new_keys": {}})
+    for r in (r1, r2, r3):
+        assert r.status_code == 503
+        assert "not configured" in r.json().get("error", "")
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hub_identity_register_503_when_upstream_unreachable(client, monkeypatch):
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+
+    async def handler(method, url, **kw):
+        raise httpx.ConnectError("down")
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+    )
+    assert r.status_code == 503
+    assert "unreachable" in r.json().get("error", "")

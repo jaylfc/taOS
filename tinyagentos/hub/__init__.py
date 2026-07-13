@@ -1,0 +1,8 @@
+"""hub.taos.my node engine (own-your-posts P2P social network).
+
+See ``docs/design/hub-social-network-foundation.md``. This package holds the
+controller-side node engine: the identity keystore (slice 1), and later the
+object store, chain logic, sync workers, and peer server. Directory calls reach
+taos.my through ``tinyagentos/routes/account_proxy.py`` additions; the browser
+never sees the taos.my base URL.
+"""
