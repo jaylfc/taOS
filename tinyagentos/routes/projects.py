@@ -17,6 +17,7 @@ from tinyagentos.agent_token_auth import (
 )
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.projects.folders import ensure_project_layout, write_project_yaml
+from tinyagentos.projects.task_store import _ELEMENT_CLEAR
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -365,6 +366,7 @@ class CreateTaskIn(BaseModel):
     labels: list[str] = Field(default_factory=list)
     assignee_id: str | None = None
     parent_task_id: str | None = None
+    element_id: str | None = None
 
 
 class UpdateTaskIn(BaseModel):
@@ -374,6 +376,9 @@ class UpdateTaskIn(BaseModel):
     labels: list[str] | None = None
     assignee_id: str | None = None
     parent_task_id: str | None = None
+    # Omit to leave the element tag unchanged; send "none" to clear it to
+    # project-level (NULL); send a real element id to move the task.
+    element_id: str | None = None
 
 
 class ClaimIn(BaseModel):
@@ -488,6 +493,23 @@ def _resolve_actor(
     return body_actor
 
 
+async def _require_active_element(
+    estore, project_id: str, element_id: str
+) -> "dict | JSONResponse":
+    """Validate that element_id names a non-archived element of this project.
+
+    Returns the element dict on success, or a 400 JSONResponse when the element
+    is missing, belongs to a different project, or has been archived. Archived
+    elements keep their tags but are no longer valid targets for new tagging.
+    """
+    el = await estore.get_element(element_id)
+    if el is None or el["project_id"] != project_id:
+        return JSONResponse({"error": "element not in project"}, status_code=400)
+    if el.get("archived_at") is not None:
+        return JSONResponse({"error": "element archived"}, status_code=400)
+    return el
+
+
 # ---------------------------------------------------------------------------
 # Task routes — order matters: /tasks/ready before /tasks/{task_id}
 # ---------------------------------------------------------------------------
@@ -501,6 +523,7 @@ async def create_task(
 ):
     store = request.app.state.project_task_store
     pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
     project_or_err = await _get_owned_project(pstore, project_id, user)
     if isinstance(project_or_err, JSONResponse):
         return project_or_err
@@ -508,6 +531,11 @@ async def create_task(
         parent = await store.get_task(payload.parent_task_id)
         if parent is None or parent["project_id"] != project_id:
             return JSONResponse({"error": "invalid parent_task_id"}, status_code=400)
+    element_id = payload.element_id
+    if element_id is not None:
+        el_check = await _require_active_element(estore, project_id, element_id)
+        if isinstance(el_check, JSONResponse):
+            return el_check
     t = await store.create_task(
         project_id=project_id,
         title=payload.title,
@@ -516,6 +544,7 @@ async def create_task(
         labels=payload.labels,
         assignee_id=payload.assignee_id,
         parent_task_id=payload.parent_task_id,
+        element_id=element_id,
         created_by=user.user_id,
     )
     _beads_mark_dirty(request, project_id)
@@ -528,26 +557,28 @@ async def list_tasks(
     project_id: str,
     request: Request,
     status: str | None = None,
+    element_id: str | None = None,
 ):
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(request, pstore, project_id)
     if isinstance(auth, JSONResponse):
         return auth
     store = request.app.state.project_task_store
-    return {"items": await store.list_tasks(project_id=project_id, status=status)}
+    return {"items": await store.list_tasks(project_id=project_id, status=status, element_id=element_id)}
 
 
 @router.get("/api/projects/{project_id}/tasks/ready")
 async def ready_tasks(
     project_id: str,
     request: Request,
+    element_id: str | None = None,
 ):
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(request, pstore, project_id)
     if isinstance(auth, JSONResponse):
         return auth
     store = request.app.state.project_task_store
-    return {"items": await store.list_ready_tasks(project_id=project_id)}
+    return {"items": await store.list_ready_tasks(project_id=project_id, element_id=element_id)}
 
 
 @router.get("/api/projects/{project_id}/tasks/{task_id}")
@@ -603,7 +634,22 @@ async def update_task(
             seen.add(cur["parent_task_id"])
             cur = await store.get_task(cur["parent_task_id"])
 
-    await store.update_task(task_id, **payload.model_dump(exclude_none=True))
+    estore = request.app.state.project_element_store
+    update_fields: dict = {}
+    for f in ("title", "body", "priority", "labels", "assignee_id", "parent_task_id"):
+        v = getattr(payload, f)
+        if v is not None:
+            update_fields[f] = v
+    if payload.element_id is not None:
+        if payload.element_id == "none":
+            update_fields["element_id"] = _ELEMENT_CLEAR
+        else:
+            el_check = await _require_active_element(estore, project_id, payload.element_id)
+            if isinstance(el_check, JSONResponse):
+                return el_check
+            update_fields["element_id"] = payload.element_id
+
+    await store.update_task(task_id, **update_fields)
     _beads_mark_dirty(request, project_id)
     return await store.get_task(task_id)
 
@@ -1013,3 +1059,207 @@ async def beads_export(
     if path is None:
         return JSONResponse({"error": "export failed"}, status_code=500)
     return {"path": str(path)}
+
+
+# ---------------------------------------------------------------------------
+# Element routes (slice 1 of docs/design/projects-nested-elements.md).
+# Owner-gated exactly like the member routes: session owner/admin via
+# _get_owned_project, with existence-hiding 404. External agent tokens get no
+# new mutation surface in v1.
+# ---------------------------------------------------------------------------
+
+class CreateElementIn(BaseModel):
+    name: str
+    slug: str | None = None
+    type: str = "generic"
+    description: str = ""
+    assignee_id: str | None = None
+    settings: dict = Field(default_factory=dict)
+
+
+class UpdateElementIn(BaseModel):
+    name: str | None = None
+    type: str | None = None
+    description: str | None = None
+    assignee_id: str | None = None
+    settings: dict | None = None
+
+
+def _ensure_element_folder(request: Request, project: dict, element: dict) -> None:
+    """Best-effort files subfolder for the element. The DB row is authoritative;
+    a disk failure must never block the element creation."""
+    try:
+        root = request.app.state.projects_root
+        d = root / project["slug"] / "files" / element["slug"]
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.warning(
+            "element files folder create failed for %s/%s: %s",
+            project.get("slug"), element.get("slug"), exc,
+        )
+
+
+async def _validate_element_assignee(pstore, project_id: str, assignee_id: "str | None") -> "bool":
+    """An element assignee must name a current project member, or be None."""
+    if assignee_id is None:
+        return True
+    members = await pstore.list_members(project_id)
+    return any(m["member_id"] == assignee_id for m in members)
+
+
+@router.post("/api/projects/{project_id}/elements")
+async def create_element(
+    project_id: str,
+    payload: CreateElementIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
+    project = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project, JSONResponse):
+        return project
+    if not await _validate_element_assignee(pstore, project_id, payload.assignee_id):
+        return JSONResponse({"error": "assignee is not a project member"}, status_code=400)
+    try:
+        el = await estore.create_element(
+            project_id=project_id,
+            name=payload.name,
+            slug=payload.slug,
+            type=payload.type,
+            description=payload.description,
+            assignee_id=payload.assignee_id,
+            settings=payload.settings,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    _ensure_element_folder(request, project, el)
+    await pstore.log_activity(
+        project_id, user.user_id, "element.created",
+        {"element_id": el["id"], "slug": el["slug"], "type": el["type"]},
+    )
+    return el
+
+
+@router.get("/api/projects/{project_id}/elements")
+async def list_elements(
+    project_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
+    project = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project, JSONResponse):
+        return project
+    return {"items": await estore.list_elements(project_id)}
+
+
+@router.get("/api/projects/{project_id}/elements/{element_id}")
+async def get_element(
+    project_id: str,
+    element_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
+    project = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project, JSONResponse):
+        return project
+    el = await estore.get_element(element_id)
+    if el is None or el["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return el
+
+
+@router.patch("/api/projects/{project_id}/elements/{element_id}")
+async def update_element(
+    project_id: str,
+    element_id: str,
+    payload: UpdateElementIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
+    project = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project, JSONResponse):
+        return project
+    el = await estore.get_element(element_id)
+    if el is None or el["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if payload.assignee_id is not None and not await _validate_element_assignee(
+        pstore, project_id, payload.assignee_id
+    ):
+        return JSONResponse({"error": "assignee is not a project member"}, status_code=400)
+    updated = await estore.update_element(
+        element_id,
+        name=payload.name,
+        type=payload.type,
+        description=payload.description,
+        assignee_id=payload.assignee_id,
+        settings=payload.settings,
+    )
+    await pstore.log_activity(
+        project_id, user.user_id, "element.updated", {"element_id": element_id}
+    )
+    return updated
+
+
+@router.post("/api/projects/{project_id}/elements/{element_id}/archive")
+async def archive_element(
+    project_id: str,
+    element_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
+    project = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project, JSONResponse):
+        return project
+    el = await estore.get_element(element_id)
+    if el is None or el["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    await estore.archive_element(element_id)
+    await pstore.log_activity(
+        project_id, user.user_id, "element.archived", {"element_id": element_id}
+    )
+    return await estore.get_element(element_id)
+
+
+@router.delete("/api/projects/{project_id}/elements/{element_id}")
+async def delete_element(
+    project_id: str,
+    element_id: str,
+    request: Request,
+    mode: str = "strict",
+    user: CurrentUser = Depends(current_user),
+):
+    pstore = request.app.state.project_store
+    estore = request.app.state.project_element_store
+    project = await _get_owned_project(pstore, project_id, user)
+    if isinstance(project, JSONResponse):
+        return project
+    el = await estore.get_element(element_id)
+    if el is None or el["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    counts = await estore.count_element_items(project_id, element_id)
+    if (counts["total_tasks"] > 0 or counts["canvas_items"] > 0) and mode != "untag":
+        return JSONResponse(
+            {
+                "error": "element has tagged items",
+                "open_tasks": counts["open_tasks"],
+                "total_tasks": counts["total_tasks"],
+                "canvas_items": counts["canvas_items"],
+            },
+            status_code=409,
+        )
+    await estore.delete_element(element_id, untag=(mode == "untag"))
+    await pstore.log_activity(
+        project_id, user.user_id, "element.deleted",
+        {"element_id": element_id, "mode": mode},
+    )
+    return {"ok": True}
+

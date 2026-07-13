@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS project_tasks (
     priority INTEGER NOT NULL DEFAULT 0,
     labels TEXT NOT NULL DEFAULT '[]',
     assignee_id TEXT,
+    element_id TEXT,
     claimed_by TEXT,
     claimed_at REAL,
     closed_at REAL,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS project_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON project_tasks(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON project_tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_element ON project_tasks(project_id, element_id);
 
 CREATE TABLE IF NOT EXISTS task_relationships (
     id TEXT PRIMARY KEY,
@@ -90,6 +92,13 @@ def _row_to_task(row, description) -> dict:
         if f in t and t[f] is not None:
             t[f] = json.loads(t[f])
     return t
+
+
+# Sentinels for update_task's element_id:
+#   _ELEMENT_UNCHANGED -> leave the task's element tag untouched (PATCH omitted)
+#   _ELEMENT_CLEAR     -> explicitly clear the tag to NULL ("none" sentinel)
+_ELEMENT_UNCHANGED: object = object()
+_ELEMENT_CLEAR: object = object()
 
 
 class ProjectTaskStore(BaseStore):
@@ -142,6 +151,20 @@ class ProjectTaskStore(BaseStore):
         except Exception:
             logger.warning("board audit record failed for task %s", task_id, exc_info=True)
 
+    async def _post_init(self) -> None:
+        # Additive column for project elements (slice 1 of
+        # docs/design/projects-nested-elements.md). Existing databases created
+        # before the element tag existed get the column added here; fresh
+        # installs already have it from SCHEMA. Swallow the duplicate-column
+        # error the same way project_store does.
+        try:
+            await self._db.execute(
+                "ALTER TABLE project_tasks ADD COLUMN element_id TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+
     async def create_task(
         self,
         project_id: str,
@@ -152,17 +175,18 @@ class ProjectTaskStore(BaseStore):
         labels: list[str] | None = None,
         assignee_id: str | None = None,
         parent_task_id: str | None = None,
+        element_id: str | None = None,
     ) -> dict:
         tid = new_id("tsk")
         now = time.time()
         await self._db.execute(
             """INSERT INTO project_tasks
                (id, project_id, parent_task_id, title, body, status, priority, labels,
-                assignee_id, created_by, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)""",
+                assignee_id, element_id, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)""",
             (
                 tid, project_id, parent_task_id, title, body, priority,
-                json.dumps(labels or []), assignee_id, created_by, now, now,
+                json.dumps(labels or []), assignee_id, element_id, created_by, now, now,
             ),
         )
         await self._db.commit()
@@ -185,6 +209,7 @@ class ProjectTaskStore(BaseStore):
         project_id: str,
         status: str | None = None,
         parent_task_id: str | None = None,
+        element_id: str | None = None,
     ) -> list[dict]:
         conds = ["project_id = ?"]
         params: list = [project_id]
@@ -194,11 +219,22 @@ class ProjectTaskStore(BaseStore):
         if parent_task_id is not None:
             conds.append("parent_task_id = ?")
             params.append(parent_task_id)
+        # element_id convention (mirrors the API surface):
+        #   None      -> no element filter (project-level + every element)
+        #   "none"    -> only untagged (project-level) tasks
+        #   <real id> -> only tasks tagged with that element
+        if element_id is not None:
+            if element_id == "none":
+                conds.append("element_id IS NULL")
+            else:
+                conds.append("element_id = ?")
+                params.append(element_id)
         sql = f"SELECT * FROM project_tasks WHERE {' AND '.join(conds)} ORDER BY created_at ASC"
         async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_task(r, desc) for r in rows]
+
 
     async def update_task(
         self,
@@ -209,6 +245,7 @@ class ProjectTaskStore(BaseStore):
         labels: list[str] | None = None,
         assignee_id: str | None = None,
         parent_task_id: str | None = None,
+        element_id: object = _ELEMENT_UNCHANGED,
     ) -> None:
         candidates = [
             ("title", title, title),
@@ -226,6 +263,16 @@ class ProjectTaskStore(BaseStore):
                 sets.append(f"{col} = ?")
                 params.append(serialised)
                 patch[col] = raw
+        # element_id is handled separately so None can mean "unchanged" while an
+        # explicit clear sets the tag to NULL.
+        if element_id is not _ELEMENT_UNCHANGED:
+            sets.append("element_id = ?")
+            if element_id is _ELEMENT_CLEAR:
+                params.append(None)
+                patch["element_id"] = None
+            else:
+                params.append(element_id)
+                patch["element_id"] = element_id
         if not sets:
             return
         sets.append("updated_at = ?"); params.append(time.time())
@@ -404,14 +451,25 @@ class ProjectTaskStore(BaseStore):
             keys = [d[0] for d in cur.description]
         return [dict(zip(keys, r)) for r in rows]
 
-    async def list_ready_tasks(self, project_id: str, limit: int = 50) -> list[dict]:
+    async def list_ready_tasks(
+        self, project_id: str, limit: int = 50, element_id: str | None = None
+    ) -> list[dict]:
         limit = max(1, min(limit, 200))
+        conds = ["project_id = ?"]
+        params: list = [project_id]
+        if element_id is not None:
+            if element_id == "none":
+                conds.append("element_id IS NULL")
+            else:
+                conds.append("element_id = ?")
+                params.append(element_id)
+        params.append(limit)
         async with self._db.execute(
-            """SELECT * FROM ready_tasks
-               WHERE project_id = ?
-               ORDER BY priority DESC, created_at ASC
-               LIMIT ?""",
-            (project_id, limit),
+            f"""SELECT * FROM ready_tasks
+                WHERE {' AND '.join(conds)}
+                ORDER BY priority DESC, created_at ASC
+                LIMIT ?""",
+            params,
         ) as cur:
             rows = await cur.fetchall()
             desc = cur.description

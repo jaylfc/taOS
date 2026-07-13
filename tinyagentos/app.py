@@ -366,6 +366,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_channels = ChatChannelStore(data_dir / "chat.db")
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
+    from tinyagentos.projects.element_store import ProjectElementStore
     from tinyagentos.projects.events import ProjectEventBroker
     from tinyagentos.projects.canvas.store import ProjectCanvasStore as ProjectCanvasStoreImpl
     from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
@@ -383,6 +384,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         audit=board_audit_store,
         project_store=project_store,
     )
+    project_element_store = ProjectElementStore(data_dir / "projects.db")
     from tinyagentos.projects.routines_store import RoutineStore
     routine_store = RoutineStore(data_dir / "routines.db")
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
@@ -511,6 +513,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await receipt_store.init()
         app.state.receipt_store = receipt_store
         await project_task_store.init()
+        await project_element_store.init()
         await routine_store.init()
         app.state.routine_store = routine_store
         await project_canvas_store.init()
@@ -827,6 +830,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.chat_channels = chat_channels
         app.state.project_store = project_store
         app.state.project_task_store = project_task_store
+        app.state.project_element_store = project_element_store
         app.state.project_event_broker = project_event_broker
         app.state.desktop_command_broker = desktop_command_broker
         app.state.project_canvas_store = project_canvas_store
@@ -1412,6 +1416,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 logger.exception("canvas snapshotter stop failed")
         await project_canvas_store.close()
         await project_task_store.close()
+        await project_element_store.close()
         await routine_store.close()
         await project_store.close()
         await chat_channels.close()
@@ -1562,6 +1567,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.board_audit = board_audit_store
     app.state.receipt_store = receipt_store
     app.state.project_task_store = project_task_store
+    app.state.project_element_store = project_element_store
     app.state.routine_store = routine_store
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker

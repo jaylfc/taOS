@@ -51,6 +51,7 @@ def task_to_jsonl_dict(
         "labels": list(task.get("labels") or []),
         "assignee_ids": [assignee_id] if assignee_id else [],
         "parent_id": task.get("parent_task_id"),
+        "element_id": task.get("element_id"),
         "deps": [
             {"task_id": r["to_task_id"], "kind": r["kind"]}
             for r in outbound_relationships
