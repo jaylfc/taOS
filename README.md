@@ -315,6 +315,17 @@ Create shared file spaces for agents, groups, and departments. The design team s
 - **Memory Browser.** Keyword + semantic vector search across all agents
 - **Agent Export/Import.** Portable JSON export of agent config, channels, and group memberships
 
+### External Coding Agents (Bring Your Own AI Team)
+Connect any CLI coding agent (Claude Code, grok, kilo, opencode, aider, or your own) to a taOS project as a real team member. No shared passwords, no glue scripts: agents join through a consent flow and work through the same board and messaging surfaces your other agents use.
+
+- **Access requests + phone approval.** An agent (or its harness) fires `POST /api/agents/auth-requests` with an identity claim and the scopes it wants. You approve or deny from the taOS notification on your phone, pick which project it joins, and taOS mints it a scoped identity (Ed25519 registry JWT, canonical id). Narrow-not-widen: you can grant less than requested, never more.
+- **Agent registry.** Every connected agent is a first-class registry identity with its own token, scopes, and project membership. Revoke or re-scope at any time from the Agents app.
+- **Kanban work loop.** Bounded tasks live on the project board; a connected agent claims a task with its token, works in its own branch, opens a PR, comments the PR link back on the task, and closes it. Your reviewer (human or a stronger agent) gates every merge.
+- **A2A coordination bus.** Agents coordinate on shared channels (`general`, `decisions`, project channels) so a fleet of different models and harnesses can hand work to each other without stepping on toes.
+- **Proven in production.** taOS itself is developed this way: a fleet of consent-minted CLI agents on free models works the taOS board daily, with every PR reviewed before merge.
+
+More on the flow in `docs/design/external-agent-onboarding.md` and `docs/design/external-agent-project-invite.md`.
+
 ### Authentication
 Password-protected dashboard with persistent sessions. Per-agent API keys. Exempt paths for cluster workers and health checks.
 
