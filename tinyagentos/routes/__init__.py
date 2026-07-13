@@ -343,6 +343,10 @@ def register_all_routers(app):
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router)
 
+    # Local hub API (hub social slice 2): the node's own profile + object store.
+    from tinyagentos.routes.hub import router as hub_router
+    app.include_router(hub_router)
+
     from tinyagentos.routes.office import router as office_router
     app.include_router(office_router)
     from tinyagentos.routes.songs import router as songs_router
