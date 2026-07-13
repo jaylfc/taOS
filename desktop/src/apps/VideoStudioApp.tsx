@@ -260,6 +260,7 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
   /* ----------------------------- delete ---------------------------- */
 
   const handleDelete = useCallback((filename: string) => {
+    if (!window.confirm(`Delete "${filename}"? This can't be undone.`)) return;
     let removed: GeneratedVideo | undefined;
     let removedIndex = -1;
     setVideos((prev) => {
@@ -275,8 +276,6 @@ export function VideoStudioApp({ windowId: _windowId }: { windowId: string }) {
         if (!res.ok) throw new Error(`Delete failed (${res.status})`);
       })
       .catch((e) => {
-        // Roll back the optimistic removal and surface the failure --
-        // don't let a failed delete silently vanish the item.
         setVideos((prev) => {
           if (!removed || prev.some((v) => v.filename === filename)) {
             return prev;

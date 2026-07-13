@@ -221,6 +221,7 @@ describe("VideoStudioApp", () => {
   });
 
   it("calls DELETE /api/video/{filename} when deleting from the Library", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const fetchMock = mockFetch({
       "GET /api/video": {
         ok: true,
@@ -253,11 +254,95 @@ describe("VideoStudioApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete video" }));
     await flush();
 
+    expect(confirmSpy).toHaveBeenCalledWith('Delete "111_222.mp4"? This can\'t be undone.');
     const call = fetchMock.mock.calls.find(
       ([url, init]: [string, RequestInit?]) =>
         url === "/api/video/111_222.mp4" && init?.method === "DELETE",
     );
     expect(call).toBeTruthy();
     expect(screen.getByText("No videos yet")).toBeTruthy();
+    confirmSpy.mockRestore();
+  });
+
+  it("keeps the video and shows an error when DELETE rejects", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = mockFetch({
+      "GET /api/video": {
+        ok: true,
+        body: {
+          videos: [
+            {
+              filename: "111_222.mp4",
+              path: "/data/videos/111_222.mp4",
+              size_bytes: 1024,
+              prompt: "a rocket launch",
+              model: "wan2.1-1.3b",
+              duration: 5,
+              resolution: "480x832",
+              seed: 222,
+            },
+          ],
+        },
+      },
+      "DELETE /api/video/111_222.mp4": { ok: false, status: 500, body: { error: "Server error" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderApp();
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open video: a rocket launch" }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Delete video" }));
+    await flush();
+
+    expect(screen.getByRole("button", { name: /Open video: a rocket launch/ })).toBeTruthy();
+    expect(screen.getByText(/Failed to delete video/)).toBeTruthy();
+    confirmSpy.mockRestore();
+  });
+
+  it("does not send DELETE when the user cancels the confirm", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchMock = mockFetch({
+      "GET /api/video": {
+        ok: true,
+        body: {
+          videos: [
+            {
+              filename: "111_222.mp4",
+              path: "/data/videos/111_222.mp4",
+              size_bytes: 1024,
+              prompt: "a rocket launch",
+              model: "wan2.1-1.3b",
+              duration: 5,
+              resolution: "480x832",
+              seed: 222,
+            },
+          ],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderApp();
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Library" }));
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open video: a rocket launch" }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Delete video" }));
+    await flush();
+
+    expect(confirmSpy).toHaveBeenCalledWith('Delete "111_222.mp4"? This can\'t be undone.');
+    expect(
+      fetchMock.mock.calls.some(([url, init]: [string, RequestInit?]) =>
+        url === "/api/video/111_222.mp4" && init?.method === "DELETE",
+      ),
+    ).toBe(false);
+    expect(screen.getByRole("button", { name: /Open video: a rocket launch/ })).toBeTruthy();
+    confirmSpy.mockRestore();
   });
 });
