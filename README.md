@@ -324,7 +324,7 @@ Connect any CLI coding agent (Claude Code, grok, kilo, opencode, aider, or your 
 - **A2A coordination bus.** Agents coordinate on shared channels (`general`, `decisions`, project channels) so a fleet of different models and harnesses can hand work to each other without stepping on toes.
 - **Proven in production.** taOS itself is developed this way: a fleet of consent-minted CLI agents on free models works the taOS board daily, with every PR reviewed before merge.
 
-More on the flow in `docs/design/external-agent-onboarding.md` and `docs/design/external-agent-project-invite.md`.
+More on the flow in `docs/design/external-agent-onboarding.md`.
 
 ### Authentication
 Password-protected dashboard with persistent sessions. Per-agent API keys. Exempt paths for cluster workers and health checks.
