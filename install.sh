@@ -1,6 +1,10 @@
 #!/bin/bash
 # TinyAgentOS installer — for users on stock Armbian/Debian who want to install without a pre-built image.
 # Usage: curl -sL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/install.sh | bash
+#
+# Hailo-10H NPU backend (Raspberry Pi 5 + AI HAT+2):
+#     TAOS_HAILO_SETUP    set to 1/true to auto-run scripts/install-hailo.sh when a Hailo-10H is detected
+#     TAOS_FORCE_HAILO    set to 1/true to force the Hailo-10H branch on boxes without a /dev/hailo0 node
 
 set -e
 
@@ -183,6 +187,32 @@ if [ -e "/dev/rknpu" ]; then
     echo ""
     echo "Rockchip NPU detected! Consider installing rkllama for NPU-accelerated inference."
     echo "  pip install rkllama"
+fi
+
+# Detect if a Hailo-10H NPU is available (Raspberry Pi 5 + AI HAT+2).
+# Only the 10H runs LLMs; an 8/8L-class device is vision-only and is skipped.
+if [ -e "/dev/hailo0" ]; then
+    _hailo_10h=0
+    if [ "${TAOS_FORCE_HAILO:-}" = "1" ] || [ "${TAOS_FORCE_HAILO:-}" = "true" ]; then
+        _hailo_10h=1
+    elif command -v lspci >/dev/null 2>&1 && lspci -d 1e60: 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+        _hailo_10h=1
+    elif command -v hailortcli >/dev/null 2>&1 && hailortcli fw-control identify 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+        _hailo_10h=1
+    fi
+    if [ "$_hailo_10h" = "1" ]; then
+        echo ""
+        echo "Hailo-10H NPU detected! Consider installing hailo-ollama for NPU-accelerated LLM inference."
+        echo "  sudo bash scripts/install-hailo.sh"
+        if [ "${TAOS_HAILO_SETUP:-}" = "1" ] || [ "${TAOS_HAILO_SETUP:-}" = "true" ]; then
+            echo "TAOS_HAILO_SETUP=1 - chaining into scripts/install-hailo.sh"
+            bash "$INSTALL_DIR/scripts/install-hailo.sh" --yes \
+                || echo "install-hailo.sh failed - continuing install anyway"
+        fi
+    else
+        echo ""
+        echo "Hailo device detected but not a 10H (vision-class: no LLM support). Skipping hailo-ollama install."
+    fi
 fi
 
 # Start TinyAgentOS

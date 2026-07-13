@@ -24,6 +24,8 @@
 #                             prints its address + PIN and waits for the admin to
 #                             enter both in taOS > Cluster > Add worker (no
 #                             network announce/discovery)
+#     TAOS_HAILO_SETUP        set to 1/true to auto-run scripts/install-hailo.sh when a Hailo-10H is detected
+#     TAOS_FORCE_HAILO        set to 1/true to force the Hailo-10H branch on bench boxes without /dev/hailo0
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1027,60 @@ detect_and_advise_accelerators() {
                         || warn "install-rknpu.sh failed — continuing worker install anyway"
                 else
                     warn "TAOS_RKNPU_SETUP=1 but install-rknpu.sh not found locally yet"
+                    warn "  it will be available after the worker repo is cloned; run it then"
+                fi
+            fi
+        fi
+    fi
+
+    # ── Hailo-10H ───────────────────────────────────────────────
+    # The 10H is the only Hailo part with an LLM runtime. It appears as
+    # /dev/hailo0 on the AI HAT+2 (PCIe M.2). lspci -d 1e60: reports
+    # "10h"/"hailo-10" for a 10H; any other /dev/hailo* node is an 8/8L
+    # vision-class device and must NOT trigger the LLM installer.
+    # TAOS_FORCE_HAILO=1 forces the branch on bench boxes without a node.
+    local hailo_present=0
+    if [[ "${TAOS_FORCE_HAILO:-}" == "1" || "${TAOS_FORCE_HAILO:-}" == "true" ]]; then
+        hailo_present=1
+    elif [[ -e /dev/hailo0 ]]; then
+        if command -v lspci >/dev/null 2>&1 && lspci -d 1e60: 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+            hailo_present=1
+        elif command -v hailortcli >/dev/null 2>&1 && hailortcli fw-control identify 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+            hailo_present=1
+        fi
+    fi
+    if (( hailo_present )); then
+        found_any=1
+        # hailo-ollama may already be installed and serving on 7836.
+        local hailo_ollama_found=0
+        if command -v hailo-ollama >/dev/null 2>&1; then
+            hailo_ollama_found=1
+        elif systemctl is-enabled hailo-ollama.service >/dev/null 2>&1; then
+            hailo_ollama_found=1
+        fi
+        if (( hailo_ollama_found )); then
+            log "hailo: device present + hailo-ollama backend installed"
+        else
+            warn "Hailo-10H detected but hailo-ollama is not installed"
+            warn "  worker will run without NPU acceleration until you install hailo-ollama"
+            warn "  run: sudo bash scripts/install-hailo.sh    (or set TAOS_HAILO_SETUP=1 before re-running this installer to opt in automatically)"
+            warn "  upstream: https://github.com/hailo-ai/hailo-ollama"
+            # Chained auto-install: if the caller opted in via env var,
+            # run scripts/install-hailo.sh now so hailo-ollama is already
+            # serving on :7836 before the worker systemd unit lands.
+            if [[ "${TAOS_HAILO_SETUP:-}" == "1" || "${TAOS_HAILO_SETUP:-}" == "true" ]]; then
+                local hailo_script=""
+                if [[ -x "$(dirname "$0")/install-hailo.sh" ]]; then
+                    hailo_script="$(dirname "$0")/install-hailo.sh"
+                elif [[ -x "$INSTALL_DIR/scripts/install-hailo.sh" ]]; then
+                    hailo_script="$INSTALL_DIR/scripts/install-hailo.sh"
+                fi
+                if [[ -n "$hailo_script" ]]; then
+                    log "TAOS_HAILO_SETUP=1 - chaining into $hailo_script"
+                    TAOS_HAILO_SETUP=1 sudo -E bash "$hailo_script" --yes \
+                        || warn "install-hailo.sh failed - continuing worker install anyway"
+                else
+                    warn "TAOS_HAILO_SETUP=1 but install-hailo.sh not found locally yet"
                     warn "  it will be available after the worker repo is cloned; run it then"
                 fi
             fi

@@ -24,6 +24,9 @@
 #     TAOS_SERVICE              install as system service: auto (default), system, user, skip
 #     TAOS_SKIP_QMD             if set, skip qmd.service install (useful for boxes without a model backend)
 #     TAOS_RKNPU_SETUP          if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
+#     TAOS_HAILO_SETUP          set to 1/true to auto-run install-hailo.sh when a Hailo-10H is detected
+#     TAOS_FORCE_HAILO          set to 1/true to force the Hailo-10H branch on bench boxes without /dev/hailo0
+#     TAOS_NO_HAILO             if set to 1/true, skip the hailo-ollama auto-install on Hailo-10H hosts
 #     TAOS_PREFETCH_BASE_IMAGE  if set to 1, download the pre-built agent base image at startup (~300-500MB, one-time)
 #     TAOS_COW_POOL             incus storage driver: auto (default), btrfs, zfs, dir
 #                               auto = use btrfs/zfs if /var/lib is on CoW fs, fall back to dir
@@ -489,6 +492,63 @@ detect_and_advise_accelerators() {
         fi
     fi
 
+    # ── Hailo-10H ──────────────────────────────────────────────
+    # The 10H is the only Hailo part with an LLM runtime. It appears as
+    # /dev/hailo0 on the AI HAT+2 (PCIe M.2). lspci -d 1e60: reports
+    # "10h"/"hailo-10" for a 10H; any other /dev/hailo* node is an 8/8L
+    # vision-class device and must NOT trigger the LLM installer.
+    # TAOS_FORCE_HAILO=1 forces the branch on bench boxes without a node.
+    local hailo_present=0
+    local hailo_signal=""
+    if [[ "${TAOS_FORCE_HAILO:-}" == "1" || "${TAOS_FORCE_HAILO:-}" == "true" ]]; then
+        hailo_present=1
+        hailo_signal="TAOS_FORCE_HAILO"
+    elif [[ -e /dev/hailo0 ]]; then
+        # 10H vs 8L discrimination: only a 10H runs LLMs.
+        if command -v lspci >/dev/null 2>&1 && lspci -d 1e60: 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+            hailo_present=1
+            hailo_signal="/dev/hailo0 + lspci"
+        elif command -v hailortcli >/dev/null 2>&1 && hailortcli fw-control identify 2>/dev/null | grep -Eiq '10h|hailo-10'; then
+            hailo_present=1
+            hailo_signal="hailortcli identify"
+        else
+            hailo_signal="hailo device is 8/8L-class (vision only)"
+        fi
+    fi
+    if (( hailo_present )); then
+        log "hailo: 10H detected via $hailo_signal"
+    elif [[ -e /dev/hailo0 ]]; then
+        warn "hailo: detected a Hailo device that is not a 10H (vision-class: no LLM support) - skipping hailo-ollama"
+    fi
+    if (( hailo_present )); then
+        found_any=1
+        # hailo-ollama may already be installed and serving on 7836.
+        local hailo_ollama_found=0
+        if command -v hailo-ollama >/dev/null 2>&1; then
+            hailo_ollama_found=1
+        elif systemctl is-enabled hailo-ollama.service >/dev/null 2>&1; then
+            hailo_ollama_found=1
+        fi
+        if (( hailo_ollama_found )); then
+            log "hailo: device present + hailo-ollama backend installed"
+        else
+            log "Hailo-10H detected - auto-installing the hailo-ollama NPU backend"
+            log "  (set TAOS_NO_HAILO=1 to skip, or run install-hailo.sh manually later)"
+            log "  upstream: https://github.com/hailo-ai/hailo-ollama"
+            if [[ "${TAOS_NO_HAILO:-}" == "1" || "${TAOS_NO_HAILO:-}" == "true" ]]; then
+                warn "TAOS_NO_HAILO=1 - skipping hailo-ollama install; controller will run CPU-only on this NPU box"
+                warn "  to set up later: sudo bash scripts/install-hailo.sh"
+            else
+                # Defer the actual install to after the repo clone - the
+                # script we need lives at $INSTALL_DIR/scripts/install-hailo.sh
+                # and that path doesn't exist on this very first detection
+                # pass. install_hailo_if_pending below picks this up.
+                HAILO_PENDING_INSTALL=1
+                log "hailo-ollama install deferred until after repo clone"
+            fi
+        fi
+    fi
+
     # ── Apple Silicon (handled in macOS path) ───────────────────────
     if (( ! found_any )); then
         log "no discrete accelerator detected — controller will run on CPU"
@@ -513,6 +573,26 @@ install_rknpu_if_pending() {
     log "chaining into $rknpu_script (rkllama auto-install)"
     sudo -E bash "$rknpu_script" --yes \
         || warn "install-rknpu.sh failed — continuing controller install anyway"
+}
+
+# Run the deferred hailo auto-install once the repo is on disk. Called
+# after `git clone $INSTALL_DIR`. Skips if no Hailo-10H was detected up front
+# or if the user opted out via TAOS_NO_HAILO=1.
+install_hailo_if_pending() {
+    if [[ "${HAILO_PENDING_INSTALL:-0}" != "1" ]]; then
+        return 0
+    fi
+    local hailo_script="$INSTALL_DIR/scripts/install-hailo.sh"
+    # We invoke via `bash "$hailo_script"`, so executable bit isn't
+    # required - only readable.
+    if [[ ! -f "$hailo_script" || ! -r "$hailo_script" ]]; then
+        warn "install-hailo.sh missing or unreadable at $hailo_script - skipping hailo-ollama auto-install"
+        warn "  to set up hailo-ollama later: sudo bash $INSTALL_DIR/scripts/install-hailo.sh"
+        return 0
+    fi
+    log "chaining into $hailo_script (hailo-ollama auto-install)"
+    sudo -E bash "$hailo_script" --yes \
+        || warn "install-hailo.sh failed - continuing controller install anyway"
 }
 
 # Install the RK3588 performance-mode systemd service when the NPU is
@@ -1095,6 +1175,7 @@ cd "$INSTALL_DIR"
 # Now that the repo is on disk, run any accelerator-backend install
 # that was deferred up front (e.g. rkllama on a Rockchip NPU host).
 install_rknpu_if_pending
+install_hailo_if_pending
 
 # If we installed rkllama on an RK3588 board, also install the performance
 # mode systemd service so the NPU/devfreq governors are set on every boot.
