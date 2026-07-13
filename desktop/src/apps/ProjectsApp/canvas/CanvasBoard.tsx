@@ -11,6 +11,7 @@ import { TaosNoteShapeUtil } from "./shapes/NoteShape";
 import { TaosLinkShapeUtil } from "./shapes/LinkShape";
 import { TaosImageShapeUtil } from "./shapes/ImageShape";
 import { TaosGenericShapeUtil } from "./shapes/GenericShape";
+import { TaosTextShapeUtil } from "./shapes/TextShape";
 import { useIsMobile } from "../../../hooks/use-is-mobile";
 
 interface CanvasBoardProps {
@@ -23,6 +24,7 @@ const CUSTOM_SHAPE_UTILS = [
   TaosLinkShapeUtil,
   TaosImageShapeUtil,
   TaosGenericShapeUtil,
+  TaosTextShapeUtil,
 ];
 
 // Self-host tldraw's fonts/translations/icons so they load same-origin.

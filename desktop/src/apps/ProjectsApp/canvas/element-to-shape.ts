@@ -22,6 +22,7 @@ export function shapeType(kind: string): string {
   if (kind === "note") return "taos-note";
   if (kind === "link") return "taos-link";
   if (kind === "image") return "taos-image";
+  if (kind === "text") return "taos-text";
   return "taos-generic";
 }
 
@@ -77,6 +78,13 @@ function imagePayload(p: any) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function textPayload(p: any) {
+  return {
+    text: str(p?.text, ""),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function elementToShape(el: CanvasElement, projectSlug: string): any {
   // Geometry is validated too (T.number), so coerce it as well: a malformed
   // element still places on the board instead of throwing.
@@ -86,7 +94,7 @@ export function elementToShape(el: CanvasElement, projectSlug: string): any {
   const h = num(el.h, 100);
   const rotation = num(el.rotation, 0);
 
-  if (el.kind === "note" || el.kind === "link" || el.kind === "image") {
+  if (el.kind === "note" || el.kind === "link" || el.kind === "image" || el.kind === "text") {
     const taosFields = {
       taos_kind: el.kind,
       taos_payload:
@@ -94,7 +102,9 @@ export function elementToShape(el: CanvasElement, projectSlug: string): any {
           ? notePayload(el.payload)
           : el.kind === "link"
             ? linkPayload(el.payload)
-            : imagePayload(el.payload),
+            : el.kind === "image"
+              ? imagePayload(el.payload)
+              : textPayload(el.payload),
       taos_author_id: str(el.author_id, "user"),
       taos_author_kind: authorKind(el.author_kind),
     };
