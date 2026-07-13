@@ -463,3 +463,241 @@ async def test_task_context_route_shape(client):
 async def test_task_context_route_unknown_task_returns_404(client):
     resp = await client.get("/api/projects/tasks/tsk-nope/context")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Slice 1: project elements + task element tags
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_and_list_elements(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+
+    resp = await client.post(
+        f"/api/projects/{pid}/elements",
+        json={"name": "Website", "type": "website", "description": "the site"},
+    )
+    assert resp.status_code == 200, resp.text
+    el = resp.json()
+    assert el["id"].startswith("elm-")
+    assert el["slug"] == "website"
+    assert el["type"] == "website"
+    assert el["description"] == "the site"
+
+    # default slug from name when omitted
+    resp2 = await client.post(
+        f"/api/projects/{pid}/elements", json={"name": "Designs"}
+    )
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["slug"] == "designs"
+    assert resp2.json()["type"] == "generic"
+
+    listing = await client.get(f"/api/projects/{pid}/elements")
+    assert listing.status_code == 200
+    items = {e["slug"]: e for e in listing.json()["items"]}
+    assert set(items) == {"website", "designs"}
+    # The list endpoint carries counts (open/total tasks, canvas items).
+    assert items["website"]["open_tasks"] == 0
+    assert items["website"]["total_tasks"] == 0
+    assert items["website"]["canvas_items"] == 0
+
+    single = await client.get(f"/api/projects/{pid}/elements/{el['id']}")
+    assert single.status_code == 200
+    assert single.json()["name"] == "Website"
+
+
+@pytest.mark.asyncio
+async def test_element_duplicate_slug_returns_409(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    await client.post(f"/api/projects/{pid}/elements", json={"name": "Website", "slug": "website"})
+    resp = await client.post(
+        f"/api/projects/{pid}/elements", json={"name": "Website Two", "slug": "website"}
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_get_update_archive_delete_element(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    el = (await client.post(
+        f"/api/projects/{pid}/elements", json={"name": "Website", "type": "website"}
+    )).json()
+
+    resp = await client.patch(
+        f"/api/projects/{pid}/elements/{el['id']}",
+        json={"name": "Site", "description": "d"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Site"
+
+    resp = await client.post(f"/api/projects/{pid}/elements/{el['id']}/archive")
+    assert resp.status_code == 200
+    assert resp.json()["archived_at"] is not None
+
+    resp = await client.delete(f"/api/projects/{pid}/elements/{el['id']}")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert (await client.get(f"/api/projects/{pid}/elements/{el['id']}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_element_assignee_must_be_member(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    resp = await client.post(
+        f"/api/projects/{pid}/elements",
+        json={"name": "Website", "assignee_id": "agent-not-a-member"},
+    )
+    assert resp.status_code == 400
+    await client.post(f"/api/projects/{pid}/members", json={"mode": "native", "agent_id": "agent-1"})
+    resp = await client.post(
+        f"/api/projects/{pid}/elements",
+        json={"name": "Website", "assignee_id": "agent-1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["assignee_id"] == "agent-1"
+
+
+@pytest.mark.asyncio
+async def test_element_delete_with_tagged_tasks_returns_409(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    el = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+    t = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "T", "element_id": el["id"]}
+    )).json()
+
+    resp = await client.delete(f"/api/projects/{pid}/elements/{el['id']}")
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["total_tasks"] == 1
+    assert body["open_tasks"] == 1
+    # The task (and element) survive the refused delete.
+    assert (await client.get(f"/api/projects/{pid}/tasks/{t['id']}")).status_code == 200
+    assert (await client.get(f"/api/projects/{pid}/elements/{el['id']}")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_element_delete_untag_mode(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    el = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+    t = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "T", "element_id": el["id"]}
+    )).json()
+
+    resp = await client.delete(
+        f"/api/projects/{pid}/elements/{el['id']}?mode=untag"
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    # Task stays but its tag is cleared to project-level.
+    cleared = (await client.get(f"/api/projects/{pid}/tasks/{t['id']}")).json()
+    assert cleared["element_id"] is None
+    assert (await client.get(f"/api/projects/{pid}/elements/{el['id']}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_element_id(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    el = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "T", "element_id": el["id"]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["element_id"] == el["id"]
+
+    listing = await client.get(f"/api/projects/{pid}/elements")
+    assert listing.json()["items"][0]["open_tasks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_invalid_element_id_400(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "T", "element_id": "elm-nope"}
+    )
+    assert resp.status_code == 400
+    # An archived element is not a valid tag target either.
+    el = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+    await client.post(f"/api/projects/{pid}/elements/{el['id']}/archive")
+    resp = await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "T2", "element_id": el["id"]}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_filter_by_element_and_none(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    el = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+    tagged = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "tagged", "element_id": el["id"]}
+    )).json()
+    untagged = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "general"}
+    )).json()
+
+    all_items = {t["id"] for t in (await client.get(f"/api/projects/{pid}/tasks")).json()["items"]}
+    assert all_items == {tagged["id"], untagged["id"]}
+
+    by_element = (await client.get(
+        f"/api/projects/{pid}/tasks", params={"element_id": el["id"]}
+    )).json()["items"]
+    assert [t["id"] for t in by_element] == [tagged["id"]]
+
+    none_items = (await client.get(
+        f"/api/projects/{pid}/tasks", params={"element_id": "none"}
+    )).json()["items"]
+    assert [t["id"] for t in none_items] == [untagged["id"]]
+
+
+@pytest.mark.asyncio
+async def test_update_task_move_element_and_clear(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    web = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+    design = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Designs"})).json()
+    t = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "T", "element_id": web["id"]}
+    )).json()
+
+    # Move to another element.
+    resp = await client.patch(
+        f"/api/projects/{pid}/tasks/{t['id']}",
+        json={"element_id": design["id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["element_id"] == design["id"]
+
+    # Clear to project-level via the "none" sentinel.
+    resp = await client.patch(
+        f"/api/projects/{pid}/tasks/{t['id']}", json={"element_id": "none"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["element_id"] is None
+
+    # Omitting element_id leaves the tag untouched.
+    resp = await client.patch(
+        f"/api/projects/{pid}/tasks/{t['id']}", json={"title": "renamed"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["element_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_ready_tasks_filter_by_element(client):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    el = (await client.post(f"/api/projects/{pid}/elements", json={"name": "Website"})).json()
+    tagged = (await client.post(
+        f"/api/projects/{pid}/tasks", json={"title": "tagged", "element_id": el["id"]}
+    )).json()
+    await client.post(f"/api/projects/{pid}/tasks", json={"title": "general"})
+
+    by_element = (await client.get(
+        f"/api/projects/{pid}/tasks/ready", params={"element_id": el["id"]}
+    )).json()["items"]
+    assert [t["id"] for t in by_element] == [tagged["id"]]
+
+    none_items = (await client.get(
+        f"/api/projects/{pid}/tasks/ready", params={"element_id": "none"}
+    )).json()["items"]
+    assert all(t["element_id"] is None for t in none_items)
+    assert len(none_items) == 1

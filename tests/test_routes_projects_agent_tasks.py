@@ -386,3 +386,65 @@ class TestSessionRegression:
         async with _bare(ctx.app) as bare:
             resp = await bare.get(f"/api/projects/{pid}/tasks")
         assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+class TestAgentElementFilter:
+    """Slice 1: an agent token filters tasks by element with ZERO auth change.
+
+    The element tag is a view of data the token already reads under
+    project_tasks, so the existing dual-auth gate passes element-filtered
+    reads straight through. No new agent surface, no scope change.
+    """
+
+    async def _new_element(self, ctx, pid, name="Website"):
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/elements", json={"name": name}
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["id"]
+
+    async def test_agent_filters_by_element(self, ctx):
+        pid = await _new_project(ctx, "alpha")
+        eid = await self._new_element(ctx, pid)
+        tagged = await _new_task(ctx, pid)
+        await ctx.client.patch(
+            f"/api/projects/{pid}/tasks/{tagged}", json={"element_id": eid}
+        )
+        await _new_task(ctx, pid)  # untagged task
+
+        _cid, token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            by_element = await bare.get(
+                f"/api/projects/{pid}/tasks",
+                params={"element_id": eid},
+                headers=_hdr(token),
+            )
+            assert by_element.status_code == 200
+            assert [t["id"] for t in by_element.json()["items"]] == [tagged]
+
+            none_only = await bare.get(
+                f"/api/projects/{pid}/tasks",
+                params={"element_id": "none"},
+                headers=_hdr(token),
+            )
+            assert none_only.status_code == 200
+            assert all(t["element_id"] is None for t in none_only.json()["items"])
+
+    async def test_agent_ready_filter_by_element(self, ctx):
+        pid = await _new_project(ctx, "alpha")
+        eid = await self._new_element(ctx, pid)
+        tagged = await _new_task(ctx, pid)
+        await ctx.client.patch(
+            f"/api/projects/{pid}/tasks/{tagged}", json={"element_id": eid}
+        )
+
+        _cid, token = await _mint_agent(ctx, pid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.get(
+                f"/api/projects/{pid}/tasks/ready",
+                params={"element_id": eid},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200
+        assert [t["id"] for t in resp.json()["items"]] == [tagged]

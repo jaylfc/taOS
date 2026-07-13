@@ -317,6 +317,10 @@ async def client(app, tmp_data_dir):
     if project_task_store._db is not None:
         await project_task_store.close()
     await project_task_store.init()
+    project_element_store = app.state.project_element_store
+    if project_element_store._db is not None:
+        await project_element_store.close()
+    await project_element_store.init()
     routine_store = app.state.routine_store
     if routine_store._db is not None:
         await routine_store.close()
@@ -436,6 +440,7 @@ async def client(app, tmp_data_dir):
     await coding_session_store.close()
     await feedback_store.close()
     await client_log_store.close()
+    await project_element_store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
     await _browser_store.close()
@@ -571,6 +576,10 @@ async def client_with_qmd(app_with_qmd):
     if project_task_store._db is not None:
         await project_task_store.close()
     await project_task_store.init()
+    project_element_store = app_with_qmd.state.project_element_store
+    if project_element_store._db is not None:
+        await project_element_store.close()
+    await project_element_store.init()
     routine_store = app_with_qmd.state.routine_store
     if routine_store._db is not None:
         await routine_store.close()
@@ -611,5 +620,6 @@ async def client_with_qmd(app_with_qmd):
     await secrets_store.close()
     await notif_store.close()
     await store.close()
+    await project_element_store.close()
     await app_with_qmd.state.qmd_client.close()
     await app_with_qmd.state.http_client.aclose()
