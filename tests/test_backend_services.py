@@ -51,6 +51,21 @@ def test_load_skips_managed_without_unit_or_scope(tmp_path: Path) -> None:
     assert bs.load_managed_backends(tmp_path) == []
 
 
+def test_load_managed_backends_includes_hailo_ollama_real_manifest() -> None:
+    catalog = Path(__file__).resolve().parents[1] / "app-catalog"
+    manifest = catalog / "services" / "hailo-ollama" / "manifest.yaml"
+    assert manifest.is_file(), "hailo-ollama service manifest must exist"
+
+    backends = bs.load_managed_backends(catalog)
+    ids = {b.id for b in backends}
+    assert "hailo-ollama" in ids
+    b = next(x for x in backends if x.id == "hailo-ollama")
+    assert b.unit == "hailo-ollama.service"
+    assert b.scope == "system"
+    assert b.health_url == "http://localhost:7836/api/tags"
+    assert b.health_expect == '"models"'
+
+
 # --------------------------------------------------------------------------
 # resolve_scope / unit_state / service_action  (mocked systemctl)
 # --------------------------------------------------------------------------
