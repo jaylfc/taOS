@@ -27,10 +27,12 @@ CREATE TABLE IF NOT EXISTS project_canvas_elements (
     payload TEXT NOT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
-    deleted_at REAL
+    deleted_at REAL,
+    element_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_project ON project_canvas_elements(project_id, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_canvas_updated ON project_canvas_elements(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_canvas_element ON project_canvas_elements(project_id, element_id);
 """
 
 _CANVAS_JSON_FIELDS = ("payload",)
@@ -69,6 +71,20 @@ class ProjectCanvasStore(BaseStore):
         super().__init__(db_path)
         self._broker = broker
 
+    async def _post_init(self) -> None:
+        # Additive column for project elements (slice 4 of
+        # docs/design/projects-nested-elements.md). Existing databases created
+        # before the element tag existed on canvas items get the column added
+        # here; fresh installs already have it from SCHEMA. Swallow the
+        # duplicate-column error the same way the task/element stores do.
+        try:
+            await self._db.execute(
+                "ALTER TABLE project_canvas_elements ADD COLUMN element_id TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
         if self._broker is not None:
             from tinyagentos.projects.events import ProjectEvent
@@ -99,6 +115,7 @@ class ProjectCanvasStore(BaseStore):
         element: dict,
         author_kind: str,
         author_id: str,
+        element_id: "str | None" = None,
     ) -> dict:
         kind = element.get("kind")
         if kind not in _VALID_KINDS:
@@ -115,13 +132,14 @@ class ProjectCanvasStore(BaseStore):
         await self._db.execute(
             """INSERT INTO project_canvas_elements
                (id, project_id, kind, author_kind, author_id,
-                x, y, w, h, rotation, z_index, payload, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                x, y, w, h, rotation, z_index, payload, element_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  kind=excluded.kind, author_kind=excluded.author_kind,
                  author_id=excluded.author_id, x=excluded.x, y=excluded.y,
                  w=excluded.w, h=excluded.h, rotation=excluded.rotation,
                  z_index=excluded.z_index, payload=excluded.payload,
+                 element_id=excluded.element_id,
                  updated_at=excluded.updated_at""",
             (
                 eid, project_id, kind, author_kind, author_id,
@@ -130,6 +148,7 @@ class ProjectCanvasStore(BaseStore):
                 float(element.get("rotation", 0)),
                 int(element.get("z_index", 0)),
                 json.dumps(element.get("payload") or {}),
+                element_id,
                 now, now,
             ),
         )
@@ -138,13 +157,30 @@ class ProjectCanvasStore(BaseStore):
         await self._publish(project_id, "canvas.element_added", {"element": new_el})
         return new_el
 
-    async def list_elements(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
-            """SELECT * FROM project_canvas_elements
-               WHERE project_id = ? AND deleted_at IS NULL
-               ORDER BY z_index ASC, created_at ASC""",
-            (project_id,),
-        ) as cur:
+    async def list_elements(
+        self,
+        project_id: str,
+        element_id: "str | None" = None,
+    ) -> list[dict]:
+        """Canvas items for a project, optionally scoped to one element.
+
+        ``element_id`` follows the same conventions as task filtering:
+        ``None`` returns every (non-deleted) item, ``"none"`` returns only
+        untagged items (``element_id IS NULL``), and any other string returns
+        items tagged with that element id.
+        """
+        sql = (
+            "SELECT * FROM project_canvas_elements "
+            "WHERE project_id = ? AND deleted_at IS NULL"
+        )
+        params: list = [project_id]
+        if element_id == "none":
+            sql += " AND element_id IS NULL"
+        elif element_id is not None:
+            sql += " AND element_id = ?"
+            params.append(element_id)
+        sql += " ORDER BY z_index ASC, created_at ASC"
+        async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_element(r, desc) for r in rows]

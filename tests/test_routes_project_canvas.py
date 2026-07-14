@@ -154,6 +154,74 @@ async def test_create_user_shape_element_returns_201(client):
 
 
 # ---------------------------------------------------------------------------
+# Slice 4: element scoping (element_id tag + list filter).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_note_with_element_id_returns_201(client):
+    body = {
+        "kind": "note",
+        "x": 0, "y": 0, "w": 100, "h": 50,
+        "payload": {"text": "tagged"},
+        "element_id": "elm-1",
+    }
+    resp = await client.post("/api/projects/proj-1/canvas/elements", json=body)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["element"]["element_id"] == "elm-1"
+
+
+@pytest.mark.asyncio
+async def test_create_note_without_element_id_is_untagged(client):
+    body = {
+        "kind": "note",
+        "x": 0, "y": 0, "w": 100, "h": 50,
+        "payload": {"text": "untagged"},
+    }
+    resp = await client.post("/api/projects/proj-1/canvas/elements", json=body)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["element"]["element_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_elements_filters_by_element_id(client):
+    tagged = (
+        await client.post(
+            "/api/projects/proj-1/canvas/elements",
+            json={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1,
+                  "payload": {"text": "t"}, "element_id": "elm-1"},
+        )
+    ).json()["element"]
+    await client.post(
+        "/api/projects/proj-1/canvas/elements",
+        json={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "u"}},
+    )
+    data = (
+        await client.get("/api/projects/proj-1/canvas/elements?element_id=elm-1")
+    ).json()
+    assert [e["id"] for e in data["elements"]] == [tagged["id"]]
+
+
+@pytest.mark.asyncio
+async def test_list_elements_none_sentinel_returns_untagged(client):
+    await client.post(
+        "/api/projects/proj-1/canvas/elements",
+        json={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1,
+              "payload": {"text": "t"}, "element_id": "elm-1"},
+    )
+    untagged = (
+        await client.post(
+            "/api/projects/proj-1/canvas/elements",
+            json={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "u"}},
+        )
+    ).json()["element"]
+    data = (
+        await client.get("/api/projects/proj-1/canvas/elements?element_id=none")
+    ).json()
+    assert [e["id"] for e in data["elements"]] == [untagged["id"]]
+
+
+# ---------------------------------------------------------------------------
 # Ideas-board kinds (#68): text, mermaid, flowchart, mindmap_edge.
 # Content travels in the free-form payload, so each just needs to round-trip.
 # ---------------------------------------------------------------------------

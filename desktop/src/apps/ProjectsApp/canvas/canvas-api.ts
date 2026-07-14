@@ -22,6 +22,7 @@ export interface CanvasElement {
   rotation: number;
   z_index: number;
   payload: Record<string, unknown>;
+  element_id: string | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -37,6 +38,7 @@ export interface CanvasElementInput {
   rotation?: number;
   z_index?: number;
   payload: Record<string, unknown>;
+  element_id?: string | null;
 }
 
 async function jsonOrThrow<T>(r: Response): Promise<T> {
@@ -48,8 +50,9 @@ async function jsonOrThrow<T>(r: Response): Promise<T> {
 }
 
 export const canvasApi = {
-  async listElements(projectId: string): Promise<CanvasElement[]> {
-    const r = await fetch(`/api/projects/${projectId}/canvas/elements`);
+  async listElements(projectId: string, elementId?: string | null): Promise<CanvasElement[]> {
+    const qs = elementId != null ? `?element_id=${encodeURIComponent(elementId)}` : "";
+    const r = await fetch(`/api/projects/${projectId}/canvas/elements${qs}`);
     const body = await jsonOrThrow<{ elements: CanvasElement[] }>(r);
     return body.elements;
   },

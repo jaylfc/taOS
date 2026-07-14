@@ -332,13 +332,20 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
             )}
           </>
         )}
-        {tab === "canvas" && <CanvasView projectId={project.id} projectSlug={project.slug} />}
+        {tab === "canvas" && (
+          <CanvasView
+            projectId={project.id}
+            projectSlug={project.slug}
+            elementId={scopedElementId}
+          />
+        )}
         {tab === "tasks" && <ProjectTaskList projectId={project.id} />}
         {tab === "files" && (
           <FilesApp
-            key={project.id}
+            key={scopedElement ? `project-files-${project.id}-${scopedElement.slug}` : `project-files-${project.id}`}
             windowId={`project-files-${project.id}`}
             rootPath={`project:${project.slug}`}
+            path={scopedElement?.slug}
           />
         )}
         {tab === "messages" && (

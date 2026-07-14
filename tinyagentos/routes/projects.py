@@ -16,7 +16,11 @@ from tinyagentos.agent_token_auth import (
     check_agent_scope_for_project,
 )
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
-from tinyagentos.projects.folders import ensure_project_layout, write_project_yaml
+from tinyagentos.projects.folders import (
+    ensure_element_folder,
+    ensure_project_layout,
+    write_project_yaml,
+)
 from tinyagentos.projects.task_store import _ELEMENT_CLEAR
 
 logger = logging.getLogger(__name__)
@@ -1087,11 +1091,13 @@ class UpdateElementIn(BaseModel):
 
 def _ensure_element_folder(request: Request, project: dict, element: dict) -> None:
     """Best-effort files subfolder for the element. The DB row is authoritative;
-    a disk failure must never block the element creation."""
+    a disk failure must never block the element creation. If a folder with the
+    element's slug already exists (a user-made folder), it is adopted rather
+    than overwritten, matching the design doc's adopt-existing semantics."""
     try:
-        root = request.app.state.projects_root
-        d = root / project["slug"] / "files" / element["slug"]
-        d.mkdir(parents=True, exist_ok=True)
+        ensure_element_folder(
+            request.app.state.projects_root, project["slug"], element["slug"]
+        )
     except Exception as exc:
         logger.warning(
             "element files folder create failed for %s/%s: %s",

@@ -41,12 +41,15 @@ class CreateElementIn(BaseModel):
     z_index: int = 0
     payload: dict = Field(default_factory=dict)
     id: str | None = None
+    element_id: str | None = None
 
 
 @router.get("/api/projects/{project_id}/canvas/elements")
-async def list_canvas_elements(project_id: str, request: Request):
+async def list_canvas_elements(
+    project_id: str, request: Request, element_id: str | None = None,
+):
     cs = request.app.state.project_canvas_store
-    elements = await cs.list_elements(project_id)
+    elements = await cs.list_elements(project_id, element_id=element_id)
     return {"elements": elements}
 
 
@@ -56,6 +59,7 @@ async def create_canvas_element(
 ):
     cs = request.app.state.project_canvas_store
     element = payload.model_dump()
+    element_id = element.pop("element_id", None)
     if element["kind"] == "link":
         url = (element.get("payload") or {}).get("url")
         if not url:
@@ -66,6 +70,7 @@ async def create_canvas_element(
         new_el = await cs.add_element(
             project_id=project_id, element=element,
             author_kind="user", author_id=_user_id(request),
+            element_id=element_id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)

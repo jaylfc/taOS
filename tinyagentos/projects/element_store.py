@@ -225,7 +225,16 @@ class ProjectElementStore(BaseStore):
                 "UPDATE project_tasks SET element_id = NULL WHERE element_id = ?",
                 (element_id,),
             )
-            # Canvas untag lands with the canvas element_id column (slice 4).
+            # Canvas untag (slice 4). Tolerates a not-yet-initialized canvas
+            # table the same way count_element_items does, so deleting an
+            # element never fails just because the canvas store has not run.
+            try:
+                await self._db.execute(
+                    "UPDATE project_canvas_elements SET element_id = NULL WHERE element_id = ?",
+                    (element_id,),
+                )
+            except sqlite3.OperationalError:
+                pass
         await self._db.execute(
             "DELETE FROM project_elements WHERE id = ?", (element_id,)
         )
