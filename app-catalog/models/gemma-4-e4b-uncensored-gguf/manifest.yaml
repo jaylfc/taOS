@@ -1,0 +1,54 @@
+id: gemma-4-e4b-uncensored-gguf
+name: Gemma 4 E4B Uncensored (GGUF)
+type: model
+version: 4.0.0
+description: "Google Gemma 4 E4B (~7.5B raw / 4B effective via PLE), abliterated/uncensored GGUF (no refusals, original Google behaviour). Natively multimodal: text, image, video and audio in one model (mmproj needed for vision/audio). CPU/llama.cpp + Ollama path only; does NOT run on the Hailo NPU."
+homepage: https://huggingface.co/mradermacher/gemma-4-E4B-it-uncensored-GGUF
+license: "Gemma Terms of Use"
+capabilities: [chat, tool-calling, vision, audio]
+context_window: 131072
+
+variants:
+  - id: q4_k_m
+    name: "Q4_K_M GGUF (5.3GB)"
+    format: gguf
+    size_mb: 5470
+    download_url: https://huggingface.co/mradermacher/gemma-4-E4B-it-uncensored-GGUF/resolve/main/gemma-4-E4B-it-uncensored.Q4_K_M.gguf
+    # TODO: sha256 not yet resolved (xet-backed repo, no LFS pointer). Fill in before release.
+    sha256: ''
+    requires:
+      backends:
+        - id: ollama
+          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 6144
+        - id: llama-cpp
+          targets: [x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 6144
+
+  - id: q3_k_m
+    name: "Q3_K_M GGUF (4.9GB)"
+    format: gguf
+    size_mb: 4966
+    download_url: https://huggingface.co/mradermacher/gemma-4-E4B-it-uncensored-GGUF/resolve/main/gemma-4-E4B-it-uncensored.Q3_K_M.gguf
+    # TODO: sha256 not yet resolved (xet-backed repo, no LFS pointer). Fill in before release.
+    sha256: ''
+    requires:
+      backends:
+        - id: ollama
+          targets: [apple-silicon, x86-cuda, x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 6144
+        - id: llama-cpp
+          targets: [x86-vulkan, arm-vulkan, cpu]
+          min_ram_mb: 6144
+
+hardware_tiers:
+  arm-npu-16gb: {recommended: q4_k_m}
+  arm-npu-32gb: {recommended: q4_k_m}
+  apple-silicon: {recommended: q4_k_m}
+  x86-cuda-12gb: {recommended: q4_k_m}
+  x86-vulkan-8gb: {recommended: q4_k_m}
+  x86-vulkan-16gb: {recommended: q4_k_m}
+  cpu-only: {recommended: q3_k_m}
+  arm-npu-6gb: {recommended: q3_k_m}
+  x86-cuda-6gb: {recommended: q3_k_m}
+  x86-vulkan-6gb: {recommended: q3_k_m}
