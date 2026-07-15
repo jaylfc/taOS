@@ -34,6 +34,7 @@ import { ContextMenu, type MenuItem } from "@/components/ContextMenu";
 import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
+import { projectsApi, type DocReviewState } from "@/lib/projects";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 
 /* ------------------------------------------------------------------ */
@@ -297,6 +298,31 @@ function getFileIcon(name: string, isDir: boolean) {
   return EXT_ICONS[ext] ?? File;
 }
 
+const REVIEW_BADGE_STYLES: Record<string, string> = {
+  approved: "bg-emerald-500/15 text-emerald-400 border-emerald-500/20",
+  changes_requested: "bg-amber-500/15 text-amber-400 border-amber-500/20",
+  awaiting_review: "bg-zinc-500/10 text-zinc-400 border-zinc-500/15",
+};
+
+const REVIEW_BADGE_LABEL: Record<string, string> = {
+  approved: "Approved",
+  changes_requested: "Changes requested",
+  awaiting_review: "Awaiting review",
+};
+
+function ReviewBadge({ state }: { state: string | null }) {
+  if (!state) return null;
+  const style = REVIEW_BADGE_STYLES[state] ?? REVIEW_BADGE_STYLES.awaiting_review;
+  return (
+    <span
+      className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${style}`}
+      title={REVIEW_BADGE_LABEL[state] ?? state}
+    >
+      {REVIEW_BADGE_LABEL[state] ?? state}
+    </span>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  API helpers                                                        */
 /* ------------------------------------------------------------------ */
@@ -329,6 +355,7 @@ interface FileRowProps {
   setDeleteConfirm: (path: string | null) => void;
   onContextMenu: (e: React.MouseEvent, f: FileEntry) => void;
   isCut: boolean;
+  reviewState: string | null;
 }
 
 function FileRow({
@@ -342,6 +369,7 @@ function FileRow({
   setDeleteConfirm,
   onContextMenu,
   isCut,
+  reviewState,
 }: FileRowProps) {
   const Icon = getFileIcon(f.name, f.is_dir);
   const relPath = f.path || (currentPath ? `${currentPath}/${f.name}` : f.name);
@@ -409,6 +437,11 @@ function FileRow({
       </td>
       <td className="px-3 py-2 text-shell-text-tertiary">
         {formatDate(f.modified)}
+      </td>
+      <td className="px-3 py-2">
+        {!f.is_dir && isProjectLocation(location) && (
+          <ReviewBadge state={reviewState} />
+        )}
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-1">
@@ -502,8 +535,32 @@ export function FilesApp({
   const [workspaceTrashLoading, setWorkspaceTrashLoading] = useState(false);
   const [workspaceTrashError, setWorkspaceTrashError] = useState<string | null>(null);
 
+  // Doc-review stamp state (project: locations only)
+  const [reviewStates, setReviewStates] = useState<Record<string, string | null>>({});
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
+
+  const fetchReviewStates = useCallback(async (loc: string, path: string) => {
+    if (!isProjectLocation(loc)) {
+      setReviewStates({});
+      return;
+    }
+    const pid = projectSlug(loc);
+    const prefix = path ? `${path}/` : "";
+    try {
+      const data = await apiFetch<{ items: Array<{ doc_path: string; review_state: string }> }>(
+        `/api/projects/${encodeURIComponent(pid)}/doc-reviews`,
+      );
+      const map: Record<string, string | null> = {};
+      for (const item of (data.items ?? [])) {
+        map[`${prefix}${item.doc_path}`] = item.review_state;
+      }
+      setReviewStates(map);
+    } catch {
+      setReviewStates({});
+    }
+  }, []);
 
   // Workspace locations (user + per-agent + project) allow mutations and the stats
   // endpoint. Shared folders and the recycle bin are read-only here.
@@ -610,6 +667,11 @@ export function FilesApp({
       .then(setStats)
       .catch(() => setStats(null));
   }, [location]);
+
+  // Refresh doc-review badges whenever we navigate within a project location.
+  useEffect(() => {
+    fetchReviewStates(location, currentPath);
+  }, [location, currentPath, fetchReviewStates]);
 
   /* ---- Recycle bin ---- */
   const fetchRecycle = useCallback(async () => {
@@ -722,9 +784,10 @@ export function FilesApp({
       await apiFetch("/api/workspace/trash", { method: "DELETE" });
       fetchWorkspaceTrash();
     } catch (e: unknown) {
-      setWorkspaceTrashError(e instanceof Error ? e.message : "Empty trash failed");
+      const msg = e instanceof Error ? e.message : "Empty trash failed";
+      setError(msg);
     }
-  }, [fetchWorkspaceTrash, workspaceTrashItems.length]);
+  }, [workspaceTrashItems.length, fetchWorkspaceTrash]);
 
   /* ---- Actions ---- */
   const handleNewFolder = useCallback(async () => {
@@ -1602,6 +1665,9 @@ export function FilesApp({
                   <span className="text-xs truncate w-full leading-tight" title={f.name}>
                     {f.name}
                   </span>
+                  {!f.is_dir && isProjectLocation(location) && (
+                    <ReviewBadge state={reviewStates[f.path || f.name] ?? null} />
+                  )}
                   {!f.is_dir && (
                     <span className="text-[10px] text-shell-text-tertiary">{formatSize(f.size)}</span>
                   )}
@@ -1656,6 +1722,7 @@ export function FilesApp({
                 <th className="px-3 py-2 font-medium">Name</th>
                 <th className="px-3 py-2 font-medium w-24">Size</th>
                 <th className="px-3 py-2 font-medium w-32">Modified</th>
+                <th className="px-3 py-2 font-medium w-28">Review</th>
                 <th className="px-3 py-2 font-medium w-16">Actions</th>
               </tr>
             </thead>
@@ -1677,6 +1744,11 @@ export function FilesApp({
                     setMenu({ x: e.clientX, y: e.clientY, file });
                   }}
                   isCut={clipboard?.mode === "cut" && clipboard.location === location && clipboard.path === f.path}
+                  reviewState={
+                    !f.is_dir && isProjectLocation(location)
+                      ? reviewStates[f.path || f.name] ?? null
+                      : null
+                  }
                 />
               ))}
             </tbody>

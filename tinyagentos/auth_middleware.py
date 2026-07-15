@@ -63,6 +63,26 @@ def _is_agent_task_path(method: str, path: str) -> bool:
     """True only for the exact subset of task routes a project_tasks token may
     reach.  Strict method + anchored-regex match; everything else is excluded."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_TASK_ROUTES)
+
+
+# Project doc-review stamp store routes an agent may reach with its own registry
+# JWT (scope project_doc_review, verified + project-bound by the route).  These
+# are DYNAMIC paths (/api/projects/{pid}/doc-review/...), so a (method,
+# compiled-regex) allowlist is used.  The single-doc path is `path`-typed:
+# doc_path may contain slashes (e.g. src/foo.md), so the final segment is `(.+)`
+# rather than the slash-free `[^/]+` used for the task routes.  Same contract as
+# the task allowlist: the token only reaches the handler, which then verifies
+# the JWT + grant + project binding; nothing else is reachable by the token.
+_AGENT_DOC_REVIEW_ROUTES = (
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/doc-reviews$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/doc-review/(.+)$")),
+    ("PUT", re.compile(rf"^/api/projects/{_SEG}/doc-review/(.+)$")),
+)
+
+
+def _is_agent_doc_review_path(method: str, path: str) -> bool:
+    """True only for the doc-review routes a project_doc_review token may reach."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_DOC_REVIEW_ROUTES)
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -255,6 +275,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if (
             path in _AGENT_TOKEN_PATHS
             or _is_agent_task_path(request.method, path)
+            or _is_agent_doc_review_path(request.method, path)
         ) and auth_header.lower().startswith("bearer "):
             request.state.user_id = None
             request.state.is_admin = False

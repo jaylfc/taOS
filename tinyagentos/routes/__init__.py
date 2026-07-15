@@ -55,6 +55,9 @@ def register_all_routers(app):
     from tinyagentos.routes import projects as projects_routes
     app.include_router(projects_routes.router)
 
+    from tinyagentos.routes.project_doc_review import router as project_doc_review_router
+    app.include_router(project_doc_review_router)
+
     from tinyagentos.routes import routines as routines_routes
     app.include_router(routines_routes.router)
 
@@ -159,6 +162,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.project_canvas import router as project_canvas_router
     app.include_router(project_canvas_router)
+
+    from tinyagentos.routes.project_doc_review import router as project_doc_review_router
+    app.include_router(project_doc_review_router)
 
     from tinyagentos.routes.desktop_control import router as desktop_control_router
     app.include_router(desktop_control_router)

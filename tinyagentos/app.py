@@ -370,6 +370,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.projects.events import ProjectEventBroker
     from tinyagentos.projects.canvas.store import ProjectCanvasStore as ProjectCanvasStoreImpl
     from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
+    from tinyagentos.projects.doc_review_store import DocReviewStore
     project_store = ProjectStore(data_dir / "projects.db")
     project_event_broker = ProjectEventBroker()
     from tinyagentos.desktop_control import DesktopCommandBroker
@@ -388,6 +389,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.projects.routines_store import RoutineStore
     routine_store = RoutineStore(data_dir / "routines.db")
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
+    doc_review_store = DocReviewStore(data_dir / "projects.db")
     from tinyagentos.decisions.decision_store import DecisionStore
     decision_store = DecisionStore(data_dir / "decisions.db")
     from tinyagentos.governance.policy_store import ExecutionPolicyStore
@@ -517,6 +519,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await routine_store.init()
         app.state.routine_store = routine_store
         await project_canvas_store.init()
+        await doc_review_store.init()
         await decision_store.init()
         app.state.decision_store = decision_store
         await execution_policy_store.init()
@@ -834,6 +837,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.project_event_broker = project_event_broker
         app.state.desktop_command_broker = desktop_command_broker
         app.state.project_canvas_store = project_canvas_store
+        app.state.doc_review_store = doc_review_store
         app.state.decision_store = decision_store
         app.state.shared_docs_store = shared_docs_store
         app.state.coding_session_store = coding_session_store
@@ -1415,6 +1419,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             except Exception:
                 logger.exception("canvas snapshotter stop failed")
         await project_canvas_store.close()
+        await doc_review_store.close()
         await project_task_store.close()
         await project_element_store.close()
         await routine_store.close()
@@ -1572,6 +1577,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker
     app.state.project_canvas_store = project_canvas_store
+    app.state.doc_review_store = doc_review_store
     app.state.decision_store = decision_store
     app.state.execution_policies = execution_policy_store
     app.state.shared_docs_store = shared_docs_store
