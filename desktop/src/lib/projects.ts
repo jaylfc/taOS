@@ -78,21 +78,6 @@ export type ProjectActivity = {
   created_at: number;
 };
 
-export type DocReviewState = "awaiting_review" | "approved" | "changes_requested";
-
-export type DocReview = {
-  id: string;
-  project_id: string;
-  doc_path: string;
-  review_state: DocReviewState | null;
-  reviewed_by: string | null;
-  reviewed_at: number | null;
-  changes_requested_by: string | null;
-  changes_requested_at: number | null;
-  created_at: number;
-  updated_at: number;
-};
-
 export type ProjectComment = {
   id: string;
   task_id: string;
@@ -363,37 +348,19 @@ export const projectsApi = {
     http<{ items: ProjectActivity[] }>(`/api/projects/${pid}/activity`).then((r) => r.items),
 
   docReviews: {
-    list: (pid: string, state?: DocReviewState) =>
-      http<{ items: DocReview[] }>(
-        `/api/projects/${encodeURIComponent(pid)}/doc-reviews${
-          state ? `?state=${state}` : ""
-        }`,
-      ).then((r) => r.items),
-    get: (pid: string, docPath: string) =>
-      http<DocReview>(
-        `/api/projects/${encodeURIComponent(pid)}/doc-review/${encodeURIComponent(docPath)}`,
-      ),
-    set: (pid: string, docPath: string, state: DocReviewState) =>
-      http<DocReview>(
-        `/api/projects/${encodeURIComponent(pid)}/doc-review/${encodeURIComponent(docPath)}`,
-        { method: "PUT", body: JSON.stringify({ state }) },
-      ),
-  },
-
-  docReview: {
-    get: (pid: string, docPath: string) =>
-      http<{ project_id: string; doc_path: string; review_state: string | null }>(
-        `/api/projects/${pid}/doc-review/${encodeURIComponent(docPath)}`,
-      ),
-    setState: (pid: string, docPath: string, state: string) =>
-      http<{ project_id: string; doc_path: string; review_state: string; reviewed_by: string | null; reviewed_at: number | null; changes_requested_by: string | null; changes_requested_at: number | null }>(
-        `/api/projects/${pid}/doc-review/${encodeURIComponent(docPath)}`,
-        { method: "PUT", body: JSON.stringify({ state }) },
-      ),
     list: (pid: string, state?: string) =>
-      http<{ items: Array<{ project_id: string; doc_path: string; review_state: string; reviewed_by: string | null; reviewed_at: number | null; changes_requested_by: string | null; changes_requested_at: number | null }> }>(
-        `/api/projects/${pid}/doc-reviews${state ? `?state=${encodeURIComponent(state)}` : ""}`,
+      http<{ items: DocReview[] }>(
+        `/api/projects/${encodeURIComponent(pid)}/doc-reviews${state ? `?state=${encodeURIComponent(state)}` : ""}`,
       ).then((r) => r.items),
+    get: (pid: string, docPath: string) =>
+      http<DocReview | DocReviewMissing>(
+        `/api/projects/${encodeURIComponent(pid)}/doc-review/${encodeURIComponent(docPath)}`,
+      ),
+    set: (pid: string, docPath: string, state: string) =>
+      http<DocReview>(
+        `/api/projects/${encodeURIComponent(pid)}/doc-review/${encodeURIComponent(docPath)}`,
+        { method: "PUT", body: JSON.stringify({ state }) },
+      ),
   },
 
   subscribeEvents(projectId: string, onEvent: (ev: ProjectEvent) => void): () => void {

@@ -310,15 +310,34 @@ const REVIEW_BADGE_LABEL: Record<string, string> = {
   awaiting_review: "Awaiting review",
 };
 
-function ReviewBadge({ state }: { state: string | null }) {
+function ReviewBadge({
+  state,
+  onClick,
+}: {
+  state: string | null;
+  onClick?: () => void;
+}) {
   if (!state) return null;
   const style = REVIEW_BADGE_STYLES[state] ?? REVIEW_BADGE_STYLES.awaiting_review;
+  const label = REVIEW_BADGE_LABEL[state] ?? state;
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={`Review state: ${label} (click to change)`}
+        className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${style} hover:brightness-125 transition`}
+      >
+        {label}
+      </button>
+    );
+  }
   return (
     <span
       className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full border ${style}`}
-      title={REVIEW_BADGE_LABEL[state] ?? state}
+      title={`Review state: ${label}`}
     >
-      {REVIEW_BADGE_LABEL[state] ?? state}
+      {label}
     </span>
   );
 }
@@ -356,6 +375,7 @@ interface FileRowProps {
   onContextMenu: (e: React.MouseEvent, f: FileEntry) => void;
   isCut: boolean;
   reviewState: string | null;
+  onDocReviewClick?: () => void;
 }
 
 function FileRow({
@@ -370,6 +390,7 @@ function FileRow({
   onContextMenu,
   isCut,
   reviewState,
+  onDocReviewClick,
 }: FileRowProps) {
   const Icon = getFileIcon(f.name, f.is_dir);
   const relPath = f.path || (currentPath ? `${currentPath}/${f.name}` : f.name);
@@ -440,7 +461,7 @@ function FileRow({
       </td>
       <td className="px-3 py-2">
         {!f.is_dir && isProjectLocation(location) && (
-          <ReviewBadge state={reviewState} />
+          <ReviewBadge state={reviewState} onClick={onDocReviewClick} />
         )}
       </td>
       <td className="px-3 py-2">
@@ -541,26 +562,43 @@ export function FilesApp({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
 
-  const fetchReviewStates = useCallback(async (loc: string, path: string) => {
+  const fetchReviewStates = useCallback(async (loc: string) => {
     if (!isProjectLocation(loc)) {
       setReviewStates({});
       return;
     }
     const pid = projectSlug(loc);
-    const prefix = path ? `${path}/` : "";
     try {
-      const data = await apiFetch<{ items: Array<{ doc_path: string; review_state: string }> }>(
-        `/api/projects/${encodeURIComponent(pid)}/doc-reviews`,
-      );
+      const items = await projectsApi.docReviews.list(pid);
       const map: Record<string, string | null> = {};
-      for (const item of (data.items ?? [])) {
-        map[`${prefix}${item.doc_path}`] = item.review_state;
+      for (const item of items) {
+        if (item.review_state) map[item.doc_path] = item.review_state;
       }
       setReviewStates(map);
     } catch {
       setReviewStates({});
     }
   }, []);
+
+  const cycleDocReview = useCallback(
+    async (docPath: string, current: string | null) => {
+      if (!isProjectLocation(location)) return;
+      const pid = projectSlug(location);
+      const order: DocReviewState[] = ["awaiting_review", "approved", "changes_requested"];
+      const idx = current ? order.indexOf(current as DocReviewState) : 0;
+      const next = order[(idx + 1) % order.length]!;
+      try {
+        await projectsApi.docReviews.set(pid, docPath, next);
+        setReviewStates((prev) => {
+          const nextMap: Record<string, string | null> = { ...prev, [docPath]: next };
+          return nextMap;
+        });
+      } catch {
+        /* write rejected (forbidden / offline): keep the current stamp */
+      }
+    },
+    [location],
+  );
 
   // Workspace locations (user + per-agent + project) allow mutations and the stats
   // endpoint. Shared folders and the recycle bin are read-only here.
@@ -668,10 +706,10 @@ export function FilesApp({
       .catch(() => setStats(null));
   }, [location]);
 
-  // Refresh doc-review badges whenever we navigate within a project location.
+  // Refresh doc-review badges whenever we switch project locations.
   useEffect(() => {
-    fetchReviewStates(location, currentPath);
-  }, [location, currentPath, fetchReviewStates]);
+    fetchReviewStates(location);
+  }, [location, fetchReviewStates]);
 
   /* ---- Recycle bin ---- */
   const fetchRecycle = useCallback(async () => {
@@ -1666,7 +1704,18 @@ export function FilesApp({
                     {f.name}
                   </span>
                   {!f.is_dir && isProjectLocation(location) && (
-                    <ReviewBadge state={reviewStates[f.path || f.name] ?? null} />
+                    <ReviewBadge
+                      state={reviewStates[f.path || f.name] ?? null}
+                      onClick={
+                        isProjectLocation(location)
+                          ? () =>
+                              cycleDocReview(
+                                f.path || f.name,
+                                reviewStates[f.path || f.name] ?? null,
+                              )
+                          : undefined
+                      }
+                    />
                   )}
                   {!f.is_dir && (
                     <span className="text-[10px] text-shell-text-tertiary">{formatSize(f.size)}</span>
@@ -1748,6 +1797,11 @@ export function FilesApp({
                     !f.is_dir && isProjectLocation(location)
                       ? reviewStates[f.path || f.name] ?? null
                       : null
+                  }
+                  onDocReviewClick={
+                    !f.is_dir && isProjectLocation(location)
+                      ? () => cycleDocReview(f.path || f.name, reviewStates[f.path || f.name] ?? null)
+                      : undefined
                   }
                 />
               ))}
