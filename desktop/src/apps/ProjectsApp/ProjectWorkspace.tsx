@@ -24,6 +24,17 @@ import styles from "./ProjectsApp.module.css";
 export type Tab = "workspace" | "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity" | "decisions" | "routines";
 const TABS: Tab[] = ["workspace", "board", "canvas", "tasks", "files", "messages", "members", "activity", "decisions", "routines"];
 
+function isTab(value: string | undefined): value is Tab {
+  return value != null && (TABS as string[]).includes(value);
+}
+
+// The directory a deep-linked file lives in, used to open the Files tab in the
+// right folder. "docs/plan.md" -> "docs"; a root-level file -> "".
+function dirOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
+
 interface AgentSummary {
   id: string;
   name: string;
@@ -58,9 +69,9 @@ function setElementParam(elementId: string | null) {
   window.history.pushState({}, "", url);
 }
 
-export function ProjectWorkspace({ project, onChanged }: { project: Project; onChanged: () => void }) {
+export function ProjectWorkspace({ project, onChanged, initialTab, filePath }: { project: Project; onChanged: () => void; initialTab?: string; filePath?: string }) {
   const isMobile = useIsMobile();
-  const [tab, setTab] = useState<Tab>("workspace");
+  const [tab, setTab] = useState<Tab>(() => (isTab(initialTab) ? initialTab : "workspace"));
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(() => readTaskParam());
@@ -70,6 +81,17 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
   const [elements, setElements] = useState<ProjectElement[]>([]);
   const [activeElementId, setActiveElementId] = useState<string | null>(() => readElementParam());
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  // The deep-linked document (from a notification target). Threaded into the
+  // Files tab so a review link lands on the right document.
+  const [deepFilePath, setDeepFilePath] = useState<string | null>(filePath ?? null);
+
+  // Deep-link launch props arrive both on first mount and, for an already-open
+  // Projects window, on a prop merge that bumps the window launchNonce. React to
+  // the merged props so a notification click navigates the workspace in place.
+  useEffect(() => {
+    if (isTab(initialTab)) setTab(initialTab);
+    if (filePath) setDeepFilePath(filePath);
+  }, [initialTab, filePath]);
 
   const handleCreateTask = async ({ title }: { title: string }) => {
     await projectsApi.tasks.create(project.id, { title });
@@ -342,10 +364,16 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         {tab === "tasks" && <ProjectTaskList projectId={project.id} />}
         {tab === "files" && (
           <FilesApp
-            key={scopedElement ? `project-files-${project.id}-${scopedElement.slug}` : `project-files-${project.id}`}
+            key={
+              scopedElement
+                ? `project-files-${project.id}-${scopedElement.slug}`
+                : deepFilePath
+                  ? `project-files-${project.id}-${deepFilePath}`
+                  : `project-files-${project.id}`
+            }
             windowId={`project-files-${project.id}`}
             rootPath={`project:${project.slug}`}
-            path={scopedElement?.slug}
+            path={scopedElement?.slug ?? (deepFilePath ? dirOf(deepFilePath) : undefined)}
           />
         )}
         {tab === "messages" && (
