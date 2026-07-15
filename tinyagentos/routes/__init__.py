@@ -385,3 +385,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.receipts import router as receipts_router
     app.include_router(receipts_router)
+
+    from tinyagentos.routes.council import router as council_router
+    app.include_router(council_router)

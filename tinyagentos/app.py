@@ -295,6 +295,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     score_cache = ScoreCache(benchmark_store, poll_interval_seconds=15.0)
     scheduler_history_store = HistoryStore(data_dir / "scheduler_history.db")
 
+    from tinyagentos.council.role_registry import RoleRegistry
+    from tinyagentos.council.member_store import MemberStore
+    council_role_registry = RoleRegistry(data_dir / "council.db")
+    council_member_store = MemberStore(data_dir / "council.db")
+
     async def _probe_backend(backend: dict) -> dict:
         return await check_backend_health(http_client, backend)
 
@@ -631,6 +636,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         await benchmark_store.init()
         await scheduler_history_store.init()
+        await council_role_registry.init()
+        await council_member_store.init()
         app.state.config = config
         app.state.config_path = config_path
         app.state.data_dir = data_dir
@@ -867,6 +874,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.benchmark_store = benchmark_store
         app.state.score_cache = score_cache
         app.state.scheduler_history_store = scheduler_history_store
+        app.state.council_roles = council_role_registry
+        app.state.council_members = council_member_store
         orchestrator = RestartOrchestrator(app.state)
         app.state.orchestrator = orchestrator
         # Boot-time: check if a pending restart was applied successfully
@@ -1637,6 +1646,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.license_acceptances = license_acceptances_store
     app.state.cluster_pairing = cluster_pairing_store
     app.state.capability_map = capability_map_store
+    app.state.council_roles = council_role_registry
+    app.state.council_members = council_member_store
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:

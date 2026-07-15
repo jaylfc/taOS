@@ -380,6 +380,14 @@ async def client(app, tmp_data_dir):
     if device_store._db is not None:
         await device_store.close()
     await device_store.init()
+    council_roles = app.state.council_roles
+    if council_roles._db is not None:
+        await council_roles.close()
+    await council_roles.init()
+    council_members = app.state.council_members
+    if council_members._db is not None:
+        await council_members.close()
+    await council_members.init()
     # BrowserApp v2 stores
     from tinyagentos.routes.desktop_browser.store import BrowserStore, BrowserCookieStore
     _browser_store = BrowserStore(tmp_data_dir / "browser.sqlite3")
@@ -445,6 +453,8 @@ async def client(app, tmp_data_dir):
     await app.state.http_client.aclose()
     await _browser_store.close()
     await _browser_cookie_store.close()
+    await app.state.council_roles.close()
+    await app.state.council_members.close()
 
 
 def create_test_qmd_db(db_path):
