@@ -35,6 +35,7 @@ import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
+import { DocViewer } from "@/apps/ProjectsApp/files/DocViewer";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -490,6 +491,11 @@ export function FilesApp({
   >(null);
   // Context menu anchor + payload. file === null targets the empty list area.
   const [menu, setMenu] = useState<{ x: number; y: number; file: FileEntry | null } | null>(null);
+
+  // In-app markdown reader: set when a .md/.markdown file is opened from a
+  // project: location, replacing the window.open download behaviour. Cleared
+  // by DocViewer's Close affordance.
+  const [docViewer, setDocViewer] = useState<{ url: string; title: string } | null>(null);
 
   // Recycle bin (per-agent container trash-cli)
   const [recycleItems, setRecycleItems] = useState<RecycleItem[]>([]);
@@ -1691,7 +1697,15 @@ export function FilesApp({
   const openFile = useCallback((f: FileEntry) => {
     if (f.is_dir) {
       navigateTo(f.path || (currentPath ? `${currentPath}/${f.name}` : f.name));
-    } else if (isWritable) {
+      return;
+    }
+    const lowerName = f.name.toLowerCase();
+    const isMarkdown = lowerName.endsWith(".md") || lowerName.endsWith(".markdown");
+    if (isMarkdown && isProjectLocation(location)) {
+      setDocViewer({ url: fileUrl(location, f.path || f.name), title: f.name });
+      return;
+    }
+    if (isWritable) {
       window.open(fileUrl(location, f.path || f.name), "_blank");
     }
   }, [navigateTo, currentPath, isWritable, location]);
@@ -1761,6 +1775,16 @@ export function FilesApp({
   };
 
   /* ---- Root layout ---- */
+  if (docViewer) {
+    return (
+      <DocViewer
+        url={docViewer.url}
+        title={docViewer.title}
+        onClose={() => setDocViewer(null)}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full bg-shell-bg text-shell-text text-sm overflow-hidden">
       <MobileSplitView
