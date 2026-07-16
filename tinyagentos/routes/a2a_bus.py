@@ -28,8 +28,10 @@ import logging
 import os
 
 import httpx
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from tinyagentos.agent_token_auth import check_agent_scope
@@ -39,6 +41,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _DEFAULT_BUS_URL = "http://127.0.0.1:7900"
+
+# Idle-stream heartbeat so intermediaries (and the taOSgo relay) do not reap a
+# quiet SSE connection. The design mandates a `: ping` comment every 25s.
+_STREAM_HEARTBEAT_SEC = 25
 
 
 def _bus_url() -> str:
@@ -95,27 +101,37 @@ async def bus_channels(request: Request):
 
 
 @router.get("/api/a2a/bus/messages")
-async def bus_messages(request: Request, channel: str = "", limit: int = 100):
+async def bus_messages(
+    request: Request,
+    channel: str = "",
+    limit: int = 100,
+    since: float | None = None,
+):
     """Read messages from one bus channel, oldest-first as the bus returns them.
 
     Authorized readers: an admin session, the host local token, or an active
     agent registry JWT holding the ``a2a_receive`` scope.
 
     ``channel`` is required and maps to the bus ``thread`` query param. ``limit``
-    is clamped to 1..500. On a bus error this returns an empty list with
-    ``available: false`` and HTTP 200.
+    is clamped to 1..500. ``since`` is forwarded verbatim to the bus as the
+    cursor (a message ``ts``); the bus replays everything after it, so an agent
+    can resume from the highest ``ts`` it has processed. On a bus error this
+    returns an empty list with ``available: false`` and HTTP 200.
     """
     await _authorize_bus_read(request)
     if not channel:
         return JSONResponse({"error": "channel required"}, status_code=400)
 
     limit = max(1, min(500, limit))
+    params: dict = {"thread": channel, "limit": limit}
+    if since is not None:
+        params["since"] = since
     bus = _bus_url()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 f"{bus}/a2a/messages",
-                params={"thread": channel, "limit": limit},
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -125,6 +141,75 @@ async def bus_messages(request: Request, channel: str = "", limit: int = 100):
 
     messages = data.get("messages", []) if isinstance(data, dict) else []
     return {"messages": messages, "available": True}
+
+
+@router.get("/api/a2a/bus/stream")
+async def bus_stream(
+    request: Request,
+    channel: str = "",
+    since: float | None = None,
+):
+    """Authenticated SSE proxy to the raw bus stream.
+
+    Mirrors the existing messages proxy's auth gate exactly: an admin session,
+    the host local token, or an active agent registry JWT holding ``a2a_receive``
+    (fail closed). It holds ONE upstream SSE connection to the bus per client and
+    relays events verbatim, injecting a ``: ping`` heartbeat comment every 25s so
+    idle streams are distinguishable from dead ones and intermediaries do not reap
+    them. The raw :7900 bus is never exposed directly: ``channel`` maps to the
+    bus ``thread`` query param and ``since`` to the bus cursor.
+    """
+    await _authorize_bus_read(request)
+    if not channel:
+        return JSONResponse({"error": "channel required"}, status_code=400)
+
+    bus = _bus_url()
+
+    async def event_stream():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "GET",
+                    f"{bus}/a2a/stream",
+                    params={"thread": channel, **({"since": since} if since is not None else {})},
+                ) as upstream:
+                    heartbeat = asyncio.create_task(
+                        _stream_sleep(_STREAM_HEARTBEAT_SEC)
+                    )
+                    try:
+                        async for line in upstream.aiter_lines():
+                            if await request.is_disconnected():
+                                break
+                            # Drain any pending heartbeat that fired while we were
+                            # forwarding real data: emit it before the next event.
+                            if heartbeat.done():
+                                heartbeat.cancel()
+                                yield ": ping\n\n"
+                                heartbeat = asyncio.create_task(
+                                    _stream_sleep(_STREAM_HEARTBEAT_SEC)
+                                )
+                            if line == "":
+                                continue
+                            yield f"{line}\n\n"
+                    finally:
+                        heartbeat.cancel()
+        except Exception as exc:  # noqa: BLE001 (surface a final SSE comment)
+            logger.warning("A2A bus stream proxy failed (%s): %s", bus, exc)
+            yield f": stream error\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _stream_sleep(secs: float) -> None:
+    """Sleep for *secs*; cancelled cleanly when a real event arrives first."""
+    await asyncio.sleep(secs)
 
 
 class BusSendBody(BaseModel):

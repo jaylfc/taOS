@@ -23,6 +23,7 @@ _REGISTRY_FEED_PATHS = frozenset({
 _A2A_BUS_READ_PATHS = frozenset({
     "/api/a2a/bus/channels",
     "/api/a2a/bus/messages",
+    "/api/a2a/bus/stream",
 })
 # Authenticated A2A bus WRITE path: an agent may POST here with its own registry
 # JWT (scope a2a_send, verified by the route, which forces the bus `from` to the
