@@ -125,6 +125,36 @@ def _rewrite_set_cookie(value: str, secure_ok: bool) -> str:
     return "; ".join(kept)
 
 
+# The local admin session cookie. The browser presents it on every same-origin
+# /api/account/* call, but it must never be relayed to the upstream taos.my: a
+# taos.my log leak or compromise would otherwise expose valid local admin
+# session tokens. Only the cookies that belong upstream are forwarded.
+_LOCAL_SESSION_COOKIE = "taos_session"
+
+
+def _strip_local_session_cookie(cookie_header: str) -> str | None:
+    """Return ``cookie_header`` with the local ``taos_session`` cookie removed.
+
+    Parses the incoming Cookie header and drops only the local session cookie,
+    preserving every other cookie (the upstream taos.my session cookie, etc.).
+    Returns ``None`` when no cookies remain, so the relayed request sends no
+    Cookie header at all. A malformed Cookie header is returned untouched rather
+    than dropping unrelated cookies.
+    """
+    kept: list[str] = []
+    for part in cookie_header.split(";"):
+        p = part.strip()
+        if not p:
+            continue
+        name = p.split("=", 1)[0].strip().lower()
+        if name == _LOCAL_SESSION_COOKIE:
+            continue
+        kept.append(p)
+    if not kept:
+        return None
+    return "; ".join(kept)
+
+
 async def _forward_to(
     request: Request, method: str, path: str, *, body: bytes | None = None
 ) -> Response:
@@ -136,7 +166,9 @@ async def _forward_to(
     headers: dict[str, str] = {}
     cookie = request.headers.get("cookie")
     if cookie:
-        headers["Cookie"] = cookie
+        relayed = _strip_local_session_cookie(cookie)
+        if relayed:
+            headers["Cookie"] = relayed
     if body is None and method == "POST":
         # Default: relay the incoming request body verbatim (slice 1/2 actions).
         body = await request.body()

@@ -176,9 +176,8 @@ async def test_cluster_join_request_forwards(client, monkeypatch):
         )
 
     _patch_upstream(monkeypatch, handler)
-    # Do NOT override the cookie header: the `client` fixture carries the taOS
-    # controller session that the /api/account/* proxy (rightly) requires, and
-    # that session cookie is what gets forwarded upstream.
+    # The `client` fixture carries the taOS controller (local admin) session
+    # cookie. It must NOT be relayed upstream: the forwarded Cookie is empty.
     r = await client.post(
         "/api/account/cluster/join/request",
         json={"device_name": "Mac", "ttl": "10m"},
@@ -187,7 +186,8 @@ async def test_cluster_join_request_forwards(client, monkeypatch):
     assert r.json()["request_id"] == "r1"
     assert captured["url"] == "https://taos.my/api/cluster/join/request"
     assert captured["method"] == "POST"
-    assert captured["cookie"]  # the session cookie was passed through
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
 
 
 @pytest.mark.asyncio
@@ -258,7 +258,8 @@ async def test_subdomains_check_forwards_name(client, monkeypatch):
     assert r.json()["available"] is True
     assert captured["url"] == "https://taos.my/api/subdomains/check?name=mybiz"
     assert captured["method"] == "GET"
-    assert captured["cookie"]  # session cookie passed through
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
 
 
 @pytest.mark.asyncio
@@ -279,12 +280,16 @@ async def test_subdomains_claim_forwards_body(client, monkeypatch):
         )
 
     _patch_upstream(monkeypatch, handler)
-    r = await client.post("/api/account/subdomains/claim", json={"name": "mybiz"})
+    r = await client.post(
+        "/api/account/subdomains/claim",
+        json={"name": "mybiz"},
+    )
     assert r.status_code == 200
     assert r.json()["name"] == "mybiz"
     assert captured["url"] == "https://taos.my/api/subdomains/claim"
     assert captured["method"] == "POST"
-    assert captured["cookie"]
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
     assert "mybiz" in captured["body"]
 
 
@@ -437,7 +442,8 @@ async def test_hub_identity_register_forwards_body(client, monkeypatch):
     assert r.json()["status"] == "registered"
     assert captured["url"] == "https://taos.my/api/hub/identity/register"
     assert captured["method"] == "POST"
-    assert captured["cookie"]  # session cookie passed through
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
     assert "signing_pubkey" in captured["body"]
 
 
@@ -555,3 +561,63 @@ async def test_hub_identity_register_503_when_upstream_unreachable(client, monke
     )
     assert r.status_code == 503
     assert "unreachable" in r.json().get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_forward_to_strips_local_session_cookie(client, monkeypatch):
+    """The proxy must NOT relay the local ``taos_session`` admin cookie upstream:
+    a taos.my log leak would otherwise expose valid local admin session tokens.
+    An upstream (taos.my) cookie in the same Cookie header IS forwarded."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(
+            content=b'{"username":"alice","status":"registered"}',
+            headers={"content-type": "application/json"},
+        )
+
+    # Build a Cookie header with the (valid) local admin session plus an upstream
+    # taos.my session cookie. The proxy receives this from the browser. We keep
+    # the real session token so the request is authenticated; the fix must strip
+    # it from what is relayed upstream while forwarding the upstream cookie.
+    session = client.cookies.get("taos_session", "")
+    cookie_header = "taos_session=" + session + "; taosgo_session=upstream-value"
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+        headers={"cookie": cookie_header},
+    )
+    assert r.status_code == 200
+    forwarded = captured.get("cookie", "")
+    # The local session cookie must never reach the upstream.
+    assert "taos_session" not in forwarded
+    # The upstream cookie is forwarded as-is.
+    assert "taosgo_session=upstream-value" in forwarded
+
+
+@pytest.mark.asyncio
+async def test_forward_to_sends_no_cookie_when_only_local_session(client, monkeypatch):
+    """When the only cookie present is the local session cookie, the relayed
+    request must send no Cookie header at all (not an empty one)."""
+    monkeypatch.setenv("TAOS_ACCOUNT_BASE_URL", "https://taos.my")
+    captured: dict[str, str] = {}
+
+    async def handler(method, url, **kw):
+        captured["cookie"] = kw.get("headers", {}).get("Cookie", "")
+        return _FakeResp(
+            content=b'{"username":"alice","status":"registered"}',
+            headers={"content-type": "application/json"},
+        )
+
+    _patch_upstream(monkeypatch, handler)
+    r = await client.post(
+        "/api/account/hub/identity/register",
+        json={"signing_pubkey": "aa", "encryption_pubkey": "bb", "proof": "cc"},
+        headers={"cookie": "taos_session=" + client.cookies.get("taos_session", "")},
+    )
+    assert r.status_code == 200
+    assert "taos_session" not in captured.get("cookie", "")
+    assert captured.get("cookie", "") == ""

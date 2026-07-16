@@ -208,7 +208,6 @@ async def verify_chain(store: hub_store.HubStore, author: str) -> tuple[bool, Op
     which is exactly why the chain index must persist past deletion.
     """
     entries = await store.list_chain_entries(author)
-    pub = identity.public_identity()["signing_pubkey"]
     prev_hash: Optional[str] = None
     for entry in entries:
         if entry.get("prev_hash") != prev_hash:
@@ -218,8 +217,16 @@ async def verify_chain(store: hub_store.HubStore, author: str) -> tuple[bool, Op
                 f"does not link to previous entry {prev_hash!r} (chain broken)",
             )
         obj = await store.get_object(entry["hash"])
-        if obj is not None and not hub_store.verify_object(obj, pub):
-            return False, f"seq {entry['seq']}: signature invalid (tampered)"
+        if obj is not None:
+            # Verify each entry against the public key resolved from that entry's
+            # declared author (its signing fingerprint), not one assumed key. A
+            # directory/network mishap that pairs an entry with the wrong author
+            # fails the author-to-key binding in verify_object.
+            resolved = await store.get_author(entry["author"])
+            if resolved is None or not resolved.get("signing_pubkey"):
+                return False, f"seq {entry['seq']}: unknown author {entry['author']!r}"
+            if not hub_store.verify_object(obj, resolved["signing_pubkey"]):
+                return False, f"seq {entry['seq']}: signature invalid (tampered)"
         prev_hash = entry["hash"]
     return True, None
 

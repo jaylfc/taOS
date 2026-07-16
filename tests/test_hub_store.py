@@ -93,6 +93,34 @@ class TestSignVerify:
         assert hub_store.verify_object({"type": "x"}, pub) is False
         assert hub_store.verify_object({"type": "x", "sig": 123}, pub) is False
 
+    def test_verify_accepts_object_whose_author_matches_signing_key(self, data_dir):
+        # A correctly bound object (author == fingerprint of the signing key)
+        # verifies True.
+        pub = identity.public_identity()["signing_pubkey"]
+        signed = hub_store.sign_object(
+            {"type": "profile", "author": identity.signing_fingerprint(), "version": 1}
+        )
+        assert hub_store.verify_object(signed, pub) is True
+
+    def test_verify_rejects_object_with_wrong_author(self, data_dir, tmp_path, monkeypatch):
+        # A valid signature from key A must NOT verify as authored by peer B:
+        # verify_object binds author to the signing key's fingerprint and rejects
+        # a mismatched author (the peer-impersonation vector).
+        signed = hub_store.sign_object(
+            {"type": "profile", "author": identity.signing_fingerprint(), "version": 1}
+        )
+        # Capture the original signing pubkey before switching identities.
+        orig_pub = identity.public_identity()["signing_pubkey"]
+        # Mint a different identity in an isolated dir to be the "wrong author".
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path / "other"))
+        other_fp = identity.signing_fingerprint()
+        # Present the object as authored by the OTHER peer's fingerprint.
+        impersonated = {**signed, "author": other_fp}
+        assert hub_store.verify_object(impersonated, orig_pub) is False
+        # And with a completely foreign (non-fingerprint) author string.
+        foreign = {**signed, "author": "deadbeef" * 8}
+        assert hub_store.verify_object(foreign, orig_pub) is False
+
 
 class TestStoreRoundTrip:
     @pytest.mark.asyncio

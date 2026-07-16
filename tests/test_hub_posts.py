@@ -62,10 +62,15 @@ class TestChainAppendVerify:
 
     @pytest.mark.asyncio
     async def test_verify_chain_passes_for_intact_chain(self, store, data_dir):
+        author = identity.signing_fingerprint()
+        pub = identity.public_identity()["signing_pubkey"]
+        # The chain verifier resolves each entry's key from its declared author,
+        # so the author -> signing key mapping must be registered.
+        await store.upsert_author(author, signing_pubkey=pub)
         await posts.append_post(store, visibility="public", text="a")
         await posts.append_post(store, visibility="circle", text="b")
         await posts.append_post(store, visibility="public", text="c")
-        ok, error = await posts.verify_chain(store, identity.signing_fingerprint())
+        ok, error = await posts.verify_chain(store, author)
         assert ok is True
         assert error is None
 
@@ -91,6 +96,8 @@ class TestTamperDetection:
     @pytest.mark.asyncio
     async def test_tampered_stored_body_fails_chain_verify(self, store, data_dir):
         author = identity.signing_fingerprint()
+        pub = identity.public_identity()["signing_pubkey"]
+        await store.upsert_author(author, signing_pubkey=pub)
         p = await posts.append_post(store, visibility="public", text="real")
         await posts.append_post(store, visibility="circle", text="more")
 
@@ -112,6 +119,8 @@ class TestTamperDetection:
     @pytest.mark.asyncio
     async def test_broken_prev_link_fails_chain_verify(self, store, data_dir):
         author = identity.signing_fingerprint()
+        pub = identity.public_identity()["signing_pubkey"]
+        await store.upsert_author(author, signing_pubkey=pub)
         await posts.append_post(store, visibility="public", text="a")
         await posts.append_post(store, visibility="circle", text="b")
 
@@ -131,6 +140,8 @@ class TestTombstone:
     @pytest.mark.asyncio
     async def test_delete_drops_content_but_keeps_chain_verifiable(self, store, data_dir):
         author = identity.signing_fingerprint()
+        pub = identity.public_identity()["signing_pubkey"]
+        await store.upsert_author(author, signing_pubkey=pub)
         await posts.append_post(store, visibility="public", text="keep me")
         p2 = await posts.append_post(store, visibility="circle", text="delete me")
 

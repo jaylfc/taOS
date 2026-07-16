@@ -91,9 +91,20 @@ def verify_object(obj: dict, signing_pubkey_hex: str) -> bool:
     Returns False (never raises) on a missing or malformed signature so callers
     verifying arbitrary peer objects degrade cleanly. Tampering with any signed
     field changes the canonical bytes and fails the check.
+
+    The declared ``author`` MUST be the fingerprint (SHA-256) of the public key
+    that signed the object, so a valid signature from key A cannot be presented
+    as authored by peer B. This closes the peer-impersonation gap that opens once
+    peer ingest lands (today the routes force the local fingerprint, so it is not
+    yet exploitable). The check is rejected unless ``author`` equals that
+    fingerprint.
     """
     sig = obj.get("sig")
     if not isinstance(sig, str) or not sig:
+        return False
+    author = obj.get("author")
+    expected_author = identity.fingerprint(signing_pubkey_hex)
+    if not isinstance(author, str) or author != expected_author:
         return False
     return identity.verify_signature(signing_pubkey_hex, canonical_bytes(obj), sig)
 

@@ -55,7 +55,8 @@ async def test_hub_requests_post_forwards_signed_intro(client, monkeypatch):
     assert r.json()["request_id"] == "r1"
     assert captured["url"] == "https://taos.my/api/hub/requests"
     assert captured["method"] == "POST"
-    assert captured["cookie"]
+    assert "taos_session" not in captured["cookie"]
+    assert captured["cookie"] == ""
     assert "peerFP" in captured["body"]
 
 
