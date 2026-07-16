@@ -43,7 +43,6 @@ CREATE TABLE IF NOT EXISTS project_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON project_tasks(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON project_tasks(parent_task_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_element ON project_tasks(project_id, element_id);
 
 CREATE TABLE IF NOT EXISTS task_relationships (
     id TEXT PRIMARY KEY,
@@ -164,6 +163,14 @@ class ProjectTaskStore(BaseStore):
             await self._db.commit()
         except Exception:
             pass
+        # Created here (not in SCHEMA) so element_id exists first on the
+        # migration path; SCHEMA runs before _post_init and would otherwise
+        # crash "no such column: element_id" on a pre-element_id table.
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_element "
+            "ON project_tasks(project_id, element_id)"
+        )
+        await self._db.commit()
 
     async def create_task(
         self,
