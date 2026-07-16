@@ -1163,6 +1163,14 @@ else
     # root-owned, or we are not root (user-mode / macOS install), run directly.
     _repo_owner="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || stat -f '%Su' "$INSTALL_DIR" 2>/dev/null || echo "")"
     if [[ "$(id -u)" == "0" && -n "$_repo_owner" && "$_repo_owner" != "root" ]]; then
+        # A prior install that was interrupted mid-chown (or a step that wrote a
+        # few paths back as root) leaves a tree with MIXED ownership.  Running
+        # the update as the owning user would then fail to unlink the still
+        # root-owned paths ("unable to unlink old ...: Permission denied" ->
+        # "Could not reset index file"), bricking every re-run.  Normalise
+        # ownership to the owning user first so the reset can rewrite the whole
+        # tree.  Safe: root performs the chown and git still runs unprivileged.
+        chown -R "$_repo_owner" "$INSTALL_DIR"
         sudo -u "$_repo_owner" git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
             && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
     else
