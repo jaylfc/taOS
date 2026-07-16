@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
 import { AddAgentDialog } from "./AddAgentDialog";
+import { InviteAgentDialog } from "./InviteAgentDialog";
 import { canvasApi } from "./canvas/canvas-api";
 
 interface AgentSummary {
@@ -187,6 +188,7 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   const [externalAgents, setExternalAgents] = useState<ExternalAgentSummary[]>([]);
   const [externalRegistryLoaded, setExternalRegistryLoaded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   // D7: the Lead is an exclusive, project-level designation. We keep a local
   // mirror of project.lead_member_id so the selector reflects changes instantly
   // (the backend enforces the one-lead invariant structurally on write).
@@ -334,6 +336,13 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
         >
           + Add agent
         </button>
+        <button
+          type="button"
+          onClick={() => setInviteOpen(true)}
+          className="text-sm px-2 py-1 bg-zinc-800 rounded hover:bg-zinc-700"
+        >
+          Invite external agent
+        </button>
       </header>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <label htmlFor="project-lead-select" className="text-xs text-zinc-400">
@@ -408,6 +417,16 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
           onAdded={() => {
             setDialogOpen(false);
             refresh();
+            onChanged();
+          }}
+        />
+      )}
+      {inviteOpen && (
+        <InviteAgentDialog
+          projectId={project.id}
+          onClose={() => setInviteOpen(false)}
+          onMinted={() => {
+            setInviteOpen(false);
             onChanged();
           }}
         />
