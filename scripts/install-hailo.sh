@@ -58,8 +58,12 @@ set -euo pipefail
 # TODO(taOS): the exact pinned hailo-ollama ref must be confirmed against the
 # community tester's install on #1771 (design Open Question 1). The default
 # below is a placeholder that operators override with TAOS_HAILO_OLLAMA_REF.
-HAILO_OLLAMA_REPO="${TAOS_HAILO_OLLAMA_REPO:-https://github.com/hailo-ai/hailo-ollama.git}"
-HAILO_OLLAMA_REF="${TAOS_HAILO_OLLAMA_REF:-main}"
+# The Hailo-Ollama server is NOT a standalone repo: it ships inside the Hailo
+# GenAI Model Zoo and is built from source there (its README: "It includes
+# Hailo-Ollama, an Ollama-compatible API written in C++ on top of HailoRT").
+# Pin a specific commit for reproducibility; override with TAOS_HAILO_OLLAMA_REF.
+HAILO_OLLAMA_REPO="${TAOS_HAILO_OLLAMA_REPO:-https://github.com/hailo-ai/hailo_model_zoo_genai.git}"
+HAILO_OLLAMA_REF="${TAOS_HAILO_OLLAMA_REF:-1a3ba6be4af93dc58e675662c946a1a65198ec31}"
 
 # Port 7836 is the next free slot in the taOS service block (7832 qmd,
 # 7833 rkllama, 7834 LiteLLM, 7835 llama-cpp). Upstream hailo-ollama listens
@@ -140,7 +144,8 @@ confirm_or_exit() {
     echo
     echo "This script will:"
     echo "  * install HailoRT + firmware (>= $HAILO_MIN_FIRMWARE) via the platform package flow"
-    echo "  * clone hailo-ollama into ~/hailo-ollama (pinned ref ${HAILO_OLLAMA_REF})"
+    echo "  * clone hailo_model_zoo_genai (pinned ref ${HAILO_OLLAMA_REF:0:12}) and build the"
+    echo "    Hailo-Ollama server from it with cmake, installing it system-wide"
     echo "  * install + enable a systemd unit hailo-ollama.service on port $HAILO_OLLAMA_PORT"
     echo
     read -r -p "Proceed? [y/N] " reply
@@ -155,7 +160,7 @@ confirm_or_exit() {
 # Resolved lazily: only after a Hailo-10H is confirmed, so a non-Hailo host
 # exits without ever touching the system (or requiring getent to exist).
 resolve_target() {
-    # When invoked under sudo we want the clone / venv to land in the calling
+    # When invoked under sudo we want the clone / build to land in the calling
     # user's home, not /root. SUDO_USER gives us that.
     if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
         TARGET_USER="$SUDO_USER"
@@ -169,7 +174,7 @@ resolve_target() {
     fi
     [[ -d "$TARGET_HOME" ]] || die "cannot resolve home directory for user $TARGET_USER"
     TARGET_GROUP="$(id -gn "$TARGET_USER")"
-    HAILO_OLLAMA_DIR="${TAOS_HAILO_OLLAMA_DIR:-$TARGET_HOME/hailo-ollama}"
+    HAILO_OLLAMA_DIR="${TAOS_HAILO_OLLAMA_DIR:-$TARGET_HOME/hailo_model_zoo_genai}"
 }
 
 # run_as_user <cmd...> -- run a command as the unprivileged target user
@@ -313,32 +318,33 @@ install_hailo_ollama() {
     run_as_user git -C "$HAILO_OLLAMA_DIR" checkout --quiet "$HAILO_OLLAMA_REF"
     log "hailo-ollama pinned to $(run_as_user git -C "$HAILO_OLLAMA_DIR" rev-parse --short HEAD)"
 
-    # If it is a Python project (pyproject.toml), build a venv so the
-    # `hailo-ollama` entrypoint lands in the venv's bin/. Otherwise assume the
-    # checkout already provides a runnable binary.
-    if [[ -f "$HAILO_OLLAMA_DIR/pyproject.toml" ]]; then
-        local venv="$HAILO_OLLAMA_DIR/venv"
-        if [[ ! -d "$venv" ]]; then
-            log "creating hailo-ollama venv at $venv"
-            run_as_user python3 -m venv "$venv"
-        fi
-        run_as_user "$venv/bin/pip" install --quiet --upgrade pip wheel
-        log "installing hailo-ollama into the venv (editable)"
-        run_as_user sh -c "cd '$HAILO_OLLAMA_DIR' && '$venv/bin/pip' install --quiet -e ."
-    fi
+    # Build + install the Hailo-Ollama server. It is C++ on top of HailoRT, built
+    # with cmake (per the repo README): configure -> build -> install. cmake
+    # --install lands the `hailo-ollama` binary in <prefix>/bin (default
+    # /usr/local/bin) and the model manifests under <prefix>/share/hailo-ollama.
+    # cmake fetches its own libs (json, oatpp, eventpp) via cmake/external, but
+    # the host still needs the C++ toolchain + OpenSSL headers.
+    log "installing build tools (cmake, compiler, OpenSSL headers)"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        cmake build-essential libssl-dev >/dev/null
+
+    log "configuring hailo-ollama build (cmake, Release)"
+    run_as_user sh -c "cd '$HAILO_OLLAMA_DIR' && cmake -B build -DCMAKE_BUILD_TYPE=Release"
+    log "compiling hailo-ollama (C++; can take several minutes on the Pi)"
+    run_as_user sh -c "cd '$HAILO_OLLAMA_DIR' && cmake --build build --config Release"
+    log "installing hailo-ollama system-wide (cmake --install, needs sudo)"
+    sudo cmake --install "$HAILO_OLLAMA_DIR/build"
 }
 
 # Resolve the hailo-ollama entrypoint into HAILO_OLLAMA_BIN.
 resolve_bin() {
-    local venv="$HAILO_OLLAMA_DIR/venv"
-    if [[ -x "$venv/bin/hailo-ollama" ]]; then
-        HAILO_OLLAMA_BIN="$venv/bin/hailo-ollama"
-    elif [[ -x "$HAILO_OLLAMA_DIR/hailo-ollama" ]]; then
-        HAILO_OLLAMA_BIN="$HAILO_OLLAMA_DIR/hailo-ollama"
-    elif command -v hailo-ollama >/dev/null 2>&1; then
+    # cmake --install placed the binary in <prefix>/bin (default /usr/local/bin).
+    if command -v hailo-ollama >/dev/null 2>&1; then
         HAILO_OLLAMA_BIN="$(command -v hailo-ollama)"
+    elif [[ -x /usr/local/bin/hailo-ollama ]]; then
+        HAILO_OLLAMA_BIN="/usr/local/bin/hailo-ollama"
     else
-        die "could not find a hailo-ollama executable after install (looked in $venv/bin, $HAILO_OLLAMA_DIR, and PATH)."
+        die "could not find a hailo-ollama executable after cmake --install (looked in PATH and /usr/local/bin)."
     fi
     log "hailo-ollama entrypoint: $HAILO_OLLAMA_BIN"
 }
@@ -347,13 +353,13 @@ resolve_bin() {
 
 install_systemd_unit() {
     local unit="/etc/systemd/system/hailo-ollama.service"
-    # The upstream hailo-ollama server listens on 0.0.0.0:8000 by default; we
-    # remap it to the taOS port 7836. The exact listen-port mechanism (flag,
-    # env var, or config file) is confirmed against the tester's install in
-    # slice S2 (design Open Question 1). We pass --port here and also export it
-    # as an environment variable so a release that reads the env instead still
-    # binds 7836. Adjust this one line if the confirmed mechanism differs.
-    local exec_start="$HAILO_OLLAMA_BIN serve --port $HAILO_OLLAMA_PORT"
+    # The hailo-ollama server takes no serve subcommand or --port flag; it is
+    # started bare and reads its listen address from the OLLAMA_HOST env var
+    # (format host:port; default 0.0.0.0:8000). taOS port hygiene bans 8000, so
+    # we bind localhost on the managed port 7836 (the taOS controller reaches it
+    # on the same host; nothing needs it exposed on 0.0.0.0). See the repo's
+    # docs/USAGE.rst "Environment Variables".
+    local exec_start="$HAILO_OLLAMA_BIN"
 
     log "installing $unit"
     sudo tee "$unit" >/dev/null <<EOF
@@ -367,14 +373,13 @@ Type=simple
 User=$TARGET_USER
 Group=$TARGET_GROUP
 WorkingDirectory=$HAILO_OLLAMA_DIR
-Environment=PYTHONUNBUFFERED=1
-Environment=HAILO_OLLAMA_PORT=$HAILO_OLLAMA_PORT
+Environment=OLLAMA_HOST=127.0.0.1:$HAILO_OLLAMA_PORT
 # hailo-ollama can leave a bare orphan process listening on the port if it
 # crashes during model load (the adopt-an-orphan lesson from PR #1755 for
 # rkllama). Reap any such process before (re)start so the bind cannot fail.
-# Match the exact server invocation, not any command line merely containing
+# Match the installed binary path, not any command line merely containing
 # "hailo-ollama" (which would kill an editor or tail open on these files).
-ExecStartPre=-/usr/bin/pkill -9 -f "$HAILO_OLLAMA_BIN serve --port $HAILO_OLLAMA_PORT"
+ExecStartPre=-/usr/bin/pkill -9 -f "$HAILO_OLLAMA_BIN"
 ExecStart=$exec_start
 Restart=always
 RestartSec=5
