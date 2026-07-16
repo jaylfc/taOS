@@ -81,6 +81,21 @@ def _check_payload_size(payload: dict) -> None:
         )
 
 
+_CANVAS_ELEMENT_RANGE = 100_000
+
+
+def _clamp_element_geometry(element: dict) -> dict:
+    if "x" in element:
+        element["x"] = max(-_CANVAS_ELEMENT_RANGE, min(_CANVAS_ELEMENT_RANGE, element["x"]))
+    if "y" in element:
+        element["y"] = max(-_CANVAS_ELEMENT_RANGE, min(_CANVAS_ELEMENT_RANGE, element["y"]))
+    if "w" in element:
+        element["w"] = max(0, min(_CANVAS_ELEMENT_RANGE, element["w"]))
+    if "h" in element:
+        element["h"] = max(0, min(_CANVAS_ELEMENT_RANGE, element["h"]))
+    return element
+
+
 def _user_id(request: Request) -> str:
     uid = getattr(request.state, "user_id", None)
     if uid:
@@ -196,6 +211,7 @@ async def create_canvas_element(
             status_code=429,
         )
     element = payload.model_dump()
+    _clamp_element_geometry(element)
     _check_payload_size(element.get("payload") or {})
     cs = request.app.state.project_canvas_store
     element_id = element.pop("element_id", None)
@@ -243,6 +259,7 @@ async def update_canvas_element(
         )
     cs = request.app.state.project_canvas_store
     patch = {k: v for k, v in payload.model_dump().items() if v is not None}
+    _clamp_element_geometry(patch)
     if "payload" in patch:
         _check_payload_size(patch["payload"])
     try:
@@ -304,7 +321,7 @@ async def get_canvas_png(project_id: str, request: Request):
     )
     out.mkdir(parents=True, exist_ok=True)
     target = out / "snapshot.png"
-    render_snapshot_png(elements=elements, output_path=target)
+    await asyncio.to_thread(render_snapshot_png, elements=elements, output_path=target)
     return FileResponse(target, media_type="image/png")
 
 

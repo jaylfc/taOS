@@ -1126,3 +1126,72 @@ class TestAgentWriteRateLimit:
             )
             assert resp.status_code == 201, resp.text
 
+
+class TestCanvasGeometryClamping:
+    @pytest.mark.asyncio
+    async def test_extreme_coordinates_are_clamped_on_create(self, ctx):
+        pid = await _new_project(ctx, "geom-clamp")
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/canvas/elements",
+            json={
+                "kind": "note",
+                "x": 1_000_000_000,
+                "y": -1_000_000_000,
+                "w": 2_000_000_000,
+                "h": -500,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        el = resp.json()["element"]
+        assert el["x"] == 100_000
+        assert el["y"] == -100_000
+        assert el["w"] == 100_000
+        assert el["h"] == 0
+
+    @pytest.mark.asyncio
+    async def test_extreme_coordinates_are_clamped_on_update(self, ctx):
+        pid = await _new_project(ctx, "geom-clamp-patch")
+        el = await _create_note(ctx.client, pid)
+        resp = await ctx.client.patch(
+            f"/api/projects/{pid}/canvas/elements/{el['id']}",
+            json={"x": 1_000_000_000, "y": -1_000_000_000, "w": 2_000_000_000, "h": -500},
+        )
+        assert resp.status_code == 200, resp.text
+        updated = resp.json()["element"]
+        assert updated["x"] == 100_000
+        assert updated["y"] == -100_000
+        assert updated["w"] == 100_000
+        assert updated["h"] == 0
+
+    @pytest.mark.asyncio
+    async def test_snapshot_render_dimensions_are_clamped(self, ctx):
+        from pathlib import Path
+        from PIL import Image
+
+        pid = await _new_project(ctx, "snap-clamp")
+        await ctx.client.post(
+            f"/api/projects/{pid}/canvas/elements",
+            json={
+                "kind": "note",
+                "x": 1_000_000,
+                "y": 1_000_000,
+                "w": 1_000_000,
+                "h": 1_000_000,
+                "payload": {"text": "extreme"},
+            },
+        )
+        resp = await ctx.client.get(f"/api/projects/{pid}/canvas/snapshot.png")
+        assert resp.status_code == 200, resp.text
+        project = await ctx.app.state.project_store.get_project(pid)
+        target = (
+            Path(ctx.app.state.projects_root)
+            / project["slug"]
+            / "files"
+            / "canvas"
+            / "snapshot.png"
+        )
+        assert target.exists(), f"snapshot not rendered at {target}"
+        with Image.open(target) as img:
+            assert img.width <= 8192
+            assert img.height <= 8192
+
