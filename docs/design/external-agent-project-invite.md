@@ -59,6 +59,57 @@ The sections below are the full draft; where they conflict with this addendum
 (e.g. the taos.my URL leg, the `apis` block omitting canvas), the addendum wins
 for Phase 1.
 
+### Addendum 2 (2026-07-16): agent-centric, multi-project model
+
+Jay clarified the target: an external agent is a FIRST-CLASS registry citizen
+that can belong to MANY projects, is invited from the Agents app as well as
+from a project's Members panel, and is free to pick up jobs from any project it
+is a member of and talk on the A2A bus. The free builder + review chain
+(hy3/stepflash/nemotron) are shared to projects the same way. Decisions:
+
+- **Project creation timing.** A project invite is bound to a project that
+  already exists. "Name a new project" in the mint dialog creates the project
+  AT MINT TIME and binds the invite to it; the redeeming agent JOINS it (it
+  does not create the project). So by the time the URL + PIN are handed over,
+  the project exists.
+
+- **Token model = one agent-identity token, per-project access gated by
+  grants (Jay's choice).** This SUPERSEDES the epic's project-bound token for
+  external agents: the registry JWT identifies the AGENT (no hard project
+  binding as the gate); each request to a project route is authorized by
+  looking up an ACTIVE grant + membership for that agent on that project. One
+  credential, assign to N projects freely by adding grant + membership rows
+  (both already per-project in the data model). A2A identity/handle is global.
+
+- **Two entry points, one identity.**
+  1. Project Members -> project invite (register-or-reuse the agent + assign to
+     THIS project). [current S4]
+  2. Agents app -> agent invite (register the agent; optionally assign to 0+
+     projects at mint) + an "Assign to project..." action to add an EXISTING
+     registered agent to more projects later (grant + membership, no re-mint,
+     no new token). [new S5]
+
+- **Re-onboard is idempotent per agent.** A redeem/assign for an agent that
+  already has an identity reuses its canonical_id + token and just adds the
+  new project's grant + membership. Only a genuinely new handle mints a new
+  identity.
+
+Build impact (supersedes the plan's slicing where noted):
+- S1 store: `project_id` is NULLABLE (an Agents-app invite may register an
+  agent with no project); the project-scoped invite still sets it.
+- NEW S2a (foundational, lands with/before S2): relax the agent-token project
+  gate in `auth_middleware` + `check_agent_scope_for_project` so a request is
+  allowed when the agent holds an active grant for the requested project, not
+  only when the token is bound to it. `mint_registry_token` stops hard-binding
+  the token to a single project for external agents. Keep the existence-hiding
+  404 for projects the agent has NO grant on.
+- S2 redeem: register-or-reuse the agent, then (if a project is bound) add the
+  grant + membership via the extracted approve helper; the token is
+  agent-identity, not project-locked.
+- NEW S5: Agents-app "Invite external agent" + "Assign to project..." UI + the
+  assign endpoint (`POST /api/projects/{pid}/members/agents/{canonical_id}` or
+  similar: grant + membership for an existing agent).
+
 ## Why
 
 Deploying a CLI agent from inside taOS is the easy case: taOS owns the process
