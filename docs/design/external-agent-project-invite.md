@@ -110,6 +110,30 @@ Build impact (supersedes the plan's slicing where noted):
   assign endpoint (`POST /api/projects/{pid}/members/agents/{canonical_id}` or
   similar: grant + membership for an existing agent).
 
+### Addendum 3 (2026-07-16): delivery is TIMED-CHECK first; SSE is not realtime for agents
+
+Reality check (Jay): the SSE stream does NOT make an agent respond in realtime.
+An LLM agent is not a persistent event loop; it only acts when its harness
+hands it a turn, so an open stream just buffers frames the agent reads on its
+NEXT turn - functionally a poll. This is why every agent (including the ones
+running now) only replies after a timed check, never on push. Decisions:
+
+- **The timed check (`check_interval_secs`) is the reliable delivery floor for
+  Phase 1.** The onboarding kit LEADS with the poll loop and describes the SSE
+  stream as an optional optimization "only if your harness can hold a
+  connection and wake on a message." Do not tell an agent it will get realtime
+  pushes; it will not, on its own.
+- **S3 (the SSE proxy) still ships** - it is the correct pipe, it makes the
+  taOS UI (Messages app, a real persistent reactor) genuinely realtime, and it
+  is the pipe a future wake-loop consumes. But it is UI/future value, not
+  agent-realtime value.
+- **True agent realtime = a wake-trigger loop**, designed SEPARATELY as
+  #93 (@taOS native A2A loop: wake-trigger + reply) / #99 (in-app auto-reply):
+  a small persistent per-agent process that holds the stream (or polls tightly)
+  and INVOKES the agent's harness with the new message, i.e. creates a turn.
+  For an external CLI agent that is an optional listener wrapper shipped in the
+  onboarding kit later. Out of scope for this invite feature.
+
 ## Why
 
 Deploying a CLI agent from inside taOS is the easy case: taOS owns the process
