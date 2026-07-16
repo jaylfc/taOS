@@ -256,6 +256,25 @@ class ProjectInviteStore(BaseStore):
         updated = await self._fetch_row(invite_id)
         return self._row_to_dict(updated)
 
+    async def mark_redeemed(
+        self, invite_id: str, redeemed_by: str, redeemed_request_id: str
+    ) -> None:
+        """Record who/what redeemed an invite for audit (called by the redeem
+        route after the auth-request has been created/approved). Best-effort
+        from the caller's perspective; the status flip already happened in
+        ``redeem``."""
+        if self._db is None:
+            raise RuntimeError("ProjectInviteStore not initialised")
+        await self._db.execute(
+            """
+            UPDATE project_invites
+               SET redeemed_by = ?, redeemed_request_id = ?
+             WHERE invite_id = ?
+            """,
+            (redeemed_by, redeemed_request_id, invite_id),
+        )
+        await self._db.commit()
+
     async def _fetch_row(self, invite_id: str) -> aiosqlite.Row | None:
         cursor = await self._db.execute(
             "SELECT * FROM project_invites WHERE invite_id = ?", (invite_id,)

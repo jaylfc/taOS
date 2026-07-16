@@ -278,23 +278,39 @@ async def approve_auth_request(
                 locks.pop(request_id, None)
 
 
-async def _do_approve(request: Request, request_id: str, body: ApproveBody, user):
-    """Inner approve logic — called under a per-request lock."""
+async def approve_request_record(
+    request: Request,
+    *,
+    record: dict,
+    granted_scopes: list[str],
+    effective_project: str | None,
+    decided_by: str,
+    project_id: str | None = None,
+) -> dict:
+    """Register an agent, mint its token, write grants + relationships +
+    membership + a2a sync, and record the decision.
+
+    This is the single mint machinery shared by the consent approve route
+    (``_do_approve``, which resolves ``granted_scopes``/``effective_project``
+    from the admin's ``ApproveBody``) and the project-invite redeem path
+    (``project_invites.redeem``), which already has the scopes + bound project
+    from the invite. ``decided_by`` is the actor recorded on the decision; for
+    the consent route it is the approving admin's user_id, for invite auto-mode
+    it is the invite's ``created_by``.
+
+    Returns ``{"status": "accepted", "canonical_id": ...}``.
+
+    Raises ``HTTPException`` for the same guard failures as the consent route:
+    a project-scoped grant without a project_id (400), or an active-handle
+    collision (409).
+    """
     auth_store = _get_auth_requests_store(request)
-    record = await auth_store.get(request_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="request not found")
-    if record["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"request is already {record['status']!r}; cannot approve",
-        )
 
     # The admin can narrow the requested scopes but never widen them, and
     # every granted scope must be in the closed vocabulary (defence in depth
     # for pending records created before scope validation existed).
     requested = set(record["requested_scopes"] or [])
-    granted = set(body.granted_scopes)
+    granted = set(granted_scopes)
     invalid = sorted((granted - requested) | (granted - VALID_SCOPES))
     if invalid:
         raise HTTPException(
@@ -309,19 +325,18 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
     _PROJECT_SCOPES = {"project_tasks"} | _CANVAS_SCOPES
 
     # project_tasks and the canvas scopes bind the token to a specific project
-    # and add a membership row, so require the human to pick that project
-    # explicitly in the consent card. Never fall back to the agent-supplied
-    # project_id for these grants: POST /api/agents/auth-requests is
-    # unauthenticated, so the request could name any existing project the
-    # operator never validated. Other scopes keep the fallback so global
-    # tokens still work. Checked before any registration so a rejected approval
-    # never leaves an orphaned agent.
-    needs_project = bool(set(body.granted_scopes) & _PROJECT_SCOPES)
-    # Reject None, "", and whitespace-only: a blank project_id is not a real
-    # binding, and a downstream truthy check would treat it as unbound, so an
-    # empty string must fail closed exactly like a missing one.
-    if needs_project and not (body.project_id and body.project_id.strip()):
-        missing = sorted(set(body.granted_scopes) & _PROJECT_SCOPES)
+    # and add a membership row, so require a real project_id for these grants.
+    # The check uses ``project_id`` — the EXPLICIT picker value the human (or
+    # the invite) supplied — NOT the agent-supplied fallback that produced
+    # ``effective_project``. Never fall back to the agent-supplied project_id for
+    # these grants: POST /api/agents/auth-requests is unauthenticated, so the
+    # request could name any existing project the operator never validated. A
+    # blank/None project_id is not a real binding and must fail closed exactly
+    # like a missing one; the redeem path passes the invite's project (always
+    # non-empty for a project invite), so it passes this guard.
+    needs_project = bool(set(granted_scopes) & _PROJECT_SCOPES)
+    if needs_project and not (project_id and project_id.strip()):
+        missing = sorted(set(granted_scopes) & _PROJECT_SCOPES)
         raise HTTPException(
             status_code=400,
             detail=f"project_id is required when granting {missing}",
@@ -364,7 +379,12 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         reg_record = await registry.register(
             framework=record["framework"],
             display_name=display_name,
-            user_id=user.user_id,
+            user_id=decided_by,
+            # external-selfjoin is the only origin that births the agent
+            # 'pending' (governance lifecycle) so the pending -> active
+            # transition below is the activation. The provenance of WHO
+            # approved (admin consent vs project invite) lives on the
+            # auth-request record / invite, not the registry origin column.
             origin="external-selfjoin",
             handle=handle,
         )
@@ -374,7 +394,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
         # 'pending' (governance lifecycle); approving the auth-request transitions
         # them to 'active' so they are NOT in the bus inactive/revocation feed and
         # @taOSmd's identity-AND-grant gate accepts them.
-        await registry.set_status(canonical_id, "active", actor=user.user_id)
+        await registry.set_status(canonical_id, "active", actor=decided_by)
     except IntegrityError:
         # A concurrent approve already took this active handle (the partial
         # unique index fired). Roll back the failed write and remove the
@@ -397,23 +417,17 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
             ),
         )
 
-    # Resolve effective project binding: admin override wins; fall back to the
-    # project_id the agent requested (may be None for a global token).
-    effective_project = (
-        body.project_id if body.project_id is not None else record.get("project_id")
-    )
-
     # Issue the identity token.
     token = mint_registry_token(
         canonical_id,
         private_pem,
-        user_id=user.user_id,
+        user_id=decided_by,
         framework=record["framework"],
         project_id=effective_project,
     )
 
     # Record grants for each approved scope.
-    for scope in body.granted_scopes:
+    for scope in granted_scopes:
         await grants_store.add_grant(canonical_id, scope, tier="once", project_id=effective_project)
         # Also write a RelationshipManager permission edge so the existing
         # permission-check path (can_communicate etc.) is aware of the agent.
@@ -424,11 +438,11 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
     # project a2a channel (membership is synced into the channel). Best-effort: a
     # membership failure never blocks the approval, which the token + grant already
     # authorize.
-    if effective_project and set(body.granted_scopes) & _PROJECT_SCOPES:
+    if effective_project and set(granted_scopes) & _PROJECT_SCOPES:
         try:
             pstore = getattr(request.app.state, "project_store", None)
             if pstore is not None:
-                granted_canvas = set(body.granted_scopes) & _CANVAS_SCOPES
+                granted_canvas = set(granted_scopes) & _CANVAS_SCOPES
                 # project_tasks and canvas scopes both bind the token to a
                 # project and require a membership row. The project_tasks path
                 # adds plain membership; canvas scopes additionally flip the
@@ -437,7 +451,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
                 # (an inert member row with all canvas flags 0 would 403).
                 # Only flags that were explicitly granted are set, mirroring
                 # how the consent card scopes are narrowed.
-                if "project_tasks" in body.granted_scopes or granted_canvas:
+                if "project_tasks" in granted_scopes or granted_canvas:
                     await pstore.add_member(
                         project_id=effective_project,
                         member_id=canonical_id,
@@ -451,7 +465,7 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
                             can_read=("canvas_read" in granted_canvas),
                             can_write=("canvas_write" in granted_canvas),
                         )
-                    if "project_tasks" in body.granted_scopes:
+                    if "project_tasks" in granted_scopes:
                         from tinyagentos.projects.a2a import ensure_a2a_channel
 
                         await ensure_a2a_channel(
@@ -470,12 +484,12 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
 
     # Atomically commit the decision.
     result = await auth_store.set_decision(
-        request_id,
+        record["id"],
         "accepted",
         canonical_id=canonical_id,
         token=token,
-        granted_scopes=body.granted_scopes,
-        decided_by=user.user_id,
+        granted_scopes=granted_scopes,
+        decided_by=decided_by,
     )
     if result is None:
         # Another concurrent approve beat us — 409.
@@ -484,8 +498,42 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
             detail="request was decided concurrently; check current status",
         )
 
-    await _retire_request_notification(request, request_id)
+    await _retire_request_notification(request, record["id"])
     return {"status": "accepted", "canonical_id": canonical_id}
+
+
+async def _do_approve(request: Request, request_id: str, body: ApproveBody, user):
+    """Inner approve logic — called under a per-request lock.
+
+    Resolves the admin's approve decision into the shared
+    ``approve_request_record`` mint machinery (used by both this route and the
+    project-invite redeem path). No behaviour change versus the pre-extraction
+    route; it only forwards the resolved ``granted_scopes`` / ``effective_project``.
+    """
+    auth_store = _get_auth_requests_store(request)
+    record = await auth_store.get(request_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="request not found")
+    if record["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"request is already {record['status']!r}; cannot approve",
+        )
+
+    # Resolve effective project binding: admin override wins; fall back to the
+    # project_id the agent requested (may be None for a global token).
+    effective_project = (
+        body.project_id if body.project_id is not None else record.get("project_id")
+    )
+
+    return await approve_request_record(
+        request,
+        record=record,
+        granted_scopes=body.granted_scopes,
+        effective_project=effective_project,
+        decided_by=user.user_id,
+        project_id=body.project_id,
+    )
 
 
 @router.post("/api/agents/auth-requests/{request_id}/deny")

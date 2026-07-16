@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -123,6 +124,13 @@ _CLUSTER_PAIRING_MANUAL_CLAIM = "/api/cluster/pairing/manual-claim"
 _CLUSTER_WORKERS = "/api/cluster/workers"
 _CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
 
+# Project-invite redeem: unauthenticated (the PIN is the proof of possession,
+# exactly like cluster pairing). The redeem POST and the content-negotiated
+# GET /i/{id} are method-sensitive exemptions (mirror the pairing-claim
+# pattern). Per-IP fixed-window rate limit reuses the pairing throttle below.
+_INVITE_REDEEM = "/api/projects/invites/redeem"
+_INVITE_INFO_PREFIX = "/i/"
+
 # Local-only shutdown drain: the systemd ExecStop hook (taos-graceful-stop)
 # POSTs this from localhost with no session cookie and no token, so it was
 # getting 401 and the in-app drain never ran. We exempt it ONLY for loopback
@@ -149,6 +157,36 @@ def _is_loopback_client(request: Request) -> bool:
         return ipaddress.ip_address(client.host).is_loopback
     except ValueError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Per-IP fixed-window rate limiter (shared by unauthenticated proof-of-
+# possession endpoints: cluster pairing manual-claim and project-invite redeem).
+# ---------------------------------------------------------------------------
+_INVITE_RATE_WINDOW_SECS = 10.0
+_INVITE_RATE_MAX_PER_WINDOW = 20
+# ip -> (window_start_ts, count). In-memory is sufficient: the controller is a
+# single process and the cap only needs to bound a brute-force burst.
+_rate_limit_hits: dict[str, tuple[float, int]] = {}
+
+
+def rate_limit_ok(key: str, *, window_secs: float = _INVITE_RATE_WINDOW_SECS,
+                  max_per_window: int = _INVITE_RATE_MAX_PER_WINDOW) -> bool:
+    """Fixed-window per-key limiter. Returns False when the key has exceeded
+    ``max_per_window`` requests in the current window. The pairing
+    ``_manual_claim_rate_ok`` helper in cluster.py uses the identical contract;
+    this shared copy keeps the cluster and invite paths from drifting and lets
+    both pass the same ``20 per 10s`` cap the design specifies.
+
+    Mirrors ``_manual_claim_rate_ok`` exactly so behaviour is identical.
+    """
+    now = time.time()
+    window_start, count = _rate_limit_hits.get(key, (now, 0))
+    if now - window_start >= window_secs:
+        window_start, count = now, 0
+    count += 1
+    _rate_limit_hits[key] = (window_start, count)
+    return count <= max_per_window
 
 
 def _is_exempt(method: str, path: str) -> bool:
@@ -200,6 +238,17 @@ def _is_exempt(method: str, path: str) -> bool:
         and path.startswith(_CLUSTER_WORKERS + "/")
         and path.endswith("/incus-enroll")
     ):
+        return True
+    # Project-invite redeem: POST /api/projects/invites/redeem is
+    # unauthenticated (the PIN is the proof of possession, exactly like cluster
+    # pairing claim) and is per-IP rate-limited at the route layer.
+    if method == "POST" and path == _INVITE_REDEEM:
+        return True
+    # GET /i/{invite_id} — content-negotiated invite advert (machine JSON or a
+    # human HTML page). No PIN check here; it only advertises the redeem
+    # contract. The browser-friendly /i/ exact path stays session-gated so a
+    # logged-out admin is not exposed, but the invite id form is exempt.
+    if method == "GET" and path.startswith(_INVITE_INFO_PREFIX) and "/" not in path[len(_INVITE_INFO_PREFIX):]:
         return True
     return False
 
