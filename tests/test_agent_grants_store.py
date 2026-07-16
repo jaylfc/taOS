@@ -1,4 +1,5 @@
 """Tests for AgentGrantsStore — per-agent scope grants persistence."""
+import aiosqlite
 import pytest
 
 from tinyagentos.agent_grants_store import AgentGrantsStore
@@ -153,5 +154,83 @@ class TestAgentGrantsStore:
         try:
             with pytest.raises(RuntimeError, match="not initialised"):
                 await store.list_active_grants()
+        finally:
+            await store.close()
+
+    # ── per-project grants (multi-project identity) ────────────────────
+    async def test_two_grants_same_scope_different_project_coexist(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            await store.add_grant("agent-mp", "project_tasks", project_id="proj-A")
+            await store.add_grant("agent-mp", "project_tasks", project_id="proj-B")
+            grants = await store.list_grants("agent-mp")
+            # Both rows must be present (old 2-col unique would have collapsed
+            # the second into a REPLACE of the first).
+            assert len(grants) == 2
+            assert {g["project_id"] for g in grants} == {"proj-A", "proj-B"}
+        finally:
+            await store.close()
+
+    async def test_readd_same_key_replaces_not_duplicates(self, tmp_path):
+        store = await self._store(tmp_path)
+        try:
+            await store.add_grant("agent-mp", "project_tasks", tier="once", project_id="proj-A")
+            second = await store.add_grant(
+                "agent-mp", "project_tasks", tier="always", project_id="proj-A"
+            )
+            assert second["tier"] == "always"
+            grants = await store.list_grants("agent-mp")
+            assert len(grants) == 1
+            assert grants[0]["tier"] == "always"
+        finally:
+            await store.close()
+
+    async def test_existing_db_with_old_unique_upgrades_and_survives(self, tmp_path):
+        db_path = tmp_path / "legacy.db"
+        # Seed a DB with the OLD 2-column unique constraint and a couple rows.
+        conn = await aiosqlite.connect(str(db_path))
+        try:
+            await conn.executescript(
+                """
+                CREATE TABLE agent_grants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    canonical_id TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    tier TEXT NOT NULL DEFAULT 'once',
+                    project_id TEXT,
+                    granted_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    UNIQUE (canonical_id, scope)
+                );
+                INSERT INTO agent_grants
+                    (canonical_id, scope, tier, project_id, granted_at, expires_at)
+                VALUES
+                    ('agent-legacy', 'project_tasks', 'once', 'proj-OLD', '2026-01-01T00:00:00+00:00', NULL),
+                    ('agent-legacy', 'memory_read', 'once', NULL, '2026-01-01T00:00:00+00:00', NULL);
+                """
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+        # init() must boot without crashing on the legacy schema.
+        store = AgentGrantsStore(db_path)
+        await store.init()
+        try:
+            # The pre-existing rows survived the migration.
+            grants = await store.list_grants("agent-legacy")
+            assert len(grants) == 2
+
+            # And a second-project grant for the same (canonical_id, scope) can
+            # now be added (this would have 409'd / replaced under the old unique).
+            await store.add_grant("agent-legacy", "project_tasks", project_id="proj-NEW")
+            after = await store.list_grants("agent-legacy")
+            assert len(after) == 3
+            assert {g["project_id"] for g in after} >= {"proj-OLD", "proj-NEW"}
+
+            # Idempotent re-run must not raise and must not duplicate.
+            await store.init()
+            again = await store.list_grants("agent-legacy")
+            assert len(again) == 3
         finally:
             await store.close()

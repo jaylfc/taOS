@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS agent_grants (
     project_id   TEXT,
     granted_at   TEXT    NOT NULL,
     expires_at   TEXT,
-    UNIQUE (canonical_id, scope)
+    UNIQUE (canonical_id, scope, project_id)
 );
 """
 
@@ -47,6 +47,75 @@ class AgentGrantsStore(BaseStore):
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
 
+    async def _post_init(self) -> None:
+        """Upgrade an EXISTING database whose agent_grants table still has the
+        old 2-column unique ``(canonical_id, scope)`` to the per-project
+        3-column unique ``(canonical_id, scope, project_id)``.
+
+        A table-level UNIQUE constraint cannot be ALTERed, so we do the standard
+        SQLite rebuild dance (create new table, copy rows, drop old, rename).
+        The copy is safe: the OLD unique guaranteed at most one row per
+        (canonical_id, scope), so no duplicate-key conflict can arise under the
+        new 3-column unique. Guarded so it only runs when the legacy constraint
+        is present, making it idempotent on already-migrated DBs. This is a
+        boot-path migration and must never crash an existing DB's init().
+        """
+        if self._db is None:  # pragma: no cover - defensive
+            return
+
+        # Detect the legacy 2-column unique by inspecting the table's SQL.
+        # row_factory may not be set yet (init() sets it after super().init()),
+        # so read the column positionally.
+        cur = await self._db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_grants'"
+        )
+        row = await cur.fetchone()
+        sql = row[0] if row else ""
+        # Legacy DDL ends the table constraint with UNIQUE (canonical_id, scope)
+        # and lacks the project_id column in the unique list. The fresh SCHEMA
+        # contains "UNIQUE (canonical_id, scope, project_id)".
+        if "UNIQUE (canonical_id, scope, project_id)" in sql:
+            return  # already migrated
+
+        async with self._db.cursor() as cur2:
+            await cur2.execute("SELECT name FROM pragma_table_info('agent_grants')")
+            cols = {r[0] for r in await cur2.fetchall()}
+        if "project_id" not in cols:  # pragma: no cover - defensive
+            return  # current schema already applied by SCHEMA; nothing to do
+
+        await self._db.execute("BEGIN")
+        try:
+            await self._db.execute(
+                """
+                CREATE TABLE agent_grants_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    canonical_id TEXT    NOT NULL,
+                    scope        TEXT    NOT NULL,
+                    tier         TEXT    NOT NULL DEFAULT 'once',
+                    project_id   TEXT,
+                    granted_at   TEXT    NOT NULL,
+                    expires_at   TEXT,
+                    UNIQUE (canonical_id, scope, project_id)
+                );
+                """
+            )
+            await self._db.execute(
+                """
+                INSERT INTO agent_grants_new
+                    (id, canonical_id, scope, tier, project_id, granted_at, expires_at)
+                SELECT id, canonical_id, scope, tier, project_id, granted_at, expires_at
+                FROM agent_grants;
+                """
+            )
+            await self._db.execute("DROP TABLE agent_grants")
+            await self._db.execute(
+                "ALTER TABLE agent_grants_new RENAME TO agent_grants"
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
+
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
@@ -60,17 +129,26 @@ class AgentGrantsStore(BaseStore):
         project_id: Optional[str] = None,
         expires_at: Optional[str] = None,
     ) -> dict:
-        """Insert or replace a grant for (canonical_id, scope).
+        """Insert or replace a grant for (canonical_id, scope, project_id).
 
-        Uses INSERT OR REPLACE so re-approving a scope is idempotent.
+        The 3-column UNIQUE key treats NULL project_id as distinct, so a bare
+        ``INSERT OR REPLACE`` would NOT replace an existing NULL-project_id row
+        (it would append a second one). We make re-approval idempotent by
+        explicitly deleting the matching key (NULL-safe via IS) before inserting.
         """
         if self._db is None:
             raise RuntimeError("AgentGrantsStore not initialised — call init() first")
 
         now = datetime.now(timezone.utc).isoformat()
+        # Remove any existing row for the exact key first (NULL-safe match).
+        await self._db.execute(
+            "DELETE FROM agent_grants "
+            "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
+            (canonical_id, scope, project_id),
+        )
         await self._db.execute(
             """
-            INSERT OR REPLACE INTO agent_grants
+            INSERT INTO agent_grants
                 (canonical_id, scope, tier, project_id, granted_at, expires_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -79,8 +157,11 @@ class AgentGrantsStore(BaseStore):
         await self._db.commit()
         row = await (
             await self._db.execute(
-                "SELECT * FROM agent_grants WHERE canonical_id = ? AND scope = ?",
-                (canonical_id, scope),
+                # Select by the full 3-column key. project_id is nullable, so
+                # match NULL with IS (a plain ``=`` would never match NULL).
+                "SELECT * FROM agent_grants "
+                "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
+                (canonical_id, scope, project_id),
             )
         ).fetchone()
         return _row_to_dict(row)  # type: ignore[return-value]
