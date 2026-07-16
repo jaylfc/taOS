@@ -119,7 +119,7 @@ Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
 grant on returns an existence-hiding 404. External agents onboard via the
 consent flow (`POST /api/agents/auth-requests`) or a project invite (link +
-PIN, see `docs/design/external-agent-project-invite.md`). When you change the
+PIN; see issue #1780). When you change the
 allowlist in `tinyagentos/auth_middleware.py`, update this section in the same
 PR (the doc-gate enforces it).
 
