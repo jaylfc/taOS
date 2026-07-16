@@ -24,7 +24,7 @@ export default function MermaidBlock({ code, theme = "dark" }: MermaidBlockProps
       try {
         const mermaid = (await import("mermaid")).default as typeof import("mermaid").default;
         if (!initialized) {
-          mermaid.initialize({ startOnLoad: false, theme });
+          mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
           initialized = true;
         }
         const id = `mermaid-${Math.random().toString(36).slice(2)}`;

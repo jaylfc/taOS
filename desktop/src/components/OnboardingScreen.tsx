@@ -33,7 +33,8 @@ export function OnboardingScreen({
   defaultAutoLogin,
 }: Props) {
   const isInvite = Boolean(invitedUsername && inviteCode);
-  const [step, setStep] = useState<Step>("account");
+  // The username-claim step is gated off (see handleSubmit); step stays "account".
+  const [step] = useState<Step>("account");
 
   const [username, setUsername] = useState(invitedUsername ?? "");
   const [fullName, setFullName] = useState("");
@@ -81,9 +82,11 @@ export function OnboardingScreen({
         setLoading(false);
         return;
       }
-      // Account created: move on to the free username step rather than leaving
-      // onboarding. The username is optional, so this step can never dead-end.
-      setStep("username");
+      // Account created: finish onboarding. The taos.my username-claim step is
+      // gated off until its backend route exists (tracked in #141): advancing to
+      // it would POST to /api/account/username, which is not implemented yet, so
+      // every user would hit an error. Re-enable by restoring setStep("username").
+      onDone();
     } catch {
       setError("Network error — please try again");
       setLoading(false);
