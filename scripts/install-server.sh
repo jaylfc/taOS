@@ -1170,7 +1170,11 @@ else
         # "Could not reset index file"), bricking every re-run.  Normalise
         # ownership to the owning user first so the reset can rewrite the whole
         # tree.  Safe: root performs the chown and git still runs unprivileged.
-        chown -R "$_repo_owner" "$INSTALL_DIR"
+        # Do not let a partial chown failure (immutable file, read-only mount)
+        # abort the whole installer under set -euo pipefail; warn and proceed,
+        # since the reset below will surface any real ownership problem.
+        chown -R "$_repo_owner" "$INSTALL_DIR" \
+            || warn "chown -R $_repo_owner $INSTALL_DIR partially failed; the update may not apply cleanly"
         sudo -u "$_repo_owner" git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" \
             && sudo -u "$_repo_owner" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
     else
