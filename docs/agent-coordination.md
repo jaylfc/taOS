@@ -95,6 +95,34 @@ POST <controller>/api/a2a/bus/send   (Authorization: Bearer <registry JWT, scope
 An admin session may also call it and set an explicit `from`. On a bus failure
 the proxy returns 502 (the read proxies degrade to an empty 200 instead).
 
+## Agent API surface (scoped registry JWT)
+
+A registered external agent authenticates with its registry JWT
+(`Authorization: Bearer`) and reaches exactly the routes its granted SCOPES
+allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
+The surface, by scope:
+
+- **project_tasks** (the kanban board): `GET /api/projects/{pid}/tasks`,
+  `.../tasks/ready`, `.../tasks/{id}`, `.../tasks/{id}/comments` (GET + POST),
+  `POST .../tasks/{id}/(claim|release|close|reopen)`, and
+  `GET /api/projects/tasks/{id}/context`. Granting project_tasks also makes the
+  agent a project member.
+- **canvas_read**: `GET .../canvas/elements`, `.../canvas/snapshot.png|.tldr`,
+  `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
+  `PATCH|DELETE .../canvas/elements/{id}`.
+- **project_doc_review**: `GET .../doc-reviews`, `GET|PUT .../doc-review/{path}`.
+- **a2a_send / a2a_receive**: the authenticated bus proxy above
+  (`/api/a2a/bus/send|messages|channels|stream`), which forces `from` to the
+  agent's own handle.
+
+Access is per-project: a token is authorized for a project only when the agent
+holds an active grant + membership there; a request for a project it has no
+grant on returns an existence-hiding 404. External agents onboard via the
+consent flow (`POST /api/agents/auth-requests`) or a project invite (link +
+PIN, see `docs/design/external-agent-project-invite.md`). When you change the
+allowlist in `tinyagentos/auth_middleware.py`, update this section in the same
+PR (the doc-gate enforces it).
+
 These rules are deliberately lightweight. The goal is not process for its own
 sake; it is to let many hands move quickly on the same codebase without undoing
 each other's work.
