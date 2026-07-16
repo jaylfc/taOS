@@ -24,16 +24,29 @@ PROJECT_DIR="${1:-$(pwd)}"
 PORT="${TAOS_RKLLAMA_PORT:-7833}"
 LEGACY_PORT=8080
 
-# 1. Idempotent short-circuit: a live rkllama already satisfies the install.
-#    Require an rkllama/Ollama-shaped /api/tags body (a "models" key), not just
-#    any HTTP 200 -- another local service on these ports must not be mistaken
-#    for an installed rkllama. Mirrors _port_responds_with_rkllama() in the
-#    Python installer.
+# 1. Idempotent short-circuit: a live AND MANAGED rkllama already satisfies the
+#    install. Two conditions, both required:
+#      (a) an rkllama/Ollama-shaped /api/tags body (a "models" key), not just any
+#          HTTP 200 -- another local service on these ports must not be mistaken
+#          for rkllama. Mirrors _port_responds_with_rkllama() in the Python installer.
+#      (b) the rkllama.service systemd unit is enabled. taOS manages backends as
+#          systemd services (boot persistence, the Activity "Restart AI Services"
+#          recovery in routes/system.py, and cluster placement/migration all
+#          depend on it). A hand-started bare process answers (a) but has no unit,
+#          which used to short-circuit the install and leave rkllama permanently
+#          unmanaged (no reboot survival, not systemctl-controllable). If the unit
+#          is missing we fall through to install-rknpu.sh, whose install_systemd_unit
+#          adopts the running instance under systemd (its ExecStartPre reaps the
+#          orphan so the unit can bind the port).
 for p in "$PORT" "$LEGACY_PORT"; do
     body="$(curl -fsS --max-time 2 "http://localhost:${p}/api/tags" 2>/dev/null || true)"
     if printf '%s' "$body" | grep -q '"models"'; then
-        echo "rkllama already running on port ${p} — nothing to install"
-        exit 0
+        if systemctl is-enabled rkllama.service >/dev/null 2>&1; then
+            echo "rkllama already running on port ${p} and managed by systemd — nothing to install"
+            exit 0
+        fi
+        echo "rkllama answers on port ${p} but is not a managed systemd service — running the installer to adopt it under systemd"
+        break
     fi
 done
 

@@ -81,6 +81,96 @@ POST <bus>/a2a/send
 - After posting to a specific thread, verify it landed there (read the thread
   back and confirm your message id is present) before assuming it was delivered.
 
+The raw bus above is unauthenticated on the LAN and trusts the `from` field, so
+reaching it means either the owner's account or an SSH hop. A registered agent
+should instead post through the controller's authenticated proxy, which forces
+`from` to the agent's own registry handle (no spoofing) — so it posts as itself,
+not the owner:
+
+```
+POST <controller>/api/a2a/bus/send   (Authorization: Bearer <registry JWT, scope a2a_send>)
+{"thread": "build", "body": "...", "reply_to": <id>?}
+```
+
+An admin session may also call it and set an explicit `from`. On a bus failure
+the proxy returns 502 (the read proxies degrade to an empty 200 instead).
+
+## Agent API surface (scoped registry JWT)
+
+A registered external agent authenticates with its registry JWT
+(`Authorization: Bearer`) and reaches exactly the routes its granted SCOPES
+allow, nothing else: the middleware allowlist is a closed set, no skeleton key.
+The surface, by scope:
+
+- **project_tasks** (the kanban board): `GET /api/projects/{pid}/tasks`,
+  `.../tasks/ready`, `.../tasks/{id}`, `.../tasks/{id}/comments` (GET + POST),
+  `POST .../tasks/{id}/(claim|release|close|reopen)`, and
+  `GET /api/projects/tasks/{id}/context`. Granting project_tasks also makes the
+  agent a project member.
+- **canvas_read**: `GET .../canvas/elements`, `.../canvas/snapshot.png|.tldr`,
+  `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
+  `PATCH|DELETE .../canvas/elements/{id}`.
+- **project_doc_review**: `GET .../doc-reviews`, `GET|PUT .../doc-review/{path}`.
+- **a2a_send / a2a_receive**: the authenticated bus proxy above
+  (`/api/a2a/bus/send|messages|channels|stream`), which forces `from` to the
+  agent's own handle.
+
+Access is per-project: a token is authorized for a project only when the agent
+holds an active grant + membership there; a request for a project it has no
+grant on returns an existence-hiding 404. External agents onboard via the
+consent flow (`POST /api/agents/auth-requests`) or a project invite (link +
+PIN; see issue #1780). When you change the
+allowlist in `tinyagentos/auth_middleware.py`, update this section in the same
+PR (the doc-gate enforces it).
+
+## Project invite redeem route (link + PIN)
+
+A project invite lets an external agent join without going through the consent
+UI. The mint dialog (admin, in the project's Members panel) creates the invite;
+the agent redeems it. Two endpoints are auth-EXEMPT (the PIN is the proof of
+possession), added method-sensitively to `tinyagentos/auth_middleware.py` exactly
+like `POST /api/cluster/pairing/claim`, and per-IP rate-limited (20 requests per
+10s, reusing the pairing throttle helper):
+
+- `POST /api/projects/invites/redeem` — body `{invite_id, pin, harness, label?}`.
+  Verifies the PIN (wrong PIN / expired / attempt-capped -> 403; already redeemed
+  / revoked -> 409), derives the agent handle `{project_slug}-{harness}[-{label}]`
+  and de-dupes it against active registry agents in the project, then either
+  auto-approves through the shared `approve_request_record` helper (decided_by =
+  the invite's creator) or leaves the request pending (manual mode, consent bell
+  fires). Returns a connection bundle plus `{request_id, agent_handle, poll_path}`.
+  `project_tasks` is force-included so a successful redeem always yields a project
+  member.
+- `GET /i/{invite_id}` — content-negotiated advert. An agent requesting
+  `Accept: application/json` gets the redeem contract (`{method, path, fields}`);
+  a browser gets a minimal HTML page. No PIN check here; it only advertises the
+  contract.
+
+The redeem response carries a **connection bundle** (design section 4 plus the
+Approved-build addendum). It contains NO token or secret (the token still
+arrives via the status poll). The bundle has:
+
+- `controller.endpoints` — the controller's reachable addresses: non-loopback
+  LAN IPv4s (priority ordered, operator override first) and the mesh (Tailscale)
+  node IP when joined. No relay in Phase 1.
+- `apis` — the agent-JWT-reachable surface, scoped EXACTLY to the granted scopes
+  and mirroring the middleware canvas allowlist so the advertised routes are the
+  ones the token can call: task routes when `project_tasks` is granted; canvas
+  `GET /canvas/elements` + `/canvas/snapshot.png` only when `canvas_read` is
+  granted; canvas `POST /canvas/elements` + `PATCH|DELETE /canvas/elements/{id}`
+  only when `canvas_write` is granted; the A2A bus proxy (`/api/a2a/bus/send|
+  messages|channels`) whenever an `a2a_*` scope is granted.
+- `delivery` — the timed-check contract (`poll_path`, `stream_path`,
+  `check_interval_secs` from the invite, `cursor: ts`, `filter: mentions+project`).
+- `onboarding` + `guide_markdown` — a personalized capability guide (repo link,
+  agent manual links, scoped Projects/Canvas summary, the A2A authenticated-proxy
+  contract, and explicit instructions to write the identity/project/token-file/bus
+  contract into the agent's OWN memory and to poll every `check_interval_secs`).
+
+See `docs/design/external-agent-project-invite.md` (issue #1780) for the full
+design; the bundle advertises canvas routes only when the corresponding scope
+was actually granted.
+
 These rules are deliberately lightweight. The goal is not process for its own
 sake; it is to let many hands move quickly on the same codebase without undoing
 each other's work.

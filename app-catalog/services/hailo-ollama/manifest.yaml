@@ -1,0 +1,29 @@
+id: hailo-ollama
+# The hailo-ollama runtime is Hailo proprietary software; the install flow
+# presents Hailo's EULA for acceptance before download (see the design doc).
+license: Proprietary (Hailo EULA, accepted at install)
+name: hailo-ollama (Hailo-10H NPU LLM)
+type: service
+category: llm-runtime
+description: "Ollama-compatible LLM server on the Hailo-10H NPU (Raspberry Pi 5 + AI HAT+2)"
+requires:
+  ram_mb: 1024
+  disk_mb: 500
+  ports: [7836]
+install:
+  method: script
+  script: scripts/install-hailo.sh
+hardware_tiers:
+  arm-npu-8gb: full
+  arm-npu-16gb: full
+  cpu-only: unsupported
+lifecycle:
+  backend_type: hailo-ollama
+  default_url: http://localhost:7836
+  auto_manage: true
+  unit: hailo-ollama.service
+  scope: system
+  health:
+    url: "http://localhost:7836/api/tags"
+    expect: '"models"'
+  startup_timeout_seconds: 120

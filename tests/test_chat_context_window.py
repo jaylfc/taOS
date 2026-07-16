@@ -1,8 +1,38 @@
-from tinyagentos.chat.context_window import build_context_window, estimate_tokens
+from tinyagentos.chat.context_window import (
+    build_context_window,
+    estimate_tokens,
+    history_token_budget,
+)
 
 
 def _msg(author, content, kind="user"):
     return {"author_id": author, "author_type": kind, "content": content}
+
+
+def test_history_token_budget_unknown_returns_default():
+    # Cloud/aliased models have no local context window; keep today's 4000.
+    assert history_token_budget(None) == 4000
+    assert history_token_budget(0) == 4000
+    assert history_token_budget(False) == 4000
+
+
+def test_history_token_budget_small_window_is_smaller_than_default():
+    # 8192 - 10000 system reserve - 1024 response reserve underflows,
+    # so the floor applies; result must be below the unknown-model default.
+    budget = history_token_budget(8192)
+    assert budget < 4000
+    assert budget == 512
+
+
+def test_history_token_budget_floored_at_512():
+    # Tiny windows still leave a usable history slice of at least 512.
+    assert history_token_budget(100) == 512
+    assert history_token_budget(1) == 512
+
+
+def test_history_token_budget_large_window_subtracts_reserves():
+    # 32768 - 10000 - 1024 = 21744
+    assert history_token_budget(32768) == 21744
 
 
 def test_build_preserves_order_oldest_first():

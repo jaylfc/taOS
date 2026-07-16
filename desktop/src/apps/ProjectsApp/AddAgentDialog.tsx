@@ -103,8 +103,8 @@ export function AddAgentDialog({
   };
 
   return createPortal(
-    <div role="dialog" aria-modal="true" aria-label="Add agent" className="fixed inset-0 bg-black/50 flex items-center justify-center">
-      <form onSubmit={onSubmit} className="bg-zinc-900 p-4 rounded shadow w-[26rem] space-y-3">
+    <div role="dialog" aria-modal="true" aria-label="Add agent" className="fixed inset-0 bg-black/50 flex items-center justify-center p-4">
+      <form onSubmit={onSubmit} className="bg-zinc-900 p-4 rounded shadow w-full max-w-md space-y-3">
         <h3 className="text-lg font-semibold">Add agent</h3>
 
         <fieldset className="border border-zinc-800 p-2 rounded">

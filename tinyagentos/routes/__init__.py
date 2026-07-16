@@ -55,6 +55,9 @@ def register_all_routers(app):
     from tinyagentos.routes import projects as projects_routes
     app.include_router(projects_routes.router)
 
+    from tinyagentos.routes.project_invites import router as project_invites_router
+    app.include_router(project_invites_router)
+
     from tinyagentos.routes import routines as routines_routes
     app.include_router(routines_routes.router)
 
@@ -196,6 +199,9 @@ def register_all_routers(app):
 
     from tinyagentos.routes.games import router as games_router
     app.include_router(games_router)
+
+    from tinyagentos.routes.game_assets import router as game_assets_router
+    app.include_router(game_assets_router)
 
     from tinyagentos.routes.terminal import router as terminal_router
     app.include_router(terminal_router)
@@ -340,6 +346,10 @@ def register_all_routers(app):
     from tinyagentos.routes.account_proxy import router as account_proxy_router
     app.include_router(account_proxy_router)
 
+    # Local hub API (hub social slice 2): the node's own profile + object store.
+    from tinyagentos.routes.hub import router as hub_router
+    app.include_router(hub_router)
+
     from tinyagentos.routes.office import router as office_router
     app.include_router(office_router)
     from tinyagentos.routes.songs import router as songs_router
@@ -378,3 +388,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.receipts import router as receipts_router
     app.include_router(receipts_router)
+
+    from tinyagentos.routes.council import router as council_router
+    app.include_router(council_router)

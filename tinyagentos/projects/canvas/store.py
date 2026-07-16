@@ -27,11 +27,21 @@ CREATE TABLE IF NOT EXISTS project_canvas_elements (
     payload TEXT NOT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
-    deleted_at REAL
+    deleted_at REAL,
+    element_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_project ON project_canvas_elements(project_id, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_canvas_updated ON project_canvas_elements(project_id, updated_at);
 """
+# The element_id index references a column added by _post_init on the migration
+# path, so it CANNOT live in SCHEMA: BaseStore runs SCHEMA (executescript)
+# before _post_init, and on an existing pre-element_id table the index creation
+# crashes ("no such column: element_id") before the migration can add it,
+# bricking controller boot. Created in _post_init after the ALTER instead.
+_CANVAS_ELEMENT_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_canvas_element "
+    "ON project_canvas_elements(project_id, element_id)"
+)
 
 _CANVAS_JSON_FIELDS = ("payload",)
 # Ideas-board kinds (text, mermaid, flowchart, mindmap_edge) carry their
@@ -69,6 +79,24 @@ class ProjectCanvasStore(BaseStore):
         super().__init__(db_path)
         self._broker = broker
 
+    async def _post_init(self) -> None:
+        # Additive column for project elements (slice 4 of
+        # docs/design/projects-nested-elements.md). Existing databases created
+        # before the element tag existed on canvas items get the column added
+        # here; fresh installs already have it from SCHEMA. Swallow the
+        # duplicate-column error the same way the task/element stores do.
+        try:
+            await self._db.execute(
+                "ALTER TABLE project_canvas_elements ADD COLUMN element_id TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+        # Created here (not in SCHEMA) so the column exists first on the
+        # migration path. Idempotent (IF NOT EXISTS).
+        await self._db.execute(_CANVAS_ELEMENT_INDEX)
+        await self._db.commit()
+
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
         if self._broker is not None:
             from tinyagentos.projects.events import ProjectEvent
@@ -99,6 +127,7 @@ class ProjectCanvasStore(BaseStore):
         element: dict,
         author_kind: str,
         author_id: str,
+        element_id: "str | None" = None,
     ) -> dict:
         kind = element.get("kind")
         if kind not in _VALID_KINDS:
@@ -107,6 +136,10 @@ class ProjectCanvasStore(BaseStore):
             raise ValueError(f"agents may not emit kind={kind}")
         if author_kind not in ("user", "agent"):
             raise ValueError(f"invalid author_kind: {author_kind}")
+        # Enforce the per-project edit permission for agents (defense in depth:
+        # the route already gates on scope + can_edit_canvas, but the store is
+        # the authoritative floor so a direct caller can never bypass it).
+        await self._check_edit_permission(project_id, author_kind, author_id)
         eid = element.get("id") or new_id("cve")
         now = time.time()
         # Upsert: the client may re-send an element it already created (e.g. a
@@ -115,13 +148,14 @@ class ProjectCanvasStore(BaseStore):
         await self._db.execute(
             """INSERT INTO project_canvas_elements
                (id, project_id, kind, author_kind, author_id,
-                x, y, w, h, rotation, z_index, payload, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                x, y, w, h, rotation, z_index, payload, element_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  kind=excluded.kind, author_kind=excluded.author_kind,
                  author_id=excluded.author_id, x=excluded.x, y=excluded.y,
                  w=excluded.w, h=excluded.h, rotation=excluded.rotation,
                  z_index=excluded.z_index, payload=excluded.payload,
+                 element_id=excluded.element_id,
                  updated_at=excluded.updated_at""",
             (
                 eid, project_id, kind, author_kind, author_id,
@@ -130,21 +164,42 @@ class ProjectCanvasStore(BaseStore):
                 float(element.get("rotation", 0)),
                 int(element.get("z_index", 0)),
                 json.dumps(element.get("payload") or {}),
+                element_id,
                 now, now,
             ),
         )
         await self._db.commit()
         new_el = await self.get_element(eid)
-        await self._publish(project_id, "canvas.element_added", {"element": new_el})
+        await self._publish(
+            project_id, "canvas.element_added",
+            {"element": new_el, "actor": {"kind": author_kind, "id": author_id}},
+        )
         return new_el
 
-    async def list_elements(self, project_id: str) -> list[dict]:
-        async with self._db.execute(
-            """SELECT * FROM project_canvas_elements
-               WHERE project_id = ? AND deleted_at IS NULL
-               ORDER BY z_index ASC, created_at ASC""",
-            (project_id,),
-        ) as cur:
+    async def list_elements(
+        self,
+        project_id: str,
+        element_id: "str | None" = None,
+    ) -> list[dict]:
+        """Canvas items for a project, optionally scoped to one element.
+
+        ``element_id`` follows the same conventions as task filtering:
+        ``None`` returns every (non-deleted) item, ``"none"`` returns only
+        untagged items (``element_id IS NULL``), and any other string returns
+        items tagged with that element id.
+        """
+        sql = (
+            "SELECT * FROM project_canvas_elements "
+            "WHERE project_id = ? AND deleted_at IS NULL"
+        )
+        params: list = [project_id]
+        if element_id == "none":
+            sql += " AND element_id IS NULL"
+        elif element_id is not None:
+            sql += " AND element_id = ?"
+            params.append(element_id)
+        sql += " ORDER BY z_index ASC, created_at ASC"
+        async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
             desc = cur.description
         return [_row_to_element(r, desc) for r in rows]
@@ -165,6 +220,30 @@ class ProjectCanvasStore(BaseStore):
         if row is None or not row[0]:
             raise CanvasPermissionError(
                 f"agent {author_id} has no can_edit_canvas on project {project_id}"
+            )
+
+    async def check_read_permission(
+        self, project_id: str, author_kind: str, author_id: str
+    ) -> None:
+        """Gate canvas reads on can_read_canvas for agents (D3 read matrix).
+
+        Mirrors _check_edit_permission: humans bypass the floor, agents must hold
+        the per-project can_read_canvas flag, and a missing member row fails
+        closed.  This is the in-process analogue of the route-level canvas_read
+        scope check, guarding the agent MCP read path at the store floor."""
+        if author_kind == "user":
+            return
+        if author_kind != "agent":
+            raise ValueError(f"invalid author_kind: {author_kind}")
+        async with self._db.execute(
+            "SELECT can_read_canvas FROM project_members "
+            "WHERE project_id = ? AND member_id = ?",
+            (project_id, author_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or not row[0]:
+            raise CanvasPermissionError(
+                f"agent {author_id} has no can_read_canvas on project {project_id}"
             )
 
     async def update_element(
@@ -203,7 +282,10 @@ class ProjectCanvasStore(BaseStore):
         updated = await self.get_element(element_id, project_id=project_id)
         if updated is None:
             raise ValueError(f"element not found: {element_id}")
-        await self._publish(project_id, "canvas.element_updated", {"element": updated})
+        await self._publish(
+            project_id, "canvas.element_updated",
+            {"element": updated, "actor": {"kind": author_kind, "id": author_id}},
+        )
         return updated
 
     async def delete_element(
@@ -226,5 +308,5 @@ class ProjectCanvasStore(BaseStore):
         if cur.rowcount == 1:
             await self._publish(
                 project_id, "canvas.element_deleted",
-                {"element_id": element_id},
+                {"element_id": element_id, "actor": {"kind": author_kind, "id": author_id}},
             )

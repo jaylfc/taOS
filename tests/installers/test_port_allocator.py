@@ -26,6 +26,10 @@ class TestReservedPorts:
     def test_llamacpp_port_reserved(self):
         assert 7835 in RESERVED_PORTS
 
+    def test_hailo_ollama_port_reserved(self):
+        """7836 is the hailo-ollama NPU backend; apps must never be allocated it."""
+        assert 7836 in RESERVED_PORTS
+
 
 class TestAllocateHostPort:
     def test_deterministic_for_same_app_id(self):
@@ -35,6 +39,14 @@ class TestAllocateHostPort:
         port = allocate_host_port("some-app")
         assert _POOL_START <= port < _POOL_END
         assert port not in RESERVED_PORTS
+
+    def test_never_allocates_hailo_ollama_port(self):
+        """7836 must stay reserved so no app host-port can squat hailo-ollama."""
+        assert 7836 in RESERVED_PORTS
+        for i in range(50):
+            port = allocate_host_port(f"hailo-port-guard-{i}")
+            assert port != 7836
+            assert port not in RESERVED_PORTS
 
     def test_walks_past_a_bound_port(self):
         preferred = allocate_host_port("walk-test-app")

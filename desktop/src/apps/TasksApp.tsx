@@ -366,7 +366,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
                             {task.agent_name || "\u2014"}
                           </span>
                         </div>
-                        <div className="flex items-center gap-3 mt-1 text-xs text-shell-text-tertiary">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-shell-text-tertiary">
                           <span className="font-mono">{task.schedule}</span>
                           <span className="font-mono truncate max-w-[200px]">{task.command}</span>
                           <span className="tabular-nums">

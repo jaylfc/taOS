@@ -304,7 +304,9 @@ class TestSlashCommandsManifest:
         r = await client.get("/api/frameworks/slash-commands")
         assert r.status_code == 200
         data = r.json()
-        assert data["plain"] == []
+        # generic framework now includes /help as a built-in command.
+        assert len(data["plain"]) >= 1
+        assert any(c["name"] == "help" for c in data["plain"])
 
     async def test_command_structure(self, client, app):
         app.state.config.agents = []

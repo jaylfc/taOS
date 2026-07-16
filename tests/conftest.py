@@ -305,6 +305,10 @@ async def client(app, tmp_data_dir):
     if project_store._db is not None:
         await project_store.close()
     await project_store.init()
+    project_invites = app.state.project_invites
+    if project_invites._db is not None:
+        await project_invites.close()
+    await project_invites.init()
     board_audit = app.state.board_audit
     if board_audit._db is not None:
         await board_audit.close()
@@ -317,6 +321,10 @@ async def client(app, tmp_data_dir):
     if project_task_store._db is not None:
         await project_task_store.close()
     await project_task_store.init()
+    project_element_store = app.state.project_element_store
+    if project_element_store._db is not None:
+        await project_element_store.close()
+    await project_element_store.init()
     routine_store = app.state.routine_store
     if routine_store._db is not None:
         await routine_store.close()
@@ -376,6 +384,14 @@ async def client(app, tmp_data_dir):
     if device_store._db is not None:
         await device_store.close()
     await device_store.init()
+    council_roles = app.state.council_roles
+    if council_roles._db is not None:
+        await council_roles.close()
+    await council_roles.init()
+    council_members = app.state.council_members
+    if council_members._db is not None:
+        await council_members.close()
+    await council_members.init()
     # BrowserApp v2 stores
     from tinyagentos.routes.desktop_browser.store import BrowserStore, BrowserCookieStore
     _browser_store = BrowserStore(tmp_data_dir / "browser.sqlite3")
@@ -414,6 +430,7 @@ async def client(app, tmp_data_dir):
     await routine_store.close()
     await board_audit.close()
     await project_store.close()
+    await project_invites.close()
     await chat_channels.close()
     await chat_messages.close()
     await expert_agents.close()
@@ -436,10 +453,13 @@ async def client(app, tmp_data_dir):
     await coding_session_store.close()
     await feedback_store.close()
     await client_log_store.close()
+    await project_element_store.close()
     await app.state.qmd_client.close()
     await app.state.http_client.aclose()
     await _browser_store.close()
     await _browser_cookie_store.close()
+    await app.state.council_roles.close()
+    await app.state.council_members.close()
 
 
 def create_test_qmd_db(db_path):
@@ -571,6 +591,10 @@ async def client_with_qmd(app_with_qmd):
     if project_task_store._db is not None:
         await project_task_store.close()
     await project_task_store.init()
+    project_element_store = app_with_qmd.state.project_element_store
+    if project_element_store._db is not None:
+        await project_element_store.close()
+    await project_element_store.init()
     routine_store = app_with_qmd.state.routine_store
     if routine_store._db is not None:
         await routine_store.close()
@@ -611,5 +635,6 @@ async def client_with_qmd(app_with_qmd):
     await secrets_store.close()
     await notif_store.close()
     await store.close()
+    await project_element_store.close()
     await app_with_qmd.state.qmd_client.close()
     await app_with_qmd.state.http_client.aclose()

@@ -43,9 +43,9 @@ class TestClusterManager:
     async def test_unregister_worker(self):
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("gpu-box"))
-        assert mgr.unregister_worker("gpu-box") is True
+        assert await mgr.unregister_worker("gpu-box") is True
         assert mgr.get_workers() == []
-        assert mgr.unregister_worker("gpu-box") is False
+        assert await mgr.unregister_worker("gpu-box") is False
 
     async def test_heartbeat_updates_load_and_status(self):
         mgr = ClusterManager()
@@ -71,6 +71,22 @@ class TestClusterManager:
 
         mgr.heartbeat("gpu-box", load=0.1)
         assert mgr.get_worker("gpu-box").status == "online"
+
+    async def test_heartbeat_does_not_reonline_draining_worker(self):
+        """A worker mid graceful-drain keeps heartbeating; heartbeat must NOT
+        flip it back to online or it re-enters routing before leases finish
+        (taOS #890)."""
+        mgr = ClusterManager()
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+        w.status = "draining"
+
+        ok = mgr.heartbeat("gpu-box", load=0.1)
+        assert ok is True
+        # Load/last_heartbeat still update, but status stays draining.
+        updated = mgr.get_worker("gpu-box")
+        assert updated.status == "draining"
+        assert updated.load == 0.1
 
     async def test_heartbeat_timeout_marks_offline(self):
         mgr = ClusterManager()

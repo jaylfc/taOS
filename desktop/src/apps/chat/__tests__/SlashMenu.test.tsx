@@ -47,4 +47,15 @@ describe("SlashMenu", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("scopes to a single agent in a group channel via scopedAgent", () => {
+    render(<SlashMenu commands={commands} queryAfterSlash="" members={["user", "tom", "don"]}
+             scopedAgent="tom" onPick={vi.fn()} onClose={vi.fn()} />);
+    // Only tom's commands are shown, with the header.
+    expect(screen.getByText("@tom")).toBeInTheDocument();
+    expect(screen.getByText("/help")).toBeInTheDocument();
+    expect(screen.getByText("/clear")).toBeInTheDocument();
+    // don's commands are excluded.
+    expect(screen.queryByText("@don")).not.toBeInTheDocument();
+  });
 });

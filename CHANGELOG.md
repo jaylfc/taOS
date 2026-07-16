@@ -7,6 +7,87 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.40] - 2026-07-11
+
+### Added
+- Approving an external agent for the project-tasks scope now asks which project to bind it to, with an inline option to create a new one, and the approval adds the agent as a member of that project so it shows up in the project's Members and joins the project channel. Granting project-tasks without picking a project is refused, so an agent's own request can never bind it to a project you did not choose (#1777).
+- taOS notifications can now reach your phone as native web-push. Install the PWA and allow notifications, and access requests and other alerts arrive as OS banners even when the app is closed, delivered best effort so a push failure never blocks the in-app feed (#1778).
+
+### Fixed
+- Agent chat now sizes its history budget to the model's real context window instead of a fixed limit, so a small-context local model no longer overflows and loops. When several agents share one reply the budget follows the smallest known window, and any unknown window keeps the previous safe default (#1740, #1779).
+
+## [1.0.0-beta.39] - 2026-07-10
+
+### Added
+- Game Studio can now generate textures and sprites from a text prompt using a ComfyUI backend on a discrete-GPU worker, writing the image straight into the game's file set. On a host with no capable GPU the panel shows a clear "needs a GPU worker" state instead of failing (#1773).
+- taOSgo cluster-join now completes the network side: a controller joins the account mesh over the system tailscale against the Headscale server, and the per-host service tokens the join returns are persisted host-locally (owner-only) so publishing and passkey fetches keep working after a join (#1770, #1772).
+- Agents post to the coordination bus as themselves through an authenticated send proxy, so a message carries the agent's own identity and cannot be spoofed as another account (#1768).
+- The cluster advertises the models a node can serve from its backend manifest, and installing a backend now registers it as a managed, node-local service that can be started, stopped, and health-checked per node (#1756, #1758, #1760, #1762).
+- An approved external agent can be granted a least-privilege project-tasks scope to read and drive a single project's task board (claim, close, comment) with its own token, scoped so it can never reach another project (#1774).
+
+### Fixed
+- Backend and worker robustness: the model VRAM check reserves atomically before a load so two loads cannot race the same memory, a malformed backend manifest no longer crashes the worker, and the VRAM guard fails closed rather than open on a probe error (#1725, #1767).
+- The RK3588 (RKLLM) install path pins the rkllama server to the verified 1.3.0 reference and guards the fork patches, and a live rkllama port is treated as installed only when it is a managed service (#1755, #1764).
+- Fixed six agent-framework catalog manifests that referenced install scripts which did not exist at the repo root (#1694).
+
+## [1.0.0-beta.38] - 2026-07-08
+
+### Added
+- The Agent conversation window now shows a live activity banner when a response is slow or has stalled. If no output arrives for a while it surfaces a "taking longer than usual" hint, escalating to a "may be stalled" warning with a shortcut to restart the AI services, so a stuck generation no longer looks like a frozen window. Requested by @mandresve (#1741).
+- A "Restart AI Services" action in the Activity tab restarts the local inference backends (rkllama and qmd) without bouncing the controller or your agents, for recovering a stalled model on an edge device without a terminal. It asks for confirmation first and reports the result per service. Requested by @mandresve (#1743).
+
+### Fixed
+- The Agent conversation window now scrolls when a conversation is longer than the visible area, so long responses and logs stay reachable instead of pushing earlier content out of view. Reported by @mandresve (#1742).
+- The Agents view is now readable on a phone. Archived agent rows stack so the agent name is no longer squeezed to a single character, and the header condenses so nothing truncates.
+- Several other app views now reflow correctly on a phone instead of overflowing: the Images studio edit and library panels, the Tasks and Observatory lists, the add-agent dialog, and the Mail reading toolbar.
+
+## [1.0.0-beta.37] - 2026-07-08
+
+### Fixed
+- An embedding model can no longer be assigned as an agent's chat model. Assigning one (for example qwen3-embedding-0.6b) now returns a clear error instead of silently accepting it and producing repeating, off-topic output, because an embedding model cannot do chat completion. Reported by @mandresve (#1740).
+- A local RK3588 (RKLLM) model whose context window is too small for the agent harness now surfaces a non-blocking warning when it is assigned, so an over-small context (for example 4096 tokens) is flagged rather than silently truncating the agent prompt and looping (#1740).
+- The RK3588 (RKLLM) backend now returns a structured context-overflow error when a prompt exceeds the model context, so a client can tell a context overflow apart from invalid input or a server fault instead of getting a bare 400. Reported by @mandresve (#1738).
+
+### Added
+- A `taos recover-password` command for offline recovery of a local account password when the admin is locked out of the web login. It resets the password directly in the auth store (single-user, named multi-user, pending, or legacy) and revokes that account's sessions.
+
+## [1.0.0-beta.36] - 2026-07-08
+
+### Fixed
+- The RK3588 (RKLLM) install path no longer produces a broken rkllama service after an update. A previous pin bumped the rkllama server to a build that had dropped its startup preload flag, so the service failed to start on existing installs. The pin now points at a server that restores preload and adds a pre-flight context-length check, so a prompt longer than the model context returns a clear error instead of crashing the worker. Reported by @mandresve (#1730, #1732).
+- SearXNG installs now enable the JSON output format by default, so an agent can use the local SearXNG as a search backend without hand-editing its settings (#969).
+- Fixed a chat initialization error where a temporal-dead-zone reference could stop the conversation view from loading (#1720).
+
+### Security
+- Per-app secret files created during install are now written owner-only (0600) and regenerated if a prior write left them empty or malformed, so a session-signing key can no longer be left world-readable on disk (#1734).
+
+### Changed
+- taOS is now dual-licensed as AGPL-3.0-or-later plus a commercial option. The public core is AGPL-3.0, an OSI-approved license, with a separate commercial license available for uses that need different terms (#1721).
+
+## [1.0.0-beta.35] - 2026-07-07
+
+### Fixed
+- The taOS Agent now returns output when it runs on a local RK3588 (RKLLM) model. Two gaps combined to make the agent report "the agent backend returned no output": the local rkllama backend was registered under a name that did not match the RKLLM model manifests, so the model was never exposed to the LiteLLM proxy the agent calls, and the pinned rkllama server had a Python version incompatibility that made its chat endpoint fail before inference. The backend name now matches on load (existing installs self-heal on update, no reinstall) and the rkllama pin is bumped to the fixed server. Reported by @mandresve (#1710).
+- Agent message bubbles are now selectable and show a copy button on hover, so an agent's reply can be copied without dragging across the whole conversation (#835).
+- The desktop top bar now shows a badge when an update is available, and clicking it opens the Updates pane in Settings (#855).
+- taOS now surfaces a clear message when your local branch has diverged from its tracked remote, instead of a confusing update-check state (#841).
+
+### Security
+- Cluster GPU-lease endpoints now require admin authentication and validate their inputs, so a non-privileged LAN client cannot claim, release, or probe another node's GPU leases (#1675 follow-up).
+- The bare-metal worker backend runs under process supervision with hardened handling, and container environment values now reject embedded newlines (#1691).
+- Agent delegation and the org model were hardened against a stale-permission carry-over and a reporting-lock race (#174, #1661, #1662).
+
+## [1.0.0-beta.34] - 2026-07-07
+
+### Fixed
+- Downloaded RK3588 (rkllama) models now appear after a normal update, with no reinstall. rkllama's background service kept saving models to its old location even after the controller updated, and taOS did not look there. taOS now reads where the rkllama service actually writes (from its systemd unit) and scans that directory, so an existing install's downloaded models show up in the Models list. Reported by @mandresve (#1548).
+- The local RKLLM provider no longer shows Error because of a stale port. Installs seeded before the taOS default port moved to 7833 kept a localhost:8080 provider URL, so the Providers page and model discovery polled a dead port. That URL is now healed to 7833 on load. Reported by @mandresve (#1697).
+- The taOS Agent chat no longer reports "runtime unavailable" when opencode was installed by the operator under their own home. The controller runs as an unprivileged service user that could not see an opencode installed in a different user's home, so it now also checks a TAOS_OPENCODE_BIN override and trusted system locations. Reported by @mandresve (#1616).
+- When an agent's model change cannot re-scope its per-agent key, the stale key is discarded and that discard is now persisted, so the next deploy correctly falls back to the master key instead of reusing a key scoped to the old model (#1686).
+
+### Security
+- opencode discovery only probes trusted locations (system paths, the service user's own home) and an explicit operator override, never arbitrary users' home directories, so a non-privileged user cannot plant a binary the service would run (#1616).
+
 ## [1.0.0-beta.33] - 2026-07-06
 
 ### Fixed

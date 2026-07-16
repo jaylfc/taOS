@@ -68,6 +68,9 @@ FRAMEWORKS: dict[str, dict] = {
         "name": "Generic",
         "description": "Fallback adapter — echos messages; use as a starting point",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show Generic adapter help"},
+        ],
     },
     "pocketflow": {
         "id": "pocketflow",
@@ -157,54 +160,81 @@ FRAMEWORKS: dict[str, dict] = {
         "name": "Agent Zero",
         "description": "Proxies messages to the Agent Zero HTTP API (agent0ai/agent-zero)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show Agent Zero help"},
+        ],
     },
     "ironclaw": {
         "id": "ironclaw",
         "name": "IronClaw",
         "description": "OpenClaw-inspired Rust agent focused on privacy and security (nearai/ironclaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show IronClaw help"},
+        ],
     },
     "microclaw": {
         "id": "microclaw",
         "name": "MicroClaw",
         "description": "Agentic AI assistant in Rust, inspired by NanoClaw (microclaw/microclaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show MicroClaw help"},
+        ],
     },
     "moltis": {
         "id": "moltis",
         "name": "Moltis",
         "description": "Secure persistent personal agent server in Rust (moltis-org/moltis)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show Moltis help"},
+        ],
     },
     "nanoclaw": {
         "id": "nanoclaw",
         "name": "NanoClaw",
         "description": "Lightweight container-based OpenClaw alternative on Anthropic Agents SDK (qwibitai/nanoclaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show NanoClaw help"},
+        ],
     },
     "nullclaw": {
         "id": "nullclaw",
         "name": "NullClaw",
         "description": "Fully autonomous AI assistant infrastructure in Zig (nullclaw/nullclaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show NullClaw help"},
+        ],
     },
     "picoclaw": {
         "id": "picoclaw",
         "name": "PicoClaw",
         "description": "Tiny, fast, and deployable anywhere — automate the mundane, unleash creativity (sipeed/picoclaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show PicoClaw help"},
+        ],
     },
     "shibaclaw": {
         "id": "shibaclaw",
         "name": "ShibaClaw",
         "description": "Self-hosted AI agent with 5-layer prompt injection protection (RikyZ90/ShibaClaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show ShibaClaw help"},
+        ],
     },
     "zeroclaw": {
         "id": "zeroclaw",
         "name": "ZeroClaw",
         "description": "Fast, small, fully autonomous AI personal assistant in Rust (zeroclaw-labs/zeroclaw)",
         "verification_status": "alpha",
+        "slash_commands": [
+            {"name": "help", "description": "Show ZeroClaw help"},
+        ],
     },
 }
 

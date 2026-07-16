@@ -198,10 +198,23 @@ self.addEventListener("push", (event: PushEvent) => {
 
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
   // Close the notification, then focus an existing same-origin window
-  // (posting the click data so the shell can route to the right tab)
-  // or open a new one at root.
+  // (posting the click data so the shell can route to the right tab) or
+  // open a new one at the notification's deep link (data.url), falling back
+  // to root.
   event.notification.close();
   const data = (event.notification.data as Record<string, unknown>) || {};
+  // Resolve the deep link against our own origin and refuse anything
+  // cross-origin (open-redirect / phishing guard): a hostile push cannot make
+  // openWindow() navigate to an external site.
+  let target = typeof data["url"] === "string" && data["url"] ? (data["url"] as string) : "/";
+  try {
+    const u = new URL(target, self.location.origin);
+    target = u.origin === self.location.origin && u.pathname.startsWith("/")
+      ? u.pathname + u.search
+      : "/";
+  } catch {
+    target = "/";
+  }
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
@@ -213,7 +226,7 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
           }
         }
         if (self.clients.openWindow) {
-          return self.clients.openWindow("/");
+          return self.clients.openWindow(target);
         }
         return null;
       })

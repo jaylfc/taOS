@@ -56,7 +56,7 @@ class TestConfigureContainerRuntimeNone:
             result = configure_container_runtime(None)
         assert result is None
         assert any(
-            "No container backend detected (Incus / Docker / Podman / Apple)" in r.message
+            "No container backend detected (Incus / Docker / Podman / Apple / Native)" in r.message
             for r in caplog.records
         )
 
@@ -90,3 +90,21 @@ class TestConfigureContainerRuntimeConfigOverride:
             result = configure_container_runtime(None)
         mock_detect.assert_called_once()
         assert result == "lxc"
+
+
+class TestConfigureContainerRuntimeNative:
+    def test_config_native_sets_native_backend(self):
+        config = MagicMock()
+        config.container_runtime = "native"
+        with patch("tinyagentos.containers.backend.detect_runtime") as mock_detect:
+            result = configure_container_runtime(config)
+        mock_detect.assert_not_called()
+        assert result == "native"
+        from tinyagentos.containers.native import NativeBackend
+        assert isinstance(_be._active_backend, NativeBackend)
+
+    def test_native_not_auto_detected(self):
+        """detect_runtime() never returns 'native' — it's config-only."""
+        from tinyagentos.containers.backend import detect_runtime
+        result = detect_runtime()
+        assert result != "native"

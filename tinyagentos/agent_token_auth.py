@@ -71,18 +71,21 @@ def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     return kp
 
 
-async def check_agent_scope(request: Request, required_scope: str) -> Optional[str]:
-    """Return the canonical_id from a valid Bearer registry JWT that holds an
-    active *required_scope* grant, or raise an HTTPException.
+# Detail string for a token whose project_id claim does not match the requested
+# project.  Shared with the project task routes so they can recognise this exact
+# rejection and collapse it into an existence-hiding 404 (a token bound to
+# another project must be indistinguishable from a non-owner session).
+PROJECT_SCOPE_MISMATCH_DETAIL = "token not scoped to this project"
 
-    Returns None when no Authorization header is present (the caller falls
-    through to its own admin/session handling).
 
-    Raises:
-      401 -- Authorization header present but the token is malformed, has a bad
-             signature, or is missing the sub claim.
-      403 -- Token is valid but the agent is not active in the registry, the
-             sub is unknown, or the grant is missing/expired.
+async def _verify_agent_scope(
+    request: Request, required_scope: str
+) -> Optional[tuple[str, dict]]:
+    """Shared verifier for the agent-token checks.
+
+    Return ``(canonical_id, payload)`` for a valid Bearer registry JWT that holds
+    an active *required_scope* grant, or ``None`` when no Authorization header is
+    present.  Raises the same 401/403 documented on ``check_agent_scope``.
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
@@ -122,4 +125,66 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
             detail=f"token does not hold an active {required_scope!r} grant",
         )
 
+    return canonical_id, payload
+
+
+async def check_agent_scope(request: Request, required_scope: str) -> Optional[str]:
+    """Return the canonical_id from a valid Bearer registry JWT that holds an
+    active *required_scope* grant, or raise an HTTPException.
+
+    Returns None when no Authorization header is present (the caller falls
+    through to its own admin/session handling).
+
+    Raises:
+      401 -- Authorization header present but the token is malformed, has a bad
+             signature, or is missing the sub claim.
+      403 -- Token is valid but the agent is not active in the registry, the
+             sub is unknown, or the grant is missing/expired.
+    """
+    result = await _verify_agent_scope(request, required_scope)
+    if result is None:
+        return None
+    canonical_id, _payload = result
+    return canonical_id
+
+
+async def check_agent_scope_for_project(
+    request: Request, required_scope: str, project_id: str
+) -> Optional[str]:
+    """Project-scoped sibling of ``check_agent_scope`` (least privilege).
+
+    Verifies the same EdDSA JWT + active-grant chain AND requires the token's
+    ``project_id`` claim to equal *project_id*.  This binds an agent token to a
+    single project's routes so it can never reach another project's board.
+
+    Returns None when no Authorization header is present.
+
+    Raises:
+      401/403 -- exactly as ``check_agent_scope`` (bad token / inactive agent /
+                 missing scope grant).
+      403 ``token not scoped to this project`` -- token is otherwise valid but
+                 its project_id claim is absent or does not match *project_id*.
+    """
+    result = await _verify_agent_scope(request, required_scope)
+    if result is None:
+        return None
+    canonical_id, payload = result
+    token_project = payload.get("project_id")
+    if not token_project or token_project != project_id:
+        raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
+    # Defense in depth: the token's project_id claim agreeing is not enough; the
+    # underlying grant must itself be bound to this project. A claim and a grant
+    # could diverge (re-mint against a stale claim, a hand-edited grant row), so
+    # require an active grant whose own project_id matches before authorizing.
+    grants_store = _get_grants_store(request)
+    now = datetime.now(timezone.utc)
+    grants = await grants_store.list_grants(canonical_id)
+    grant_ok = any(
+        g["scope"] == required_scope
+        and g.get("project_id") == project_id
+        and _grant_unexpired(g.get("expires_at"), now)
+        for g in grants
+    )
+    if not grant_ok:
+        raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
     return canonical_id

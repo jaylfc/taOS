@@ -5,6 +5,7 @@ import { projectsApi } from "../../../../lib/projects";
 
 beforeEach(() => {
   vi.spyOn(projectsApi.tasks, "list").mockResolvedValue([]);
+  vi.spyOn(projectsApi.elements, "list").mockResolvedValue([]);
   vi.spyOn(projectsApi, "subscribeEvents").mockReturnValue(() => {});
 });
 

@@ -30,6 +30,17 @@ async def app_env(tmp_path):
     await snap._ensure_subscribed(p["id"])
 
     app = FastAPI()
+
+    # The gated canvas routes authorize via request.state.user_id / is_admin
+    # (set by the auth middleware in production). This bare test app has no
+    # middleware, so inject a fixed admin session to mirror the unchanged
+    # session-owner behavior the routes rely on.
+    @app.middleware("http")
+    async def _inject_session(request, call_next):
+        request.state.user_id = "admin"
+        request.state.is_admin = True
+        return await call_next(request)
+
     app.state.project_store = ps
     app.state.project_canvas_store = cs
     app.state.canvas_snapshotter = snap

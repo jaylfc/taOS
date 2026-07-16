@@ -262,6 +262,22 @@ async def remote_is_strictly_ahead(project_dir: Path, current: str, remote: str)
     return rc == 0
 
 
+async def branch_is_diverged(project_dir: Path, current: str, remote: str) -> bool:
+    """True when *current* and *remote* have diverged.
+
+    Callers must already have confirmed that ``remote_is_strictly_ahead(current, remote)``
+    is False, and that *current* and *remote* are non-empty and different. Under those
+    preconditions, this returns True when *remote* is also not an ancestor of *current*
+    (i.e. neither side is a strict ancestor — truly diverged).
+    """
+    if not current or not remote or current == remote:
+        return False
+    rc, _ = await _run(
+        ["git", "merge-base", "--is-ancestor", remote, current], project_dir
+    )
+    return rc != 0
+
+
 class AutoUpdateService:
     """Background service that periodically checks GitHub for updates.
 
@@ -362,6 +378,16 @@ class AutoUpdateService:
                     # Remember so we don't re-notify next hour.
                     prefs["last_notified_commit"] = new_commit
                     await self._save_prefs(prefs)
+            elif current and new_commit and current != new_commit \
+                    and await branch_is_diverged(self._project_dir, current, new_commit):
+                # Local branch has diverged from the tracked remote — the
+                # user won't see an update notification until they reconcile
+                # (or manually check via Settings, which surfaces a message).
+                logger.debug(
+                    "auto-update: branch diverged from tracked remote "
+                    "(%s vs %s) — no update notification will fire",
+                    current[:7], new_commit[:7],
+                )
 
         # Poll latest framework release metadata for frameworks that publish
         # GitHub releases. Guarded with getattr so it's a no-op before Task 8.1

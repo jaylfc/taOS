@@ -57,6 +57,10 @@ class ClusterManager:
     async def stop(self):
         if self._monitor_task:
             self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
 
     async def register_worker(self, info: WorkerInfo) -> None:
         # Snapshot capabilities before adding worker
@@ -205,7 +209,13 @@ class ClusterManager:
         prev_status = worker.status
         worker.last_heartbeat = time.time()
         worker.load = load
-        worker.status = "online"
+        # A worker mid graceful-drain keeps heartbeating while it finishes
+        # inflight work. Do NOT flip it back to "online" — that would re-enter
+        # it into routing/catalog/lease-claims before its leases drain and
+        # defeat the drain (taOS #890). Leave the drain to complete or be
+        # cancelled explicitly; every other status re-onlines as before.
+        if worker.status != "draining":
+            worker.status = "online"
         if models is not None:
             worker.models = models
         if backends is not None:
@@ -219,6 +229,18 @@ class ClusterManager:
                     if name_m and name_m not in flat_models:
                         flat_models.append(name_m)
             worker.models = flat_models
+            # Derive available_models from the live backend catalog.
+            # Each backend may carry a manifest-enriched
+            # available_models list; flatten across all backends.
+            flat_available: list[dict] = []
+            seen_ids: set[str] = set()
+            for b in backends:
+                for m in b.get("available_models") or []:
+                    model_id = m.get("model_id") or ""
+                    if model_id and model_id not in seen_ids:
+                        seen_ids.add(model_id)
+                        flat_available.append(m)
+            worker.available_models = flat_available
         if capabilities is not None:
             worker.capabilities = list(capabilities)
         if kv_cache_quant_support is not None:
@@ -249,8 +271,36 @@ class ClusterManager:
                 pass  # No running loop (e.g. in sync tests) — skip gracefully
         return True
 
-    def unregister_worker(self, name: str) -> bool:
-        return self._workers.pop(name, None) is not None
+    async def unregister_worker(self, name: str) -> bool:
+        """Remove a worker and all of its active GPU leases.
+
+        When a worker is explicitly unregistered (admin action), every
+        active lease tied to the worker's resources is released so that
+        those resource slots become available for new claims immediately.
+        This mirrors the lease-release logic in ``_monitor_loop`` for the
+        heartbeat-timeout path (taOS #1705).
+        """
+        worker = self._workers.get(name)
+        if worker is None:
+            return False
+
+        # Release all active leases for this worker's resources.
+        async with self._lease_lock:
+            lids: list[str] = [
+                lid for lid, lease in self._leases.items()
+                if (parsed := self._parse_resource_id(lease.resource_id))
+                and parsed[0] == name
+            ]
+            for lid in lids:
+                self._leases.pop(lid, None)
+                logger.debug(
+                    "Lease %s released — worker '%s' unregistered",
+                    lid, name,
+                )
+
+            self._workers.pop(name, None)
+        logger.info("Worker '%s' unregistered — %d leases released", name, len(lids))
+        return True
 
     def get_workers(self) -> list[WorkerInfo]:
         return list(self._workers.values())
@@ -322,12 +372,16 @@ class ClusterManager:
         ``_lease_lock`` so two concurrent claims for the same resource
         cannot both succeed.
         """
-        worker = self._worker_for_resource(resource_id)
-        if worker is None:
-            logger.debug("claim_lease: worker not found or offline for %s", resource_id)
-            return None
-
         async with self._lease_lock:
+            # Resolve the worker and re-check its status inside the lock: the
+            # monitor loop marks workers offline and sweeps their leases under
+            # this same lock, so a lookup before the lock could admit a lease
+            # against a worker that went offline while we waited (TOCTOU).
+            worker = self._worker_for_resource(resource_id)
+            if worker is None:
+                logger.debug("claim_lease: worker not found or offline for %s", resource_id)
+                return None
+
             existing = self.find_existing_lease(resource_id)
             if existing is not None:
                 logger.debug(
@@ -347,7 +401,7 @@ class ClusterManager:
                 )
                 return None
 
-            lease_id = f"l_{secrets.token_hex(4)}"
+            lease_id = f"l_{secrets.token_hex(16)}"
             lease = GpuLease(
                 lease_id=lease_id,
                 resource_id=resource_id,

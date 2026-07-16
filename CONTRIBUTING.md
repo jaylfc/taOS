@@ -8,7 +8,7 @@ Welcome — and thanks for your interest in contributing. taOS is a self-hosted 
 
 ## License & Contributor License Agreement
 
-taOS is licensed under the **taOS Sustainable Use License** (source-available, not open source; see [`LICENSE`](LICENSE)) — free to use, modify, and self-host for personal use and for your own organisation's internal business purposes, with a separate commercial license required to sell it, host it as a paid service, or build it into a product you monetise.
+taOS is open source under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later; see [`LICENSE`](LICENSE)). A separate commercial license is available from jaylfc for uses the AGPL does not grant, for example embedding taOS in a proprietary product or offering it as a hosted service without releasing your modifications under the AGPL (see [`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md)).
 
 To keep this sustainable, **all contributors must agree to the Contributor License Agreement ([`CLA.md`](CLA.md))** before their contributions are merged. The CLA grants jaylfc the right to include and **relicense** your contributions under the project's licenses; **you keep ownership of your work**. You sign once — on your first pull request, comment **"I have read the CLA Document and I hereby sign the CLA"** and the CLA check turns green; it then covers all your future contributions.
 

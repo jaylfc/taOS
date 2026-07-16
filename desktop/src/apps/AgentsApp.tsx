@@ -488,24 +488,27 @@ export function AgentsApp({ windowId: _windowId }: { windowId: string }) {
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* On mobile the labels are dropped to icon-only so the two actions
+              plus the title fit without truncating "N deployed". */}
           <Button
             onClick={() => setImportWizardOpen(true)}
-            size="sm"
+            size={isMobile ? "icon" : "sm"}
             variant="outline"
+            className={isMobile ? "h-11 w-11" : undefined}
             aria-label="Import an existing agent"
           >
-            <Upload size={14} />
-            Import Agent
+            <Upload size={isMobile ? 18 : 14} />
+            {!isMobile && "Import Agent"}
           </Button>
           <Button
             onClick={() => setWizardOpen(true)}
-            size="sm"
-            className="text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0"
+            size={isMobile ? "icon" : "sm"}
+            className={`text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 hover:brightness-110 border-0${isMobile ? " h-11 w-11" : ""}`}
             style={{ background: "linear-gradient(135deg, #8b92a3, #5b6170)" }}
             aria-label="Deploy new agent"
           >
-            <Plus size={14} />
-            Deploy Agent
+            <Plus size={isMobile ? 18 : 14} />
+            {!isMobile && "Deploy Agent"}
           </Button>
         </div>
       </div>

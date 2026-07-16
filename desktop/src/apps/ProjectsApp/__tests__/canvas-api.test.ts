@@ -35,4 +35,38 @@ describe("canvasApi", () => {
     const r = await canvasApi.deleteElement("prj-1", "cve-1");
     expect(r).toBe(true);
   });
+
+  it("listElements appends element_id query when scoped", async () => {
+    (fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ elements: [] }),
+    });
+    await canvasApi.listElements("prj-1", "elm-1");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/projects/prj-1/canvas/elements?element_id=elm-1",
+    );
+  });
+
+  it("listElements omits the query when not scoped", async () => {
+    (fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ elements: [] }),
+    });
+    await canvasApi.listElements("prj-1");
+    expect(fetch).toHaveBeenCalledWith("/api/projects/prj-1/canvas/elements");
+  });
+
+  it("addElement sends element_id when provided", async () => {
+    (fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ element: { id: "cve-1", kind: "note" } }),
+    });
+    await canvasApi.addElement("prj-1", {
+      kind: "note", x: 1, y: 2, w: 3, h: 4, payload: { text: "x" },
+      element_id: "elm-1",
+    });
+    const call = (fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+    expect(body.element_id).toBe("elm-1");
+  });
 });

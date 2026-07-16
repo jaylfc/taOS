@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { elementToShape, shapeType } from "../canvas/element-to-shape";
 import { CanvasElement } from "../canvas/canvas-api";
+import { COLOR_MAP } from "../canvas/shapes/NoteShape";
 
 function makeElement(over: Partial<CanvasElement>): CanvasElement {
   return {
@@ -21,6 +22,7 @@ describe("shapeType", () => {
     expect(shapeType("note")).toBe("taos-note");
     expect(shapeType("link")).toBe("taos-link");
     expect(shapeType("image")).toBe("taos-image");
+    expect(shapeType("text")).toBe("taos-text");
   });
   it("maps unknown kinds to the taos-generic fallback, never built-in geo", () => {
     expect(shapeType("user_shape")).toBe("taos-generic");
@@ -50,6 +52,23 @@ describe("elementToShape", () => {
     const s = elementToShape(makeElement({ kind: "link" }), "slug");
     expect(s.type).toBe("taos-link");
     expect(s.props.taos_kind).toBe("link");
+  });
+
+  it("text: taos_* live in props, payload.text preserved", () => {
+    const s = elementToShape(makeElement({ kind: "text", payload: { text: "hello world" } }), "slug");
+    expect(s.type).toBe("taos-text");
+    expect(s.props.taos_kind).toBe("text");
+    expect(s.props.taos_payload).toEqual({ text: "hello world" });
+  });
+
+  it("text: missing text falls back to empty string", () => {
+    const s = elementToShape(makeElement({ kind: "text", payload: {} }), "slug");
+    expect(s.props.taos_payload).toEqual({ text: "" });
+  });
+
+  it("text: coerces non-string text to string", () => {
+    const s = elementToShape(makeElement({ kind: "text", payload: { text: 42 as unknown as string } }), "slug");
+    expect(s.props.taos_payload.text).toBe("42");
   });
 
   it("fallback: taos_* live in meta, props only carry geometry", () => {
@@ -115,5 +134,23 @@ describe("elementToShape", () => {
       const s = elementToShape(makeElement({ kind: "note", author_kind: "system" as unknown as "user", payload: {} }), "slug");
       expect(s.props.taos_author_kind).toBe("user");
     });
+  });
+
+  it("note: preserves violet color in payload (no fallback to yellow)", () => {
+    const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "violet", font_size: 14 } }), "slug");
+    expect(s.props.taos_payload.color).toBe("violet");
+    expect(COLOR_MAP["violet"]).toBeDefined();
+  });
+
+  it("note: preserves red color in payload (no fallback to yellow)", () => {
+    const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "red", font_size: 14 } }), "slug");
+    expect(s.props.taos_payload.color).toBe("red");
+    expect(COLOR_MAP["red"]).toBeDefined();
+  });
+
+  it("note: preserves light-blue color in payload", () => {
+    const s = elementToShape(makeElement({ kind: "note", payload: { text: "hi", color: "light-blue", font_size: 14 } }), "slug");
+    expect(s.props.taos_payload.color).toBe("light-blue");
+    expect(COLOR_MAP["light-blue"]).toBeDefined();
   });
 });

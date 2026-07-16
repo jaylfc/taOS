@@ -271,3 +271,136 @@ class TestBusAgentAuth:
             )
         # Falls through middleware to the session gate: API request -> 401.
         assert resp.status_code == 401
+
+
+def _mock_bus_post(json_payload: dict, *, raise_on_status: bool = False):
+    """A mock httpx.AsyncClient whose async ctx yields a client whose
+    .post().json() returns *json_payload*. If *raise_on_status* the mocked
+    response.raise_for_status() raises, simulating a bus error."""
+    mock_resp = MagicMock()
+    if raise_on_status:
+        mock_resp.raise_for_status = MagicMock(side_effect=RuntimeError("bus 500"))
+    else:
+        mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = json_payload
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    return mock_ctx, mock_client
+
+
+@pytest.mark.asyncio
+class TestBusAgentSend:
+    """Authenticated write path: agents post as themselves, never spoofing."""
+
+    async def test_agent_send_derives_from_from_registry_handle(self, bus_client):
+        # _make_agent_token registers handle "@bus-reader".
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        ctx, client = _mock_bus_post({"id": 1, "from": "@bus-reader", "thread": "build"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "build", "body": "hi", "from": "@somebody-else"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert resp.json()["from"] == "@bus-reader"
+        # Anti-spoof: the body's "from" is ignored; the bus is called with the
+        # agent's own registry handle.
+        sent = client.post.call_args.kwargs["json"]
+        assert sent["from"] == "@bus-reader"
+        assert sent["thread"] == "build" and sent["body"] == "hi"
+
+    async def test_agent_without_send_scope_forbidden(self, bus_client):
+        # Only a2a_receive -> cannot send.
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_receive",))
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/send",
+                json={"thread": "build", "body": "hi"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 403
+
+    async def test_no_auth_rejected(self, bus_client):
+        # No Bearer header at all: the auth middleware rejects the API request
+        # with 401 before it reaches the route (no credentials presented). The
+        # route's own 403 covers a *valid* token that lacks the a2a_send grant.
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/send",
+                json={"thread": "build", "body": "hi"},
+            )
+        assert resp.status_code == 401
+
+    async def test_admin_may_send_with_explicit_from(self, bus_client):
+        ctx, client = _mock_bus_post({"id": 2, "from": "@operator", "thread": "general"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            resp = await bus_client.post(
+                "/api/a2a/bus/send",
+                json={"thread": "general", "body": "ops note", "from": "@release-bot"},
+            )
+        assert resp.status_code == 200
+        # Admin's explicit from is honored.
+        assert client.post.call_args.kwargs["json"]["from"] == "@release-bot"
+
+    async def test_missing_thread_or_body_400(self, bus_client):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/send",
+                json={"thread": "  ", "body": "hi"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 400
+
+    async def test_reply_to_must_be_positive(self, bus_client):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        async with _bare(bus_client._app) as bare:
+            resp = await bare.post(
+                "/api/a2a/bus/send",
+                json={"thread": "build", "body": "hi", "reply_to": 0},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 400
+
+    async def test_body_is_trimmed_before_forwarding(self, bus_client):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        ctx, client = _mock_bus_post({"id": 9, "from": "@bus-reader", "thread": "build"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "build", "body": "  padded  "},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 200
+        assert client.post.call_args.kwargs["json"]["body"] == "padded"
+
+    async def test_admin_from_control_chars_stripped(self, bus_client):
+        ctx, client = _mock_bus_post({"id": 10, "from": "@x", "thread": "general"})
+        with patch(_BUS_PATCH, return_value=ctx):
+            resp = await bus_client.post(
+                "/api/a2a/bus/send",
+                json={"thread": "general", "body": "hi", "from": "@evil\nInjected: x"},
+            )
+        assert resp.status_code == 200
+        # Newline/control chars removed so nothing can be injected downstream.
+        assert "\n" not in client.post.call_args.kwargs["json"]["from"]
+
+    async def test_bus_error_surfaces_502(self, bus_client):
+        _cid, token = await _make_agent_token(bus_client._app, scopes=("a2a_send",))
+        ctx, _client = _mock_bus_post({}, raise_on_status=True)
+        with patch(_BUS_PATCH, return_value=ctx):
+            async with _bare(bus_client._app) as bare:
+                resp = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "build", "body": "hi"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert resp.status_code == 502

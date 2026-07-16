@@ -7,6 +7,8 @@ import pytest
 
 from tinyagentos.agent_heartbeat import (
     REWAKE_COOLDOWN,
+    _MAX_TICK_STAGGER_SECONDS,
+    _WAKE_STAGGER_SECONDS,
     _heartbeat_tick,
     agent_heartbeat_loop,
 )
@@ -229,6 +231,86 @@ async def test_one_bad_agent_does_not_break_the_tick():
     state.bridge_sessions.enqueue_user_message.assert_awaited_once()
     args = state.bridge_sessions.enqueue_user_message.call_args.args
     assert args[0] == "good-agent"
+
+
+@pytest.mark.asyncio
+async def test_wake_stagger_between_successive_wakes(monkeypatch):
+    # Two idle running agents both with a ready task: the tick must stagger the
+    # second wake by _WAKE_STAGGER_SECONDS so their downstream LLM turns don't
+    # fire at one instant. The patched sleep records instead of sleeping, so the
+    # test stays fast.
+    a = _agent(id="agent-a", name="agent-a")
+    b = _agent(id="agent-b", name="agent-b")
+    config = SimpleNamespace(agents=[a, b], server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config)
+
+    async def _ready(assignee_id):
+        return [_task(id=f"tsk-{assignee_id}")]
+
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(side_effect=_ready)
+
+    sleeps = []
+
+    async def _fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("tinyagentos.agent_heartbeat.asyncio.sleep", _fake_sleep)
+
+    await _heartbeat_tick(state)
+
+    # Both agents woken; exactly one stagger sleep sits between the two wakes
+    # (no leading/trailing sleep).
+    assert state.bridge_sessions.enqueue_user_message.await_count == 2
+    assert sleeps == [_WAKE_STAGGER_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_single_wake_has_no_stagger(monkeypatch):
+    config = SimpleNamespace(agents=[_agent()], server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config)
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(return_value=[_task()])
+
+    sleeps = []
+
+    async def _fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("tinyagentos.agent_heartbeat.asyncio.sleep", _fake_sleep)
+
+    await _heartbeat_tick(state)
+
+    state.bridge_sessions.enqueue_user_message.assert_awaited_once()
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_wake_stagger_is_capped_on_large_fleet(monkeypatch):
+    # The cumulative per-tick stagger is bounded so a large fleet cannot push a
+    # tick past the next sweep: once the budget is spent, remaining wakes fire
+    # with no added delay.
+    cap_wakes = int(_MAX_TICK_STAGGER_SECONDS / _WAKE_STAGGER_SECONDS)
+    n = cap_wakes + 20  # comfortably past the budget
+    agents = [_agent(id=f"agent-{i}", name=f"agent-{i}") for i in range(n)]
+    config = SimpleNamespace(agents=agents, server={"agent_heartbeat_enabled": True})
+    state = _make_state(config=config)
+    state.project_task_store.list_ready_tasks_for_assignee = AsyncMock(
+        side_effect=lambda assignee_id: [_task(id=f"tsk-{assignee_id}")]
+    )
+
+    sleeps = []
+
+    async def _fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("tinyagentos.agent_heartbeat.asyncio.sleep", _fake_sleep)
+
+    await _heartbeat_tick(state)
+
+    # All agents were woken, but the number of stagger sleeps is capped by the
+    # budget, not by the fleet size, and the total never exceeds the cap.
+    assert state.bridge_sessions.enqueue_user_message.await_count == n
+    assert len(sleeps) == cap_wakes
+    assert sum(sleeps) <= _MAX_TICK_STAGGER_SECONDS
 
 
 @pytest.mark.asyncio

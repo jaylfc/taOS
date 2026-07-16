@@ -146,7 +146,9 @@ class TorrentDownloader:
         upload_bps = max(0, self.settings.upload_rate_limit_kbps * 1024)
         self._session = lt.session({
             "listen_interfaces": f"0.0.0.0:{listen_port_range[0]}",
-            "enable_dht": True,
+            # taOSnet is a closed, authenticated swarm: no DHT. Private torrents
+            # (BEP-27) also disable it per-torrent, but keep it off session-wide.
+            "enable_dht": False,
             "enable_lsd": True,
             "enable_upnp": True,
             "enable_natpmp": True,
@@ -182,6 +184,50 @@ class TorrentDownloader:
     def get_task(self, task_id: str) -> Optional[TorrentTask]:
         return self._tasks.get(task_id)
 
+    def _params_from_torrent_url(self, url: str):
+        """Fetch a .torrent over HTTP (the public taOSnet metadata path) and
+        build add_torrent_params from it. Used when a manifest supplies a
+        ``torrent_url`` instead of a magnet."""
+        import httpx
+
+        resp = httpx.get(url, timeout=30.0, follow_redirects=True)
+        resp.raise_for_status()
+        ti = lt.torrent_info(lt.bdecode(resp.content))
+        params = lt.add_torrent_params()
+        params.ti = ti
+        return params
+
+    def _build_params(
+        self,
+        magnet_or_torrent: str,
+        save_dir: Path,
+        passkey: Optional[str] = None,
+        web_seeds: Optional[list[str]] = None,
+    ):
+        """Build a configured add_torrent_params from a magnet or torrent_url.
+
+        For taOSnet the shared magnet/.torrent carries the info_hash and web
+        seeds but no tracker; the caller passes this node's ``passkey`` and we
+        inject the private announce URL (BEP-27 private, DHT already off at the
+        session). ``web_seeds`` (BEP-19) are the HTTP fallback the swarm rides.
+        """
+        if magnet_or_torrent.startswith("magnet:"):
+            params = lt.parse_magnet_uri(magnet_or_torrent)
+        elif magnet_or_torrent.startswith(("http://", "https://")):
+            params = self._params_from_torrent_url(magnet_or_torrent)
+        else:
+            raise TorrentError(
+                f"unsupported torrent source: {magnet_or_torrent[:40]!r}"
+            )
+        params.save_path = str(save_dir)
+        if passkey:
+            from tinyagentos.taosnet.torrent_client import announce_url
+
+            params.trackers = [announce_url(passkey)]
+        if web_seeds:
+            params.url_seeds = list(web_seeds)
+        return params
+
     async def download(
         self,
         task_id: str,
@@ -189,8 +235,14 @@ class TorrentDownloader:
         dest: Path,
         expected_sha256: Optional[str] = None,
         progress_cb: Optional[Callable[[TorrentTask], None]] = None,
+        passkey: Optional[str] = None,
+        web_seeds: Optional[list[str]] = None,
     ) -> TorrentTask:
         """Start a torrent download and poll to completion.
+
+        ``passkey`` (opaque, account-bound) is injected into the taOSnet tracker
+        announce; ``web_seeds`` are added as BEP-19 HTTP seeds. Both optional so
+        the method still serves plain public magnets.
 
         Raises :class:`TorrentTimeout` if no peers are found within
         ``peer_timeout_seconds`` — the caller should catch and fall back
@@ -206,10 +258,7 @@ class TorrentDownloader:
         )
         self._tasks[task_id] = task
 
-        params = lt.parse_magnet_uri(magnet_or_torrent) if magnet_or_torrent.startswith("magnet:") else None
-        if params is None:
-            raise TorrentError("torrent_url fetching not yet implemented — use magnet URIs in Phase 1")
-        params.save_path = str(dest.parent)
+        params = self._build_params(magnet_or_torrent, dest.parent, passkey, web_seeds)
         handle = self._session.add_torrent(params)
         self._handles[task_id] = handle
 

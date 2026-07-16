@@ -43,6 +43,7 @@ from tinyagentos.auth import AuthManager
 from tinyagentos.backend_fallback import BackendFallback
 from tinyagentos.capabilities import CapabilityChecker
 from tinyagentos.cluster.manager import ClusterManager
+from tinyagentos.vram_reservation import VramReservationManager
 from tinyagentos.cluster.router import TaskRouter
 from tinyagentos.config import auto_register_from_manifest, load_config, save_config, save_config_locked
 from tinyagentos.lifecycle_manager import LifecycleManager
@@ -50,6 +51,7 @@ from tinyagentos.channels import ChannelStore
 from tinyagentos.download_manager import DownloadManager
 from tinyagentos.metrics import MetricsStore
 from tinyagentos.notifications import NotificationStore
+from tinyagentos.notifications_push import NotificationPushStore
 from tinyagentos.coding_workspaces import CodingWorkspaceStore
 from tinyagentos.install_registry import InstallRegistryStore
 from tinyagentos.store_submissions import StoreSubmissionStore
@@ -59,7 +61,7 @@ from tinyagentos.benchmark import BenchmarkStore
 from tinyagentos.installation_state import InstallationState
 from tinyagentos.scheduler import BackendCatalog, HistoryStore, ScoreCache, TaskScheduler
 from tinyagentos.scheduler.discovery import build_scheduler as build_resource_scheduler
-from tinyagentos.scheduler.gpu_arbiter import GpuArbiter, _probe_nvidia_vram
+from tinyagentos.scheduler.gpu_arbiter import GpuArbiter
 from tinyagentos.torrent_settings import TorrentSettingsStore
 from tinyagentos.relationships import RelationshipManager
 from tinyagentos.github_identities import GitHubIdentitiesStore
@@ -276,6 +278,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     metrics_store = MetricsStore(data_dir / "metrics.db")
     notif_store = NotificationStore(data_dir / "notifications.db")
+    notif_push_store = NotificationPushStore(data_dir / "notif_push.db")
     mcp_store = MCPServerStore(data_dir / "mcp.db")
     qmd_client = QmdClient(config.qmd.get("url", "http://localhost:7832"))
     http_client = httpx.AsyncClient(timeout=30)
@@ -292,6 +295,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     benchmark_store = BenchmarkStore(data_dir / "benchmarks.db")
     score_cache = ScoreCache(benchmark_store, poll_interval_seconds=15.0)
     scheduler_history_store = HistoryStore(data_dir / "scheduler_history.db")
+
+    from tinyagentos.council.role_registry import RoleRegistry
+    from tinyagentos.council.member_store import MemberStore
+    council_role_registry = RoleRegistry(data_dir / "council.db")
+    council_member_store = MemberStore(data_dir / "council.db")
 
     async def _probe_backend(backend: dict) -> dict:
         return await check_backend_health(http_client, backend)
@@ -364,10 +372,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_channels = ChatChannelStore(data_dir / "chat.db")
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
+    from tinyagentos.projects.element_store import ProjectElementStore
     from tinyagentos.projects.events import ProjectEventBroker
     from tinyagentos.projects.canvas.store import ProjectCanvasStore as ProjectCanvasStoreImpl
     from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
+    from tinyagentos.projects.invite_store import ProjectInviteStore
     project_store = ProjectStore(data_dir / "projects.db")
+    project_invite_store = ProjectInviteStore(data_dir / "project_invites.db")
     project_event_broker = ProjectEventBroker()
     from tinyagentos.desktop_control import DesktopCommandBroker
     desktop_command_broker = DesktopCommandBroker()
@@ -381,6 +392,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         audit=board_audit_store,
         project_store=project_store,
     )
+    project_element_store = ProjectElementStore(data_dir / "projects.db")
     from tinyagentos.projects.routines_store import RoutineStore
     routine_store = RoutineStore(data_dir / "routines.db")
     project_canvas_store = ProjectCanvasStoreImpl(data_dir / "projects.db", broker=project_event_broker)
@@ -485,6 +497,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.capability_map = capability_map_store
         await metrics_store.init()
         await notif_store.init()
+        await notif_push_store.init()
         await qmd_client.init()
         await secrets_store.init()
         await broker_store.init()
@@ -503,11 +516,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_messages.init()
         await chat_channels.init()
         await project_store.init()
+        await project_invite_store.init()
+        app.state.project_invites = project_invite_store
         await board_audit_store.init()
         app.state.board_audit = board_audit_store
         await receipt_store.init()
         app.state.receipt_store = receipt_store
         await project_task_store.init()
+        await project_element_store.init()
         await routine_store.init()
         app.state.routine_store = routine_store
         await project_canvas_store.init()
@@ -625,6 +641,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         await benchmark_store.init()
         await scheduler_history_store.init()
+        await council_role_registry.init()
+        await council_member_store.init()
         app.state.config = config
         app.state.config_path = config_path
         app.state.data_dir = data_dir
@@ -781,6 +799,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.models_root.mkdir(parents=True, exist_ok=True)
         app.state.metrics = metrics_store
         app.state.notifications = notif_store
+        app.state.notif_push_store = notif_push_store
         app.state.qmd_client = qmd_client
         app.state.http_client = http_client
         app.state.download_manager = download_manager
@@ -823,6 +842,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.chat_channels = chat_channels
         app.state.project_store = project_store
         app.state.project_task_store = project_task_store
+        app.state.project_element_store = project_element_store
         app.state.project_event_broker = project_event_broker
         app.state.desktop_command_broker = desktop_command_broker
         app.state.project_canvas_store = project_canvas_store
@@ -859,6 +879,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.benchmark_store = benchmark_store
         app.state.score_cache = score_cache
         app.state.scheduler_history_store = scheduler_history_store
+        app.state.council_roles = council_role_registry
+        app.state.council_members = council_member_store
         orchestrator = RestartOrchestrator(app.state)
         app.state.orchestrator = orchestrator
         # Boot-time: check if a pending restart was applied successfully
@@ -1143,23 +1165,36 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             logger.exception("resource scheduler failed to build — routes will use static config")
             app.state.resource_scheduler = None
 
-        # Build the GPU arbiter — wraps the resource scheduler with VRAM-accounted
-        # admission control, queuing, and eviction for GPU-bound workloads.
+        # Single VRAM authority (taOS #185). One VramReservationManager is the
+        # sole ledger: it does atomic check-and-reserve so two concurrent model
+        # loads cannot both pass a VRAM check before either consumes physical
+        # VRAM (TOCTOU, #1706). The GPU arbiter reserves against THIS SAME
+        # instance for scheduler tasks, and the model-load path
+        # (routes/models.py) reserves against it too, so there is exactly one
+        # ledger and no double-counting.
+        vram_reservation = VramReservationManager()
+        app.state.vram_reservation = vram_reservation
+
+        # Build the GPU arbiter — VRAM-accounted admission control, queuing, and
+        # eviction for GPU-bound scheduler workloads, layered on the resource
+        # scheduler. It shares the reservation ledger above (does not keep its
+        # own), so admission for tasks and model loads draws from one authority.
         try:
             gpu_arbiter = GpuArbiter(
                 scheduler=resource_scheduler if resource_scheduler is not None else None,
                 cluster_manager=cluster_manager,
-                vram_probe=_probe_nvidia_vram,
+                vram_reservation=vram_reservation,
                 max_queue_size=100,
                 eviction_enabled=True,
             )
             await gpu_arbiter.start()
             app.state.gpu_arbiter = gpu_arbiter
             cluster_manager._gpu_arbiter = gpu_arbiter
-            logger.info("GPU arbiter ready (queue size=100, eviction=enabled)")
+            logger.info("GPU arbiter ready (queue size=100, eviction=enabled, shared VRAM ledger)")
         except Exception:
             logger.exception("GPU arbiter failed to start — GPU tasks will use vanilla scheduler")
             app.state.gpu_arbiter = None
+
         # Detect and set container runtime
         from tinyagentos.containers.backend import configure_container_runtime
         configure_container_runtime(config)
@@ -1276,6 +1311,31 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         notif_store.set_event_emitter(_notify_emitter)
 
+        # Wire NotificationStore -> OS-level PWA web-push so notifications reach
+        # an installed PWA even when taOS is closed. Uses its own VAPID keypair
+        # (separate file + purpose from the Browser copilot push). Strictly
+        # best-effort: keypair-load failure disables push but never blocks
+        # startup, and the sender itself is dispatched off-loop inside add().
+        try:
+            from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+            from tinyagentos.notifications_push import send_web_push
+
+            app.state.notif_vapid_keypair = load_or_create_vapid_keypair(
+                data_dir, filename="notif_vapid.pem"
+            )
+
+            async def _web_push_sender(row: dict) -> None:
+                await send_web_push(
+                    row,
+                    store=app.state.notif_push_store,
+                    vapid=app.state.notif_vapid_keypair,
+                )
+
+            notif_store.set_push_sender(_web_push_sender)
+        except Exception:
+            app.state.notif_vapid_keypair = None
+            logger.warning("notif web-push disabled: VAPID keypair unavailable", exc_info=True)
+
         # All startup init complete — allow requests through.
         app.state._startup_complete = True
         logger.info("startup complete — accepting requests")
@@ -1375,6 +1435,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await user_memory.close()
         await desktop_settings.close()
         await device_store.close()
+        # Close the APNs sender's httpx client (self-created by HttpApnsSender);
+        # guarded so the Null sender or a missing attribute is a no-op.
+        _apns = getattr(app.state, "apns_sender", None)
+        if _apns is not None and hasattr(_apns, "aclose"):
+            try:
+                await _apns.aclose()
+            except Exception:
+                logger.exception("apns sender aclose failed")
         await canvas_store.close()
         try:
             bb = getattr(app.state, "beads_bridge", None)
@@ -1389,7 +1457,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             except Exception:
                 logger.exception("canvas snapshotter stop failed")
         await project_canvas_store.close()
+        await project_invite_store.close()
         await project_task_store.close()
+        await project_element_store.close()
         await routine_store.close()
         await project_store.close()
         await chat_channels.close()
@@ -1409,6 +1479,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await broker_store.close()
         await mail_store.close()
         await notif_store.close()
+        await notif_push_store.close()
         await app.state.system_events.close()
         await metrics_store.close()
         await qmd_client.close()
@@ -1498,6 +1569,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.agent_memory_dir.mkdir(parents=True, exist_ok=True)
     app.state.metrics = metrics_store
     app.state.notifications = notif_store
+    app.state.notif_push_store = notif_push_store
+    app.state.notif_vapid_keypair = None
     app.state.qmd_client = qmd_client
     app.state.http_client = http_client
     app.state.download_manager = download_manager
@@ -1534,9 +1607,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.chat_messages = chat_messages
     app.state.chat_channels = chat_channels
     app.state.project_store = project_store
+    app.state.project_invites = project_invite_store
     app.state.board_audit = board_audit_store
     app.state.receipt_store = receipt_store
     app.state.project_task_store = project_task_store
+    app.state.project_element_store = project_element_store
     app.state.routine_store = routine_store
     app.state.project_event_broker = project_event_broker
     app.state.desktop_command_broker = desktop_command_broker
@@ -1606,6 +1681,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.license_acceptances = license_acceptances_store
     app.state.cluster_pairing = cluster_pairing_store
     app.state.capability_map = capability_map_store
+    app.state.council_roles = council_role_registry
+    app.state.council_members = council_member_store
 
     # Detect and set container runtime (eager, so tests work without lifespan)
     try:
@@ -1636,6 +1713,59 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     return app
 
 
+def _recover_password_cli(argv) -> int:
+    """``taos recover-password`` -- offline reset of a local account password.
+
+    For when the admin is locked out of the web login. Runs directly against
+    the auth store (no server, no token) using the same data directory the
+    controller uses, then revokes that account's sessions. Restart the
+    controller afterwards so open sessions re-authenticate.
+    """
+    import argparse
+    import getpass
+    import os
+    import sys
+
+    from tinyagentos.auth import AuthManager
+
+    parser = argparse.ArgumentParser(
+        prog="taos recover-password",
+        description="Reset a local taOS account password (offline recovery).",
+    )
+    parser.add_argument(
+        "--username", help="Username to reset (default: the only user, single-user mode)."
+    )
+    parser.add_argument(
+        "--password", help="New password (min 8 chars). Omit to be prompted without echo."
+    )
+    parser.add_argument(
+        "--data-dir", help="Data directory (default: TAOS_DATA_DIR env, else <project>/data)."
+    )
+    ns = parser.parse_args(argv)
+
+    override = ns.data_dir or os.environ.get("TAOS_DATA_DIR")
+    data_dir = Path(override) if override else (PROJECT_DIR / "data")
+
+    new_password = ns.password
+    if not new_password:
+        new_password = getpass.getpass("New password: ")
+        if new_password != getpass.getpass("Confirm password: "):
+            print("passwords do not match", file=sys.stderr)
+            return 1
+    if len(new_password) < 8:
+        print("password must be at least 8 characters", file=sys.stderr)
+        return 1
+
+    try:
+        who = AuthManager(data_dir).recover_password(new_password, username=ns.username)
+    except ValueError as exc:
+        print(f"recovery failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Password reset for '{who}' in {data_dir}.")
+    print("Restart the taOS controller so open sessions re-authenticate.")
+    return 0
+
+
 def main():
     import sys
     # `taos rollback [ref]` -- undo the last update (restore branch + version) and
@@ -1645,6 +1775,12 @@ def main():
         import subprocess
         script = PROJECT_DIR / "scripts" / "rollback.sh"
         raise SystemExit(subprocess.call(["bash", str(script), *sys.argv[2:]]))
+
+    # `taos recover-password [--username U] [--password P]` -- offline recovery
+    # of a local account when the admin is locked out of the web login. Resets
+    # the auth store directly (no running server needed).
+    if len(sys.argv) > 1 and sys.argv[1] == "recover-password":
+        raise SystemExit(_recover_password_cli(sys.argv[2:]))
 
     import uvicorn
     config = load_config(PROJECT_DIR / "data" / "config.yaml")

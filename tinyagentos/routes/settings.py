@@ -503,7 +503,7 @@ async def set_container_runtime(request: Request):
     """Set the container runtime preference."""
     body = await request.json()
     runtime = body.get("runtime", "auto")
-    if runtime not in ("auto", "apple", "lxc", "docker", "podman"):
+    if runtime not in ("auto", "apple", "lxc", "docker", "podman", "native"):
         return JSONResponse({"error": f"Invalid runtime: {runtime}"}, status_code=400)
     config = request.app.state.config
     config.container_runtime = runtime
@@ -522,6 +522,9 @@ async def set_container_runtime(request: Request):
         set_backend(LXCBackend())
     elif effective in ("docker", "podman"):
         set_backend(DockerBackend(binary=effective))
+    elif effective == "native":
+        from tinyagentos.containers.native import NativeBackend
+        set_backend(NativeBackend())
     return {"status": "updated", "runtime": effective}
 
 
@@ -531,7 +534,7 @@ async def check_for_updates(request: Request):
     import asyncio
     import re
     from tinyagentos import __version__
-    from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead
+    from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead, branch_is_diverged
     project_dir = str(Path(__file__).parent.parent.parent)
 
     # Track the user's selected branch (Updates → Advanced selector), or the
@@ -569,6 +572,21 @@ async def check_for_updates(request: Request):
     if has_updates and await changes_are_docs_only(Path(project_dir), local_sha, remote_sha):
         has_updates = False
 
+    # Detect divergence: when neither side is a strict ancestor of the other,
+    # the local branch has commits not in the remote. Surface an actionable
+    # message so the user knows an update would hard-reset to the remote
+    # (their local work is preserved as a recovery tag).
+    diverged = False
+    diverged_message: str | None = None
+    if not has_updates and local_sha and remote_sha and local_sha != remote_sha \
+            and await branch_is_diverged(project_dir, local_sha, remote_sha):
+        diverged = True
+        diverged_message = (
+            "Your local branch has diverged from the tracked branch. "
+            "An update will preserve your local commits as a recovery tag "
+            "before syncing to the remote."
+        )
+
     async def _log1(ref: str) -> str:
         p = await asyncio.create_subprocess_exec(
             "git", "log", "-1", "--format=%h %s", ref,
@@ -579,12 +597,12 @@ async def check_for_updates(request: Request):
         return out.decode().strip() if out else "unknown"
 
     current = await _log1("HEAD")
-    new_commit = await _log1(f"origin/{branch}") if has_updates else None
+    new_commit = await _log1(f"origin/{branch}") if (has_updates or diverged) else None
 
     # Read the version string from the remote branch HEAD so the UI can show
     # the target version number without requiring a full install first.
     new_version: str | None = None
-    if has_updates:
+    if has_updates or diverged:
         try:
             rc, raw = await _run_capture(
                 ["git", "show", f"origin/{branch}:tinyagentos/__init__.py"],
@@ -599,6 +617,8 @@ async def check_for_updates(request: Request):
 
     return {
         "has_updates": has_updates,
+        "diverged": diverged,
+        "diverged_message": diverged_message,
         "current_version": __version__,
         "new_version": new_version,
         "current_commit": current,

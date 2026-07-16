@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,74 @@ class DockerInstaller(AppInstaller):
 
     def _compose_path(self, app_id: str) -> Path:
         return self.apps_dir / app_id / "docker-compose.yaml"
+
+    def _write_config_files(self, app_id: str, install_config: dict) -> None:
+        """Write declarative config files from the manifest to the app directory.
+
+        ``install_config['config_files']`` is a list of ``{path, content}``
+        objects.  Each file is written to ``<app_dir>/<path>``, creating
+        parent directories as needed.  The string ``{secret_key}`` in
+        ``content`` is replaced with a random 64-hex-char secret so that
+        apps like SearXNG can ship a default settings file without a
+        hard-coded key.  The secret is persisted in ``<app_dir>/.secret_key``
+        so re-installs keep it stable.
+        """
+        config_files = install_config.get("config_files", [])
+        if not config_files:
+            return
+        app_dir = self.apps_dir / app_id
+
+        # Validate each entry has required keys before using them.
+        for i, entry in enumerate(config_files):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"config_files[{i}] must be a dict, got {type(entry).__name__}"
+                )
+            if "path" not in entry:
+                raise ValueError(f"config_files[{i}] missing required key 'path'")
+            if "content" not in entry:
+                raise ValueError(f"config_files[{i}] missing required key 'content'")
+
+        # Validate paths: reject '..' components and absolute paths; confirm
+        # the resolved path stays within app_dir (path-traversal protection).
+        resolved_app_dir = app_dir.resolve()
+        for i, entry in enumerate(config_files):
+            path = entry["path"]
+            if path.startswith("/"):
+                raise ValueError(
+                    f"config_files[{i}].path must be relative, got {path!r}"
+                )
+            if ".." in Path(path).parts:
+                raise ValueError(
+                    f"config_files[{i}].path must not contain '..', got {path!r}"
+                )
+            resolved = (app_dir / path).resolve()
+            if not str(resolved).startswith(str(resolved_app_dir) + "/"):
+                raise ValueError(
+                    f"config_files[{i}].path resolves outside app_dir: {path!r}"
+                )
+
+        # Persist secret_key per app so re-installs don't rotate it. It signs
+        # sessions, so keep it owner-only and regenerate if a prior write left
+        # it empty or malformed.
+        secret_key_path = app_dir / ".secret_key"
+        secret_key = ""
+        if secret_key_path.exists():
+            secret_key = secret_key_path.read_text().strip()
+        if len(secret_key) != 64 or not all(c in "0123456789abcdef" for c in secret_key):
+            secret_key = secrets.token_hex(32)
+            app_dir.mkdir(parents=True, exist_ok=True)
+            secret_key_path.write_text(secret_key)
+            secret_key_path.chmod(0o600)
+
+        for entry in config_files:
+            path = entry["path"]
+            content = entry["content"]
+            if "{secret_key}" in content:
+                content = content.replace("{secret_key}", secret_key)
+            full_path = app_dir / path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content)
 
     @staticmethod
     def _is_named_volume(source: str) -> bool:
@@ -96,6 +165,10 @@ class DockerInstaller(AppInstaller):
     async def install(self, app_id: str, install_config: dict, **kwargs) -> dict:
         app_dir = self.apps_dir / app_id
         app_dir.mkdir(parents=True, exist_ok=True)
+
+        # Seed any declarative config files before compose generation so
+        # bind mounts like ./settings.yml resolve against the app dir.
+        self._write_config_files(app_id, install_config)
 
         compose, host_port = self._generate_compose(app_id, install_config)
         compose_path = self._compose_path(app_id)

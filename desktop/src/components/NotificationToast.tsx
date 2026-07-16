@@ -306,6 +306,7 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
           <ConsentActions
             requestId={consent.requestId}
             scopes={consent.scopes}
+            requestedProjectId={consent.projectId}
             onResolved={() => archiveRead(notif.id)}
           />
         )}

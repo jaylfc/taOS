@@ -94,3 +94,74 @@ async def test_log_activity(store):
     rows = await store.list_activity(p["id"])
     assert [r["kind"] for r in rows] == ["member.added", "project.created"]
     assert rows[0]["payload"] == {"member_id": "agent-1"}
+
+
+@pytest.mark.asyncio
+async def test_backfill_clear_lead_does_not_repromote_on_restart(tmp_path):
+    """A Lead the owner deliberately cleared (lead_member_id set NULL, legacy
+    is_lead still set) must not be re-promoted by the one-shot backfill when the
+    store is re-initialized. The backfill clears is_lead after migrating, so a
+    second init sees nothing to promote."""
+    from tinyagentos.projects.project_store import ProjectStore
+
+    db_path = tmp_path / "proj-repromote.db"
+    s = ProjectStore(db_path)
+    await s.init()
+    try:
+        project = await s.create_project(name="A", slug="a", created_by="u")
+        pid = project["id"]
+        await s.add_member(pid, member_id="agent-old-lead", member_kind="native")
+        # Simulate the legacy is_lead flag being set (the pre-epic state).
+        await s._db.execute(
+            "UPDATE project_members SET is_lead = 1 WHERE project_id = ? AND member_id = ?",
+            (pid, "agent-old-lead"),
+        )
+        await s._db.commit()
+        # Re-run init so the backfill sees the legacy is_lead flag and migrates it.
+        await s.init()
+        again = await s.get_project(pid)
+        assert again["lead_member_id"] == "agent-old-lead"
+
+        # Owner clears the Lead.
+        await s.set_lead(pid, None)
+    finally:
+        await s.close()
+
+    # Second store init (a restart): the legacy flag must have been cleared by
+    # the first backfill, so nothing promotes a Lead.
+    s2 = ProjectStore(db_path)
+    await s2.init()
+    try:
+        restarted = await s2.get_project(pid)
+        assert restarted["lead_member_id"] is None
+        members = await s2.list_members(pid)
+        assert members[0]["is_lead"] == 0
+    finally:
+        await s2.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_only_runs_for_null_lead(tmp_path):
+    """Projects that already have a Lead (lead_member_id set) are untouched by the
+    backfill, and projects with no is_lead flag are never promoted."""
+    from tinyagentos.projects.project_store import ProjectStore
+
+    s = ProjectStore(tmp_path / "proj-no-reprompt.db")
+    await s.init()
+    try:
+        # Project with a proper lead already set, no legacy flag.
+        p1 = await s.create_project(name="A", slug="a", created_by="u")
+        await s.add_member(p1["id"], member_id="agent-a", member_kind="native")
+        await s.set_lead(p1["id"], "agent-a")
+
+        # Project with no lead and no flag: must stay NULL.
+        p2 = await s.create_project(name="B", slug="b", created_by="u")
+        await s.add_member(p2["id"], member_id="agent-b", member_kind="native")
+
+        # Re-init to force a backfill pass.
+        await s.init()
+
+        assert (await s.get_project(p1["id"]))["lead_member_id"] == "agent-a"
+        assert (await s.get_project(p2["id"]))["lead_member_id"] is None
+    finally:
+        await s.close()

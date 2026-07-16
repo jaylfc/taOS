@@ -9,9 +9,12 @@ import {
   AlertCircle,
   Check,
   Sparkles,
+  ImagePlus,
 } from "lucide-react";
 import { streamTaosAgentChat } from "../appstudio/stream-chat";
 import { FileEditor } from "./FileEditor";
+import { AssetsPanel } from "./AssetsPanel";
+import { buildAssetReference } from "./asset-reference";
 import { parseFileBlocks, type ParsedFile } from "./file-blocks";
 import { buildEditSystemPrompt, isVendorFile } from "./game-authoring-prompt";
 import { getGame, gamePreviewUrl, saveGame } from "./games-api";
@@ -60,6 +63,7 @@ export function EditorView({ gameId }: EditorViewProps) {
   const [chatError, setChatError] = useState<string | null>(null);
   const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null);
   const [applying, setApplying] = useState(false);
+  const [rightTab, setRightTab] = useState<"chat" | "assets">("chat");
 
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -263,6 +267,22 @@ export function EditorView({ gameId }: EditorViewProps) {
     setApplying(false);
   }, [pendingEdit, flushSave]);
 
+  /* ── insert a generated asset reference into the active file ──────── */
+
+  const handleInsertAsset = useCallback(
+    (filename: string) => {
+      const path = activePath;
+      if (!path) return;
+      const ref = buildAssetReference(path, filename);
+      setFiles((prev) => {
+        const next = { ...prev, [path]: (prev[path] ?? "") + ref };
+        void flushSave(next);
+        return next;
+      });
+    },
+    [activePath, flushSave],
+  );
+
   /* ── render ─────────────────────────────────────────────────────── */
 
   if (loading) {
@@ -394,13 +414,39 @@ export function EditorView({ gameId }: EditorViewProps) {
           </div>
         </div>
 
-        {/* AI chat sidebar */}
+        {/* AI chat + assets sidebar */}
         <div className="flex min-h-0 flex-col border-l border-shell-border">
-          <div className="flex items-center gap-2 border-b border-shell-border px-3.5 py-3">
-            <Sparkles size={15} className="text-accent" />
-            <h3 className="text-[13px] font-bold">Ask the agent</h3>
+          <div role="tablist" aria-label="Editor sidebar" className="flex flex-none items-center gap-1 border-b border-shell-border px-2.5 py-2">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightTab === "chat"}
+              onClick={() => setRightTab("chat")}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-bold ${
+                rightTab === "chat" ? "bg-shell-surface-active text-shell-text" : "text-shell-text-secondary hover:bg-shell-surface"
+              }`}
+            >
+              <Sparkles size={14} className="text-accent" />
+              Ask the agent
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightTab === "assets"}
+              onClick={() => setRightTab("assets")}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-bold ${
+                rightTab === "assets" ? "bg-shell-surface-active text-shell-text" : "text-shell-text-secondary hover:bg-shell-surface"
+              }`}
+            >
+              <ImagePlus size={14} className="text-accent" />
+              Assets
+            </button>
           </div>
 
+          {rightTab === "assets" ? (
+            <AssetsPanel gameId={gameId} activePath={activePath} onInsert={handleInsertAsset} />
+          ) : (
+          <>
           <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
             {chat.length === 0 && (
               <p className="px-1 py-2 text-[12px] text-shell-text-tertiary">
@@ -493,6 +539,8 @@ export function EditorView({ gameId }: EditorViewProps) {
               {chatBusy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
             </button>
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>

@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 
 from tinyagentos.projects.folders import (
+    ensure_element_folder,
     ensure_project_layout,
     project_dir,
     read_project_yaml,
@@ -82,3 +83,34 @@ def test_read_project_yaml_round_trip(tmp_path: Path):
     write_project_yaml(tmp_path, "fox", payload)
 
     assert read_project_yaml(tmp_path, "fox") == payload
+
+
+# ---------------------------------------------------------------------------
+# Element files folder (slice 4)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_element_folder_creates_subdir(tmp_path: Path):
+    d = ensure_element_folder(tmp_path, "alpha", "website")
+    assert d == tmp_path / "alpha" / "files" / "website"
+    assert d.is_dir()
+
+
+def test_ensure_element_folder_adopts_existing(tmp_path: Path):
+    """An existing user-made folder with the element slug is adopted, not
+    clobbered: pre-existing contents survive element creation."""
+    pre = tmp_path / "alpha" / "files" / "website"
+    pre.mkdir(parents=True, exist_ok=True)
+    (pre / "existing.txt").write_text("keep me")
+
+    d = ensure_element_folder(tmp_path, "alpha", "website")
+
+    assert d == pre
+    assert (d / "existing.txt").read_text() == "keep me"
+
+
+def test_ensure_element_folder_idempotent(tmp_path: Path):
+    first = ensure_element_folder(tmp_path, "alpha", "website")
+    second = ensure_element_folder(tmp_path, "alpha", "website")
+    assert first == second
+    assert first.is_dir()

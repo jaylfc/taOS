@@ -83,7 +83,7 @@ describe("AccountSection", () => {
     );
   });
 
-  it("shows the 'Reserve your username' promo when signed in with no handle", async () => {
+  it("shows the free-username copy and CTA when no username is claimed", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       if (String(input).includes("/auth/status")) {
         return Promise.resolve(new Response(null, { status: 401 }));
@@ -100,11 +100,14 @@ describe("AccountSection", () => {
       );
     });
     render(<AccountSection />);
-    expect(await screen.findByText("Reserve your taOS username")).toBeInTheDocument();
-    expect(screen.getByText("Reserve your username")).toBeInTheDocument();
+    expect(await screen.findByText("Claim your free taOS username")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Your username is your free identity on taOS/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Claim your username")).toBeInTheDocument();
   });
 
-  it("shows the reserved handle instead of the CTA when the account has one", async () => {
+  it("displays the claimed username with free-identity copy (no .taos.my suffix)", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       if (String(input).includes("/auth/status")) {
         return Promise.resolve(new Response(null, { status: 401 }));
@@ -115,7 +118,8 @@ describe("AccountSection", () => {
             user_id: "u1",
             email: "jay@example.com",
             taosgo: { status: "none" },
-            handle: "jay",
+            username: "jay",
+            subdomains: [],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
@@ -123,8 +127,111 @@ describe("AccountSection", () => {
     });
     render(<AccountSection />);
     expect(await screen.findByText("@jay")).toBeInTheDocument();
-    expect(screen.getByText("jay.taos.my")).toBeInTheDocument();
-    expect(screen.queryByText("Reserve your username")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/People use @username to find you/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("jay.taos.my")).not.toBeInTheDocument();
+  });
+
+  it("renders the claimed subdomain list with active and grace badges", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      if (String(input).includes("/auth/status")) {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            user_id: "u1",
+            email: "jay@example.com",
+            taosgo: { status: "active" },
+            username: "jay",
+            subdomains: [
+              { id: "s1", account_id: "u1", name: "mybiz", status: "active" },
+              { id: "s2", account_id: "u1", name: "old", status: "grace" },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    render(<AccountSection />);
+    expect(await screen.findByText("mybiz.taos.my")).toBeInTheDocument();
+    expect(screen.getByText("old.taos.my")).toBeInTheDocument();
+    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
+    expect(screen.getByText("Grace")).toBeInTheDocument();
+  });
+
+  it("disables the claim UI when not subscribed", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      if (String(input).includes("/auth/status")) {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            user_id: "u1",
+            email: "jay@example.com",
+            taosgo: { status: "none" },
+            username: "jay",
+            subdomains: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    render(<AccountSection />);
+    const input = await screen.findByLabelText("Subdomain name");
+    expect(input).toBeDisabled();
+    expect(screen.getByText(/Claiming a subdomain is part of taOSgo/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Claim" })).toBeDisabled();
+  });
+
+  it("shows inline availability and claims a subdomain", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/auth/status")) {
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      if (url.includes("/subdomains/check")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ available: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/subdomains/claim")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "s9",
+              account_id: "u1",
+              name: "mybiz",
+              status: "active",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            user_id: "u1",
+            email: "jay@example.com",
+            taosgo: { status: "active" },
+            username: "jay",
+            subdomains: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    render(<AccountSection />);
+    const input = await screen.findByLabelText("Subdomain name");
+    fireEvent.change(input, { target: { value: "mybiz" } });
+    expect(await screen.findByText("Available")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Claim" }));
+    expect(await screen.findByText("mybiz.taos.my")).toBeInTheDocument();
   });
 
   it("shows the local 'this device' identity from /auth/status", async () => {

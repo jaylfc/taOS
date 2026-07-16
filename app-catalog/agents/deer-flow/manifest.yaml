@@ -14,12 +14,11 @@ requires:
 
 install:
   method: script
-  script: scripts/install.sh
+  script: scripts/install-deer-flow.sh
   note: |
     Clones bytedance/deer-flow into /opt/deer-flow and provisions the backend
-    with uv (Python 3.12). Writes a config.yaml pointing DeerFlow at the taOS
-    LiteLLM proxy and a systemd unit that serves the backend runs API on 8001.
-    The bridge adapter (deer_flow_adapter.py) lives in the taOS controller.
+    with uv (Python 3.12). The bridge adapter (deer_flow_adapter.py) lives in
+    the taOS controller.
 
 config_schema:
   - name: model

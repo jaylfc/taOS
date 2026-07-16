@@ -14,6 +14,7 @@
 .idRow { display: flex; gap: 6px; font: 9.5px ui-monospace, monospace; color: #86868b; margin-bottom: 5px; }
 .parent { background: rgba(255,255,255,.05); padding: 1px 6px; border-radius: 3px; color: #d2d2d7; }
 .title { font: 600 13px -apple-system; line-height: 1.35; margin-bottom: 8px; letter-spacing: -.01em; }
+.elBadge { display: inline-block; font: 600 9.5px -apple-system; padding: 2px 7px; border-radius: 999px; background: rgba(34,211,238,.16); color: #8be9fd; margin-bottom: 8px; }
 .labels { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 9px; }
 .lbl { font: 600 9.5px -apple-system; padding: 2px 7px; border-radius: 4px; }
 .lbl_feature { background: rgba(100,210,255,.16); color: #64d2ff; }

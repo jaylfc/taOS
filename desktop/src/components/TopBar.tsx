@@ -1,9 +1,10 @@
-import { Bell, Search, LayoutGrid, Power, Lock, Settings, RotateCcw, LogOut, Sparkles } from "lucide-react";
+import { Bell, Search, LayoutGrid, Power, Lock, Settings, RotateCcw, LogOut, Sparkles, ArrowUpCircle } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useClock } from "@/hooks/use-clock";
 import { useWidgetStore } from "@/stores/widget-store";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useProcessStore } from "@/stores/process-store";
+import { useUpdateAvailable } from "@/hooks/use-update-available";
 import { StatusIndicators } from "./StatusIndicators";
 import { AgentKillSwitch } from "./AgentKillSwitch";
 import { withCsrf } from "@/lib/csrf";
@@ -101,6 +102,12 @@ export function TopBar({ onSearchOpen, onAssistantOpen }: Props) {
   const { showWidgets, toggleWidgets } = useWidgetStore();
   const unreadCount = useNotificationStore((s) => s.notifications.filter((n) => !n.read && !n.archived).length);
   const toggleCentre = useNotificationStore((s) => s.toggleCentre);
+  const hasUpdate = useUpdateAvailable();
+  const openWindow = useProcessStore((s) => s.openWindow);
+
+  const openSettingsUpdates = () => {
+    openWindow("settings", { w: 760, h: 520 }, { section: "updates" });
+  };
 
   return (
     <div
@@ -140,6 +147,17 @@ export function TopBar({ onSearchOpen, onAssistantOpen }: Props) {
         <span className="text-xs text-shell-text-tertiary">{clock}</span>
         <AgentKillSwitch />
         <PowerMenu />
+        {hasUpdate && (
+          <button
+            onClick={openSettingsUpdates}
+            className="relative p-1 rounded hover:bg-shell-surface-hover transition-colors text-accent"
+            aria-label="Update available"
+            title="Update available — click to open Settings"
+          >
+            <ArrowUpCircle size={14} />
+            <span className="absolute top-0 right-0 w-1.5 h-1.5 bg-accent rounded-full" />
+          </button>
+        )}
         <button
           onClick={toggleWidgets}
           className={`p-1 rounded transition-colors ${showWidgets ? "text-accent bg-accent/10" : "text-shell-text-secondary hover:bg-shell-surface-hover"}`}

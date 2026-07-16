@@ -22,6 +22,9 @@ export interface ProjectBoardProps {
   projectId: string;
   currentUserId: string;
   onOpenTask?: (id: string) => void;
+  /** When set, the board is scoped to this element and the element filter bar
+   *  is hidden (the element is the active filter). Used by element drill-in. */
+  elementId?: string | null;
 }
 
 const PERSIST_KEY = (pid: string) => `taos.projects.${pid}.board`;
@@ -36,13 +39,18 @@ const MOBILE_COLUMNS: ReadonlyArray<MobileBoardColumn> = [
 ];
 type ColStatus = "ready" | "claimed" | "closed";
 
-export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBoardProps) {
+export function ProjectBoard({ projectId, currentUserId, onOpenTask, elementId }: ProjectBoardProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("lanes");
   const [groupBy, setGroupBy] = useState<GroupBy>("assignee");
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS, elementId: elementId ?? null });
   const [justClaimed, setJustClaimed] = useState<string | null>(null);
   const [movePopover, setMovePopover] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+
+  // Keep the board scoped to the drilled-in element when the prop changes.
+  useEffect(() => {
+    setFilters((f) => (f.elementId === (elementId ?? null) ? f : { ...f, elementId: elementId ?? null }));
+  }, [elementId]);
 
   useEffect(() => {
     try {
@@ -59,7 +67,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
     localStorage.setItem(PERSIST_KEY(projectId), JSON.stringify({ viewMode, groupBy }));
   }, [projectId, viewMode, groupBy]);
 
-  const { tasks, applyEvent, setTasks } = useBoardData(projectId);
+  const { tasks, elements, applyEvent, setTasks } = useBoardData(projectId);
   const { connected } = useBoardLive(projectId, (e) => {
     if (e.kind === "task.claimed") {
       const id = String((e.payload as { id?: string }).id ?? "");
@@ -93,6 +101,12 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
     closed: filtered.filter(t => t.status === "closed").length,
   }), [filtered]);
 
+  const elementNameById = useMemo(
+    () => Object.fromEntries(elements.map(e => [e.id, e.name])),
+    [elements],
+  );
+  const showElementBadge = filters.elementId === null;
+
   const onCardDragStart = (e: DragEvent<HTMLButtonElement>, task: Task) => {
     e.dataTransfer.setData("text/plain", task.id);
   };
@@ -122,7 +136,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
       } catch (err) {
         console.error("DnD call failed", err);
         setTasks(snapshot);
-        window.alert("Could not move card — reverted.");
+        window.alert("Could not move card: reverted.");
         return;
       }
     }
@@ -138,6 +152,7 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
       onMove={(id) => setMovePopover(id)}
       justClaimed={justClaimed === t.id}
       draggable={drag}
+      elementName={showElementBadge && t.element_id ? (elementNameById[t.element_id] ?? null) : null}
       onDragStart={drag ? onCardDragStart : undefined}
     />
   );
@@ -149,10 +164,12 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
           viewMode={viewMode}
           groupBy={groupBy}
           filters={filters}
+          elements={elements}
           live={connected}
           onChangeView={setViewMode}
           onChangeGroup={setGroupBy}
           onChangeFilters={setFilters}
+          hideElementFilter={elementId != null}
         />
         <MobileBoardCarousel
           columns={MOBILE_COLUMNS}
@@ -171,10 +188,12 @@ export function ProjectBoard({ projectId, currentUserId, onOpenTask }: ProjectBo
         viewMode={viewMode}
         groupBy={groupBy}
         filters={filters}
+        elements={elements}
         live={connected}
         onChangeView={setViewMode}
         onChangeGroup={setGroupBy}
         onChangeFilters={setFilters}
+        hideElementFilter={elementId != null}
       />
       {viewMode === "kanban" ? (
         <div className={styles.cols}>

@@ -7,7 +7,7 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -515,7 +515,7 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
 @router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
     cluster = request.app.state.cluster_manager
-    removed = cluster.unregister_worker(name)
+    removed = await cluster.unregister_worker(name)
     if not removed:
         return JSONResponse({"error": "Worker not found"}, status_code=404)
     return {"status": "removed", "name": name}
@@ -1004,11 +1004,17 @@ async def promote_archived_models(request: Request):
 # ── GPU lease coordination (taOS #893) ───────────────────────────────────
 
 
+# Lease TTLs are short-lived reservations; cap at a day so a bad caller
+# can't pin a GPU indefinitely, and require a positive value so a zero/negative
+# TTL can't mint a lease that is already expired (and thus grants no exclusion).
+_LEASE_TTL_MAX = 86_400
+
+
 class LeaseClaimRequest(BaseModel):
     resource_id: str
-    ttl_seconds: float = 30
+    ttl_seconds: float = Field(default=30, gt=0, le=_LEASE_TTL_MAX)
     caller: str = ""
-    required_vram_mb: int = 0
+    required_vram_mb: int = Field(default=0, ge=0)
 
 
 class LeaseReleaseRequest(BaseModel):
@@ -1017,7 +1023,36 @@ class LeaseReleaseRequest(BaseModel):
 
 class LeaseRenewRequest(BaseModel):
     lease_id: str
-    ttl_seconds: float = 30
+    ttl_seconds: float = Field(default=30, gt=0, le=_LEASE_TTL_MAX)
+
+
+async def _require_lease_access(request: Request) -> JSONResponse | None:
+    """Gate the lease coordination endpoints.
+
+    Leases are a controller-internal coordination surface (claimed by
+    controller-side dispatchers, A2A agents, or paired workers), so restrict
+    them to trusted principals: an admin session, a valid local token
+    (same-host trust), or a signed worker HMAC. Returns an error response to
+    return to the client if denied, or ``None`` when access is allowed.
+
+    Without this gate the endpoints are reachable unauthenticated, so any LAN
+    process could list every lease id and release them, re-enabling the
+    concurrent-GPU-load the lease system exists to prevent.
+    """
+    ok, _ = _require_admin(request)
+    if ok:
+        return None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        presented = auth_header[7:].strip()
+        if presented and request.app.state.auth.validate_local_token(presented):
+            return None
+    try:
+        await require_worker_hmac(request)
+        return None
+    except _HMACError:
+        pass
+    return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
 @router.post("/api/cluster/leases/claim")
@@ -1027,6 +1062,9 @@ async def claim_lease(request: Request, body: LeaseClaimRequest):
     Returns 200 with lease details on success, 409 if the resource is
     already leased or the worker has insufficient free VRAM.
     """
+    denied = await _require_lease_access(request)
+    if denied is not None:
+        return denied
     cluster = request.app.state.cluster_manager
     lease = await cluster.claim_lease(
         resource_id=body.resource_id,
@@ -1061,6 +1099,9 @@ async def claim_lease(request: Request, body: LeaseClaimRequest):
 @router.post("/api/cluster/leases/release")
 async def release_lease(request: Request, body: LeaseReleaseRequest):
     """Release a GPU lease by id.  Idempotent."""
+    denied = await _require_lease_access(request)
+    if denied is not None:
+        return denied
     cluster = request.app.state.cluster_manager
     await cluster.release_lease(body.lease_id)
     return {"status": "released", "lease_id": body.lease_id}
@@ -1069,6 +1110,9 @@ async def release_lease(request: Request, body: LeaseReleaseRequest):
 @router.post("/api/cluster/leases/renew")
 async def renew_lease(request: Request, body: LeaseRenewRequest):
     """Extend a lease's TTL.  Returns 409 if the lease is expired."""
+    denied = await _require_lease_access(request)
+    if denied is not None:
+        return denied
     cluster = request.app.state.cluster_manager
     lease = await cluster.renew_lease(body.lease_id, ttl_seconds=body.ttl_seconds)
     if lease is None:
@@ -1086,6 +1130,9 @@ async def renew_lease(request: Request, body: LeaseRenewRequest):
 @router.get("/api/cluster/leases")
 async def list_leases(request: Request):
     """Return active (non-expired) GPU leases."""
+    denied = await _require_lease_access(request)
+    if denied is not None:
+        return denied
     cluster = request.app.state.cluster_manager
     leases = cluster.get_leases()
     return {
@@ -1182,6 +1229,9 @@ async def update_worker(request: Request, name: str):
                 f"{worker.url}/api/worker/deploy",
                 json={"command": "update-worker"},
             )
+            # Surface a non-2xx worker response as a failure instead of
+            # reporting status:"updating" with the error body as deploy_result.
+            resp.raise_for_status()
             deploy_result = resp.json()
     except Exception as exc:
         # Deploy failed — cancel drain so worker can still serve traffic

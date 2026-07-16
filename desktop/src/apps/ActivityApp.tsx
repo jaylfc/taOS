@@ -4,6 +4,7 @@ import {
   Gauge, Layers, RefreshCw, Loader2, Server,
 } from "lucide-react";
 import { Card, CardContent, Button } from "@/components/ui";
+import { AiStackRecovery } from "./ActivityApp.aiStack";
 import type { ClusterWorker } from "@/lib/cluster";
 import { workerStatus, workerHardwareSummary, workerShortIp, normalizeBackendName, STATUS_PILL_CLASS, STATUS_LABEL } from "@/lib/cluster";
 
@@ -337,9 +338,12 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
             {hardware.ram_mb && ` \u00b7 ${(hardware.ram_mb / 1024).toFixed(0)} GB RAM`}
           </p>
         </div>
-        <Button variant="ghost" size="icon" onClick={fetchData} aria-label="Refresh">
-          <RefreshCw size={14} />
-        </Button>
+        <div className="flex items-center gap-1">
+          <AiStackRecovery onRecovered={fetchData} />
+          <Button variant="ghost" size="icon" onClick={fetchData} aria-label="Refresh">
+            <RefreshCw size={14} />
+          </Button>
+        </div>
       </div>
 
       {/* Grid */}

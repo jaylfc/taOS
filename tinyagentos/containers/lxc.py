@@ -40,6 +40,13 @@ class _IncusPtyHandle(PtyHandle):
         fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsize)
 
     def close(self) -> None:
+        """Close the PTY and terminate the subprocess.
+
+        Sends SIGTERM, closes the master fd, then waits for the process
+        with a short timeout.  The wait is fire-and-forget — callers in
+        async contexts should wrap this in ``asyncio.to_thread`` if they
+        need to avoid blocking the event loop.
+        """
         try:
             self._proc.send_signal(signal.SIGTERM)
         except ProcessLookupError:
@@ -48,7 +55,14 @@ class _IncusPtyHandle(PtyHandle):
             os.close(self._master_fd)
         except OSError:
             pass
-        self._proc.wait(timeout=5)
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            try:
+                self._proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def _open_incus_pty(container: str, shell_cmd: str) -> _IncusPtyHandle:

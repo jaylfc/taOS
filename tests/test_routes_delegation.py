@@ -32,14 +32,21 @@ async def _make_project_and_task(app, *, title="Do the thing", created_by="from-
     return project, task
 
 
+# The to-agent's config id is deliberately distinct from its name: task
+# assignee_id is keyed on this hex id everywhere it is read (beads, project
+# members, the heartbeat sweep), so a delegation must write the id, not the
+# slug. Fixtures that omit a distinct id masked that mismatch.
+TO_AGENT_ID = "aid-to-000002"
+
+
 @pytest.fixture(autouse=True)
 def _seed_agents(app):
     """Two config agents so from_agent/to_agent resolve via find_agent."""
     app.state.config.agents.append(
-        {"name": "from-agent", "host": "", "qmd_index": "from-agent", "color": "#111111"}
+        {"name": "from-agent", "id": "aid-from-0001", "host": "", "qmd_index": "from-agent", "color": "#111111"}
     )
     app.state.config.agents.append(
-        {"name": "to-agent", "host": "", "qmd_index": "to-agent", "color": "#222222"}
+        {"name": "to-agent", "id": TO_AGENT_ID, "host": "", "qmd_index": "to-agent", "color": "#222222"}
     )
 
 
@@ -63,6 +70,35 @@ class TestDelegationGateDeny:
 
         unchanged = await app.state.project_task_store.get_task(task["id"])
         assert unchanged["assignee_id"] is None
+
+    async def test_deny_audit_event_is_findable_in_project_feed(self, client, app):
+        """A denied delegation must be recorded against the real project (and
+        the real task when one exists) so it appears in the project activity
+        feed - the old synthetic agent:{from_agent} task_id with a blank
+        project_id left the deny event unfindable everywhere."""
+        await app.state.execution_policies.set_policy("delegate", "deny", agent_name="from-agent")
+        project, task = await _make_project_and_task(app)
+
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/agents/from-agent/delegate",
+                json={"to_agent": "to-agent", "task_id": task["id"]},
+            )
+        finally:
+            await agent_client.aclose()
+        assert resp.status_code == 403
+
+        feed = await app.state.board_audit.recent_for_project(project["id"])
+        denies = [e for e in feed if e["event"] == "delegation_policy_deny"]
+        assert len(denies) == 1
+        assert denies[0]["task_id"] == task["id"]
+        assert denies[0]["project_id"] == project["id"]
+        assert denies[0]["detail"]["to_agent"] == "to-agent"
+
+        # It is also reachable from the real task's history.
+        history = await app.state.board_audit.history(task["id"])
+        assert any(e["event"] == "delegation_policy_deny" for e in history)
 
 
 @pytest.mark.asyncio
@@ -119,10 +155,11 @@ class TestDelegationGateRequireApproval:
         body = resp.json()
         assert body["status"] == "delegated"
         assert body["task_id"] == task["id"]
+        # The response keeps the display name; the stored assignee is the id.
         assert body["to_agent"] == "to-agent"
 
         updated = await app.state.project_task_store.get_task(task["id"])
-        assert updated["assignee_id"] == "to-agent"
+        assert updated["assignee_id"] == TO_AGENT_ID
 
     async def test_grant_is_scoped_per_agent(self, client, app):
         """A grant for one agent does not authorize a different agent's delegation."""
@@ -186,7 +223,7 @@ class TestDelegationApprovalFlow:
         assert answer_resp.status_code == 200
 
         completed = await app.state.project_task_store.get_task(task["id"])
-        assert completed["assignee_id"] == "to-agent"
+        assert completed["assignee_id"] == TO_AGENT_ID
 
         # The action class is now granted for from-agent, so a follow-up
         # delegation by the same agent proceeds without another approval.
@@ -241,7 +278,7 @@ class TestDelegationApprovalFlow:
 
         tasks = await app.state.project_task_store.list_tasks(project["id"])
         new_task = next(t for t in tasks if t["title"] == "Brand new task")
-        assert new_task["assignee_id"] == "to-agent"
+        assert new_task["assignee_id"] == TO_AGENT_ID
 
     async def test_approving_routes_exactly_one_honest_message(self, client, app, monkeypatch):
         """Answering a delegation gate must send the asking agent a SINGLE
@@ -342,7 +379,7 @@ class TestDelegationTaskTitleCreatesTask:
 
         tasks = await app.state.project_task_store.list_tasks(project["id"])
         created = next(t for t in tasks if t["title"] == "Write the docs")
-        assert created["assignee_id"] == "to-agent"
+        assert created["assignee_id"] == TO_AGENT_ID
 
     async def test_task_title_without_project_id_is_400(self, client, app):
         await app.state.execution_policies.set_policy("delegate", "allow", agent_name="from-agent")
@@ -355,6 +392,53 @@ class TestDelegationTaskTitleCreatesTask:
         finally:
             await agent_client.aclose()
         assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+class TestDelegationApprovalQuestion:
+    async def test_existing_task_question_uses_title_not_raw_id(self, client, app):
+        """Delegating an existing task with no task_title must show the task's
+        title in the human approval inbox, not the raw task id."""
+        _project, task = await _make_project_and_task(app, title="Ship the release notes")
+
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/agents/from-agent/delegate",
+                json={"to_agent": "to-agent", "task_id": task["id"]},
+            )
+        finally:
+            await agent_client.aclose()
+        assert resp.status_code == 202
+
+        decision = await app.state.decision_store.get(resp.json()["decision_id"])
+        assert '"Ship the release notes"' in decision["question"]
+        assert task["id"] not in decision["question"]
+
+
+@pytest.mark.asyncio
+class TestDelegationAssigneeIdFallback:
+    async def test_agent_without_config_id_falls_back_to_name(self, client, app):
+        """An older/test agent whose config carries no distinct id (id == name)
+        must still delegate cleanly, storing the name as assignee_id."""
+        app.state.config.agents.append(
+            {"name": "legacy-agent", "host": "", "qmd_index": "legacy-agent", "color": "#333333"}
+        )
+        await app.state.execution_policies.set_policy("delegate", "allow", agent_name="from-agent")
+        _project, task = await _make_project_and_task(app)
+
+        agent_client = _local_token_client(app)
+        try:
+            resp = await agent_client.post(
+                "/api/agents/from-agent/delegate",
+                json={"to_agent": "legacy-agent", "task_id": task["id"]},
+            )
+        finally:
+            await agent_client.aclose()
+        assert resp.status_code == 200
+
+        updated = await app.state.project_task_store.get_task(task["id"])
+        assert updated["assignee_id"] == "legacy-agent"
 
 
 @pytest.mark.asyncio

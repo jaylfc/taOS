@@ -14,6 +14,10 @@ requires:
 install:
   method: script
   script: scripts/install-agent-zero.sh
+  note: |
+    Clones frdel/agent-zero into /opt/agent-zero and installs with pip.
+    No PyPI package — the `agent-zero` package on PyPI is an unrelated
+    voice-agent framework. Agent Zero is clone-and-run only.
 
 hardware_tiers:
   arm-npu-16gb: full

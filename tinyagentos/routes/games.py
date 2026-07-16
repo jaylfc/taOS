@@ -30,6 +30,14 @@ _SLUG_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 _MAX_FILE_BYTES = 2 * 1024 * 1024
 _MAX_FILES = 40
 
+# Generated binary assets (game_assets.py textures now; audio/3D meshes later)
+# that the text editor does not manage; a full-replace save must never sweep
+# them, even if their bytes happen to decode as UTF-8.
+_BINARY_ASSET_EXTS = {
+    ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    ".glb", ".gltf", ".wav", ".mp3", ".ogg",
+}
+
 
 class GameSaveRequest(BaseModel):
     name: str | None = None
@@ -129,8 +137,23 @@ async def save_game(request: Request, game_id: str, body: GameSaveRequest):
     game_dir.mkdir(parents=True, exist_ok=True)
 
     for p in game_dir.iterdir():
-        if p.is_file() and p.name != "game.json" and p.name not in body.files:
-            p.unlink()
+        if not (p.is_file() and p.name != "game.json" and p.name not in body.files):
+            continue
+        # The editor's file set is text-only (_list_game_files skips undecodable
+        # files), so generated binary assets (textures/sprites written by
+        # routes/game_assets.py) never appear in `body.files`. Preserve them
+        # instead of sweeping them: full-replace semantics apply only to the
+        # text files the editor actually manages. Match a known binary-asset
+        # extension first (a binary payload that happens to decode as UTF-8 —
+        # e.g. a GLB whose bytes are coincidentally valid — must not be swept),
+        # then fall back to an undecodable-bytes check for anything unlisted.
+        if p.suffix.lower() in _BINARY_ASSET_EXTS:
+            continue
+        try:
+            p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        p.unlink()
     for name, content in body.files.items():
         (game_dir / name).write_text(content, encoding="utf-8")
 

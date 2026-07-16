@@ -986,6 +986,21 @@ class TestSetRoleTitle:
         result = await store.set_role_title("no-such-20260101-000000", title="X")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_empty_string_clears_field(self, store):
+        row = await store.register(framework="openclaw", display_name="A", role="worker")
+        cleared = await store.set_role_title(row["canonical_id"], role="")
+        assert cleared["role"] is None
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_is_treated_as_set_not_clear(self, store):
+        # set_role_title clears only on a truly empty string; the route strips
+        # whitespace-only input to "" before calling, so raw "   " here stays
+        # verbatim (the store does not itself strip).
+        row = await store.register(framework="openclaw", display_name="A", role="worker")
+        updated = await store.set_role_title(row["canonical_id"], role="   ")
+        assert updated["role"] == "   "
+
 
 # ---------------------------------------------------------------------------
 # set_reporting
@@ -1055,6 +1070,37 @@ class TestSetReporting:
         await store.set_reporting(report["canonical_id"], m1["canonical_id"])
         updated = await store.set_reporting(report["canonical_id"], m2["canonical_id"])
         assert updated["reports_to"] == m2["canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_edits_cannot_persist_cycle(self, store):
+        """Two concurrent edits (A->B and B->A) must not both pass the cycle
+        guard and then both write. The reporting lock serializes the
+        check-then-write, so exactly one edge survives and no cycle persists."""
+        import asyncio
+
+        a = await store.register(framework="openclaw", display_name="A")
+        b = await store.register(framework="openclaw", display_name="B")
+        aid = a["canonical_id"]
+        bid = b["canonical_id"]
+
+        results = await asyncio.gather(
+            store.set_reporting(aid, bid),
+            store.set_reporting(bid, aid),
+            return_exceptions=True,
+        )
+        # One edit wins; the other either wins the ordering and then the second
+        # is rejected as a cycle, or both individually succeed only if they do
+        # not close a loop. Either way the final state must be acyclic.
+        cycle_errors = [r for r in results if isinstance(r, ValueError)]
+        assert len(cycle_errors) <= 1
+
+        a_final = await store.get(aid)
+        b_final = await store.get(bid)
+        # A reciprocal A->B and B->A pair is exactly the persisted cycle the
+        # lock exists to prevent.
+        assert not (
+            a_final["reports_to"] == bid and b_final["reports_to"] == aid
+        )
 
 
 # ---------------------------------------------------------------------------

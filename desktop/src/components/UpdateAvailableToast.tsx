@@ -15,19 +15,9 @@
  * instructions are surfaced in the body text instead.
  */
 import { useEffect, useRef } from "react";
+import { useUpdateAvailable } from "@/hooks/use-update-available";
 import { useBackendStatus } from "@/contexts/BackendStatusContext";
 import { useNotificationStore } from "@/stores/notification-store";
-
-const DEV_VERSION_PATTERN = /^(dev|0\.0\.0)/i;
-
-// Strip semver build metadata so a new SPA build (e.g. 0.1.0+a3bd632)
-// against the same backend version (0.1.0) doesn't trigger a spurious
-// "update available" toast. Build metadata is by spec not part of the
-// release identity.
-function strippedVersion(v: string): string {
-  const plus = v.indexOf("+");
-  return plus === -1 ? v : v.slice(0, plus);
-}
 
 interface Props {
   buildVersion: string;
@@ -35,13 +25,13 @@ interface Props {
 
 export function UpdateAvailableToast({ buildVersion }: Props) {
   const { currentVersion } = useBackendStatus();
+  const hasUpdate = useUpdateAvailable(buildVersion);
   const addNotification = useNotificationStore((s) => s.addNotification);
   const firedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (DEV_VERSION_PATTERN.test(buildVersion)) return;
+    if (!hasUpdate) return;
     if (!currentVersion) return;
-    if (strippedVersion(currentVersion) === strippedVersion(buildVersion)) return;
     if (firedFor.current === currentVersion) return;
     firedFor.current = currentVersion;
     addNotification({
@@ -50,7 +40,7 @@ export function UpdateAvailableToast({ buildVersion }: Props) {
       title: "New taOS version available",
       body: `Reload to upgrade from ${buildVersion} to ${currentVersion}.`,
     });
-  }, [buildVersion, currentVersion, addNotification]);
+  }, [hasUpdate, buildVersion, currentVersion, addNotification]);
 
   return null;
 }

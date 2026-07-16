@@ -13,7 +13,7 @@
 trailer = "Docs-Reviewed:"
 
 [invariants]
-referenced_paths_scan = ["README.md", "docs/agent-coordination.md"]
+referenced_paths_scan = ["README.md", "docs/agent-coordination.md", "docs/agent-manual/index.md"]
 
 [[rules]]
 name = "apps"
@@ -41,3 +41,9 @@ name = "catalog"
 when_changed = ["app-catalog/**"]
 require_doc = ["README.md"]
 hint = "a catalog manifest was added or removed"
+
+[[rules]]
+name = "agent-api"
+when_changed = ["tinyagentos/auth_middleware.py"]
+require_doc = ["docs/agent-coordination.md"]
+hint = "the agent-token route allowlist changed; update the agent-facing API surface (or add a Docs-Reviewed trailer explaining why not)"

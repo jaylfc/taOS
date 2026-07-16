@@ -370,13 +370,13 @@ async def test_mention_routes_to_agent_in_a2a_channel():
 
 
 # ---------------------------------------------------------------------------
-# Lead agent — ensure_a2a_channel syncs settings.leads
+# Lead agent — ensure_a2a_channel syncs settings.leads from lead_member_id (D7)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ensure_populates_leads_from_is_lead_flag(stores):
-    """When a member has is_lead=1, their name appears in settings.leads."""
+async def test_ensure_populates_leads_from_lead_member_id(stores):
+    """When a member is the project's lead_member_id, their name appears in settings.leads."""
     project_store, channel_store = stores
     p = await project_store.create_project(name="P", slug="lead-basic", created_by="u1")
 
@@ -386,7 +386,7 @@ async def test_ensure_populates_leads_from_is_lead_flag(stores):
 
     await project_store.add_member(p["id"], coord_id, member_kind="native")
     await project_store.add_member(p["id"], worker_id, member_kind="native")
-    await project_store.set_member_lead(p["id"], coord_id, True)
+    await project_store.set_lead(p["id"], coord_id)
 
     ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
 
@@ -396,7 +396,7 @@ async def test_ensure_populates_leads_from_is_lead_flag(stores):
 
 @pytest.mark.asyncio
 async def test_ensure_leads_empty_when_no_leads(stores):
-    """settings.leads is an empty list when no member is marked as lead."""
+    """settings.leads is an empty list when no member is the lead."""
     project_store, channel_store = stores
     p = await project_store.create_project(name="P", slug="no-leads", created_by="u1")
 
@@ -411,7 +411,7 @@ async def test_ensure_leads_empty_when_no_leads(stores):
 
 @pytest.mark.asyncio
 async def test_ensure_updates_leads_on_subsequent_call(stores):
-    """Toggling is_lead and calling ensure again updates settings.leads."""
+    """Changing lead_member_id and calling ensure again updates settings.leads."""
     project_store, channel_store = stores
     p = await project_store.create_project(name="P", slug="lead-update", created_by="u1")
 
@@ -422,18 +422,18 @@ async def test_ensure_updates_leads_on_subsequent_call(stores):
     ch1 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
     assert ch1["settings"]["leads"] == []
 
-    await project_store.set_member_lead(p["id"], coord_id, True)
+    await project_store.set_lead(p["id"], coord_id)
     ch2 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
     assert ch2["settings"]["leads"] == ["coord"]
 
-    await project_store.set_member_lead(p["id"], coord_id, False)
+    await project_store.set_lead(p["id"], None)
     ch3 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
     assert ch3["settings"]["leads"] == []
 
 
 @pytest.mark.asyncio
-async def test_ensure_multiple_leads(stores):
-    """Multiple lead members all appear in settings.leads, sorted."""
+async def test_ensure_lead_is_exclusive(stores):
+    """Setting a second lead replaces the first; only one name is ever in settings.leads."""
     project_store, channel_store = stores
     p = await project_store.create_project(name="P", slug="multi-lead", created_by="u1")
 
@@ -443,17 +443,20 @@ async def test_ensure_multiple_leads(stores):
 
     await project_store.add_member(p["id"], alpha_id, member_kind="native")
     await project_store.add_member(p["id"], beta_id, member_kind="native")
-    await project_store.set_member_lead(p["id"], alpha_id, True)
-    await project_store.set_member_lead(p["id"], beta_id, True)
+    await project_store.set_lead(p["id"], alpha_id)
 
-    ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    ch1 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch1["settings"]["leads"] == ["alpha"]
 
-    assert ch["settings"]["leads"] == ["alpha", "beta"]
+    # Promoting beta must atomically unset alpha.
+    await project_store.set_lead(p["id"], beta_id)
+    ch2 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch2["settings"]["leads"] == ["beta"]
 
 
 @pytest.mark.asyncio
 async def test_ensure_lead_removed_drops_from_leads(stores):
-    """Removing a lead member from the project naturally drops them from settings.leads."""
+    """Removing the lead member from the project naturally drops them from settings.leads."""
     project_store, channel_store = stores
     p = await project_store.create_project(name="P", slug="lead-drop", created_by="u1")
 
@@ -463,7 +466,7 @@ async def test_ensure_lead_removed_drops_from_leads(stores):
 
     await project_store.add_member(p["id"], coord_id, member_kind="native")
     await project_store.add_member(p["id"], worker_id, member_kind="native")
-    await project_store.set_member_lead(p["id"], coord_id, True)
+    await project_store.set_lead(p["id"], coord_id)
 
     ch1 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
     assert ch1["settings"]["leads"] == ["coord"]
@@ -473,3 +476,28 @@ async def test_ensure_lead_removed_drops_from_leads(stores):
     ch2 = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
     assert ch2["settings"]["leads"] == []
     assert ch2["members"] == ["worker"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_lead_follows_backfilled_column(stores):
+    """A legacy is_lead=1 flag is backfilled into lead_member_id on init and synced."""
+    project_store, channel_store = stores
+    p = await project_store.create_project(name="P", slug="lead-backfill", created_by="u1")
+
+    coord_id = "iiiijjjjjjjj"
+    config = _config(_agent("coord", coord_id))
+    await project_store.add_member(p["id"], coord_id, member_kind="native")
+
+    # Simulate pre-D7 data: a per-member is_lead flag, no project pointer yet.
+    await project_store._db.execute(
+        "UPDATE project_members SET is_lead = 1 WHERE project_id = ? AND member_id = ?",
+        (p["id"], coord_id),
+    )
+    await project_store._db.commit()
+    await project_store._backfill_lead_member_id()
+
+    refreshed = await project_store.get_project(p["id"])
+    assert refreshed["lead_member_id"] == coord_id
+
+    ch = await ensure_a2a_channel(channel_store, project_store, p["id"], config=config)
+    assert ch["settings"]["leads"] == ["coord"]

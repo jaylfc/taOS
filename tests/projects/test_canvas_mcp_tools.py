@@ -28,7 +28,16 @@ async def env(tmp_path):
     ctx = ct.CanvasToolContext(
         project_store=ps, canvas_store=cs, snapshotter=snap, data_root=data_root,
     )
-    yield p, ctx, ps
+
+    async def _grant_edit():
+        await ps._db.execute(
+            "UPDATE project_members SET can_edit_canvas = 1 "
+            "WHERE project_id = ? AND member_id = ?",
+            (p["id"], "agent-1"),
+        )
+        await ps._db.commit()
+
+    yield p, ctx, ps, _grant_edit
     await snap.stop()
     await cs.close()
     await ps.close()
@@ -36,7 +45,8 @@ async def env(tmp_path):
 
 @pytest.mark.asyncio
 async def test_canvas_add_note_creates_element(env):
-    p, ctx, _ = env
+    p, ctx, _ps, grant = env
+    await grant()
     res = await ct.canvas_add_note(
         ctx, project_id=p["id"], agent_id="agent-1",
         text="agent-said-hello", x=10, y=20,
@@ -48,7 +58,8 @@ async def test_canvas_add_note_creates_element(env):
 
 @pytest.mark.asyncio
 async def test_canvas_add_text_creates_element(env):
-    p, ctx, _ = env
+    p, ctx, _ps, grant = env
+    await grant()
     res = await ct.canvas_add_text(
         ctx, project_id=p["id"], agent_id="agent-1",
         text="an idea", x=5, y=5, font_size=20,
@@ -62,7 +73,8 @@ async def test_canvas_add_text_creates_element(env):
 
 @pytest.mark.asyncio
 async def test_canvas_add_mermaid_and_flowchart_carry_source(env):
-    p, ctx, _ = env
+    p, ctx, _ps, grant = env
+    await grant()
     m = await ct.canvas_add_mermaid(
         ctx, project_id=p["id"], agent_id="agent-1",
         source="graph TD; A-->B", x=0, y=0,
@@ -79,7 +91,8 @@ async def test_canvas_add_mermaid_and_flowchart_carry_source(env):
 
 @pytest.mark.asyncio
 async def test_canvas_add_mindmap_edge_links_endpoints(env):
-    p, ctx, _ = env
+    p, ctx, _ps, grant = env
+    await grant()
     a = await ct.canvas_add_text(
         ctx, project_id=p["id"], agent_id="agent-1", text="a", x=0, y=0,
     )
@@ -100,7 +113,8 @@ async def test_canvas_add_mindmap_edge_links_endpoints(env):
 
 @pytest.mark.asyncio
 async def test_canvas_add_mindmap_edge_rejects_unknown_endpoint(env):
-    p, ctx, _ = env
+    p, ctx, _ps, grant = env
+    await grant()
     a = await ct.canvas_add_text(
         ctx, project_id=p["id"], agent_id="agent-1", text="a", x=0, y=0,
     )
@@ -112,32 +126,71 @@ async def test_canvas_add_mindmap_edge_rejects_unknown_endpoint(env):
 
 
 @pytest.mark.asyncio
-async def test_canvas_update_denied_without_permission(env):
-    p, ctx, _ = env
-    note = await ct.canvas_add_note(
+async def test_canvas_add_denied_without_permission(env):
+    p, ctx, _ps, _grant = env
+    res = await ct.canvas_add_note(
         ctx, project_id=p["id"], agent_id="agent-1",
         text="x", x=0, y=0,
     )
+    assert res["error"] == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_canvas_list_denied_without_read(env):
+    p, ctx, _ps, grant = env
+    # can_edit_canvas only: the read checkbox stays off, so the in-process
+    # read path must be blocked even though the agent can write.
+    await grant()
+    res = await ct.canvas_list_elements(
+        ctx, project_id=p["id"], agent_id="agent-1"
+    )
+    assert res["error"] == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_canvas_list_allowed_with_read(env):
+    p, ctx, ps, grant = env
+    await grant()
+    await ps._db.execute(
+        "UPDATE project_members SET can_read_canvas = 1 "
+        "WHERE project_id = ? AND member_id = ?",
+        (p["id"], "agent-1"),
+    )
+    await ps._db.commit()
+    el = await ctx.canvas_store.add_element(
+        project_id=p["id"], author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "x"}},
+    )
+    res = await ct.canvas_list_elements(
+        ctx, project_id=p["id"], agent_id="agent-1"
+    )
+    assert "elements" in res
+    assert [e["id"] for e in res["elements"]] == [el["id"]]
+
+
+@pytest.mark.asyncio
+async def test_canvas_update_denied_without_permission(env):
+    p, ctx, _ps, _grant = env
+    # An agent without the edit flag cannot mutate an existing element.
+    el = await ctx.canvas_store.add_element(
+        project_id=p["id"], author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "x"}},
+    )
     res = await ct.canvas_update_element(
         ctx, project_id=p["id"], agent_id="agent-1",
-        element_id=note["element"]["id"], patch={"x": 99},
+        element_id=el["id"], patch={"x": 99},
     )
     assert res["error"] == "permission_denied"
 
 
 @pytest.mark.asyncio
 async def test_canvas_update_succeeds_with_permission(env):
-    p, ctx, ps = env
+    p, ctx, ps, grant = env
+    await grant()
     note = await ct.canvas_add_note(
         ctx, project_id=p["id"], agent_id="agent-1",
         text="x", x=0, y=0,
     )
-    await ps._db.execute(
-        "UPDATE project_members SET can_edit_canvas = 1 "
-        "WHERE project_id = ? AND member_id = ?",
-        (p["id"], "agent-1"),
-    )
-    await ps._db.commit()
     res = await ct.canvas_update_element(
         ctx, project_id=p["id"], agent_id="agent-1",
         element_id=note["element"]["id"], patch={"x": 99},
@@ -147,7 +200,8 @@ async def test_canvas_update_succeeds_with_permission(env):
 
 @pytest.mark.asyncio
 async def test_canvas_get_snapshot_png_writes_file(env):
-    p, ctx, _ = env
+    p, ctx, _ps, grant = env
+    await grant()
     await ct.canvas_add_note(
         ctx, project_id=p["id"], agent_id="agent-1", text="x", x=0, y=0,
     )

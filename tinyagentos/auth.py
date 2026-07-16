@@ -422,6 +422,50 @@ class AuthManager:
         self._password_file.parent.mkdir(parents=True, exist_ok=True)
         self._password_file.write_text(hash_password(password))
 
+    def recover_password(self, new_password: str, username: str | None = None) -> str:
+        """Offline recovery: force-set an account's password without the old one.
+
+        For use by the ``recover-password`` CLI when the admin is locked out.
+        Works across every store shape: sets the ``password_hash`` on the
+        matching user record (found by ``username``, or the sole user in
+        single-user mode), or writes the legacy ``.auth_password`` when there
+        is no user record yet. All of that user's existing sessions are
+        revoked so a leaked/forgotten-password session cannot survive the
+        reset. Returns the username reset (or ``"(legacy)"``).
+        """
+        data = self._read_users()
+        users = data.get("users", [])
+        if users:
+            if username:
+                target_idx = next(
+                    (i for i, u in enumerate(users) if u.get("username") == username),
+                    None,
+                )
+                if target_idx is None:
+                    known = ", ".join(u.get("username", "?") for u in users)
+                    raise ValueError(
+                        f"user '{username}' not found (known users: {known})"
+                    )
+            elif len(users) == 1:
+                target_idx = 0
+            else:
+                names = ", ".join(u.get("username", "?") for u in users)
+                raise ValueError(
+                    f"multiple users exist; pass --username (one of: {names})"
+                )
+            user = users[target_idx]
+            user["password_hash"] = hash_password(new_password)
+            user.pop("pending_invite", None)  # a pending user becomes active
+            users[target_idx] = user
+            data["users"] = users
+            self._write_users(data)
+            if user.get("id"):
+                self.revoke_user_sessions(user["id"])
+            return user.get("username", "(unknown)")
+        # No user records: legacy single-password store.
+        self.set_password(new_password)
+        return "(legacy)"
+
     def check_password(self, password: str, username: str | None = None) -> tuple[bool, dict | None]:
         """Verify credentials.
 

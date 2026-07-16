@@ -73,10 +73,17 @@ async def test_user_can_add_ideas_board_kind(store, kind):
 
 @pytest.mark.parametrize("kind", ["text", "mermaid", "flowchart", "mindmap_edge"])
 @pytest.mark.asyncio
-async def test_agent_can_emit_ideas_board_kind(store, kind):
-    # Agents may paint the ideas-board kinds via the canvas tools (#68).
-    e = await store.add_element(
-        project_id="p",
+async def test_agent_can_emit_ideas_board_kind(store_with_member, kind):
+    # Agents may paint the ideas-board kinds via the canvas tools (#68). The
+    # store enforces can_edit_canvas, so the member needs the edit flag set.
+    cs, _ = store_with_member
+    await cs._db.execute(
+        "UPDATE project_members SET can_edit_canvas = 1 "
+        "WHERE project_id = 'p1' AND member_id = 'agent-1'"
+    )
+    await cs._db.commit()
+    e = await cs.add_element(
+        project_id="p1",
         element={"kind": kind, "x": 0, "y": 0, "w": 1, "h": 1, "payload": {}},
         author_kind="agent", author_id="agent-1",
     )
@@ -262,3 +269,88 @@ async def test_update_element_does_not_leak_across_projects(store):
     # Original row is unchanged.
     again = await store.get_element(e["id"])
     assert again["x"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Slice 4: element scoping (element_id tag on canvas items).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_element_persists_element_id(store):
+    e = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+        element_id="elm-1",
+    )
+    assert e["element_id"] == "elm-1"
+
+
+@pytest.mark.asyncio
+async def test_add_element_defaults_element_id_none(store):
+    e = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+    )
+    assert e["element_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_add_element_upsert_keeps_element_id(store):
+    """Re-sending the same id (the client upsert path) must preserve the tag."""
+    e = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+        element_id="elm-1",
+    )
+    again = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"id": e["id"], "kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "a"}},
+        element_id="elm-1",
+    )
+    assert again["element_id"] == "elm-1"
+
+
+@pytest.mark.asyncio
+async def test_list_elements_filters_by_element_id(store):
+    tagged = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "t"}},
+        element_id="elm-1",
+    )
+    await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "u"}},
+    )
+    rows = await store.list_elements("p", element_id="elm-1")
+    assert [r["id"] for r in rows] == [tagged["id"]]
+
+
+@pytest.mark.asyncio
+async def test_list_elements_none_sentinel_returns_untagged(store):
+    await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "t"}},
+        element_id="elm-1",
+    )
+    untagged = await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "u"}},
+    )
+    rows = await store.list_elements("p", element_id="none")
+    assert [r["id"] for r in rows] == [untagged["id"]]
+
+
+@pytest.mark.asyncio
+async def test_list_elements_without_filter_returns_all(store):
+    await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "t"}},
+        element_id="elm-1",
+    )
+    await store.add_element(
+        project_id="p", author_kind="user", author_id="u",
+        element={"kind": "note", "x": 0, "y": 0, "w": 1, "h": 1, "payload": {"text": "u"}},
+    )
+    rows = await store.list_elements("p")
+    assert len(rows) == 2

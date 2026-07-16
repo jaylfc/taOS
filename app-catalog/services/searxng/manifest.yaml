@@ -15,10 +15,25 @@ install:
   method: docker
   image: searxng/searxng:latest
   volumes:
-    - config:/etc/searxng
+    - ./settings.yml:/etc/searxng/settings.yml:ro
   # 8080 is the container-internal port; the host port is allocated from the
   # managed pool (30000-40000) by the installer — never bound to 8080 on the host.
   ports: [8080]
+  config_files:
+    - path: settings.yml
+      content: |
+        # SearXNG settings — JSON format is enabled so agents can query
+        # the engine programmatically (?format=json).
+        use_default_settings: true
+
+        search:
+          formats:
+            - html
+            - json
+
+        server:
+          secret_key: "{secret_key}"
+          bind_address: "0.0.0.0"
 
 hardware_tiers:
   arm-npu-16gb: full

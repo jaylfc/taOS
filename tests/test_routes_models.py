@@ -6,7 +6,12 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch, MagicMock
 from tinyagentos.app import create_app
 from tinyagentos.installers.model_paths import models_root
-from tinyagentos.routes.models import DEFAULT_MODELS_DIR, get_downloaded_models
+from tinyagentos.routes.models import (
+    DEFAULT_MODELS_DIR,
+    _estimated_vram_mb,
+    get_downloaded_models,
+)
+from tinyagentos.vram_reservation import VramReservationManager
 
 
 class TestDefaultModelsDir:
@@ -41,10 +46,14 @@ def catalog_with_models(tmp_path):
             {"id": "small", "name": "Small GGUF", "format": "gguf", "size_mb": 100,
              "min_ram_mb": 512, "download_url": "https://example.com/small.gguf",
              "backend": ["ollama", "llama-cpp"]},
+            # Catalog-faithful rkllm shape: variant min_ram_mb is 0; the real
+            # floor lives on requires.backends[].min_ram_mb (#1766 MEDIUM).
             {"id": "npu", "name": "NPU RKLLM", "format": "rkllm", "size_mb": 200,
              "min_ram_mb": 0, "download_url": "https://example.com/npu.rkllm",
              "backend": ["rkllama"], "requires_npu": ["rk3588"],
-             "requires": {"backends": [{"id": "rkllama"}]}},
+             "requires": {"backends": [
+                 {"id": "rkllama", "targets": ["rockchip"], "min_ram_mb": 2048},
+             ]}},
         ],
         "hardware_tiers": {"arm-npu-16gb": {"recommended": "npu", "fallback": "small"}},
         "install": {"method": "download"},
@@ -386,6 +395,94 @@ class TestModelDownload:
         fake_catalog.refresh.assert_not_awaited()
         installed = models_app.state.registry.list_installed()
         assert not any(row["id"] == "test-model" for row in installed)
+
+    async def test_rkllama_no_probe_backend_min_ram_no_503(
+        self, models_app, models_client
+    ):
+        """Acceptance (#1766): no nvidia-smi + real backend-level min_ram_mb
+        proceeds with bookkeeping and does not 503.
+        """
+        mgr = VramReservationManager()
+        mgr._probe_vram = staticmethod(lambda: None)  # type: ignore[method-assign]
+        models_app.state.vram_reservation = mgr
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ):
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "started"
+        # While the installer is in flight the reservation is held.
+        # Drain it so release runs in the finally block.
+        download_id = data["download_id"]
+        await models_app.state.download_manager._running[download_id]
+        # After success the reservation is released.
+        assert mgr.pending_count == 0
+
+    async def test_rkllama_insufficient_vram_503_on_nvidia(
+        self, models_app, models_client
+    ):
+        """On measurable NVIDIA VRAM the atomic check still denies when
+        free capacity cannot cover the backend min_ram_mb floor.
+        """
+        mgr = VramReservationManager()
+        mgr._probe_vram = staticmethod(lambda: (1024, 8192))  # type: ignore[method-assign]
+        models_app.state.vram_reservation = mgr
+
+        with patch(
+            "tinyagentos.installers.rkllama_installer.RkllamaInstaller.install",
+            new=AsyncMock(return_value={"success": True, "app_id": "test-model"}),
+        ) as mock_install:
+            resp = await models_client.post(
+                "/api/models/download",
+                json={"app_id": "test-model", "variant_id": "npu"},
+            )
+        assert resp.status_code == 503
+        body = resp.json()
+        assert "Insufficient VRAM" in body["error"]
+        assert "2048" in body["error"]
+        mock_install.assert_not_awaited()
+        assert mgr.pending_count == 0
+
+
+class TestEstimatedVramMb:
+    """Unit coverage for the #1766 backend-level min_ram_mb gate."""
+
+    def test_reads_backend_min_ram_when_variant_is_zero(self):
+        variant = {
+            "min_ram_mb": 0,
+            "requires": {
+                "backends": [
+                    {"id": "rkllama", "min_ram_mb": 2048},
+                ],
+            },
+        }
+        assert _estimated_vram_mb(variant) == 2048
+
+    def test_max_across_backends(self):
+        variant = {
+            "min_ram_mb": 0,
+            "requires": {
+                "backends": [
+                    {"id": "a", "min_ram_mb": 1024},
+                    {"id": "b", "min_ram_mb": 4096},
+                ],
+            },
+        }
+        assert _estimated_vram_mb(variant) == 4096
+
+    def test_falls_back_to_variant_key(self):
+        variant = {"min_ram_mb": 512, "requires": {"backends": [{"id": "ollama"}]}}
+        assert _estimated_vram_mb(variant) == 512
+
+    def test_missing_requires_uses_variant_only(self):
+        assert _estimated_vram_mb({"min_ram_mb": 256}) == 256
+        assert _estimated_vram_mb({}) == 0
 
 
 @pytest.mark.asyncio

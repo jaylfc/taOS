@@ -22,6 +22,9 @@ class ApnsSender(Protocol):
     async def send(self, push_token: str, payload: dict, *, topic: str | None = None) -> bool:
         ...
 
+    async def aclose(self) -> None:
+        ...
+
 
 class NullApnsSender:
     """Used when APNs is unconfigured: logs the intent and reports failure so
@@ -30,6 +33,10 @@ class NullApnsSender:
     async def send(self, push_token: str, payload: dict, *, topic: str | None = None) -> bool:
         logger.info("APNs not configured; dropping push to %s", push_token[:8])
         return False
+
+    async def aclose(self) -> None:
+        # No client to close; present so shutdown can call aclose() uniformly.
+        return None
 
 
 def build_apns_payload(
@@ -72,6 +79,9 @@ class HttpApnsSender:
         self._bundle_id = bundle_id
         self._host = host
         self._client = client or httpx.AsyncClient(http2=True)
+        # Only close the client on aclose() if this sender created it; an
+        # injected client is owned by the caller.
+        self._owns_client = client is None
 
     async def send(self, push_token: str, payload: dict, *, topic: str | None = None) -> bool:
         jwt = build_apns_jwt(
@@ -94,6 +104,12 @@ class HttpApnsSender:
             logger.warning("APNs send failed for %s", push_token[:8], exc_info=True)
             return False
         return resp.status_code == 200
+
+    async def aclose(self) -> None:
+        # Close the httpx client only if this sender created it; an injected
+        # client stays the caller's responsibility. aclose() is idempotent.
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
 
 
 def apns_sender_from_env() -> ApnsSender:

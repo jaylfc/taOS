@@ -24,6 +24,7 @@ import {
   Switch,
 } from "@/components/ui";
 import { useShortcuts } from "@/hooks/use-shortcut-registry";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useThemeStore } from "@/stores/theme-store";
 import { useDockStore } from "@/stores/dock-store";
 import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
@@ -771,7 +772,9 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     return () => { cancelled = true; };
   }, []);
 
-  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+  // Reactive + app-standard 768px breakpoint (was a one-shot innerWidth < 640
+  // read that never updated on resize/rotate).
+  const isMobile = useIsMobile();
 
   const visibleSections = isAdmin ? SECTIONS : SECTIONS.filter((s) => !ADMIN_ONLY.has(s.id));
   const effectiveSection: Section =

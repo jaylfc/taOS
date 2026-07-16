@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from tinyagentos.restart_orchestrator import RestartOrchestrator
+from tinyagentos.routes import system as system_routes
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +236,175 @@ class TestRestartStatus:
         assert resp.status_code == 503
         data = resp.json()
         assert "error" in data
+
+
+async def _member_client(app) -> AsyncClient:
+    """Cookie'd client for a non-admin member session (mirrors settings authz)."""
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite("member", invite_code, "Test Member", "", "memberpass123456")
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+    )
+
+
+class TestRestartAiStack:
+    """POST /api/system/ai-stack/restart -- issue #1743 backend recovery.
+
+    The endpoint derives its target set via ``_managed_ai_units`` (tested
+    separately below) and restarts each via ``backend_services.service_action``;
+    these tests stub both to exercise the aggregation/status logic.
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_ok(self, client, monkeypatch):
+        monkeypatch.setattr(
+            system_routes, "_managed_ai_units",
+            AsyncMock(return_value=[("rkllama.service", "system"), ("qmd.service", "system")]),
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "service_action",
+            AsyncMock(side_effect=[
+                {"unit": "rkllama.service", "ok": True, "scope": "system"},
+                {"unit": "qmd.service", "ok": True, "scope": "system"},
+            ]),
+        )
+        resp = await client.post("/api/system/ai-stack/restart")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["restarted"] == ["rkllama.service", "qmd.service"]
+        assert data["failed"] == []
+
+    @pytest.mark.asyncio
+    async def test_partial_recovery_reports_partial(self, client, monkeypatch):
+        monkeypatch.setattr(
+            system_routes, "_managed_ai_units",
+            AsyncMock(return_value=[("rkllama.service", "system"), ("qmd.service", "system")]),
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "service_action",
+            AsyncMock(side_effect=[
+                {"unit": "rkllama.service", "ok": True, "scope": "system"},
+                {"unit": "qmd.service", "ok": False, "detail": "not installed"},
+            ]),
+        )
+        data = (await client.post("/api/system/ai-stack/restart")).json()
+        # A mixed result is "partial" (not "ok"), so the UI can flag it.
+        assert data["status"] == "partial"
+        assert data["restarted"] == ["rkllama.service"]
+        assert len(data["failed"]) == 1
+        assert data["failed"][0]["unit"] == "qmd.service"
+
+    @pytest.mark.asyncio
+    async def test_all_fail_reports_failed(self, client, monkeypatch):
+        monkeypatch.setattr(
+            system_routes, "_managed_ai_units",
+            AsyncMock(return_value=[("rkllama.service", "system"), ("qmd.service", "system")]),
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "service_action",
+            AsyncMock(side_effect=[
+                {"unit": "rkllama.service", "ok": False, "detail": "auth required"},
+                {"unit": "qmd.service", "ok": False, "detail": "auth required"},
+            ]),
+        )
+        data = (await client.post("/api/system/ai-stack/restart")).json()
+        assert data["status"] == "failed"
+        assert data["restarted"] == []
+        assert len(data["failed"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_managed_backends_installed(self, client, monkeypatch):
+        # No managed backend installed on this node (e.g. non-systemd dev host):
+        # report noop rather than a misleading "failed", and never call restart.
+        monkeypatch.setattr(
+            system_routes, "_managed_ai_units", AsyncMock(return_value=[]),
+        )
+        action = AsyncMock()
+        monkeypatch.setattr(system_routes.backend_services, "service_action", action)
+        data = (await client.post("/api/system/ai-stack/restart")).json()
+        assert data["status"] == "noop"
+        assert data["restarted"] == [] and data["failed"] == []
+        action.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_rejected_403(self, client, app, monkeypatch):
+        # Guard should reject before any restart is attempted.
+        units = AsyncMock(return_value=[("qmd.service", "system")])
+        monkeypatch.setattr(system_routes, "_managed_ai_units", units)
+        member_client = await _member_client(app)
+        try:
+            resp = await member_client.post("/api/system/ai-stack/restart")
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 403
+        units.assert_not_called()
+
+
+class TestManagedAiUnits:
+    """_managed_ai_units: derive core + manifest units, filter to installed."""
+
+    def _request(self, tmp_path):
+        req = MagicMock()
+        req.app.state.registry.catalog_dir = tmp_path
+        return req
+
+    @pytest.mark.asyncio
+    async def test_unions_core_and_manifest_when_installed(self, tmp_path, monkeypatch):
+        from tinyagentos.cluster.backend_services import ManagedBackend
+
+        rk = ManagedBackend(
+            id="rkllama", unit="rkllama.service", scope="system",
+            health_url="http://localhost:7833/api/tags", health_expect='"models"',
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "load_managed_backends", lambda root: [rk]
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "unit_state",
+            AsyncMock(return_value={"installed": True}),
+        )
+        units = await system_routes._managed_ai_units(self._request(tmp_path))
+        # qmd (core, no manifest) + rkllama (from manifest), both installed.
+        assert set(u for u, _ in units) == {"qmd.service", "rkllama.service"}
+
+    @pytest.mark.asyncio
+    async def test_skips_units_not_installed_on_node(self, tmp_path, monkeypatch):
+        from tinyagentos.cluster.backend_services import ManagedBackend
+
+        rk = ManagedBackend(
+            id="rkllama", unit="rkllama.service", scope="system",
+            health_url="", health_expect="",
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "load_managed_backends", lambda root: [rk]
+        )
+
+        async def fake_state(unit, prefer=None):
+            # rkllama has migrated to another node; only qmd is installed here.
+            return {"installed": unit == "qmd.service"}
+
+        monkeypatch.setattr(system_routes.backend_services, "unit_state", fake_state)
+        units = await system_routes._managed_ai_units(self._request(tmp_path))
+        assert [u for u, _ in units] == ["qmd.service"]
+
+    @pytest.mark.asyncio
+    async def test_catalog_load_failure_still_yields_core(self, tmp_path, monkeypatch):
+        # A broken catalog must not drop qmd from recovery.
+        def boom(root):
+            raise RuntimeError("catalog unreadable")
+
+        monkeypatch.setattr(
+            system_routes.backend_services, "load_managed_backends", boom
+        )
+        monkeypatch.setattr(
+            system_routes.backend_services, "unit_state",
+            AsyncMock(return_value={"installed": True}),
+        )
+        units = await system_routes._managed_ai_units(self._request(tmp_path))
+        assert [u for u, _ in units] == ["qmd.service"]

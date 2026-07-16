@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
+import { projectsApi, type Project, type ProjectMember, type ProjectElement } from "@/lib/projects";
 import { ProjectTaskList } from "./ProjectTaskList";
 import { ProjectMembers } from "./ProjectMembers";
 import { ProjectActivity } from "./ProjectActivity";
@@ -16,10 +16,24 @@ import { useIsMobile } from "../../hooks/use-is-mobile";
 import { WorkspaceTabPills } from "../../components/mobile/WorkspaceTabPills";
 import { ProjectFab } from "./mobile/ProjectFab";
 import { TaskCreateSheet } from "./mobile/TaskCreateSheet";
+import { defaultTabForType } from "./elements/types";
+import { ElementGrid } from "./elements/ElementGrid";
+import { ElementCreateDialog } from "./elements/ElementCreateDialog";
 import styles from "./ProjectsApp.module.css";
 
-type Tab = "workspace" | "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity" | "decisions" | "routines";
+export type Tab = "workspace" | "board" | "canvas" | "tasks" | "files" | "messages" | "members" | "activity" | "decisions" | "routines";
 const TABS: Tab[] = ["workspace", "board", "canvas", "tasks", "files", "messages", "members", "activity", "decisions", "routines"];
+
+function isTab(value: string | undefined): value is Tab {
+  return value != null && (TABS as string[]).includes(value);
+}
+
+// The directory a deep-linked file lives in, used to open the Files tab in the
+// right folder. "docs/plan.md" -> "docs"; a root-level file -> "".
+function dirOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
 
 interface AgentSummary {
   id: string;
@@ -40,15 +54,44 @@ function setTaskParam(taskId: string | null) {
   window.history.pushState({}, "", url);
 }
 
-export function ProjectWorkspace({ project, onChanged }: { project: Project; onChanged: () => void }) {
+// The drilled-in element id rides the URL next to `task` so deep links and
+// open-in-new-window work per element (per design doc slice 3).
+function readElementParam(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("element");
+}
+
+function setElementParam(elementId: string | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (elementId) url.searchParams.set("element", elementId);
+  else url.searchParams.delete("element");
+  window.history.pushState({}, "", url);
+}
+
+export function ProjectWorkspace({ project, onChanged, initialTab, filePath }: { project: Project; onChanged: () => void; initialTab?: string; filePath?: string }) {
   const isMobile = useIsMobile();
-  const [tab, setTab] = useState<Tab>("workspace");
+  const [tab, setTab] = useState<Tab>(() => (isTab(initialTab) ? initialTab : "workspace"));
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(() => readTaskParam());
   const [createSheetOpen, setCreateSheetOpen] = useState(false);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [elements, setElements] = useState<ProjectElement[]>([]);
+  const [activeElementId, setActiveElementId] = useState<string | null>(() => readElementParam());
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  // The deep-linked document (from a notification target). Threaded into the
+  // Files tab so a review link lands on the right document.
+  const [deepFilePath, setDeepFilePath] = useState<string | null>(filePath ?? null);
+
+  // Deep-link launch props arrive both on first mount and, for an already-open
+  // Projects window, on a prop merge that bumps the window launchNonce. React to
+  // the merged props so a notification click navigates the workspace in place.
+  useEffect(() => {
+    if (isTab(initialTab)) setTab(initialTab);
+    if (filePath) setDeepFilePath(filePath);
+  }, [initialTab, filePath]);
 
   const handleCreateTask = async ({ title }: { title: string }) => {
     await projectsApi.tasks.create(project.id, { title });
@@ -95,11 +138,41 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
     return () => { cancelled = true; };
   }, []);
 
+  // Elements drive the overview grid and the drill-in navigation. Failure here
+  // must never break the rest of the workspace: fall back to an empty list.
   useEffect(() => {
-    const onPop = () => setOpenTaskId(readTaskParam());
+    let cancelled = false;
+    projectsApi.elements
+      .list(project.id)
+      .then((rows) => {
+        if (cancelled) return;
+        const items = Array.isArray(rows) ? rows : [];
+        setElements(items);
+        // Honour a deep-linked element param once we know the valid ids.
+        const deep = readElementParam();
+        if (deep && items.some((e) => e.id === deep)) {
+          setActiveElementId(deep);
+          const el = items.find((e) => e.id === deep);
+          if (el) setTab(defaultTabForType(el.type));
+        }
+      })
+      .catch(() => { if (!cancelled) setElements([]); });
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  useEffect(() => {
+    const onPop = () => {
+      setOpenTaskId(readTaskParam());
+      const el = readElementParam();
+      setActiveElementId(el);
+      if (el) {
+        const found = elements.find((e) => e.id === el);
+        if (found) setTab(defaultTabForType(found.type));
+      }
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [elements]);
 
   const agentName = useMemo(() => {
     const byId = new Map<string, AgentSummary>();
@@ -110,6 +183,20 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
     };
   }, [agents]);
 
+  // Resolve a member/agent id to a friendly label for the element card owner
+  // chip. Members are agents, so fall back to the agent roster, then the id.
+  const memberLabel = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const m of members) byId.set(m.member_id, agentName(m.member_id));
+    for (const a of agents) byId.set(a.id, a.display_name || a.name);
+    return (id: string) => byId.get(id) ?? id;
+  }, [members, agents, agentName]);
+
+  const memberOptions = useMemo(
+    () => members.map((m) => ({ id: m.member_id, label: memberLabel(m.member_id) })),
+    [members, memberLabel],
+  );
+
   const presence = useMemo(
     () => derivePresence({ ownerInitial: "Y", members, agentName }),
     [members, agentName],
@@ -117,6 +204,45 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
 
   const openTask = (id: string) => { setTaskParam(id); setOpenTaskId(id); };
   const closeTask = () => { setTaskParam(null); setOpenTaskId(null); };
+
+  // Element drill-in: scope the board/canvas/files to the element and land on
+  // its type's preferred tab. The id rides the URL for deep links.
+  const openElement = (id: string) => {
+    const el = elements.find((e) => e.id === id);
+    if (!el) return;
+    setElementParam(id);
+    setActiveElementId(id);
+    setTab(defaultTabForType(el.type));
+  };
+  const openProjectView = () => {
+    setElementParam(null);
+    setActiveElementId(null);
+    setTab("workspace");
+  };
+  const refreshElements = () => {
+    projectsApi.elements
+      .list(project.id)
+      .then((rows) => setElements(Array.isArray(rows) ? rows : []))
+      .catch(() => {});
+  };
+
+  // Selecting the workspace tab returns to the element overview grid (clears
+  // any drilled-in element). This is the breadcrumb's "project" home too.
+  const selectTab = (t: Tab) => {
+    if (t === "workspace") {
+      setElementParam(null);
+      setActiveElementId(null);
+    }
+    setTab(t);
+  };
+
+  // The element we are currently scoped to, validated against the live list so
+  // a stale/removed id never silently scopes the board.
+  const scopedElement =
+    activeElementId && elements.some((e) => e.id === activeElementId)
+      ? elements.find((e) => e.id === activeElementId)!
+      : null;
+  const scopedElementId = scopedElement ? scopedElement.id : null;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -150,7 +276,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
           <WorkspaceTabPills
             tabs={tabPills}
             active={tab}
-            onSelect={(id) => setTab(id as Tab)}
+            onSelect={(id) => selectTab(id as Tab)}
           />
         ) : (
           <nav className={styles.tabs} role="tablist">
@@ -162,7 +288,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
                 id={`workspace-tab-${t}`}
                 aria-selected={tab === t}
                 aria-controls={`workspace-tabpanel-${t}`}
-                onClick={() => setTab(t)}
+                onClick={() => selectTab(t)}
                 className={`${styles.tab} ${tab === t ? styles.tabOn : ""}`}
               >
                 {t}
@@ -172,13 +298,38 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
         )}
       </header>
 
+      {scopedElement && (
+        <nav className={styles.breadcrumb} aria-label="Breadcrumb">
+          <button type="button" className={styles.crumb} onClick={openProjectView}>
+            {project.name}
+          </button>
+          <span className={styles.crumbSep} aria-hidden>/</span>
+          <span className={`${styles.crumb} ${styles.crumbOn}`} aria-current="page">
+            {scopedElement.name}
+          </span>
+        </nav>
+      )}
+
       <div
         className={tab === "workspace" ? styles.panel : styles.panelPad}
         role="tabpanel"
         id={`workspace-tabpanel-${tab}`}
         aria-labelledby={`workspace-tab-${tab}`}
       >
-        {tab === "workspace" && <ProjectWorkspacePane project={project} />}
+        {tab === "workspace" && (
+          elements.length > 0 ? (
+            <ElementGrid
+              project={project}
+              elements={elements}
+              assigneeName={memberLabel}
+              onOpenElement={openElement}
+              onAddElement={() => setCreateDialogOpen(true)}
+              onOpenProject={openProjectView}
+            />
+          ) : (
+            <ProjectWorkspacePane project={project} />
+          )
+        )}
         {tab === "board" && (
           <>
             {!authResolved ? (
@@ -187,6 +338,7 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
               <ProjectBoard
                 projectId={project.id}
                 currentUserId={currentUserId}
+                elementId={scopedElementId}
                 onOpenTask={openTask}
               />
             ) : (
@@ -202,13 +354,26 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
             )}
           </>
         )}
-        {tab === "canvas" && <CanvasView projectId={project.id} projectSlug={project.slug} />}
+        {tab === "canvas" && (
+          <CanvasView
+            projectId={project.id}
+            projectSlug={project.slug}
+            elementId={scopedElementId}
+          />
+        )}
         {tab === "tasks" && <ProjectTaskList projectId={project.id} />}
         {tab === "files" && (
           <FilesApp
-            key={project.id}
+            key={
+              scopedElement
+                ? `project-files-${project.id}-${scopedElement.slug}`
+                : deepFilePath
+                  ? `project-files-${project.id}-${deepFilePath}`
+                  : `project-files-${project.id}`
+            }
             windowId={`project-files-${project.id}`}
             rootPath={`project:${project.slug}`}
+            path={scopedElement?.slug ?? (deepFilePath ? dirOf(deepFilePath) : undefined)}
           />
         )}
         {tab === "messages" && (
@@ -233,6 +398,18 @@ export function ProjectWorkspace({ project, onChanged }: { project: Project; onC
             onSubmit={handleCreateTask}
           />
         </>
+      )}
+
+      {createDialogOpen && (
+        <ElementCreateDialog
+          projectId={project.id}
+          memberOptions={memberOptions}
+          onClose={() => setCreateDialogOpen(false)}
+          onCreated={() => {
+            setCreateDialogOpen(false);
+            refreshElements();
+          }}
+        />
       )}
     </div>
   );

@@ -30,6 +30,55 @@ const VALID_LEVELS: ReadonlySet<Notification["level"]> = new Set([
 ]);
 
 /**
+ * A typed deep-link target carried on a notification's JSON `data.target`.
+ * `kind` selects a route builder from TARGET_ROUTES; the remaining fields are
+ * kind-specific (e.g. a `project_file` carries `project_id` and `path`).
+ */
+export interface NotificationTarget {
+  kind: string;
+  project_id?: string;
+  path?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Registry mapping a target `kind` to the app route a click should open. Keyed
+ * by kind rather than a hardcoded switch so new kinds (`project_task`,
+ * `canvas_element`, ...) are purely additive: one entry each, no change to the
+ * click handler. `action` is an app id understood by the process store; `meta`
+ * carries the launch props the target app reads.
+ */
+const TARGET_ROUTES: Record<
+  string,
+  (t: NotificationTarget) => { action: string; meta: Record<string, string> }
+> = {
+  project_file: (t) => ({
+    action: "projects",
+    meta: {
+      projectId: String(t.project_id ?? ""),
+      tab: "files",
+      filePath: String(t.path ?? ""),
+    },
+  }),
+};
+
+/**
+ * Resolve a typed notification `target` to an app route via TARGET_ROUTES.
+ * Returns an empty object when there is no target or its kind is unknown, so
+ * the caller can fall back to the source-keyed switch.
+ */
+export function targetToAction(
+  target: unknown,
+): { action?: string; meta?: Record<string, string> } {
+  if (!target || typeof target !== "object") return {};
+  const kind = (target as { kind?: unknown }).kind;
+  if (typeof kind !== "string") return {};
+  const build = TARGET_ROUTES[kind];
+  if (!build) return {};
+  return build(target as NotificationTarget);
+}
+
+/**
  * Map a backend event `source` to the app a click on the notification should
  * open. Sources that have no relevant destination return an empty object, which
  * leaves the notification non-navigable. `action` is an app id understood by the
@@ -70,7 +119,14 @@ export function mapRow(row: ServerNotificationRow): Notification {
   const level = VALID_LEVELS.has(row.level as Notification["level"])
     ? (row.level as Notification["level"])
     : "info";
-  const { action, meta } = sourceToTarget(row.source);
+  // A typed `data.target` takes precedence over the source-keyed switch, so a
+  // row can point at a specific destination (e.g. a project file opens the doc
+  // viewer) regardless of its source. Source routing stays as the fallback for
+  // rows that only carry a source.
+  const targetRoute = targetToAction(row.data?.target);
+  const { action, meta } = targetRoute.action
+    ? targetRoute
+    : sourceToTarget(row.source);
   return {
     id: `srv-${row.id}`,
     source: row.source || "system",

@@ -66,7 +66,7 @@ export function ThemesPanel() {
 
   return (
     <section aria-label="Themes">
-      <div className="flex items-center justify-between mb-5 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-5 gap-3">
         <div>
           <h2 className="text-lg font-semibold">Themes</h2>
           <p className="text-sm text-shell-text-tertiary mt-0.5">

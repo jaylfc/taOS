@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 _MIN_WIDTH = 800
 _MIN_HEIGHT = 600
 _PADDING = 40
+_MAX_RENDER_DIM = 8192
 
 _KIND_FILL = {
     "note":   (255, 240, 140, 255),
@@ -78,6 +79,8 @@ def render_snapshot_png(*, elements: list[dict], output_path: Path) -> Path:
     min_x, min_y, max_x, max_y = _bounds(elements)
     width = max(_MIN_WIDTH, int(max_x - min_x) + 2 * _PADDING)
     height = max(_MIN_HEIGHT, int(max_y - min_y) + 2 * _PADDING)
+    width = min(width, _MAX_RENDER_DIM)
+    height = min(height, _MAX_RENDER_DIM)
     img = Image.new("RGB", (width, height), color=(255, 255, 255))
     draw = ImageDraw.Draw(img, "RGBA")
     try:

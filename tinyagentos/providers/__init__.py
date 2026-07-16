@@ -20,6 +20,7 @@ from __future__ import annotations
 ALL_TYPES: set[str] = {
     # -- local LLM backends --
     "rkllama",
+    "hailo-ollama",
     "ollama",
     "llama-cpp",
     "vllm",
@@ -63,6 +64,7 @@ NEEDS_API_BASE_TYPES: set[str] = (LOCAL_TYPES - IMAGE_GEN_TYPES) | {"openai-comp
 BACKEND_TYPE_MAP: dict[str, str] = {
     "ollama": "ollama",
     "rkllama": "ollama",  # rkllama is ollama-compatible on /api/embed too
+    "hailo-ollama": "ollama",  # hailo-ollama is ollama-compatible on /api/embed too
     "llama-cpp": "openai",
     "vllm": "openai",
     "exo": "openai",
@@ -82,4 +84,5 @@ CHAT_BACKEND_TYPE_MAP: dict[str, str] = {
     **BACKEND_TYPE_MAP,
     "ollama": "ollama_chat",
     "rkllama": "ollama_chat",
+    "hailo-ollama": "ollama_chat",
 }

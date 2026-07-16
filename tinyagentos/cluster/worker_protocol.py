@@ -16,6 +16,7 @@ class WorkerInfo:
     # Cross-host callers must route through the worker agent (worker.url) -- never dial backend url directly.
     backends: list[dict] = field(default_factory=list)  # Available inference backends; name is "type:port"
     models: list[str] = field(default_factory=list)     # Currently loaded models
+    available_models: list[dict] = field(default_factory=list)  # Models this worker CAN load (from local manifest)
     capabilities: list[str] = field(default_factory=list)  # embed, chat, rerank, image-gen, tts, etc
     status: str = "online"            # online | offline | busy
     last_heartbeat: float = 0

@@ -22,6 +22,10 @@ import {
   RotateCcw,
   MessagesSquare,
   Search,
+  Copy,
+  Check,
+  AlertTriangle,
+  Loader2,
 } from "lucide-react";
 import {
   Button,
@@ -75,6 +79,11 @@ import {
   writeLastChannel,
 } from "./MessagesApp.a2aSelection";
 import { bucketAgentChannels } from "./MessagesApp.agentSections";
+import {
+  pickWatchAgent,
+  computeStallInfo,
+  type StallWatch,
+} from "./MessagesApp.stallWatch";
 import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
@@ -428,6 +437,15 @@ export function MessagesApp({
   const [typingHumans, setTypingHumans] = useState<string[]>([]);
   const [typingAgents, setTypingAgents] = useState<AgentTyping[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
+  // #1741 stall watchdog. The backend streams a reply via WS deltas, but if a
+  // generation stalls (endless model loop, broken stream, or a missing
+  // completion event) no further frames arrive and the window looks frozen with
+  // no hint. We arm a watch when the user sends to an agent and clear it on
+  // completion; `lastActivityAt` is bumped on every inbound frame so the render
+  // can surface an escalating "taking longer / may be stalled" banner once
+  // activity stops. Fast, healthy responses never trip it.
+  const [responseWatch, setResponseWatch] = useState<StallWatch | null>(null);
+  const [, bumpStallClock] = useState(0);
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [overflowMenu, setOverflowMenu] = useState<{ messageId: string; x: number; y: number } | null>(null);
@@ -610,6 +628,12 @@ export function MessagesApp({
           return;
         }
         if (data.type === "thinking") {
+          // #1741: a thinking frame from the waited-on agent is live activity.
+          // Scope to that agent so a concurrent generation by another agent
+          // cannot keep a stalled watch fresh.
+          setResponseWatch((w) =>
+            w && data.slug === w.agent ? { ...w, lastActivityAt: Date.now() } : w,
+          );
           if (data.state === "start") {
             setTypingAgents((prev) => {
               const without = prev.filter((a) => a.slug !== data.slug);
@@ -643,6 +667,16 @@ export function MessagesApp({
                 notify(`${data.author_id} in #${chName}`, data.content ?? "", () => setSelectedChannel(data.channel_id));
               }
             }
+            // #1741: the waited-on agent's reply frame in the watched channel
+            // is activity. Scope to that agent (not any non-user author) so a
+            // message from another speaker in a group channel cannot mask a
+            // real stall, and record the reply id so subsequent deltas (which
+            // carry no channel_id) can be matched to this stream.
+            setResponseWatch((w) =>
+              w && w.channelId === data.channel_id && data.author_id === w.agent
+                ? { ...w, lastActivityAt: Date.now(), streamId: data.id }
+                : w,
+            );
             break;
 
           case "message_delta":
@@ -653,6 +687,14 @@ export function MessagesApp({
                   : m,
               ),
             );
+            // #1741: bump only for the reply we are waiting on (matched by the
+            // stream id captured above), so a concurrent generation in another
+            // open channel cannot keep this watch alive.
+            setResponseWatch((w) =>
+              w && w.streamId && data.message_id === w.streamId
+                ? { ...w, lastActivityAt: Date.now() }
+                : w,
+            );
             break;
 
           case "message_state":
@@ -661,6 +703,14 @@ export function MessagesApp({
                 m.id === data.message_id ? { ...m, state: data.state } : m,
               ),
             );
+            // #1741: a terminal state on the watched reply means it resolved.
+            // Clear only for our stream (or before any stream id was captured,
+            // as a defensive fallback), not for an unrelated channel's finish.
+            if (data.state === "complete" || data.state === "error") {
+              setResponseWatch((w) =>
+                w && (!w.streamId || data.message_id === w.streamId) ? null : w,
+              );
+            }
             break;
 
           case "typing":
@@ -1019,10 +1069,8 @@ export function MessagesApp({
       ? items.filter((ch) => (unread[ch.id] ?? 0) > 0 || ch.id === selectedChannel)
       : items;
 
-  /* ---- typing emitter + slash menu derived state ---- */
+  /* ---- typing emitter ---- */
   const emitTyping = useTypingEmitter(selectedChannel, "user");
-  const showSlash = input.startsWith("/");
-  const slashQuery = showSlash ? input.slice(1).split(/\s/, 1)[0] || "" : "";
 
   /* ---- mutex: settings vs thread panel ---- */
   const handleOpenSettings = () => {
@@ -1050,6 +1098,37 @@ export function MessagesApp({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // #1741: drop any active watch when the user switches channels — a stall
+  // banner from a previous conversation must not bleed into another.
+  useEffect(() => {
+    setResponseWatch(null);
+  }, [selectedChannel]);
+
+  // #1741: while a watch is armed, tick once a second so the render recomputes
+  // elapsed-since-activity and the banner escalates. Only the presence of a
+  // watch (not each bump) gates the interval, so healthy streaming does not
+  // thrash it.
+  useEffect(() => {
+    if (!responseWatch) return;
+    const id = setInterval(() => bumpStallClock((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [responseWatch !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #1741: arm the stall watch after a send if this channel has an agent that
+  // is expected to reply — always in a DM with an agent, or when an agent
+  // member is @mentioned elsewhere. Human-only channels never arm it.
+  const armResponseWatch = (text: string) => {
+    if (!currentChannel) return;
+    const agent = pickWatchAgent(
+      currentChannel,
+      text,
+      liveAgents.map((a) => a.name),
+    );
+    if (agent) {
+      setResponseWatch({ channelId: currentChannel.id, agent, lastActivityAt: Date.now() });
+    }
+  };
 
   /* ---- send message ---- */
   const sendMessage = async () => {
@@ -1093,6 +1172,7 @@ export function MessagesApp({
         setPendingAttachments([]);
         if (inputRef.current) inputRef.current.style.height = "auto";
         autoScrollRef.current = true;
+        armResponseWatch(text);
         return;
       } catch (e) {
         setSendError((e as Error).message || "send failed");
@@ -1163,6 +1243,7 @@ export function MessagesApp({
     setNewDividerAtId(null);
     autoScrollRef.current = true;
     if (inputRef.current) inputRef.current.style.height = "auto";
+    armResponseWatch(text);
   };
 
   /* ---- typing indicator ---- */
@@ -1421,6 +1502,22 @@ export function MessagesApp({
   const allChannels = [...channels, ...archivedChannels];
   const currentChannel = allChannels.find((c) => c.id === selectedChannel);
   const isCurrentArchived = currentChannel?.settings?.archived === true;
+  // #1741: derive the stall banner. Silent for the first 20s of no activity
+  // (healthy responses resolve well before then), a soft "taking longer" hint
+  // after, and an amber "may be stalled" warning with a recovery pointer at 75s.
+  const stallInfo = computeStallInfo(responseWatch, selectedChannel, Date.now());
+
+  /* ---- slash menu derived state ---- */
+  // In a DM (2 members: user + 1 agent), a leading "/" opens the agent's
+  // slash menu.  In a group channel (3+ members), the user must prefix
+  // with "@agentname /" so we know which agent's commands to show.
+  const isDm = (currentChannel?.members?.length ?? 0) === 2;
+  const showSlash = isDm ? input.startsWith("/") : /^@\S+\s+\//.test(input);
+  // The agent scoped by "@agentname /" (group only; undefined in DM).
+  const slashAgent = !isDm && showSlash ? input.match(/^@(\S+)\s+\//)?.[1] || undefined : undefined;
+  const slashQuery = showSlash
+    ? (isDm ? input.slice(1).split(/\s/, 1)[0] : input.slice(input.indexOf("/") + 1).split(/\s/, 1)[0]) || ""
+    : "";
 
   /* ---- @mention autocomplete: candidates = channel members + "all" ---- */
   const mentionCandidates: string[] = (() => {
@@ -2140,7 +2237,7 @@ export function MessagesApp({
           <div
             ref={messageListRef}
             onScroll={handleScroll}
-            className={`flex-1 overflow-y-auto px-4 py-3 space-y-0.5 select-text message-list-drop-target ${
+            className={`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-0.5 select-text message-list-drop-target ${
               shellFileDropTarget.isOver
                 ? "ring-2 ring-sky-400/60 ring-inset bg-sky-500/5"
                 : shellFileDropTarget.isValidTarget
@@ -2313,8 +2410,15 @@ export function MessagesApp({
                       onCancel={() => setEditingMessageId(null)}
                     />
                   ) : (
-                    <div className={`${isMobile ? "text-[14px]" : "text-[15px]"} leading-[1.46] whitespace-pre-wrap break-words ${isDeadAgent ? "text-shell-text-secondary" : "text-shell-text"}`}>
-                      {renderContent(msg.content)}
+                    <div className="relative">
+                      {msg.content && msg.author_type === "agent" && msg.state !== "streaming" && msg.state !== "pending" && (
+                        <CopyButton
+                          content={msg.content}
+                          className="absolute -top-1 right-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-white/10 text-shell-text-secondary hover:text-shell-text transition-opacity select-none z-10"
+                        />
+                      )}
+                      <div className={`${isMobile ? "text-[14px]" : "text-[15px]"} leading-[1.46] whitespace-pre-wrap break-words select-text ${isDeadAgent ? "text-shell-text-secondary" : "text-shell-text"}`}>
+                        {renderContent(msg.content)}
                       {msg.state === "pending" && (
                         <span className="ml-1 text-shell-text-tertiary">...</span>
                       )}
@@ -2328,6 +2432,7 @@ export function MessagesApp({
                       {msg.state === "error" && (
                         <span className="ml-1 text-red-400 text-[11px]">(error)</span>
                       )}
+                    </div>
                     </div>
                   )}
                   {msg.metadata?.pin_requested && msg.author_type === "agent" && (
@@ -2497,6 +2602,47 @@ export function MessagesApp({
           {/* typing footer */}
           <TypingFooter humans={typingHumans} agents={typingAgents} selfId="user" />
 
+          {/* #1741: stall banner — surfaces only when a response is abnormally
+              slow or has gone quiet, so a stalled generation no longer looks
+              like a frozen window. */}
+          {stallInfo && (
+            <div
+              role="status"
+              className={`mx-4 mb-2 px-3 py-2 rounded-lg border text-[12px] flex items-center gap-2 shrink-0 ${
+                stallInfo.stalled
+                  ? "bg-amber-500/10 border-amber-500/25 text-amber-300/90"
+                  : "bg-white/[0.04] border-white/10 text-white/55"
+              }`}
+            >
+              {stallInfo.stalled ? (
+                <AlertTriangle size={13} aria-hidden="true" className="shrink-0" />
+              ) : (
+                <Loader2 size={13} aria-hidden="true" className="shrink-0 animate-spin" />
+              )}
+              {stallInfo.stalled ? (
+                <span className="flex-1">
+                  No response from {stallInfo.agent} for {stallInfo.seconds}s. The model may be
+                  stalled.{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const a = getApp("dashboard");
+                      if (a) openWindow("dashboard", a.defaultSize);
+                    }}
+                    className="underline underline-offset-2 hover:text-amber-200"
+                  >
+                    Open Activity to restart the AI services
+                  </button>
+                  .
+                </span>
+              ) : (
+                <span className="flex-1">
+                  {stallInfo.agent} is taking longer than usual… ({stallInfo.seconds}s)
+                </span>
+              )}
+            </div>
+          )}
+
           {/* archived banner */}
           {isCurrentArchived && (
             <div className="mx-4 mb-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[12px] text-amber-400/80 flex items-center gap-2 shrink-0" role="status">
@@ -2586,6 +2732,7 @@ export function MessagesApp({
                   commands={slashCommands}
                   queryAfterSlash={slashQuery}
                   members={currentChannel?.members || []}
+                  scopedAgent={slashAgent}
                   onPick={(slug, cmd) => {
                     setInput(`@${slug} /${cmd} `);
                   }}
@@ -3103,5 +3250,56 @@ export function MessagesApp({
         )
       )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  CopyButton — hover copy affordance for message bubbles             */
+/*  Matches the CodeBlock + TaosAssistantPanel copy-button pattern.    */
+/* ------------------------------------------------------------------ */
+
+function CopyButton({ content, className }: { content: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const [clipError, setClipError] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* Clear any pending timers on unmount so we never setState on a dead component. */
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setClipError(false);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setClipError(true);
+      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = setTimeout(() => setClipError(false), 2500);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      aria-label={copied ? "Copied" : clipError ? "Copy failed — check clipboard permissions" : "Copy message"}
+      className={className}
+    >
+      {copied ? (
+        <Check size={10} />
+      ) : clipError ? (
+        <X size={10} className="text-red-400" />
+      ) : (
+        <Copy size={10} />
+      )}
+    </button>
   );
 }

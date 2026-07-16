@@ -22,6 +22,7 @@ export interface CanvasElement {
   rotation: number;
   z_index: number;
   payload: Record<string, unknown>;
+  element_id: string | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -37,6 +38,7 @@ export interface CanvasElementInput {
   rotation?: number;
   z_index?: number;
   payload: Record<string, unknown>;
+  element_id?: string | null;
 }
 
 async function jsonOrThrow<T>(r: Response): Promise<T> {
@@ -48,8 +50,9 @@ async function jsonOrThrow<T>(r: Response): Promise<T> {
 }
 
 export const canvasApi = {
-  async listElements(projectId: string): Promise<CanvasElement[]> {
-    const r = await fetch(`/api/projects/${projectId}/canvas/elements`);
+  async listElements(projectId: string, elementId?: string | null): Promise<CanvasElement[]> {
+    const qs = elementId != null ? `?element_id=${encodeURIComponent(elementId)}` : "";
+    const r = await fetch(`/api/projects/${projectId}/canvas/elements${qs}`);
     const body = await jsonOrThrow<{ elements: CanvasElement[] }>(r);
     return body.elements;
   },
@@ -89,15 +92,22 @@ export const canvasApi = {
     return r.ok;
   },
 
+  // Set a single canvas capability checkbox for an agent member. `flag` selects
+  // which capability to flip: "read" (can_read_canvas) or "edit" (can_edit_canvas).
+  // Both default OFF in the store, so the human ticks exactly what each agent
+  // may do. The backend permission PATCH accepts either field independently.
   async setPermission(
-    projectId: string, agentId: string, canEdit: boolean,
+    projectId: string, agentId: string, flag: "read" | "edit", allowed: boolean,
   ): Promise<void> {
+    const body = flag === "read"
+      ? { can_read_canvas: allowed }
+      : { can_edit_canvas: allowed };
     const r = await fetch(
       `/api/projects/${projectId}/canvas/permissions/${agentId}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ can_edit_canvas: canEdit }),
+        body: JSON.stringify(body),
       },
     );
     if (!r.ok) throw new Error(`setPermission failed: ${r.status}`);

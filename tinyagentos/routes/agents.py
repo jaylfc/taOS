@@ -241,6 +241,64 @@ async def agent_set_own_model(request: Request, body: AgentSelfModelUpdate):
     return {"status": "updated", "current": model}
 
 
+def _reject_non_chat_model(model_id: str):
+    """Reject a non-chat model being assigned as an agent's chat model.
+
+    An embedding or reranker model cannot do chat completion, so assigning it
+    as an agent's model produces undefined, looping output instead of a reply
+    (reported by @mandresve in #1740, where a 0.6B embedding model was
+    selectable as an agent model and generated endless "analysis" text).
+    Returns a 400 JSONResponse to hand back, or None when the model is
+    chat-capable and may be assigned.
+    """
+    from tinyagentos.litellm_config import _is_embedding_model
+
+    if model_id and _is_embedding_model(model_id):
+        return JSONResponse(
+            {
+                "error": (
+                    f"'{model_id}' is an embedding model and cannot be used as an "
+                    "agent chat model. Choose a chat-capable model."
+                ),
+                "model": model_id,
+                "reason": "not_chat_capable",
+            },
+            status_code=400,
+        )
+    return None
+
+
+RECOMMENDED_AGENT_CONTEXT = 8192
+
+
+def _small_context_warning(registry, model_id: str) -> str | None:
+    """Advisory when a model's context window is too small for the agent harness.
+
+    The agent system prompt plus tool definitions are large (order of 10k
+    tokens), so a model with a small context window (e.g. a 4096-token RK
+    model) receives a truncated prompt and can degenerate into looping or
+    off-topic output rather than a coherent reply (#1740). Returns a warning
+    string, or None when the context is adequate or unknown (a cloud or
+    aliased model has no local manifest to read a context window from). This
+    is advisory only and must never block or break an assignment.
+    """
+    try:
+        from tinyagentos.cluster.model_resolver import _find_model_manifest
+
+        manifest = _find_model_manifest(registry, model_id)
+        ctx = int(getattr(manifest, "context_window", 0) or 0) if manifest else 0
+    except Exception:  # noqa: BLE001 - an advisory must never break assignment
+        return None
+    if 0 < ctx < RECOMMENDED_AGENT_CONTEXT:
+        return (
+            f"'{model_id}' has a {ctx}-token context window, smaller than the "
+            f"{RECOMMENDED_AGENT_CONTEXT} tokens recommended for agent use. The "
+            "agent system prompt may be truncated, which can cause looping or "
+            "off-topic output. Consider a model with a larger context window."
+        )
+    return None
+
+
 @router.get("/api/agents/{name}/deploy-status")
 async def get_deploy_status(request: Request, name: str):
     """Get the background deploy task status for an agent."""
@@ -436,6 +494,11 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
        We never silently retarget a pinned deploy.
     6. Model not found anywhere in the cluster — 404.
     """
+    # Reject a non-chat model (e.g. embedding) before any side effects (#1740).
+    rejection = _reject_non_chat_model((body.model or "").strip())
+    if rejection is not None:
+        return rejection
+
     # --- Idempotency guard ---
     idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
     idempotency_key = request.headers.get("Idempotency-Key")
@@ -1075,6 +1138,10 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
     if not model_id:
         return JSONResponse({"error": "model must not be empty"}, status_code=400)
 
+    rejection = _reject_non_chat_model(model_id)
+    if rejection is not None:
+        return rejection
+
     # Validate reachability against the live cluster state.
     from tinyagentos.cluster.model_resolver import (
         describe_downloaded_backend_down,
@@ -1135,6 +1202,21 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
             key_rescoped = await proxy.update_agent_key(llm_key, permitted)
         except Exception:
             logger.exception("update_agent_model: re-scoping key for %s failed", name)
+        if not key_rescoped:
+            # Key re-scope failed (e.g. provider type mismatch after model
+            # change).  Discard the stale per-agent key so the deployer
+            # falls back to the master key on the next deploy — a stale
+            # scope would cause LiteLLM to 403 the new model.
+            logger.warning(
+                "update_agent_model: re-scope failed for %s — "
+                "discarding stale per-agent key (will fall back to master key)",
+                name,
+            )
+            agent["llm_key"] = None
+            # Persist the discard: the earlier save_config_locked ran before the
+            # re-scope, so without this the stale key survives on disk and the
+            # next deploy would still use it.
+            await save_config_locked(config, config.config_path)
 
     framework = agent.get("framework")
     if framework in ("openclaw", "hermes"):
@@ -1144,7 +1226,7 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         except Exception:
             logger.exception("model sync: pushing framework config for %s failed", name)
 
-    return {
+    result = {
         "status": "updated",
         "name": name,
         "model": model_id,
@@ -1153,6 +1235,10 @@ async def update_agent_model(request: Request, name: str, body: AgentModelUpdate
         "location": location.kind,
         "key_rescoped": key_rescoped,
     }
+    warning = _small_context_warning(getattr(request.app.state, "registry", None), model_id)
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @router.get("/api/agents/{name}/permitted-models")
@@ -1180,6 +1266,11 @@ async def set_permitted_models(request: Request, name: str, body: PermittedModel
 
     if not body.models:
         return JSONResponse({"error": "models must not be empty"}, status_code=400)
+
+    for _requested in body.models:
+        rejection = _reject_non_chat_model((_requested or "").strip())
+        if rejection is not None:
+            return rejection
 
     # Build the final set up front — the current primary must always be a
     # member — so it is validated alongside the requested models. Otherwise an

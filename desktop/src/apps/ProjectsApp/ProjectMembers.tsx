@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
 import { AddAgentDialog } from "./AddAgentDialog";
+import { InviteAgentDialog } from "./InviteAgentDialog";
 import { canvasApi } from "./canvas/canvas-api";
 
 interface AgentSummary {
@@ -13,6 +14,7 @@ interface AgentSummary {
 
 interface ExternalAgentSummary {
   handle: string;
+  canonical_id?: string;
   display_name?: string;
   framework?: string;
 }
@@ -26,6 +28,7 @@ function frameworkLabel(fw?: string): string {
     opencode: "opencode",
     hermes: "Hermes",
     "grok-build": "Grok",
+    grok: "Grok",
   };
   return map[fw] || fw;
 }
@@ -73,6 +76,7 @@ function MemberRow({
   isExternal,
   framework,
   projectId,
+  isLead,
   onRefresh,
   onChanged,
 }: {
@@ -83,6 +87,7 @@ function MemberRow({
   isExternal?: boolean;
   framework?: string;
   projectId: string;
+  isLead?: boolean;
   onRefresh: () => void;
   onChanged: () => void;
 }) {
@@ -113,7 +118,7 @@ function MemberRow({
               {typeLabel}
             </span>
           )}
-          {!!member.is_lead && (
+          {isLead && (
             <span className="ml-1 text-xs text-yellow-400 font-medium" aria-label="Lead agent">
               ★ Lead
             </span>
@@ -127,36 +132,37 @@ function MemberRow({
         {isAgent && (
           <label
             style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-            title="When off, this agent can add new elements but cannot modify or delete existing ones."
+            title="When on, this agent can read (list, stream, snapshot) the canvas."
           >
             <input
               type="checkbox"
-              checked={!!member.can_edit_canvas}
+              checked={!!member.can_read_canvas}
+              aria-label={`Can read canvas for ${label}`}
               onChange={async (e) => {
-                await canvasApi.setPermission(projectId, member.member_id, e.target.checked);
+                await canvasApi.setPermission(projectId, member.member_id, "read", e.target.checked);
                 onRefresh();
                 onChanged();
               }}
             />
-            <span className="text-xs">Can edit canvas</span>
+            <span className="text-xs">Can read canvas</span>
           </label>
         )}
         {isAgent && (
           <label
             style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-            title="Lead agents see all messages in the project channel, even without being @mentioned."
+            title="When off, this agent can add new elements but cannot modify or delete existing ones."
           >
             <input
               type="checkbox"
-              checked={!!member.is_lead}
-              aria-label={`Toggle lead for ${label}`}
+              checked={!!member.can_edit_canvas}
+              aria-label={`Can edit canvas for ${label}`}
               onChange={async (e) => {
-                await projectsApi.members.setLead(projectId, member.member_id, e.target.checked);
+                await canvasApi.setPermission(projectId, member.member_id, "edit", e.target.checked);
                 onRefresh();
                 onChanged();
               }}
             />
-            <span className="text-xs">Lead</span>
+            <span className="text-xs">Can edit canvas</span>
           </label>
         )}
         <button
@@ -182,6 +188,33 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   const [externalAgents, setExternalAgents] = useState<ExternalAgentSummary[]>([]);
   const [externalRegistryLoaded, setExternalRegistryLoaded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  // D7: the Lead is an exclusive, project-level designation. We keep a local
+  // mirror of project.lead_member_id so the selector reflects changes instantly
+  // (the backend enforces the one-lead invariant structurally on write).
+  const [leadMemberId, setLeadMemberId] = useState<string | null>(project.lead_member_id ?? null);
+
+  useEffect(() => {
+    setLeadMemberId(project.lead_member_id ?? null);
+  }, [project.lead_member_id]);
+
+  const handleLeadChange = async (value: string) => {
+    const next = value || null;
+    setLeadMemberId(next);
+    try {
+      await projectsApi.setLead(project.id, next);
+    } catch {
+      // Revert on failure so the UI stays consistent with the server.
+      setLeadMemberId(project.lead_member_id ?? null);
+    }
+    onChanged();
+  };
+
+  const labelFor = (m: ProjectMember): string => {
+    if (byId.has(m.member_id)) return formatMemberLabel(m.member_id, byId).label;
+    if (byHandle.has(m.member_id)) return formatExternalMemberLabel(m.member_id, byHandle).label;
+    return m.member_id;
+  };
 
   const refresh = () =>
     projectsApi.members.list(project.id).then(setMembers).catch(() => setMembers([]));
@@ -229,8 +262,14 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
           );
           setExternalAgents(
             active.map(
-              (entry: { handle?: string; display_name?: string; framework?: string }) => ({
+              (entry: {
+                handle?: string;
+                canonical_id?: string;
+                display_name?: string;
+                framework?: string;
+              }) => ({
                 handle: entry.handle || "",
+                canonical_id: entry.canonical_id,
                 display_name: entry.display_name,
                 framework: entry.framework,
               }),
@@ -256,6 +295,11 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   const byHandle = useMemo(() => {
     const m = new Map<string, ExternalAgentSummary>();
     for (const a of externalAgents) {
+      // A project member references an external agent by its canonical id
+      // (consent-flow agents), while older identities like @taOS-dev reference
+      // it by handle. Key on both so an approved agent lands in the External
+      // section either way.
+      if (a.canonical_id) m.set(a.canonical_id, a);
       if (a.handle) m.set(a.handle, a);
     }
     return m;
@@ -276,6 +320,11 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
     return { mainMembers: main, externalMembers: external };
   }, [members, byId, byHandle, externalRegistryLoaded]);
 
+  const leadOptions = useMemo(
+    () => [...mainMembers, ...externalMembers],
+    [mainMembers, externalMembers],
+  );
+
   return (
     <section>
       <header className="flex justify-between mb-3">
@@ -287,7 +336,38 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
         >
           + Add agent
         </button>
+        <button
+          type="button"
+          onClick={() => setInviteOpen(true)}
+          className="text-sm px-2 py-1 bg-zinc-800 rounded hover:bg-zinc-700"
+        >
+          Invite external agent
+        </button>
       </header>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <label htmlFor="project-lead-select" className="text-xs text-zinc-400">
+          Lead
+        </label>
+        <select
+          id="project-lead-select"
+          aria-label="Project lead"
+          value={leadMemberId ?? ""}
+          onChange={(e) => {
+            void handleLeadChange(e.target.value);
+          }}
+          className="text-xs bg-zinc-800 border border-zinc-700 rounded px-2 py-1"
+        >
+          <option value="">No lead</option>
+          {leadOptions.map((m) => (
+            <option key={m.member_id} value={m.member_id}>
+              {labelFor(m)}
+            </option>
+          ))}
+        </select>
+        <span className="text-[10px] text-zinc-500">
+          exclusive per project
+        </span>
+      </div>
       <ul className="space-y-1" aria-label="Project members">
         {mainMembers.map((m) => {
           const { label, emoji, hint } = formatMemberLabel(m.member_id, byId);
@@ -298,6 +378,7 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
               label={label}
               emoji={emoji}
               hint={hint}
+              isLead={m.member_id === leadMemberId}
               projectId={project.id}
               onRefresh={refresh}
               onChanged={onChanged}
@@ -317,6 +398,7 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
                   member={m}
                   label={label}
                   hint={hint}
+                  isLead={m.member_id === leadMemberId}
                   isExternal
                   framework={byHandle.get(m.member_id)?.framework}
                   projectId={project.id}
@@ -335,6 +417,16 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
           onAdded={() => {
             setDialogOpen(false);
             refresh();
+            onChanged();
+          }}
+        />
+      )}
+      {inviteOpen && (
+        <InviteAgentDialog
+          projectId={project.id}
+          onClose={() => setInviteOpen(false)}
+          onMinted={() => {
+            setInviteOpen(false);
             onChanged();
           }}
         />

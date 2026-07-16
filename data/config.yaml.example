@@ -10,7 +10,7 @@ server:
   browser_proxy_port: 6970
 
 backends:
-  - name: local-npu
+  - name: local-rkllama
     type: rkllama
     url: http://localhost:8080
     priority: 3

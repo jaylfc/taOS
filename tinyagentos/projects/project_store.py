@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at REAL NOT NULL,
     archived_at REAL,
     deleted_at REAL,
+    lead_member_id TEXT,
     settings TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
@@ -67,8 +68,10 @@ class ProjectStore(BaseStore):
     async def _post_init(self) -> None:
         for col_def in (
             "ALTER TABLE project_members ADD COLUMN can_edit_canvas INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE project_members ADD COLUMN can_read_canvas INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE project_members ADD COLUMN is_lead INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE projects ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE projects ADD COLUMN lead_member_id TEXT",
         ):
             try:
                 await self._db.execute(col_def)
@@ -76,16 +79,58 @@ class ProjectStore(BaseStore):
             except Exception:
                 # Column already exists on fresh installs (created by SCHEMA).
                 pass
+        # D7 backfill: the exclusive per-project lead moves from the per-member
+        # is_lead flag (non-exclusive) to the project's single lead_member_id
+        # pointer. Only projects with EXACTLY one flagged member are migrated;
+        # any with zero or several flagged members are left NULL so a human picks
+        # in the UI (the old flag never promised exclusivity).
+        await self._backfill_lead_member_id()
 
-    async def set_member_lead(self, project_id: str, member_id: str, is_lead: bool) -> None:
-        val = 1 if is_lead else 0
-        cur = await self._db.execute(
-            "UPDATE project_members SET is_lead = ? WHERE project_id = ? AND member_id = ?",
-            (val, project_id, member_id),
+    async def _backfill_lead_member_id(self) -> None:
+        rows = await (await self._db.execute(
+            "SELECT id FROM projects WHERE lead_member_id IS NULL"
+        )).fetchall()
+        for (pid,) in rows:
+            cur = await self._db.execute(
+                "SELECT member_id FROM project_members WHERE project_id = ? AND is_lead = 1",
+                (pid,),
+            )
+            flagged = [r[0] for r in await cur.fetchall()]
+            if len(flagged) == 1:
+                await self._db.execute(
+                    "UPDATE projects SET lead_member_id = ? WHERE id = ?",
+                    (flagged[0], pid),
+                )
+                # Clear the legacy per-member is_lead flag so this backfill
+                # runs once. The epic removed the only writer of is_lead, so
+                # without this a Lead the owner deliberately cleared (lead_member_id
+                # set NULL) would be re-promoted from the stale flag on restart.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 0 WHERE project_id = ?",
+                    (pid,),
+                )
+        await self._db.commit()
+
+    async def set_lead(self, project_id: str, member_id: "str | None") -> None:
+        """Set (or clear, when member_id is None) the project's exclusive lead.
+
+        The single pointer column makes the one-lead-per-project invariant
+        structural: setting a new lead atomically unsets any previous one, and
+        there is no partial-update window. A member_id that is not a current
+        member of the project raises KeyError (the route maps it to 404).
+        """
+        p = await self.get_project(project_id)
+        if p is None:
+            raise KeyError(f"project {project_id!r} not found")
+        if member_id is not None:
+            member = await self.get_member(project_id, member_id)
+            if member is None:
+                raise KeyError(f"member {member_id!r} not in project {project_id!r}")
+        await self._db.execute(
+            "UPDATE projects SET lead_member_id = ? WHERE id = ?",
+            (member_id, project_id),
         )
         await self._db.commit()
-        if cur.rowcount == 0:
-            raise KeyError(f"member {member_id!r} not in project {project_id!r}")
 
     async def create_project(
         self,
@@ -233,6 +278,42 @@ class ProjectStore(BaseStore):
             "DELETE FROM project_members WHERE project_id = ? AND member_id = ?",
             (project_id, member_id),
         )
+        # Removing the designated lead unsets the pointer so it can never dangle
+        # on a member that no longer belongs to the project.
+        await self._db.execute(
+            "UPDATE projects SET lead_member_id = NULL "
+            "WHERE id = ? AND lead_member_id = ?",
+            (project_id, member_id),
+        )
+        await self._db.commit()
+
+    async def set_member_canvas(
+        self,
+        project_id: str,
+        member_id: str,
+        can_read: bool = False,
+        can_write: bool = False,
+    ) -> None:
+        """Set a member's per-project canvas flags (best-effort, additive OR).
+
+        Only the flags explicitly passed as True are flipped on; a flag not
+        requested is left untouched, so a partial approval (e.g. canvas_read
+        only) never clears a flag the member already held.
+        """
+        sets: list[str] = []
+        params: list = []
+        if can_read:
+            sets.append("can_read_canvas = 1")
+        if can_write:
+            sets.append("can_edit_canvas = 1")
+        if not sets:
+            return
+        params.extend([project_id, member_id])
+        await self._db.execute(
+            f"UPDATE project_members SET {', '.join(sets)} "
+            "WHERE project_id = ? AND member_id = ?",
+            params,
+        )
         await self._db.commit()
 
     async def list_members(self, project_id: str) -> list[dict]:
@@ -243,6 +324,17 @@ class ProjectStore(BaseStore):
             rows = await cur.fetchall()
             keys = [d[0] for d in cur.description]
         return [dict(zip(keys, r)) for r in rows]
+
+    async def get_member(self, project_id: str, member_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM project_members WHERE project_id = ? AND member_id = ?",
+            (project_id, member_id),
+        ) as cur:
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            keys = [d[0] for d in cur.description]
+        return dict(zip(keys, row))
 
     async def log_activity(
         self,

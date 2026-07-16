@@ -1,5 +1,7 @@
-import { Search, Bell } from "lucide-react";
+import { Search, Bell, ArrowUpCircle } from "lucide-react";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useUpdateAvailable } from "@/hooks/use-update-available";
+import { useProcessStore } from "@/stores/process-store";
 import { StatusIndicators } from "../StatusIndicators";
 
 interface Props {
@@ -10,6 +12,12 @@ interface Props {
 export function MobileTopBar({ onHome, onSearch }: Props) {
   const unreadCount = useNotificationStore((s) => s.notifications.filter((n) => !n.read).length);
   const toggleCentre = useNotificationStore((s) => s.toggleCentre);
+  const hasUpdate = useUpdateAvailable();
+  const openWindow = useProcessStore((s) => s.openWindow);
+
+  const openSettingsUpdates = () => {
+    openWindow("settings", { w: 760, h: 520 }, { section: "updates" });
+  };
 
   return (
     <div
@@ -54,6 +62,28 @@ export function MobileTopBar({ onHome, onSearch }: Props) {
           >
             <Search size={15} className="text-white/70" />
           </button>
+          {hasUpdate && (
+            <button
+              onClick={openSettingsUpdates}
+              className="relative flex items-center justify-center active:opacity-60 transition-opacity"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: "50%",
+                background: "rgba(255,255,255,0.08)",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+                border: "1px solid rgba(255,255,255,0.1)",
+              }}
+              aria-label="Update available"
+            >
+              <ArrowUpCircle size={15} className="text-accent" />
+              <span
+                className="absolute bg-accent rounded-full"
+                style={{ width: 5, height: 5, top: 6, right: 6 }}
+              />
+            </button>
+          )}
           <button
             onClick={toggleCentre}
             className="relative flex items-center justify-center active:opacity-60 transition-opacity"

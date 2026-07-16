@@ -14,7 +14,7 @@ class TestConfigGeneration:
     def test_generates_config_from_backends(self):
         backends = [
             {"name": "fedora-gpu", "type": "ollama", "url": "http://fedora:11434", "priority": 1},
-            {"name": "local-npu", "type": "rkllama", "url": "http://localhost:8080", "priority": 3},
+            {"name": "local-rkllama", "type": "rkllama", "url": "http://localhost:8080", "priority": 3},
         ]
         config = generate_litellm_config(backends)
         assert "model_list" in config

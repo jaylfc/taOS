@@ -11,6 +11,7 @@ The public key is exposed via GET /api/agents/registry/pubkey so the A2A bus
 (taOSmd) can verify tokens independently without needing the private key.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -46,6 +47,24 @@ CREATE TABLE IF NOT EXISTS agent_registry (
     revoked_at      TEXT,
     status          TEXT    NOT NULL DEFAULT 'active'
 );
+"""
+
+# Partial unique index: at most ONE active agent may own any given non-empty
+# handle. SQLite enforces this atomically, so two concurrent consent approvals
+# of the same identity_claim cannot both flip to 'active' with the same handle.
+# Pending / suspended / revoked rows and empty handles are excluded from the
+# index, so (a) a handle can be reused once its owner leaves 'active', and (b)
+# pre-existing empty-handle active agents never block the index's creation.
+#
+# This index references the ``status`` column, which is added by
+# _migration_v1_add_status on the migration path.  Per BaseStore's contract it
+# therefore CANNOT live in SCHEMA (the executescript runs before migrations and
+# would crash on a pre-status table); it is created in _post_init after the
+# migration guarantees the column exists.
+ACTIVE_HANDLE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_active_handle
+    ON agent_registry(handle)
+    WHERE status = 'active' AND handle != '';
 """
 
 # ---------------------------------------------------------------------------
@@ -137,6 +156,54 @@ async def _migration_v3_add_org_fields(conn) -> None:
     if "reports_to" not in existing_cols:
         await conn.execute("ALTER TABLE agent_registry ADD COLUMN reports_to TEXT")
     await conn.commit()
+
+
+async def _migration_v4_dedupe_active_handles(conn) -> None:
+    """Blank duplicate active handles so ux_agent_active_handle can be created.
+
+    Handle uniqueness among active agents is a NEW invariant (the consent flow
+    added it).  Databases created before it can legally hold two active rows
+    with the same non-empty handle.  Creating the partial unique index over
+    such a DB raises IntegrityError, and since this runs in lifespan the whole
+    controller would fail to boot on every restart until manual DB surgery --
+    unacceptable for a no-terminal appliance.
+
+    Heal it non-destructively: keep the handle on the OLDEST active row (lowest
+    id, the most likely original owner) and blank it on the rest.  The rows
+    survive as active agents; empty handles are excluded from the index, so a
+    freed handle can be reclaimed later.  Every change is logged so an operator
+    can reconcile.  Idempotent: a clean DB has no duplicates and is untouched.
+    """
+    rows = await (
+        await conn.execute(
+            "SELECT id, canonical_id, handle FROM agent_registry "
+            "WHERE status = 'active' AND handle != '' ORDER BY handle, id"
+        )
+    ).fetchall()
+
+    seen_handles: set[str] = set()
+    demoted: list[tuple[str, str]] = []  # (canonical_id, handle)
+    for row in rows:
+        handle = row[2]
+        if handle in seen_handles:
+            demoted.append((row[1], handle))
+        else:
+            seen_handles.add(handle)
+
+    for canonical_id, handle in demoted:
+        await conn.execute(
+            "UPDATE agent_registry SET handle = '' WHERE canonical_id = ?",
+            (canonical_id,),
+        )
+        logger.warning(
+            "registry heal: blanked duplicate active handle %r on agent %s so the "
+            "active-handle unique index can be created; reassign a handle if needed",
+            handle,
+            canonical_id,
+        )
+    if demoted:
+        await conn.commit()
+
 
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
@@ -327,6 +394,16 @@ class AgentRegistryStore(BaseStore):
 
     SCHEMA = SCHEMA
 
+    def __init__(self, db_path: Path):
+        super().__init__(db_path)
+        # Serializes set_reporting's cycle-check-then-write so two concurrent
+        # org edits (A->B and B->A) can't both pass the cycle guard and then
+        # both write a persisted cycle. The shared aiosqlite connection yields
+        # on every await inside the check, so the read chain and the write must
+        # be held together. Created at construction (not in init()) so it always
+        # exists before any caller, independent of init ordering.
+        self._reporting_lock = asyncio.Lock()
+
     async def init(self) -> None:
         await super().init()
         if self._db is not None:
@@ -337,6 +414,22 @@ class AgentRegistryStore(BaseStore):
         await _migration_v1_add_status(self._db)
         await _migration_v2_strip_at_display_name(self._db)
         await _migration_v3_add_org_fields(self._db)
+        # Dedupe BEFORE the index so a pre-invariant DB with duplicate active
+        # handles cannot make the CREATE UNIQUE INDEX (hence boot) fail.
+        await _migration_v4_dedupe_active_handles(self._db)
+        # Created after the status migration so the partial index's WHERE clause
+        # can reference the status column on the pre-status migration path.
+        # Guard the index creation too: if some path we did not anticipate still
+        # leaves a duplicate, warn and continue rather than bricking boot -- the
+        # uniqueness is also enforced at write time (register/activation).
+        try:
+            await self._db.executescript(ACTIVE_HANDLE_INDEX)
+        except aiosqlite.IntegrityError:
+            logger.error(
+                "registry: could not create ux_agent_active_handle (duplicate "
+                "active handles remain); continuing without it -- write-time "
+                "uniqueness still applies. Reconcile duplicate handles manually."
+            )
 
     # ------------------------------------------------------------------
     # Registration
@@ -413,6 +506,26 @@ class AgentRegistryStore(BaseStore):
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
+
+    async def rollback(self) -> None:
+        """Roll back the current transaction, clearing any failed write so the
+        connection can accept new statements.  No-op if the store is closed or
+        no transaction is open.
+        """
+        if self._db is not None:
+            await self._db.rollback()
+
+    async def delete(self, canonical_id: str) -> None:
+        """Permanently remove *canonical_id* (used to clean up a half-registered
+        row when a concurrent approve wins the active-handle race).  Returns
+        silently if *canonical_id* does not exist.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        await self._db.execute(
+            "DELETE FROM agent_registry WHERE canonical_id = ?", (canonical_id,)
+        )
+        await self._db.commit()
 
     async def get(self, canonical_id: str) -> Optional[dict]:
         """Return the record for *canonical_id*, or ``None``."""
@@ -650,10 +763,34 @@ class AgentRegistryStore(BaseStore):
     ) -> Optional[dict]:
         """Set *role* and/or *title* on *canonical_id* (free-form strings).
 
-        Only the provided (non-None) fields are changed.  Returns the updated
-        record, or None if *canonical_id* does not exist.
+        Only the provided (non-None) fields are changed. A provided empty
+        string clears the field (stores NULL), matching the ""-clears
+        convention used for reports_to. Returns the updated record, or None if
+        *canonical_id* does not exist.
         """
-        return await self.update(canonical_id, role=role, title=title)
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            return None
+
+        cols: list[str] = []
+        vals: list = []
+        if role is not None:
+            cols.append("role = ?")
+            vals.append(role or None)
+        if title is not None:
+            cols.append("title = ?")
+            vals.append(title or None)
+        if not cols:
+            return record
+        vals.append(canonical_id)
+        await self._db.execute(
+            f"UPDATE agent_registry SET {', '.join(cols)} WHERE canonical_id = ?",
+            vals,
+        )
+        await self._db.commit()
+        return await self.get(canonical_id)
 
     async def set_reporting(
         self, canonical_id: str, reports_to: Optional[str]
@@ -673,43 +810,49 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
-        record = await self.get(canonical_id)
-        if record is None:
-            raise KeyError(canonical_id)
 
-        if reports_to is not None:
-            if reports_to == canonical_id:
-                raise ValueError("an agent cannot report to itself")
-            manager = await self.get(reports_to)
-            if manager is None:
-                raise ValueError(f"reports_to manager not found: {reports_to!r}")
+        # Hold the lock across the whole cycle-check-then-write. Every await in
+        # the check yields the shared aiosqlite connection, so without this two
+        # concurrent edits (A->B and B->A) could both pass the guard and then
+        # both write, persisting a cycle.
+        async with self._reporting_lock:
+            record = await self.get(canonical_id)
+            if record is None:
+                raise KeyError(canonical_id)
 
-            # Cycle guard: walk the candidate manager's existing reports_to
-            # chain; if it ever reaches canonical_id, this edge would close a
-            # loop. `seen` guards against looping forever on an already-
-            # corrupt chain independent of the depth cap.
-            seen: set[str] = set()
-            current: Optional[str] = reports_to
-            depth = 0
-            while current is not None and depth < self._MAX_REPORTS_TO_WALK:
-                if current == canonical_id:
-                    raise ValueError(
-                        f"assigning reports_to={reports_to!r} would create "
-                        f"a reporting cycle"
-                    )
-                if current in seen:
-                    break
-                seen.add(current)
-                current_record = await self.get(current)
-                current = current_record.get("reports_to") if current_record else None
-                depth += 1
+            if reports_to is not None:
+                if reports_to == canonical_id:
+                    raise ValueError("an agent cannot report to itself")
+                manager = await self.get(reports_to)
+                if manager is None:
+                    raise ValueError(f"reports_to manager not found: {reports_to!r}")
 
-        await self._db.execute(
-            "UPDATE agent_registry SET reports_to = ? WHERE canonical_id = ?",
-            (reports_to, canonical_id),
-        )
-        await self._db.commit()
-        return await self.get(canonical_id)  # type: ignore[return-value]
+                # Cycle guard: walk the candidate manager's existing reports_to
+                # chain; if it ever reaches canonical_id, this edge would close a
+                # loop. `seen` guards against looping forever on an already-
+                # corrupt chain independent of the depth cap.
+                seen: set[str] = set()
+                current: Optional[str] = reports_to
+                depth = 0
+                while current is not None and depth < self._MAX_REPORTS_TO_WALK:
+                    if current == canonical_id:
+                        raise ValueError(
+                            f"assigning reports_to={reports_to!r} would create "
+                            f"a reporting cycle"
+                        )
+                    if current in seen:
+                        break
+                    seen.add(current)
+                    current_record = await self.get(current)
+                    current = current_record.get("reports_to") if current_record else None
+                    depth += 1
+
+            await self._db.execute(
+                "UPDATE agent_registry SET reports_to = ? WHERE canonical_id = ?",
+                (reports_to, canonical_id),
+            )
+            await self._db.commit()
+            return await self.get(canonical_id)  # type: ignore[return-value]
 
     async def direct_reports(self, canonical_id: str) -> list[dict]:
         """Return the agents whose reports_to is *canonical_id*, oldest first."""

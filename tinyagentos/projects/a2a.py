@@ -104,31 +104,28 @@ def _resolve_member_names(member_rows: list[dict], config) -> set[str]:
     return resolved
 
 
-def _resolve_lead_names(member_rows: list[dict], config) -> list[str]:
-    """Return sorted list of resolved agent names for members where is_lead = 1.
+def _resolve_lead_names(project: dict, config) -> list[str]:
+    """Return the resolved agent name for the project's single exclusive lead.
 
-    Uses the same config-lookup strategy as _resolve_member_names. Returns
-    names in sorted order for deterministic storage.
+    The lead designation lives on the project as a single ``lead_member_id``
+    pointer (D7), not on the members. At most one name is ever returned; an
+    empty list means no lead. Uses the same config-lookup strategy as
+    _resolve_member_names so the quiet-filter and settings.leads stay in the
+    name-space the @mention parser and router expect.
     """
-    leads = [m for m in member_rows if m.get("is_lead")]
-    if not leads:
+    lead_id = project.get("lead_member_id")
+    if not lead_id:
         return []
     by_id, by_name = _build_agent_lookups(config)
-    result: list[str] = []
-    for m in leads:
-        mid = m["member_id"]
-        if by_id is None:
-            # No config (test path): use member_id as name directly.
-            result.append(mid)
-            continue
-        agent = by_id.get(mid) or by_name.get(mid)
-        if agent is None:
-            logger.debug("a2a: lead member_id %r not found in config — skipping", mid)
-            continue
-        name = agent.get("name")
-        if name:
-            result.append(name)
-    return sorted(set(result))
+    if by_id is None:
+        # No config (test path): use the member id directly.
+        return [lead_id]
+    agent = by_id.get(lead_id) or by_name.get(lead_id)
+    if agent is None:
+        logger.debug("a2a: lead member_id %r not found in config — skipping", lead_id)
+        return []
+    name = agent.get("name")
+    return [name] if name else []
 
 
 async def ensure_a2a_channel(
@@ -143,21 +140,21 @@ async def ensure_a2a_channel(
     router both operate on names. When None (test path with name-keyed members),
     member_ids are used as-is.
 
-    Also syncs settings.leads from project members where is_lead = 1 so that
-    the router can give leads visibility into all channel messages regardless
+    Also syncs settings.leads from the project's exclusive lead_member_id so that
+    the router can give the lead visibility into all channel messages regardless
     of response_mode.
 
     Idempotent. Serialized per project_id via _A2A_LOCKS to prevent racing
     member-sync diffs when multiple callers fire concurrently.
     """
     async with _A2A_LOCKS[project_id]:
+        project = await project_store.get_project(project_id)
         project_members = await project_store.list_members(project_id)
         expected = _resolve_member_names(project_members, config)
-        expected_leads = _resolve_lead_names(project_members, config)
+        expected_leads = _resolve_lead_names(project, config)
 
         matches = await _find_a2a_channels(channel_store, project_id)
         if not matches:
-            project = await project_store.get_project(project_id)
             created_by = project.get("created_by", "system") if project else "system"
             return await channel_store.create_channel(
                 name=A2A_NAME,

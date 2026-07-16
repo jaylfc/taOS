@@ -10,7 +10,20 @@ import { ProjectWorkspace } from "./ProjectWorkspace";
 // `projectId` is a per-window prop: each Projects window can be pinned to a
 // different project (opened via the project list's "open in new window"), so
 // the user can view two projects side by side. Omitted for the first window.
-export function ProjectsApp({ windowId: _windowId, projectId }: { windowId: string; projectId?: string }) {
+// `tab` and `filePath` are deep-link launch props: a notification target can
+// open a specific project on a specific tab (and, for the Files tab, a specific
+// document). They ride the same prop-merge/launchNonce path as `projectId`.
+export function ProjectsApp({
+  windowId: _windowId,
+  projectId,
+  tab,
+  filePath,
+}: {
+  windowId: string;
+  projectId?: string;
+  tab?: string;
+  filePath?: string;
+}) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(projectId ?? null);
   const openWindow = useProcessStore((s) => s.openWindow);
@@ -76,7 +89,7 @@ export function ProjectsApp({ windowId: _windowId, projectId }: { windowId: stri
     <>
       {error && <div role="alert" className="p-3 text-red-400">{error}</div>}
       {selected ? (
-        <ProjectWorkspace project={selected} onChanged={refresh} />
+        <ProjectWorkspace project={selected} onChanged={refresh} initialTab={tab} filePath={filePath} />
       ) : (
         <div className="p-6 text-shell-text-secondary">Select or create a project.</div>
       )}

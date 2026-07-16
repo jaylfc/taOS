@@ -379,10 +379,10 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
         </span>
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        {/* tool rail */}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        {/* tool rail — horizontal scroller on mobile, vertical rail on desktop */}
         <div
-          className="flex w-[78px] flex-none flex-col items-center gap-1 border-r border-shell-border bg-shell-bg-deep py-3"
+          className="flex w-full md:w-[78px] flex-none flex-row md:flex-col items-center gap-1 overflow-x-auto md:overflow-x-visible border-b md:border-b-0 md:border-r border-shell-border bg-shell-bg-deep px-2 py-2 md:px-0 md:py-3"
           role="tablist"
           aria-label="Edit tools"
         >
@@ -464,7 +464,7 @@ export function EditView({ image, onApplyAdjust, onEdited }: EditViewProps) {
         </div>
 
         {/* options panel */}
-        <div className="flex w-[286px] flex-none flex-col gap-[18px] overflow-auto border-l border-shell-border p-[18px]">
+        <div className="flex w-full md:w-[286px] flex-none flex-col gap-[18px] overflow-auto border-t md:border-t-0 md:border-l border-shell-border p-[18px]">
           <div className="flex items-center gap-2.5 text-[15px] font-bold tracking-[-0.01em]">
             <def.icon size={18} className="text-accent" />
             {def.title}

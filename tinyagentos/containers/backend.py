@@ -295,9 +295,13 @@ def configure_container_runtime(config: object = None) -> str | None:
     operator to pin a specific runtime.  When ``"auto"``, ``detect_runtime()``
     is called to probe the host.
 
-    Returns the runtime name (``"apple"``, ``"lxc"``, ``"docker"``, or
-    ``"podman"``), or ``None`` (after logging a warning) if no runtime is
-    available.
+    ``"native"`` selects the bare-metal backend.  It is never auto-detected
+    (every host is bare-metal-capable, so auto-detect would shadow LXC/Docker).
+    Set ``container_runtime: native`` explicitly in taOS config to use it.
+
+    Returns the runtime name (``"apple"``, ``"lxc"``, ``"docker"``,
+    ``"podman"``, ``"native"``), or ``None`` (after logging a warning) if no
+    runtime is available.
     """
     from tinyagentos.containers.lxc import LXCBackend
     from tinyagentos.containers.docker import DockerBackend
@@ -315,8 +319,12 @@ def configure_container_runtime(config: object = None) -> str | None:
     if runtime in ("docker", "podman"):
         set_backend(DockerBackend(binary=runtime))
         return runtime
+    if runtime == "native":
+        from tinyagentos.containers.native import NativeBackend
+        set_backend(NativeBackend())
+        return runtime
     logger.warning(
-        "No container backend detected (Incus / Docker / Podman / Apple). "
+        "No container backend detected (Incus / Docker / Podman / Apple / Native). "
         "Cluster features and worker containers will be disabled. "
         "Install one (e.g. 'sudo apt install incus' on Ubuntu/Debian, "
         "'sudo dnf install incus' on Fedora) and restart taOS."

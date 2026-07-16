@@ -109,6 +109,43 @@ class TestUpdateOrgFields:
         assert body["role"] == "engineer"
         assert body["title"] == "Staff Engineer"
 
+    async def test_empty_body_is_400(self, org_client):
+        """An all-None body is a silent no-op write; it must be rejected."""
+        client, _uid = org_client
+        reg = await client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Worker"},
+        )
+        cid = reg.json()["canonical_id"]
+        resp = await client.put(f"/api/agents/{cid}/org", json={})
+        assert resp.status_code == 400
+
+    async def test_clear_role_with_empty_string(self, org_client):
+        client, _uid = org_client
+        reg = await client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Worker"},
+        )
+        cid = reg.json()["canonical_id"]
+        await client.put(f"/api/agents/{cid}/org", json={"role": "engineer"})
+
+        resp = await client.put(f"/api/agents/{cid}/org", json={"role": ""})
+        assert resp.status_code == 200
+        assert resp.json()["role"] is None
+
+    async def test_whitespace_only_title_is_cleared(self, org_client):
+        client, _uid = org_client
+        reg = await client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Worker"},
+        )
+        cid = reg.json()["canonical_id"]
+        await client.put(f"/api/agents/{cid}/org", json={"title": "Staff Engineer"})
+
+        resp = await client.put(f"/api/agents/{cid}/org", json={"title": "   "})
+        assert resp.status_code == 200
+        assert resp.json()["title"] is None
+
     async def test_set_reports_to(self, org_client):
         client, _uid = org_client
         manager = (await client.post(

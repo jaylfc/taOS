@@ -76,6 +76,25 @@ async def _resolve_agent_name(request: Request, ref: str) -> str | None:
     return None
 
 
+def _resolve_agent_id(request: Request, name: str) -> str:
+    """Resolve a config-agent *name* (slug) to its stable hex id.
+
+    Task assignee_id is keyed on the config hex id everywhere else that reads
+    it - beads (projects/beads_bridge._resolve_assignee -> agent["id"]),
+    project members (member_id), and the heartbeat sweep
+    (agent_heartbeat.list_ready_tasks_for_assignee(agent["id"])). The name is
+    kept only for display/notify text. Falls back to *name* when the agent has
+    no id (older/test agents where id == name) or cannot be found.
+    """
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        return name
+    agent = find_agent(config, name)
+    if agent is None:
+        return name
+    return agent.get("id") or name
+
+
 class DelegateRequest(BaseModel):
     to_agent: str
     task_id: str | None = None
@@ -97,6 +116,7 @@ async def _check_delegation_policy(
     task_title: str | None,
     project_id: str | None,
     note: str,
+    existing_title: str | None = None,
 ) -> JSONResponse | None:
     """Agent governance gate for delegation. Returns a JSONResponse to
     short-circuit the call (deny / pending-approval), or None to let the
@@ -126,8 +146,15 @@ async def _check_delegation_policy(
         board_audit = getattr(request.app.state, "board_audit", None)
         if board_audit is not None:
             try:
+                # Key the deny on the real task when one exists (so it shows in
+                # that task's history) and always carry the real project_id so
+                # recent_for_project surfaces it in the project feed. Without a
+                # task, record a policy-level event rather than fabricating an
+                # agent:{from_agent} task_id - the old synthetic id plus a blank
+                # project_id left every deny event unfindable in any feed.
                 await board_audit.record(
-                    task_id=f"agent:{from_agent}",
+                    task_id=task_id or f"policy:{ACTION_CLASS}",
+                    project_id=project_id or "",
                     event="delegation_policy_deny",
                     actor=from_agent,
                     detail={"to_agent": to_agent, "action_class": ACTION_CLASS},
@@ -165,7 +192,10 @@ async def _check_delegation_policy(
             status_code=503,
         )
     try:
-        target = f'"{task_title}"' if task_title else (task_id or "")
+        # Prefer a human-readable title in the approval question: the existing
+        # task's fetched title, then a new-task task_title, then the raw id.
+        display_title = existing_title or task_title
+        target = f'"{display_title}"' if display_title else (task_id or "")
         decision = await decision_store.create(
             from_agent=from_agent,
             question=f"Agent {from_agent} wants to delegate {target} to {to_agent}".strip(),
@@ -250,11 +280,15 @@ async def complete_delegation(
     persisted by then).
     """
     task_store = request.app.state.project_task_store
+    # to_agent is the config slug (name); task assignee_id must be the agent's
+    # stable hex id so the heartbeat sweep and id-keyed member lookups can see
+    # the delegated task. The name is still used below for the notify text.
+    assignee_id = _resolve_agent_id(request, to_agent)
     if task_id:
         task = await task_store.get_task(task_id)
         if task is None:
             raise ValueError(f"task '{task_id}' not found")
-        await task_store.update_task(task_id, assignee_id=to_agent)
+        await task_store.update_task(task_id, assignee_id=assignee_id)
         task = await task_store.get_task(task_id)
     else:
         if not task_title:
@@ -262,7 +296,7 @@ async def complete_delegation(
         if not project_id:
             raise ValueError("project_id is required to create a new task")
         task = await task_store.create_task(
-            project_id=project_id, title=task_title, created_by=from_agent, assignee_id=to_agent,
+            project_id=project_id, title=task_title, created_by=from_agent, assignee_id=assignee_id,
         )
 
     await _notify_delegate(request, from_agent=from_agent, to_agent=to_agent, task=task, note=note)
@@ -292,12 +326,14 @@ async def delegate_task(request: Request, from_agent: str, body: DelegateRequest
         return JSONResponse({"error": "task_id or task_title is required"}, status_code=400)
 
     project_id = body.project_id
+    existing_title: str | None = None
     if body.task_id:
         task_store = request.app.state.project_task_store
         existing_task = await task_store.get_task(body.task_id)
         if existing_task is None:
             return JSONResponse({"error": f"task '{body.task_id}' not found"}, status_code=404)
         project_id = existing_task["project_id"]
+        existing_title = existing_task.get("title")
     elif not project_id:
         return JSONResponse(
             {"error": "project_id is required when delegating a new task_title"},
@@ -312,6 +348,7 @@ async def delegate_task(request: Request, from_agent: str, body: DelegateRequest
         task_title=body.task_title,
         project_id=project_id,
         note=body.note or "",
+        existing_title=existing_title,
     )
     if gate_response is not None:
         return gate_response

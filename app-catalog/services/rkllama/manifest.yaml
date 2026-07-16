@@ -31,6 +31,13 @@ lifecycle:
   backend_type: rkllama
   default_url: http://localhost:7833
   auto_manage: true
+  # Managed as a systemd service (see scripts/install-rknpu.sh install_systemd_unit).
+  # taOS manages the unit per node: start/stop/restart default to `systemctl <verb> <unit>`.
+  unit: rkllama.service
+  scope: system
+  health:
+    url: "http://localhost:7833/api/tags"
+    expect: '"models"'
   keep_alive_minutes: 0
   start_cmd: "systemctl start rkllama"
   stop_cmd: "systemctl stop rkllama"

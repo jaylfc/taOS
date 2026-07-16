@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -236,8 +237,21 @@ class TestResolveOpencodeBinary:
     def test_prefers_path_lookup(self, monkeypatch):
         from tinyagentos import opencode_runtime as ocr
 
+        monkeypatch.delenv("TAOS_OPENCODE_BIN", raising=False)
         monkeypatch.setattr(ocr.shutil, "which", lambda name: "/usr/local/bin/opencode")
         assert ocr.resolve_opencode_binary() == "/usr/local/bin/opencode"
+
+    def test_env_override_wins(self, tmp_path, monkeypatch):
+        """TAOS_OPENCODE_BIN is the explicit operator override and beats PATH."""
+        from tinyagentos import opencode_runtime as ocr
+
+        binary = tmp_path / "my-opencode"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        monkeypatch.setenv("TAOS_OPENCODE_BIN", str(binary))
+        # Even with a PATH hit, the override wins.
+        monkeypatch.setattr(ocr.shutil, "which", lambda name: "/usr/local/bin/opencode")
+        assert ocr.resolve_opencode_binary() == str(binary)
 
     def test_falls_back_to_installer_default_location(self, tmp_path, monkeypatch):
         from tinyagentos import opencode_runtime as ocr
@@ -249,16 +263,53 @@ class TestResolveOpencodeBinary:
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
 
+        monkeypatch.delenv("TAOS_OPENCODE_BIN", raising=False)
         monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
         monkeypatch.setattr(ocr.Path, "home", classmethod(lambda cls: fake_home))
 
         assert ocr.resolve_opencode_binary() == str(binary)
 
+    def test_finds_first_executable_candidate(self, tmp_path, monkeypatch):
+        """resolve_opencode_binary walks the trusted candidate list and returns
+        the first existing executable, skipping earlier non-existent ones (e.g.
+        the service user's own home has none, but a system path does)."""
+        from tinyagentos import opencode_runtime as ocr
+
+        system_bin = tmp_path / "usr" / "local" / "bin" / "opencode"
+        system_bin.parent.mkdir(parents=True)
+        system_bin.write_text("#!/bin/sh\n")
+        system_bin.chmod(0o755)
+
+        monkeypatch.delenv("TAOS_OPENCODE_BIN", raising=False)
+        monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            ocr, "_opencode_candidate_paths",
+            lambda: [tmp_path / "taos-home" / ".opencode" / "bin" / "opencode", system_bin],
+        )
+        assert ocr.resolve_opencode_binary() == str(system_bin)
+
+    def test_does_not_probe_arbitrary_user_homes(self, monkeypatch):
+        """Security: the candidate list must not glob /home/*, since running a binary
+        from a non-privileged user's home is a privilege-escalation vector on a
+        multi-user box (#1616 security review). The service user's own home
+        (e.g. /opt/taos) is fine; only *arbitrary* /home/* is banned, so pin
+        home outside /home to isolate it from the CI runner's /home/runner."""
+        from tinyagentos import opencode_runtime as ocr
+
+        monkeypatch.setattr(ocr.Path, "home", classmethod(lambda cls: Path("/opt/taos")))
+        for candidate in ocr._opencode_candidate_paths():
+            assert not str(candidate).startswith("/home/"), (
+                f"must not probe arbitrary user home: {candidate}"
+            )
+
     def test_returns_none_when_not_installed_anywhere(self, tmp_path, monkeypatch):
         from tinyagentos import opencode_runtime as ocr
 
+        monkeypatch.delenv("TAOS_OPENCODE_BIN", raising=False)
         monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
-        monkeypatch.setattr(ocr.Path, "home", classmethod(lambda cls: tmp_path / "no-home"))
+        # Neutralise the host filesystem so a real opencode on the CI runner
+        # doesn't leak into this "nothing installed" case.
+        monkeypatch.setattr(ocr, "_opencode_candidate_paths", lambda: [])
 
         assert ocr.resolve_opencode_binary() is None
 

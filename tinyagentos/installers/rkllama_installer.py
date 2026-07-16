@@ -19,7 +19,9 @@ import json
 import logging
 import re
 import socket
+import subprocess
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -94,6 +96,60 @@ def default_rkllama_url() -> str:
         )
         return f"http://localhost:{_LEGACY_RKLLAMA_PORT}"
     return f"http://localhost:{_DEFAULT_RKLLAMA_PORT}"
+
+
+_RKLLAMA_UNIT_PATH = Path("/etc/systemd/system/rkllama.service")
+# --models <dir>, tolerating `=` or space and single/double-quoted paths that
+# may contain whitespace (e.g. --models '/path with spaces').
+_RKLLAMA_MODELS_ARG_RE = re.compile(r"--models[=\s]+('[^']*'|\"[^\"]*\"|\S+)")
+
+
+def _extract_models_arg(text: str) -> Path | None:
+    """Pull the ``--models`` value out of an ExecStart command blob. Collapses
+    systemd backslash line-continuations first so a multi-line ExecStart still
+    matches, and strips surrounding quotes."""
+    if not text:
+        return None
+    joined = text.replace("\\\n", " ")
+    m = _RKLLAMA_MODELS_ARG_RE.search(joined)
+    if not m:
+        return None
+    val = m.group(1).strip("'\"")
+    return Path(val) if val else None
+
+
+def rkllama_service_models_dir(
+    unit_path: Path = _RKLLAMA_UNIT_PATH,
+) -> Path | None:
+    """Directory the installed rkllama systemd service actually writes models
+    to, parsed from its ``ExecStart --models`` flag.
+
+    Lets taOS discover models wherever an *existing* rkllama install puts them,
+    even one whose service predates the unified-model-store change (#1682) and
+    therefore writes to a directory taOS's own roots don't cover. Updating the
+    controller doesn't regenerate that service, so without this an existing
+    install's downloads stay invisible until a manual reinstall (#1548).
+
+    Reads the standard unit file first (fast, no subprocess); if that yields
+    nothing (drop-in override, user-level unit, or a non-standard path), falls
+    back to ``systemctl show`` which resolves the effective ExecStart wherever
+    the unit lives. Returns ``None`` when neither source has a ``--models``.
+    """
+    try:
+        text = unit_path.read_text()
+    except OSError:
+        text = ""
+    result = _extract_models_arg(text)
+    if result is not None:
+        return result
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", "rkllama.service", "--property=ExecStart", "--value"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _extract_models_arg(proc.stdout)
 
 
 _PLAIN_PERCENT_RE = re.compile(r"^\s*(\d{1,3})(?:\.\d+)?\s*%\s*$")

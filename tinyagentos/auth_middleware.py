@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
+import re
+import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -22,11 +24,65 @@ _REGISTRY_FEED_PATHS = frozenset({
 _A2A_BUS_READ_PATHS = frozenset({
     "/api/a2a/bus/channels",
     "/api/a2a/bus/messages",
+    "/api/a2a/bus/stream",
+})
+# Authenticated A2A bus WRITE path: an agent may POST here with its own registry
+# JWT (scope a2a_send, verified by the route, which forces the bus `from` to the
+# agent's own handle so it posts as itself instead of the owner's account).
+_A2A_BUS_WRITE_PATHS = frozenset({
+    "/api/a2a/bus/send",
 })
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate an arbitrary route (no skeleton key).
-_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS
+_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE_PATHS
+
+# Project kanban routes an agent may reach with its own registry JWT (scope
+# project_tasks, verified + project-bound by the route).  These are DYNAMIC
+# paths (/api/projects/{pid}/tasks...), so an exact frozenset can't match them;
+# a (method, compiled-regex) allowlist is used instead.  Each pattern is fully
+# anchored and uses a slash-free segment ([^/]+) with an exact segment count, so
+# sibling routes that must stay session-only -- POST .../tasks (create),
+# /members, /relationships, /audit, /activity, project lifecycle -- never match.
+# This is the project-scoped analogue of the exact _AGENT_TOKEN_PATHS contract:
+# the token only reaches the handler, which then verifies the JWT + grant +
+# project binding.  Anything not listed here is NOT reachable by a registry JWT.
+_SEG = r"[^/]+"
+_AGENT_TASK_ROUTES = (
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/ready$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}$")),
+    ("GET", re.compile(rf"^/api/projects/tasks/{_SEG}/context$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/comments$")),
+    # PATCH (free task-field mutation) is intentionally NOT here: it is broader
+    # than the "read + lifecycle + comments" the project_tasks scope documents.
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/(claim|release|close|reopen)$")),
+)
+
+_AGENT_CANVAS_ROUTES = (
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/elements$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/canvas/elements$")),
+    ("PATCH", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/canvas/elements/{_SEG}$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.png$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.tldr$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/stream$")),
+)
+
+
+def _is_agent_task_path(method: str, path: str) -> bool:
+    """True only for the exact subset of task routes a project_tasks token may
+    reach.  Strict method + anchored-regex match; everything else is excluded."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_TASK_ROUTES)
+
+
+def _is_agent_canvas_path(method: str, path: str) -> bool:
+    """True only for the exact subset of canvas routes a canvas_read/canvas_write
+    token may reach.  Strict method + anchored-regex match; the PATCH permissions
+    route stays session-only (owner/admin only) but the PATCH elements route is
+    reachable by a canvas_write-bound agent token, mirroring POST/DELETE."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_CANVAS_ROUTES)
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -68,6 +124,13 @@ _CLUSTER_PAIRING_MANUAL_CLAIM = "/api/cluster/pairing/manual-claim"
 _CLUSTER_WORKERS = "/api/cluster/workers"
 _CLUSTER_HEARTBEAT = "/api/cluster/heartbeat"
 
+# Project-invite redeem: unauthenticated (the PIN is the proof of possession,
+# exactly like cluster pairing). The redeem POST and the content-negotiated
+# GET /i/{id} are method-sensitive exemptions (mirror the pairing-claim
+# pattern). Per-IP fixed-window rate limit reuses the pairing throttle below.
+_INVITE_REDEEM = "/api/projects/invites/redeem"
+_INVITE_INFO_PREFIX = "/i/"
+
 # Local-only shutdown drain: the systemd ExecStop hook (taos-graceful-stop)
 # POSTs this from localhost with no session cookie and no token, so it was
 # getting 401 and the in-app drain never ran. We exempt it ONLY for loopback
@@ -94,6 +157,36 @@ def _is_loopback_client(request: Request) -> bool:
         return ipaddress.ip_address(client.host).is_loopback
     except ValueError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Per-IP fixed-window rate limiter (shared by unauthenticated proof-of-
+# possession endpoints: cluster pairing manual-claim and project-invite redeem).
+# ---------------------------------------------------------------------------
+_INVITE_RATE_WINDOW_SECS = 10.0
+_INVITE_RATE_MAX_PER_WINDOW = 20
+# ip -> (window_start_ts, count). In-memory is sufficient: the controller is a
+# single process and the cap only needs to bound a brute-force burst.
+_rate_limit_hits: dict[str, tuple[float, int]] = {}
+
+
+def rate_limit_ok(key: str, *, window_secs: float = _INVITE_RATE_WINDOW_SECS,
+                  max_per_window: int = _INVITE_RATE_MAX_PER_WINDOW) -> bool:
+    """Fixed-window per-key limiter. Returns False when the key has exceeded
+    ``max_per_window`` requests in the current window. The pairing
+    ``_manual_claim_rate_ok`` helper in cluster.py uses the identical contract;
+    this shared copy keeps the cluster and invite paths from drifting and lets
+    both pass the same ``20 per 10s`` cap the design specifies.
+
+    Mirrors ``_manual_claim_rate_ok`` exactly so behaviour is identical.
+    """
+    now = time.time()
+    window_start, count = _rate_limit_hits.get(key, (now, 0))
+    if now - window_start >= window_secs:
+        window_start, count = now, 0
+    count += 1
+    _rate_limit_hits[key] = (window_start, count)
+    return count <= max_per_window
 
 
 def _is_exempt(method: str, path: str) -> bool:
@@ -145,6 +238,17 @@ def _is_exempt(method: str, path: str) -> bool:
         and path.startswith(_CLUSTER_WORKERS + "/")
         and path.endswith("/incus-enroll")
     ):
+        return True
+    # Project-invite redeem: POST /api/projects/invites/redeem is
+    # unauthenticated (the PIN is the proof of possession, exactly like cluster
+    # pairing claim) and is per-IP rate-limited at the route layer.
+    if method == "POST" and path == _INVITE_REDEEM:
+        return True
+    # GET /i/{invite_id} — content-negotiated invite advert (machine JSON or a
+    # human HTML page). No PIN check here; it only advertises the redeem
+    # contract. The browser-friendly /i/ exact path stays session-gated so a
+    # logged-out admin is not exposed, but the invite id form is exempt.
+    if method == "GET" and path.startswith(_INVITE_INFO_PREFIX) and "/" not in path[len(_INVITE_INFO_PREFIX):]:
         return True
     return False
 
@@ -206,15 +310,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     request.state.via = "local_token"
                 return await call_next(request)
 
-        # Agent-token endpoints (registry feeds + read-only A2A bus proxy) accept
-        # a registry JWT as an alternative to the admin session.  This branch
-        # sits AFTER the local-token check on purpose: a local token is
+        # Agent-token endpoints (registry feeds + A2A bus proxy + project kanban)
+        # accept a registry JWT as an alternative to the admin session.  This
+        # branch sits AFTER the local-token check on purpose: a local token is
         # admin-equivalent and must keep its admin semantics on these paths
         # (taOSmd polls the feeds with it today).  Only a Bearer that is NOT the
         # local token falls through to here; it is PASSED THROUGH and the route
-        # verifies the registry JWT + scope grant.  The allowlist is exact so a
-        # registry JWT can never authenticate any other route (no skeleton key).
-        if path in _AGENT_TOKEN_PATHS and auth_header.lower().startswith("bearer "):
+        # verifies the registry JWT + scope grant (+ project binding for task
+        # routes).  The allowlist -- the exact _AGENT_TOKEN_PATHS plus the
+        # anchored task-route matcher -- is closed so a registry JWT can never
+        # authenticate any other route (no skeleton key).
+        if (
+            path in _AGENT_TOKEN_PATHS
+            or _is_agent_task_path(request.method, path)
+            or _is_agent_canvas_path(request.method, path)
+        ) and auth_header.lower().startswith("bearer "):
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "registry_jwt_candidate"

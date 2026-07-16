@@ -30,25 +30,66 @@ class CanvasToolContext:
     data_root: Path
 
 
-async def canvas_list_elements(ctx: CanvasToolContext, *, project_id: str) -> dict:
+async def canvas_list_elements(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str
+) -> dict:
+    """List canvas elements an agent can read, gated by can_read_canvas (D3).
+
+    Surfaces the read-permission floor as a clean error, mirroring the other
+    in-process canvas tools so an agent without read access is told what to do
+    instead of silently receiving another principal's board contents."""
+    try:
+        await ctx.canvas_store.check_read_permission(
+            project_id, "agent", agent_id
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have read permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to grant access."
+            ),
+        }
     elements = await ctx.canvas_store.list_elements(project_id)
     return {"elements": elements}
+
+
+async def _add_agent_element(
+    ctx: CanvasToolContext, *, project_id: str, agent_id: str, element: dict
+) -> dict:
+    """Add an element authored by an agent, surfacing the edit-permission gate
+    as a clean error (mirrors canvas_update_element / canvas_delete_element)."""
+    try:
+        el = await ctx.canvas_store.add_element(
+            project_id=project_id,
+            author_kind="agent", author_id=agent_id,
+            element=element,
+        )
+    except CanvasPermissionError:
+        return {
+            "error": "permission_denied",
+            "message": (
+                "This agent does not have edit permission on the canvas. "
+                "Ask the user to enable it in project settings, or message "
+                "them to make the change."
+            ),
+        }
+    return {"element": el}
 
 
 async def canvas_add_note(
     ctx: CanvasToolContext, *, project_id: str, agent_id: str,
     text: str, x: float, y: float, color: str = "yellow",
 ) -> dict:
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "note", "x": float(x), "y": float(y),
             "w": 200.0, "h": 100.0,
             "payload": {"text": text, "color": color, "font_size": 14},
         },
     )
-    return {"element": el}
 
 
 async def canvas_add_link(
@@ -56,77 +97,67 @@ async def canvas_add_link(
     url: str, x: float, y: float,
 ) -> dict:
     meta = await fetch_link_metadata(url)
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "link", "x": float(x), "y": float(y),
             "w": 320.0, "h": 120.0, "payload": meta,
         },
     )
-    return {"element": el}
 
 
 async def canvas_add_image(
     ctx: CanvasToolContext, *, project_id: str, agent_id: str,
     file_id: str, x: float, y: float, alt: str = "",
 ) -> dict:
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "image", "x": float(x), "y": float(y),
             "w": 240.0, "h": 240.0,
             "payload": {"file_id": file_id, "alt": alt, "mime": "image/png"},
         },
     )
-    return {"element": el}
 
 
 async def canvas_add_text(
     ctx: CanvasToolContext, *, project_id: str, agent_id: str,
     text: str, x: float, y: float, font_size: int = 16,
 ) -> dict:
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "text", "x": float(x), "y": float(y),
             "w": 220.0, "h": 80.0,
             "payload": {"text": text, "font_size": int(font_size)},
         },
     )
-    return {"element": el}
 
 
 async def canvas_add_mermaid(
     ctx: CanvasToolContext, *, project_id: str, agent_id: str,
     source: str, x: float, y: float,
 ) -> dict:
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "mermaid", "x": float(x), "y": float(y),
             "w": 320.0, "h": 240.0, "payload": {"source": source},
         },
     )
-    return {"element": el}
 
 
 async def canvas_add_flowchart(
     ctx: CanvasToolContext, *, project_id: str, agent_id: str,
     source: str, x: float, y: float,
 ) -> dict:
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "flowchart", "x": float(x), "y": float(y),
             "w": 320.0, "h": 240.0, "payload": {"source": source},
         },
     )
-    return {"element": el}
 
 
 async def canvas_add_mindmap_edge(
@@ -147,9 +178,8 @@ async def canvas_add_mindmap_edge(
         }
     ax, ay = a["x"] + a["w"] / 2, a["y"] + a["h"] / 2
     bx, by = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
-    el = await ctx.canvas_store.add_element(
-        project_id=project_id,
-        author_kind="agent", author_id=agent_id,
+    return await _add_agent_element(
+        ctx, project_id=project_id, agent_id=agent_id,
         element={
             "kind": "mindmap_edge",
             "x": min(ax, bx), "y": min(ay, by),
@@ -157,7 +187,6 @@ async def canvas_add_mindmap_edge(
             "payload": {"from": from_id, "to": to_id},
         },
     )
-    return {"element": el}
 
 
 async def canvas_update_element(

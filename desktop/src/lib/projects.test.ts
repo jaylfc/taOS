@@ -269,27 +269,27 @@ describe("projectsApi.members.remove", () => {
   });
 });
 
-describe("projectsApi.members.setLead", () => {
+describe("projectsApi.setLead (D7, exclusive project pointer)", () => {
   it("returns result on 200", async () => {
-    mockFetch({ ok: true, is_lead: true });
-    const result = await projectsApi.members.setLead("p-1", "m-1", true);
-    expect(result.is_lead).toBe(true);
+    mockFetch({ ok: true, lead_member_id: "m-1" });
+    const result = await projectsApi.setLead("p-1", "m-1");
+    expect(result.lead_member_id).toBe("m-1");
   });
 
-  it("patches with is_lead body", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, is_lead: true }) });
+  it("patches the project lead endpoint with a member_id body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, lead_member_id: null }) });
     global.fetch = fetchMock;
-    await projectsApi.members.setLead("p-1", "m-1", false);
+    await projectsApi.setLead("p-1", null);
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/projects/p-1/members/m-1/lead");
+    expect(url).toBe("/api/projects/p-1/lead");
     expect(opts.method).toBe("PATCH");
     const body = JSON.parse(opts.body);
-    expect(body.is_lead).toBe(false);
+    expect(body.member_id).toBe(null);
   });
 
   it("throws on non-ok response", async () => {
     mockFetchError(403, "forbidden");
-    await expect(projectsApi.members.setLead("p-1", "m-1", true)).rejects.toThrow("403");
+    await expect(projectsApi.setLead("p-1", "m-1")).rejects.toThrow("403");
   });
 });
 

@@ -673,3 +673,45 @@ class TestEvictionToMakeRoom:
 
         # Cleanup
         await arbiter._evict_task("running")
+
+
+class TestEvictionOrdering:
+    """Xid-62 fix: _evict_task awaits the cancelled task so its VRAM is
+    physically reclaimed BEFORE the reservation is freed and re-admission is
+    allowed (taOS #894)."""
+
+    @pytest.mark.asyncio
+    async def test_evict_awaits_task_before_releasing_reservation(self):
+        arbiter = GpuArbiter(vram_probe=lambda: (8192, 8192), max_queue_size=10)
+
+        started = asyncio.Event()
+        unloaded = asyncio.Event()
+
+        async def payload(_resource):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            finally:
+                # Stands in for the model's physical unload during teardown.
+                unloaded.set()
+
+        task = _make_task("t-order", vram_mb=0)
+        task.payload = payload
+
+        # Reserve against the shared ledger exactly as _reserve_and_check would.
+        reservation = await arbiter._vram.reserve(4096, caller="gpu-task:t-order")
+        arbiter._pending_reservations["t-order"] = reservation.reservation_id
+        assert arbiter._vram.reserved_vram_mb == 4096
+
+        bg = asyncio.create_task(arbiter._run_gpu_task(task, 4096, True, None))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        await arbiter._evict_task("t-order")
+
+        # The fix: the task coroutine has fully unwound (unload ran) and the
+        # reservation is released by the time _evict_task returns — so a
+        # re-admission cannot pass against not-yet-reclaimed VRAM.
+        assert unloaded.is_set()
+        assert bg.done()
+        assert arbiter._vram.reserved_vram_mb == 0
+        assert "t-order" not in arbiter._pending_reservations

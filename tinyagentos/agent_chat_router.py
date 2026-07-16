@@ -163,10 +163,52 @@ class AgentChatRouter:
         policy = getattr(self._state, "group_policy", None)
 
         # Build the context window once per routed message, not per recipient.
+        # Budget for the smallest known model context among recipients so no
+        # recipient overflows (#1740). Unknown windows keep the 4000 default.
         context = []
         if hasattr(self._state, "chat_messages"):
             try:
-                from tinyagentos.chat.context_window import build_context_window
+                from tinyagentos.chat.context_window import (
+                    DEFAULT_HISTORY_MAX_TOKENS,
+                    build_context_window,
+                    history_token_budget,
+                )
+                from tinyagentos.cluster.model_resolver import _find_model_manifest
+
+                known_windows: list[int] = []
+                any_unknown = False
+                registry = getattr(self._state, "registry", None)
+                for agent_name in recipients:
+                    agent = find_agent(config, agent_name)
+                    if agent is None:
+                        continue
+                    model_id = agent.get("model") or ""
+                    if not model_id:
+                        any_unknown = True
+                        continue
+                    try:
+                        manifest = _find_model_manifest(registry, model_id)
+                        ctx = (
+                            int(getattr(manifest, "context_window", 0) or 0)
+                            if manifest
+                            else 0
+                        )
+                        if ctx > 0:
+                            known_windows.append(ctx)
+                        else:
+                            any_unknown = True
+                    except Exception:  # noqa: BLE001 - advisory lookup only
+                        any_unknown = True
+                        continue
+                min_window = min(known_windows) if known_windows else 0
+                max_tokens = history_token_budget(min_window)
+                # A recipient whose window we cannot read (aliased/cloud model or
+                # missing manifest) may have a small real window, so never let a
+                # known large-window recipient raise the shared budget above the
+                # historical default for it.
+                if any_unknown and known_windows:
+                    max_tokens = min(max_tokens, DEFAULT_HISTORY_MAX_TOKENS)
+
                 if thread_id:
                     recent = await self._state.chat_messages.get_thread_messages(
                         channel_id=channel["id"], parent_id=thread_id, limit=30,
@@ -179,7 +221,7 @@ class AgentChatRouter:
                     recent = await self._state.chat_messages.get_messages(
                         channel_id=channel["id"], limit=30,
                     )
-                context = build_context_window(recent, limit=20, max_tokens=4000)
+                context = build_context_window(recent, limit=20, max_tokens=max_tokens)
             except Exception:
                 logger.warning("context fetch failed for channel %s", channel.get("id"), exc_info=True)
                 context = []

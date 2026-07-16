@@ -17,6 +17,14 @@ every other loop -- no separate start/stop lifecycle needed.
 Opt-in: gated behind config.server["agent_heartbeat_enabled"] (default
 False), re-read every tick from app_state.config so it can be toggled via the
 existing PUT /api/config endpoint without a restart.
+
+Cost profile: while enabled, every running + idle + ready agent takes an LLM
+turn each wake, so cost scales with fleet size. Two things bound it: the
+per-(agent, task) debounce (REWAKE_COOLDOWN) stops the same task re-firing
+within the cooldown, and a small deterministic stagger (_WAKE_STAGGER_SECONDS)
+between successive wakes within a tick spreads the downstream LLM turns instead
+of firing them all at one instant. The stagger is fixed (not random) so it
+stays testable.
 """
 from __future__ import annotations
 
@@ -29,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 60  # seconds between agent queue sweeps
 REWAKE_COOLDOWN = 300  # seconds before the same (agent, task) may be re-woken
+_WAKE_STAGGER_SECONDS = 0.5  # deterministic gap between successive wakes in a tick
+# Cap the cumulative per-tick stagger well under HEARTBEAT_INTERVAL so a large
+# fleet cannot push a tick past the next sweep. Once this budget is spent, the
+# remaining wakes in the tick fire without added delay.
+_MAX_TICK_STAGGER_SECONDS = HEARTBEAT_INTERVAL / 4
 
 
 def _heartbeat_enabled(app_state) -> bool:
@@ -144,6 +157,8 @@ async def _heartbeat_tick(app_state) -> None:
     debounce = _debounce_map(app_state)
     now = time.time()
 
+    woke_this_tick = 0
+    staggered_seconds = 0.0
     for agent in getattr(config, "agents", None) or []:
         if agent.get("status") != "running":
             continue
@@ -159,6 +174,15 @@ async def _heartbeat_tick(app_state) -> None:
             task = ready[0]
             if not _should_wake(debounce, agent_id, task["id"], now):
                 continue
+            # Spread successive wakes within a tick so the downstream LLM turns
+            # don't all fire at one instant on a large fleet. Deterministic (not
+            # random) to stay testable; only agents we actually wake sleep, so
+            # skipped agents above add no delay. The cumulative stagger is
+            # capped so a large fleet cannot push the tick past the next sweep.
+            if woke_this_tick and staggered_seconds < _MAX_TICK_STAGGER_SECONDS:
+                await asyncio.sleep(_WAKE_STAGGER_SECONDS)
+                staggered_seconds += _WAKE_STAGGER_SECONDS
+            woke_this_tick += 1
             # Debounce only a wake that actually reached the agent's queue; a
             # failed enqueue retries next tick instead of silencing the agent
             # for the whole cooldown.

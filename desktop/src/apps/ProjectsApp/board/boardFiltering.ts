@@ -7,6 +7,14 @@ export function applyFilters(tasks: Task[], f: Filters): Task[] {
     if (f.labels.length && !f.labels.some(l => t.labels.includes(l))) return false;
     if (f.priorities.length && !f.priorities.includes(t.priority)) return false;
     if (f.parentTaskId && t.parent_task_id !== f.parentTaskId) return false;
+    if (f.elementId === "none" && t.element_id != null) return false;
+    if (
+      typeof f.elementId === "string" &&
+      f.elementId !== "none" &&
+      t.element_id !== f.elementId
+    ) {
+      return false;
+    }
     if (f.hideClosed && t.status === "closed") return false;
     if (search) {
       const hay = `${t.title} ${t.body} ${t.id}`.toLowerCase();

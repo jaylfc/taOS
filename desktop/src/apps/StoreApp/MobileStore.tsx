@@ -84,7 +84,7 @@ function GetButton({
       onClick={handleGet}
       disabled={busy}
       aria-label={failed ? `Retry installing ${app.name}` : `Get ${app.name}`}
-      className={`shrink-0 min-w-[68px] h-7 inline-flex items-center justify-center rounded-full text-[13px] font-bold tracking-wide active:scale-[0.94] transition-transform ${
+      className={`shrink-0 min-w-[68px] h-9 inline-flex items-center justify-center rounded-full text-[13px] font-bold tracking-wide active:scale-[0.94] transition-transform ${
         failed
           ? "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/40"
           : "bg-shell-surface-active text-shell-text"

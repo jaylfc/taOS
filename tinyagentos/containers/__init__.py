@@ -14,6 +14,7 @@ import time
 from .backend import ContainerInfo, _parse_memory, detect_runtime, get_backend, set_backend
 from .lxc import LXCBackend
 from .docker import DockerBackend
+from .native import NativeBackend
 
 logger = logging.getLogger(__name__)
 

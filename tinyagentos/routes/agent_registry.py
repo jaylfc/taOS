@@ -24,6 +24,7 @@ import asyncio
 import logging
 from typing import Optional
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -91,6 +92,8 @@ _ALLOWED_SCOPES = frozenset({
     "a2a_send", "a2a_receive",
     "files_read", "files_write",
     "tools_execute", "registry_feeds_read",
+    "project_tasks",
+    "canvas_read", "canvas_write",
 })
 
 
@@ -233,15 +236,23 @@ async def register_agent(
     store = _get_store(request)
     private_pem, _public_pem = _get_keypair(request)
 
-    record = await store.register(
-        framework=body.framework,
-        display_name=body.display_name or "",
-        user_id=user.user_id,
-        origin=body.origin or "taos-deployed",
-        handle=body.handle or "",
-        role=body.role,
-        capabilities=body.capabilities or [],
-    )
+    try:
+        record = await store.register(
+            framework=body.framework,
+            display_name=body.display_name or "",
+            user_id=user.user_id,
+            origin=body.origin or "taos-deployed",
+            handle=body.handle or "",
+            role=body.role,
+            capabilities=body.capabilities or [],
+        )
+    except aiosqlite.IntegrityError:
+        # The active-handle unique index rejected a handle another active agent
+        # already owns. That is a client conflict, not a server error.
+        raise HTTPException(
+            status_code=409,
+            detail="handle is already owned by another active agent",
+        )
 
     token = mint_registry_token(
         record["canonical_id"],
@@ -572,13 +583,20 @@ async def patch_registry_entry(
         return JSONResponse({"error": "not found"}, status_code=404)
     require_owner_or_admin(user, record["user_id"])
     old_name = record.get("display_name") or ""
-    updated = await store.update(
-        canonical_id,
-        display_name=body.display_name,
-        handle=body.handle,
-        role=body.role,
-        capabilities=body.capabilities,
-    )
+    try:
+        updated = await store.update(
+            canonical_id,
+            display_name=body.display_name,
+            handle=body.handle,
+            role=body.role,
+            capabilities=body.capabilities,
+        )
+    except aiosqlite.IntegrityError:
+        # Renaming this entry's handle onto one another active agent owns.
+        return JSONResponse(
+            {"error": "handle is already owned by another active agent"},
+            status_code=409,
+        )
     if updated is None:
         # The entry was revoked/removed between the get and the update; do not
         # emit a rename notification for a row that no longer exists.
@@ -750,8 +768,18 @@ async def update_org_fields(
         return JSONResponse({"error": "not found"}, status_code=404)
     require_owner_or_admin(user, record["user_id"])
 
+    if body.role is None and body.title is None and body.reports_to is None:
+        # An all-None body is a no-op write; reject it rather than returning a
+        # misleading 200 that reports success while changing nothing.
+        return JSONResponse({"error": "no fields to update"}, status_code=400)
+
     if body.role is not None or body.title is not None:
-        await store.set_role_title(canonical_id, role=body.role, title=body.title)
+        # Normalize whitespace-only values to "" so set_role_title clears the
+        # field (NULL), matching the reports_to ""-clears convention below;
+        # a None field is left untouched.
+        role = body.role.strip() if body.role is not None else None
+        title = body.title.strip() if body.title is not None else None
+        await store.set_role_title(canonical_id, role=role, title=title)
 
     if body.reports_to is not None:
         manager_id = body.reports_to or None  # "" clears the manager

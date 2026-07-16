@@ -1,10 +1,23 @@
 # Model Torrent Mesh
 
-**Status:** Draft — design only. Phase 1 tracked by #47, Phase 2 by #48, Phase 3 by #49.
+**Status:** Partially superseded. taOSnet shipped as a CLOSED, authenticated swarm, which changes several choices below (open opentracker, DHT bootstrap, "Jay's home mirror", and the tinyagentos.com hostnames are all obsolete). The authoritative live server contract is `docs/taosnet.md` (built by the taos.my side). The original open-swarm design is kept below for history; the current architecture is summarised next.
 
-Peer-to-peer model distribution for TinyAgentOS. Every instance that downloads
-a model becomes a seeder, taking load off the central mirror server and making
-the catalog resilient to mirror outages.
+Peer-to-peer model distribution for taOS. Every instance that downloads a model becomes a seeder, taking load off the central mirror and making the catalog resilient to outages.
+
+## Current state (2026-07-08)
+
+taOSnet is a closed, account-authenticated swarm on `taos.my`, not an open BitTorrent network.
+
+- **Gate:** an authenticated taOS account (paid via taOSgo today). No account still works via the HTTP web-seed fallback.
+- **Passkey:** each node fetches an opaque, account-bound passkey (`GET /api/taosnet/passkey`) and injects it into the private tracker announce `https://tracker.taos.my/<passkey>/announce`. BEP-27 private torrents, DHT off. Tracker returns 401 on a bad/rotated passkey (re-fetch).
+- **Index + publish:** `GET /api/taosnet/index` (account-authed, keyed on info_hash), `GET /taosnet/<info_hash>.torrent` (public metadata), `PUT /api/taosnet/index/<info_hash>` (bearer `TAOSNET_PUBLISH_TOKEN`, used by the catalog-publish CLI).
+- **Tracker + seedbox:** in-app tracker on `tracker.taos.my` (chihaya upgrade path). The bootstrap seedbox runs on the VPS backed by a 5TB Google Drive with a local-disk cache for the hot set; NOT a home seedbox.
+- **Web seed (BEP-19):** every torrent lists the HuggingFace `resolve` URL, so "no peers" degrades to today's HTTP download. No new failure mode.
+- **Eligibility:** only license-redistributable weights are seeded (`tinyagentos/taosnet/license_eligibility.py`; Apache/MIT/BSD/CC-BY/OpenRAIL/Gemma/Llama-community true, NC/research/gated false).
+
+Built: Phase-1 hybrid-download client (merged); license classifier (PR #1723); client passkey / web-seed / torrent_url wiring + DHT-off in `torrent_downloader.py` and `tinyagentos/taosnet/torrent_client.py` (PR #1728, Pi-verified against libtorrent 2.0.13); the taos.my server contract (live, `docs/taosnet.md`).
+
+Remaining: DownloadManager passkey fetch via the account-session proxy + clean HTTP fallback for unlinked controllers; the catalog-publish CLI (runs where the weights live, i.e. the seedbox) writing magnets/info_hashes back into the manifests; the seedbox build itself.
 
 ## Goals
 

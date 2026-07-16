@@ -8,6 +8,7 @@ const t = (over: Partial<Task>): Task => ({
   id: "t1", project_id: "p1", parent_task_id: null, title: "T", body: "",
   status: "open", priority: 2, labels: [], assignee_id: null,
   claimed_by: null, claimed_at: null, closed_at: null, closed_by: null,
+  element_id: null,
   created_by: "u", created_at: "2026-01-01", updated_at: "2026-01-01",
   ...over,
 });

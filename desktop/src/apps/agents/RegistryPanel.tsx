@@ -43,9 +43,39 @@ export interface RegistryEntry {
 /*  Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-/** Strip a leading "@" for display only — "@" is bus-addressing syntax, not a name. */
+/** Strip a leading "@" for display only, "@" is bus-addressing syntax, not a name. */
 export function stripAt(s: string): string {
   return s.startsWith("@") ? s.slice(1) : s;
+}
+
+/** True when two registry snapshots are identical by id and content (poll no-op). */
+export function registryEntriesEqual(a: RegistryEntry[], b: RegistryEntry[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (!x || !y) return false;
+    if (
+      x.canonical_id !== y.canonical_id ||
+      x.framework !== y.framework ||
+      x.display_name !== y.display_name ||
+      x.user_id !== y.user_id ||
+      x.origin !== y.origin ||
+      x.handle !== y.handle ||
+      x.role !== y.role ||
+      x.status !== y.status ||
+      x.registered_at !== y.registered_at ||
+      x.updated_at !== y.updated_at ||
+      x.revoked_at !== y.revoked_at
+    ) {
+      return false;
+    }
+    const xc = x.capabilities;
+    const yc = y.capabilities;
+    if (xc.length !== yc.length || xc.some((c, j) => c !== yc[j])) return false;
+  }
+  return true;
 }
 
 function relativeTime(ts: string | null): string {
@@ -370,35 +400,45 @@ export function RegistryPanel() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Monotonic counter — only the latest in-flight response is applied.
+  // Monotonic counter, only the latest in-flight response is applied.
   const loadSeq = useRef(0);
 
-  const load = useCallback(async () => {
+  /** Load registry. quiet=true skips the loading spinner so polls do not unmount the list. */
+  const load = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
     const seq = ++loadSeq.current;
-    setLoading(true);
-    setErr(null);
+    if (!quiet) {
+      setLoading(true);
+      setErr(null);
+    }
     try {
       const [statusResp, registryResp] = await Promise.all([
         fetch("/auth/status", { credentials: "include" }),
         fetch("/api/agents/registry", { credentials: "include" }),
       ]);
-      if (seq !== loadSeq.current) return; // stale — a newer load fired; discard
+      if (seq !== loadSeq.current) return; // stale, a newer load fired; discard
       if (statusResp.ok) {
         const s = await statusResp.json();
-        setIsAdmin(!!s.user?.is_admin);
-        setCurrentUserId(s.user?.id ?? "");
+        const nextAdmin = !!s.user?.is_admin;
+        const nextUserId = (s.user?.id as string | undefined) ?? "";
+        setIsAdmin((prev) => (prev === nextAdmin ? prev : nextAdmin));
+        setCurrentUserId((prev) => (prev === nextUserId ? prev : nextUserId));
       }
       if (registryResp.ok) {
         const data = await registryResp.json();
-        setEntries(Array.isArray(data) ? data : []);
+        const next: RegistryEntry[] = Array.isArray(data) ? data : [];
+        // Unchanged poll is a no-op so React keeps the scroll container mounted.
+        setEntries((prev) => (registryEntriesEqual(prev, next) ? prev : next));
+        if (quiet) setErr((prev) => (prev === null ? prev : null));
       } else if (registryResp.status !== 404) {
-        setErr(`Failed to load registry (${registryResp.status})`);
+        const msg = `Failed to load registry (${registryResp.status})`;
+        setErr((prev) => (prev === msg ? prev : msg));
       }
     } catch (e: unknown) {
       if (seq !== loadSeq.current) return;
-      setErr(e instanceof Error ? e.message : "Network error");
+      const msg = e instanceof Error ? e.message : "Network error";
+      setErr((prev) => (prev === msg ? prev : msg));
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current && !quiet) setLoading(false);
     }
   }, []);
 
@@ -411,7 +451,8 @@ export function RegistryPanel() {
     let timer: ReturnType<typeof setInterval> | null = null;
 
     const startPolling = () => {
-      if (timer === null) timer = setInterval(() => void load(), 5_000);
+      // Quiet polls: no spinner, and setEntries is a no-op when data is unchanged.
+      if (timer === null) timer = setInterval(() => void load({ quiet: true }), 5_000);
     };
     const stopPolling = () => {
       if (timer !== null) {
@@ -423,7 +464,7 @@ export function RegistryPanel() {
       if (document.hidden) {
         stopPolling();
       } else {
-        void load();
+        void load({ quiet: true });
         startPolling();
       }
     };
@@ -431,7 +472,7 @@ export function RegistryPanel() {
     // (covers alt-tab / dock-click without a tab switch).
     const onFocus = () => {
       if (!document.hidden) {
-        void load();
+        void load({ quiet: true });
         startPolling();
       }
     };
@@ -451,7 +492,7 @@ export function RegistryPanel() {
     action: "approve" | "reject" | "suspend" | "reactivate" | "revoke",
   ) {
     await registryAction(canonical_id, action);
-    await load();
+    await load({ quiet: true });
   }
 
   const pendingCount = entries.filter((e) => e.status === "pending").length;

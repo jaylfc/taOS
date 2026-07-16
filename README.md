@@ -39,7 +39,7 @@ Most AI assistants keep your memory, conversations, and files on their servers. 
 - **Offline memory.** Your AI's long-term memory is a self-hosted knowledge graph on your own box (a £170 Orange Pi is enough), not a row in someone else's cloud database.
 - **Self-hosted agents and chat.** Your agents, their conversations, and your channels run on hardware you control.
 - **Your compute, your models.** A local model catalog and cluster inference on your own devices; cloud models are opt-in, never required.
-- **Auditable and exit-able.** Source-available, with a self-hostable binary mirror and an air-gapped install path. Nothing locks you in.
+- **Auditable and exit-able.** Open source (AGPL-3.0), with a self-hostable binary mirror and an air-gapped install path. Nothing locks you in.
 
 Sovereignty by default, cloud by choice. Run taOS fully offline, or connect a cloud model or paid remote access (taOSgo) when you decide it is worth it. The default is that your data never leaves your hardware.
 
@@ -315,6 +315,17 @@ Create shared file spaces for agents, groups, and departments. The design team s
 - **Memory Browser.** Keyword + semantic vector search across all agents
 - **Agent Export/Import.** Portable JSON export of agent config, channels, and group memberships
 
+### External Coding Agents (Bring Your Own AI Team)
+Connect any CLI coding agent (Claude Code, grok, kilo, opencode, aider, or your own) to a taOS project as a real team member. No shared passwords, no glue scripts: agents join through a consent flow and work through the same board and messaging surfaces your other agents use.
+
+- **Access requests + phone approval.** An agent (or its harness) fires `POST /api/agents/auth-requests` with an identity claim and the scopes it wants. You approve or deny from the taOS notification on your phone, pick which project it joins, and taOS mints it a scoped identity (Ed25519 registry JWT, canonical id). Narrow-not-widen: you can grant less than requested, never more.
+- **Agent registry.** Every connected agent is a first-class registry identity with its own token, scopes, and project membership. Revoke or re-scope at any time from the Agents app.
+- **Kanban work loop.** Bounded tasks live on the project board; a connected agent claims a task with its token, works in its own branch, opens a PR, comments the PR link back on the task, and closes it. Your reviewer (human or a stronger agent) gates every merge.
+- **A2A coordination bus.** Agents coordinate on shared channels (`general`, `decisions`, project channels) so a fleet of different models and harnesses can hand work to each other without stepping on toes.
+- **Proven in production.** taOS itself is developed this way: a fleet of consent-minted CLI agents on free models works the taOS board daily, with every PR reviewed before merge.
+
+More on the flow in `docs/design/external-agent-onboarding.md`.
+
 ### Authentication
 Password-protected dashboard with persistent sessions. Per-agent API keys. Exempt paths for cluster workers and health checks.
 
@@ -578,6 +589,20 @@ curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-
 
 See [docs/mirror-policy.md](docs/mirror-policy.md) for the mirror governance policy, what is mirrored, when it updates, how to verify integrity independently, and how to self-host the mirror for air-gapped deployments. The same policy will extend to RK3576, Raspberry Pi 4, Mac mini / Apple Silicon, and x86 classes as those verified install paths land.
 
+## Agent Framework Install Scripts
+
+Several agent frameworks ship with dedicated install scripts under `scripts/install-*.sh` that are invoked automatically by the catalog installer when deploying the corresponding framework:
+
+| Script | Framework | Build toolchain |
+|---|---|---|
+| `scripts/install-agent-zero.sh` | [Agent Zero](https://github.com/frdel/agent-zero) | Clones repo to `/opt/agent-zero` and installs with pip |
+| `scripts/install-deer-flow.sh` | [DeerFlow](https://github.com/bytedance/deer-flow) | Clones repo to `/opt/deer-flow` and provisions with `uv` (Python 3.12) |
+| `scripts/install-moltis.sh` | [Moltis](https://github.com/moltis-org/moltis) | Installs via `cargo install` from crates.io (or git tag) |
+| `scripts/install-openclaw.sh` | [OpenClaw](https://github.com/openclaw/openclaw) | Clones repo to `/opt/openclaw` and installs with pip |
+| `scripts/install-picoclaw.sh` | [PicoClaw](https://github.com/sipeed/picoclaw) | Clones repo to `/opt/picoclaw` and builds with `cmake` |
+
+Hermes Agent uses `install: {method: pip, package: hermes-agent}` in its catalog manifest (available on PyPI from Nous Research) and does not need a separate install script.
+
 ## TurboQuant KV cache compression
 
 **768K context window on a single RTX 3060 (12 GB).** taOS integrates Google's TurboQuant (ICLR 2026) KV cache quantization via TheTom/llama-cpp-turboquant. Unlike weight quantization, which compresses model files, TurboQuant compresses the per-request KV cache -- the per-token memory that scales with context length and is the actual bottleneck on consumer hardware.
@@ -789,6 +814,8 @@ taOS is better for the people testing it, filing issues, and sending fixes:
 
 ## License
 
-taOS Sustainable Use License v0.1 -- source-available, not open source. See [LICENSE](LICENSE).
+taOS is open source under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
 
-Free to use, modify, and self-host for personal use and for your own organisation's internal business purposes -- forever. A separate commercial license from jaylfc is required to sell taOS, host it as a paid service, or build it into a product or service you monetise (contact info@taos.my). Prior releases tagged under AGPL-3.0 remain available under AGPL-3.0.
+You may use, modify, and self-host taOS freely under the AGPL, including for your own organisation's internal business purposes. The AGPL's one condition for network use is that if you run a modified taOS as a service for others, you make your modified source available to those users, also under the AGPL.
+
+A separate **commercial license** is available from jaylfc for anyone who wants to use taOS on terms the AGPL does not grant them -- for example embedding it in a proprietary product, or offering it as a hosted or managed service without releasing modifications under the AGPL. See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact info@taos.my.

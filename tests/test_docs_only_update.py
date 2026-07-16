@@ -143,6 +143,11 @@ async def test_update_check_hides_docs_only_diff(client, monkeypatch):
         fake_docs_only,
         raising=False,
     )
+    monkeypatch.setattr(
+        "tinyagentos.auto_update.branch_is_diverged",
+        AsyncMock(return_value=False),
+        raising=False,
+    )
 
     r = await client.get("/api/settings/update-check")
     assert r.status_code == 200

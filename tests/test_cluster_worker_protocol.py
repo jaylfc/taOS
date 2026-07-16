@@ -201,3 +201,188 @@ class TestHeartbeatVram:
         w = mgr.get_worker("w1")
         assert w.free_vram_mb == 0
         assert w.used_vram_mb == 0
+
+
+# ---------------------------------------------------------------------------
+# WorkerInfo available_models field (local worker manifest)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerInfoAvailableModels:
+    def test_default_is_empty_list(self):
+        """available_models defaults to empty list when not provided."""
+        w = WorkerInfo(name="w", url="http://localhost:9000")
+        assert w.available_models == []
+
+    def test_custom_value_stored(self):
+        w = WorkerInfo(
+            name="w",
+            url="http://localhost:9000",
+            available_models=[
+                {"model_id": "qwen3-embedding-8b", "status": "available"},
+            ],
+        )
+        assert len(w.available_models) == 1
+        assert w.available_models[0]["model_id"] == "qwen3-embedding-8b"
+
+    def test_serialises_via_asdict(self):
+        w = WorkerInfo(
+            name="w",
+            url="http://localhost:9000",
+            available_models=[
+                {"model_id": "kokoro-v1.0", "status": "available"},
+            ],
+        )
+        d = asdict(w)
+        assert "available_models" in d
+        assert d["available_models"][0]["model_id"] == "kokoro-v1.0"
+
+    def test_roundtrip(self):
+        models = [
+            {"model_id": "a", "status": "loaded"},
+            {"model_id": "b", "status": "available"},
+        ]
+        w = WorkerInfo(
+            name="w",
+            url="http://localhost:9000",
+            available_models=models,
+        )
+        d = asdict(w)
+        w2 = WorkerInfo(**{k: v for k, v in d.items() if not isinstance(v, bytes)})
+        assert w2.available_models == models
+
+    def test_roundtrip_default(self):
+        w = WorkerInfo(name="w", url="http://localhost:9000")
+        d = asdict(w)
+        w2 = WorkerInfo(**{k: v for k, v in d.items() if not isinstance(v, bytes)})
+        assert w2.available_models == []
+
+
+# ---------------------------------------------------------------------------
+# ClusterManager heartbeat available_models derivation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestHeartbeatAvailableModels:
+    async def _register(self, mgr: ClusterManager, name: str) -> WorkerInfo:
+        w = WorkerInfo(name=name, url=f"http://localhost:900{name[-1]}")
+        await mgr.register_worker(w)
+        return w
+
+    async def test_heartbeat_derives_from_backends(self):
+        """available_models is derived from backend entries at heartbeat."""
+        mgr = ClusterManager()
+        await self._register(mgr, "w1")
+        backends = [
+            {
+                "name": "llama-cpp:8080",
+                "type": "llama-cpp",
+                "url": "http://localhost:8080",
+                "available_models": [
+                    {"model_id": "qwen3-embedding-8b", "status": "available"},
+                    {"model_id": "phi4", "status": "loaded"},
+                ],
+            },
+        ]
+        mgr.heartbeat("w1", backends=backends)
+        w = mgr.get_worker("w1")
+        assert len(w.available_models) == 2
+        model_ids = {m["model_id"] for m in w.available_models}
+        assert model_ids == {"qwen3-embedding-8b", "phi4"}
+
+    async def test_heartbeat_dedupes_across_backends(self):
+        """Duplicate model_ids across backends are deduplicated."""
+        mgr = ClusterManager()
+        await self._register(mgr, "w1")
+        backends = [
+            {
+                "name": "llama-cpp:8080",
+                "type": "llama-cpp",
+                "url": "http://localhost:8080",
+                "available_models": [
+                    {"model_id": "qwen3-embedding-8b", "status": "available"},
+                ],
+            },
+            {
+                "name": "llama-cpp:8081",
+                "type": "llama-cpp",
+                "url": "http://localhost:8081",
+                "available_models": [
+                    {"model_id": "qwen3-embedding-8b", "status": "loaded"},
+                ],
+            },
+        ]
+        mgr.heartbeat("w1", backends=backends)
+        w = mgr.get_worker("w1")
+        # Deduplicated: same model_id appears once.
+        assert len(w.available_models) == 1
+        assert w.available_models[0]["model_id"] == "qwen3-embedding-8b"
+
+    async def test_heartbeat_additive_across_backends(self):
+        """Different model_ids from different backends all appear."""
+        mgr = ClusterManager()
+        await self._register(mgr, "w1")
+        backends = [
+            {
+                "name": "llama-cpp:8080",
+                "type": "llama-cpp",
+                "url": "http://localhost:8080",
+                "available_models": [
+                    {"model_id": "a", "status": "available"},
+                ],
+            },
+            {
+                "name": "kokoro:8880",
+                "type": "kokoro",
+                "url": "http://localhost:8880",
+                "available_models": [
+                    {"model_id": "b", "status": "available"},
+                ],
+            },
+        ]
+        mgr.heartbeat("w1", backends=backends)
+        w = mgr.get_worker("w1")
+        assert len(w.available_models) == 2
+
+    async def test_heartbeat_empty_backends_clears(self):
+        """Heartbeat with no backends (or no available_models) clears the list."""
+        mgr = ClusterManager()
+        await self._register(mgr, "w1")
+        # First heartbeat with models
+        mgr.heartbeat("w1", backends=[
+            {
+                "name": "llama-cpp:8080",
+                "type": "llama-cpp",
+                "url": "http://localhost:8080",
+                "available_models": [
+                    {"model_id": "a", "status": "available"},
+                ],
+            },
+        ])
+        w = mgr.get_worker("w1")
+        assert len(w.available_models) == 1
+
+        # Heartbeat with empty backends — no available_models
+        mgr.heartbeat("w1", backends=[])
+        w = mgr.get_worker("w1")
+        assert w.available_models == []
+
+    async def test_heartbeat_no_backends_preserves_prior(self):
+        """Heartbeat without backends parameter preserves prior available_models."""
+        mgr = ClusterManager()
+        await self._register(mgr, "w1")
+        mgr.heartbeat(
+            "w1",
+            backends=[{
+                "name": "t",
+                "type": "llama-cpp",
+                "url": "http://localhost:8000",
+                "available_models": [{"model_id": "x", "status": "loaded"}],
+            }],
+        )
+        # Sparse heartbeat — only load, no backends
+        mgr.heartbeat("w1", load=0.5)
+        w = mgr.get_worker("w1")
+        assert len(w.available_models) == 1
+        assert w.available_models[0]["model_id"] == "x"

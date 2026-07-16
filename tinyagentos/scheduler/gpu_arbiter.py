@@ -18,6 +18,7 @@ from tinyagentos.scheduler.types import (
     Priority,
     Task,
 )
+from tinyagentos.vram_reservation import VramReservationManager
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +83,12 @@ class GpuArbiter:
         scheduler=None,
         cluster_manager=None,
         vram_probe: Callable[[], tuple[int, int]] | None = None,
+        vram_reservation: VramReservationManager | None = None,
         max_queue_size: int = 100,
         eviction_enabled: bool = True,
     ):
         self._scheduler = scheduler
         self._cluster_manager = cluster_manager
-        self._vram_probe = vram_probe or _default_vram_probe
         self._max_queue_size = max_queue_size
         self._eviction_enabled = eviction_enabled
         self._queue: asyncio.PriorityQueue[_QueuedGpuTask] = asyncio.PriorityQueue(maxsize=max_queue_size)
@@ -96,18 +97,30 @@ class GpuArbiter:
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._running_lock = asyncio.Lock()
 
-        # --- TOCTOU-race fix (taOS #894 review feedback #2) ---
-        # _check_admission reads live nvidia-smi free VRAM with no reservation.
-        # Two concurrent submit_gpu calls can both pass before either model loads
-        # — the exact concurrent-load crash the arbiter exists to prevent.
-        # _reserved_vram_mb tracks in-flight admissions that haven't yet
-        # consumed physical VRAM (model still loading).  _reserve_and_check()
-        # atomically checks admission against (probe - _reserved_vram_mb) and
-        # reserves the VRAM if admitted.  _release_reservation() is called in
-        # _run_gpu_task's finally and in _evict_task.
-        self._reserved_vram_mb: int = 0
-        self._pending_reservations: dict[str, int] = {}
-        self._reservation_lock = asyncio.Lock()
+        # --- Single VRAM authority (taOS #185) ---
+        # The arbiter does NOT keep its own VRAM ledger. It reserves against a
+        # shared VramReservationManager — the same instance the model-load path
+        # (routes/models.py) uses — so GPU tasks and model loads never
+        # double-count. The manager does atomic check-and-reserve with an
+        # nvidia-smi probe run in a worker thread (no event-loop stall) plus a
+        # TTL sweep for hung reservations, which is why folding it in also
+        # closes the arbiter's own probe-under-lock and stale-hold gaps.
+        #
+        # When a legacy ``vram_probe`` (free, total) is supplied (tests/standalone),
+        # adapt it to the manager's ``(free, total) | None`` convention: a total
+        # of 0 means "no local GPU" so admission routes to the cluster instead
+        # of fail-open-admitting locally.
+        if vram_reservation is not None:
+            self._vram = vram_reservation
+        else:
+            probe_adapter: Callable[[], tuple[int, int] | None] | None = None
+            if vram_probe is not None:
+                def probe_adapter() -> tuple[int, int] | None:
+                    free_mb, total_mb = vram_probe()
+                    return (free_mb, total_mb) if total_mb > 0 else None
+            self._vram = VramReservationManager(probe=probe_adapter)
+        # task_id -> reservation_id held in the shared ledger (None-safe pop).
+        self._pending_reservations: dict[str, str] = {}
 
         self._queue_processor_task: asyncio.Task | None = None
         self._submitted = 0
@@ -206,37 +219,69 @@ class GpuArbiter:
         """Release an in-flight VRAM reservation for *task_id*.
 
         Idempotent — safe to call on a task that was never reserved (e.g.
-        a zero-VRAM task or eviction of a queued-but-not-yet-admitted entry).
+        a zero-VRAM task, an eviction of a queued-but-not-yet-admitted entry,
+        or a task whose _run_gpu_task finally already released it).
         """
-        vram = self._pending_reservations.pop(task_id, None)
-        if vram is not None:
-            self._reserved_vram_mb -= vram
-            logger.debug("gpu-arbiter: released reservation %d MiB for task %s", vram, task_id)
+        reservation_id = self._pending_reservations.pop(task_id, None)
+        if reservation_id is not None:
+            self._vram.release(reservation_id)
+            logger.debug("gpu-arbiter: released reservation %s for task %s", reservation_id, task_id)
 
     async def _reserve_and_check(self, task_id: str, required_vram_mb: int) -> GpuAdmission:
         """Atomically check admission and reserve VRAM if admitted.
 
-        Acquires _reservation_lock, calls _check_admission (which subtracts
-        _reserved_vram_mb from the hardware probe), and if admitted
-        immediately adds required_vram_mb to _reserved_vram_mb so
-        concurrent callers see the reduced capacity.
+        Reserves against the shared VramReservationManager (the single VRAM
+        authority, taOS #185), whose ``reserve`` is itself atomic
+        check-and-reserve, so two concurrent callers cannot both pass before
+        either consumes physical VRAM. Local admission is decided by the
+        manager; when the host has no local GPU probe the request routes to
+        the cluster instead.
 
-        Returns the GpuAdmission.  The caller MUST call _release_reservation
+        Returns the GpuAdmission. The caller MUST call _release_reservation
         when the task finishes or is evicted.
         """
         if required_vram_mb <= 0:
             return GpuAdmission(admitted=True)
 
-        async with self._reservation_lock:
-            # Build a synthetic task just for the admission check.  The
-            # reservation-aware check uses _reserved_vram_mb internally.
-            admission = self._check_admission(None, required_vram_mb)
-            if admission.admitted:
-                self._reserved_vram_mb += required_vram_mb
-                self._pending_reservations[task_id] = required_vram_mb
-                logger.debug("gpu-arbiter: reserved %d MiB for task %s (total reserved: %d)",
-                             required_vram_mb, task_id, self._reserved_vram_mb)
-            return admission
+        # available_vram() reports (effective_free, total); total==0 means no
+        # local GPU probe. Run it in a thread — nvidia-smi is a blocking
+        # subprocess and this is on the admission hot path.
+        effective_free, total = await asyncio.to_thread(self._vram.available_vram)
+        if total > 0:
+            # Local GPU present — atomic check-and-reserve on the shared ledger.
+            reservation = await self._vram.reserve(required_vram_mb, caller=f"gpu-task:{task_id}")
+            if reservation is not None:
+                self._pending_reservations[task_id] = reservation.reservation_id
+                return GpuAdmission(admitted=True, free_vram_mb=effective_free,
+                                    required_vram_mb=required_vram_mb)
+            return GpuAdmission(
+                admitted=False, free_vram_mb=effective_free, required_vram_mb=required_vram_mb,
+                reason=(f"insufficient local VRAM: need {required_vram_mb} MiB, "
+                        f"have {effective_free} MiB available"),
+            )
+        # No local GPU probe: try the cluster.
+        if self._cluster_manager is not None:
+            return self._check_cluster_admission(required_vram_mb)
+        # No local GPU and no cluster: fail open with bookkeeping, matching the
+        # reservation manager's no-probe convention (cluster claim_lease parity).
+        reservation = await self._vram.reserve(required_vram_mb, caller=f"gpu-task:{task_id}")
+        if reservation is not None:
+            self._pending_reservations[task_id] = reservation.reservation_id
+        return GpuAdmission(admitted=True, required_vram_mb=required_vram_mb)
+
+    async def reserve_vram(self, vram_mb: int, caller: str = ""):
+        """Front-door VRAM reservation for non-task callers (e.g. model loads).
+
+        Reserves against the arbiter's single shared ledger so model loads and
+        GPU scheduler tasks draw from ONE authority and never double-count
+        (taOS #185). Returns a ``VramReservation`` or ``None`` when there is
+        not enough VRAM; the caller MUST call :meth:`release_vram` when done.
+        """
+        return await self._vram.reserve(vram_mb, caller=caller)
+
+    def release_vram(self, reservation_id: str) -> bool:
+        """Release a reservation taken via :meth:`reserve_vram`. Idempotent."""
+        return self._vram.release(reservation_id)
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -299,63 +344,36 @@ class GpuArbiter:
             # _run_gpu_task can proceed safely.
         return await self._run_gpu_task(task, required_vram_mb, evictable, resource_id)
 
-    def _check_admission(self, task: Task | None, required_vram_mb: int) -> GpuAdmission:
-        """Check whether *required_vram_mb* can be admitted right now.
+    def _check_cluster_admission(self, required_vram_mb: int) -> GpuAdmission:
+        """Check whether a cluster worker can host *required_vram_mb*.
 
-        Subtracts in-flight reservations (_reserved_vram_mb) from the
-        hardware probe so that concurrent admission attempts see the
-        capacity already promised to other tasks whose models are still
-        loading.
-
-        *task* may be None when called from _reserve_and_check (which
-        doesn't need the full Task — just the VRAM budget).
+        Used only when the local host has no GPU probe. Subtracts each
+        worker's active GPU leases and the shared ledger's in-flight
+        reservations so a task whose model is still loading is accounted for
+        (taOS #1705).
         """
-        if required_vram_mb <= 0:
-            return GpuAdmission(admitted=True)
-        free_vram, _total = self._vram_probe()
-        # Subtract in-flight reservations from the probe to close the
-        # TOCTOU window between two concurrent submit_gpu calls.
-        effective_free = max(0, free_vram - self._reserved_vram_mb)
-        if free_vram > 0:
-            if effective_free < required_vram_mb:
+        if self._cluster_manager is None:
+            return GpuAdmission(admitted=True, required_vram_mb=required_vram_mb)
+        leases = self._cluster_manager.get_leases()
+        reserved = self._vram.reserved_vram_mb
+        for worker in self._cluster_manager.get_workers():
+            if worker.status != "online":
+                continue
+            worker_leases = sum(
+                l.required_vram_mb for l in leases
+                if l.resource_id.startswith(worker.name + ":") and l.required_vram_mb > 0
+            )
+            available = worker.free_vram_mb - worker_leases - reserved
+            if available >= required_vram_mb:
                 return GpuAdmission(
-                    admitted=False,
-                    free_vram_mb=effective_free,
+                    admitted=True,
+                    free_vram_mb=available,
                     required_vram_mb=required_vram_mb,
-                    reason=(
-                        f"insufficient local VRAM: need {required_vram_mb} MiB, "
-                        f"have {effective_free} MiB available "
-                        f"({free_vram} MiB free - {self._reserved_vram_mb} MiB reserved)"
-                    ),
                 )
-            return GpuAdmission(
-                admitted=True, free_vram_mb=effective_free,
-                required_vram_mb=required_vram_mb,
-            )
-        if self._cluster_manager is not None:
-            leases = self._cluster_manager.get_leases()
-            for worker in self._cluster_manager.get_workers():
-                if worker.status != "online":
-                    continue
-                worker_leases = sum(
-                    l.required_vram_mb for l in leases
-                    if l.resource_id.startswith(worker.name + ":") and l.required_vram_mb > 0
-                )
-                # Subtract in-flight reservations as well — the cluster-mode
-                # path must also account for tasks whose models are still
-                # loading (taOS #1705).
-                available = worker.free_vram_mb - worker_leases - self._reserved_vram_mb
-                if available >= required_vram_mb:
-                    return GpuAdmission(
-                        admitted=True,
-                        free_vram_mb=available,
-                        required_vram_mb=required_vram_mb,
-                    )
-            return GpuAdmission(
-                admitted=False, required_vram_mb=required_vram_mb,
-                reason=f"no cluster worker with {required_vram_mb} MiB free VRAM",
-            )
-        return GpuAdmission(admitted=True, required_vram_mb=required_vram_mb)
+        return GpuAdmission(
+            admitted=False, required_vram_mb=required_vram_mb,
+            reason=f"no cluster worker with {required_vram_mb} MiB free VRAM",
+        )
 
     async def _run_gpu_task(
         self, task: Task, required_vram_mb: int, evictable: bool, resource_id: str | None,
@@ -448,7 +466,11 @@ class GpuArbiter:
         async with self._running_lock:
             victim_id, victim_priority = None, -1
             for tid, (_t, _lid, pri, _vram) in self._running.items():
-                if min_priority is not None and pri < min_priority:
+                # Only STRICTLY lower-priority running tasks are eviction
+                # candidates. With "lower int = higher priority", skip anything
+                # whose priority value is <= the requester's so an equal-priority
+                # task is never preempted (avoids eviction thrash between peers).
+                if min_priority is not None and pri <= min_priority:
                     continue
                 if pri > victim_priority:
                     victim_priority, victim_id = pri, tid
@@ -462,14 +484,30 @@ class GpuArbiter:
                 return 0
             task, lease_id, _pri, _vram = self._running.pop(task_id)
             asyncio_task = self._running_tasks.pop(task_id, None)
-        # Release the VRAM reservation — the task is being preempted and
-        # its reserved VRAM should be returned to the pool immediately.
+        # ORDERING MATTERS (Xid-62 fix, taOS #894): cancel the running task and
+        # AWAIT it to completion BEFORE releasing the VRAM reservation and lease.
+        # cancel() is cooperative — the model is still physically resident when
+        # cancel() returns. If we freed the reservation first, an evict-to-make-
+        # room re-admission could pass against not-yet-reclaimed VRAM and start a
+        # second concurrent load (the exact driver crash the arbiter prevents).
+        # Awaiting lets the task's coroutine unwind (its finally releases its own
+        # reservation) so the capacity is genuinely free before re-admission.
+        if (asyncio_task is not None and not asyncio_task.done()
+                and asyncio_task is not asyncio.current_task()):
+            asyncio_task.cancel()
+            try:
+                await asyncio_task
+            except (asyncio.CancelledError, Exception):
+                # Swallow the cancellation and any teardown error — the task is
+                # being force-evicted; its result/exception is intentionally
+                # discarded and surfaced to the submitter via _arbiter_future.
+                pass
+        # Now the VRAM is physically reclaimed. Release the reservation
+        # (idempotent — the task's own finally may already have) and the lease
+        # (the task skipped it because we popped _running first).
         self._release_reservation(task_id)
         if lease_id is not None and self._cluster_manager is not None:
             await self._cluster_manager.release_lease(lease_id)
-        # Cancel the running asyncio Task — stops _run_gpu_task and frees VRAM
-        if asyncio_task is not None and not asyncio_task.done():
-            asyncio_task.cancel()
         # Also cancel the arbiter future for queued tasks (belt-and-suspenders)
         future = getattr(task, "_arbiter_future", None)
         if future is not None and not future.done():
@@ -564,7 +602,7 @@ class GpuArbiter:
             "dropped": self._dropped, "queue_depth": self._queue.qsize(),
             "running": running_count, "max_queue_size": self._max_queue_size,
             "eviction_enabled": self._eviction_enabled,
-            "reserved_vram_mb": self._reserved_vram_mb,
+            "reserved_vram_mb": self._vram.reserved_vram_mb,
             "pending_reservations": len(self._pending_reservations),
         }
 

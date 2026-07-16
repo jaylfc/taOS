@@ -23,6 +23,7 @@ data/.setup_complete
 data/.auth_password
 data/.auth_sessions
 data/.auth_local_token
+data/mesh_credentials.json
 data/agents.json
 data/images/
 data/videos/
