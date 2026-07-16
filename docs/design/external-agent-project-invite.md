@@ -1,11 +1,63 @@
 # Inviting an external coding agent to a taOS project (link + PIN)
 
-Status: DRAFT for Jay review. Plan only, no implementation.
+Status: APPROVED 2026-07-16 (Jay). Building Phase 1.
 Builds on: the consent loop (`docs/design/external-agent-onboarding.md`, #744),
 the `project_tasks` scope (#1774), the member-add-on-approve commit on
 `feat/consent-project-picker` (bec4186b), the cluster pairing code
 (`tinyagentos/cluster/pairing_store.py`), and the taOSgo mesh-join foundation
 (`docs/design/taosgo-mesh-join-foundation.md`).
+
+## Approved-build addendum (2026-07-16)
+
+Jay approved this design with a real driver: a Claude Code agent building a
+game should register, create a game project, and join as lead dev. Two
+decisions and two additions to the draft below:
+
+- **Phase 1 = LAN / tailnet only.** Mint the controller-local invite and show
+  the controller-direct URL (section 3, Approach C, without the taos.my leg).
+  The taos.my relay resolver is deferred to a later phase; slices 1-3 are
+  fully useful on LAN/tailnet, which is where the driving agent runs.
+- **Lead role in the mint dialog.** The scope checkboxes include the exclusive
+  project Lead toggle (the epic's `lead_member_id`); ticking it makes the
+  redeemed agent the project Lead in one step.
+
+- **ADDITION 1 - canvas endpoints in the bundle.** The `apis` block (section 4)
+  currently lists only task + A2A routes. When the invite grants
+  `canvas_read` and/or `canvas_write`, the bundle MUST also carry the canvas
+  routes so a lead-dev agent can drive the board:
+  `canvas_elements: GET/POST /api/projects/{pid}/canvas/elements`,
+  `canvas_element: PATCH/DELETE /api/projects/{pid}/canvas/elements/{eid}`,
+  `canvas_snapshot: GET /api/projects/{pid}/canvas/snapshot.png`. Include a
+  route only when its scope was granted (read routes need `canvas_read`, write
+  routes need `canvas_write`), mirroring the middleware allowlist.
+
+- **ADDITION 2 - the onboarding kit (capability guide).** Beyond machine
+  endpoints, the redeem response and the `GET /i/{invite_id}` page carry an
+  `onboarding` block AND serve a short markdown guide so the agent is aware of
+  everything it can do. Contents:
+  - **Links:** the taOS repo (`https://github.com/jaylfc/taOS`) and the
+    in-repo agent guides (`docs/agent-manual/`, e.g. `04-apps.md`,
+    `09-os-control.md`), plus the Projects + Canvas capability docs.
+  - **Capabilities in plain language:** the Projects app (tasks, the kanban
+    board, claim/comment/close a task) and the Canvas (read/write elements -
+    notes, links, text, mermaid, flowchart - and the snapshot), scoped to what
+    the invite granted.
+  - **A2A contract:** use the AUTHENTICATED proxy (`/api/a2a/bus/*`), never the
+    raw :7900 bus; `from` is forced to the agent's own handle; the
+    `thread`/`body` message shape; how to reach Jay and other agents.
+  - **Memory + timed-check instructions (explicit, imperative):** write your
+    `canonical_id`, project id/slug, token file location, and the bus contract
+    into your OWN persistent memory now; then poll every `check_interval_secs`
+    (and/or hold the SSE stream) for your ready tasks and any mentions, act,
+    and report progress on the bus. This is the loop that makes the agent an
+    autonomous project member rather than a one-shot.
+  The guide is generated from the granted scopes + project + derived handle at
+  redeem time (no secrets: the token still arrives via the status poll), so an
+  agent that only reads the guide has an accurate, personalized capability map.
+
+The sections below are the full draft; where they conflict with this addendum
+(e.g. the taos.my URL leg, the `apis` block omitting canvas), the addendum wins
+for Phase 1.
 
 ## Why
 
