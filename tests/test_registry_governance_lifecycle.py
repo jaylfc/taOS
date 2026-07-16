@@ -261,6 +261,67 @@ class TestSetStatus:
         finally:
             await store.close()
 
+    async def test_init_heals_duplicate_active_handles(self, tmp_path):
+        """A pre-invariant DB with two active rows sharing a handle must still
+        boot: init() blanks the duplicate, keeps the oldest, and builds the
+        index (regression for the boot-brick audit finding)."""
+        import aiosqlite
+        from tinyagentos.db_migrations import apply_wal_pragmas_async
+
+        db_path = tmp_path / "dup.db"
+        async with aiosqlite.connect(str(db_path)) as conn:
+            await apply_wal_pragmas_async(conn)
+            # Full current columns, NO unique index (a pre-invariant DB).
+            await conn.executescript("""
+                CREATE TABLE IF NOT EXISTS agent_registry (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    canonical_id TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    framework    TEXT NOT NULL DEFAULT '',
+                    user_id      TEXT NOT NULL DEFAULT '',
+                    origin       TEXT NOT NULL DEFAULT 'taos-deployed',
+                    handle       TEXT NOT NULL DEFAULT '',
+                    role         TEXT,
+                    capabilities TEXT NOT NULL DEFAULT '[]',
+                    created_ts   TEXT NOT NULL,
+                    revoked_at   TEXT,
+                    status       TEXT NOT NULL DEFAULT 'active'
+                );
+            """)
+            for cid in ("first", "second"):
+                await conn.execute(
+                    "INSERT INTO agent_registry (canonical_id, framework, handle, created_ts, status) "
+                    "VALUES (?, 'f', 'hermes', '2026-01-01T00:00:00', 'active')",
+                    (cid,),
+                )
+            await conn.commit()
+
+        # Must NOT raise IntegrityError (would brick boot before the fix).
+        store = AgentRegistryStore(db_path)
+        await store.init()
+        try:
+            first = await store.get("first")   # oldest keeps the handle
+            second = await store.get("second")  # duplicate blanked
+            assert first["handle"] == "hermes"
+            assert second["handle"] == ""
+            assert first["status"] == "active" and second["status"] == "active"
+            # Index now exists and is enforced: 'first' still owns 'hermes', so a
+            # new active agent taking it is rejected.
+            with pytest.raises(Exception):
+                await store.register(framework="f", handle="hermes")
+        finally:
+            await store.close()
+
+    async def test_register_duplicate_active_handle_rejected(self, tmp_path):
+        """Write-time enforcement: a second active agent cannot take a live handle."""
+        store = await self._make_store(tmp_path / "reg.db")
+        try:
+            await store.register(framework="f", handle="solo")
+            with pytest.raises(Exception):
+                await store.register(framework="f", handle="solo")
+        finally:
+            await store.close()
+
     # -- list_inactive + list_all(status=) ----------------------------------
 
     async def test_list_inactive_returns_non_active(self, tmp_path):

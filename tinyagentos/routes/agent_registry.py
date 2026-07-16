@@ -24,6 +24,7 @@ import asyncio
 import logging
 from typing import Optional
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -235,15 +236,23 @@ async def register_agent(
     store = _get_store(request)
     private_pem, _public_pem = _get_keypair(request)
 
-    record = await store.register(
-        framework=body.framework,
-        display_name=body.display_name or "",
-        user_id=user.user_id,
-        origin=body.origin or "taos-deployed",
-        handle=body.handle or "",
-        role=body.role,
-        capabilities=body.capabilities or [],
-    )
+    try:
+        record = await store.register(
+            framework=body.framework,
+            display_name=body.display_name or "",
+            user_id=user.user_id,
+            origin=body.origin or "taos-deployed",
+            handle=body.handle or "",
+            role=body.role,
+            capabilities=body.capabilities or [],
+        )
+    except aiosqlite.IntegrityError:
+        # The active-handle unique index rejected a handle another active agent
+        # already owns. That is a client conflict, not a server error.
+        raise HTTPException(
+            status_code=409,
+            detail="handle is already owned by another active agent",
+        )
 
     token = mint_registry_token(
         record["canonical_id"],
@@ -574,13 +583,20 @@ async def patch_registry_entry(
         return JSONResponse({"error": "not found"}, status_code=404)
     require_owner_or_admin(user, record["user_id"])
     old_name = record.get("display_name") or ""
-    updated = await store.update(
-        canonical_id,
-        display_name=body.display_name,
-        handle=body.handle,
-        role=body.role,
-        capabilities=body.capabilities,
-    )
+    try:
+        updated = await store.update(
+            canonical_id,
+            display_name=body.display_name,
+            handle=body.handle,
+            role=body.role,
+            capabilities=body.capabilities,
+        )
+    except aiosqlite.IntegrityError:
+        # Renaming this entry's handle onto one another active agent owns.
+        return JSONResponse(
+            {"error": "handle is already owned by another active agent"},
+            status_code=409,
+        )
     if updated is None:
         # The entry was revoked/removed between the get and the update; do not
         # emit a rename notification for a row that no longer exists.
