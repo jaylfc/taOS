@@ -101,6 +101,14 @@ class ProjectStore(BaseStore):
                     "UPDATE projects SET lead_member_id = ? WHERE id = ?",
                     (flagged[0], pid),
                 )
+                # Clear the legacy per-member is_lead flag so this backfill
+                # runs once. The epic removed the only writer of is_lead, so
+                # without this a Lead the owner deliberately cleared (lead_member_id
+                # set NULL) would be re-promoted from the stale flag on restart.
+                await self._db.execute(
+                    "UPDATE project_members SET is_lead = 0 WHERE project_id = ?",
+                    (pid,),
+                )
         await self._db.commit()
 
     async def set_lead(self, project_id: str, member_id: "str | None") -> None:
@@ -276,6 +284,35 @@ class ProjectStore(BaseStore):
             "UPDATE projects SET lead_member_id = NULL "
             "WHERE id = ? AND lead_member_id = ?",
             (project_id, member_id),
+        )
+        await self._db.commit()
+
+    async def set_member_canvas(
+        self,
+        project_id: str,
+        member_id: str,
+        can_read: bool = False,
+        can_write: bool = False,
+    ) -> None:
+        """Set a member's per-project canvas flags (best-effort, additive OR).
+
+        Only the flags explicitly passed as True are flipped on; a flag not
+        requested is left untouched, so a partial approval (e.g. canvas_read
+        only) never clears a flag the member already held.
+        """
+        sets: list[str] = []
+        params: list = []
+        if can_read:
+            sets.append("can_read_canvas = 1")
+        if can_write:
+            sets.append("can_edit_canvas = 1")
+        if not sets:
+            return
+        params.extend([project_id, member_id])
+        await self._db.execute(
+            f"UPDATE project_members SET {', '.join(sets)} "
+            "WHERE project_id = ? AND member_id = ?",
+            params,
         )
         await self._db.commit()
 

@@ -424,24 +424,42 @@ async def _do_approve(request: Request, request_id: str, body: ApproveBody, user
     # project a2a channel (membership is synced into the channel). Best-effort: a
     # membership failure never blocks the approval, which the token + grant already
     # authorize.
-    if effective_project and "project_tasks" in body.granted_scopes:
+    if effective_project and set(body.granted_scopes) & _PROJECT_SCOPES:
         try:
             pstore = getattr(request.app.state, "project_store", None)
             if pstore is not None:
-                await pstore.add_member(
-                    project_id=effective_project,
-                    member_id=canonical_id,
-                    member_kind="native",
-                    role="member",
-                )
-                from tinyagentos.projects.a2a import ensure_a2a_channel
+                granted_canvas = set(body.granted_scopes) & _CANVAS_SCOPES
+                # project_tasks and canvas scopes both bind the token to a
+                # project and require a membership row. The project_tasks path
+                # adds plain membership; canvas scopes additionally flip the
+                # per-member can_read_canvas / can_edit_canvas flags so the
+                # approved token is actually authorized for canvas calls
+                # (an inert member row with all canvas flags 0 would 403).
+                # Only flags that were explicitly granted are set, mirroring
+                # how the consent card scopes are narrowed.
+                if "project_tasks" in body.granted_scopes or granted_canvas:
+                    await pstore.add_member(
+                        project_id=effective_project,
+                        member_id=canonical_id,
+                        member_kind="native",
+                        role="member",
+                    )
+                    if granted_canvas:
+                        await pstore.set_member_canvas(
+                            project_id=effective_project,
+                            member_id=canonical_id,
+                            can_read=("canvas_read" in granted_canvas),
+                            can_write=("canvas_write" in granted_canvas),
+                        )
+                    if "project_tasks" in body.granted_scopes:
+                        from tinyagentos.projects.a2a import ensure_a2a_channel
 
-                await ensure_a2a_channel(
-                    request.app.state.chat_channels,
-                    pstore,
-                    effective_project,
-                    config=getattr(request.app.state, "config", None),
-                )
+                        await ensure_a2a_channel(
+                            request.app.state.chat_channels,
+                            pstore,
+                            effective_project,
+                            config=getattr(request.app.state, "config", None),
+                        )
         except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
             logger.warning(
                 "auth-approve: could not sync %s membership/a2a channel for project %s",

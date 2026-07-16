@@ -379,6 +379,138 @@ class TestCanvasScopeApproval:
         await grants.close()
 
     @pytest.mark.asyncio
+    async def test_approve_canvas_write_adds_member_with_write_flag(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Approving a canvas_write grant bound to a project must add the agent as
+        a project member with can_edit_canvas=1 (and not can_read_canvas unless
+        granted), so the approved token is actually authorized to write the
+        canvas instead of 403ing on every call."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-canvas-mem.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-canvas-mem.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-canvas-mem.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-canvas-mem.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-canvas-mem")
+
+        project = await pstore.create_project(
+            name="Canvas Proj", slug="canvas-proj", created_by="u"
+        )
+        pid = project["id"]
+
+        record = await auth_store.create(
+            identity_claim="canvas-bot",
+            framework="canvas-cli",
+            requested_scopes=["canvas_write"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=pid,
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={"granted_scopes": ["canvas_write"], "project_id": pid},
+        )
+        assert resp.status_code == 200, resp.text
+
+        members = await pstore.list_members(pid)
+        assert len(members) == 1
+        member = members[0]
+        assert member["can_edit_canvas"] == 1
+        # canvas_write alone must NOT grant read.
+        assert member["can_read_canvas"] == 0
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_approve_canvas_read_and_write_sets_both_flags(
+        self, client, monkeypatch, tmp_path
+    ):
+        """Both canvas scopes granted bound to a project flip both member flags."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-canvas-both.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-canvas-both.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-canvas-both.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-canvas-both.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-canvas-both")
+
+        project = await pstore.create_project(
+            name="Canvas Proj", slug="canvas-proj-both", created_by="u"
+        )
+        pid = project["id"]
+
+        record = await auth_store.create(
+            identity_claim="canvas-bot",
+            framework="canvas-cli",
+            requested_scopes=["canvas_read", "canvas_write"],
+            requested_skills=None,
+            reason="",
+            duration_secs=None,
+            project_id=pid,
+        )
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(
+            client._transport.app.state, "agent_registry_keypair", (priv, pub)
+        )
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{record['id']}/approve",
+            json={
+                "granted_scopes": ["canvas_read", "canvas_write"],
+                "project_id": pid,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        members = await pstore.list_members(pid)
+        assert len(members) == 1
+        assert members[0]["can_read_canvas"] == 1
+        assert members[0]["can_edit_canvas"] == 1
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
     async def test_approve_canvas_scopes_without_project_is_rejected(
         self, client, monkeypatch, tmp_path
     ):
