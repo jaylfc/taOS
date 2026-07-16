@@ -611,9 +611,244 @@ class TestCanvasScopeApproval:
             # The blank-project approval must not register an agent.
             assert await registry.list_all() == []
 
-            await registry.close()
-            await auth_store.close()
-            await grants.close()
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+
+
+class TestAddAgentToAnotherProject:
+    """taOS #1862: an already-registered ACTIVE agent (handle collision) is
+    ADDED to a further project instead of 409ing when the approval is for a
+    project-scoped grant. The identity (canonical_id) and token are reused."""
+
+    @pytest.mark.asyncio
+    async def test_reuse_active_handle_adds_second_project(
+        self, client, monkeypatch, tmp_path
+    ):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-mp.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-mp.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-mp.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-mp.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-mp")
+
+        pA = await pstore.create_project(name="A", slug="proj-a", created_by="u")
+        pB = await pstore.create_project(name="B", slug="proj-b", created_by="u")
+
+        # Register + approve the agent for project A (handle taosmd-dev).
+        rA = await auth_store.create(
+            identity_claim="@taOSmd-dev", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pA["id"],
+        )
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        respA = await client.post(
+            f"/api/agents/auth-requests/{rA['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pA["id"]},
+        )
+        assert respA.status_code == 200, respA.text
+        cid = respA.json()["canonical_id"]
+        assert cid
+
+        # Now approve a SECOND request with the SAME handle, for project B.
+        rB = await auth_store.create(
+            identity_claim="@taOSmd-dev", framework="openclaw",
+            requested_scopes=["project_tasks"], requested_skills=None, reason="",
+            duration_secs=None, project_id=pB["id"],
+        )
+        respB = await client.post(
+            f"/api/agents/auth-requests/{rB['id']}/approve",
+            json={"granted_scopes": ["project_tasks"], "project_id": pB["id"]},
+        )
+        assert respB.status_code == 200, respB.text
+        # Same canonical_id is reused, NOT a fresh one (no 409).
+        assert respB.json()["canonical_id"] == cid
+
+        # Exactly one active agent with that handle.
+        active = await registry.list_all(status="active")
+        assert len([a for a in active if a["handle"] == "taosmd-dev"]) == 1
+
+        # Member of BOTH projects.
+        membersA = await pstore.list_members(pA["id"])
+        membersB = await pstore.list_members(pB["id"])
+        assert any(m["member_id"] == cid for m in membersA)
+        assert any(m["member_id"] == cid for m in membersB)
+
+        # Grants for BOTH projects.
+        agent_grants = await grants.list_grants(cid)
+        assert {g["project_id"] for g in agent_grants} >= {pA["id"], pB["id"]}
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_non_project_handle_collision_still_409(
+        self, client, monkeypatch, tmp_path
+    ):
+        """A handle collision on a NON-project grant remains a genuine 409."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-mp409.db")
+        await registry.init()
+        auth_store = AuthRequestsStore(tmp_path / "auth-mp409.db")
+        await auth_store.init()
+        grants = AgentGrantsStore(tmp_path / "grants-mp409.db")
+        await grants.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-mp409")
+
+        await registry.register(
+            framework="openclaw", display_name="existing-agent",
+            user_id="user-existing", origin="taos-deployed", handle="taosmd-dev",
+        )
+
+        r = await auth_store.create(
+            identity_claim="@taOSmd-dev", framework="openclaw",
+            requested_scopes=["memory_read"], requested_skills=None, reason="",
+            duration_secs=None, project_id=None,
+        )
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "agent_registry_keypair", (priv, pub))
+
+        resp = await client.post(
+            f"/api/agents/auth-requests/{r['id']}/approve",
+            json={"granted_scopes": ["memory_read"]},
+        )
+        assert resp.status_code == 409, resp.text
+
+        await registry.close()
+        await auth_store.close()
+        await grants.close()
+
+
+class TestAssignAgentRoute:
+    """Admin route POST /api/projects/{pid}/members/assign-agent."""
+
+    @pytest.mark.asyncio
+    async def test_assign_existing_agent_adds_membership_and_grant(
+        self, client, monkeypatch, tmp_path
+    ):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-assign.db")
+        await registry.init()
+        grants = AgentGrantsStore(tmp_path / "grants-assign.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-assign.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-assign")
+
+        # An already-registered agent (owner u).
+        reg = await registry.register(
+            framework="openclaw", display_name="taosmd-dev",
+            user_id="u", origin="external-selfjoin", handle="taosmd-dev",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+        cid = reg["canonical_id"]
+
+        project = await pstore.create_project(name="P", slug="proj-p", created_by="u")
+
+        # Make the test client act as admin+owner so the gate passes.
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        resp = await client.post(
+            f"/api/projects/{project['id']}/members/assign-agent",
+            json={"canonical_id": cid, "scopes": ["project_tasks"]},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["canonical_id"] == cid
+        assert data["project_id"] == project["id"]
+        assert data["granted_scopes"] == ["project_tasks"]
+
+        members = await pstore.list_members(project["id"])
+        assert any(m["member_id"] == cid for m in members)
+        agent_grants = await grants.list_grants(cid)
+        assert any(
+            g["scope"] == "project_tasks" and g["project_id"] == project["id"]
+            for g in agent_grants
+        )
+
+        await registry.close()
+        await grants.close()
+        await pstore.close()
+
+    @pytest.mark.asyncio
+    async def test_assign_requires_admin(self, client, monkeypatch, tmp_path):
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.agent_grants_store import AgentGrantsStore
+        from tinyagentos.projects.project_store import ProjectStore
+
+        registry = AgentRegistryStore(tmp_path / "reg-assign2.db")
+        await registry.init()
+        grants = AgentGrantsStore(tmp_path / "grants-assign2.db")
+        await grants.init()
+        pstore = ProjectStore(tmp_path / "projects-assign2.db")
+        await pstore.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-assign2")
+
+        reg = await registry.register(
+            framework="openclaw", display_name="taosmd-dev",
+            user_id="u", origin="external-selfjoin", handle="taosmd-dev",
+        )
+        await registry.set_status(reg["canonical_id"], "active")
+        project = await pstore.create_project(name="P", slug="proj-p2", created_by="u")
+
+        # A non-admin, non-owner caller must be rejected by the admin gate.
+        # add_user_invite creates a non-admin user; log in as them for this call.
+        auth = client._transport.app.state.auth
+        auth.add_user_invite("bob", "admin")
+        bob = auth.find_user("bob")
+        bob_token = auth.create_session(user_id=bob["id"], long_lived=True)
+
+        monkeypatch.setattr(client._transport.app.state, "agent_registry", registry)
+        monkeypatch.setattr(client._transport.app.state, "agent_grants", grants)
+        monkeypatch.setattr(client._transport.app.state, "project_store", pstore)
+
+        resp = await client.post(
+            f"/api/projects/{project['id']}/members/assign-agent",
+            json={"canonical_id": reg["canonical_id"], "scopes": ["project_tasks"]},
+            cookies={"taos_session": bob_token},
+        )
+        assert resp.status_code == 403, resp.text
+
+        await registry.close()
+        await grants.close()
+        await pstore.close()
 
     @pytest.mark.asyncio
     async def test_approve_cannot_widen_canvas_scopes(

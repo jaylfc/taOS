@@ -123,6 +123,17 @@ PIN; see issue #1780). When you change the
 allowlist in `tinyagentos/auth_middleware.py`, update this section in the same
 PR (the doc-gate enforces it).
 
+Multi-project identities (taOS #1862): one agent identity (the registry JWT) may
+belong to several projects at once. The grants table keys a grant on
+`(canonical_id, scope, project_id)`, so the same scope can be held for multiple
+projects. Project access is GRANT-GATED, not claim-gated: the token's `project_id`
+claim is advisory only, and `check_agent_scope_for_project` authorizes a project
+purely from a matching active grant. An already-registered agent is added to a
+further project via `POST /api/projects/{project_id}/members/assign-agent`
+(admin/owner gated) or by redeeming an invite whose handle collides with an
+active identity (the existing canonical_id and token are reused instead of
+409ing).
+
 ## Project invite redeem route (link + PIN)
 
 A project invite lets an external agent join without going through the consent

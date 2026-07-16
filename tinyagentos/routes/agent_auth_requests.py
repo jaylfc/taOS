@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from aiosqlite import IntegrityError
 from tinyagentos.agent_registry_store import _slugify, mint_registry_token
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,12 @@ class CreateAuthRequest(BaseModel):
 class ApproveBody(BaseModel):
     granted_scopes: list[str]
     project_id: Optional[str] = None
+
+
+class AssignAgentBody(BaseModel):
+    canonical_id: str
+    scopes: list[str]
+    is_lead: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +365,43 @@ async def approve_request_record(
     handle = _slugify(_claim)
     existing_active = await registry.get_by_handle(handle, status="active")
     if existing_active is not None:
+        # The handle already maps to an ACTIVE identity. In the multi-project
+        # model (taOS #1862) this is NOT a hard collision when the approval is
+        # for a project-scoped grant: instead of 409ing, ADD the existing agent
+        # to the new project (reuse its identity + token, do not re-register).
+        # A non-project approval colliding on a handle is still a genuine
+        # identity collision and stays a 409.
+        if effective_project and set(granted_scopes) & _PROJECT_SCOPES:
+            existing_cid = existing_active["canonical_id"]
+            token = mint_registry_token(
+                existing_cid,
+                private_pem,
+                user_id=decided_by,
+                framework=record["framework"],
+                project_id=effective_project,
+            )
+            await add_agent_to_project(
+                request,
+                canonical_id=existing_cid,
+                project_id=effective_project,
+                granted_scopes=granted_scopes,
+                decided_by=decided_by,
+            )
+            result = await auth_store.set_decision(
+                record["id"],
+                "accepted",
+                canonical_id=existing_cid,
+                token=token,
+                granted_scopes=granted_scopes,
+                decided_by=decided_by,
+            )
+            if result is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="request was decided concurrently; check current status",
+                )
+            await _retire_request_notification(request, record["id"])
+            return {"status": "accepted", "canonical_id": existing_cid}
         raise HTTPException(
             status_code=409,
             detail=(
@@ -500,6 +543,141 @@ async def approve_request_record(
 
     await _retire_request_notification(request, record["id"])
     return {"status": "accepted", "canonical_id": canonical_id}
+
+
+async def add_agent_to_project(
+    request: Request,
+    *,
+    canonical_id: str,
+    project_id: str,
+    granted_scopes: list[str],
+    decided_by: str,
+    is_lead: bool = False,
+) -> dict:
+    """Add an ALREADY-REGISTERED agent to ANOTHER project (taOS #1862).
+
+    This is the shared primitive for the multi-project identity model: it
+    writes the per-scope grants bound to *project_id*, adds the idempotent
+    project_members row, ensures the a2a channel membership, and records the
+    relationship permission edge. It does NOT mint a new token or re-register
+    the agent: the identity is reused so one registry JWT spans every project
+    the agent holds a grant for.
+
+    Returns ``{"canonical_id": ..., "project_id": ..., "granted_scopes": ...}``.
+    """
+    grants_store = _get_grants_store(request)
+    rel_mgr = _get_relationships(request)
+
+    _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
+    _PROJECT_SCOPES = {"project_tasks"} | _CANVAS_SCOPES
+
+    # Write the grants bound to this project and the relationship edge.
+    for scope in granted_scopes:
+        await grants_store.add_grant(
+            canonical_id, scope, tier="once", project_id=project_id
+        )
+        await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
+
+    # If a project-scoped scope was granted, add the agent as a project member
+    # (PK (project_id, member_id) makes this naturally idempotent) and sync the
+    # a2a channel. Best-effort: a membership failure never blocks the grant,
+    # which already authorizes the agent for the project.
+    result: dict = {
+        "canonical_id": canonical_id,
+        "project_id": project_id,
+        "granted_scopes": list(granted_scopes),
+        "is_lead": bool(is_lead),
+    }
+    if set(granted_scopes) & _PROJECT_SCOPES:
+        try:
+            pstore = getattr(request.app.state, "project_store", None)
+            if pstore is not None:
+                granted_canvas = set(granted_scopes) & _CANVAS_SCOPES
+                role = "lead" if is_lead else "member"
+                if "project_tasks" in granted_scopes or granted_canvas:
+                    await pstore.add_member(
+                        project_id=project_id,
+                        member_id=canonical_id,
+                        member_kind="native",
+                        role=role,
+                    )
+                    if granted_canvas:
+                        await pstore.set_member_canvas(
+                            project_id=project_id,
+                            member_id=canonical_id,
+                            can_read=("canvas_read" in granted_canvas),
+                            can_write=("canvas_write" in granted_canvas),
+                        )
+                    if "project_tasks" in granted_scopes:
+                        from tinyagentos.projects.a2a import ensure_a2a_channel
+
+                        await ensure_a2a_channel(
+                            request.app.state.chat_channels,
+                            pstore,
+                            project_id,
+                            config=getattr(request.app.state, "config", None),
+                        )
+        except Exception:  # noqa: BLE001 - membership is best-effort
+            logger.warning(
+                "add_agent_to_project: could not sync %s membership/a2a for project %s",
+                canonical_id,
+                project_id,
+                exc_info=True,
+            )
+    return result
+
+
+@router.post("/api/projects/{project_id}/members/assign-agent")
+async def assign_agent_to_project(
+    request: Request,
+    project_id: str,
+    body: AssignAgentBody,
+    user: CurrentUser = Depends(current_user),
+):
+    """Admin route: assign an EXISTING agent (by canonical_id) to a project.
+
+    The Agents-app UI (a later slice) uses this to add an already-registered
+    agent to another project without re-registering it or minting a new token.
+    Writes the per-scope grants bound to the project, the idempotent
+    project_members row, and ensures a2a channel membership.
+
+    Owner-or-admin gated on the project like the invite mint route.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    pstore = getattr(request.app.state, "project_store", None)
+    if pstore is None:
+        raise HTTPException(status_code=500, detail="project store unavailable")
+    project = await pstore.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    require_owner_or_admin(user, project["user_id"])
+
+    # Every granted scope must be in the closed vocabulary.
+    unknown = sorted(set(body.scopes) - VALID_SCOPES)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}",
+        )
+
+    registry = _get_registry_store(request)
+    existing = await registry.get(body.canonical_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=404, detail="agent canonical_id not found in the registry"
+        )
+
+    result = await add_agent_to_project(
+        request,
+        canonical_id=body.canonical_id,
+        project_id=project_id,
+        granted_scopes=body.scopes,
+        decided_by=user.user_id,
+        is_lead=body.is_lead,
+    )
+    return result
 
 
 async def _do_approve(request: Request, request_id: str, body: ApproveBody, user):
