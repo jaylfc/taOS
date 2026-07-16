@@ -32,8 +32,16 @@ CREATE TABLE IF NOT EXISTS project_canvas_elements (
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_project ON project_canvas_elements(project_id, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_canvas_updated ON project_canvas_elements(project_id, updated_at);
-CREATE INDEX IF NOT EXISTS idx_canvas_element ON project_canvas_elements(project_id, element_id);
 """
+# The element_id index references a column added by _post_init on the migration
+# path, so it CANNOT live in SCHEMA: BaseStore runs SCHEMA (executescript)
+# before _post_init, and on an existing pre-element_id table the index creation
+# crashes ("no such column: element_id") before the migration can add it,
+# bricking controller boot. Created in _post_init after the ALTER instead.
+_CANVAS_ELEMENT_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_canvas_element "
+    "ON project_canvas_elements(project_id, element_id)"
+)
 
 _CANVAS_JSON_FIELDS = ("payload",)
 # Ideas-board kinds (text, mermaid, flowchart, mindmap_edge) carry their
@@ -84,6 +92,10 @@ class ProjectCanvasStore(BaseStore):
             await self._db.commit()
         except Exception:
             pass
+        # Created here (not in SCHEMA) so the column exists first on the
+        # migration path. Idempotent (IF NOT EXISTS).
+        await self._db.execute(_CANVAS_ELEMENT_INDEX)
+        await self._db.commit()
 
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
         if self._broker is not None:
