@@ -372,7 +372,9 @@ Environment=HAILO_OLLAMA_PORT=$HAILO_OLLAMA_PORT
 # hailo-ollama can leave a bare orphan process listening on the port if it
 # crashes during model load (the adopt-an-orphan lesson from PR #1755 for
 # rkllama). Reap any such process before (re)start so the bind cannot fail.
-ExecStartPre=-/usr/bin/pkill -9 -f 'hailo-ollama'
+# Match the exact server invocation, not any command line merely containing
+# "hailo-ollama" (which would kill an editor or tail open on these files).
+ExecStartPre=-/usr/bin/pkill -9 -f "$HAILO_OLLAMA_BIN serve --port $HAILO_OLLAMA_PORT"
 ExecStart=$exec_start
 Restart=always
 RestartSec=5
@@ -410,7 +412,13 @@ already_installed() {
     #   * systemd unit enabled
     #   * HTTP API responding with a "models" body
     [[ -d "$HAILO_OLLAMA_DIR/.git" ]] || return 1
-    [[ "$(run_as_user git -C "$HAILO_OLLAMA_DIR" rev-parse HEAD 2>/dev/null || true)" == "$HAILO_OLLAMA_REF" ]] || return 1
+    # Compare resolved commits, not HEAD-vs-ref-name: HAILO_OLLAMA_REF is usually
+    # a branch/tag ("main"), so comparing it to rev-parse HEAD (a SHA) never
+    # matched and every re-run needlessly re-fetched and re-installed.
+    local _head _want
+    _head="$(run_as_user git -C "$HAILO_OLLAMA_DIR" rev-parse HEAD 2>/dev/null || true)"
+    _want="$(run_as_user git -C "$HAILO_OLLAMA_DIR" rev-parse "${HAILO_OLLAMA_REF}^{commit}" 2>/dev/null || true)"
+    [[ -n "$_head" && "$_head" == "$_want" ]] || return 1
     systemctl is-enabled hailo-ollama.service >/dev/null 2>&1 || return 1
     local tags
     tags="$(curl -fs "http://localhost:$HAILO_OLLAMA_PORT/api/tags" 2>/dev/null || true)"
