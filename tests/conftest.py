@@ -305,6 +305,10 @@ async def client(app, tmp_data_dir):
     if project_store._db is not None:
         await project_store.close()
     await project_store.init()
+    project_invites = app.state.project_invites
+    if project_invites._db is not None:
+        await project_invites.close()
+    await project_invites.init()
     board_audit = app.state.board_audit
     if board_audit._db is not None:
         await board_audit.close()
@@ -426,6 +430,7 @@ async def client(app, tmp_data_dir):
     await routine_store.close()
     await board_audit.close()
     await project_store.close()
+    await project_invites.close()
     await chat_channels.close()
     await chat_messages.close()
     await expert_agents.close()
