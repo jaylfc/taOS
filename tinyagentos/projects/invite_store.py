@@ -17,7 +17,7 @@ _PENDING_CAP = 10
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_invites (
     invite_id            TEXT PRIMARY KEY,
-    project_id           TEXT NOT NULL,
+    project_id           TEXT,
     pin_hash             TEXT NOT NULL,
     scopes               TEXT NOT NULL,
     approval_mode        TEXT NOT NULL,
@@ -99,7 +99,7 @@ class ProjectInviteStore(BaseStore):
     def _generate_pin(self) -> str:
         return f"{secrets.randbelow(10_000):04d}"
 
-    async def mint(self, *, project_id, scopes: list[str], approval_mode: str,
+    async def mint(self, *, project_id=None, scopes: list[str], approval_mode: str,
                    check_interval_secs: int, created_by: str) -> dict:
         if self._db is None:
             raise RuntimeError("ProjectInviteStore not initialised")
