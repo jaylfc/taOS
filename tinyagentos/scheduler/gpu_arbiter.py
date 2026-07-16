@@ -208,10 +208,26 @@ class GpuArbiter:
             gpu_info = worker.hardware.get("gpu", {}) if isinstance(worker.hardware, dict) else {}
             gpu_model = gpu_info.get("model", "") or ""
             cc = gpu_info.get("compute_cap", "") or ""
-            if required_gpu_arch in gpu_model or required_gpu_arch in cc:
-                if resource_id is None or resource_id.startswith(worker.name + ":"):
+            # compute_cap is the authoritative token (e.g. "sm_86") — match it
+            # exactly so "sm_8" cannot prefix-match "sm_86"; the freeform model
+            # string keeps a substring match for vendor-name requirements.
+            if required_gpu_arch == cc or required_gpu_arch in gpu_model:
+                if resource_id is None or self._resource_on_worker(resource_id, worker.name):
                     return True, None
         return False, f"no online worker with GPU architecture {required_gpu_arch}"
+
+    def _resource_on_worker(self, resource_id: str, worker_name: str) -> bool:
+        """True when *resource_id* names a resource on *worker_name*.
+
+        Uses the cluster manager's exact parse when available so that
+        ``gpu-node`` does not match ``gpu-node-2`` (the same prefix-collision
+        #1726 fixed on the lease paths); falls back to a colon-delimited match.
+        """
+        if self._cluster_manager is not None:
+            parsed = self._cluster_manager._parse_resource_id(resource_id)
+            if parsed is not None:
+                return parsed[0] == worker_name
+        return resource_id.startswith(worker_name + ":")
 
     # ── Reservation helpers (TOCTOU fix) ──────────────────────────────
 
@@ -361,7 +377,7 @@ class GpuArbiter:
                 continue
             worker_leases = sum(
                 l.required_vram_mb for l in leases
-                if l.resource_id.startswith(worker.name + ":") and l.required_vram_mb > 0
+                if self._resource_on_worker(l.resource_id, worker.name) and l.required_vram_mb > 0
             )
             available = worker.free_vram_mb - worker_leases - reserved
             if available >= required_vram_mb:
