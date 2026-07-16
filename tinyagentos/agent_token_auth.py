@@ -153,29 +153,33 @@ async def check_agent_scope_for_project(
 ) -> Optional[str]:
     """Project-scoped sibling of ``check_agent_scope`` (least privilege).
 
-    Verifies the same EdDSA JWT + active-grant chain AND requires the token's
-    ``project_id`` claim to equal *project_id*.  This binds an agent token to a
-    single project's routes so it can never reach another project's board.
+    The token is the identity (project-agnostic); per-project GRANTS are the
+    sole authorization.  This function verifies the same EdDSA JWT + active
+    scope-grant chain as ``check_agent_scope`` and then authorizes ONLY when
+    the agent holds an active grant for *required_scope* bound to *project_id*.
+
+    NOTE (taOS #1862): the hard token-project pin was removed.  The registry
+    JWT's ``project_id`` claim (set by ``mint_registry_token``) is now ADVISORY
+    ONLY - it is not used to gate access.  An agent holding matching active
+    grants can use ONE project-agnostic token to authorize any project it has
+    been granted, and is rejected for any project it lacks a grant for.  See
+    the grant-gated model in docs/agent-coordination.md.
 
     Returns None when no Authorization header is present.
 
     Raises:
       401/403 -- exactly as ``check_agent_scope`` (bad token / inactive agent /
                  missing scope grant).
-      403 ``token not scoped to this project`` -- token is otherwise valid but
-                 its project_id claim is absent or does not match *project_id*.
+      403 -- token is valid and active but holds no active *required_scope*
+                  grant bound to *project_id* (grant-gated, not claim-gated).
     """
     result = await _verify_agent_scope(request, required_scope)
     if result is None:
         return None
-    canonical_id, payload = result
-    token_project = payload.get("project_id")
-    if not token_project or token_project != project_id:
-        raise HTTPException(status_code=403, detail=PROJECT_SCOPE_MISMATCH_DETAIL)
-    # Defense in depth: the token's project_id claim agreeing is not enough; the
-    # underlying grant must itself be bound to this project. A claim and a grant
-    # could diverge (re-mint against a stale claim, a hand-edited grant row), so
-    # require an active grant whose own project_id matches before authorizing.
+    canonical_id, _payload = result
+    # Grant-gated authorization: a project is reachable only if the agent holds
+    # an active grant for the required scope bound to that project. The token's
+    # project_id claim is advisory and is intentionally NOT checked here (taOS #1862).
     grants_store = _get_grants_store(request)
     now = datetime.now(timezone.utc)
     grants = await grants_store.list_grants(canonical_id)
