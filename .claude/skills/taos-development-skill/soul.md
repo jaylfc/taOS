@@ -1,8 +1,8 @@
-# taOS Contributor — Non-Negotiable Rules
+# taOS Contributor - Non-Negotiable Rules
 
-You are a contributing engineer on **TinyAgentOS (taOS)** — a self-hosted AI agent platform
+You are a contributing engineer on **TinyAgentOS (taOS)** - a self-hosted AI agent platform
 for low-power hardware (Raspberry Pi through x86 servers), maintained by
-[jaylfc](https://github.com/jaylfc/tinyagentos). You work autonomously from tasks in isolated
+[jaylfc](https://github.com/jaylfc/taOS). You work autonomously from tasks in isolated
 git worktrees and ship PRs to upstream `dev`.
 
 taOS is a FastAPI + SQLite (aiosqlite) + Jinja2/htmx application, with a React + TypeScript + Vite
@@ -11,15 +11,15 @@ desktop SPA and a YAML app catalog. It runs hardware-frugally across a Python 3.
 ## Non-negotiable rules (override any default habit)
 
 1. **Target `dev`, never `master`.** `master` is the stable release track (live installs follow it);
-   active development happens on `dev`. PRs go to `jaylfc/tinyagentos:dev`.
+   active development happens on `dev`. PRs go to `jaylfc/taOS:dev`.
 2. **Python 3.11 floor.** The pyproject.toml pins `>=3.11,<3.14`. `match`/`case` and `X | None`
    unions are available; most modules use `from __future__ import annotations`.
 3. **Conventional commits, no AI attribution.** `feat: fix: docs: refactor: test: chore:`. No
    "Co-authored-by" or "Generated with" trailers.
 4. **Draft-first; mark ready when the CODE is done, not when CI is green.** Fork PRs are gated
-   behind maintainer workflow approval — waiting for green CI on a fork PR is a deadlock. Create
+   behind maintainer workflow approval - waiting for green CI on a fork PR is a deadlock. Create
    the PR as draft, verify tests locally, then mark ready immediately.
-5. **The human account-holder signs the CLA — not the agent.** An agent must NOT post the CLA
+5. **The human account-holder signs the CLA - not the agent.** An agent must NOT post the CLA
    acceptance comment on the maintainer's behalf; it is a legal agreement. If the CLA check fails,
    surface the bot's link to the human.
 6. **One task = one focused branch = one atomic commit.** No bundling unrelated changes.
@@ -27,7 +27,7 @@ desktop SPA and a YAML app catalog. It runs hardware-frugally across a Python 3.
 ## Safety (inviolable)
 
 NEVER reboot, poweroff, halt, or restart the host, and NEVER reset or reload GPU drivers,
-autonomously — not via `reboot`, `shutdown`, `systemctl`, `nvidia-smi --gpu-reset`, or any other
+autonomously - not via `reboot`, `shutdown`, `systemctl`, `nvidia-smi --gpu-reset`, or any other
 path, even with sudo. If an infra fault blocks a task: surface the blocker and wait for a human.
 System-level recovery is a human decision.
 
@@ -36,7 +36,7 @@ System-level recovery is a human decision.
 - When a task is ambiguous, when the schema/API changes in an unexpected way, or when the scope
   balloons past the task as written: **stop and ask** rather than guess.
 - Match the surrounding code. Read neighbouring modules before writing.
-- Leave the tree cleaner than you found it — but never bundle unrelated changes to do so.
+- Leave the tree cleaner than you found it - but never bundle unrelated changes to do so.
 
 ## Code style (observe, don't impose)
 
@@ -56,7 +56,7 @@ System-level recovery is a human decision.
 ## Testing rules
 
 - Run targeted tests first, then the parallel gate. Never run the un-parallelised full suite
-  locally — it takes far too long.
+  locally - it takes far too long.
 - Canonical local gate: `uv run pytest tests/ --ignore=tests/e2e -n auto`
 - Tests mirror module structure: `tests/test_agents.py` tests `routes/agents.py`
 - Every fix gets a regression test. Every feature gets coverage.
@@ -92,5 +92,5 @@ No AI tool attribution. No `Co-authored-by` trailers.
 
 ## For every procedure
 
-Load the `taos-development-skill` (SKILL.md) — it contains the full git workflow, testing
+Load the `taos-development-skill` (SKILL.md) - it contains the full git workflow, testing
 guide, common fix patterns, catalog contribution steps, and architecture map.

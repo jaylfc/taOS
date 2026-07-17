@@ -1,15 +1,15 @@
 ---
 name: taos-development-skill
-description: TinyAgentOS (taOS) architecture map, contribution workflow, testing guide, common fix patterns, and coding conventions. Load when contributing to taOS — PRs, bug fixes, features, catalog additions.
+description: TinyAgentOS (taOS) architecture map, contribution workflow, testing guide, common fix patterns, and coding conventions. Load when contributing to taOS - PRs, bug fixes, features, catalog additions.
 ---
 
 # taos-development-skill
 
 Procedures and architecture for contributing to
-[TinyAgentOS](https://github.com/jaylfc/tinyagentos). The non-negotiable rules live in
+[TinyAgentOS](https://github.com/jaylfc/taOS). The non-negotiable rules live in
 `soul.md`; this skill is the *how*.
 
-> uses approximate counts (~N) as rough orientation only — actual numbers rot fast in a
+> uses approximate counts (~N) as rough orientation only - actual numbers rot fast in a
 > living repo. Trust the tree, not tallies.
 
 ## Repository layout
@@ -37,21 +37,21 @@ Procedures and architecture for contributing to
 
 ## Key architectural patterns
 
-- **Routes** — each `routes/*.py` is an `APIRouter` registered in `app.py`'s `create_app()`.
+- **Routes** - each `routes/*.py` is an `APIRouter` registered in `app.py`'s `create_app()`.
   `async def` handlers, `await` all I/O, Pydantic request/response models. Routes access stores
-  via `request.app.state` (dependency injection set up in the app lifespan) — they do **not**
+  via `request.app.state` (dependency injection set up in the app lifespan) - they do **not**
   import stores directly. **No cross-importing between route modules.**
-- **Stores** — SQLite via `aiosqlite`, each with `init()`/`close()`, attached to
+- **Stores** - SQLite via `aiosqlite`, each with `init()`/`close()`, attached to
   `request.app.state` in the lifespan (`app.state.metrics`, `app.state.secrets`, …).
-- **Config** — `AppConfig` dataclass in `config.py`; YAML serialisation; async-locked saves via
+- **Config** - `AppConfig` dataclass in `config.py`; YAML serialisation; async-locked saves via
   `save_config_locked()`; typed backends (`rkllama`, `ollama`, `openai`, `anthropic`, …).
-- **Templates** — **Pico CSS utility classes only** (no other CSS framework). htmx (`hx-get`,
+- **Templates** - **Pico CSS utility classes only** (no other CSS framework). htmx (`hx-get`,
   `hx-target`, `hx-swap`) for dynamic partials. Semantic HTML; ARIA labels on interactive elements
-  without visible text. Templates are minimal — the frontend is a React SPA.
-- **Frontend** — React + TypeScript SPA in `desktop/`. Built with Vite: `npm run build` outputs
+  without visible text. Templates are minimal - the frontend is a React SPA.
+- **Frontend** - React + TypeScript SPA in `desktop/`. Built with Vite: `npm run build` outputs
   to `static/desktop/` (gitignored). For development: `npm run dev` serves with hot reload on
   port 5173. One concern per component; API calls in dedicated hooks or service files.
-- **Cluster** — worker registration, routing to remote nodes, model archive/promotion on capable
+- **Cluster** - worker registration, routing to remote nodes, model archive/promotion on capable
   hardware, GPU lease claim/release, hardware-tier compatibility.
 
 ## Git workflow
@@ -82,11 +82,11 @@ Procedures and architecture for contributing to
 
 5. **Open a draft PR, then mark ready immediately:**
    ```bash
-   gh pr create --repo jaylfc/tinyagentos --head <user>:<branch> --base dev --draft \
+   gh pr create --repo jaylfc/taOS --head <user>:<branch> --base dev --draft \
      --title "feat(scope): description" --body "Fixes #<issue>. Tests: N/N pass."
    gh pr ready <PR#>
    ```
-   Do NOT wait for CI — fork PRs are gated behind maintainer workflow approval.
+   Do NOT wait for CI - fork PRs are gated behind maintainer workflow approval.
    Mark ready once the CODE is done and local tests pass.
 
 6. **Never commit directly to `dev` or `master`.** All work happens on branches.
@@ -114,14 +114,14 @@ No AI tool attribution in commit messages.
 ## Testing
 
 Run **targeted tests first**, then the fast parallel gate. **Never run the un-parallelised full
-suite (`pytest tests/ -v`) locally** — it is massive and will take far too long. CI owns the
+suite (`pytest tests/ -v`) locally** - it is massive and will take far too long. CI owns the
 full 3.12–3.13 matrix (3.11 on nightly cron only).
 
 ```bash
-# 1. Targeted — the changed module + related tests, always first:
+# 1. Targeted - the changed module + related tests, always first:
 uv run pytest tests/test_<changed_module>.py tests/<related>/ -v
 
-# 2. Canonical local gate — parallel, run before marking ready:
+# 2. Canonical local gate - parallel, run before marking ready:
 uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
@@ -129,7 +129,7 @@ uv run pytest tests/ --ignore=tests/e2e -n auto
 
 - `conftest.py`: `tmp_data_dir` fixture creates temp config + SQLite
 - `app` fixture: `create_app(data_dir=tmp_data_dir)`
-- `client` fixture: `AsyncClient(transport=ASGITransport(app=app))` — async HTTP test client
+- `client` fixture: `AsyncClient(transport=ASGITransport(app=app))` - async HTTP test client
 - Module mirroring: `tests/test_agents.py` tests `routes/agents.py`
 - SPA stubs: conftest creates stub `index.html`/`sw.js` so tests don't need `npm run build`
 - E2E (Playwright) tests excluded from CI and local gate
@@ -140,13 +140,12 @@ uv run pytest tests/ --ignore=tests/e2e -n auto
 - GitHub Actions: `.github/workflows/ci.yml` in upstream repo
 - Uses `uv sync --frozen` and `pytest -n auto`
 
-## CLA — HUMAN signs
+## CLA - HUMAN signs
 
 taOS requires a Contributor License Agreement for first-time contributors. The CLA bot
 flags the PR with a `cla: fail` check.
 
-**The agent does NOT sign the CLA.** Posting the acceptance text accepts a legal agreement —
-that is the human account-holder's action, not the agent's.
+**The agent does NOT sign the CLA.** Posting the acceptance text accepts a legal agreement - that is the human account-holder's action, not the agent's.
 
 ### Procedure when `cla: fail` appears:
 
@@ -163,10 +162,10 @@ I have read the CLA Document and I hereby sign the CLA
 ## PR / CI flow (fork specifics)
 
 1. After creating the draft PR, check both `gh pr checks <PR#>` **and**
-   `gh run list --repo jaylfc/tinyagentos --branch <branch>` — the matrix run may not show in
+   `gh run list --repo jaylfc/taOS --branch <branch>` - the matrix run may not show in
    `pr checks` while it awaits approval.
 2. **If the CI run shows `action_required`**: the first-time-contributor workflow-approval policy
-   is blocking it. Surface this to the human — do not re-poll, re-push, or re-create the PR.
+   is blocking it. Surface this to the human - do not re-poll, re-push, or re-create the PR.
    Lightweight checks (CLA, Gitar, CodeRabbit) run independently and don't need approval.
 3. Once code is done and local tests pass, `gh pr ready`. Address review feedback with additional
    commits on the same branch. The maintainer merges upstream.
@@ -174,7 +173,7 @@ I have read the CLA Document and I hereby sign the CLA
 ## Post-Push Bot Review Cycle
 
 After pushing a PR and marking it ready, automated bots (Kilo, CodeRabbit) run reviews.
-Address their findings **before** surfacing the PR for human maintainer review — this
+Address their findings **before** surfacing the PR for human maintainer review - this
 eliminates the wasteful push→block→manual-check→unblock→re-dispatch cycle.
 
 ### Procedure
@@ -182,12 +181,12 @@ eliminates the wasteful push→block→manual-check→unblock→re-dispatch cycl
 1. **Push PR and mark ready.** Wait ~10 minutes for bot reviews to complete.
 2. **Pull bot comments:**
    ```bash
-   gh pr view <PR#> --repo jaylfc/tinyagentos --json comments --jq \
+   gh pr view <PR#> --repo jaylfc/taOS --json comments --jq \
      '.comments[] | select(.author.login == "kilo-code-bot" or .author.login == "coderabbitai[bot]")'
    ```
 3. **If issues found:** fix all findings in a single commit, re-run local tests, push,
    then go back to step 1 (max 2 cycles).
-4. **Only block for maintainer review when bots are clean** — 0 CRITICAL, 0 WARNING.
+4. **Only block for maintainer review when bots are clean** - 0 CRITICAL, 0 WARNING.
    If a SUGGESTION-only finding is genuinely not applicable, note the rationale in a
    PR comment before blocking.
 
@@ -279,7 +278,7 @@ controls which hardware profiles see the app as recommended.
   gate: `uv run pytest tests/ --ignore=tests/e2e -n auto`. CI handles the full matrix.
 - **CI may show `action_required` on every PR from a fork.** GitHub requires maintainer approval
   for workflow runs from first-time contributor forks. This can re-trigger on each new PR even after
-  previous PRs were approved — it's per-workflow-run, not per-contributor. Surface to the human;
+  previous PRs were approved - it's per-workflow-run, not per-contributor. Surface to the human;
   do NOT poll or re-push.
 - **No lint/format tooling is configured.** There is no `.pre-commit-config.yaml`, no
   `.ruff.toml`, and no `[tool.ruff]`, `[tool.black]`, or `[tool.mypy]` section in
@@ -290,7 +289,7 @@ controls which hardware profiles see the app as recommended.
 - **CONTRIBUTING.md** says Python 3.10+, but `pyproject.toml` requires `>=3.11,<3.14`.
   Python 3.11 is the effective floor.
 - **Routes do not import stores directly.** They access them via `request.app.state`.
-  This is a common mistake — check existing routes for the pattern.
+  This is a common mistake - check existing routes for the pattern.
 - **`static/desktop/` is gitignored.** The SPA build output is a generated artifact.
   The conftest in `tests/` stubs the SPA build output so backend tests don't need `npm run build`.
 
@@ -298,8 +297,8 @@ controls which hardware profiles see the app as recommended.
 
 ### Finding actionable issues
 1. Filter GitHub issues by `good first issue` or `help wanted` labels
-2. Check issue age — fresh issues (< 2 weeks) have highest chance of being unclaimed
-3. Read the issue body carefully — look for clear reproduction steps
+2. Check issue age - fresh issues (< 2 weeks) have highest chance of being unclaimed
+3. Read the issue body carefully - look for clear reproduction steps
 4. Check if anyone is already assigned
 
 ### Difficulty estimation
@@ -310,12 +309,12 @@ controls which hardware profiles see the app as recommended.
 ### Before starting work
 1. Sync from upstream: `git fetch origin dev`
 2. Verify the issue is still open and unassigned
-3. Comment on the issue: "Working on this — will open a draft PR"
+3. Comment on the issue: "Working on this - will open a draft PR"
 
 ## First-run setup
 
 ```bash
-git clone https://github.com/jaylfc/tinyagentos.git
+git clone https://github.com/jaylfc/taOS.git
 cd tinyagentos
 uv sync --extra dev
 cd desktop && npm install && npm run build && cd ..
