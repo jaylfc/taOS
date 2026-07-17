@@ -107,7 +107,7 @@ export function AssignAgentToProjectDialog({
       role="dialog"
       aria-modal="true"
       aria-label="Assign agent to project"
-      className="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-4"
     >
       <form
         onSubmit={onSubmit}
