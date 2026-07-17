@@ -92,7 +92,7 @@ describe("TaosAssistantPanel", () => {
     expect(screen.getByTestId("settings-modal")).toBeInTheDocument();
   });
 
-  it("last assistant message shows edit hint when not streaming", () => {
+  it("last assistant message shows edit button when not streaming", () => {
     useTaosAgentStore.setState({
       model: "qwen3",
       streaming: false,
@@ -102,10 +102,10 @@ describe("TaosAssistantPanel", () => {
       ],
     });
     render(<TaosAssistantPanel />);
-    expect(screen.getByText("click to edit")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /edit message/i })).toBeInTheDocument();
   });
 
-  it("no edit hint while streaming the last assistant message", () => {
+  it("no edit button while streaming the last assistant message", () => {
     useTaosAgentStore.setState({
       model: "qwen3",
       streaming: true,
@@ -115,10 +115,10 @@ describe("TaosAssistantPanel", () => {
       ],
     });
     render(<TaosAssistantPanel />);
-    expect(screen.queryByText("click to edit")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /edit message/i })).not.toBeInTheDocument();
   });
 
-  it("clicking last assistant bubble enters edit mode", () => {
+  it("clicking edit button enters edit mode", () => {
     useTaosAgentStore.setState({
       model: "qwen3",
       streaming: false,
@@ -128,9 +128,7 @@ describe("TaosAssistantPanel", () => {
       ],
     });
     render(<TaosAssistantPanel />);
-    const bubble = screen.getByText("Old response").closest('[class*="cursor-pointer"]');
-    expect(bubble).not.toBeNull();
-    fireEvent.click(bubble!);
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
     expect(screen.getByRole("textbox", { name: /edit agent message/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /save edit/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /cancel edit/i })).toBeInTheDocument();
@@ -146,8 +144,7 @@ describe("TaosAssistantPanel", () => {
       ],
     });
     render(<TaosAssistantPanel />);
-    const bubble = screen.getByText("Old response").closest('[class*="cursor-pointer"]');
-    fireEvent.click(bubble!);
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
     const textarea = screen.getByRole("textbox", { name: /edit agent message/i });
     fireEvent.change(textarea, { target: { value: "Corrected!" } });
     fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
@@ -164,7 +161,7 @@ describe("TaosAssistantPanel", () => {
       ],
     });
     render(<TaosAssistantPanel />);
-    fireEvent.click(screen.getByText("Original").closest('[class*="cursor-pointer"]')!);
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
     fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
     expect(useTaosAgentStore.getState().messages[1].content).toBe("Original");
   });
@@ -179,9 +176,25 @@ describe("TaosAssistantPanel", () => {
       ],
     });
     render(<TaosAssistantPanel />);
-    fireEvent.click(screen.getByText("Original").closest('[class*="cursor-pointer"]')!);
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
     const textarea = screen.getByRole("textbox", { name: /edit agent message/i });
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(useTaosAgentStore.getState().messages[1].content).toBe("Original");
+  });
+
+  it("save is disabled when textarea is emptied", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: false,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Original", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /edit message/i }));
+    const textarea = screen.getByRole("textbox", { name: /edit agent message/i });
+    fireEvent.change(textarea, { target: { value: "   " } });
+    expect(screen.getByRole("button", { name: /save edit/i })).toBeDisabled();
   });
 });
