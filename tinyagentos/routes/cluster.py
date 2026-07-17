@@ -1201,11 +1201,11 @@ async def _do_single_worker_update(cluster, worker) -> dict:
     ``"drain_cancelled": bool`` (whether ``cancel_drain`` was actually called).
     On success: ``{"success": True, "worker": ..., "status": "updating", ...}``.
     On failure: ``{"success": False, "worker": ..., "error": "..."}``.
-    Never raises — all exceptions are caught and converted into error dicts.
+    Never raises -- all exceptions are caught and converted into error dicts.
     """
     name = worker.name
 
-    # Step 1: Begin draining (with exception isolation — drain_worker
+    # Step 1: Begin draining (with exception isolation -- drain_worker
     # may raise from notification or background-task failures).
     try:
         drain_result = await cluster.drain_worker(name, graceful=True)
@@ -1338,12 +1338,12 @@ async def update_worker(request: Request, name: str):
 
 @router.post("/api/cluster/workers/update-all")
 async def update_all_workers(request: Request):
-    """Rolling update of the entire worker fleet — one at a time (taOS #1876).
+    """Rolling update of the entire worker fleet -- one at a time (taOS #1876).
 
     Updates every online worker sequentially, draining and updating at most
     one worker at any moment so the fleet never fully drains. Skips the
     ``local`` worker (the controller itself) and any worker that is not
-    ``online``. Workers already ``draining`` are not counted as skipped — they
+    ``online``. Workers already ``draining`` are not counted as skipped -- they
     are likely mid-update from a prior action.
 
     If one worker's update fails, the roll continues to the remaining workers.
@@ -1408,7 +1408,7 @@ async def update_all_workers(request: Request):
                     break
             else:
                 # Timeout: worker didn't come back online in time. Log it but
-                # continue the roll — the worker's status will resolve on its own.
+                # continue the roll -- the worker's status will resolve on its own.
                 logger.warning(
                     "update-all: worker '%s' did not re-register within %ds timeout; "
                     "continuing roll",

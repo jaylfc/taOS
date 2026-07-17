@@ -614,7 +614,7 @@ async def _register_workers(app, *names):
 
 
 async def _fake_sleep(seconds):
-    """No-op sleep for tests — makes re-registration polling instant."""
+    """No-op sleep for tests -- makes re-registration polling instant."""
     pass
 
 
@@ -671,7 +671,7 @@ async def test_update_all_workers_happy_path(client, app, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_update_all_workers_one_fails_others_continue(client, app, monkeypatch):
-    """w1 fails with ConnectError, w2 succeeds — roll continues."""
+    """w1 fails with ConnectError, w2 succeeds -- roll continues."""
     import asyncio as _asyncio
     await _register_workers(app, "w1", "w2")
 
@@ -812,10 +812,10 @@ async def test_update_all_workers_no_online_workers(client, app):
 
 @pytest.mark.asyncio
 async def test_update_all_workers_draining_excluded_from_skipped(client, app, monkeypatch):
-    """Draining workers are not counted as skipped — they are mid-update."""
+    """Draining workers are not counted as skipped -- they are mid-update."""
     import asyncio as _asyncio
     await _register_workers(app, "w1", "w2")
-    # Set w2 to draining — it should NOT appear in skipped
+    # Set w2 to draining -- it should NOT appear in skipped
     app.state.cluster_manager._workers["w2"].status = "draining"  # noqa: SLF001
 
     async def _mock_do(cluster, worker):
@@ -841,7 +841,7 @@ async def test_update_all_workers_draining_excluded_from_skipped(client, app, mo
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["updated"] == ["w1"]
-    # w2 is draining — NOT skipped
+    # w2 is draining -- NOT skipped
     assert "w2" not in data["skipped"]
     assert data["total_targets"] == 1  # only w1 was online
 
@@ -912,7 +912,7 @@ async def test_update_all_workers_re_register_timeout(client, app, monkeypatch):
             "drain_cancelled": False,
         }
 
-    # get_worker always returns "draining" — simulates worker never coming back
+    # get_worker always returns "draining" -- simulates worker never coming back
     monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(
         "tinyagentos.routes.cluster._do_single_worker_update",
@@ -922,7 +922,7 @@ async def test_update_all_workers_re_register_timeout(client, app, monkeypatch):
     resp = await client.post("/api/cluster/workers/update-all")
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    # Both workers should still be listed as updated — the timeout just logs a warning
+    # Both workers should still be listed as updated -- the timeout just logs a warning
     assert sorted(data["updated"]) == ["w1", "w2"]
     assert data["failed"] == []
     assert data["total_targets"] == 2
