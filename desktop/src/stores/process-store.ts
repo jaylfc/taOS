@@ -40,6 +40,7 @@ interface ProcessStore {
   updateSize: (id: string, w: number, h: number) => void;
   updateBounds: (id: string, x: number, y: number, w: number, h: number) => void;
   snapWindow: (id: string, snap: SnapPosition) => void;
+  reclampAllWindows: () => void;
   runningAppIds: () => string[];
 }
 
@@ -241,6 +242,26 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
       windows: s.windows.map((w) =>
         w.id === id ? { ...w, snapped: snap } : w
       ),
+    }));
+  },
+
+  // Re-clamp every visible, non-maximized, non-snapped window after a viewport
+  // resize (e.g. moving the browser window from an ultrawide monitor to a
+  // 16:9 laptop screen).  Maximized windows already fill the available area
+  // and snapped windows are recomputed reactively; this only adjusts windows
+  // with stored absolute positions that may now be off-screen.
+  reclampAllWindows() {
+    set((s) => ({
+      windows: s.windows.map((w) => {
+        if (w.minimized || w.maximized || w.snapped) return w;
+        const safe = safeBounds(w.position, w.size);
+        // safeBounds is idempotent — if the window is already on-screen it
+        // returns the same position and size.
+        if (safe.position.x === w.position.x && safe.position.y === w.position.y && safe.size.w === w.size.w && safe.size.h === w.size.h) {
+          return w;
+        }
+        return { ...w, ...safe };
+      }),
     }));
   },
 

@@ -89,3 +89,105 @@ describe("process-store openWindow", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("process-store reclampAllWindows", () => {
+  beforeEach(() => {
+    reset();
+    // Set a known viewport size so safeBounds clamping is deterministic.
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 768, writable: true, configurable: true });
+  });
+
+  it("clamps an off-screen window back into the viewport", () => {
+    // Open a window at a position that would be reachable on a big monitor
+    // but simulate it being far outside the current viewport.
+    useProcessStore.getState().openWindow("files", { w: 600, h: 400 });
+    // Directly set a position way off-screen to the right.
+    const winId = useProcessStore.getState().windows[0].id;
+    useProcessStore.setState((s) => ({
+      windows: s.windows.map((w) =>
+        w.id === winId ? { ...w, position: { x: 2000, y: 100 } } : w
+      ),
+    }));
+    // Before clamping: window is unreachable.
+    const before = useProcessStore.getState().windows[0];
+    expect(before.position.x).toBe(2000);
+
+    useProcessStore.getState().reclampAllWindows();
+
+    const after = useProcessStore.getState().windows[0];
+    // After clamping: x should be within the viewport (clamped to right edge).
+    expect(after.position.x).toBeLessThan(1024);
+    expect(after.position.x).toBeGreaterThan(0);
+  });
+
+  it("leaves a window already on-screen unchanged", () => {
+    useProcessStore.getState().openWindow("files", { w: 600, h: 400 });
+    const winId = useProcessStore.getState().windows[0].id;
+    useProcessStore.setState((s) => ({
+      windows: s.windows.map((w) =>
+        w.id === winId ? { ...w, position: { x: 200, y: 150 } } : w
+      ),
+    }));
+
+    useProcessStore.getState().reclampAllWindows();
+
+    const after = useProcessStore.getState().windows[0];
+    expect(after.position.x).toBe(200);
+    expect(after.position.y).toBe(150);
+  });
+
+  it("skips minimized windows", () => {
+    useProcessStore.getState().openWindow("files", { w: 600, h: 400 });
+    const winId = useProcessStore.getState().windows[0].id;
+    useProcessStore.getState().minimizeWindow(winId);
+    useProcessStore.setState((s) => ({
+      windows: s.windows.map((w) =>
+        w.id === winId ? { ...w, position: { x: 2000, y: 100 } } : w
+      ),
+    }));
+
+    useProcessStore.getState().reclampAllWindows();
+
+    // Minimized window should stay at its stored position (off-screen).
+    const after = useProcessStore.getState().windows[0];
+    expect(after.position.x).toBe(2000);
+    expect(after.minimized).toBe(true);
+  });
+
+  it("skips maximized windows", () => {
+    useProcessStore.getState().openWindow("files", { w: 600, h: 400 });
+    const winId = useProcessStore.getState().windows[0].id;
+    useProcessStore.getState().maximizeWindow(winId);
+    useProcessStore.setState((s) => ({
+      windows: s.windows.map((w) =>
+        w.id === winId ? { ...w, position: { x: 2000, y: 100 } } : w
+      ),
+    }));
+
+    useProcessStore.getState().reclampAllWindows();
+
+    // Maximized window keeps its stored position (viewport handles display).
+    const after = useProcessStore.getState().windows[0];
+    expect(after.position.x).toBe(2000);
+    expect(after.maximized).toBe(true);
+  });
+
+  it("skips snapped windows", () => {
+    useProcessStore.getState().openWindow("files", { w: 600, h: 400 });
+    const winId = useProcessStore.getState().windows[0].id;
+    useProcessStore.getState().snapWindow(winId, "left");
+    useProcessStore.setState((s) => ({
+      windows: s.windows.map((w) =>
+        w.id === winId ? { ...w, position: { x: 2000, y: 100 } } : w
+      ),
+    }));
+
+    useProcessStore.getState().reclampAllWindows();
+
+    // Snapped window keeps stored position; display is handled reactively.
+    const after = useProcessStore.getState().windows[0];
+    expect(after.position.x).toBe(2000);
+    expect(after.snapped).toBe("left");
+  });
+});

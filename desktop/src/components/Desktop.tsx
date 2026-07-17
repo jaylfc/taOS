@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { FolderPlus, Image, Monitor, Settings, LayoutGrid, Layers, BookmarkPlus } from "lucide-react";
 import { useProcessStore } from "@/stores/process-store";
 import { useThemeStore } from "@/stores/theme-store";
@@ -25,7 +25,7 @@ type ContextMenuState = {
 
 export function Desktop() {
   const windows = useProcessStore((s) => s.windows);
-  const { openWindow } = useProcessStore();
+  const { openWindow, reclampAllWindows } = useProcessStore();
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
   const wallpaperMobileImage = useThemeStore((s) => s.wallpaperMobileImage);
   const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
@@ -78,6 +78,23 @@ export function Desktop() {
   // (open apps, move/arrange windows) by pushing commands the controller streams
   // here. Re-dispatches to the taos:open-app / taos:window receivers above.
   useDesktopCommandStream();
+
+  // When the viewport shrinks (e.g. moving the browser from an ultrawide
+  // monitor to a 16:9 laptop), windows with absolute positions can end up
+  // off-screen and unreachable.  Re-clamp every visible window after each
+  // resize, debounced so we don't thrash during a drag-resize.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => reclampAllWindows(), 150);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [reclampAllWindows]);
 
   const menuItems: MenuItem[] = [
     {
