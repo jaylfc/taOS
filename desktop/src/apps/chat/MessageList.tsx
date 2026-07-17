@@ -196,12 +196,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     scrollToBottom: () => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     },
-  }));
+  }), []);
 
-  // Expose scroll-to-latest via ref
+  // Expose scroll-to-latest via ref — syncs parent's atBottom/newCount state
   useEffect(() => {
-    if (messagesEndRef.current && messages.length > 0) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (messages.length > 0) {
+      onScrollToLatest();
     }
   }, []); // eslint-disable-line
 
@@ -325,7 +325,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
       <div
         ref={messageListRef}
         onScroll={onScroll}
-        className={`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-0.5 select-text ${
+        className={`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-0.5 select-text message-list-drop-target ${
           dropTarget.isOver
             ? "ring-2 ring-sky-400/60 ring-inset bg-sky-500/5"
             : dropTarget.isValidTarget
