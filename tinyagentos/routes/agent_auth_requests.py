@@ -297,6 +297,7 @@ async def approve_request_record(
     effective_project: str | None,
     decided_by: str,
     project_id: str | None = None,
+    display_name: str | None = None,
 ) -> dict:
     """Register an agent, mint its token, write grants + relationships +
     membership + a2a sync, and record the decision.
@@ -365,7 +366,10 @@ async def approve_request_record(
     # which could still carry the "@", so display_name is always a clean,
     # non-empty value.
     _claim = record["identity_claim"].strip().removeprefix("@").strip()
-    display_name = _claim or record["framework"]
+    # An explicit display_name (e.g. the OS-level invite alias) wins so the human
+    # label is preserved even when the handle is slugified/deduped; otherwise fall
+    # back to the cleaned claim, then the framework name.
+    display_name = (display_name or "").strip() or _claim or record["framework"]
 
     handle = _slugify(_claim)
     existing_active = await registry.get_by_handle(handle, status="active")

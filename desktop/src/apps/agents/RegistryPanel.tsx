@@ -414,6 +414,16 @@ function GovernanceAuditPanel({ isAdmin }: { isAdmin: boolean }) {
 /*  InviteExternalAgentPicker                                           */
 /* ------------------------------------------------------------------ */
 
+/** OS-level (project-less) mint result: the redeemable URL + PIN. */
+interface OsInviteResult {
+  invite_id: string;
+  pin: string;
+}
+
+function osInviteUrl(inviteId: string): string {
+  return `${window.location.origin}/i/${inviteId}`;
+}
+
 function InviteExternalAgentPicker({
   onCancel,
   onPick,
@@ -424,7 +434,11 @@ function InviteExternalAgentPicker({
   const [projects, setProjects] = useState<import("@/lib/projects").Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [alias, setAlias] = useState("");
+  // "" is the default "None" option: available in chat, assign to projects later.
   const [selected, setSelected] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<OsInviteResult | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -436,7 +450,6 @@ function InviteExternalAgentPicker({
         if (!active) return;
         const list: import("@/lib/projects").Project[] = Array.isArray(rows) ? rows : [];
         setProjects(list);
-        if (list.length > 0) setSelected((prev) => prev || list[0]!.id);
       })
       .catch((e: unknown) => {
         if (active) setErr(e instanceof Error ? e.message : "Failed to load projects");
@@ -449,59 +462,181 @@ function InviteExternalAgentPicker({
     };
   }, []);
 
+  const copy = (text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+  };
+
+  const mintOsInvite = async () => {
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/agents/invites", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scopes: ["a2a_send", "a2a_receive"],
+          approval_mode: "auto",
+          check_interval_secs: 1800,
+          display_name: alias.trim() || null,
+        }),
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => r.statusText);
+        throw new Error(`${r.status}: ${text}`);
+      }
+      const data = (await r.json()) as OsInviteResult;
+      setResult(data);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    if (selected) {
+      // A project was chosen: chain to the existing project-scoped mint UI.
+      onPick(selected);
+      return;
+    }
+    void mintOsInvite();
+  };
+
+  const instruction = result
+    ? `Fetch ${osInviteUrl(result.invite_id)} and redeem with PIN ${result.pin}; follow the returned JSON instructions to join taOS as an external agent.`
+    : "";
+
   return createPortal(
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Invite external agent to project"
+      aria-label="Invite external agent"
       className="fixed inset-0 z-[10001] bg-black/50 flex items-center justify-center p-4"
     >
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (selected) onPick(selected);
-        }}
-        className="bg-zinc-900 p-4 rounded shadow w-full max-w-md space-y-3"
-      >
-        <h3 className="text-lg font-semibold">Invite external agent</h3>
-        {loading ? (
-          <div className="text-xs text-zinc-500">Loading projects…</div>
-        ) : err ? (
-          <p role="alert" className="text-red-400 text-xs">{err}</p>
-        ) : (
-          <label className="block text-sm">
-            <span className="text-zinc-400">Project</span>
-            <select
-              value={selected}
-              onChange={(e) => setSelected(e.target.value)}
-              className="w-full mt-1 px-2 py-1 bg-zinc-800 rounded"
-              aria-label="Project to invite into"
-            >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || p.slug}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <div className="flex justify-end gap-2">
+      {result ? (
+        <section
+          className="bg-zinc-900 p-4 rounded shadow w-full max-w-lg space-y-3"
+          aria-label="Invite result"
+        >
+          <h3 className="text-lg font-semibold">Invite external agent</h3>
+          <div className="space-y-1">
+            <div className="text-xs text-zinc-400">Invite URL</div>
+            <div className="flex items-center gap-2">
+              <code className="text-sm break-all bg-zinc-800 rounded px-2 py-1 flex-1">
+                {osInviteUrl(result.invite_id)}
+              </code>
+              <button
+                type="button"
+                onClick={() => copy(osInviteUrl(result.invite_id))}
+                className="text-xs px-2 py-1 bg-zinc-800 rounded hover:bg-zinc-700"
+                aria-label="Copy invite URL"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs text-zinc-400">PIN (shown once)</div>
+            <div className="flex items-center gap-2">
+              <div className="text-4xl font-bold tracking-widest tabular-nums">{result.pin}</div>
+              <button
+                type="button"
+                onClick={() => copy(result.pin)}
+                className="text-xs px-2 py-1 bg-zinc-800 rounded hover:bg-zinc-700"
+                aria-label="Copy PIN"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs text-zinc-400">Agent instruction</div>
+            <div className="flex items-start gap-2">
+              <code className="text-xs break-all bg-zinc-800 rounded px-2 py-1 flex-1">{instruction}</code>
+              <button
+                type="button"
+                onClick={() => copy(instruction)}
+                className="text-xs px-2 py-1 bg-zinc-800 rounded hover:bg-zinc-700 whitespace-nowrap"
+                aria-label="Copy instruction"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-zinc-500">
+            This agent has no project yet. Assign it to projects later from its
+            row in the registry.
+          </p>
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-1 text-sm"
+            className="px-3 py-1 text-sm bg-zinc-800 rounded hover:bg-zinc-700"
           >
-            Cancel
+            Done
           </button>
-          <button
-            type="submit"
-            disabled={loading || !selected}
-            className="px-3 py-1 bg-blue-600 rounded text-sm disabled:opacity-50"
-          >
-            Continue
-          </button>
-        </div>
-      </form>
+        </section>
+      ) : (
+        <form
+          onSubmit={onSubmit}
+          className="bg-zinc-900 p-4 rounded shadow w-full max-w-md space-y-3"
+        >
+          <h3 className="text-lg font-semibold">Invite external agent</h3>
+          <label className="block text-sm">
+            <span className="text-zinc-400">Name / alias</span>
+            <input
+              type="text"
+              value={alias}
+              onChange={(e) => setAlias(e.target.value)}
+              placeholder="e.g. Scout"
+              className="w-full mt-1 px-2 py-1 bg-zinc-800 rounded"
+              aria-label="Agent name or alias"
+            />
+          </label>
+          {loading ? (
+            <div className="text-xs text-zinc-500">Loading projects…</div>
+          ) : (
+            <label className="block text-sm">
+              <span className="text-zinc-400">Project</span>
+              <select
+                value={selected}
+                onChange={(e) => setSelected(e.target.value)}
+                className="w-full mt-1 px-2 py-1 bg-zinc-800 rounded"
+                aria-label="Project to invite into"
+              >
+                <option value="">None — available in chat, assign to projects later</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.slug}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {err && (
+            <p role="alert" className="text-red-400 text-xs">{err}</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={submitting}
+              className="px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-3 py-1 bg-blue-600 rounded text-sm disabled:opacity-50"
+            >
+              {selected ? "Continue" : submitting ? "Minting…" : "Mint invite"}
+            </button>
+          </div>
+        </form>
+      )}
     </div>,
     document.body,
   );

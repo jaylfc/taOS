@@ -33,6 +33,12 @@ describe("RegistryPanel invite + assign wiring", () => {
       if (url === "/api/agents/registry") {
         return Promise.resolve(ok([ACTIVE_ENTRY]));
       }
+      if (url === "/api/agents/invites") {
+        return Promise.resolve(ok({ invite_id: "482913", pin: "7788" }));
+      }
+      if (url === "/api/projects/prj_a/invites") {
+        return Promise.resolve(ok([]));
+      }
       return Promise.resolve(ok({}));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -82,5 +88,66 @@ describe("RegistryPanel invite + assign wiring", () => {
       expect(screen.getByRole("dialog", { name: /assign agent to project/i })).toBeInTheDocument(),
     );
     expect(screen.getByRole("option", { name: /Alpha/ })).toBeInTheDocument();
+  });
+
+  it("mints an OS-level invite (no project) with the entered alias and shows URL + PIN", async () => {
+    await act(async () => {
+      render(<RegistryPanel />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Agent Registry/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Invite external agent/i }),
+    );
+
+    // The project select defaults to the "None" option.
+    const projectSelect = await screen.findByRole("combobox", { name: /Project to invite into/i });
+    expect((projectSelect as HTMLSelectElement).value).toBe("");
+    expect(screen.getByRole("option", { name: /None — available in chat/i })).toBeInTheDocument();
+
+    // Enter an alias.
+    fireEvent.change(screen.getByRole("textbox", { name: /Agent name or alias/i }), {
+      target: { value: "Scout" },
+    });
+
+    // Mint → posts to the OS-level endpoint with the alias, no project.
+    fireEvent.click(screen.getByRole("button", { name: /Mint invite/i }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]: [string]) => url === "/api/agents/invites"),
+      ).toBe(true),
+    );
+    const call = fetchMock.mock.calls.find(([url]: [string]) => url === "/api/agents/invites");
+    expect(call?.[1]?.method).toBe("POST");
+    const body = JSON.parse(call?.[1]?.body as string);
+    expect(body.display_name).toBe("Scout");
+    expect(body.scopes).toContain("a2a_send");
+
+    // The result view shows the redeemable URL + PIN.
+    await waitFor(() => expect(screen.getByLabelText(/Invite result/i)).toBeInTheDocument());
+    // The invite id appears inside the /i/<id> URL; the PIN stands alone.
+    expect(screen.getAllByText(/482913/).length).toBeGreaterThan(0);
+    expect(screen.getByText("7788")).toBeInTheDocument();
+  });
+
+  it("chains to the project-scoped mint dialog when a project is chosen", async () => {
+    await act(async () => {
+      render(<RegistryPanel />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Agent Registry/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Invite external agent/i }),
+    );
+
+    const projectSelect = await screen.findByRole("combobox", { name: /Project to invite into/i });
+    fireEvent.change(projectSelect, { target: { value: "prj_a" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    // The existing project-scoped invite dialog opens (fetches its pending list).
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]: [string]) => url === "/api/projects/prj_a/invites"),
+      ).toBe(true),
+    );
   });
 });

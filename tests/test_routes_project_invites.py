@@ -327,6 +327,172 @@ async def test_invite_info_html_for_browser(client, app):
     assert "taOS" in resp.text
 
 
+# ---------------------------------------------------------------------------
+# OS-level (project-less) invites: mint + redeem to a chat-available identity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_os_mint_returns_pin_and_no_project_tasks(client, app):
+    resp = await client.post(
+        "/api/agents/invites",
+        json={
+            "scopes": ["a2a_send"],
+            "approval_mode": "auto",
+            "check_interval_secs": 1800,
+            "display_name": "Scout",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["invite_id"]) == 6 and data["invite_id"].isdigit()
+    assert len(data["pin"]) == 4 and data["pin"].isdigit()
+    # OS-level invites are not project-bound, so project_tasks is not forced.
+    assert data["scopes"] == ["a2a_send"]
+    assert data["display_name"] == "Scout"
+
+
+@pytest.mark.asyncio
+async def test_os_mint_non_admin_rejected(client, app):
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="non-admin-user", is_admin=False
+    )
+    try:
+        resp = await client.post(
+            "/api/agents/invites",
+            json={"scopes": ["a2a_send"], "approval_mode": "auto"},
+        )
+        assert resp.status_code == 403, resp.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_os_list_and_revoke(client, app):
+    mint = await client.post(
+        "/api/agents/invites",
+        json={"scopes": ["a2a_send"], "approval_mode": "auto", "display_name": "Scout"},
+    )
+    iid = mint.json()["invite_id"]
+
+    listing = await client.get("/api/agents/invites")
+    assert listing.status_code == 200, listing.text
+    rows = listing.json()
+    assert len(rows) == 1
+    assert rows[0]["invite_id"] == iid
+    assert rows[0]["display_name"] == "Scout"
+
+    revoke = await client.delete(f"/api/agents/invites/{iid}")
+    assert revoke.status_code == 204, revoke.text
+
+
+@pytest.mark.asyncio
+async def test_os_revoke_rejects_project_invite(client, app):
+    """The OS-level revoke route must not revoke a project-scoped invite."""
+    pid = await _create_project(client, slug="os-guard")
+    iid, _pin = await _mint_invite(client, pid, approval_mode="auto")
+    resp = await client.delete(f"/api/agents/invites/{iid}")
+    assert resp.status_code == 404, resp.text
+
+
+async def _mint_os_invite(client, *, approval_mode="auto", scopes=None, display_name=None):
+    resp = await client.post(
+        "/api/agents/invites",
+        json={
+            "scopes": scopes if scopes is not None else ["a2a_send"],
+            "approval_mode": approval_mode,
+            "check_interval_secs": 1800,
+            "display_name": display_name,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    return data["invite_id"], data["pin"]
+
+
+@pytest.mark.asyncio
+async def test_os_redeem_mints_chat_agent_no_project_grant(client, app, monkeypatch, tmp_path):
+    _registry, _auth, grants = await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    iid, pin = await _mint_os_invite(client, scopes=["a2a_send"], display_name="Scout")
+
+    resp = await client.post(
+        "/api/projects/invites/redeem",
+        json={"invite_id": iid, "pin": pin, "harness": "claude"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The handle derives from the alias, not a project slug.
+    assert body["agent_handle"] == "scout"
+    # The bundle carries no project and no project/task/canvas apis.
+    bundle = body["bundle"]
+    assert bundle["project"] is None
+    assert "tasks_list" not in bundle["apis"]
+    assert "canvas_elements" not in bundle["apis"]
+    assert "a2a_bus_send" in bundle["apis"]
+
+    req_id = body["request_id"]
+    poll = await client.get(f"/api/agents/auth-requests/{req_id}")
+    assert poll.status_code == 200, poll.text
+    pdata = poll.json()
+    assert pdata["status"] == "accepted"
+    canonical_id = pdata["canonical_id"]
+    assert pdata["token"]
+
+    # No project membership row anywhere.
+    projects = await app.state.project_store.list_projects()
+    for p in projects:
+        assert await app.state.project_store.list_members(p["id"]) == []
+
+    # Grants are GLOBAL (project_id is None), never project-scoped.
+    agent_grants = await grants.list_grants(canonical_id)
+    assert agent_grants, "expected at least one global grant"
+    for g in agent_grants:
+        assert g["project_id"] is None
+    scopes_granted = {g["scope"] for g in agent_grants}
+    assert "a2a_send" in scopes_granted
+    assert "project_tasks" not in scopes_granted
+
+
+@pytest.mark.asyncio
+async def test_os_redeem_applies_display_name(client, app, monkeypatch, tmp_path):
+    registry, _auth, _grants = await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    iid, pin = await _mint_os_invite(client, scopes=["a2a_send"], display_name="My Cool Agent")
+
+    resp = await client.post(
+        "/api/projects/invites/redeem",
+        json={"invite_id": iid, "pin": pin, "harness": "claude"},
+    )
+    assert resp.status_code == 200, resp.text
+    # Handle is slugified; the display_name preserves the human alias.
+    assert resp.json()["agent_handle"] == "my-cool-agent"
+    canonical_id = (await client.get(
+        f"/api/agents/auth-requests/{resp.json()['request_id']}"
+    )).json()["canonical_id"]
+    record = await registry.get(canonical_id)
+    assert record["display_name"] == "My Cool Agent"
+
+
+@pytest.mark.asyncio
+async def test_os_invite_advert_json_works(client, app):
+    """The /i/{invite_id} advert must not 500 for a project-less invite."""
+    iid, _pin = await _mint_os_invite(client, scopes=["a2a_send"], display_name="Scout")
+    resp = await client.get(f"/i/{iid}", headers={"accept": "application/json"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["redeem"]["path"] == "/api/projects/invites/redeem"
+
+
+@pytest.mark.asyncio
+async def test_os_redeem_falls_back_to_harness_handle(client, app, monkeypatch, tmp_path):
+    await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    iid, pin = await _mint_os_invite(client, scopes=["a2a_send"], display_name=None)
+    resp = await client.post(
+        "/api/projects/invites/redeem",
+        json={"invite_id": iid, "pin": pin, "harness": "opencode"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["agent_handle"] == "opencode"
+
+
 @pytest.mark.asyncio
 async def test_invite_info_html_escapes_project_name(client, app):
     # A project name is owner-controlled and is interpolated into the invite

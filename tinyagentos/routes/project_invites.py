@@ -5,7 +5,7 @@ import json
 import logging
 import socket
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,18 @@ class MintInviteIn(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     check_interval_secs: int = Field(default=1800, ge=60)
+
+
+class MintOsInviteIn(BaseModel):
+    """Mint an OS-level (project-less) invite. The redeemed agent becomes
+    chat-available immediately with a global (non-project) grant; projects are
+    assigned later. ``display_name`` is the human alias applied to the minted
+    identity on redeem."""
+
+    scopes: list[str] = Field(default_factory=list)
+    approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
+    check_interval_secs: int = Field(default=1800, ge=60)
+    display_name: str | None = None
 
 
 class RedeemInviteIn(BaseModel):
@@ -65,6 +77,25 @@ def _derive_handle(project_slug: str, harness: str, label: str | None) -> str:
         if lbl:
             parts.append(lbl)
     return "-".join(p for p in parts if p)
+
+
+def _derive_os_handle(display_name: str | None, harness: str, label: str | None) -> str:
+    """Build the base handle for an OS-level (project-less) redeem.
+
+    There is no project slug to namespace on, so the alias (display_name) is the
+    primary name, falling back to the harness. An optional label disambiguates,
+    as in the project path. Each component is slugified independently.
+
+    ``_slugify`` returns the sentinel ``"agent"`` for empty input, so only
+    slugify a non-empty alias; otherwise the harness fallback never fires."""
+    alias = (display_name or "").strip()
+    base = _slugify(alias) if alias else _slugify(harness)
+    parts = [base]
+    if label:
+        lbl = _slugify(label)
+        if lbl:
+            parts.append(lbl)
+    return "-".join(p for p in parts if p) or _slugify(harness)
 
 
 async def _dedupe_handle(request: Request, base_handle: str) -> str:
@@ -160,29 +191,10 @@ def _enumerate_lan_ips() -> list[str]:
     return ips
 
 
-async def build_connection_bundle(
-    request: Request,
-    *,
-    invite_record: dict,
-    project: dict,
-    agent_handle: str,
-    granted_scopes: list[str],
-    check_interval_secs: int,
-) -> dict:
-    """Assemble the JSON connection bundle returned by a successful redeem.
-
-    The bundle carries NO token or secret (the token arrives via the status
-    poll). It enumerates the controller's reachable endpoints (LAN, mesh; no
-    relay in Phase 1), the agent-JWT-reachable API surface scoped EXACTLY to
-    the granted scopes (mirroring auth_middleware's canvas allowlist), the
-    timed-check delivery contract, and an onboarding kit + guide_markdown.
-
-    See design section 4 and the Approved-build addendum.
-    """
-    pid = project["id"]
-    project_slug = project.get("slug") or pid
-
-    # --- controller endpoints ---------------------------------------------
+async def _build_controller_dict(request: Request) -> dict:
+    """Enumerate the controller's reachable endpoints (operator override, LAN,
+    mesh; no relay in Phase 1) and wrap them in the controller descriptor shared
+    by the project and OS-level bundles."""
     endpoints: list[dict] = []
     priority = 1
 
@@ -225,11 +237,106 @@ async def build_connection_bundle(
     except Exception:  # noqa: BLE001 - mesh is optional
         pass
 
-    controller = {
+    return {
         "endpoints": endpoints,
         "health_path": "/api/health",
         "registry_pubkey_path": "/api/agents/registry/pubkey",
     }
+
+
+async def build_os_connection_bundle(
+    request: Request,
+    *,
+    invite_record: dict,
+    agent_handle: str,
+    granted_scopes: list[str],
+    check_interval_secs: int,
+) -> dict:
+    """Assemble the connection bundle for an OS-level (project-less) redeem.
+
+    Same security model as the project bundle (NO token or secret; the token
+    arrives via the status poll), but the agent joins taOS chat globally rather
+    than a project: the advertised API surface is the a2a bus only, with no
+    project/task/canvas routes. ``project`` is null in the returned bundle.
+    """
+    controller = await _build_controller_dict(request)
+
+    scopeset = set(granted_scopes)
+    apis: dict = {}
+    if "a2a_send" in scopeset or "a2a_receive" in scopeset:
+        apis["a2a_bus_send"] = "/api/a2a/bus/send"
+        apis["a2a_bus_messages"] = "/api/a2a/bus/messages"
+        apis["a2a_bus_channels"] = "/api/a2a/bus/channels"
+
+    delivery = {
+        "stream_path": "/api/a2a/bus/stream?channel={channel}&since={cursor}",
+        "poll_path": "/api/a2a/bus/messages?channel={channel}&since={cursor}",
+        "check_interval_secs": check_interval_secs,
+        "cursor": "ts",
+        "filter": "mentions",
+    }
+
+    onboarding = {
+        "links": [
+            {"label": "taOS repository", "url": "https://github.com/jaylfc/taOS"},
+            {
+                "label": "Agent manual (04-apps.md)",
+                "url": "https://github.com/jaylfc/taOS/blob/main/docs/agent-manual/04-apps.md",
+            },
+            {
+                "label": "Agent manual (09-os-control.md)",
+                "url": "https://github.com/jaylfc/taOS/blob/main/docs/agent-manual/09-os-control.md",
+            },
+        ],
+        "check_interval_secs": check_interval_secs,
+    }
+
+    guide = _build_os_guide_markdown(
+        agent_handle=agent_handle,
+        granted_scopes=granted_scopes,
+        check_interval_secs=check_interval_secs,
+    )
+
+    return {
+        "version": 1,
+        "invite_id": invite_record["invite_id"],
+        "project": None,
+        "controller": controller,
+        "auth": {
+            "flow": "auth_request",
+            "agent_handle": agent_handle,
+            "granted_scopes": sorted(granted_scopes),
+        },
+        "apis": apis,
+        "delivery": delivery,
+        "onboarding": onboarding,
+        "guide_markdown": guide,
+    }
+
+
+async def build_connection_bundle(
+    request: Request,
+    *,
+    invite_record: dict,
+    project: dict,
+    agent_handle: str,
+    granted_scopes: list[str],
+    check_interval_secs: int,
+) -> dict:
+    """Assemble the JSON connection bundle returned by a successful redeem.
+
+    The bundle carries NO token or secret (the token arrives via the status
+    poll). It enumerates the controller's reachable endpoints (LAN, mesh; no
+    relay in Phase 1), the agent-JWT-reachable API surface scoped EXACTLY to
+    the granted scopes (mirroring auth_middleware's canvas allowlist), the
+    timed-check delivery contract, and an onboarding kit + guide_markdown.
+
+    See design section 4 and the Approved-build addendum.
+    """
+    pid = project["id"]
+    project_slug = project.get("slug") or pid
+
+    controller = await _build_controller_dict(request)
 
     # --- agent_handle scoped api surface ----------------------------------
     apis: dict = {}
@@ -411,6 +518,72 @@ def _build_guide_markdown(
     return "\n".join(lines)
 
 
+def _build_os_guide_markdown(
+    *,
+    agent_handle: str,
+    granted_scopes: list[str],
+    check_interval_secs: int,
+) -> str:
+    """Generate the capability guide for an OS-level (project-less) redeem.
+
+    Contains NO secret (the token arrives via the status poll). The agent is
+    chat-available across taOS but is a member of no project yet; projects are
+    assigned later via the Assign-to-project flow."""
+    scopeset = set(granted_scopes)
+    lines: list[str] = []
+    lines.append(f"# Joining taOS in chat as `{agent_handle}`")
+    lines.append("")
+    lines.append(
+        "You were invited to taOS as an external agent. Redeeming your invite "
+        "registered you and minted an agent-identity token (delivered via your "
+        "status poll, not this guide). You are available in chat now; you are not "
+        "a member of any project yet. The operator can assign you to projects "
+        "later, which grants project-scoped capabilities at that time."
+    )
+    lines.append("")
+    lines.append("## Links")
+    lines.append("")
+    lines.append("- taOS repository: https://github.com/jaylfc/taOS")
+    lines.append("- Agent manual - apps: https://github.com/jaylfc/taOS/blob/main/docs/agent-manual/04-apps.md")
+    lines.append("- Agent manual - OS control: https://github.com/jaylfc/taOS/blob/main/docs/agent-manual/09-os-control.md")
+    lines.append("")
+    lines.append("## A2A bus contract (authenticated proxy)")
+    lines.append("")
+    if "a2a_send" in scopeset or "a2a_receive" in scopeset:
+        lines.append(
+            "Reach other agents and the coordinator through the authenticated proxy "
+            "`/api/a2a/bus/*` (never the raw :7900 bus). The proxy forces `from` to your "
+            "own handle, so you always post as yourself. Send with "
+            "`POST /api/a2a/bus/send` using the body `{thread, body}` (and optional "
+            "`reply_to`); `channel` is ignored, address threads by name. Read via "
+            "`GET /api/a2a/bus/messages?channel={channel}&since={cursor}`."
+        )
+    else:
+        lines.append("- A2A bus: NOT granted.")
+    lines.append("")
+    lines.append("## WRITE THIS INTO YOUR OWN PERSISTENT MEMORY NOW")
+    lines.append("")
+    lines.append(
+        "Persist the following into your own long-term memory (not the operator's): "
+        "your canonical_id (from the status poll), the path to the token file where "
+        "you stored the polled token, and this bus contract (authenticated proxy, "
+        f"`from` forced to `{agent_handle}`). A re-spawn must reuse this identity, "
+        "not mint a new one."
+    )
+    lines.append("")
+    lines.append("## CHECK ON A TIMER")
+    lines.append("")
+    lines.append(
+        f"Poll every {check_interval_secs} seconds (or hold the SSE stream at "
+        "`/api/a2a/bus/stream`) for any @mentions addressed to "
+        f"`{agent_handle}`. On each check: read your mentions, act on them, and "
+        "report status. This timed check is the reliable delivery floor; the "
+        "stream is an optional optimization only if your harness can hold a "
+        "connection and wake on a message."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
 
 @router.post("/api/projects/{project_id}/invites")
 async def mint_invite(
@@ -494,6 +667,93 @@ async def revoke_invite(
 
 
 # ---------------------------------------------------------------------------
+# OS-level invites (project-less; admin-gated)
+# ---------------------------------------------------------------------------
+#
+# An OS-level invite mints the SAME redeemable link (URL + PIN) as a project
+# invite, but is not tied to a project. On redeem the agent gets a global
+# (chat) grant and NO project grant, so it is available in chat immediately and
+# projects are assigned later. There is no per-resource owner to check against,
+# so these routes are admin-only (matching mint-internal / seed-internal).
+
+
+def _require_admin(user: CurrentUser) -> None:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@router.post("/api/agents/invites")
+async def mint_os_invite(
+    payload: MintOsInviteIn,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    _require_admin(user)
+    store = request.app.state.project_invites
+    try:
+        result = await store.mint(
+            project_id=None,
+            scopes=list(payload.scopes),
+            approval_mode=payload.approval_mode,
+            check_interval_secs=payload.check_interval_secs,
+            created_by=user.user_id,
+            display_name=payload.display_name,
+        )
+    except InvitePendingCapError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=429)
+    record = result["record"]
+    return {
+        "invite_id": record["invite_id"],
+        "pin": result["pin"],
+        "expires_ts": record["expires_ts"],
+        "scopes": record["scopes"],
+        "approval_mode": record["approval_mode"],
+        "check_interval_secs": record["check_interval_secs"],
+        "display_name": record["display_name"],
+    }
+
+
+@router.get("/api/agents/invites")
+async def list_os_invites(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    _require_admin(user)
+    store = request.app.state.project_invites
+    items = await store.list_os_level()
+    return [
+        {
+            "invite_id": i["invite_id"],
+            "scopes": i["scopes"],
+            "status": i["status"],
+            "expires_ts": i["expires_ts"],
+            "redeemed_by": i.get("redeemed_by"),
+            "display_name": i.get("display_name"),
+        }
+        for i in items
+    ]
+
+
+@router.delete("/api/agents/invites/{invite_id}")
+async def revoke_os_invite(
+    invite_id: str,
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    _require_admin(user)
+    store = request.app.state.project_invites
+    row = await store.get(invite_id)
+    # Only OS-level (project-less) invites are revocable through this route;
+    # project invites keep their per-project revoke endpoint.
+    if row is None or row.get("project_id") is not None:
+        return JSONResponse({"error": "invite not found"}, status_code=404)
+    ok = await store.revoke(invite_id)
+    if not ok:
+        return JSONResponse({"error": "invite not found or already redeemed"}, status_code=404)
+    return JSONResponse(content=None, status_code=204)
+
+
+# ---------------------------------------------------------------------------
 # Redeem (auth-EXEMPT) + content-negotiated invite advert
 # ---------------------------------------------------------------------------
 
@@ -537,6 +797,13 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
     except Exception as exc:  # noqa: BLE001 - mapped to HTTP below
         status, msg = _invite_exception_to_http(exc)
         return JSONResponse({"error": msg}, status_code=status)
+
+    # OS-level (project-less) invite: mint a chat-available identity with a
+    # global grant and NO project grant. Same PIN/expiry/attempt-cap security
+    # (already enforced by store.redeem above); only the grant is not
+    # project-scoped, so there is no membership row.
+    if invite["project_id"] is None:
+        return await _redeem_os_level(request, body, invite, store)
 
     project_store = request.app.state.project_store
     project = await project_store.get_project(invite["project_id"])
@@ -603,6 +870,79 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
         request,
         invite_record=invite,
         project=project,
+        agent_handle=handle,
+        granted_scopes=scopes,
+        check_interval_secs=invite.get("check_interval_secs") or 1800,
+    )
+
+    return {
+        "request_id": record["id"],
+        "agent_handle": handle,
+        "poll_path": f"/api/agents/auth-requests/{record['id']}",
+        "bundle": bundle,
+    }
+
+
+async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict, store) -> dict | JSONResponse:
+    """Redeem an OS-level (project-less) invite.
+
+    Mints a chat-available identity: the granted scopes are exactly the invite's
+    scopes (project_tasks is NOT forced), the auth-request carries project_id=None,
+    and approve_request_record writes GLOBAL grants (project_id=None) with no
+    membership row. The alias (display_name) from the invite is applied to the
+    minted identity.
+    """
+    # Parse scopes defensively (store returns a JSON string). No project_tasks
+    # is forced: this identity is not bound to any project.
+    raw_scopes = invite["scopes"] or []
+    if isinstance(raw_scopes, str):
+        try:
+            raw_scopes = json.loads(raw_scopes)
+        except (ValueError, TypeError):
+            raw_scopes = []
+    scopes = list(raw_scopes)
+
+    display_name = invite.get("display_name")
+    handle = _derive_os_handle(display_name, body.harness, body.label)
+    handle = await _dedupe_handle(request, handle)
+
+    from tinyagentos.routes.agent_auth_requests import approve_request_record
+
+    auth_store = request.app.state.auth_requests
+    record = await auth_store.create(
+        identity_claim=handle,
+        framework=body.harness,
+        requested_scopes=scopes,
+        requested_skills=None,
+        reason=f"invite {body.invite_id}",
+        duration_secs=None,
+        project_id=None,
+    )
+
+    if invite["approval_mode"] == "auto":
+        try:
+            await approve_request_record(
+                request,
+                record=record,
+                granted_scopes=scopes,
+                effective_project=None,
+                decided_by=invite["created_by"],
+                project_id=None,
+                display_name=display_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface as JSON error
+            return JSONResponse({"error": str(exc)}, status_code=400)
+    else:
+        _notify_pending_invite(request, record)
+
+    try:
+        await store.mark_redeemed(body.invite_id, handle, record["id"])
+    except Exception:  # noqa: BLE001 - audit best-effort
+        pass
+
+    bundle = await build_os_connection_bundle(
+        request,
+        invite_record=invite,
         agent_handle=handle,
         granted_scopes=scopes,
         check_interval_secs=invite.get("check_interval_secs") or 1800,

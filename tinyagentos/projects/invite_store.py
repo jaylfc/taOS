@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS project_invites (
     redeem_attempts      INTEGER DEFAULT 0,
     status               TEXT NOT NULL,
     redeemed_by          TEXT,
-    redeemed_request_id  TEXT
+    redeemed_request_id  TEXT,
+    display_name         TEXT
 );
 """
 
@@ -83,6 +84,11 @@ class ProjectInviteStore(BaseStore):
                 "ALTER TABLE project_invites ADD COLUMN redeemed_request_id TEXT"
             )
             await self._db.commit()
+        if "display_name" not in existing_cols:
+            await self._db.execute(
+                "ALTER TABLE project_invites ADD COLUMN display_name TEXT"
+            )
+            await self._db.commit()
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_invites_project "
             "ON project_invites(project_id)"
@@ -100,22 +106,40 @@ class ProjectInviteStore(BaseStore):
         return f"{secrets.randbelow(10_000):04d}"
 
     async def mint(self, *, project_id=None, scopes: list[str], approval_mode: str,
-                   check_interval_secs: int, created_by: str) -> dict:
+                   check_interval_secs: int, created_by: str,
+                   display_name: str | None = None) -> dict:
         if self._db is None:
             raise RuntimeError("ProjectInviteStore not initialised")
 
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) FROM project_invites WHERE project_id = ? AND status = 'pending'",
-            (project_id,),
-        )
+        # The pending cap is per-scope: project-scoped invites are capped per
+        # project, OS-level (project_id IS NULL) invites are capped as a group.
+        # SQL ``= NULL`` never matches, so branch on IS NULL to keep the cap live
+        # for OS-level invites too.
+        if project_id is None:
+            cursor = await self._db.execute(
+                "SELECT COUNT(*) FROM project_invites "
+                "WHERE project_id IS NULL AND status = 'pending'",
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT COUNT(*) FROM project_invites "
+                "WHERE project_id = ? AND status = 'pending'",
+                (project_id,),
+            )
         row = await cursor.fetchone()
         pending_count = row[0] if row else 0
         if pending_count >= _PENDING_CAP:
+            scope_label = "OS-level" if project_id is None else f"project {project_id}"
             raise InvitePendingCapError(
-                f"project {project_id} already has {_PENDING_CAP} pending invites"
+                f"{scope_label} already has {_PENDING_CAP} pending invites"
             )
 
-        scopes = list(dict.fromkeys(list(scopes) + ["project_tasks"]))
+        # project_tasks binds the token to a project, so it is only forced for
+        # project-scoped invites. An OS-level invite mints a chat-available
+        # identity with no project grant, so it keeps exactly the requested scopes.
+        scopes = list(dict.fromkeys(list(scopes)))
+        if project_id is not None:
+            scopes = list(dict.fromkeys(scopes + ["project_tasks"]))
 
         invite_id = self._generate_invite_id()
         pin = self._generate_pin()
@@ -127,8 +151,9 @@ class ProjectInviteStore(BaseStore):
             """
             INSERT INTO project_invites
                 (invite_id, project_id, pin_hash, scopes, approval_mode,
-                 check_interval_secs, created_by, created_ts, expires_ts, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 check_interval_secs, created_by, created_ts, expires_ts, status,
+                 display_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (
                 invite_id,
@@ -140,6 +165,7 @@ class ProjectInviteStore(BaseStore):
                 created_by,
                 now,
                 expires_ts,
+                display_name,
             ),
         )
         await self._db.commit()
@@ -159,6 +185,7 @@ class ProjectInviteStore(BaseStore):
                 "status": "pending",
                 "redeemed_by": None,
                 "redeemed_request_id": None,
+                "display_name": display_name,
             },
             "pin": pin,
         }
@@ -185,6 +212,23 @@ class ProjectInviteStore(BaseStore):
         cursor = await self._db.execute(
             "SELECT * FROM project_invites WHERE project_id = ? ORDER BY created_ts DESC",
             (project_id,),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            d = self._row_to_dict(row)
+            d.pop("pin_hash", None)
+            result.append(d)
+        return result
+
+    async def list_os_level(self) -> list[dict]:
+        """List OS-level invites (project_id IS NULL), newest first, without the
+        pin hash. Mirrors ``list_for_project`` for the project-less group."""
+        if self._db is None:
+            raise RuntimeError("ProjectInviteStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT * FROM project_invites WHERE project_id IS NULL "
+            "ORDER BY created_ts DESC",
         )
         rows = await cursor.fetchall()
         result = []

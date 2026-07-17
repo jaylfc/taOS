@@ -36,6 +36,14 @@ def register_all_routers(app):
     from tinyagentos.routes.delegation import router as delegation_router
     app.include_router(delegation_router, dependencies=_csrf)
 
+    # project_invites is registered before the agents router because it owns the
+    # literal /api/agents/invites routes, which must win over the agents router's
+    # /api/agents/{name} dynamic route (otherwise GET/DELETE resolve to "agent
+    # not found"). Its own routes are all literal, so this reorder cannot shadow
+    # any dynamic route in the projects/agents routers.
+    from tinyagentos.routes.project_invites import router as project_invites_router
+    app.include_router(project_invites_router, dependencies=_csrf)
+
     from tinyagentos.routes.agents import router as agents_router
     app.include_router(agents_router, dependencies=_csrf)
 
@@ -59,9 +67,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes import projects as projects_routes
     app.include_router(projects_routes.router, dependencies=_csrf)
-
-    from tinyagentos.routes.project_invites import router as project_invites_router
-    app.include_router(project_invites_router, dependencies=_csrf)
 
     from tinyagentos.routes import routines as routines_routes
     app.include_router(routines_routes.router, dependencies=_csrf)

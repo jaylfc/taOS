@@ -93,6 +93,131 @@ async def test_mint_enforces_pending_cap(store):
 
 
 # ---------------------------------------------------------------------------
+# OS-level (project-less) mint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_os_level_mint_no_project_tasks(store):
+    """An OS-level invite (project_id=None) keeps exactly the requested scopes;
+    project_tasks is NOT forced because the identity is not project-bound."""
+    result = await store.mint(
+        project_id=None,
+        scopes=["a2a_send"],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="user-admin",
+    )
+    scopes = result["record"]["scopes"]
+    assert scopes == ["a2a_send"]
+    assert "project_tasks" not in scopes
+    assert result["record"]["project_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_os_level_mint_stores_display_name(store):
+    result = await store.mint(
+        project_id=None,
+        scopes=["a2a_send"],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        display_name="Scout",
+    )
+    iid = result["record"]["invite_id"]
+    assert result["record"]["display_name"] == "Scout"
+    row = await store.get(iid)
+    assert row["display_name"] == "Scout"
+
+
+@pytest.mark.asyncio
+async def test_os_level_pending_cap_uses_is_null(store):
+    """The pending cap stays live for OS-level invites (project_id IS NULL);
+    SQL ``= NULL`` would silently bypass it."""
+    for _ in range(10):
+        await store.mint(
+            project_id=None,
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+        )
+    with pytest.raises(InvitePendingCapError):
+        await store.mint(
+            project_id=None,
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+        )
+
+
+@pytest.mark.asyncio
+async def test_os_level_cap_independent_of_project_cap(store):
+    """OS-level pending invites do not count against a project's cap and vice
+    versa: 10 OS-level + a project mint still succeeds."""
+    for _ in range(10):
+        await store.mint(
+            project_id=None,
+            scopes=[],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="u",
+        )
+    # A project mint is unaffected by the OS-level pending group.
+    result = await store.mint(
+        project_id="prj-x",
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+    )
+    assert result["record"]["project_id"] == "prj-x"
+
+
+@pytest.mark.asyncio
+async def test_list_os_level_omits_pin_hash(store):
+    await store.mint(
+        project_id=None,
+        scopes=["a2a_send"],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+        display_name="Scout",
+    )
+    # A project invite must NOT appear in the OS-level listing.
+    await store.mint(
+        project_id="prj-1",
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+    )
+    items = await store.list_os_level()
+    assert len(items) == 1
+    assert items[0]["project_id"] is None
+    assert items[0]["display_name"] == "Scout"
+    assert "pin_hash" not in items[0]
+
+
+@pytest.mark.asyncio
+async def test_os_level_redeem_single_use(store):
+    result = await store.mint(
+        project_id=None,
+        scopes=["a2a_send"],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+    )
+    iid = result["record"]["invite_id"]
+    record = await store.redeem(iid, result["pin"])
+    assert record["status"] == "redeemed"
+    assert record["project_id"] is None
+    with pytest.raises(InviteAlreadyRedeemedError):
+        await store.redeem(iid, result["pin"])
+
+
+# ---------------------------------------------------------------------------
 # get
 # ---------------------------------------------------------------------------
 
@@ -329,4 +454,6 @@ async def test_boot_migration_adds_missing_column(tmp_path):
     assert row is not None
     assert row["status"] == "pending"
     assert row.get("redeemed_request_id") is None
+    # The display_name column is added by the boot migration for legacy DBs.
+    assert row.get("display_name") is None
     await store.close()
