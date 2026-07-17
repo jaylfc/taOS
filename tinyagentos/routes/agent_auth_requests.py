@@ -101,6 +101,22 @@ class AssignAgentBody(BaseModel):
     is_lead: bool = False
 
 
+class CreateScopeRequest(BaseModel):
+    """Body for POST /api/agents/registry/{canonical_id}/scope-requests.
+
+    An ALREADY-REGISTERED agent (or its owner/admin) asks for additional scope
+    grants on that same identity. No new identity is minted on approval.
+    """
+    requested_scopes: list[str]
+    project_id: Optional[str] = None
+    reason: str = ""
+
+
+class ApproveScopeBody(BaseModel):
+    granted_scopes: list[str]
+    project_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -126,6 +142,13 @@ def _get_registry_store(request: Request):
     return store
 
 
+def _get_scope_requests_store(request: Request):
+    store = getattr(request.app.state, "agent_scope_requests", None)
+    if store is None:
+        raise RuntimeError("agent_scope_requests store not on app.state")
+    return store
+
+
 def _get_keypair(request: Request) -> tuple[bytes, bytes]:
     kp = getattr(request.app.state, "agent_registry_keypair", None)
     if kp is None:
@@ -148,6 +171,18 @@ async def _retire_request_notification(request: Request, request_id: str) -> Non
         return
     try:
         await notifs.archive_by_source_ref("auth_requests", request_id)
+    except Exception:
+        pass
+
+
+async def _retire_scope_request_notification(request: Request, request_id: str) -> None:
+    """Archive the bell notification for a now-decided scope request so it leaves
+    the active list. Best effort: never fails the decision."""
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is None:
+        return
+    try:
+        await notifs.archive_by_source_ref("agent_scope_requests", request_id)
     except Exception:
         pass
 
@@ -800,3 +835,270 @@ async def list_auth_requests(
     store = _get_auth_requests_store(request)
     pending = await store.list_pending()
     return {"requests": pending}
+
+
+# ---------------------------------------------------------------------------
+# Scope requests — an EXISTING agent asks for MORE scopes on its own identity.
+#
+# Unlike the auth-request flow above, approval here does NOT mint a new
+# identity: it adds grants to the existing canonical_id. Creation is gated to
+# the agent's OWN registry token (self-request) OR the owner/admin, because the
+# agent already has credentials — an anonymous caller must never be able to
+# escalate an existing identity. Approve/deny are owner/admin only.
+# ---------------------------------------------------------------------------
+
+# Maximum unresolved scope requests per canonical_id before new ones are 429'd.
+_SCOPE_REQUEST_PENDING_CAP = 10
+
+# Scopes that bind a grant to a specific project (and add a membership row), so
+# a real project_id is required for them. decisions_read/decisions_write are
+# NOT here: they may be granted globally (project_id=None) or per-project.
+_SCOPE_CANVAS_SCOPES = {"canvas_read", "canvas_write"}
+_SCOPE_PROJECT_SCOPES = {"project_tasks"} | _SCOPE_CANVAS_SCOPES
+
+
+async def _authorize_scope_request_creation(
+    request: Request, canonical_id: str, record: dict
+) -> None:
+    """Authorize the caller to create a scope request for *canonical_id*.
+
+    Allowed: an owner/admin session (or admin local token), OR the agent's own
+    registry bearer token whose ``sub`` matches *canonical_id*. Any other caller
+    (including a different agent's token, or no credentials) is a 403/401.
+    """
+    is_admin = bool(getattr(request.state, "is_admin", False))
+    uid = getattr(request.state, "user_id", None)
+    if is_admin or (uid and uid == record.get("user_id")):
+        return
+
+    # The agent's own registry token. check_agent_identity returns None when no
+    # Authorization header is present (an unauthenticated caller never reaches
+    # here anyway — the middleware 401s a credential-less non-exempt request) and
+    # raises 401/403 for a malformed/inactive token.
+    from tinyagentos.agent_token_auth import check_agent_identity
+
+    agent_cid = await check_agent_identity(request)
+    if agent_cid is not None and agent_cid == canonical_id:
+        return
+
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
+@router.post("/api/agents/registry/{canonical_id}/scope-requests")
+async def create_scope_request(
+    request: Request, canonical_id: str, body: CreateScopeRequest
+):
+    """Create a pending scope request for an EXISTING active agent.
+
+    Auth: the agent's own registry bearer token (sub == canonical_id) OR the
+    owning user / an admin. Returns {request_id, status: 'pending'}.
+    """
+    registry = _get_registry_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        # Existence-hiding is unnecessary here (the caller must already be the
+        # agent or its owner/admin) but an inactive/unknown id is simply a 404.
+        raise HTTPException(
+            status_code=404, detail="agent not found or not active"
+        )
+
+    if not body.requested_scopes:
+        raise HTTPException(status_code=400, detail="requested_scopes must not be empty")
+
+    # Only known scopes may be requested — an unknown scope can never be enforced.
+    unknown = sorted(set(body.requested_scopes) - VALID_SCOPES)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}",
+        )
+
+    await _authorize_scope_request_creation(request, canonical_id, record)
+
+    store = _get_scope_requests_store(request)
+    pending_count = await store.count_pending_for(canonical_id)
+    if pending_count >= _SCOPE_REQUEST_PENDING_CAP:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"too many pending scope requests for {canonical_id!r} "
+                f"({pending_count} pending; resolve existing requests first)"
+            ),
+        )
+
+    rec = await store.create(
+        canonical_id=canonical_id,
+        requested_scopes=body.requested_scopes,
+        project_id=body.project_id,
+        reason=body.reason,
+    )
+
+    # Surface the request as a bell + toast for the owner/admin. Best effort: a
+    # notification failure must not fail the created request (mirrors the
+    # auth-request create flow and decisions.py).
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is not None:
+        try:
+            scopes = rec["requested_scopes"] or []
+            handle = record.get("handle") or record.get("display_name") or canonical_id
+            where = f"project {rec['project_id']}" if rec.get("project_id") else "global scope"
+            await notifs.add(
+                title="Scope request",
+                message=f"{handle} is requesting {', '.join(scopes)} on {where}",
+                level="info",
+                source="agent_scope_requests",
+                data={
+                    "request_id": rec["id"],
+                    "canonical_id": canonical_id,
+                    "requested_scopes": list(scopes),
+                    "project_id": rec.get("project_id"),
+                },
+            )
+        except Exception:
+            pass
+
+    return {"request_id": rec["id"], "status": "pending"}
+
+
+@router.post("/api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve")
+async def approve_scope_request(
+    request: Request,
+    canonical_id: str,
+    req_id: str,
+    body: ApproveScopeBody,
+    user: CurrentUser = Depends(current_user),
+):
+    """Approve a scope request: add the granted scopes to the EXISTING agent.
+
+    Owner/admin only. The admin may narrow but never widen the requested scopes.
+    Grants are idempotent (UNIQUE(canonical_id, scope, project_id)), so
+    re-approving an already-granted scope is a no-op, not an error. No new
+    identity is minted.
+    """
+    registry = _get_registry_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=404, detail="agent not found or not active")
+    require_owner_or_admin(user, record["user_id"])
+
+    store = _get_scope_requests_store(request)
+    req = await store.get(req_id)
+    if req is None or req.get("canonical_id") != canonical_id:
+        raise HTTPException(status_code=404, detail="scope request not found")
+    if req["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"request is already {req['status']!r}; cannot approve",
+        )
+
+    if not body.granted_scopes:
+        raise HTTPException(status_code=400, detail="granted_scopes must not be empty")
+
+    # Narrow-not-widen: granted must be a subset of the requested scopes, and
+    # every granted scope must be in the closed vocabulary.
+    requested = set(req["requested_scopes"] or [])
+    granted = set(body.granted_scopes)
+    invalid = sorted((granted - requested) | (granted - VALID_SCOPES))
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"granted scopes must be a subset of the requested scopes; "
+                f"not grantable: {invalid}"
+            ),
+        )
+
+    # Resolve project binding: the admin's picker value wins; fall back to the
+    # project_id the agent named on the request.
+    effective_project = (
+        body.project_id if body.project_id is not None else req.get("project_id")
+    )
+
+    # project_tasks and the canvas scopes bind the grant to a specific project
+    # and add a membership row, so require an EXPLICIT picker project_id for them
+    # (the agent-named fallback is not an operator-validated binding). decisions
+    # scopes are global-capable, so they do not require a project_id.
+    needs_project = bool(granted & _SCOPE_PROJECT_SCOPES)
+    if needs_project and not (body.project_id and body.project_id.strip()):
+        missing = sorted(granted & _SCOPE_PROJECT_SCOPES)
+        raise HTTPException(
+            status_code=400,
+            detail=f"project_id is required when granting {missing}",
+        )
+
+    grants_store = _get_grants_store(request)
+    rel_mgr = _get_relationships(request)
+
+    # Global (non-project) grants: write the grant + relationship edge directly.
+    # Project-scoped grants: route through add_agent_to_project so the membership
+    # + a2a channel are synced, exactly like the consent-approve path. add_grant
+    # is idempotent, so re-approving an already-granted scope changes nothing.
+    project_scopes = [s for s in body.granted_scopes if s in _SCOPE_PROJECT_SCOPES]
+    other_scopes = [s for s in body.granted_scopes if s not in _SCOPE_PROJECT_SCOPES]
+    for scope in other_scopes:
+        await grants_store.add_grant(
+            canonical_id, scope, tier="once", project_id=effective_project
+        )
+        await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
+    if project_scopes:
+        await add_agent_to_project(
+            request,
+            canonical_id=canonical_id,
+            project_id=effective_project,
+            granted_scopes=project_scopes,
+            decided_by=user.user_id,
+        )
+
+    result = await store.set_decision(
+        req_id,
+        "accepted",
+        granted_scopes=body.granted_scopes,
+        decided_by=user.user_id,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="request was decided concurrently; check current status",
+        )
+
+    await _retire_scope_request_notification(request, req_id)
+    return {
+        "status": "accepted",
+        "canonical_id": canonical_id,
+        "granted_scopes": body.granted_scopes,
+    }
+
+
+@router.post("/api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny")
+async def deny_scope_request(
+    request: Request,
+    canonical_id: str,
+    req_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Deny a pending scope request (owner/admin only)."""
+    registry = _get_registry_store(request)
+    record = await registry.get(canonical_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    require_owner_or_admin(user, record["user_id"])
+
+    store = _get_scope_requests_store(request)
+    req = await store.get(req_id)
+    if req is None or req.get("canonical_id") != canonical_id:
+        raise HTTPException(status_code=404, detail="scope request not found")
+    if req["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"request is already {req['status']!r}; cannot deny",
+        )
+
+    result = await store.set_decision(req_id, "refused", decided_by=user.user_id)
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="request was decided concurrently; check current status",
+        )
+
+    await _retire_scope_request_notification(request, req_id)
+    return {"status": "refused"}

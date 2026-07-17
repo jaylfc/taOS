@@ -148,6 +148,48 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
     return canonical_id
 
 
+async def check_agent_identity(request: Request) -> Optional[str]:
+    """Return the canonical_id from a valid Bearer registry JWT for an ACTIVE
+    agent, without requiring any scope grant.
+
+    This proves only *who* the caller is, not *what* it may do — the caller is
+    responsible for the authorization decision (e.g. only allowing an agent to
+    act on its OWN canonical_id).  It is used by the scope-request create flow,
+    where an already-registered agent asks for MORE scopes: it must not need a
+    scope it does not yet hold in order to request one.
+
+    Returns None when no Authorization header is present (the caller falls
+    through to its own admin/session handling).
+
+    Raises:
+      401 -- Authorization header present but the token is malformed, has a bad
+             signature, or is missing the sub claim.
+      403 -- Token is valid but the agent is not active in the registry.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+
+    raw_token = auth_header[7:].strip()
+
+    _private_pem, public_pem = _get_keypair(request)
+    try:
+        payload = verify_registry_token(raw_token, public_pem)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
+
+    canonical_id: str = payload.get("sub", "")
+    if not canonical_id:
+        raise HTTPException(status_code=401, detail="token missing sub claim")
+
+    registry = _get_store(request)
+    record = await registry.get(canonical_id)
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    return canonical_id
+
+
 async def check_agent_scope_for_project(
     request: Request, required_scope: str, project_id: str
 ) -> Optional[str]:

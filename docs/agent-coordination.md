@@ -145,6 +145,36 @@ further project via `POST /api/projects/{project_id}/members/assign-agent`
 active identity (the existing canonical_id and token are reused instead of
 409ing).
 
+## Requesting more scope for an existing identity (scope requests)
+
+The auth-request flow (`POST /api/agents/auth-requests`) MINTS A NEW identity on
+approval, so an agent that already holds an active registry identity cannot use
+it to gain more scopes without duplicating itself. A scope request adds grants to
+that SAME canonical_id instead:
+
+- `POST /api/agents/registry/{canonical_id}/scope-requests`
+  `{requested_scopes, project_id?, reason?}` — create a pending request. Unlike
+  the new-agent auth-request (unauthenticated, since the agent has no creds yet),
+  this is CREDENTIALLED: the caller must be the agent's OWN registry bearer token
+  (`sub` == `canonical_id`) OR the owning user / an admin. An anonymous caller can
+  never escalate an existing identity. The middleware allowlist exposes only the
+  create path to a registry JWT; the route re-checks identity == canonical_id.
+- `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/approve`
+  `{granted_scopes, project_id?}` — owner/admin only. The admin may narrow but
+  never widen the requested scopes; each granted scope is added via
+  `add_grant(canonical_id, scope, project_id)` (idempotent on the
+  `(canonical_id, scope, project_id)` UNIQUE key, so re-approving is a no-op). No
+  new identity is created.
+- `POST /api/agents/registry/{canonical_id}/scope-requests/{req_id}/deny` —
+  owner/admin only.
+
+Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
+as the consent flow. `project_tasks` and the canvas scopes still require an
+explicit `project_id`; `decisions_read` / `decisions_write` (and the other global
+scopes) may be granted globally (`project_id=None`) or per-project. Creation
+surfaces a bell notification (`source: agent_scope_requests`) to the owner/admin,
+retired when the request is decided.
+
 ## Project invite redeem route (link + PIN)
 
 A project invite lets an external agent join without going through the consent
