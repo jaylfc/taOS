@@ -371,19 +371,27 @@ async def approve_request_record(
         # to the new project (reuse its identity + token, do not re-register).
         # A non-project approval colliding on a handle is still a genuine
         # identity collision and stays a 409.
-        if effective_project and set(granted_scopes) & _PROJECT_SCOPES:
+        # Bind the multi-project ADD strictly to the EXPLICIT validated
+        # project_id, never to effective_project. The guard above already
+        # rejected a project-scoped grant with an absent project_id, so for
+        # project scopes project_id is the operator/invite-validated value;
+        # binding to effective_project (which can carry the agent-supplied
+        # fallback for global scopes) would be safe only by invariant. Gate and
+        # bind on project_id so cross-project escalation is impossible by
+        # construction (kilo review, taOS #1862).
+        if project_id and set(granted_scopes) & _PROJECT_SCOPES:
             existing_cid = existing_active["canonical_id"]
             token = mint_registry_token(
                 existing_cid,
                 private_pem,
                 user_id=decided_by,
                 framework=record["framework"],
-                project_id=effective_project,
+                project_id=project_id,
             )
             await add_agent_to_project(
                 request,
                 canonical_id=existing_cid,
-                project_id=effective_project,
+                project_id=project_id,
                 granted_scopes=granted_scopes,
                 decided_by=decided_by,
             )
