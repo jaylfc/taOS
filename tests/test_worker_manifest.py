@@ -1,4 +1,4 @@
-"""Tests for tinyagentos.worker.worker_manifest — local manifest parser."""
+"""Tests for tinyagentos.worker.worker_manifest -- local manifest parser."""
 from __future__ import annotations
 
 import json
@@ -28,13 +28,13 @@ class TestSoftwareMapping:
         assert SOFTWARE_TO_BACKEND_TYPE['embed'] == 'llama-cpp'
 
     def test_unrecognised_software_not_in_mapping(self):
-        """kokoro and whisper are no longer mapped — no probe candidates exist."""
+        """kokoro and whisper are no longer mapped -- no probe candidates exist."""
         assert 'kokoro' not in SOFTWARE_TO_BACKEND_TYPE
         assert 'whisper' not in SOFTWARE_TO_BACKEND_TYPE
 
 
 # ---------------------------------------------------------------------------
-# load_manifest — file-based tests
+# load_manifest -- file-based tests
 # ---------------------------------------------------------------------------
 
 
@@ -215,8 +215,7 @@ class TestLoadManifestEdgeCases:
         try:
             result = load_manifest(tmp_path)
             assert len(result["models"]) == 1
-            # load_manifest doesn't validate individual fields —
-            # that's the enrichment layer's job.
+            # load_manifest doesn't validate individual fields -- # that's the enrichment layer's job.
         finally:
             os.unlink(tmp_path)
 

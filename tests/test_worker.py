@@ -706,7 +706,7 @@ class TestDetectBackends:
 
 
 # ---------------------------------------------------------------------------
-# Enrichment — manifest-defined stopped backends (MEDIUM fix, #1765)
+# Enrichment -- manifest-defined stopped backends (MEDIUM fix, #1765)
 # ---------------------------------------------------------------------------
 
 
@@ -721,7 +721,7 @@ class TestManifestStoppedBackends:
         entry with status='stopped' and the declared available_models."""
         agent = WorkerAgent("http://localhost:6969")
 
-        # No backends are running — all probes fail
+        # No backends are running -- all probes fail
         with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -834,7 +834,7 @@ class TestManifestStoppedBackends:
 
     async def test_manifest_enrichment_failure_graceful(self):
         """If the manifest enrichment raises, detect_backends still returns
-        without crashing — just the probed backends without enrichment."""
+        without crashing -- just the probed backends without enrichment."""
         agent = WorkerAgent("http://localhost:6969")
 
         mock_tags_resp = MagicMock()
@@ -863,7 +863,7 @@ class TestManifestStoppedBackends:
             mock_client.get = AsyncMock(side_effect=mock_get)
             mock_client_cls.return_value = mock_client
 
-            # load_manifest raises — simulates a file-system or parse error
+            # load_manifest raises -- simulates a file-system or parse error
             # that gets past load_manifest's own guards
             with patch("tinyagentos.worker.worker_manifest.load_manifest",
                        side_effect=RuntimeError("disk failure")):
@@ -876,7 +876,7 @@ class TestManifestStoppedBackends:
 
 
 # ---------------------------------------------------------------------------
-# Enrichment — loaded_models vs catalog (NIT fix, #1765)
+# Enrichment -- loaded_models vs catalog (NIT fix, #1765)
 # ---------------------------------------------------------------------------
 
 
@@ -903,7 +903,7 @@ class TestManifestLoadedStatus:
                 {"model": "phi3:mini", "size": 2_000_000_000},
             ]
         })
-        # /api/ps returns only the actually-loaded models — just tinyllama
+        # /api/ps returns only the actually-loaded models -- just tinyllama
         mock_ps_resp = MagicMock()
         mock_ps_resp.status_code = 200
         mock_ps_resp.json = MagicMock(return_value={
