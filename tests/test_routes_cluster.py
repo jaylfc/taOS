@@ -589,3 +589,141 @@ async def test_update_worker_connect_error_cancels_drain(client, app, monkeypatc
     assert resp.json().get("drain_cancelled") is True
     # Drain was cancelled, so the worker is back online and still routable.
     assert app.state.cluster_manager.get_worker("gpu-box").status == "online"
+
+
+# ---------------------------------------------------------------------------
+# Rolling "update all workers" orchestration (taOS #1876)
+# ---------------------------------------------------------------------------
+
+
+async def _register_workers(app, *names):
+    """Register multiple online workers for testing update-all.
+
+    Adds workers directly to the cluster manager's internal dict to avoid
+    spawning background model-promotion tasks that can accumulate across
+    concurrent async tests and cause event-loop deadlocks.
+    """
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    cluster = app.state.cluster_manager
+    for i, name in enumerate(names):
+        cluster._workers[name] = WorkerInfo(  # noqa: SLF001
+            name=name, url=f"http://{name}:9000",
+            capabilities=["chat"],
+            load=0.0, status="online", platform="linux",
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_happy_path(client, app, monkeypatch):
+    """Two online workers: both restart-disconnect, both succeed."""
+    import httpx as _httpx
+    await _register_workers(app, "w1", "w2")
+    monkeypatch.setattr(
+        _httpx, "AsyncClient",
+        _client_raising(_httpx.RemoteProtocolError("server disconnected during restart")),
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert sorted(data["updated"]) == ["w1", "w2"]
+    assert data["failed"] == []
+    assert data["total_targets"] == 2
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_one_fails_others_continue(client, app, monkeypatch):
+    """w1 fails with ConnectError, w2 succeeds — roll continues."""
+    import httpx as _httpx
+    await _register_workers(app, "w1", "w2")
+
+    from tinyagentos.routes.cluster import _do_single_worker_update as _original_do
+
+    async def _mock_do(cluster, worker):
+        if worker.name == "w1":
+            return {"success": False, "worker": "w1", "error": "Worker unreachable for update: test"}
+        return await _original_do(cluster, worker)
+
+    monkeypatch.setattr(
+        _httpx, "AsyncClient",
+        _client_raising(_httpx.RemoteProtocolError("server disconnected")),
+    )
+    monkeypatch.setattr(
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["updated"] == ["w2"]
+    assert len(data["failed"]) == 1
+    assert data["failed"][0]["name"] == "w1"
+    assert "unreachable" in data["failed"][0]["error"]
+    assert data["total_targets"] == 2
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_skips_local(client, app, monkeypatch):
+    """The 'local' worker is never targeted for update."""
+    import httpx as _httpx
+    await _register_workers(app, "r1", "r2")
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    app.state.cluster_manager._workers["local"] = WorkerInfo(  # noqa: SLF001
+        name="local", url="http://localhost:9000",
+        capabilities=["chat"], load=0.0, status="online", platform="linux",
+    )
+    monkeypatch.setattr(
+        _httpx, "AsyncClient",
+        _client_raising(_httpx.RemoteProtocolError("server disconnected")),
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert sorted(data["updated"]) == ["r1", "r2"]
+    # local must appear in skipped, not updated
+    assert "local" in data["skipped"]
+    assert "local" not in data["updated"]
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_skips_offline(client, app, monkeypatch):
+    """Offline workers are skipped, online workers are updated."""
+    import httpx as _httpx
+    await _register_workers(app, "online-1", "online-2")
+    app.state.cluster_manager._workers["online-2"].status = "offline"  # noqa: SLF001
+    monkeypatch.setattr(
+        _httpx, "AsyncClient",
+        _client_raising(_httpx.RemoteProtocolError("server disconnected")),
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["updated"] == ["online-1"]
+    assert "online-2" in data["skipped"]
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_no_online_workers(client, app):
+    """When no online remote workers exist, return empty with a message."""
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["updated"] == []
+    assert data["failed"] == []
+    assert "no online" in data.get("message", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_admin_gate_rejected(app, tmp_data_dir):
+    """Unauthenticated callers are rejected with 401/403."""
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/cluster/workers/update-all",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code in (401, 403)
