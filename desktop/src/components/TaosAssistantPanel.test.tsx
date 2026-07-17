@@ -91,4 +91,97 @@ describe("TaosAssistantPanel", () => {
     fireEvent.click(cogBtn);
     expect(screen.getByTestId("settings-modal")).toBeInTheDocument();
   });
+
+  it("last assistant message shows edit hint when not streaming", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: false,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Hi! How can I help?", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    expect(screen.getByText("click to edit")).toBeInTheDocument();
+  });
+
+  it("no edit hint while streaming the last assistant message", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: true,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Thinking...", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    expect(screen.queryByText("click to edit")).not.toBeInTheDocument();
+  });
+
+  it("clicking last assistant bubble enters edit mode", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: false,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Old response", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    const bubble = screen.getByText("Old response").closest('[class*="cursor-pointer"]');
+    expect(bubble).not.toBeNull();
+    fireEvent.click(bubble!);
+    expect(screen.getByRole("textbox", { name: /edit agent message/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save edit/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /cancel edit/i })).toBeInTheDocument();
+  });
+
+  it("saving edit updates the store", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: false,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Old response", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    const bubble = screen.getByText("Old response").closest('[class*="cursor-pointer"]');
+    fireEvent.click(bubble!);
+    const textarea = screen.getByRole("textbox", { name: /edit agent message/i });
+    fireEvent.change(textarea, { target: { value: "Corrected!" } });
+    fireEvent.click(screen.getByRole("button", { name: /save edit/i }));
+    expect(useTaosAgentStore.getState().messages[1].content).toBe("Corrected!");
+  });
+
+  it("cancel edit reverts without changing store", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: false,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Original", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    fireEvent.click(screen.getByText("Original").closest('[class*="cursor-pointer"]')!);
+    fireEvent.click(screen.getByRole("button", { name: /cancel edit/i }));
+    expect(useTaosAgentStore.getState().messages[1].content).toBe("Original");
+  });
+
+  it("Escape key cancels edit", () => {
+    useTaosAgentStore.setState({
+      model: "qwen3",
+      streaming: false,
+      messages: [
+        { role: "user", content: "Hello", ts: 1 },
+        { role: "assistant", content: "Original", ts: 2 },
+      ],
+    });
+    render(<TaosAssistantPanel />);
+    fireEvent.click(screen.getByText("Original").closest('[class*="cursor-pointer"]')!);
+    const textarea = screen.getByRole("textbox", { name: /edit agent message/i });
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(useTaosAgentStore.getState().messages[1].content).toBe("Original");
+  });
 });

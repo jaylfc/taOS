@@ -69,4 +69,24 @@ describe("taos-agent-store", () => {
     useTaosAgentStore.getState().setStreaming(false);
     expect(useTaosAgentStore.getState().streaming).toBe(false);
   });
+
+  it("updateMessage replaces content at index", () => {
+    const { appendMessage, updateMessage } = useTaosAgentStore.getState();
+    appendMessage({ role: "user", content: "Hello", ts: 1 });
+    appendMessage({ role: "assistant", content: "Hi there", ts: 2 });
+    updateMessage(1, "Corrected response");
+    const msgs = useTaosAgentStore.getState().messages;
+    expect(msgs[1].content).toBe("Corrected response");
+    // Does not touch other fields
+    expect(msgs[1].role).toBe("assistant");
+    expect(msgs[1].ts).toBe(2);
+  });
+
+  it("updateMessage with out-of-range index is a no-op", () => {
+    const { appendMessage, updateMessage } = useTaosAgentStore.getState();
+    appendMessage({ role: "assistant", content: "ok", ts: 1 });
+    updateMessage(-1, "x");
+    updateMessage(99, "x");
+    expect(useTaosAgentStore.getState().messages[0].content).toBe("ok");
+  });
 });
