@@ -47,8 +47,6 @@ DEFAULT_MANIFEST_PATH = "/etc/taos/worker-models.json"
 SOFTWARE_TO_BACKEND_TYPE: dict[str, str] = {
     "llamacpp": "llama-cpp",
     "embed": "llama-cpp",
-    "kokoro": "kokoro",
-    "whisper": "whisper",
 }
 
 

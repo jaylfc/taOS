@@ -647,3 +647,255 @@ class TestDetectBackends:
         port2 = urlparse("http://localhost:11434").port
         name2 = f"{backend_type}:{port2}" if port2 is not None else backend_type
         assert name2 == "ollama:11434"
+
+
+# ---------------------------------------------------------------------------
+# Enrichment — manifest-defined stopped backends (MEDIUM fix, #1765)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestManifestStoppedBackends:
+    """MEDIUM: manifest entries for stopped-but-installed backends must appear
+    in detect_backends output, decoupling availability from liveness."""
+
+    async def test_manifest_only_backend_creates_stopped_entry(self):
+        """When a manifest declares models for a backend type that has no
+        probed (running) instance, detect_backends emits a synthetic backend
+        entry with status='stopped' and the declared available_models."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        # No backends are running — all probes fail
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client_cls.return_value = mock_client
+
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "qwen-7b",
+                        "capability": "chat",
+                        "software": "llamacpp",
+                        "port": 8000,
+                        "vram_required_gb": 16.0,
+                        "health_url": "http://localhost:8000/health",
+                    },
+                ],
+            }
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                backends = await agent.detect_backends()
+
+        # Should have a synthetic backend for llama-cpp with the manifest entry
+        assert len(backends) == 1
+        assert backends[0]["type"] == "llama-cpp"
+        assert backends[0]["status"] == "stopped"
+        assert backends[0]["models"] == []
+        assert backends[0]["loaded_models"] == []
+        avail = backends[0].get("available_models", [])
+        assert len(avail) == 1
+        assert avail[0]["model_id"] == "qwen-7b"
+        assert avail[0]["status"] == "available"
+
+    async def test_manifest_mixed_probed_and_stopped(self):
+        """When some backends are running and others are only in the manifest,
+        the probed backends get enriched AND synthetic entries appear for the
+        manifest-only types."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        # Only ollama on 11434 is running
+        mock_tags_resp = MagicMock()
+        mock_tags_resp.status_code = 200
+        mock_tags_resp.json = MagicMock(return_value={
+            "models": [{"model": "tinyllama:latest", "size": 600_000_000}]
+        })
+        mock_ps_resp = MagicMock()
+        mock_ps_resp.status_code = 200
+        mock_ps_resp.json = MagicMock(return_value={
+            "models": [{"model": "tinyllama:latest", "size": 600_000_000}]
+        })
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "11434" in url:
+                    if "/api/ps" in url:
+                        return mock_ps_resp
+                    return mock_tags_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "qwen-7b",
+                        "capability": "chat",
+                        "software": "llamacpp",
+                        "port": 8000,
+                    },
+                ],
+            }
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                backends = await agent.detect_backends()
+
+        # Should have the probed ollama + synthetic llama-cpp
+        types = {b["type"] for b in backends}
+        assert "ollama" in types
+        assert "llama-cpp" in types
+        # llama-cpp should be stopped
+        llcpp = [b for b in backends if b["type"] == "llama-cpp"][0]
+        assert llcpp["status"] == "stopped"
+        assert len(llcpp["available_models"]) == 1
+        assert llcpp["available_models"][0]["model_id"] == "qwen-7b"
+
+    async def test_manifest_empty_no_synthetic_backends(self):
+        """When the manifest has no models, no synthetic backends are created."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value={"resource_id": "", "models": []}):
+                backends = await agent.detect_backends()
+
+        assert backends == []
+
+    async def test_manifest_enrichment_failure_graceful(self):
+        """If the manifest enrichment raises, detect_backends still returns
+        without crashing — just the probed backends without enrichment."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        mock_tags_resp = MagicMock()
+        mock_tags_resp.status_code = 200
+        mock_tags_resp.json = MagicMock(return_value={
+            "models": [{"model": "tinyllama:latest", "size": 600_000_000}]
+        })
+        mock_ps_resp = MagicMock()
+        mock_ps_resp.status_code = 200
+        mock_ps_resp.json = MagicMock(return_value={
+            "models": [{"model": "tinyllama:latest", "size": 600_000_000}]
+        })
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "11434" in url:
+                    if "/api/ps" in url:
+                        return mock_ps_resp
+                    return mock_tags_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            # load_manifest raises — simulates a file-system or parse error
+            # that gets past load_manifest's own guards
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       side_effect=RuntimeError("disk failure")):
+                backends = await agent.detect_backends()
+
+        # Backend still detected, just no available_models attached
+        assert len(backends) == 1
+        assert backends[0]["type"] == "ollama"
+        assert "available_models" not in backends[0]
+
+
+# ---------------------------------------------------------------------------
+# Enrichment — loaded_models vs catalog (NIT fix, #1765)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestManifestLoadedStatus:
+    """NIT: 'loaded' status must use loaded_models (in-memory), not the
+    full catalog from /api/tags (on-disk)."""
+
+    async def test_loaded_status_uses_loaded_models(self):
+        """Verify that a manifest model present in loaded_models gets
+        status='loaded', while one only in the catalog gets 'available'."""
+        agent = WorkerAgent("http://localhost:6969")
+
+        # Patch SOFTWARE_TO_BACKEND_TYPE to include ollama mapping so
+        # manifest entries match the probed ollama backend.
+        mock_sw_map = {"ollama": "ollama"}
+
+        # /api/tags returns ALL models on disk
+        mock_tags_resp = MagicMock()
+        mock_tags_resp.status_code = 200
+        mock_tags_resp.json = MagicMock(return_value={
+            "models": [
+                {"model": "tinyllama:latest", "size": 600_000_000},
+                {"model": "phi3:mini", "size": 2_000_000_000},
+            ]
+        })
+        # /api/ps returns only the actually-loaded models — just tinyllama
+        mock_ps_resp = MagicMock()
+        mock_ps_resp.status_code = 200
+        mock_ps_resp.json = MagicMock(return_value={
+            "models": [
+                {"model": "tinyllama:latest", "size": 600_000_000},
+            ]
+        })
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "11434" in url:
+                    if "/api/ps" in url:
+                        return mock_ps_resp
+                    return mock_tags_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "tinyllama:latest",
+                        "software": "ollama",
+                    },
+                    {
+                        "model_id": "phi3:mini",
+                        "software": "ollama",
+                    },
+                ],
+            }
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                with patch("tinyagentos.worker.worker_manifest.SOFTWARE_TO_BACKEND_TYPE",
+                           mock_sw_map):
+                    backends = await agent.detect_backends()
+
+        assert len(backends) == 1
+        avail = backends[0].get("available_models", [])
+        assert len(avail) == 2
+        # tinyllama is loaded (in /api/ps → loaded_models)
+        tiny = [m for m in avail if m["model_id"] == "tinyllama:latest"][0]
+        assert tiny["status"] == "loaded"
+        # phi3 is only on disk (in /api/tags → models catalog, not loaded)
+        phi = [m for m in avail if m["model_id"] == "phi3:mini"][0]
+        assert phi["status"] == "available"

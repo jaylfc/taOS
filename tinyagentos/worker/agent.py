@@ -177,11 +177,15 @@ class WorkerAgent:
         # and take the whole worker down with it.
         try:
             manifest = load_manifest()
+            probed_types: set[str] = {b["type"] for b in backends}
             if manifest.get("models"):
                 for backend in backends:
                     backend_type = backend["type"]
-                    probed_names = {
-                        m.get("name", "") for m in backend.get("models", [])
+                    # Use loaded_models (resident in memory, per /api/ps) rather
+                    # than the full models catalog so "loaded" status reflects
+                    # real residency, not merely-on-disk.
+                    probed_loaded_names = {
+                        m.get("name", "") for m in backend.get("loaded_models", [])
                     }
                     available = []
                     for m in manifest["models"]:
@@ -195,7 +199,7 @@ class WorkerAgent:
                                 "skipping worker-manifest entry without model_id: %r", m
                             )
                             continue
-                        status = "loaded" if model_id in probed_names else "available"
+                        status = "loaded" if model_id in probed_loaded_names else "available"
                         available.append({
                             "model_id": model_id,
                             "capability": m.get("capability", ""),
@@ -207,6 +211,57 @@ class WorkerAgent:
                         })
                     if available:
                         backend["available_models"] = available
+
+            # Emit synthetic backend entries for manifest-declared software
+            # types that have no running (probed) backend counterpart.  This
+            # decouples availability from liveness: a stopped-but-installed
+            # backend declared in the manifest still advertises its available
+            # models to the controller so the cluster view reflects total
+            # capacity, not just currently-running backends.
+            declared_entries: dict[str, list[dict]] = {}
+            for m in manifest.get("models", []):
+                if not isinstance(m, dict):
+                    continue
+                sw = m.get("software", "")
+                if not sw:
+                    continue
+                bt = SOFTWARE_TO_BACKEND_TYPE.get(sw)
+                if not bt:
+                    continue  # unknown software type, silently skip
+                if bt in probed_types:
+                    continue  # already covered by the probed backend above
+                declared_entries.setdefault(bt, []).append(m)
+
+            for bt, entries in declared_entries.items():
+                available = []
+                for m in entries:
+                    model_id = m.get("model_id")
+                    if not model_id:
+                        logger.warning(
+                            "skipping worker-manifest entry without model_id: %r", m
+                        )
+                        continue
+                    available.append({
+                        "model_id": model_id,
+                        "capability": m.get("capability", ""),
+                        "software": m.get("software", ""),
+                        "port": m.get("port", 0),
+                        "vram_required_gb": m.get("vram_required_gb", 0.0),
+                        "health_url": m.get("health_url", ""),
+                        "status": "available",
+                    })
+                if available:
+                    backends.append({
+                        "name": bt,
+                        "type": bt,
+                        "url": "",
+                        "capabilities": sorted(BACKEND_CAPABILITIES.get(bt, set())),
+                        "models": [],
+                        "loaded_models": [],
+                        "status": "stopped",
+                        "kv_quant_support": {"k": ["fp16"], "v": ["fp16"], "boundary": False},
+                        "available_models": available,
+                    })
         except Exception:  # noqa: BLE001 - manifest must never brick the worker
             logger.warning("worker-manifest enrichment failed; continuing without it",
                            exc_info=True)
