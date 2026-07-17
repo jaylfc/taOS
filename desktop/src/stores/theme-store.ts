@@ -404,9 +404,29 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
         credentials: "include",
       });
       if (res.ok) {
-        set((s) => ({
-          userWallpapers: s.userWallpapers.filter((w) => w.id !== id),
-        }));
+        const userWpId = `user-${id}`;
+        set((s) => {
+          // Purge this wallpaper from per-theme selections
+          const nextByTheme: Record<string, string> = {};
+          let changed = false;
+          for (const [themeId, wpId] of Object.entries(s.wallpaperIdByTheme)) {
+            if (wpId !== userWpId) {
+              nextByTheme[themeId] = wpId;
+            } else {
+              changed = true;
+            }
+          }
+          const updates: Partial<ThemeStore> = {
+            userWallpapers: s.userWallpapers.filter((w) => w.id !== id),
+          };
+          if (changed) updates.wallpaperIdByTheme = nextByTheme;
+          // If the deleted wallpaper is currently active, reset to default
+          if (s.wallpaperId === userWpId) {
+            const graphite = WALLPAPERS.find((w) => w.id === "graphite") ?? WALLPAPERS[0]!;
+            Object.assign(updates, wallpaperFields(graphite, graphite.id));
+          }
+          return updates as ThemeStore;
+        });
       }
     } catch {
       // best-effort — user can retry

@@ -77,7 +77,7 @@ async def serve_wallpaper(request: Request, wp_id: str):
     """Serve a user-uploaded wallpaper image."""
     store = request.app.state.desktop_wallpapers
     record = await store.get_wallpaper(wp_id)
-    if record is None:
+    if record is None or record["user_id"] != _user_id(request):
         return JSONResponse({"error": "Wallpaper not found"}, status_code=404)
 
     file_path = store.wallpapers_dir / record["filename"]
@@ -95,8 +95,9 @@ async def serve_wallpaper(request: Request, wp_id: str):
 async def delete_wallpaper(request: Request, wp_id: str):
     """Delete a user-uploaded wallpaper."""
     store = request.app.state.desktop_wallpapers
+    current_user = _user_id(request)
     record = await store.get_wallpaper(wp_id)
-    if record is None:
+    if record is None or record["user_id"] != current_user:
         return JSONResponse({"error": "Wallpaper not found"}, status_code=404)
 
     # Remove from disk

@@ -87,7 +87,7 @@ class DesktopWallpapersStore(BaseStore):
         """Get a single wallpaper by id."""
         assert self._db is not None
         cursor = await self._db.execute(
-            "SELECT id, label, filename, mime_type, created_at "
+            "SELECT id, user_id, label, filename, mime_type, created_at "
             "FROM user_wallpapers WHERE id = ?",
             (wp_id,),
         )
@@ -96,11 +96,12 @@ class DesktopWallpapersStore(BaseStore):
             return None
         return {
             "id": row[0],
-            "label": row[1],
-            "filename": row[2],
-            "mime_type": row[3],
+            "user_id": row[1],
+            "label": row[2],
+            "filename": row[3],
+            "mime_type": row[4],
             "url": f"/api/desktop/wallpapers/{row[0]}",
-            "created_at": row[4],
+            "created_at": row[5],
         }
 
     async def delete_wallpaper(self, wp_id: str) -> bool:
