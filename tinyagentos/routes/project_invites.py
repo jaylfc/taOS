@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import socket
@@ -707,7 +708,7 @@ async def invite_info(request: Request, invite_id: str):
 
 def _invite_html(invite: dict, project: dict) -> str:
     """Minimal self-contained HTML page for a human who opens the invite link."""
-    name = (project.get("name") or invite.get("project_id") or "a taOS project")
+    name = html.escape(project.get("name") or invite.get("project_id") or "a taOS project")
     return (
         "<!doctype html><meta charset=utf-8><title>taOS project invite</title>"
         "<h1>You have been invited to a taOS project</h1>"

@@ -328,6 +328,25 @@ async def test_invite_info_html_for_browser(client, app):
 
 
 @pytest.mark.asyncio
+async def test_invite_info_html_escapes_project_name(client, app):
+    # A project name is owner-controlled and is interpolated into the invite
+    # advert HTML. It must be HTML-escaped or a name like "<script>..." would
+    # execute in the browser of whoever opens the invite link (stored XSS).
+    resp = await client.post(
+        "/api/projects",
+        json={"name": "<script>alert(1)</script>", "slug": "xssproj"},
+    )
+    assert resp.status_code == 200, resp.text
+    pid = resp.json()["id"]
+    iid, pin = await _mint_invite(client, pid, approval_mode="auto")
+
+    resp = await client.get(f"/i/{iid}", headers={"accept": "text/html"})
+    assert resp.status_code == 200, resp.text
+    assert "<script>alert(1)</script>" not in resp.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in resp.text
+
+
+@pytest.mark.asyncio
 async def test_guide_markdown_contains_required_instructions(client, app, monkeypatch, tmp_path):
     await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
     pid = await _create_project(client, slug="redguide")
