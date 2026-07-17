@@ -252,14 +252,21 @@ class WorkerAgent:
                     })
                 if available:
                     backends.append({
+                        # Synthetic entry: no probed instance, so name is the
+                        # bare type (not type:port like live backends).  The
+                        # url is None because there is no reachable endpoint.
                         "name": bt,
                         "type": bt,
-                        "url": "",
+                        "url": None,
                         "capabilities": sorted(BACKEND_CAPABILITIES.get(bt, set())),
                         "models": [],
                         "loaded_models": [],
                         "status": "stopped",
-                        "kv_quant_support": {"k": ["fp16"], "v": ["fp16"], "boundary": False},
+                        # No probed backend → KV quant support is unknown.
+                        # Empty dict means "no data" rather than over-reporting
+                        # fp16.  detect_kv_quant_support() adds the fp16
+                        # baseline anyway.
+                        "kv_quant_support": {},
                         "available_models": available,
                     })
         except Exception:  # noqa: BLE001 - manifest must never brick the worker
