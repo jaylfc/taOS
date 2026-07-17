@@ -483,3 +483,92 @@ async def test_drive_turn_ensure_session_failure_emits_error():
     )
 
     assert any(r["kind"] == "error" for r in received)
+
+
+# ---------------------------------------------------------------------------
+# drive_turn — timeout
+# ---------------------------------------------------------------------------
+
+class _HangingAdapter(_FakeAdapter):
+    """Adapter whose prompt() blocks forever (simulates a hung LLM)."""
+
+    async def prompt(self, text, trace_id=None):
+        # Block forever — never completes.
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_drive_turn_timeout_emits_error():
+    """With a short timeout, drive_turn must emit an error, not hang."""
+    received = []
+
+    async def sink(reply: dict):
+        received.append(reply)
+
+    await drive_turn(
+        "text", "tx", sink,
+        base_url="http://127.0.0.1:5900",
+        model_id="gpt-4o",
+        adapter_factory=lambda cfg, s: _HangingAdapter(cfg, s),
+        turn_timeout=0.1,
+    )
+
+    error_replies = [r for r in received if r["kind"] == "error"]
+    assert len(error_replies) == 1
+    assert error_replies[0]["trace_id"] == "tx"
+
+
+@pytest.mark.asyncio
+async def test_drive_turn_timeout_message_is_descriptive():
+    """The error reply must mention timeout, not the generic transport failure."""
+    received = []
+
+    async def sink(reply: dict):
+        received.append(reply)
+
+    await drive_turn(
+        "text", "ty", sink,
+        base_url="http://127.0.0.1:5900",
+        model_id="gpt-4o",
+        adapter_factory=lambda cfg, s: _HangingAdapter(cfg, s),
+        turn_timeout=0.1,
+    )
+
+    error = next(r for r in received if r["kind"] == "error")
+    assert "timed out" in error["error"]
+    assert "limit:" in error["error"]
+
+
+@pytest.mark.asyncio
+async def test_drive_turn_default_timeout_does_not_trigger_on_fast_turn():
+    """When the adapter completes promptly, the timeout must not fire."""
+    received = []
+
+    async def sink(reply: dict):
+        received.append(reply)
+
+    await drive_turn(
+        "hello", "t1", sink,
+        base_url="http://127.0.0.1:5900",
+        model_id="gpt-4o",
+        adapter_factory=_FakeAdapter,
+    )
+
+    error_replies = [r for r in received if r["kind"] == "error"]
+    assert len(error_replies) == 0, (
+        f"timeout should not fire on a fast turn, got {error_replies}"
+    )
+    assert len(received) == 2  # delta + final from _FakeAdapter
+
+
+@pytest.mark.asyncio
+async def test_drive_turn_rejects_non_positive_timeout():
+    """turn_timeout <= 0 must raise ValueError immediately, not degrade."""
+    with pytest.raises(ValueError, match="turn_timeout must be positive"):
+        await drive_turn(
+            "text", "tx",
+            sink=lambda r: None,
+            base_url="http://127.0.0.1:5900",
+            model_id="gpt-4o",
+            turn_timeout=0,
+        )

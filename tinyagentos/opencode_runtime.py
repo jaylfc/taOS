@@ -346,12 +346,18 @@ async def drive_turn(
     model_provider_id: str = "litellm",
     server_password: str | None = None,
     adapter_factory: Callable[..., OpenCodeAdapter] = OpenCodeAdapter,
+    turn_timeout: float = 300.0,
 ) -> None:
     """Run one opencode turn, streaming reply dicts to *sink*.
 
     Mirrors :func:`tinyagentos.openclaw_acp_runtime.drive_turn` in defensive
     style: never raises.  Any failure degrades to exactly one
     ``{"kind":"error",...}`` dict delivered to the sink.
+
+    The turn is bounded by *turn_timeout* (default 300 s).  If the LLM call
+    takes longer, an ``asyncio.TimeoutError`` is raised inside the adapter
+    operations and degraded to an ``error`` reply.  This prevents an HTTP
+    connection from blocking indefinitely when the LLM backend hangs.
 
     Args:
         text:              User message text.
@@ -362,7 +368,12 @@ async def drive_turn(
         model_provider_id: opencode provider ID (default ``"litellm"``).
         server_password:   If set, HTTP Basic auth password (username ``opencode``).
         adapter_factory:   Injectable for tests; defaults to :class:`OpenCodeAdapter`.
+        turn_timeout:      Seconds before the turn is cancelled (default 300).
     """
+    if turn_timeout <= 0:
+        raise ValueError(
+            f"turn_timeout must be positive, got {turn_timeout}"
+        )
     cfg = OpenCodeConfig(
         base_url=base_url,
         server_password=server_password,
@@ -370,19 +381,48 @@ async def drive_turn(
         model_id=model_id,
     )
     adapter = None
+    # Track whether an error reply was already emitted (e.g. by the adapter
+    # returning a non-200 status before the timeout fires) so we don't
+    # violate the "exactly one error" contract.
+    _error_emitted: bool = False
+
+    def _sink(reply: dict) -> None:
+        nonlocal _error_emitted
+        if reply.get("kind") == "error":
+            _error_emitted = True
+        return sink(reply)
+
     try:
-        adapter = adapter_factory(cfg, sink)
-        await adapter.ensure_session()
-        await adapter.prompt(text, trace_id)
+        adapter = adapter_factory(cfg, _sink)
+        async with asyncio.timeout(turn_timeout):
+            await adapter.ensure_session()
+            await adapter.prompt(text, trace_id)
+    except TimeoutError:
+        logger.error(
+            "opencode_runtime: drive_turn timed out after %.1fs", turn_timeout,
+        )
+        if not _error_emitted:
+            try:
+                reply: dict = {
+                    "kind": "error",
+                    "trace_id": trace_id,
+                    "error": f"agent turn timed out (limit: {turn_timeout:g}s)",
+                }
+                res = sink(reply)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                logger.exception("opencode_runtime: error reply also failed")
     except Exception:
         logger.exception("opencode_runtime: drive_turn failed")
-        try:
-            reply: dict = {"kind": "error", "trace_id": trace_id, "error": "agent turn failed (opencode transport)"}
-            res = sink(reply)
-            if asyncio.iscoroutine(res):
-                await res
-        except Exception:
-            logger.exception("opencode_runtime: error reply also failed")
+        if not _error_emitted:
+            try:
+                reply: dict = {"kind": "error", "trace_id": trace_id, "error": "agent turn failed (opencode transport)"}
+                res = sink(reply)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                logger.exception("opencode_runtime: error reply also failed")
     finally:
         if adapter is not None:
             try:
