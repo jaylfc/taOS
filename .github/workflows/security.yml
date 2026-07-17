@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,proxy,worker]"
 
       - name: Check for known vulnerabilities
         # CVE-2026-3219 affects pip itself with no fix released yet; revisit once
