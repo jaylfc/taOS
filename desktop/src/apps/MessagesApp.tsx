@@ -1,12 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { createPortal } from "react-dom";
 import {
   MessageCircle,
   Hash,
   Users,
   Plus,
-  Send,
-  Bot,
   X,
   AtSign,
   ChevronDown,
@@ -34,34 +31,25 @@ import { MobileSplitView } from "@/components/mobile/MobileSplitView";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { useDropTarget } from "@/shell/dnd/use-drop-target";
-import { startDrag, endDrag } from "@/shell/dnd/dnd-bus";
-import { resolveAgentEmoji } from "@/lib/agent-emoji";
-import { MessageAvatar } from "./chat/MessageAvatar";
 import { ChannelSettingsPanel } from "./chat/ChannelSettingsPanel";
 import { AgentContextMenu } from "./chat/AgentContextMenu";
 import { type SlashCommandsBySlug } from "./chat/SlashMenu";
-import { TypingFooter, type AgentTyping } from "./chat/TypingFooter";
+import { type AgentTyping } from "./chat/TypingFooter";
 import { useTypingEmitter } from "@/lib/use-typing-emitter";
-import { MessageHoverActions } from "./chat/MessageHoverActions";
-import { ThreadIndicator } from "./chat/ThreadIndicator";
 import { ThreadPanel } from "./chat/ThreadPanel";
 import { type PendingAttachment } from "./chat/AttachmentsBar";
-import { AttachmentGallery } from "./chat/AttachmentGallery";
 import { uploadDiskFile, attachmentFromPath, type AttachmentRecord } from "@/lib/chat-attachments-api";
 import { useThreadPanel } from "@/lib/use-thread-panel";
 import { openFilePicker } from "@/shell/file-picker-api";
 import { MessageOverflowMenu } from "./chat/MessageOverflowMenu";
 import { BottomSheet } from "@/shell/BottomSheet";
-import { MessageEditor } from "./chat/MessageEditor";
-import { MessageTombstone } from "./chat/MessageTombstone";
 import { PinBadge } from "./chat/PinBadge";
 import { PinnedMessagesPopover, type PinnedMessage } from "./chat/PinnedMessagesPopover";
 import { AllThreadsList } from "./chat/AllThreadsList";
 import { ChannelSwitcher } from "./chat/ChannelSwitcher";
 import { useChatNotifications } from "./chat/useChatNotifications";
-import { PinRequestAffordance } from "./chat/PinRequestAffordance";
-import { ReactionBar } from "./chat/ReactionBar";
 import { MessageInput } from "./chat/MessageInput";
+import { MessageList, type MessageListHandle } from "./chat/MessageList";
 import {
   pinMessage, unpinMessage, listPins,
   editMessage as apiEditMessage, deleteMessage as apiDeleteMessage,
@@ -79,7 +67,6 @@ import {
   computeStallInfo,
   type StallWatch,
 } from "./MessagesApp.stallWatch";
-import { displayAuthor } from "./chat/format-author";
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
@@ -310,7 +297,6 @@ export function renderInline(text: string, keyPrefix: string) {
   ];
 }
 
-const EMOJI_PICKER = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🚀", "✅"];
 
 // Best-effort per-channel draft storage. Drafts are user input that may
 // contain sensitive material; they are kept in localStorage (the same
@@ -485,8 +471,7 @@ export function MessagesApp({
   useEffect(() => { channelsRef.current = channels; }, [channels]);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messageListRef = useRef<HTMLDivElement>(null);
+  const messageListHandleRef = useRef<MessageListHandle>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSentRef = useRef(0);
@@ -1011,7 +996,7 @@ export function MessagesApp({
     const delta = messages.length - prevMsgCountRef.current;
     prevMsgCountRef.current = messages.length;
     if (autoScrollRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      messageListHandleRef.current?.scrollToBottom();
     } else if (delta > 0) {
       setNewCount((c) => c + delta);
     }
@@ -1030,8 +1015,8 @@ export function MessagesApp({
     return () => clearInterval(id);
   }, []);
 
-  const handleScroll = () => {
-    const el = messageListRef.current;
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
     if (!el) return;
     const nowAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     autoScrollRef.current = nowAtBottom;
@@ -1041,7 +1026,7 @@ export function MessagesApp({
   };
 
   const scrollToLatest = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messageListHandleRef.current?.scrollToBottom();
     autoScrollRef.current = true;
     setAtBottom(true);
     setNewCount(0);
@@ -1772,362 +1757,80 @@ export function MessagesApp({
             )}
           </div>
 
-          {/* message list — explicitly selectable. Most app shells set
-              `select-none` for the native-OS feel; Messages is the exception
-              where users expect to copy conversation text, so opt back in. */}
-          <div
-            ref={messageListRef}
+          <MessageList
+            ref={messageListHandleRef}
+            messages={messages}
+            fetchedChannel={fetchedChannel}
+            channel={currentChannel}
+            selectedChannel={selectedChannel}
+            isMobile={isMobile}
+            keyboardInset={keyboardInset}
+            nowMs={nowMs}
+            liveAgents={liveAgents}
+            archivedAgents={archivedAgents}
+            currentUserId={currentUserId}
+            currentUserDisplayName={currentUserDisplayName}
+            pinnedMessages={pinnedMessages}
+            pinnedPopoverOpen={pinnedPopoverOpen}
+            onTogglePinnedPopover={() => setPinnedPopoverOpen((o) => !o)}
+            editingMessageId={editingMessageId}
+            onCancelEdit={() => setEditingMessageId(null)}
+            onSaveEdit={handleSaveEdit}
+            onToggleReaction={toggleReaction}
+            showEmoji={showEmoji}
+            onShowEmoji={setShowEmoji}
+            hoveredMessageId={hoveredMessageId}
+            onHoverMessage={setHoveredMessageId}
+            onReplyInThread={handleOpenThreadFor}
+            onOverflow={(e, messageId) => { e.preventDefault(); setOverflowMenu({ messageId, x: e.clientX, y: e.clientY }); }}
+            onOpenThread={handleOpenThreadFor}
+            onApprovePinRequest={handlePinRequest}
+            onViewCanvas={setViewingCanvas}
+            newDividerAtId={newDividerAtId}
+            atBottom={atBottom}
+            newCount={newCount}
+            onScrollToLatest={scrollToLatest}
             onScroll={handleScroll}
-            className={`flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-0.5 select-text message-list-drop-target ${
-              shellFileDropTarget.isOver
-                ? "ring-2 ring-sky-400/60 ring-inset bg-sky-500/5"
-                : shellFileDropTarget.isValidTarget
-                ? "ring-2 ring-sky-400/30 ring-inset"
-                : ""
-            }`}
-            style={isMobile && keyboardInset > 0 ? { paddingBottom: `${keyboardInset + 60}px` } : undefined}
-            onDragEnter={shellFileDropTarget.dropHandlers.onDragEnter}
-            onDragOver={(e) => {
-              shellFileDropTarget.dropHandlers.onDragOver(e);
-              if (!e.defaultPrevented) e.preventDefault();
+            dropTarget={{
+              isOver: shellFileDropTarget.isOver,
+              isValidTarget: shellFileDropTarget.isValidTarget,
+              handlers: {
+                onDragEnter: shellFileDropTarget.dropHandlers.onDragEnter,
+                onDragOver: (e: React.DragEvent) => {
+                  shellFileDropTarget.dropHandlers.onDragOver(e);
+                  if (!e.defaultPrevented) e.preventDefault();
+                },
+                onDragLeave: shellFileDropTarget.dropHandlers.onDragLeave,
+                onDrop: (e: React.DragEvent) => {
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    e.preventDefault();
+                    for (const f of Array.from(e.dataTransfer.files)) {
+                      const id = Math.random().toString(36).slice(2);
+                      setPendingAttachments((p) => [...p, { id, filename: f.name, size: f.size, uploading: true, file: f }]);
+                      uploadDiskFile(f, selectedChannel ?? undefined)
+                        .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
+                        .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
+                    }
+                    return;
+                  }
+                  shellFileDropTarget.dropHandlers.onDrop(e);
+                },
+              },
             }}
-            onDragLeave={shellFileDropTarget.dropHandlers.onDragLeave}
-            onDrop={(e) => {
-              // OS-level file drops (finder/explorer) take precedence.
-              if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                e.preventDefault();
-                for (const f of Array.from(e.dataTransfer.files)) {
-                  const id = Math.random().toString(36).slice(2);
-                  setPendingAttachments((p) => [...p, { id, filename: f.name, size: f.size, uploading: true, file: f }]);
-                  uploadDiskFile(f, selectedChannel ?? undefined)
-                    .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
-                    .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
-                }
-                return;
-              }
-              shellFileDropTarget.dropHandlers.onDrop(e);
+            showAllThreads={showAllThreads}
+            onToggleAllThreads={() => {
+              if (showAllThreads) { setShowAllThreads(false); }
+              else { closeThread(); setShowSettings(false); setShowSearch(false); setShowAllThreads(true); }
             }}
-          >
-            {messages.length === 0 && fetchedChannel === selectedChannel && (
-              <div className="flex flex-col items-center justify-center h-full text-white/25 text-center px-6">
-                <MessageCircle size={40} className="mb-3 opacity-30" />
-                <p className="text-sm">
-                  No messages yet. Say hello to{" "}
-                  {currentChannel?.type === "dm"
-                    ? `@${(currentChannel.members ?? []).find((m) => m !== "user") ?? "them"}`
-                    : currentChannel?.name
-                      ? `#${currentChannel.name}`
-                      : "this channel"}
-                  .
-                </p>
-              </div>
-            )}
-            {messages.map((msg, i) => {
-              const isAgent = msg.author_type === "agent";
-              const prev = i > 0 ? messages[i - 1] : undefined;
-              const showAuthor = !prev || prev.author_id !== msg.author_id;
-              const prevDay = prev ? new Date(toMs(prev.created_at)).toDateString() : null;
-              const currDay = new Date(toMs(msg.created_at)).toDateString();
-              const showDaySeparator = !prev || prevDay !== currDay;
-              const authorState = resolveAuthorDisplayState(
-                msg.author_id,
-                msg.author_type,
-                liveAgents,
-                archivedAgents,
-              );
-              const isDeadAgent = isAgent && authorState !== "active";
-              const authorTooltip =
-                authorState === "archived"
-                  ? "Agent no longer active"
-                  : authorState === "removed"
-                    ? "Agent removed"
-                    : undefined;
-              return (
-                <React.Fragment key={msg.id}>
-                {showDaySeparator && (
-                  <div className="flex items-center gap-3 my-4 select-none">
-                    <div className="flex-1 h-px bg-white/10" />
-                    <span className="text-[11px] text-white/40 font-medium">{dayLabel(msg.created_at)}</span>
-                    <div className="flex-1 h-px bg-white/10" />
-                  </div>
-                )}
-                {newDividerAtId === msg.id && (
-                  <div
-                    role="separator"
-                    aria-label="New messages"
-                    className="flex items-center gap-3 my-3 select-none"
-                  >
-                    <div className="flex-1 h-px bg-red-400/40" />
-                    <span className="text-[11px] text-red-400 font-semibold">New</span>
-                    <div className="flex-1 h-px bg-red-400/40" />
-                  </div>
-                )}
-                <div
-                  data-message-id={msg.id}
-                  className={`group relative flex gap-2.5 px-3 py-0.5 rounded-md transition-colors hover:bg-shell-surface ${showAuthor ? (isMobile ? "mt-2" : "mt-3") : ""}`}
-                  onMouseEnter={() => setHoveredMessageId(msg.id)}
-                  onMouseLeave={() => setHoveredMessageId((id) => id === msg.id ? null : id)}
-                >
-                  {/* avatar gutter */}
-                  <div
-                    className="flex-shrink-0 flex justify-end pt-0.5"
-                    style={{ width: isMobile ? 34 : 38 }}
-                    onContextMenu={(e) => {
-                      if (msg.author_type !== "agent") return;
-                      e.preventDefault();
-                      setContextMenu({ slug: msg.author_id, x: e.clientX, y: e.clientY });
-                    }}
-                  >
-                    {showAuthor ? (
-                      (() => {
-                        const agent = isAgent ? liveAgents.find((a) => a.name === msg.author_id) : undefined;
-                        return (
-                          <MessageAvatar
-                            size={isMobile ? 34 : 38}
-                            authorId={msg.author_id}
-                            displayName={displayAuthor(msg, { currentUserId, currentUserDisplayName })}
-                            kind={isAgent ? "agent" : "user"}
-                            dead={isDeadAgent}
-                            emoji={agent ? resolveAgentEmoji(agent.emoji, agent.framework) : isAgent ? resolveAgentEmoji(undefined, undefined) : undefined}
-                          />
-                        );
-                      })()
-                    ) : (
-                      <span
-                        className="text-[10px] leading-none text-shell-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity self-center select-none"
-                        aria-hidden="true"
-                        title={new Date(toMs(msg.created_at)).toLocaleString()}
-                      >
-                        {new Date(toMs(msg.created_at)).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    )}
-                  </div>
-                  {/* content column */}
-                  <div className="flex-1 min-w-0">
-                  {showAuthor && (
-                    <div
-                      className="flex items-center gap-2 mb-0.5"
-                      onContextMenu={(e) => {
-                        if (msg.author_type !== "agent") return;
-                        e.preventDefault();
-                        setContextMenu({ slug: msg.author_id, x: e.clientX, y: e.clientY });
-                      }}
-                    >
-                      <span
-                        className={`${isMobile ? "text-[14px]" : "text-[15px]"} font-bold tracking-tight ${
-                          isDeadAgent
-                            ? "line-through text-shell-text-tertiary"
-                            : "text-shell-text"
-                        }`}
-                        style={isDeadAgent ? { opacity: 0.55 } : undefined}
-                        title={authorTooltip}
-                      >
-                        {displayAuthor(msg, { currentUserId, currentUserDisplayName })}
-                      </span>
-                      {isAgent && !isDeadAgent && (
-                        <span className="text-[10px] uppercase tracking-wide bg-accent-soft text-accent-strong border border-accent-line px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
-                          <Bot size={10} aria-hidden="true" /> Agent
-                        </span>
-                      )}
-                      {isDeadAgent && (
-                        <span className="text-[10px] uppercase tracking-wide bg-shell-surface-active text-shell-text-tertiary px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
-                          <Bot size={10} aria-hidden="true" />
-                          {authorState === "archived" ? "inactive" : "removed"}
-                        </span>
-                      )}
-                      <span
-                        className="text-[11px] text-shell-text-tertiary"
-                        title={new Date(toMs(msg.created_at)).toLocaleString()}
-                      >{relativeTime(msg.created_at, nowMs)}</span>
-                      {msg.edited_at && <span className="text-[10px] text-shell-text-tertiary">(edited)</span>}
-                    </div>
-                  )}
-                  {msg.deleted_at ? (
-                    <MessageTombstone />
-                  ) : editingMessageId === msg.id ? (
-                    <MessageEditor
-                      initial={msg.content}
-                      onSave={(content) => handleSaveEdit(msg.id, content)}
-                      onCancel={() => setEditingMessageId(null)}
-                    />
-                  ) : (
-                    <div className="relative">
-                      {msg.content && msg.author_type === "agent" && msg.state !== "streaming" && msg.state !== "pending" && (
-                        <CopyButton
-                          content={msg.content}
-                          className="absolute -top-1 right-0 p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 bg-shell-surface border border-white/10 text-shell-text-secondary hover:text-shell-text transition-opacity select-none z-10"
-                        />
-                      )}
-                      <div className={`${isMobile ? "text-[14px]" : "text-[15px]"} leading-[1.46] whitespace-pre-wrap break-words select-text ${isDeadAgent ? "text-shell-text-secondary" : "text-shell-text"}`}>
-                        {renderContent(msg.content)}
-                      {msg.state === "pending" && (
-                        <span className="ml-1 text-shell-text-tertiary">...</span>
-                      )}
-                      {msg.state === "streaming" && (
-                        <span className="ml-1 inline-flex gap-0.5">
-                          <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:0ms]" />
-                          <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:150ms]" />
-                          <span className="w-1 h-1 bg-accent rounded-full animate-bounce [animation-delay:300ms]" />
-                        </span>
-                      )}
-                      {msg.state === "error" && (
-                        <span className="ml-1 text-red-400 text-[11px]">(error)</span>
-                      )}
-                    </div>
-                    </div>
-                  )}
-                  {msg.metadata?.pin_requested && msg.author_type === "agent" && (
-                    <PinRequestAffordance
-                      authorId={msg.author_id}
-                      onApprove={() => handlePinRequest(msg.id)}
-                    />
-                  )}
-
-                  {/* canvas attachment */}
-                  {msg.content_type === "canvas" && (msg.metadata?.canvas_url || msg.metadata?.canvas_id) && (
-                    <div className="mt-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          const url = msg.metadata?.canvas_url ?? `/canvas/${msg.metadata?.canvas_id}`;
-                          setViewingCanvas({ url, title: msg.metadata?.canvas_title as string | undefined });
-                        }}
-                        className="h-7 px-2.5 text-[12px] gap-1.5 bg-shell-surface border-shell-border-strong hover:bg-shell-surface-hover"
-                        aria-label="View canvas"
-                      >
-                        <PanelRight size={13} />
-                        View Canvas{msg.metadata?.canvas_title ? `: ${msg.metadata.canvas_title}` : ""}
-                      </Button>
-                    </div>
-                  )}
-
-                  {/* reactions */}
-                  {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                    <ReactionBar
-                      reactions={msg.reactions}
-                      messageId={msg.id}
-                      currentUserId={currentUserId}
-                      onToggle={toggleReaction}
-                    />
-                  )}
-
-                  {/* hover actions — always visible on mobile (no hover available), hover-gated on desktop */}
-                  {(isMobile || hoveredMessageId === msg.id) && (() => {
-                    const excerpt = (msg.content || "").slice(0, 80);
-                    const msgChannelId = msg.channel_id ?? selectedChannel ?? "";
-                    return (
-                      <div className="absolute -top-3 right-2 z-10">
-                        <MessageHoverActions
-                          onReact={() => {
-                            if (showEmoji && showEmoji.messageId === msg.id) {
-                              setShowEmoji(null);
-                              return;
-                            }
-                            const row = document.querySelector(`[data-message-id="${msg.id}"]`) as HTMLElement | null;
-                            const rect = row?.getBoundingClientRect();
-                            if (!rect) return;
-                            setShowEmoji({ messageId: msg.id, rect });
-                          }}
-                          onReplyInThread={() => handleOpenThreadFor(msg.channel_id ?? selectedChannel ?? "", msg.id)}
-                          onOverflow={(e) => {
-                            e.preventDefault();
-                            setOverflowMenu({ messageId: msg.id, x: e.clientX, y: e.clientY });
-                          }}
-                          dragHandle={msgChannelId ? (
-                            <span
-                              draggable
-                              onDragStart={(e) => {
-                                e.stopPropagation();
-                                e.dataTransfer.effectAllowed = "copy";
-                                try {
-                                  e.dataTransfer.setData("text/plain", `@${msg.author_id}: ${excerpt}`);
-                                  e.dataTransfer.setData("text/uri-list", `${window.location.origin}/chat/${msgChannelId}?msg=${msg.id}`);
-                                } catch { /* best-effort */ }
-                                startDrag({
-                                  kind: "message",
-                                  channel_id: msgChannelId,
-                                  message_id: msg.id,
-                                  author_id: msg.author_id,
-                                  excerpt,
-                                });
-                              }}
-                              onDragEnd={() => endDrag()}
-                              className="p-1 opacity-40 hover:opacity-100 cursor-grab select-none"
-                              aria-label="Drag message"
-                              title="Drag this message"
-                            >&#8942;&#8942;</span>
-                          ) : undefined}
-                        />
-                      </div>
-                    );
-                  })()}
-                  <AttachmentGallery attachments={(msg.attachments as AttachmentRecord[] | undefined) || []} />
-                  {typeof msg.reply_count === "number" && msg.reply_count > 0 && (
-                    <ThreadIndicator
-                      replyCount={msg.reply_count}
-                      lastReplyAt={msg.last_reply_at ?? null}
-                      onOpen={() => handleOpenThreadFor(msg.channel_id ?? selectedChannel ?? "", msg.id)}
-                    />
-                  )}
-
-                  {/* emoji picker — rendered in a portal to avoid clipping by the scrollable list */}
-                  {showEmoji && showEmoji.messageId === msg.id && createPortal(
-                    (() => {
-                      const POPOVER_W = 300;
-                      const POPOVER_H = 360;
-                      const vw = window.innerWidth;
-                      const vh = window.innerHeight;
-                      const r = showEmoji.rect;
-                      // Upper bounds are clamped to >=8 so a viewport smaller
-                      // than the popover (with margins) cannot produce a
-                      // negative limit and let Math.min return a value < 8.
-                      const top = Math.max(8, Math.min(r.top, Math.max(8, vh - POPOVER_H - 8)));
-                      const left = Math.max(8, Math.min(r.right - POPOVER_W, Math.max(8, vw - POPOVER_W - 8)));
-                      return (
-                    <div
-                      data-emoji-popover="1"
-                      role="dialog"
-                      aria-label="Emoji reactions"
-                      className="fixed z-50 bg-shell-bg border border-shell-border-strong rounded-lg shadow-xl p-2 w-[300px] h-[360px] flex flex-col gap-2 backdrop-blur-xl"
-                      style={{ top, left }}
-                    >
-                      <div className="flex gap-1 shrink-0">
-                        {EMOJI_PICKER.map((em) => (
-                          <button
-                            key={em}
-                            onClick={() => toggleReaction(msg.id, em)}
-                            className="text-lg hover:bg-white/10 rounded p-0.5 transition-colors"
-                          >
-                            {em}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="flex-1 min-h-0">
-                        <Picker
-                          theme={Theme.DARK}
-                          width="100%"
-                          height="100%"
-                          onEmojiClick={(d) => {
-                            toggleReaction(msg.id, d.emoji);
-                          }}
-                        />
-                      </div>
-                    </div>
-                      );
-                    })(),
-                    document.body,
-                  )}
-                  </div>
-                </div>
-                </React.Fragment>
-              );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* typing footer */}
-          <TypingFooter humans={typingHumans} agents={typingAgents} selfId="user" />
+            showSearch={showSearch}
+            onToggleSearch={() => {
+              if (showSearch) { setShowSearch(false); }
+              else { closeThread(); setShowSettings(false); setShowAllThreads(false); setShowSearch(true); }
+            }}
+            onOpenSettings={handleOpenSettings}
+            typingHumans={typingHumans}
+            typingAgents={typingAgents}
+          />
 
           {/* #1741: stall banner — surfaces only when a response is abnormally
               slow or has gone quiet, so a stalled generation no longer looks
@@ -2717,56 +2420,5 @@ export function MessagesApp({
         )
       )}
     </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  CopyButton — hover copy affordance for message bubbles             */
-/*  Matches the CodeBlock + TaosAssistantPanel copy-button pattern.    */
-/* ------------------------------------------------------------------ */
-
-function CopyButton({ content, className }: { content: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  const [clipError, setClipError] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /* Clear any pending timers on unmount so we never setState on a dead component. */
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
-    };
-  }, []);
-
-  const handleCopy = async () => {
-    if (!content) return;
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-      setClipError(false);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setClipError(true);
-      if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
-      errorTimerRef.current = setTimeout(() => setClipError(false), 2500);
-    }
-  };
-
-  return (
-    <button
-      onClick={handleCopy}
-      aria-label={copied ? "Copied" : clipError ? "Copy failed — check clipboard permissions" : "Copy message"}
-      className={className}
-    >
-      {copied ? (
-        <Check size={10} />
-      ) : clipError ? (
-        <X size={10} className="text-red-400" />
-      ) : (
-        <Copy size={10} />
-      )}
-    </button>
   );
 }

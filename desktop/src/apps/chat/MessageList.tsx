@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from "react";
+import React, { forwardRef, useImperativeHandle, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import {
   Hash,
@@ -117,7 +117,7 @@ export interface MessageListProps {
   atBottom: boolean;
   newCount: number;
   onScrollToLatest: () => void;
-  onScroll: () => void;
+  onScroll: (e: React.UIEvent<HTMLDivElement>) => void;
 
   /* ---- drop target ---- */
   dropTarget: {
@@ -143,7 +143,11 @@ export interface MessageListProps {
   typingAgents: AgentTyping[];
 }
 
-export function MessageList({
+export interface MessageListHandle {
+  scrollToBottom: () => void;
+}
+
+export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList({
   messages,
   fetchedChannel,
   channel,
@@ -184,9 +188,15 @@ export function MessageList({
   onOpenSettings,
   typingHumans,
   typingAgents,
-}: MessageListProps) {
+}: MessageListProps, ref: React.Ref<MessageListHandle>) {
   const messageListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    scrollToBottom: () => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    },
+  }));
 
   // Expose scroll-to-latest via ref
   useEffect(() => {
@@ -770,7 +780,7 @@ export function MessageList({
       />
     </>
   );
-}
+});
 
 /* ------------------------------------------------------------------ */
 /*  CopyButton (hover copy affordance)                                 */
