@@ -252,6 +252,62 @@ class TestRegistration:
 
 
 @pytest.mark.asyncio
+class TestRegistrationUrlFallback:
+    """Regression: when all backends are synthetic/stopped (url=None),
+    the registration URL must fall through to get_worker_url()."""
+
+    async def test_register_url_falls_back_when_all_backends_stopped(self, tmp_path):
+        """Synthetic stopped backends have url=None. The registration URL
+        must skip None-URL backends and fall through to get_worker_url()
+        instead of sending None, which causes a silent registration-failure
+        loop.  Regression test for #1765 review finding."""
+        import json as _json
+
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent(
+            "http://controller:6969", name="test-worker", state_dir=tmp_path
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+
+        # Synthetic stopped backend: url is None
+        stopped_backend = {
+            "name": "ollama",
+            "type": "ollama",
+            "url": None,
+            "capabilities": ["llm-chat"],
+            "models": [],
+            "loaded_models": [],
+            "status": "stopped",
+            "kv_quant_support": {},
+            "available_models": [],
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            with patch(
+                "tinyagentos.worker.agent.WorkerAgent.detect_backends",
+                return_value=[stopped_backend],
+            ):
+                result = await agent.register()
+
+            # Registration must succeed AND the payload URL must be a
+            # real reachable URL, not None.
+            assert result is True
+            assert mock_client.post.called
+            call_args = mock_client.post.call_args
+            body = _json.loads(call_args[1]["content"])
+            assert body["url"] is not None
+            assert body["url"].startswith("http://")
+
+
+@pytest.mark.asyncio
 class TestHeartbeat:
     """Test heartbeat sending with mocked HTTP."""
 

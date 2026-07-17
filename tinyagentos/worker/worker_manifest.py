@@ -26,7 +26,7 @@ The file format is::
     }
 
 When the file is absent the worker simply reports an empty available-models
-list — no error, no behaviour change for deployments that do not use the
+list -- no error, no behaviour change for deployments that do not use the
 feature.
 """
 

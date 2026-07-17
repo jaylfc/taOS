@@ -525,7 +525,7 @@ class WorkerAgent:
         worker_url = (
             self.advertise_url
             or adv_url
-            or (backends[0]["url"] if backends else self.get_worker_url())
+            or next((b["url"] for b in backends if b.get("url")), self.get_worker_url())
         )
 
         payload = {
