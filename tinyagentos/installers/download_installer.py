@@ -20,7 +20,7 @@ def _ssrf_guard(url: str) -> str:
 
     Resolves the hostname once via :func:`resolve_safe_public_ip` so the
     caller can connect to that validated IP directly instead of letting the
-    HTTP client re-resolve — re-resolution reopens a DNS-rebinding TOCTOU
+    HTTP client re-resolve -- re-resolution reopens a DNS-rebinding TOCTOU
     window where the resolved-and-validated address differs from the one
     actually connected to.
 
@@ -103,7 +103,7 @@ async def download_file(
             )
             resp = await client.send(request, stream=True)
 
-            # Follow redirect — validate the target on the next iteration.
+            # Follow redirect -- validate the target on the next iteration.
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("location")
                 if not location:

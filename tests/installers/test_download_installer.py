@@ -1,6 +1,6 @@
 """Regression tests for DNS-rebinding / TOCTOU SSRF hardening in download_file.
 
-Covers the installer source_url / download_url fetch path — the download_file
+Covers the installer source_url / download_url fetch path -- the download_file
 function in download_installer.py now validates every URL hop via
 resolve_safe_public_ip and pins the connection to the validated IP so a
 second DNS resolution cannot return a different (malicious) address.
@@ -223,7 +223,7 @@ class TestDownloadFileSsrf:
         def _alternating(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
-                return _gai("93.184.216.34")  # first (validation) — public
+                return _gai("93.184.216.34")  # first (validation) -- public
             return _gai("10.99.99.99")        # second would be private
 
         with patch("socket.getaddrinfo", side_effect=_alternating):
