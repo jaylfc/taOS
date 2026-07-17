@@ -233,7 +233,7 @@ class TorrentDownloader:
         task_id: str,
         magnet_or_torrent: str,
         dest: Path,
-        expected_sha256: Optional[str] = None,
+        expected_sha256: str,
         progress_cb: Optional[Callable[[TorrentTask], None]] = None,
         passkey: Optional[str] = None,
         web_seeds: Optional[list[str]] = None,
@@ -243,6 +243,11 @@ class TorrentDownloader:
         ``passkey`` (opaque, account-bound) is injected into the taOSnet tracker
         announce; ``web_seeds`` are added as BEP-19 HTTP seeds. Both optional so
         the method still serves plain public magnets.
+
+        SHA256 verification is **mandatory** — the caller MUST supply
+        ``expected_sha256``. If the downloaded file does not match the expected
+        hash, :class:`TorrentError` is raised. If no hash is available, the
+        caller should skip the torrent path entirely.
 
         Raises :class:`TorrentTimeout` if no peers are found within
         ``peer_timeout_seconds`` — the caller should catch and fall back
@@ -289,13 +294,18 @@ class TorrentDownloader:
                 except Exception:
                     logger.exception("torrent progress_cb raised")
 
-        # Optional SHA256 verification against the expected hash
-        if expected_sha256 and dest.exists():
-            actual = hashlib.sha256(dest.read_bytes()).hexdigest()
-            if actual.lower() != expected_sha256.lower():
-                task.status = "error"
-                task.error = "sha256 mismatch"
-                raise TorrentError("sha256 mismatch after torrent download")
+        # Mandatory SHA256 verification — every torrent download must
+        # be verified against the expected hash to guard against
+        # malicious peers serving modified weights.
+        if not dest.exists():
+            task.status = "error"
+            task.error = "download produced no data"
+            raise TorrentError("torrent download produced no data")
+        actual = hashlib.sha256(dest.read_bytes()).hexdigest()
+        if actual.lower() != expected_sha256.lower():
+            task.status = "error"
+            task.error = "sha256 mismatch"
+            raise TorrentError("sha256 mismatch after torrent download")
 
         # Seeding opt-out: if the user has disabled seeding, release
         # the torrent handle now that the download is complete. The

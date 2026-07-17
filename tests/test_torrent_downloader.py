@@ -114,6 +114,7 @@ async def test_download_manager_hybrid_falls_back_to_http_on_torrent_failure(tmp
                 download_id="test",
                 url="http://example.com/model.bin",
                 dest=dest,
+                expected_sha256="abc",
                 magnet="magnet:?xt=urn:btih:abc",
                 license_allows_redistribution=True,
             )
@@ -182,3 +183,83 @@ async def test_download_manager_pure_http_when_no_magnet(tmp_path: Path):
         await asyncio.wait_for(dm._running["t"], timeout=5)
 
     assert dest.read_bytes() == b"http"
+
+
+@pytest.mark.asyncio
+async def test_download_manager_skips_torrent_without_sha256(tmp_path: Path):
+    """When no SHA256 hash is available, the torrent path is skipped
+    entirely — untrusted peers cannot be verified, so we fall straight
+    through to HTTP."""
+    from tinyagentos.download_manager import DownloadManager
+
+    dm = DownloadManager()
+    dest = tmp_path / "model.bin"
+
+    # Track whether the torrent factory was even invoked
+    torrent_factory_calls = {"n": 0}
+    def _factory_spy():
+        torrent_factory_calls["n"] += 1
+        return MagicMock()
+
+    with patch.object(dm, "_get_torrent_downloader", side_effect=_factory_spy):
+        async def fake_http(task, sha=None):
+            task.dest.write_bytes(b"http")
+            task.status = "complete"
+
+        with patch.object(dm, "_download", side_effect=fake_http):
+            dm.start_download(
+                download_id="t",
+                url="http://example.com/m.bin",
+                dest=dest,
+                magnet="magnet:?xt=urn:btih:abc",
+                license_allows_redistribution=True,
+            )
+            await asyncio.wait_for(dm._running["t"], timeout=5)
+
+    # Torrent path was never touched — no hash, no torrent
+    assert torrent_factory_calls["n"] == 0
+    assert dest.read_bytes() == b"http"
+
+
+@pytest.mark.asyncio
+async def test_download_manager_torrent_sha256_mismatch_falls_back_to_http(tmp_path: Path):
+    """If the torrent delivers a file whose SHA256 doesn't match the
+    expected hash, the download fails and falls back to HTTP."""
+    import hashlib
+    from tinyagentos.download_manager import DownloadManager
+
+    dm = DownloadManager()
+    dest = tmp_path / "model.bin"
+
+    # The mock torrent writes tainted data then raises TorrentError to
+    # simulate the mandatory SHA256 check catching a mismatch
+    fake_torrent = MagicMock()
+    async def _mock_download(task_id, magnet_or_torrent, dest, expected_sha256, progress_cb, passkey=None, web_seeds=None):
+        dest.write_bytes(b"tainted data from malicious peer")
+        raise TorrentError("sha256 mismatch after torrent download")
+
+    fake_torrent.download = AsyncMock(side_effect=_mock_download)
+
+    # HTTP fallback data
+    http_data = b"verified model from http"
+    expected_hash = hashlib.sha256(http_data).hexdigest()
+
+    with patch.object(dm, "_get_torrent_downloader", return_value=fake_torrent):
+        async def fake_http(task, sha=None):
+            task.dest.write_bytes(http_data)
+            task.status = "complete"
+
+        with patch.object(dm, "_download", side_effect=fake_http):
+            dm.start_download(
+                download_id="t",
+                url="http://example.com/m.bin",
+                dest=dest,
+                expected_sha256=expected_hash,
+                magnet="magnet:?xt=urn:btih:abc",
+                license_allows_redistribution=True,
+            )
+            await asyncio.wait_for(dm._running["t"], timeout=5)
+
+    # HTTP fallback succeeded, torrent was attempted
+    assert fake_torrent.download.called
+    assert dest.read_bytes() == http_data

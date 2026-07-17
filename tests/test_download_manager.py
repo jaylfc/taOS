@@ -424,7 +424,7 @@ class TestDownloadWithFallback:
         with patch.object(dm, "_get_torrent_downloader", return_value=fake_torrent):
             await dm._download_with_fallback(
                 task,
-                expected_sha256=None,
+                expected_sha256="e35df0beb994665801280a978d8997d6b41fb31797f29100352fda9fc499afe8",
                 magnet="magnet:?xt=urn:btih:abc",
                 license_allows_redistribution=True,
             )
@@ -457,7 +457,7 @@ class TestDownloadWithFallback:
         with patch.object(dm, "_get_torrent_downloader", return_value=fake_torrent):
             await dm._download_with_fallback(
                 task,
-                expected_sha256=None,
+                expected_sha256="abc",
                 magnet="magnet:?xt=urn:btih:abc",
                 license_allows_redistribution=True,
             )
@@ -481,7 +481,7 @@ class TestDownloadWithFallback:
         with patch.object(dm, "_get_torrent_downloader", return_value=fake_torrent):
             await dm._download_with_fallback(
                 task,
-                expected_sha256=None,
+                expected_sha256="abc",
                 magnet="magnet:?xt=urn:btih:abc",
                 license_allows_redistribution=True,
             )
@@ -504,7 +504,7 @@ class TestDownloadWithFallback:
             with patch("tinyagentos.download_manager.httpx.AsyncClient", return_value=mock_client):
                 await dm._download_with_fallback(
                     task,
-                    expected_sha256=None,
+                    expected_sha256="93cdef50225636d780608d21182f72523754766637ee85e9d4682af045e61678",
                     magnet="magnet:?xt=urn:btih:abc",
                     license_allows_redistribution=True,
                 )
@@ -544,7 +544,7 @@ class TestDownloadWithFallback:
             with patch("tinyagentos.download_manager.httpx.AsyncClient", return_value=mock_client):
                 await dm._download_with_fallback(
                     task,
-                    expected_sha256=None,
+                    expected_sha256="97da6995e0f94ba51e5f3634a84303861e8b3997959f4041e263af26c58a247b",
                     magnet="magnet:?xt=urn:btih:abc",
                     license_allows_redistribution=True,
                 )

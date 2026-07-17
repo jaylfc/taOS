@@ -200,6 +200,7 @@ class DownloadManager:
         if (
             magnet
             and license_allows_redistribution
+            and expected_sha256
             and (torrent := self._get_torrent_downloader()) is not None
         ):
             # Headless passkey fetch: if this host has joined an account mesh,
