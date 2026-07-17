@@ -20,6 +20,7 @@ class DesktopWallpapersStore(BaseStore):
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS user_wallpapers (
         id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT '',
         label TEXT NOT NULL,
         filename TEXT NOT NULL,
         mime_type TEXT NOT NULL,
@@ -36,7 +37,7 @@ class DesktopWallpapersStore(BaseStore):
         await super().init()
 
     async def add_wallpaper(
-        self, label: str, filename: str, mime_type: str
+        self, label: str, filename: str, mime_type: str, user_id: str = "",
     ) -> dict:
         """Persist a new wallpaper record and return its metadata.
 
@@ -47,9 +48,9 @@ class DesktopWallpapersStore(BaseStore):
         wp_id = uuid.uuid4().hex
         created_at = datetime.now(timezone.utc).isoformat()
         await self._db.execute(
-            "INSERT INTO user_wallpapers (id, label, filename, mime_type, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (wp_id, label, filename, mime_type, created_at),
+            "INSERT INTO user_wallpapers (id, user_id, label, filename, mime_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (wp_id, user_id, label, filename, mime_type, created_at),
         )
         await self._db.commit()
         return {
@@ -61,12 +62,13 @@ class DesktopWallpapersStore(BaseStore):
             "created_at": created_at,
         }
 
-    async def list_wallpapers(self) -> list[dict]:
+    async def list_wallpapers(self, user_id: str = "") -> list[dict]:
         """Return all user-uploaded wallpapers, newest first."""
         assert self._db is not None
         cursor = await self._db.execute(
             "SELECT id, label, filename, mime_type, created_at "
-            "FROM user_wallpapers ORDER BY created_at DESC"
+            "FROM user_wallpapers WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
         )
         rows = await cursor.fetchall()
         return [

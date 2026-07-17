@@ -12,6 +12,11 @@ ALLOWED_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
+def _user_id(request: Request) -> str:
+    uid = getattr(request.state, "user_id", None)
+    return uid if uid else "system"
+
+
 @router.post("/api/desktop/wallpapers")
 async def upload_wallpaper(request: Request, file: UploadFile):
     """Accept a user-uploaded wallpaper image."""
@@ -54,6 +59,7 @@ async def upload_wallpaper(request: Request, file: UploadFile):
         label=label,
         filename=filename,
         mime_type=file.content_type,
+        user_id=_user_id(request),
     )
     return JSONResponse(record, status_code=201)
 
@@ -62,7 +68,7 @@ async def upload_wallpaper(request: Request, file: UploadFile):
 async def list_wallpapers(request: Request):
     """List all user-uploaded wallpapers."""
     store = request.app.state.desktop_wallpapers
-    wallpapers = await store.list_wallpapers()
+    wallpapers = await store.list_wallpapers(user_id=_user_id(request))
     return JSONResponse(wallpapers)
 
 

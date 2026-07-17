@@ -248,7 +248,7 @@ interface ThemeStore {
   removeUserWallpaper: (id: string) => Promise<void>;
 }
 
-export const useThemeStore = create<ThemeStore>((set) => ({
+export const useThemeStore = create<ThemeStore>((set, get) => ({
   wallpaperId: DEFAULT_WP.id,
   wallpaperImage: DEFAULT_WP.image,
   wallpaperMobileImage: DEFAULT_WP.mobileImage ?? DEFAULT_WP.image,
@@ -289,7 +289,7 @@ export const useThemeStore = create<ThemeStore>((set) => ({
     }
     // Check user wallpapers (id format: "user-<uuid>")
     if (id.startsWith("user-")) {
-      const uwp = useThemeStore.getState().userWallpapers.find(
+      const uwp = get().userWallpapers.find(
         (u) => `user-${u.id}` === id,
       );
       if (uwp) {
@@ -340,7 +340,7 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   },
 
   getWallpapers: () => {
-    const { userWallpapers } = useThemeStore.getState();
+    const { userWallpapers }: { userWallpapers: UserWallpaper[] } = get();
     const userWps = userWallpapers.map(_userWpToWallpaper);
     return [...WALLPAPERS, ...userWps];
   },

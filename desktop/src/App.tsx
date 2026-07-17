@@ -281,6 +281,7 @@ export function App() {
   // later re-login.
   useOnAuthReady(() => {
     void restoreActiveTheme();
+    void useThemeStore.getState().fetchUserWallpapers();
   });
 
   // Apply reduce-effects / performance mode (#58) as a root attribute so the CSS
