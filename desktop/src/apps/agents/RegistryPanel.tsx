@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronRight,
   ShieldCheck,
@@ -10,8 +11,12 @@ import {
   RefreshCw,
   ScrollText,
   ArrowRight,
+  UserPlus,
 } from "lucide-react";
 import { Button, Card } from "@/components/ui";
+import { projectsApi } from "@/lib/projects";
+import { AssignAgentToProjectDialog } from "./AssignAgentToProjectDialog";
+import { InviteAgentDialog } from "@/apps/ProjectsApp/InviteAgentDialog";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                               */
@@ -127,16 +132,19 @@ function RegistryEntryRow({
   isAdmin,
   currentUserId,
   onAction,
+  onAssign,
 }: {
   entry: RegistryEntry;
   isAdmin: boolean;
   currentUserId: string;
   onAction: (id: string, action: "approve" | "reject" | "suspend" | "reactivate" | "revoke") => Promise<void>;
+  onAssign: (entry: RegistryEntry) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const isOwner = entry.user_id === currentUserId;
   const canRevoke = (isAdmin || isOwner) && (entry.status === "active" || entry.status === "suspended");
+  const canAssign = (isAdmin || isOwner) && entry.status === "active";
 
   async function act(action: "approve" | "reject" | "suspend" | "reactivate" | "revoke") {
     setBusy(true);
@@ -248,6 +256,19 @@ function RegistryEntryRow({
               title="Revoke"
             >
               <ShieldOff size={14} />
+            </Button>
+          )}
+          {canAssign && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 hover:bg-blue-500/15 hover:text-blue-400"
+              onClick={() => onAssign(entry)}
+              disabled={busy}
+              aria-label={`Assign ${stripAt(entry.display_name) || entry.canonical_id} to project`}
+              title="Assign to project"
+            >
+              <UserPlus size={14} />
             </Button>
           )}
         </div>
@@ -390,6 +411,103 @@ function GovernanceAuditPanel({ isAdmin }: { isAdmin: boolean }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  InviteExternalAgentPicker                                           */
+/* ------------------------------------------------------------------ */
+
+function InviteExternalAgentPicker({
+  onCancel,
+  onPick,
+}: {
+  onCancel: () => void;
+  onPick: (projectId: string) => void;
+}) {
+  const [projects, setProjects] = useState<import("@/lib/projects").Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [selected, setSelected] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setErr(null);
+    projectsApi
+      .list()
+      .then((rows) => {
+        if (!active) return;
+        const list: import("@/lib/projects").Project[] = Array.isArray(rows) ? rows : [];
+        setProjects(list);
+        if (list.length > 0) setSelected((prev) => prev || list[0]!.id);
+      })
+      .catch((e: unknown) => {
+        if (active) setErr(e instanceof Error ? e.message : "Failed to load projects");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Invite external agent to project"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center p-4"
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (selected) onPick(selected);
+        }}
+        className="bg-zinc-900 p-4 rounded shadow w-full max-w-md space-y-3"
+      >
+        <h3 className="text-lg font-semibold">Invite external agent</h3>
+        {loading ? (
+          <div className="text-xs text-zinc-500">Loading projects…</div>
+        ) : err ? (
+          <p role="alert" className="text-red-400 text-xs">{err}</p>
+        ) : (
+          <label className="block text-sm">
+            <span className="text-zinc-400">Project</span>
+            <select
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              className="w-full mt-1 px-2 py-1 bg-zinc-800 rounded"
+              aria-label="Project to invite into"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name || p.slug}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3 py-1 text-sm"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={loading || !selected}
+            className="px-3 py-1 bg-blue-600 rounded text-sm disabled:opacity-50"
+          >
+            Continue
+          </button>
+        </div>
+      </form>
+    </div>,
+    document.body,
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  RegistryPanel                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -400,6 +518,10 @@ export function RegistryPanel() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Invite / assign dialogs (Feature: invite + assign external agents to projects).
+  const [inviteProjectId, setInviteProjectId] = useState<string | null>(null);
+  const [invitePickerOpen, setInvitePickerOpen] = useState(false);
+  const [assignEntry, setAssignEntry] = useState<RegistryEntry | null>(null);
   // Monotonic counter, only the latest in-flight response is applied.
   const loadSeq = useRef(0);
 
@@ -548,11 +670,44 @@ export function RegistryPanel() {
               isAdmin={isAdmin}
               currentUserId={currentUserId}
               onAction={handleAction}
+              onAssign={setAssignEntry}
             />
           ))
         )}
         <GovernanceAuditPanel isAdmin={isAdmin} />
       </div>
+
+      {isAdmin && inviteProjectId && (
+        <InviteAgentDialog
+          projectId={inviteProjectId}
+          onClose={() => setInviteProjectId(null)}
+        />
+      )}
+      {isAdmin && invitePickerOpen && (
+        <InviteExternalAgentPicker
+          onCancel={() => setInvitePickerOpen(false)}
+          onPick={(pid) => {
+            setInvitePickerOpen(false);
+            setInviteProjectId(pid);
+          }}
+        />
+      )}
+      {assignEntry && (
+        <AssignAgentToProjectDialog
+          entry={assignEntry}
+          onClose={() => setAssignEntry(null)}
+        />
+      )}
+      {isAdmin && (
+        <button
+          type="button"
+          onClick={() => setInvitePickerOpen(true)}
+          className="mt-2 px-3 py-1 text-xs bg-blue-600 rounded hover:bg-blue-500 transition-colors"
+          aria-label="Invite external agent"
+        >
+          Invite external agent
+        </button>
+      )}
     </section>
   );
 }
