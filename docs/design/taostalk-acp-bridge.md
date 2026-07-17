@@ -253,3 +253,33 @@ freshness.
 session (e.g. `@taOS-dev` on this Mac) shows live in taOStalk and can be replied to from taOS
 via the channel. The CCC local filesystem attach (Tier 1) becomes a same-host enhancement in a
 later slice, not the foundation.
+
+## Onboarding (acceptance requirement)
+
+Because the transport degrades across tiers and differs per harness, the onboarding flow is
+part of the deliverable, not a doc afterthought. A "Connect a session" wizard in taOStalk must
+walk the operator through, and clearly explain:
+
+- **Scenario detection first:** is the agent LOCAL to taOS (same host + account), REMOTE
+  (other machine / off-LAN / container), or under a DIFFERENT account? The wizard picks the
+  transport tier from this and states which capabilities apply.
+- **Tier 0 (any agent, incl. remote):** how the agent connects over the network - it posts to
+  its taOS channel with its registry identity/token (mint/consent flow), reads replies by
+  subscribe-or-poll. Copy-paste connect snippet per harness. Off-LAN requires taOSgo/Headscale
+  (link to that setup); on-LAN/same-host is direct.
+- **Tier 1 (local same-host only):** the optional richer attach - point taOS at the harness
+  transcript/state (Claude Code: `~/.claude`), install the hooks, or ACP attach/spawn. Explain
+  it is a same-host enhancement, unavailable remote/cross-account.
+- **Per-harness specifics:** the exact connect command / ACP entry (`claude ...`, `kilo acp`,
+  `grok --acp`, `opencode acp`) and auth. For Claude Code, explain the subscription-vs-API-key
+  choice AND the Anthropic ToS caveat plainly: subscription (CLI-wrap) is personal-individual
+  use only; shared/multi-user/commercial taOS must use an API key or a non-Claude harness.
+- **Capability expectations set honestly:** live READ works everywhere; REPLY-from-taOS works
+  via the channel (Tier 0) or resume-drive (Tier 1); you cannot inject into a live foreground
+  terminal process. The wizard states what this specific session can and cannot do.
+- **Freshness indicator:** the channel shows the active tier (live-stream vs polled) so the
+  operator always knows how real-time the view is.
+
+Acceptance: a non-expert operator can connect each of a local Claude Code session, a remote
+kilo/grok/opencode session, and a cross-account session, guided entirely by the wizard, and
+understands what each can do.
