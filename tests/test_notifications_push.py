@@ -283,6 +283,115 @@ class TestAddTriggersPush:
 
 
 # ---------------------------------------------------------------------------
+# Per-user scoping (user_id on add() → per-user push fan-out)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestPerUserScoping:
+    async def test_add_with_user_id_stores_it(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            await store.add("Hi", "there", user_id="user-1")
+            items = await store.list()
+            assert len(items) == 1
+            assert items[0]["user_id"] == "user-1"
+        finally:
+            await store.close()
+
+    async def test_add_without_user_id_stores_null(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            await store.add("Broadcast", "to all")
+            items = await store.list()
+            assert len(items) == 1
+            assert items[0]["user_id"] is None
+        finally:
+            await store.close()
+
+    async def test_add_passes_user_id_to_event_emitter(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            seen: list[dict] = []
+
+            async def emitter(row: dict) -> None:
+                seen.append(row)
+
+            store.set_event_emitter(emitter)
+            await store.add("Scoped", "msg", user_id="user-a")
+            assert len(seen) == 1
+            assert seen[0]["user_id"] == "user-a"
+        finally:
+            await store.close()
+
+    async def test_add_passes_null_user_id_to_event_emitter(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            seen: list[dict] = []
+
+            async def emitter(row: dict) -> None:
+                seen.append(row)
+
+            store.set_event_emitter(emitter)
+            await store.add("Broadcast", "msg")
+            assert len(seen) == 1
+            assert seen[0]["user_id"] is None
+        finally:
+            await store.close()
+
+    async def test_send_web_push_scoped_to_user(self, push_store):
+        """When row has user_id, only that user's subscriptions are targeted."""
+        import json
+
+        await _seed(push_store, "https://push.example.com/user_a_sub", user_id="user-a")
+        await _seed(push_store, "https://push.example.com/user_b_sub", user_id="user-b")
+
+        row = {**_ROW, "user_id": "user-a"}
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        assert mock.call_count == 1
+        assert result["sent"] == 1
+        # Verify the targeted endpoint belongs to user-a
+        payload = json.loads(mock.call_args.kwargs["data"])
+        assert payload["title"] == "Access request"
+
+    async def test_send_web_push_broadcast_when_no_user_id(self, push_store):
+        """When row has no user_id (None/absent), fans out to all."""
+        await _seed(push_store, "https://push.example.com/user_a_sub", user_id="user-a")
+        await _seed(push_store, "https://push.example.com/user_b_sub", user_id="user-b")
+
+        row = {**_ROW}  # no user_id
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        assert mock.call_count == 2
+        assert result["sent"] == 2
+
+    async def test_send_web_push_scoped_no_subscriptions_is_noop(self, push_store):
+        """Scoped send to a user with no subscriptions is a no-op."""
+        await _seed(push_store, "https://push.example.com/user_a_sub", user_id="user-a")
+        row = {**_ROW, "user_id": "user-b"}  # user-b has no subscriptions
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        mock.assert_not_called()
+        assert result == {"sent": 0, "failed": 0, "removed": 0}
+
+    async def test_send_web_push_broadcast_none_user_id(self, push_store):
+        """When user_id is explicitly None, fans out to all (broadcast)."""
+        await _seed(push_store, "https://push.example.com/user_a_sub", user_id="user-a")
+        await _seed(push_store, "https://push.example.com/user_b_sub", user_id="user-b")
+
+        row = {**_ROW, "user_id": None}
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        assert mock.call_count == 2
+        assert result["sent"] == 2
+
+
+# ---------------------------------------------------------------------------
 # HTTP routes
 # ---------------------------------------------------------------------------
 

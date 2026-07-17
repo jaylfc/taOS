@@ -10,9 +10,10 @@ send/subscribe patterns are shared.
 Design notes
 ------------
 * The subscription store is a small SQLite table keyed by the push endpoint.
-  Subscriptions are recorded per user_id, but taOS notifications are currently
-  global (add() has no target user), so the send path fans out to every
-  subscription.
+  Subscriptions are recorded per user_id. When a notification carries a user_id,
+  the send path fans out only to that user's subscriptions; when user_id is None
+  (broadcast), it fans out to every subscription for genuinely system-wide
+  notices.
 * pywebpush.webpush() is synchronous (uses requests). Each send runs in a
   worker thread via asyncio.to_thread so the event loop is never blocked.
 * The whole send path is strictly best-effort: a missing VAPID key, no
@@ -107,6 +108,27 @@ class NotificationPushStore(BaseStore):
         ) as cursor:
             rows = await cursor.fetchall()
         return [{"endpoint": r[0], "created_at": r[1]} for r in rows]
+
+    async def list_all_for_user(self, user_id: str) -> list[dict]:
+        """Full subscription rows (including secrets) for one user.
+
+        Used by the send fan-out when scoping a notification to a specific
+        user. Returns the same shape as list_all() — endpoint, user_id,
+        p256dh, auth, created_at — so _send_one() can use it directly.
+        """
+        if not user_id:
+            raise ValueError("user_id is required")
+        assert self._db is not None
+        async with self._db.execute(
+            "SELECT endpoint, user_id, p256dh, auth, created_at FROM notif_push_subscriptions "
+            "WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {"endpoint": r[0], "user_id": r[1], "p256dh": r[2], "auth": r[3], "created_at": r[4]}
+            for r in rows
+        ]
 
     async def delete_by_endpoint(self, endpoint: str) -> int:
         """Delete the subscription for this endpoint, ignoring ownership.
@@ -224,6 +246,11 @@ async def _send_one(sub: dict, data_str: str, private_pem: str, store: Notificat
 async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple[str, str] | None) -> dict:
     """Best-effort fan-out of one notification row to every subscription.
 
+    When ``row["user_id"]`` is set, fans out only to that user's subscriptions
+    via ``store.list_all_for_user()``. When ``user_id`` is None (broadcast), fans
+    out to every subscription via ``store.list_all()`` for genuinely
+    system-wide notices.
+
     Returns {"sent", "failed", "removed"} counts (also useful for tests). Never
     raises: a missing VAPID key or no subscriptions is a no-op, and every
     per-subscription error is caught and counted.
@@ -232,7 +259,8 @@ async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple
         return {"sent": 0, "failed": 0, "removed": 0}
     _, private_pem = vapid
     try:
-        subs = await store.list_all()
+        user_id = row.get("user_id")
+        subs = await (store.list_all_for_user(user_id) if user_id else store.list_all())
     except Exception:  # noqa: BLE001 - store read must never break add()
         logger.warning("notif-push: failed to list subscriptions", exc_info=True)
         return {"sent": 0, "failed": 0, "removed": 0}
