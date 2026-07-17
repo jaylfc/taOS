@@ -45,11 +45,6 @@ const CHANNEL_OPTIONS = [
   { label: "Beta", branch: "dev", description: "Preview upcoming features." },
 ] as const;
 
-function channelForBranch(branch: string): string {
-  const opt = CHANNEL_OPTIONS.find((c) => c.branch === branch);
-  return opt?.branch ?? branch;
-}
-
 // Render a lucide icon by kebab-case name (matches the format used in optional-apps registry).
 function AppIconGlyph({ iconName, size = 16 }: { iconName: string; size?: number }) {
   const pascal = iconName
