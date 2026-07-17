@@ -13,8 +13,6 @@ import {
   PauseCircle,
   MessagesSquare,
   Search,
-  Copy,
-  Check,
   AlertTriangle,
   Loader2,
 } from "lucide-react";
@@ -72,7 +70,7 @@ import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import Picker, { Theme } from "emoji-picker-react";
+import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { SearchPanel } from "./chat/SearchPanel";
 import { ChannelSidebar } from "./chat/ChannelSidebar";
 import { A2aBusMessageView, useBusChannels } from "./chat/A2aBusPanel";
