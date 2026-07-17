@@ -1796,6 +1796,10 @@ install_linux_systemd_system() {
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
     log "installed /usr/local/bin/taos-graceful-stop"
 
+    # Install desktop rebuild script (runs async after controller start; taOS #807)
+    $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/rebuild-desktop.sh" /usr/local/bin/taos-rebuild-desktop
+    log "installed /usr/local/bin/taos-rebuild-desktop"
+
     # Stamp the template from the repo, substituting install-time variables.
     # The service runs as the dedicated 'taos' system user, not the installer's
     # $USER.  The installer itself still runs as root.
@@ -1815,6 +1819,16 @@ install_linux_systemd_system() {
     $sudo_cmd sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
     log "installed $unit (system unit, runs as 'taos')"
 
+    # Install desktop-rebuild service (runs async after controller starts; taOS #807)
+    local rebuild_unit="/etc/systemd/system/tinyagentos-rebuild-desktop.service"
+    sed \
+        -e "s|TAOS_USER|taos|g" \
+        -e "s|TAOS_GROUP|taos|g" \
+        -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
+        "$INSTALL_DIR/scripts/systemd/tinyagentos-rebuild-desktop.service" \
+        | $sudo_cmd tee "$rebuild_unit" > /dev/null
+    log "installed $rebuild_unit"
+
     # Hand the data directory to the service user before the unit first starts.
     set_data_dir_ownership
 
@@ -1826,6 +1840,8 @@ install_linux_systemd_system() {
 
     $sudo_cmd systemctl daemon-reload
     $sudo_cmd systemctl enable --now tinyagentos
+    # Enable the desktop rebuild service (runs async after controller start; taOS #807)
+    $sudo_cmd systemctl enable tinyagentos-rebuild-desktop.service
     if [[ -f /etc/systemd/system/taos-pre-shutdown.service ]]; then
         $sudo_cmd systemctl enable taos-pre-shutdown.service
     fi
@@ -1841,6 +1857,9 @@ install_linux_systemd_user() {
     # Install graceful-stop script to user-local bin if possible
     mkdir -p "$HOME/.local/bin"
     install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" "$HOME/.local/bin/taos-graceful-stop"
+    # Install desktop rebuild script (runs async after controller start; taOS #807)
+    install -m 0755 "$INSTALL_DIR/scripts/rebuild-desktop.sh" "$HOME/.local/bin/taos-rebuild-desktop"
+    log "installed $HOME/.local/bin/taos-rebuild-desktop"
 
     local taos_prefetch="${TAOS_PREFETCH_BASE_IMAGE:-0}"
 
@@ -1866,6 +1885,17 @@ install_linux_systemd_user() {
     sed -i "s|^Environment=PYTHONUNBUFFERED=1|Environment=PYTHONUNBUFFERED=1\nEnvironment=TAOS_HOST=0.0.0.0\nEnvironment=TAOS_PORT=$TAOS_PORT\nEnvironment=TAOS_BROWSER_PROXY_PORT=$TAOS_BROWSER_PROXY_PORT|" "$unit"
     log "installed $unit (user unit fallback — sudo unavailable)"
 
+    # Install desktop-rebuild service (runs async after controller starts; taOS #807)
+    local rebuild_unit="$unit_dir/tinyagentos-rebuild-desktop.service"
+    sed \
+        -e "s|TAOS_USER|$USER|g" \
+        -e "s|TAOS_GROUP|$(id -gn)|g" \
+        -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
+        -e "s|/usr/local/bin/taos-rebuild-desktop|$HOME/.local/bin/taos-rebuild-desktop|g" \
+        "$INSTALL_DIR/scripts/systemd/tinyagentos-rebuild-desktop.service" \
+        > "$rebuild_unit"
+    log "installed $rebuild_unit (user unit fallback)"
+
     # Make the user manager start on boot without an active login. Must
     # happen BEFORE the systemctl --user calls so the user bus is up.
     loginctl enable-linger "$USER" 2>/dev/null || true
@@ -1882,11 +1912,13 @@ install_linux_systemd_user() {
     done
 
     if ! systemctl --user daemon-reload 2>/dev/null; then
-        warn "user systemd not reachable — leaving the unit on disk so it activates on next login"
-        warn "to start manually: systemctl --user daemon-reload && systemctl --user enable --now tinyagentos"
+        warn "user systemd not reachable — leaving the units on disk so they activate on next login"
+        warn "to start manually: systemctl --user daemon-reload && systemctl --user enable --now tinyagentos tinyagentos-rebuild-desktop"
         return 0
     fi
     systemctl --user enable --now tinyagentos
+    # Enable the desktop rebuild service (runs async after controller start; taOS #807)
+    systemctl --user enable tinyagentos-rebuild-desktop.service
     log "controller running as user systemd service"
     log "check: systemctl --user status tinyagentos"
     log "logs:  journalctl --user -u tinyagentos -f"
