@@ -1,12 +1,12 @@
 ---
 name: taos-development-skill
-description: TinyAgentOS (taOS) architecture map, contribution workflow, testing guide, common fix patterns, and coding conventions. Load when contributing to taOS - PRs, bug fixes, features, catalog additions.
+description: taOS architecture map, contribution workflow, testing guide, common fix patterns, and coding conventions. Load when contributing to taOS - PRs, bug fixes, features, catalog additions.
 ---
 
 # taos-development-skill
 
 Procedures and architecture for contributing to
-[TinyAgentOS](https://github.com/jaylfc/taOS). The non-negotiable rules live in
+[taOS](https://github.com/jaylfc/taOS). The non-negotiable rules live in
 `soul.md`; this skill is the *how*.
 
 > uses approximate counts (~N) as rough orientation only - actual numbers rot fast in a
@@ -19,35 +19,38 @@ Procedures and architecture for contributing to
   tinyagentos/                 ← server package
     app.py                     ← FastAPI app factory: lifespan, route registration
     config.py                  ← Platform config, hardware detection
-    routes/                    ← one APIRouter module per feature area (~86 modules)
+    routes/                    ← one APIRouter module per feature area (~127 modules)
     templates/                 ← minimal: agent_debugger.html only (frontend is React SPA)
     channel_hub/               ← framework-agnostic messaging: connectors + MessageRouter
     adapters/                  ← thin per-framework agent adapters (~25 lines each)
     cluster/                   ← distributed compute: worker registry, task routing, GPU lease
     worker/                    ← cross-platform worker apps (system tray, Android, iOS)
-    stores/                    ← data layer: aiosqlite (SQLite), one store per concern
+    *_store.py, base_store.py  ← data layer: top-level BaseStore subclasses (aiosqlite); one SQLite file per store; no stores/ dir
     chat/ projects/ mcp/       ← chat, project board/canvas/A2A, MCP proxy+permissions
     installers/ containers/    ← model/app installers; Docker + LXC backends
     migrations/                ← DB migrations
   desktop/                     ← React + TypeScript SPA (Vite)
   app-catalog/                 ← YAML app manifests + catalog.yaml (~108 apps)
-  tests/                       ← pytest suite (~3,590 tests)
+  tests/                       ← pytest suite (~4,845 tests)
   docs/                        ← documentation; agent manual compiled from docs/agent-manual/
 ```
 
 ## Key architectural patterns
 
-- **Routes** - each `routes/*.py` is an `APIRouter` registered in `app.py`'s `create_app()`.
-  `async def` handlers, `await` all I/O, Pydantic request/response models. Routes access stores
-  via `request.app.state` (dependency injection set up in the app lifespan) - they do **not**
-  import stores directly. **No cross-importing between route modules.**
-- **Stores** - SQLite via `aiosqlite`, each with `init()`/`close()`, attached to
-  `request.app.state` in the lifespan (`app.state.metrics`, `app.state.secrets`, …).
+- **Routes** - each `routes/*.py` is an `APIRouter` registered in
+  `tinyagentos/routes/__init__.py`'s `register_all_routers()` (called from `create_app()`) with
+  `dependencies=_csrf`. `async def` handlers, `await` all I/O, Pydantic request/response models.
+  Routes access stores via `request.app.state` (dependency injection set up in the app lifespan) -
+  they do **not** import stores directly. **No cross-importing between route modules.**
+- **Stores** - SQLite via `aiosqlite`; each subclasses `BaseStore` (`tinyagentos/base_store.py`),
+  sets `SCHEMA` (first-open DDL) and `MIGRATIONS`, and is attached to `request.app.state` in the
+  lifespan (`app.state.secrets`, …). Never reference a migration-added column inside `SCHEMA`.
 - **Config** - `AppConfig` dataclass in `config.py`; YAML serialisation; async-locked saves via
   `save_config_locked()`; typed backends (`rkllama`, `ollama`, `openai`, `anthropic`, …).
-- **Templates** - **Pico CSS utility classes only** (no other CSS framework). htmx (`hx-get`,
-  `hx-target`, `hx-swap`) for dynamic partials. Semantic HTML; ARIA labels on interactive elements
-  without visible text. Templates are minimal - the frontend is a React SPA.
+- **Templates** - all real UI work goes in the `desktop/` React SPA. The Pico CSS + htmx guidance
+  applies **only** to the single legacy Jinja template (`agent_debugger.html`): **Pico CSS utility
+  classes only** (no other CSS framework), htmx (`hx-get`, `hx-target`, `hx-swap`) for dynamic
+  partials, semantic HTML, ARIA labels on interactive elements without visible text.
 - **Frontend** - React + TypeScript SPA in `desktop/`. Built with Vite: `npm run build` outputs
   to `static/desktop/` (gitignored). For development: `npm run dev` serves with hot reload on
   port 5173. One concern per component; API calls in dedicated hooks or service files.
@@ -58,11 +61,14 @@ Procedures and architecture for contributing to
 
 ### Before starting
 
-1. **Sync from upstream:**
+1. **Sync from upstream.** In a fork clone, `origin` is *your fork* (push target) and `upstream`
+   is `jaylfc/taOS` (fetch/rebase target). Add upstream once:
+   `git remote add upstream https://github.com/jaylfc/taOS.git`. Always rebase onto the canonical
+   branch, never your fork's possibly-stale `dev`:
    ```bash
-   git fetch origin dev
+   git fetch upstream dev
    git checkout dev
-   git rebase origin/dev
+   git rebase upstream/dev
    ```
    Never branch from a stale `dev`.
 
@@ -86,8 +92,10 @@ Procedures and architecture for contributing to
      --title "feat(scope): description" --body "Fixes #<issue>. Tests: N/N pass."
    gh pr ready <PR#>
    ```
-   Do NOT wait for CI - fork PRs are gated behind maintainer workflow approval.
-   Mark ready once the CODE is done and local tests pass.
+   Do NOT wait for CI to *start* - fork PRs are gated behind maintainer workflow approval, so a
+   fresh fork PR's matrix run may never begin on its own; mark ready once the CODE is done and
+   local tests pass. This does NOT mean ignore red CI: once the matrix runs you own making it
+   green - re-check `gh pr checks <PR#>` and fix any red matrix job before considering the task done.
 
 6. **Never commit directly to `dev` or `master`.** All work happens on branches.
    Main only receives merges via upstream PR approval.
@@ -185,7 +193,8 @@ eliminates the wasteful push→block→manual-check→unblock→re-dispatch cycl
      '.comments[] | select(.author.login == "kilo-code-bot" or .author.login == "coderabbitai[bot]")'
    ```
 3. **If issues found:** fix all findings in a single commit, re-run local tests, push,
-   then go back to step 1 (max 2 cycles).
+   then go back to step 1 (max 2 cycles). If findings still persist after 2 cycles, stop -
+   do not loop further; surface the remaining findings to the human.
 4. **Only block for maintainer review when bots are clean** - 0 CRITICAL, 0 WARNING.
    If a SUGGESTION-only finding is genuinely not applicable, note the rationale in a
    PR comment before blocking.
@@ -209,10 +218,14 @@ eliminates the wasteful push→block→manual-check→unblock→re-dispatch cycl
 
 ## Common fix patterns
 
-- **New route:** `routes/<feature>.py` with `router = APIRouter()` → register in `create_app()` →
-  tests in `tests/test_<feature>.py` using the `client` fixture.
-- **New store:** class with `init()`/`close()` (aiosqlite) → attach in the lifespan → mock in
-  conftest if needed.
+- **New route:** `routes/<feature>.py` with `router = APIRouter()` → register in
+  `tinyagentos/routes/__init__.py::register_all_routers()` with `dependencies=_csrf`, honoring the
+  ordering comments there (e.g. `agent_registry` before the generic `agents` `/{name}` route); do
+  **not** add `include_router` inline in `app.py` → tests in `tests/test_<feature>.py` using the
+  `client` fixture.
+- **New store:** subclass `BaseStore` → set `SCHEMA` (first-open DDL) and `MIGRATIONS` (never
+  reference a migration-added column in `SCHEMA`) → attach in the lifespan as `app.state.<name>` →
+  mock in conftest if needed.
 - **Config field:** add to config dataclass → update defaults + `to_dict()`/`from_dict()` →
   `test_config.py`.
 - **Catalog entry:** `manifest.yaml` under `app-catalog/<category>/<id>/` → add to `catalog.yaml` →
@@ -231,6 +244,10 @@ A gate blocks PRs that add or remove certain feature code without a matching doc
 | Route module under `tinyagentos/routes/` added/removed | `docs/agent-coordination.md` |
 | Installer under `tinyagentos/installers/` or `scripts/install*` added/removed | `README.md` |
 | Manifest under `app-catalog/` added/removed | `README.md` |
+| `tinyagentos/auth_middleware.py` (agent-token route allowlist) changed | `docs/agent-coordination.md` |
+
+`.github/workflows/doc-gate.yml` is authoritative (a local `--no-verify` does not bypass it) and
+also runs `scripts/check_schema_migrations.py` (the SCHEMA-before-migrations guard, see Pitfalls).
 
 If your PR trips a rule and there is genuinely nothing to document, add a trailer:
 ```
@@ -280,18 +297,48 @@ controls which hardware profiles see the app as recommended.
   for workflow runs from first-time contributor forks. This can re-trigger on each new PR even after
   previous PRs were approved - it's per-workflow-run, not per-contributor. Surface to the human;
   do NOT poll or re-push.
-- **No lint/format tooling is configured.** There is no `.pre-commit-config.yaml`, no
-  `.ruff.toml`, and no `[tool.ruff]`, `[tool.black]`, or `[tool.mypy]` section in
-  `pyproject.toml`. Match the surrounding code style manually.
-- **Secrets:** No dedicated secrets store in the current tree. The `stores/` directory pattern
-  handles data access; secrets management may live in the MCP permissions model or be handled
-  at the OS/deployment layer. When unsure, treat secrets as escalate-to-human.
+- **No formatter/linter *config* yet, but CI is not silent.** There is no `.ruff.toml` and no
+  `[tool.ruff]`/`[tool.black]`/`[tool.mypy]` section in `pyproject.toml` (ruff may land soon -
+  check `pyproject.toml` before assuming). CI does run a `lint` job (`python -m compileall
+  tinyagentos/`), so any syntax error fails CI, and `.githooks/pre-commit` + `.githooks/commit-msg`
+  run the doc-gate + schema-migration checks locally (enable them with `scripts/install-git-hooks.sh`).
+  Match the surrounding code style manually.
+- **Secrets have a dedicated store.** `tinyagentos/secrets.py` (routes in
+  `tinyagentos/routes/secrets.py`, attached as `app.state.secrets`) is the credential store. Store
+  credentials there - never in config or in code.
 - **CONTRIBUTING.md** says Python 3.10+, but `pyproject.toml` requires `>=3.11,<3.14`.
   Python 3.11 is the effective floor.
 - **Routes do not import stores directly.** They access them via `request.app.state`.
   This is a common mistake - check existing routes for the pattern.
 - **`static/desktop/` is gitignored.** The SPA build output is a generated artifact.
   The conftest in `tests/` stubs the SPA build output so backend tests don't need `npm run build`.
+- **CSRF is HTTP-only; keep it websocket-safe.** `register_all_routers` attaches
+  `dependencies=[Depends(verify_csrf)]` to *every* router, including ones with `@router.websocket`
+  routes. `verify_csrf` must be typed `HTTPConnection` (the shared base of `Request` and
+  `WebSocket`) so it is injectable on both scopes and can skip when there is no HTTP method - a
+  plain `Request` param (or `Request | None`) `TypeError`s on a websocket route and breaks it (this
+  is exactly what broke `/ws/chat`). Do session auth *inside* the handler (see `chat_ws` in
+  `routes/chat.py`). Note: tests bypass CSRF via an autouse conftest patch, so a local green run
+  does **not** prove CSRF behavior - only `tests/test_csrf.py` exercises the real check.
+- **SCHEMA-before-migrations can brick boot.** `BaseStore.init()` runs `SCHEMA` before
+  `MIGRATIONS`/`_post_init`, so a `CREATE INDEX` in `SCHEMA` on a migration-added column bricks boot
+  on an *existing* DB while every fresh-DB test still passes. `scripts/check_schema_migrations.py`
+  (doc-gate + pre-commit) guards this. Rule: never reference a migration-added column in `SCHEMA`;
+  retrofit columns in a guarded `_post_init` (`PRAGMA table_info` + `ALTER` only if absent); and
+  **test schema changes over an existing pre-change DB, not just a fresh one.**
+- **Worktree test shadowing.** `tests/conftest.py` imports `tinyagentos` from the installed editable
+  package (the main checkout). Running `pytest` in a worktree with the main venv tests the **wrong**
+  code. Always `uv run pytest` from the worktree root, and sanity-check with
+  `uv run python -c "import tinyagentos; print(tinyagentos.__file__)"` that the path is the worktree.
+- **Agent-token route allowlist.** Agent/registry JWTs only reach explicitly allowlisted
+  `(method, path)` pairs in `tinyagentos/auth_middleware.py`. A new agent-facing *mutating* route
+  silently 401s until it is added there - and editing that file trips the doc-gate `agent-api` rule
+  (update `docs/agent-coordination.md`).
+- **Scope vocab lives in two synced places.** `_ALLOWED_SCOPES` (`routes/agent_registry.py`) and
+  `VALID_SCOPES` (`routes/agent_auth_requests.py`) must stay equal - a test asserts
+  `set(_ALLOWED_SCOPES) == set(VALID_SCOPES)`. Add any new scope to **both**.
+- **The data layer is many separate SQLite files** - one file per store, not one shared DB. There is
+  no cross-store SQL and migrations are per-store.
 
 ## Issue triage
 
@@ -307,7 +354,7 @@ controls which hardware profiles see the app as recommended.
 - **Feature** (3+ hours): Design → implement → tests → documentation
 
 ### Before starting work
-1. Sync from upstream: `git fetch origin dev`
+1. Sync from upstream: `git fetch upstream dev`
 2. Verify the issue is still open and unassigned
 3. Comment on the issue: "Working on this - will open a draft PR"
 
@@ -315,7 +362,7 @@ controls which hardware profiles see the app as recommended.
 
 ```bash
 git clone https://github.com/jaylfc/taOS.git
-cd tinyagentos
+cd taOS
 uv sync --extra dev
 cd desktop && npm install && npm run build && cd ..
 uv run pytest tests/ --ignore=tests/e2e -n auto

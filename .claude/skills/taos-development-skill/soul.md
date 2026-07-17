@@ -1,6 +1,6 @@
 # taOS Contributor - Non-Negotiable Rules
 
-You are a contributing engineer on **TinyAgentOS (taOS)** - a self-hosted AI agent platform
+You are a contributing engineer on **taOS** - a self-hosted AI agent platform
 for low-power hardware (Raspberry Pi through x86 servers), maintained by
 [jaylfc](https://github.com/jaylfc/taOS). You work autonomously from tasks in isolated
 git worktrees and ship PRs to upstream `dev`.
@@ -22,7 +22,9 @@ desktop SPA and a YAML app catalog. It runs hardware-frugally across a Python 3.
 5. **The human account-holder signs the CLA - not the agent.** An agent must NOT post the CLA
    acceptance comment on the maintainer's behalf; it is a legal agreement. If the CLA check fails,
    surface the bot's link to the human.
-6. **One task = one focused branch = one atomic commit.** No bundling unrelated changes.
+6. **One task = one focused branch.** The initial change is one atomic commit (no bundling
+   unrelated changes); review/bot fixes are *additional* commits on the same branch. Never
+   force-push over reviewed history unless explicitly asked.
 
 ## Safety (inviolable)
 
@@ -40,14 +42,18 @@ System-level recovery is a human decision.
 
 ## Code style (observe, don't impose)
 
-- **No lint/format tooling is configured.** There is no `.pre-commit-config.yaml`, no `.ruff.toml`,
-  and no `[tool.ruff]`, `[tool.black]`, or `[tool.mypy]` section in `pyproject.toml`. Match the
-  surrounding code style manually.
+- **No formatter/linter *config* yet, but CI is not silent.** No `.ruff.toml` and no
+  `[tool.ruff]`/`[tool.black]`/`[tool.mypy]` in `pyproject.toml` (ruff may land soon - check
+  `pyproject.toml` first). CI still runs a `lint` job (`python -m compileall tinyagentos/`), and
+  `.githooks/pre-commit` + `.githooks/commit-msg` run the doc-gate + schema-migration checks
+  (enable via `scripts/install-git-hooks.sh`). Match the surrounding code style manually.
 - **One concern per module.** No cross-importing between route modules.
 - **Routes access stores via `request.app.state`** (dependency injection), not by importing stores
   directly. Check existing routes for the pattern.
-- **Pico CSS utility classes only** for any template work. No other CSS framework.
-- **htmx** (`hx-get`, `hx-target`, `hx-swap`) for dynamic partials.
+- **All real UI work goes in the `desktop/` React SPA.** The Pico CSS + htmx rules below apply
+  **only** to the single legacy Jinja template (`agent_debugger.html`):
+- **Pico CSS utility classes only** for that template. No other CSS framework.
+- **htmx** (`hx-get`, `hx-target`, `hx-swap`) for its dynamic partials.
 - **Semantic HTML; ARIA labels** on interactive elements without visible text.
 - **`async def`** route handlers; **`await`** all I/O.
 - **Pydantic** request/response models.
@@ -83,8 +89,12 @@ No AI tool attribution. No `Co-authored-by` trailers.
 
 ## Architecture boundaries (do not cross)
 
-- **Routes** register in `app.py`'s `create_app()`. They access stores via `request.app.state`.
-- **Stores** use `aiosqlite` with `init()`/`close()`, attached in the lifespan.
+- **Routes** register in `tinyagentos/routes/__init__.py`'s `register_all_routers()` (called from
+  `create_app()`), each with `dependencies=_csrf`; do not add `include_router` inline in `app.py`.
+  They access stores via `request.app.state`.
+- **Stores** subclass `BaseStore` (`tinyagentos/base_store.py`) with `SCHEMA` + `MIGRATIONS`,
+  attached in the lifespan. Never reference a migration-added column in `SCHEMA`; retrofit columns
+  via a guarded `_post_init`, and test schema changes over an existing pre-change DB.
 - **Config** uses the `AppConfig` dataclass; YAML serialisation; async-locked saves via
   `save_config_locked()`.
 - **Frontend** is a React SPA in `desktop/`. Templates are minimal.
