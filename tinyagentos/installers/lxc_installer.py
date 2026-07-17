@@ -3,11 +3,8 @@ from __future__ import annotations
 import logging
 import secrets
 import shlex
-import socket
-from contextlib import closing
-
 from tinyagentos.installers.base import AppInstaller
-from tinyagentos.installers.port_allocator import RESERVED_PORTS
+from tinyagentos.installers.port_allocator import allocate_host_port
 import tinyagentos.containers as containers
 
 logger = logging.getLogger(__name__)
@@ -69,20 +66,6 @@ def _render_app_ini(app_id: str = "gitea-lxc") -> str:
         internal_token=secrets.token_hex(32),
         root_url=f"/apps/{app_id}/",
     )
-
-
-def _find_free_port(start: int = 30_000, end: int = 40_000) -> int:
-    """Return the first available TCP port in [start, end) that is not reserved."""
-    for port in range(start, end):
-        if port in RESERVED_PORTS:
-            continue
-        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-            try:
-                s.bind(("0.0.0.0", port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(f"No free non-reserved port found in range {start}-{end}")
 
 
 class LXCInstaller(AppInstaller):
@@ -305,9 +288,12 @@ class LXCInstaller(AppInstaller):
 
             # Step 8: Add proxy device (host_port → container:3000).
             # Retry up to 10 times to handle the TOCTOU window between the
-            # port probe and the actual bind by incus.
+            # port probe and the actual bind by incus.  Each failed port is
+            # accumulated so the deterministic allocator doesn't hand it out
+            # again in the next retry.
+            failed_ports: set[int] = set()
             for _attempt in range(10):
-                host_port = _find_free_port()
+                host_port = allocate_host_port(app_id, exclude=failed_ports)
                 logger.info(
                     "LXCInstaller: adding proxy device host:%d -> container:3000 (attempt %d)",
                     host_port, _attempt + 1,
@@ -324,6 +310,7 @@ class LXCInstaller(AppInstaller):
                     raise RuntimeError(
                         f"Failed to add proxy device: {res.get('output', '')}"
                     )
+                failed_ports.add(host_port)
                 logger.warning(
                     "LXCInstaller: port %d already in use, retrying", host_port
                 )

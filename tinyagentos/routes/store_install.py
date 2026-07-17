@@ -267,12 +267,16 @@ async def _install_agent_framework(
 
 
 def _docker_published_port(install_config: dict) -> int:
-    """Return the first host port a docker service publishes, or 0.
+    """Return the first container port a docker service publishes, or 0.
 
-    DockerInstaller maps each declared port as ``{p}:{p}`` so the host port
-    equals the container port. Ports may be declared either at the top level
-    (``install.ports``) or nested under ``install.requires.ports`` — mirror
-    the precedence DockerInstaller._generate_compose uses (requires first).
+    DockerInstaller maps each declared port as ``{allocated_host_port}:{container_port}``
+    so the container-side port is distinct from the host port.  This function
+    reads the container ports from the manifest (install.ports or
+    install.requires.ports) for use as a fallback when the installer
+    doesn't return a host_port.  Ports may be declared either at the top
+    level (``install.ports``) or nested under ``install.requires.ports`` —
+    mirror the precedence DockerInstaller._generate_compose uses (requires
+    first).
     """
     if not isinstance(install_config, dict):
         return 0

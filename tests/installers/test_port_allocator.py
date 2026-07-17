@@ -2,6 +2,7 @@
 import socket
 
 from tinyagentos.installers.docker_installer import DockerInstaller
+from tinyagentos.installers.lxc_installer import LXCInstaller
 from tinyagentos.installers.port_allocator import (
     RESERVED_PORTS,
     _POOL_END,
@@ -102,3 +103,28 @@ class TestDockerComposeMultiPort:
             ]
         assert first + 1 not in host_side
         assert len(set(host_side)) == 2
+
+
+class TestLxcUsesCentralizedAllocator:
+    """LXCInstaller must route through the centralized allocator, not a standalone scanner."""
+
+    def test_no_standalone_find_free_port(self):
+        """_find_free_port must not exist on the module (removed in favour of allocate_host_port)."""
+        import tinyagentos.installers.lxc_installer as mod
+        assert not hasattr(mod, "_find_free_port"), (
+            "lxc_installer must not carry its own _find_free_port; "
+            "use allocate_host_port from port_allocator instead"
+        )
+
+    def test_allocate_host_port_imported(self):
+        """lxc_installer imports allocate_host_port (not RESERVED_PORTS) from port_allocator."""
+        import tinyagentos.installers.lxc_installer as mod
+        # The only port-allocation import should be allocate_host_port.
+        # RESERVED_PORTS was only used by the removed _find_free_port.
+        assert hasattr(mod, "allocate_host_port"), (
+            "lxc_installer must import allocate_host_port"
+        )
+
+    def test_installer_class_available(self):
+        """LXCInstaller is importable (sanity check — no import errors from the refactor)."""
+        assert LXCInstaller is not None
