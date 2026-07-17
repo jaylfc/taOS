@@ -124,6 +124,9 @@ class TestLxcUsesCentralizedAllocator:
         assert hasattr(mod, "allocate_host_port"), (
             "lxc_installer must import allocate_host_port"
         )
+        assert not hasattr(mod, "RESERVED_PORTS"), (
+            "lxc_installer must not import RESERVED_PORTS; allocate_host_port handles that internally"
+        )
 
     def test_installer_class_available(self):
         """LXCInstaller is importable (sanity check — no import errors from the refactor)."""
