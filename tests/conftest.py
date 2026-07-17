@@ -28,7 +28,10 @@ from tinyagentos.routes.desktop import SPA_DIR
 from fastapi import Request as _FastAPIRequest
 
 
-def _noop_verify_csrf(request: _FastAPIRequest) -> None:
+def _noop_verify_csrf(request: _FastAPIRequest | None = None) -> None:
+    # request is optional so this override is callable on websocket routes too
+    # (FastAPI injects no Request into a websocket scope), matching the real
+    # verify_csrf which no-ops when request is None.
     return
 
 
