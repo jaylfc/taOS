@@ -31,6 +31,9 @@ jobs:
       - name: Invariants (Layer A)
         run: python scripts/check_doc_gate.py invariants
 
+      - name: Schema-migration guard (#1865)
+        run: python scripts/check_schema_migrations.py
+
       - name: Diff gate (Layer B)
         env:
           BASE_REF: ${{ github.base_ref }}
