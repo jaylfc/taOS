@@ -171,6 +171,43 @@ I have read the CLA Document and I hereby sign the CLA
 3. Once code is done and local tests pass, `gh pr ready`. Address review feedback with additional
    commits on the same branch. The maintainer merges upstream.
 
+## Post-Push Bot Review Cycle
+
+After pushing a PR and marking it ready, automated bots (Kilo, CodeRabbit) run reviews.
+Address their findings **before** surfacing the PR for human maintainer review — this
+eliminates the wasteful push→block→manual-check→unblock→re-dispatch cycle.
+
+### Procedure
+
+1. **Push PR and mark ready.** Wait ~10 minutes for bot reviews to complete.
+2. **Pull bot comments:**
+   ```bash
+   gh pr view <PR#> --repo jaylfc/tinyagentos --json comments --jq \
+     '.comments[] | select(.author.login == "kilo-code-bot" or .author.login == "coderabbitai[bot]")'
+   ```
+3. **If issues found:** fix all findings in a single commit, re-run local tests, push,
+   then go back to step 1 (max 2 cycles).
+4. **Only block for maintainer review when bots are clean** — 0 CRITICAL, 0 WARNING.
+   If a SUGGESTION-only finding is genuinely not applicable, note the rationale in a
+   PR comment before blocking.
+
+### Severity tiers
+
+| Tier | Action |
+|------|--------|
+| CRITICAL | Must fix before blocking for review |
+| WARNING | Must fix before blocking for review |
+| SUGGESTION | Fix or explain why not applicable |
+
+### Time estimates
+
+| Phase | Duration |
+|-------|----------|
+| First bot pass (Kilo + CodeRabbit) | ~10 min |
+| Fix cycle (if needed) | ~5–10 min |
+| Second bot pass (if re-pushed) | ~10 min |
+| **Worst case (2 cycles)** | **~30 min** |
+
 ## Common fix patterns
 
 - **New route:** `routes/<feature>.py` with `router = APIRouter()` → register in `create_app()` →
