@@ -38,6 +38,18 @@ interface OptionalAppCatalogEntry {
   update_available: boolean;
 }
 
+// Release-channel to branch mapping. The label is shown in the UI; the
+// branch is sent to the API and stored as the tracked_branch preference.
+const CHANNEL_OPTIONS = [
+  { label: "Stable", branch: "master", description: "Recommended for most users." },
+  { label: "Beta", branch: "dev", description: "Preview upcoming features." },
+] as const;
+
+function channelForBranch(branch: string): string {
+  const opt = CHANNEL_OPTIONS.find((c) => c.branch === branch);
+  return opt?.branch ?? branch;
+}
+
 // Render a lucide icon by kebab-case name (matches the format used in optional-apps registry).
 function AppIconGlyph({ iconName, size = 16 }: { iconName: string; size?: number }) {
   const pascal = iconName
@@ -114,6 +126,7 @@ export function UpdatesPanel() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [branchInfo, setBranchInfo] = useState<BranchInfo | null>(null);
   const [selectedBranch, setSelectedBranch] = useState<string>("");
+  const [customBranch, setCustomBranch] = useState<string>("");
   const [switching, setSwitching] = useState(false);
   const [showSwitchConfirm, setShowSwitchConfirm] = useState(false);
   const branchFetched = useRef(false);
@@ -256,6 +269,9 @@ export function UpdatesPanel() {
           const data: BranchInfo = await r.json();
           setBranchInfo(data);
           setSelectedBranch(data.current);
+          // Pre-select the matching channel option for the top-level selector.
+          const ch = CHANNEL_OPTIONS.find((c) => c.branch === data.current);
+          setCustomBranch(ch ? "" : data.current);
           branchFetched.current = true;
         } else {
           setStatus("Could not load branch list.");
@@ -270,15 +286,19 @@ export function UpdatesPanel() {
     setShowSwitchConfirm(false);
     setSwitching(true);
     setStatus(null);
+    // When a channel option was selected (and custom is blank), use the
+    // channel's branch. Otherwise use the free-text custom branch input.
+    const branch = customBranch.trim() || selectedBranch;
+    if (!branch) { setSwitching(false); return; }
     try {
       const res = await fetch("/api/settings/update-channel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch: selectedBranch }),
+        body: JSON.stringify({ branch }),
       });
       const data = await res.json().catch(() => ({})) as { status?: string; branch?: string; snapshot?: string; recovery_tag?: string; message?: string; error?: string };
       if (res.ok && !data.error) {
-        setStatus(data.message ?? data.snapshot ?? `Switching to ${data.branch ?? selectedBranch}…`);
+        setStatus(data.message ?? data.snapshot ?? `Switching to ${data.branch ?? branch}…`);
         setShowRestartModal(true);
       } else {
         setStatus(data.error ?? "Branch switch failed.");
@@ -423,6 +443,52 @@ export function UpdatesPanel() {
 
         </div>
 
+        {/* Release channel selector */}
+        <div className="border-t border-white/5 pt-4 space-y-3">
+          <Label className="text-sm">Release channel</Label>
+          <div className="space-y-2">
+            {CHANNEL_OPTIONS.map((ch) => (
+              <label
+                key={ch.branch}
+                className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${
+                  (selectedBranch === ch.branch && !customBranch.trim())
+                    ? "border-sky-500/40 bg-sky-500/10"
+                    : "border-white/10 hover:border-white/20"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="release-channel"
+                  value={ch.branch}
+                  checked={selectedBranch === ch.branch && !customBranch.trim()}
+                  onChange={() => { setSelectedBranch(ch.branch); setCustomBranch(""); }}
+                  className="mt-0.5 accent-sky-500"
+                  aria-label={ch.label}
+                />
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-shell-text">{ch.label}</span>
+                  <span className="text-[10px] text-shell-text-tertiary ml-1.5 font-mono">({ch.branch})</span>
+                  <p className="text-[11px] text-shell-text-tertiary mt-0.5">{ch.description}</p>
+                </div>
+              </label>
+            ))}
+          </div>
+          {branchInfo && (
+            <p className="text-[11px] text-shell-text-tertiary">
+              Current: <span className="font-mono">{branchInfo.current}</span>
+            </p>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={switching || !selectedBranch || (selectedBranch === branchInfo?.current && !customBranch.trim())}
+            onClick={() => setShowSwitchConfirm(true)}
+            aria-label="Switch channel"
+          >
+            {switching ? "Switching…" : "Switch to " + (CHANNEL_OPTIONS.find((c) => c.branch === selectedBranch)?.label ?? selectedBranch)}
+          </Button>
+        </div>
+
         {/* Advanced disclosure */}
         <div className="border-t border-white/5 pt-4">
           <button
@@ -440,29 +506,27 @@ export function UpdatesPanel() {
             <div className="mt-3 space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-end gap-2">
                 <div className="flex flex-col gap-1 min-w-0 flex-1">
-                  <label htmlFor="branch-select" className="text-[11px] text-shell-text-tertiary">
-                    Branch
+                  <label htmlFor="custom-branch" className="text-[11px] text-shell-text-tertiary">
+                    Custom branch
                   </label>
-                  <select
-                    id="branch-select"
-                    aria-label="Branch"
-                    value={selectedBranch}
-                    onChange={(e) => setSelectedBranch(e.target.value)}
-                    className="w-full min-w-0 max-w-full text-sm bg-white/5 border border-white/10 rounded px-2 py-1 text-shell-text-primary focus:outline-none focus:ring-1 focus:ring-sky-500"
-                  >
-                    {branchInfo?.branches.map((b) => (
-                      <option key={b} value={b}>{b}</option>
-                    ))}
-                  </select>
+                  <input
+                    id="custom-branch"
+                    type="text"
+                    aria-label="Custom branch"
+                    value={customBranch}
+                    onChange={(e) => { setCustomBranch(e.target.value); if (e.target.value.trim()) setSelectedBranch(""); }}
+                    placeholder="e.g. feature/my-branch"
+                    className="w-full min-w-0 max-w-full text-sm bg-white/5 border border-white/10 rounded px-2 py-1 text-shell-text-primary placeholder:text-shell-text-tertiary focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={switching || !selectedBranch || selectedBranch === branchInfo?.current}
-                  onClick={() => setShowSwitchConfirm(true)}
-                  aria-label="Switch branch"
+                  disabled={switching || !customBranch.trim() || customBranch.trim() === branchInfo?.current}
+                  onClick={() => { setSelectedBranch(customBranch.trim()); setShowSwitchConfirm(true); }}
+                  aria-label="Switch to custom branch"
                 >
-                  {switching ? "Switching…" : "Switch branch"}
+                  {switching ? "Switching…" : "Switch"}
                 </Button>
               </div>
               {branchInfo && (
@@ -514,9 +578,14 @@ export function UpdatesPanel() {
             className="bg-shell-surface border border-white/10 rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 id="switch-branch-title" className="text-sm font-semibold">Switch branch?</h3>
+            <h3 id="switch-branch-title" className="text-sm font-semibold">Switch channel?</h3>
             <p id="switch-branch-desc" className="text-xs text-shell-text-secondary leading-relaxed">
-              This switches taOS to <span className="font-mono font-semibold">{selectedBranch}</span> and restarts.
+              This switches taOS to{" "}
+              <span className="font-mono font-semibold">
+                {CHANNEL_OPTIONS.find((c) => c.branch === selectedBranch)?.label ?? selectedBranch}
+                {customBranch.trim() ? "" : ` (${selectedBranch})`}
+              </span>{" "}
+              and restarts.
               Your data/ is backed up first (data-backups/).
               Switching to an older branch may leave data written by a newer version unreadable.
             </p>

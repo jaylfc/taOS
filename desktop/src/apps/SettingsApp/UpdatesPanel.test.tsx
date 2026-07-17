@@ -46,25 +46,94 @@ describe("UpdatesPanel -- version display", () => {
   });
 });
 
-describe("UpdatesPanel -- branch selector", () => {
-  it("hides the branch selector until Advanced is expanded", async () => {
+describe("UpdatesPanel -- release channel selector", () => {
+  it("shows Stable and Beta channel radio buttons at the top level", async () => {
     render(<UpdatesPanel />);
-    expect(screen.queryByRole("combobox", { name: /branch/i })).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
-    await waitFor(() => expect(screen.getByRole("combobox", { name: /branch/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Stable" })).toBeInTheDocument());
+    expect(screen.getByRole("radio", { name: "Beta" })).toBeInTheDocument();
   });
 
-  it("requires confirm before posting a switch", async () => {
+  it("shows current branch indicator", async () => {
     render(<UpdatesPanel />);
+    // The branch info is fetched when Advanced opens. Current is dev per BASE_FETCH.
+    // Open Advanced first to trigger the branch fetch.
     fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
-    const select = await screen.findByRole("combobox", { name: /branch/i });
-    fireEvent.change(select, { target: { value: "master" } });
-    fireEvent.click(screen.getByRole("button", { name: /switch branch/i }));
+    // "dev" appears in both the top-level Current indicator and the Advanced section
+    await waitFor(() => expect(screen.getAllByText("dev").length).toBeGreaterThanOrEqual(1));
+  });
+
+  it("requires confirm before posting a channel switch", async () => {
+    render(<UpdatesPanel />);
+    // Open Advanced to trigger branch fetch (needed for switch button to enable)
+    fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
+    // Wait for branches to load (dev appears in both Current indicators)
+    await waitFor(() => expect(screen.getAllByText("dev").length).toBeGreaterThanOrEqual(1));
+
+    // Select Stable (master) — it's different from current (dev), so button enables
+    fireEvent.click(screen.getByRole("radio", { name: "Stable" }));
+    fireEvent.click(screen.getByRole("button", { name: /switch channel/i }));
     expect((global.fetch as any).mock.calls.find((c: any[]) => c[0] === "/api/settings/update-channel")).toBeUndefined();
+    // Confirm the dialog
     fireEvent.click(await screen.findByRole("button", { name: /^confirm/i }));
     await waitFor(() =>
       expect((global.fetch as any).mock.calls.find((c: any[]) => c[0] === "/api/settings/update-channel")).toBeTruthy()
     );
+  });
+
+  it("shows confirm dialog with channel label", async () => {
+    render(<UpdatesPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
+    await waitFor(() => expect(screen.getAllByText("dev").length).toBeGreaterThanOrEqual(1));
+
+    fireEvent.click(screen.getByRole("radio", { name: "Stable" }));
+    fireEvent.click(screen.getByRole("button", { name: /switch channel/i }));
+    // Dialog should show "Switch channel?" title
+    await waitFor(() => expect(screen.getByText("Switch channel?")).toBeInTheDocument());
+    // The dialog mentions the selected channel
+    const dialogText = screen.getByRole("dialog").textContent ?? "";
+    expect(dialogText).toContain("Stable");
+    expect(dialogText).toContain("master");
+  });
+
+  it("switch button is disabled when on current channel", async () => {
+    (global.fetch as any) = vi.fn(async (url: string) => {
+      if (url === "/api/preferences/auto-update") return jResp({ check_enabled: true });
+      if (url === "/api/settings/update-check")
+        return jResp({ has_updates: false, current_version: "1.0.0-beta.2", current_commit: "abc x" });
+      if (url === "/api/settings/update-status") return jResp({ current_sha: "abc", pending_restart_sha: null });
+      if (url === "/api/settings/branches") return jResp({ branches: ["master", "dev"], current: "master" });
+      if (url === "/api/apps/optional/catalog") return jResp({ apps: [] });
+      return jResp({});
+    });
+    render(<UpdatesPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
+    await waitFor(() => expect(screen.getAllByText("master").length).toBeGreaterThanOrEqual(1));
+    // Current is master; Stable (master) should be selected and button disabled
+    const btn = screen.getByRole("button", { name: /switch channel/i });
+    expect(btn).toBeDisabled();
+  });
+
+  it("custom branch input is behind Advanced disclosure", async () => {
+    render(<UpdatesPanel />);
+    // Custom branch input should not be visible until Advanced is expanded
+    expect(screen.queryByRole("textbox", { name: /custom branch/i })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: /custom branch/i })).toBeInTheDocument()
+    );
+  });
+
+  it("custom branch input clears channel selection", async () => {
+    render(<UpdatesPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /advanced/i }));
+    await waitFor(() => expect(screen.getAllByText("dev").length).toBeGreaterThanOrEqual(1));
+
+    // Type a custom branch
+    const input = screen.getByRole("textbox", { name: /custom branch/i });
+    fireEvent.change(input, { target: { value: "feature/test" } });
+    // Stable radio should be unchecked
+    const stableRadio = screen.getByRole("radio", { name: "Stable" }) as HTMLInputElement;
+    expect(stableRadio.checked).toBe(false);
   });
 });
 
