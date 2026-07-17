@@ -179,6 +179,17 @@ export async function markServerRead(id: string): Promise<void> {
   }
 }
 
+/** Archive a single server-origin notification on the backend. No-op for client ids. */
+export async function archiveServerNotification(id: string): Promise<void> {
+  const n = serverId(id);
+  if (n == null) return;
+  try {
+    await fetch(`/api/notifications/${n}/archive`, withCsrf({ method: "POST" }));
+  } catch {
+    // best-effort; the optimistic local update already happened
+  }
+}
+
 /** Mark all server-origin notifications read on the backend. */
 export async function markAllServerRead(): Promise<void> {
   try {

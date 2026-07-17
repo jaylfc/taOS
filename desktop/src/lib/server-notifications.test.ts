@@ -3,6 +3,7 @@ import {
   fetchServerNotifications,
   markServerRead,
   markAllServerRead,
+  archiveServerNotification,
   sourceToTarget,
 } from "./server-notifications";
 
@@ -169,6 +170,27 @@ describe("server-notifications", () => {
     it("swallows fetch failures", async () => {
       fetchMock.mockRejectedValue(new Error("boom"));
       await expect(markServerRead("srv-1")).resolves.toBeUndefined();
+    });
+  });
+
+  describe("archiveServerNotification", () => {
+    it("POSTs the numeric id to the archive endpoint for srv- ids", async () => {
+      fetchMock.mockResolvedValue({ ok: true });
+      await archiveServerNotification("srv-42");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe("/api/notifications/42/archive");
+      expect(init?.method).toBe("POST");
+    });
+
+    it("is a no-op for client (notif-) ids", async () => {
+      await archiveServerNotification("notif-3");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("swallows fetch failures", async () => {
+      fetchMock.mockRejectedValue(new Error("boom"));
+      await expect(archiveServerNotification("srv-1")).resolves.toBeUndefined();
     });
   });
 

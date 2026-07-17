@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { archiveServerNotification } from "@/lib/server-notifications";
 
 export interface Notification {
   id: string;
@@ -39,10 +40,11 @@ interface NotificationStore {
 
 let counter = 0;
 
-// Server items dismissed this session. The backend has no "dismiss" concept
-// (only read), so without this a dismissed server notification would be
-// re-added by the very next poll. Session-scoped: a hard reload re-shows
-// items that are still unread on the server, which is the intended behaviour.
+// Server items archived this session. Archiving POSTs to the backend
+// (archiveServerNotification), which is the durable source of truth: once the
+// write lands, GET /api/notifications no longer returns the row. This Set is an
+// optimistic guard covering the window between the POST and the next poll, so a
+// just-archived item is not briefly re-shown as active.
 const dismissedServerIds = new Set<string>();
 
 export const useNotificationStore = create<NotificationStore>((set, get) => ({
@@ -95,7 +97,10 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   dismiss(id) {
-    if (id.startsWith("srv-")) dismissedServerIds.add(id);
+    if (id.startsWith("srv-")) {
+      dismissedServerIds.add(id);
+      void archiveServerNotification(id);
+    }
     set((s) => ({
       notifications: s.notifications.map((n) =>
         n.id === id ? { ...n, archived: true } : n,
@@ -107,7 +112,10 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     // Resolving a notification (e.g. answering an agent access-request) both
     // reads and archives it: it leaves the active Inbox and lands in History
     // rather than being marked read in place or silently removed (#62).
-    if (id.startsWith("srv-")) dismissedServerIds.add(id);
+    if (id.startsWith("srv-")) {
+      dismissedServerIds.add(id);
+      void archiveServerNotification(id);
+    }
     set((s) => ({
       notifications: s.notifications.map((n) =>
         n.id === id ? { ...n, archived: true, read: true } : n,
@@ -118,7 +126,10 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   clearAll() {
     set((s) => {
       for (const n of s.notifications) {
-        if (n.id.startsWith("srv-")) dismissedServerIds.add(n.id);
+        if (n.id.startsWith("srv-")) {
+          dismissedServerIds.add(n.id);
+          void archiveServerNotification(n.id);
+        }
       }
       return {
         notifications: s.notifications.map((n) => ({ ...n, archived: true })),

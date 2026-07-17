@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useNotificationStore, type Notification } from "./notification-store";
 
 function srv(id: number, ts: number, read = false): Notification {
@@ -13,8 +13,18 @@ function srv(id: number, ts: number, read = false): Notification {
   };
 }
 
+const originalFetch = global.fetch;
+let fetchMock: ReturnType<typeof vi.fn>;
+
 beforeEach(() => {
+  fetchMock = vi.fn().mockResolvedValue({ ok: true });
+  global.fetch = fetchMock as unknown as typeof fetch;
   useNotificationStore.setState({ notifications: [], centreOpen: false });
+});
+
+afterEach(() => {
+  global.fetch = originalFetch;
+  vi.restoreAllMocks();
 });
 
 describe("mergeServerNotifications", () => {
@@ -168,6 +178,53 @@ describe("dismiss archives instead of removing", () => {
     store.clearArchived();
 
     expect(useNotificationStore.getState().notifications).toHaveLength(0);
+  });
+
+  it("dismiss persists to the backend for a srv- item", () => {
+    const store = useNotificationStore.getState();
+    store.mergeServerNotifications([srv(42, 100)]);
+
+    store.dismiss("srv-42");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/notifications/42/archive");
+    expect(init?.method).toBe("POST");
+  });
+
+  it("archiveRead persists to the backend for a srv- item", () => {
+    const store = useNotificationStore.getState();
+    store.mergeServerNotifications([srv(7, 100)]);
+
+    store.archiveRead("srv-7");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/notifications/7/archive",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("does NOT persist for a client-origin (notif-) item", () => {
+    const store = useNotificationStore.getState();
+    const id = store.addNotification({ source: "system", title: "t", body: "b", level: "info" });
+
+    store.dismiss(id);
+    store.archiveRead(id);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("clearAll persists archive for every server item, none for client items", () => {
+    const store = useNotificationStore.getState();
+    store.addNotification({ source: "system", title: "c", body: "b", level: "info" });
+    store.mergeServerNotifications([srv(11, 100), srv(12, 200)]);
+
+    store.clearAll();
+
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain("/api/notifications/11/archive");
+    expect(urls).toContain("/api/notifications/12/archive");
+    expect(urls).toHaveLength(2);
   });
 
   it("unreadCount excludes archived items", () => {
