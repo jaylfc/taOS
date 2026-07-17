@@ -89,13 +89,16 @@ class TestVerifyCSRF:
 
 
 def test_verify_csrf_is_noop_for_websocket_scope():
-    # WebSocket routes on a router carrying dependencies=[Depends(verify_csrf)]
-    # invoke verify_csrf with no Request (FastAPI does not inject one into a
-    # websocket scope), so request arrives as None. It must be a no-op, not
-    # raise a TypeError that rejects the socket with a 500 (the /ws/chat
-    # "Offline" regression). WebSocket handshakes are cookie-authenticated in
-    # their own handler and are not susceptible to form-based CSRF.
+    # verify_csrf is typed HTTPConnection so FastAPI injects it on BOTH http and
+    # websocket routes (a router-level dep also runs on @router.websocket routes).
+    # A websocket scope carries no HTTP method, so verify_csrf must skip rather
+    # than raise a TypeError that rejects the socket with a 500 (the /ws/chat
+    # "Offline" regression). WS handshakes are cookie-authenticated in-handler
+    # and are not susceptible to form-based CSRF.
+    from starlette.requests import HTTPConnection
+
     from tinyagentos.middleware.csrf import verify_csrf
 
-    assert verify_csrf() is None
-    assert verify_csrf(None) is None
+    ws_conn = HTTPConnection({"type": "websocket", "headers": []})
+    assert getattr(ws_conn, "method", None) is None
+    assert verify_csrf(ws_conn) is None
