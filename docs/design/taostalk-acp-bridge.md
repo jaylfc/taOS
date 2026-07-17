@@ -210,3 +210,46 @@ kilo/grok/opencode equivalents are a slice-4 research item.
 4. **Per-harness attach + drive: kilo, grok, opencode** (research each harness's transcript +
    resume mechanism; ACP-spawn as the secondary "new session" path).
 5. **Parity finish + taOStalk surface** (unchanged).
+
+## Transport tiers + graceful degradation (network is the baseline)
+
+Correction to both the ACP-spawn and CCC-attach framings: neither is universal. Filesystem
+attach needs a locally readable home dir (same host + account); ACP-spawn needs taOS to launch
+the process locally. Remote external agents (off-LAN, other machine), sessions under a
+different OS account, and containerized agents have NEITHER. So the bridge is TIERED, with the
+NETWORK path as the always-on baseline and filesystem/ACP as local enhancements. The bridge
+probes what is available per session and degrades gracefully; communication never stops.
+
+**Tier 0 - network push + poll (universal, always works).**
+The agent (or a thin agent-side shim) posts its turns/status/questions to its taOS channel over
+the API - the A2A bus (`POST /a2a/send`) or the chat message API - using its registry
+identity/token. It reads operator replies back from the channel: subscribe live (SSE/WS) when it
+can reach taOS in real time, else POLL the A2A + chat frequently. Works for ANY agent that can
+reach taOS over the network: remote, off-LAN via taOSgo/Headscale, different account,
+container. This is already how `@taOS-dev` (running off-host) talks to taOS today - push to the
+bus, poll on the sweep - so it is proven. **This tier is the flagship "keep comms moving"
+layer, not the CCC attach.**
+
+**Tier 1 - local real-time enhancement (best case).**
+When the session home dir IS locally readable (same host + account) or ACP can attach/spawn,
+layer richer capture on top of Tier 0: full transcript (CCC recipe), tool-call detail, live
+token streaming, the CCC hooks for the working-now signal.
+
+**Fallback logic (per session):** probe - is the home dir readable? can ACP attach/spawn? is a
+live SSE/WS to the agent reachable? Pick the best tier; degrade to Tier 0 push+poll if none.
+Surface the current tier in the channel (live-stream vs polled) so the operator knows the
+freshness.
+
+**Consequences:**
+- Tier 0 reuses existing infra: A2A bus, chat API, the poll sweeps. Little net-new for the
+  baseline; the value-add is richer rendering + the Tier 1 enhancements.
+- The reply direction is Tier-0-native: operator replies land in the channel; the agent reads
+  them by subscribe-or-poll. This sidesteps the "cannot inject into a live foreground process"
+  constraint for remote agents entirely (they were never going to be filesystem-attached).
+- Off-LAN reach for remote agents rides taOSgo/Headscale (see the taOSgo work); on-LAN and
+  same-host are the easy cases.
+
+**Revised slice 1:** the flagship is Tier 0 (network push + poll) proving an existing REMOTE
+session (e.g. `@taOS-dev` on this Mac) shows live in taOStalk and can be replied to from taOS
+via the channel. The CCC local filesystem attach (Tier 1) becomes a same-host enhancement in a
+later slice, not the foundation.
