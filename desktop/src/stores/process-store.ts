@@ -255,7 +255,7 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
       windows: s.windows.map((w) => {
         if (w.minimized || w.maximized || w.snapped) return w;
         const safe = safeBounds(w.position, w.size);
-        // safeBounds is idempotent — if the window is already on-screen it
+        // safeBounds is idempotent -- if the window is already on-screen it
         // returns the same position and size.
         if (safe.position.x === w.position.x && safe.position.y === w.position.y && safe.size.w === w.size.w && safe.size.h === w.size.h) {
           return w;
