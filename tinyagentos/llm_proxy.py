@@ -18,14 +18,16 @@ from pathlib import Path
 
 import httpx
 
-from tinyagentos.providers import CLOUD_TYPES as CLOUD_BACKEND_TYPES
+from tinyagentos.providers import CLOUD_TYPES as CLOUD_BACKEND_TYPES  # noqa: F401  (public re-export)
 from tinyagentos.litellm_config import (
-    EMBEDDING_ALIAS,
+    EMBEDDING_ALIAS,  # noqa: F401  (public re-export)
     _is_embedding_model,
     _discover_ollama_backends_concurrent,
     generate_litellm_config,
     get_litellm_master_key,
 )
+
+__all__ = ["EMBEDDING_ALIAS", "CLOUD_BACKEND_TYPES"]
 
 logger = logging.getLogger(__name__)
 
