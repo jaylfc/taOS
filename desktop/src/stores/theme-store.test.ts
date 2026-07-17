@@ -22,6 +22,7 @@ const reset = () => {
     activeThemeId: "default",
     wallpaperByTheme: {},
     themeDefaultWallpaper: {},
+    themeDefaultWallpaperId: {},
     wallpaperIdByTheme: {},
   });
 };
@@ -108,6 +109,50 @@ describe("theme-store", () => {
     expect(ids).toContain("neural-live");
     expect(ids).toContain("default");
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("getWallpapersBySection returns structured sections with theme-default first", () => {
+    const sections = useThemeStore.getState().getWallpapersBySection();
+    expect(sections.length).toBe(4);
+
+    // themeDefault section
+    expect(sections[0].id).toBe("themeDefault");
+    expect(sections[0].label).toBe("Theme default");
+    // Falls back to graphite when no theme is set
+    expect(sections[0].items[0].id).toBe("graphite");
+
+    // builtin section
+    expect(sections[1].id).toBe("builtin");
+    expect(sections[1].label).toBe("Built-in");
+    // All 11 wallpapers minus the theme default (graphite) = 10
+    expect(sections[1].items.length).toBe(10);
+    const builtinIds = sections[1].items.map((w) => w.id);
+    expect(builtinIds).not.toContain("graphite"); // deduplicated
+
+    // user and online are empty placeholders
+    expect(sections[2].id).toBe("user");
+    expect(sections[2].items).toHaveLength(0);
+    expect(sections[3].id).toBe("online");
+    expect(sections[3].items).toHaveLength(0);
+  });
+
+  it("getWallpapersBySection uses the active theme's declared default wallpaper id", () => {
+    useThemeStore.setState({
+      activeThemeId: "indigo",
+      themeDefaultWallpaperId: { indigo: "neural-live" },
+    });
+    const sections = useThemeStore.getState().getWallpapersBySection();
+    expect(sections[0].items[0].id).toBe("neural-live");
+    expect(sections[1].items.map((w) => w.id)).not.toContain("neural-live");
+  });
+
+  it("getWallpapersBySection falls back to graphite when themeDefaultWallpaperId is not set", () => {
+    useThemeStore.setState({
+      activeThemeId: "custom-theme",
+      themeDefaultWallpaperId: {},
+    });
+    const sections = useThemeStore.getState().getWallpapersBySection();
+    expect(sections[0].items[0].id).toBe("graphite");
   });
 
   it("reset: showDesktopIcons defaults to true after explicit false then reset", () => {

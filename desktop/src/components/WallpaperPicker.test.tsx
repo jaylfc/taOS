@@ -11,6 +11,8 @@ describe("WallpaperPicker", () => {
       wallpaperOverlayText: null,
       showOverlayText: true,
       wallpaperParams: { density: 200, speed: 0.5, glow: 6 },
+      activeThemeId: "default",
+      themeDefaultWallpaperId: {},
     });
   });
 
@@ -25,12 +27,39 @@ describe("WallpaperPicker", () => {
     expect(screen.getByText("Change Wallpaper")).toBeInTheDocument();
   });
 
-  it("renders all wallpaper buttons with labels", () => {
+  it("renders section headings for all four sections", () => {
     render(<WallpaperPicker open={true} onClose={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /graphite/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /neural \(live\)/i })).toBeInTheDocument();
+    // Section headings render as h4 elements — use getAllByText to disambiguate
+    // from the badge that shares the text "Theme default" inside the wallpaper tile.
+    const themeDefaultHeadings = screen.getAllByText("Theme default");
+    expect(themeDefaultHeadings.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Built-in")).toBeInTheDocument();
+    expect(screen.getByText("Your wallpapers")).toBeInTheDocument();
+    expect(screen.getByText("Browse online")).toBeInTheDocument();
+  });
+
+  it("shows the theme default wallpaper in its own section with a badge when it matches", () => {
+    useThemeStore.setState({ wallpaperId: "graphite" });
+    render(<WallpaperPicker open={true} onClose={vi.fn()} />);
+    // The graphite wallpaper is in the themeDefault section and is pre-selected
+    const graphiteBtn = screen.getByRole("button", { name: /graphite/i });
+    expect(graphiteBtn).toHaveAttribute("aria-pressed", "true");
+    // The badge text "Theme default" appears inside the wallpaper tile
+    const badges = screen.getAllByText("Theme default");
+    // At least one is the badge (inside a span), plus the section heading (h4)
+    expect(badges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders all built-in wallpaper buttons in the builtin section", () => {
+    useThemeStore.setState({
+      wallpaperId: "default",
+      themeDefaultWallpaperId: { default: "graphite" },
+    });
+    render(<WallpaperPicker open={true} onClose={vi.fn()} />);
     expect(screen.getByRole("button", { name: /classic/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /neural \(live\)/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /aurora/i })).toBeInTheDocument();
+    // "default" = Classic, which is in the builtin section
   });
 
   it("marks the active wallpaper with aria-pressed and a check indicator", () => {
@@ -42,7 +71,7 @@ describe("WallpaperPicker", () => {
     expect(inactiveBtn).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("updates wallpaperId when a wallpaper button is clicked", () => {
+  it("updates wallpaperId when a built-in wallpaper button is clicked", () => {
     render(<WallpaperPicker open={true} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /midnight blue/i }));
     expect(useThemeStore.getState().wallpaperId).toBe("midnight");
@@ -116,5 +145,11 @@ describe("WallpaperPicker", () => {
     const densitySlider = screen.getByLabelText("Density");
     fireEvent.change(densitySlider, { target: { value: "300" } });
     expect(useThemeStore.getState().wallpaperParams.density).toBe(300);
+  });
+
+  it("renders empty states for user and online sections", () => {
+    render(<WallpaperPicker open={true} onClose={vi.fn()} />);
+    expect(screen.getByText("Upload an image")).toBeInTheDocument();
+    expect(screen.getByText("Search Wallhaven")).toBeInTheDocument();
   });
 });

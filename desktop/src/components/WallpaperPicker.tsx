@@ -1,4 +1,5 @@
 import { useThemeStore } from "@/stores/theme-store";
+import type { Wallpaper } from "@/stores/theme-store";
 import { Check } from "lucide-react";
 
 interface Props {
@@ -12,19 +13,98 @@ const SLIDERS: { key: "density" | "speed" | "glow"; label: string; min: number; 
   { key: "glow", label: "Glow", min: 0, max: 16, step: 1 },
 ];
 
+function WallpaperTile({
+  wp,
+  isSelected,
+  onClick,
+  showBadge,
+}: {
+  wp: Wallpaper;
+  isSelected: boolean;
+  onClick: () => void;
+  showBadge?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={wp.label}
+      aria-pressed={isSelected}
+      className={`relative rounded-lg overflow-hidden border-2 transition-all ${
+        isSelected
+          ? "border-accent ring-1 ring-accent/30"
+          : "border-shell-border hover:border-shell-border-strong"
+      }`}
+    >
+      <div
+        className="relative h-24 w-full"
+        style={
+          wp.kind === "animated"
+            ? { background: "radial-gradient(120% 120% at 50% 46%, #2a2a2e 0%, #1d1d1f 45%, #101011 100%)" }
+            : {
+                backgroundImage: wp.image,
+                backgroundColor: wp.fallback,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+                backgroundRepeat: "no-repeat",
+              }
+        }
+      >
+        {wp.overlayText && (
+          <span className="absolute inset-0 grid place-items-center text-[13px] font-semibold tracking-tight text-white/85">
+            {wp.overlayText}
+          </span>
+        )}
+      </div>
+      <div className="px-2 py-1.5 text-xs text-shell-text-secondary text-left flex items-center gap-1.5">
+        {wp.label}
+        {showBadge && (
+          <span className="text-[10px] px-1 py-px rounded bg-accent/15 text-accent font-medium">
+            {showBadge}
+          </span>
+        )}
+      </div>
+      {isSelected && (
+        <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-accent flex items-center justify-center">
+          <Check size={12} className="text-white" />
+        </div>
+      )}
+    </button>
+  );
+}
+
+function SectionHeading({ label }: { label: string }) {
+  return (
+    <h4 className="text-[11px] font-medium uppercase tracking-wider text-shell-text-tertiary px-1 pt-2 pb-1">
+      {label}
+    </h4>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-shell-border px-3 py-4 text-center">
+      <span className="text-xs text-shell-text-tertiary">{message}</span>
+    </div>
+  );
+}
+
 export function WallpaperPicker({ open, onClose }: Props) {
   const {
     wallpaperId,
     setWallpaper,
-    getWallpapers,
+    getWallpapersBySection,
     wallpaperOverlayText,
     showOverlayText,
     toggleOverlayText,
     wallpaperKind,
     wallpaperParams,
     setWallpaperParam,
+    themeDefaultWallpaperId,
+    activeThemeId,
   } = useThemeStore();
-  const wallpapers = getWallpapers();
+  const sections = getWallpapersBySection();
+  const themeDefaultId = themeDefaultWallpaperId[activeThemeId] || "graphite";
+  const isThemeDefault = wallpaperId === themeDefaultId;
 
   if (!open) return null;
 
@@ -55,50 +135,44 @@ export function WallpaperPicker({ open, onClose }: Props) {
             ×
           </button>
         </div>
-        <div className="p-4 grid grid-cols-2 gap-3 overflow-y-auto flex-1">
-          {wallpapers.map((wp) => (
-            <button
-              key={wp.id}
-              onClick={() => {
-                setWallpaper(wp.id);
-              }}
-              aria-label={wp.label}
-              aria-pressed={wallpaperId === wp.id}
-              className={`relative rounded-lg overflow-hidden border-2 transition-all ${
-                wallpaperId === wp.id
-                  ? "border-accent ring-1 ring-accent/30"
-                  : "border-shell-border hover:border-shell-border-strong"
-              }`}
-            >
-              <div
-                className="relative h-24 w-full"
-                style={
-                  wp.kind === "animated"
-                    ? { background: "radial-gradient(120% 120% at 50% 46%, #2a2a2e 0%, #1d1d1f 45%, #101011 100%)" }
-                    : {
-                        backgroundImage: wp.image,
-                        backgroundColor: wp.fallback,
-                        backgroundSize: "cover",
-                        backgroundPosition: "center",
-                        backgroundRepeat: "no-repeat",
+        <div className="p-4 flex flex-col gap-1 overflow-y-auto flex-1">
+          {sections.map((section) => (
+            <div key={section.id}>
+              <SectionHeading label={section.label} />
+              {section.items.length > 0 ? (
+                <div
+                  className={
+                    section.id === "themeDefault"
+                      ? "grid grid-cols-1 gap-3"
+                      : "grid grid-cols-2 gap-3"
+                  }
+                >
+                  {section.items.map((wp) => (
+                    <WallpaperTile
+                      key={wp.id}
+                      wp={wp}
+                      isSelected={wallpaperId === wp.id}
+                      onClick={() => setWallpaper(wp.id)}
+                      showBadge={
+                        section.id === "themeDefault" && isThemeDefault
+                          ? "Theme default"
+                          : undefined
                       }
-                }
-              >
-                {wp.overlayText && (
-                  <span className="absolute inset-0 grid place-items-center text-[13px] font-semibold tracking-tight text-white/85">
-                    {wp.overlayText}
-                  </span>
-                )}
-              </div>
-              <div className="px-2 py-1.5 text-xs text-shell-text-secondary text-left">
-                {wp.label}
-              </div>
-              {wallpaperId === wp.id && (
-                <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-accent flex items-center justify-center">
-                  <Check size={12} className="text-white" />
+                    />
+                  ))}
                 </div>
+              ) : (
+                <EmptyState
+                  message={
+                    section.id === "user"
+                      ? "Upload an image"
+                      : section.id === "online"
+                        ? "Search Wallhaven"
+                        : "No wallpapers"
+                  }
+                />
               )}
-            </button>
+            </div>
           ))}
         </div>
         {wallpaperKind === "animated" && (

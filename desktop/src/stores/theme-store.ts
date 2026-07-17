@@ -8,7 +8,7 @@ import { BUILTIN_THEMES } from "@/theme/builtin-themes";
 // per viewport (cover on desktop, contain on mobile so the full image is
 // visible instead of cropped at the edges).
 
-interface Wallpaper {
+export interface Wallpaper {
   id: string;
   label: string;
   image: string; // desktop background-image (empty for animated wallpapers)
@@ -30,6 +30,13 @@ interface Wallpaper {
   lightImage?: string;
   lightMobileImage?: string;
   lightFallback?: string;
+}
+
+// Section of wallpaper items shown in the picker, grouped by source.
+export interface WallpaperSection {
+  id: string;
+  label: string;
+  items: Wallpaper[];
 }
 
 const WALLPAPERS: Wallpaper[] = [
@@ -204,6 +211,7 @@ interface ThemeStore {
   activeThemeId: string;
   wallpaperByTheme: Record<string, string>;
   themeDefaultWallpaper: Record<string, string>;
+  themeDefaultWallpaperId: Record<string, string>;
   // Per-theme memory of the wallpaper id the user last picked while that theme
   // was active. Lets a theme switch restore the wallpaper that was in use for
   // the target theme rather than inheriting the previous theme's wallpaper.
@@ -215,6 +223,7 @@ interface ThemeStore {
   toggleDesktopIcons: () => void;
   setReduceEffects: (on: boolean) => void;
   getWallpapers: () => Wallpaper[];
+  getWallpapersBySection: () => WallpaperSection[];
 }
 
 export const useThemeStore = create<ThemeStore>((set) => ({
@@ -239,6 +248,7 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   activeThemeId: "default",
   wallpaperByTheme: {},
   themeDefaultWallpaper: {},
+  themeDefaultWallpaperId: {},
   wallpaperIdByTheme: {},
 
   setWallpaper(id) {
@@ -291,6 +301,43 @@ export const useThemeStore = create<ThemeStore>((set) => ({
   },
 
   getWallpapers: () => WALLPAPERS,
+
+  getWallpapersBySection: () => {
+    const state = useThemeStore.getState();
+    // The theme's declared default wallpaper id, or the global fallback.
+    const themeDefaultId =
+      state.themeDefaultWallpaperId[state.activeThemeId] || "graphite";
+    const themeDefaultWp =
+      WALLPAPERS.find((w) => w.id === themeDefaultId) ??
+      WALLPAPERS.find((w) => w.id === "graphite");
+
+    const sections: WallpaperSection[] = [
+      {
+        id: "themeDefault",
+        label: "Theme default",
+        items: themeDefaultWp ? [themeDefaultWp] : [],
+      },
+      {
+        id: "builtin",
+        label: "Built-in",
+        // Deduplicate: if the theme-default is a builtin, don't show it twice.
+        items: WALLPAPERS.filter(
+          (w) => !themeDefaultWp || w.id !== themeDefaultWp.id
+        ),
+      },
+      {
+        id: "user",
+        label: "Your wallpapers",
+        items: [], // C3 fills this in
+      },
+      {
+        id: "online",
+        label: "Browse online",
+        items: [], // C4 fills this in
+      },
+    ];
+    return sections;
+  },
 }));
 
 let _applied: string[] = []; // token keys currently set, for revert
@@ -483,6 +530,12 @@ export async function restoreActiveTheme(): Promise<void> {
         ...useThemeStore.getState().themeDefaultWallpaper,
         ...(cfg.wallpaper ? { [themeId]: cfg.wallpaper } : {}),
       },
+      themeDefaultWallpaperId: {
+        ...useThemeStore.getState().themeDefaultWallpaperId,
+        ...(cfg.defaultWallpaperId
+          ? { [themeId]: cfg.defaultWallpaperId }
+          : {}),
+      },
     });
     // Do NOT apply the theme's default wallpaper here: useSessionPersistence
     // restores the user's persisted wallpaper, which is authoritative (#1603).
@@ -499,6 +552,12 @@ export function keepTheme(themeId: string, cfg: ThemeConfig) {
     themeDefaultWallpaper: {
       ...useThemeStore.getState().themeDefaultWallpaper,
       ...(cfg.wallpaper ? { [themeId]: cfg.wallpaper } : {}),
+    },
+    themeDefaultWallpaperId: {
+      ...useThemeStore.getState().themeDefaultWallpaperId,
+      ...(cfg.defaultWallpaperId
+        ? { [themeId]: cfg.defaultWallpaperId }
+        : {}),
     },
   });
   applyThemeDefaultWallpaper(themeId, cfg);
