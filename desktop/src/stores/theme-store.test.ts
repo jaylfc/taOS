@@ -24,6 +24,7 @@ const reset = () => {
     themeDefaultWallpaper: {},
     themeDefaultWallpaperId: {},
     wallpaperIdByTheme: {},
+    userWallpapers: [],
   });
 };
 
@@ -161,4 +162,41 @@ describe("theme-store", () => {
     reset();
     expect(useThemeStore.getState().showDesktopIcons).toBe(true);
   });
+
+  // User wallpaper tests
+  it("addUserWallpaper appends to the list", () => {
+    useThemeStore.getState().addUserWallpaper({ id: "abc", label: "Test", url: "/api/desktop/wallpapers/abc" });
+    const state = useThemeStore.getState();
+    expect(state.userWallpapers).toHaveLength(1);
+    expect(state.userWallpapers[0]!.id).toBe("abc");
+    expect(state.userWallpapers[0]!.label).toBe("Test");
+  });
+
+  it("setWallpaper works with a user wallpaper id", () => {
+    useThemeStore.getState().addUserWallpaper({ id: "uw1", label: "My Pic", url: "/api/desktop/wallpapers/uw1" });
+    useThemeStore.getState().setWallpaper("user-uw1");
+    const s = useThemeStore.getState();
+    expect(s.wallpaperId).toBe("user-uw1");
+    expect(s.wallpaperImage).toBe("url('/api/desktop/wallpapers/uw1')");
+    expect(s.wallpaperFallback).toBe("#141415");
+    expect(s.wallpaperKind).toBe("image");
+  });
+
+  it("getWallpapers includes user wallpapers after addUserWallpaper", () => {
+    useThemeStore.getState().addUserWallpaper({ id: "aaa", label: "Upload", url: "/api/desktop/wallpapers/aaa" });
+    const list = useThemeStore.getState().getWallpapers();
+    expect(list.some((w) => w.id === "user-aaa")).toBe(true);
+  });
+
+  it("setWallpaper ignores unknown user wallpaper id when userWallpapers is empty", () => {
+    const before = useThemeStore.getState();
+    useThemeStore.getState().setWallpaper("user-nonexistent");
+    const after = useThemeStore.getState();
+    expect(after.wallpaperId).toBe(before.wallpaperId);
+  });
 });
+
+// ---------------------------------------------------------------------------
+// User wallpaper helpers (exported for WallpaperPicker tests)
+// ---------------------------------------------------------------------------
+export { reset as resetThemeStore };

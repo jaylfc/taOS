@@ -413,3 +413,6 @@ def register_all_routers(app):
 
     from tinyagentos.routes.council import router as council_router
     app.include_router(council_router, dependencies=_csrf)
+
+    from tinyagentos.routes.desktop_wallpapers import router as desktop_wallpapers_router
+    app.include_router(desktop_wallpapers_router)

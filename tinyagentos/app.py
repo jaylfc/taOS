@@ -95,6 +95,7 @@ from tinyagentos.chat.channel_store import ChatChannelStore
 from tinyagentos.chat.hub import ChatHub
 from tinyagentos.chat.canvas import CanvasStore
 from tinyagentos.desktop_settings import DesktopSettingsStore
+from tinyagentos.stores.desktop_wallpapers import DesktopWallpapersStore
 from tinyagentos.feedback_store import FeedbackStore
 from tinyagentos.client_log_store import ClientLogStore
 from tinyagentos.user_memory import UserMemoryStore
@@ -433,6 +434,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     chat_hub = ChatHub()
     canvas_store = CanvasStore(data_dir / "canvas.db")
     desktop_settings = DesktopSettingsStore(data_dir / "desktop.db")
+    desktop_wallpapers = DesktopWallpapersStore(
+        data_dir / "desktop_wallpapers.db",
+        data_dir / "wallpapers",
+    )
     from tinyagentos.device_store import DeviceStore
     device_store = DeviceStore(data_dir / "devices.db")
     from tinyagentos.push.apns import apns_sender_from_env
@@ -586,6 +591,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         projects_root.mkdir(parents=True, exist_ok=True)
         await canvas_store.init()
         await desktop_settings.init()
+        await desktop_wallpapers.init()
         await device_store.init()
         await user_memory.init()
         await installed_apps.init()
@@ -843,6 +849,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.typing = TypingRegistry()
         from tinyagentos.agent_chat_router import AgentChatRouter
         app.state.agent_chat_router = AgentChatRouter(app.state)
+
         app.state.benchmark_store = benchmark_store
         app.state.score_cache = score_cache
         app.state.scheduler_history_store = scheduler_history_store
@@ -1615,6 +1622,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.typing = None
     app.state.canvas_store = canvas_store
     app.state.desktop_settings = desktop_settings
+    app.state.desktop_wallpapers = desktop_wallpapers
     app.state.device_store = device_store
     app.state.apns_sender = apns_sender
     app.state.user_memory = user_memory
