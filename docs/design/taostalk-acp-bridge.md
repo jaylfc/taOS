@@ -146,3 +146,25 @@ CLI harness (Claude Code | kilo | grok | opencode)
 - Whether kilo/grok expose ACP natively or need the PTY->ACP wrapper (scoped in slice 4).
 - Auth: an ACP session binds to the agent's registry identity + the operator's session;
   confirm the channel membership + grant model reuses the existing DM-channel gating.
+
+## ACP wiring per harness (researched 2026-07-17)
+
+All four required harnesses expose ACP natively or via a first-class adapter, over
+newline-delimited JSON-RPC on stdin/stdout. **No PTY-to-ACP wrapper is needed** (this
+supersedes the earlier slice-4 assumption). Each adapter is just the correct launch
+command + auth passthrough; taOS's existing `acp_adapter.py` already speaks this wire.
+
+| Harness | ACP entry point | Notes |
+|---|---|---|
+| Claude Code | `@agentclientprotocol/claude-agent-acp` (npm, Apache-2.0; renamed from `@zed-industries/claude-code-acp`) | Wraps the Claude Code SDK, translates to ACP JSON-RPC. Auth via `/login` (API key or Claude Code billing). |
+| Kilo | `kilo acp` (native) | CLI invoked with the `acp` argument; JSON-RPC handshake over stdin/stdout. |
+| opencode | `opencode acp` (native) | Starts an ACP server exposing its agent loop + tool registry + interactive permissions. |
+| grok | `grok --acp` (native; listed as "Grok Build" in the ACP registry) | JSON-RPC-over-stdio agent-server mode. Verify exact flag against the installed grok CLI version. |
+
+Reference implementations to mine (do not fork): `openclaw/acpx` (headless stateful ACP
+client), Zed's open-source Claude Code adapter, and the ACP spec at agentclientprotocol.com.
+
+**Consequence for the plan:** slice 4 becomes "register the launch command + auth per
+harness" (thin), not "build wrappers". Each harness owns its own model/tools/auth
+(consistent with the external-agent model); taOS owns the session-to-channel bridge,
+identity, grants, and the rendered surface.
