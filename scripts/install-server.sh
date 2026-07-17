@@ -1839,9 +1839,10 @@ install_linux_systemd_system() {
     fi
 
     $sudo_cmd systemctl daemon-reload
-    $sudo_cmd systemctl enable --now tinyagentos
-    # Enable the desktop rebuild service (runs async after controller start; taOS #807)
+    # Enable the desktop rebuild service before starting the controller so
+    # systemd installs the WantedBy= symlink atomically (taOS #807).
     $sudo_cmd systemctl enable tinyagentos-rebuild-desktop.service
+    $sudo_cmd systemctl enable --now tinyagentos
     if [[ -f /etc/systemd/system/taos-pre-shutdown.service ]]; then
         $sudo_cmd systemctl enable taos-pre-shutdown.service
     fi
@@ -1892,6 +1893,8 @@ install_linux_systemd_user() {
         -e "s|TAOS_GROUP|$(id -gn)|g" \
         -e "s|TAOS_INSTALL_DIR|$INSTALL_DIR|g" \
         -e "s|/usr/local/bin/taos-rebuild-desktop|$HOME/.local/bin/taos-rebuild-desktop|g" \
+        -e "/^User=/d" \
+        -e "/^Group=/d" \
         "$INSTALL_DIR/scripts/systemd/tinyagentos-rebuild-desktop.service" \
         > "$rebuild_unit"
     log "installed $rebuild_unit (user unit fallback)"
@@ -1916,9 +1919,10 @@ install_linux_systemd_user() {
         warn "to start manually: systemctl --user daemon-reload && systemctl --user enable --now tinyagentos tinyagentos-rebuild-desktop"
         return 0
     fi
-    systemctl --user enable --now tinyagentos
-    # Enable the desktop rebuild service (runs async after controller start; taOS #807)
+    # Enable the desktop rebuild service before starting the controller so
+    # systemd --user installs the WantedBy= symlink atomically (taOS #807).
     systemctl --user enable tinyagentos-rebuild-desktop.service
+    systemctl --user enable --now tinyagentos
     log "controller running as user systemd service"
     log "check: systemctl --user status tinyagentos"
     log "logs:  journalctl --user -u tinyagentos -f"

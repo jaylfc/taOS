@@ -30,7 +30,7 @@ fi
 #
 # Using -print -quit so find stops at the first hit (no need to scan everything).
 if [ -f static/desktop/index.html ]; then
-    _stale_src="$(find desktop/src -type f -newer static/desktop/index.html -print -quit 2>/dev/null)"
+    _stale_src="$(find desktop/src -type f -not -path '*/node_modules/*' -newer static/desktop/index.html -print -quit 2>/dev/null)"
     _stale_cfg="$(find desktop \( -name 'package.json' -o -name '*-lock.*' -o -name 'vite.config.*' -o -name 'tsconfig*.json' \) -type f -newer static/desktop/index.html -print -quit 2>/dev/null)"
     if [ -z "$_stale_src" ] && [ -z "$_stale_cfg" ]; then
         echo "[taos-rebuild-desktop] desktop bundle is current — skipping rebuild"
@@ -48,7 +48,7 @@ if [ ! -f desktop/package.json ]; then
     exit 0
 fi
 
-if (cd desktop && npm install --silent && npm run build); then
+if (cd desktop && npm install && npm run build); then
     echo "[taos-rebuild-desktop] desktop rebuild succeeded"
 elif [ -f static/desktop/index.html ]; then
     echo "[taos-rebuild-desktop] desktop rebuild FAILED -- keeping the existing bundle (see journalctl -u tinyagentos-rebuild-desktop)"
