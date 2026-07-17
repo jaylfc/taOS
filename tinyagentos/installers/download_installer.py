@@ -15,6 +15,48 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, int], None]
 
 
+def _ssrf_guard(url: str) -> str:
+    """Validate *url* is safe to fetch and return the hostname's pinned IP.
+
+    Resolves the hostname once via :func:`resolve_safe_public_ip` so the
+    caller can connect to that validated IP directly instead of letting the
+    HTTP client re-resolve — re-resolution reopens a DNS-rebinding TOCTOU
+    window where the resolved-and-validated address differs from the one
+    actually connected to.
+
+    Returns the pinned IP (string).  Raises ``ValueError`` when *url* is not
+    an http(s) URL or any resolved address is non-public.
+    """
+    from tinyagentos.userspace.url_guard import resolve_safe_public_ip
+
+    pinned_ip = resolve_safe_public_ip(url)
+    if pinned_ip is None:
+        raise ValueError(
+            f"SSRF blocked: {url!r} resolves to a non-public address"
+        )
+    return pinned_ip
+
+
+def _pin_url(url: str, pinned_ip: str) -> tuple[str, str]:
+    """Return ``(pinned_url, host_header)`` for a URL whose host is replaced
+    by *pinned_ip*.
+
+    *pinned_url* uses the IP literally in the netloc (bracketed for IPv6);
+    *host_header* preserves the original ``hostname[:port]`` so virtual-host
+    routing and TLS SNI still work.
+    """
+    from urllib.parse import urlparse
+
+    _u = urlparse(url)
+    _host = _u.hostname
+    assert _host is not None, f"URL has no hostname: {url!r}"  # guarded by _ssrf_guard
+    _ip_host = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+    _netloc = _ip_host if not _u.port else f"{_ip_host}:{_u.port}"
+    _pinned_url = _u._replace(netloc=_netloc).geturl()
+    _host_header = _host if not _u.port else f"{_host}:{_u.port}"
+    return _pinned_url, _host_header
+
+
 async def download_file(
     url: str,
     dest: Path,
@@ -28,16 +70,54 @@ async def download_file(
     total_bytes). total_bytes is 0 when the server didn't send a
     Content-Length. Callbacks are throttled to roughly once a second
     so the install-progress store doesn't take a write lock per chunk.
+
+    Every URL hop (initial + redirects) is SSRF-validated via
+    :func:`resolve_safe_public_ip` and the connection is pinned to the
+    validated IP to prevent DNS-rebinding TOCTOU attacks.
     """
+    from urllib.parse import urljoin, urlparse
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     import time as _time
+
+    sha = hashlib.sha256()
+    downloaded = 0
+    total = 0
     last_cb = 0.0
-    async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-        async with client.stream("GET", url) as resp:
+
+    async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
+        current_url = url
+        max_redirects = 10
+
+        for _hop in range(max_redirects):
+            # SSRF guard: resolve once, pin the IP, use it for the request.
+            pinned_ip = _ssrf_guard(current_url)
+            pinned_url, host_header = _pin_url(current_url, pinned_ip)
+
+            _parsed = urlparse(current_url)
+            request = client.build_request(
+                "GET",
+                pinned_url,
+                headers={"Host": host_header},
+                extensions={"sni_hostname": _parsed.hostname},
+            )
+            resp = await client.send(request, stream=True)
+
+            # Follow redirect — validate the target on the next iteration.
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                if not location:
+                    await resp.aread()
+                    raise ValueError(
+                        f"Redirect without Location header from {current_url!r}"
+                    )
+                await resp.aread()
+                current_url = urljoin(current_url, location)
+                continue
+
             resp.raise_for_status()
             total = int(resp.headers.get("content-length") or 0)
-            sha = hashlib.sha256()
-            downloaded = 0
+
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=65536):
                     f.write(chunk)
@@ -57,16 +137,20 @@ async def download_file(
                                     exc,
                                 )
                             last_cb = now
-            # Always emit a final update at 100% so the UI can flip to
-            # "verifying" promptly instead of waiting for the next tick.
-            if on_progress is not None:
-                try:
-                    on_progress(downloaded, total or downloaded)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "download_file: final progress callback raised %s",
-                        exc,
-                    )
+            break
+        else:
+            raise ValueError(f"Too many redirects for {url!r}")
+
+    # Always emit a final update at 100% so the UI can flip to
+    # "verifying" promptly instead of waiting for the next tick.
+    if on_progress is not None:
+        try:
+            on_progress(downloaded, total or downloaded)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "download_file: final progress callback raised %s",
+                exc,
+            )
     if expected_sha256 and sha.hexdigest() != expected_sha256:
         dest.unlink()
         raise ValueError(f"SHA256 mismatch: expected {expected_sha256}, got {sha.hexdigest()}")
