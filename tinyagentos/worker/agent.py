@@ -842,4 +842,9 @@ class WorkerAgent:
     def stop(self):
         self._running = False
         if self._update_service is not None:
-            asyncio.ensure_future(self._update_service.stop())
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._update_service.stop())
+            except RuntimeError:
+                # No running event loop — nothing to stop.
+                pass

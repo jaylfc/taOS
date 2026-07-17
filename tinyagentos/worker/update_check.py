@@ -56,6 +56,7 @@ def _install_id(state_dir: Path) -> str:
             existing = path.read_text(encoding="utf-8").strip()
             if existing:
                 return existing
+        state_dir.mkdir(parents=True, exist_ok=True)
         import uuid
         new_id = uuid.uuid4().hex
         path.write_text(new_id, encoding="utf-8")
@@ -131,8 +132,10 @@ def _parse_version(version_str: str) -> tuple[int, ...]:
     components are kept. Returns an empty tuple on parse failure.
     """
     try:
-        # Strip pre-release suffix (e.g. '-beta.40') and 'v' prefix
-        v = version_str.strip().lstrip("v")
+        # Strip 'v' prefix (single leading 'v' or 'V' only)
+        v = version_str.strip()
+        if v.startswith("v") or v.startswith("V"):
+            v = v[1:]
         # Take only the portion before any '-' or '+'
         v = v.split("-")[0].split("+")[0]
         parts = [int(p) for p in v.split(".") if p]
@@ -316,13 +319,13 @@ class WorkerUpdateService:
             client = self._http_client
             if client is None:
                 import httpx
-                async with httpx.AsyncClient(timeout=10.0) as tmp:
-                    resp = await tmp.get(url, params=params, follow_redirects=True)
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as tmp:
+                    resp = await tmp.get(url, params=params)
                     if resp.status_code == 200:
                         data = resp.json()
                         latest_version = data.get("latest_version")
             else:
-                resp = await client.get(url, params=params, timeout=10.0, follow_redirects=True)
+                resp = await client.get(url, params=params, timeout=10.0)
                 if resp.status_code == 200:
                     data = resp.json()
                     latest_version = data.get("latest_version")
