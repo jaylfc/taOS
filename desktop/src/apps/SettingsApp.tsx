@@ -29,6 +29,7 @@ import { useThemeStore } from "@/stores/theme-store";
 import { useDockStore } from "@/stores/dock-store";
 import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
 import { safeFetch, ProgressBar, RestartProgressModal } from "@/apps/SettingsApp/_shared";
+import { WallpaperPicker } from "@/components/WallpaperPicker";
 import { UpdatesSection } from "@/apps/SettingsApp/UpdatesPanel";
 import { UsersSection } from "@/apps/SettingsApp/UsersPanel";
 import { AccountSection } from "@/apps/SettingsApp/AccountPanel";
@@ -692,11 +693,59 @@ export function DesktopDockSection() {
   const applyDockSize = useDockStore((s) => s.setIconSize);
   const applyDockPosition = useDockStore((s) => s.setPosition);
 
+  const wallpaperId = useThemeStore((s) => s.wallpaperId);
+  const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
+  const wallpaperFallback = useThemeStore((s) => s.wallpaperFallback);
+  const wallpaperLightImage = useThemeStore((s) => s.wallpaperLightImage);
+  const wallpaperLightFallback = useThemeStore((s) => s.wallpaperLightFallback);
+  const scheme = useThemeStore((s) => s.scheme);
+  const getWallpapers = useThemeStore((s) => s.getWallpapers);
+  const [showPicker, setShowPicker] = useState(false);
+
+  const wallpapers = getWallpapers();
+  const currentWallpaper = wallpapers.find((w) => w.id === wallpaperId);
+  const wallpaperLabel = currentWallpaper?.label ?? "Unknown";
+
+  const isLight = scheme === "light";
+  const thumbImage = isLight && wallpaperLightImage ? wallpaperLightImage : wallpaperImage;
+  const thumbFallback = isLight && wallpaperLightFallback ? wallpaperLightFallback : wallpaperFallback;
+
+  const thumbnailStyle: React.CSSProperties =
+    currentWallpaper && currentWallpaper.kind === "animated"
+      ? { background: "radial-gradient(120% 120% at 50% 46%, #2a2a2e 0%, #1d1d1f 45%, #101011 100%)" }
+      : {
+          backgroundImage: thumbImage,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundColor: thumbFallback,
+        };
+
   return (
     <section aria-label="Desktop and dock settings">
       <h2 className="text-lg font-semibold mb-5">Desktop & Dock</h2>
 
       <div className="space-y-3">
+        <Card className="p-4">
+          <p className="text-sm font-medium mb-3">Wallpaper</p>
+          <div className="flex items-center gap-3">
+            <div
+              className="w-12 h-8 rounded-md shrink-0 border border-white/10"
+              style={thumbnailStyle}
+              aria-hidden="true"
+            />
+            <span className="text-sm text-shell-text-secondary flex-1 min-w-0 truncate">
+              {wallpaperLabel}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowPicker(true)}
+            >
+              Change…
+            </Button>
+          </div>
+        </Card>
+
         <Card className="p-4">
           <p className="text-sm font-medium mb-3">Dock icon size</p>
           <div className="flex gap-2" role="group" aria-label="Dock icon size">
@@ -736,6 +785,13 @@ export function DesktopDockSection() {
           </div>
         </Card>
       </div>
+
+      {showPicker && (
+        <WallpaperPicker
+          open={showPicker}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
     </section>
   );
 }
