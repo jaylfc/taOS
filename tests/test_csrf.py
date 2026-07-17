@@ -86,3 +86,16 @@ class TestVerifyCSRF:
                 follow_redirects=False,
             )
         assert resp.status_code == 403
+
+
+def test_verify_csrf_is_noop_for_websocket_scope():
+    # WebSocket routes on a router carrying dependencies=[Depends(verify_csrf)]
+    # invoke verify_csrf with no Request (FastAPI does not inject one into a
+    # websocket scope), so request arrives as None. It must be a no-op, not
+    # raise a TypeError that rejects the socket with a 500 (the /ws/chat
+    # "Offline" regression). WebSocket handshakes are cookie-authenticated in
+    # their own handler and are not susceptible to form-based CSRF.
+    from tinyagentos.middleware.csrf import verify_csrf
+
+    assert verify_csrf() is None
+    assert verify_csrf(None) is None

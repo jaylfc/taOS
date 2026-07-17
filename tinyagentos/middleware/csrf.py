@@ -64,11 +64,17 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def verify_csrf(request: Request) -> None:
+def verify_csrf(request: Request | None = None) -> None:
     """FastAPI dependency — enforce the double-submit CSRF check.
 
     Scope
     -----
+    * WebSocket routes are exempt. When this dependency is attached at the
+      router level (``dependencies=_csrf``), it also applies to any
+      ``@router.websocket`` route on that router. FastAPI does not inject a
+      ``Request`` into a websocket scope, so ``request`` arrives as ``None``;
+      websocket connections are not susceptible to form-based CSRF (their
+      handshake is authenticated in-handler via the session cookie), so skip.
     * Safe HTTP methods (GET / HEAD / OPTIONS) are always exempt.
     * Requests authenticated via ``Authorization: Bearer …`` are exempt —
       the bearer token itself is unforgeable from a third-party origin.
@@ -79,6 +85,10 @@ def verify_csrf(request: Request) -> None:
     For protected requests the ``X-CSRF-Token`` header must match the
     ``csrf_token`` cookie value (double-submit pattern).
     """
+    # WebSocket scope: no Request is injected. Not CSRF-able; skip.
+    if request is None:
+        return
+
     # Safe methods need no protection.
     if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):
         return
