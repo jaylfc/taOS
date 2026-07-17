@@ -1,0 +1,148 @@
+# taOStalk: live agent sessions in taOS chat over ACP
+
+## Goal
+
+Bring live CLI agent sessions (this Claude Code session as `@taOS-dev`, plus the
+`@taOSmd-dev` and `@taOS-website-dev` sessions) into the taOS Messages / taOStalk
+app as first-class chat channels, so the operator reads and replies from taOS and
+the agent responds in real time. Anything a coding CLI can present to the operator
+in its own terminal (formatted text, code, diffs, tool activity, multiple-choice
+questions, permission prompts, plans, files, progress) must render in taOStalk with
+full parity. This is the surface that lets the operator move day-to-day comms and
+project management into taOS.
+
+## Non-goals
+
+- Replacing the A2A bus. A2A stays the agent-to-agent coordination transport; ACP
+  is the human-in-the-loop session transport. They coexist.
+- Managing an external agent's model. taOS owns the agent identity, grants, and the
+  channel; the model lives on the agent's side. We steer via chat + ACP.
+
+## Decisions (locked with owner)
+
+- **Transport: ACP (Agent Client Protocol)**, real-time bidirectional. Core is
+  **harness-agnostic**; required v1 adapters are **Claude Code, kilo, grok, opencode**.
+- **Interactive questions live in chat AND the Decisions app, synced.** Answering in
+  either place updates both and round-trips to the agent.
+- **Full presentation parity** with the coding-CLI terminal is the acceptance bar.
+
+## What already exists (build on, do not reinvent)
+
+- `tinyagentos/adapters/acp_adapter.py`: an ACP client (JSON-RPC over stdio) speaking
+  `session/new`, `session/prompt`, streaming `session/update`, `tool_call` /
+  `tool_call_update`, and `session/request_permission` (a request that expects a
+  response). Already maps updates to taOS reply kinds via `bridge_session.py`.
+- `tinyagentos/bridge_session.py`: `record_reply` bridge for session output.
+- Chat message model (`tinyagentos/chat/message_store.py`, `channel_store.py`): each
+  message already carries `content_blocks`, `embeds`, `components`, `attachments`,
+  `metadata` (all JSON). The renderable surface is a data field, not a rewrite.
+- Agent DM channels: every taOS agent gets a 1:1 `type="dm"` channel; the A2A bus is
+  already surfaced in Messages.
+- Decisions system (`tinyagentos/decisions/decision_store.py`):
+  `DECISION_TYPES = (single_select, multi_select, approve_deny, free_text)` with
+  `options`, `answer`, `from_agent`, `project_id`. This IS the AskUserQuestion model.
+  The agent-side write permission (`decisions_write` scope + gating) landed this cycle.
+
+## Architecture
+
+```
+CLI harness (Claude Code | kilo | grok | opencode)
+        |  ACP (JSON-RPC / stdio)
+   harness adapter  ---->  ACP session manager (harness-agnostic core)
+        |                       |
+        |                  session <-> channel registry (1 session = 1 DM channel)
+        v                       v
+   content-block mapper  --->  chat message (content_blocks + components)
+        ^                       |
+        |                  taOStalk renderer registry (per block type)
+   user input / answers  <----  operator (chat reply, choice selection)
+        |
+   request_permission / ask  <-> Decision (single/multi_select/approve_deny) synced to Decisions app
+```
+
+- **ACP session manager (core, harness-agnostic):** owns ACP connections, maps each
+  session to a chat channel, tracks presence/lifecycle (connect, active turn, idle,
+  disconnect). Generalizes the current OpenClaw-specific bridge.
+- **Harness adapters:** thin per-CLI shims that launch/attach the harness over ACP.
+  Claude Code and opencode speak ACP; kilo and grok get a wrapper if they do not
+  expose ACP natively (fallback: PTY capture -> ACP-shaped events). Adapter registry
+  keyed by harness name, resolved the same way agent framework adapters already are.
+- **Content-block mapper:** translates ACP `session/update` payloads (and the richer
+  terminal surface) into taOS chat `content_blocks` + `components`. This is the parity
+  layer.
+- **taOStalk renderer registry (frontend):** a pluggable set of renderers, one per
+  block type, in the chat message view. Adding a new presentable type = adding a
+  renderer + a mapper entry.
+- **Interactive questions:** an agent question (ACP `request_permission`, or an
+  AskUserQuestion-equivalent) creates a Decision (typed single/multi_select/
+  approve_deny/free_text with `options`) that renders inline in chat as choice buttons
+  AND appears in the Decisions inbox. The operator's selection writes the Decision
+  `answer` (either surface), which round-trips over ACP as the permission/prompt
+  response. Reuses the decisions_write plumbing.
+
+## Presentation parity target
+
+| Coding-CLI surface | taOStalk content-block / component |
+|---|---|
+| Markdown / formatted text | rich text block |
+| Code block | syntax-highlighted CodeBlock (exists) |
+| Single / multi choice question | choice-button component -> `single_select`/`multi_select` decision (synced) |
+| Permission / approve-deny prompt | approve/deny component -> `approve_deny` decision |
+| Plan (ExitPlanMode) | plan card with approve-to-proceed |
+| Tool use (name + status + detail) | collapsible tool-call activity card |
+| File diff | diff viewer block |
+| Table | table block |
+| File / image | attachment / inline image (attachments exist) |
+| Artifact (rendered HTML) | sandboxed artifact frame |
+| Progress / status | live status line |
+| Thinking (visible reasoning) | collapsible thinking block |
+| Mermaid / diagram | rendered diagram |
+
+## Data flow: an interactive question, end to end
+
+1. Agent (over ACP) emits `session/request_permission` or an AskUserQuestion with
+   options.
+2. ACP manager -> content-block mapper creates a Decision (`single_select` etc.,
+   `from_agent`, `project_id`, `options`) and posts a chat message whose `components`
+   reference that decision id.
+3. taOStalk renders choice buttons inline; the Decisions app shows the same pending
+   decision (single source of truth = the decision row).
+4. Operator selects an option in chat OR answers in Decisions -> both write the same
+   decision `answer` + `answered_at`.
+5. ACP manager observes the answered decision -> sends the ACP permission/prompt
+   response -> the agent's turn continues.
+
+## Decomposition (buildable slices)
+
+1. **ACP bridge core + Claude Code adapter.** Harness-agnostic session manager
+   (session <-> channel), bidirectional TEXT streaming. Acceptance: this Claude Code
+   session appears live in taOStalk; operator replies from taOS and the agent responds.
+2. **Content-block renderer registry.** Markdown, code, diff, table, image/file,
+   tool-call card. Acceptance: a session that streams those types renders them.
+3. **Interactive questions, synced.** Choice/approve components inline in chat AND in
+   Decisions, answer round-trips over ACP. Acceptance: agent asks a single_select in
+   chat, operator picks in either surface, agent proceeds.
+4. **Harness adapters: kilo, grok, opencode.** Bring the required v1 set to parity
+   with the Claude Code adapter (native ACP where available, PTY->ACP wrapper else).
+5. **Parity finish + taOStalk surface.** Plans, thinking, artifacts/HTML, progress,
+   mermaid; session-list UX (live/idle/disconnected), presence, per-session channel
+   entry. Acceptance: the parity table above is fully covered.
+
+## Testing
+
+- Core: unit-test the ACP session manager (session<->channel mapping, lifecycle) and
+  the content-block mapper (each ACP update -> expected content_block/component) with
+  recorded ACP fixtures.
+- Questions: test the Decision round-trip (question -> decision row -> answer in chat
+  and in Decisions -> ACP response) end to end.
+- Renderers: vitest per renderer (given a content_block, renders the expected UI).
+- Adapters: a smoke test per harness that a `session/prompt` produces a streamed
+  reply into the mapped channel.
+
+## Open questions for the plan phase
+
+- Where the ACP session manager runs (controller process vs a per-session worker) and
+  how it survives a controller restart mid-session.
+- Whether kilo/grok expose ACP natively or need the PTY->ACP wrapper (scoped in slice 4).
+- Auth: an ACP session binds to the agent's registry identity + the operator's session;
+  confirm the channel membership + grant model reuses the existing DM-channel gating.
