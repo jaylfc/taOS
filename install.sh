@@ -12,6 +12,12 @@ INSTALL_DIR="/opt/tinyagentos"
 DATA_DIR="/opt/tinyagentos/data"
 CATALOG_REPO="https://github.com/jaylfc/tinyagentos.git"
 
+# Pinned commit hash for installation integrity.
+# Each release this script is updated with the current master HEAD so that
+# `git clone` + `git checkout` always fetches a known-good revision.
+# To update: git ls-remote https://github.com/jaylfc/tinyagentos.git HEAD | awk '{print $1}'
+TAOS_INSTALL_COMMIT="${TAOS_INSTALL_COMMIT:-66accad8bb725e3c86ab92db1fbde553040364fc}"
+
 echo "======================================"
 echo "  TinyAgentOS Installer"
 echo "======================================"
@@ -87,6 +93,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
 else
     echo "Installing TinyAgentOS to $INSTALL_DIR..."
     git clone "$CATALOG_REPO" "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" checkout "$TAOS_INSTALL_COMMIT"
 fi
 
 cd "$INSTALL_DIR"
