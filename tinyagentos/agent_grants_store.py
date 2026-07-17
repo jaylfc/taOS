@@ -11,6 +11,7 @@ The Permissions app and the A2A bus read this table to check what an agent
 may do.  ``list_active_grants`` is the feed @taOSmd polls later.
 """
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Optional
@@ -42,10 +43,19 @@ class AgentGrantsStore(BaseStore):
 
     SCHEMA = SCHEMA
 
+    # Serializes the DELETE-then-INSERT-then-SELECT in add_grant. The 3-column
+    # UNIQUE with a nullable project_id forces a non-atomic delete+insert
+    # (INSERT OR REPLACE cannot dedup a NULL project_id), so two concurrent
+    # same-key writes could interleave (one DELETE removes the other's row
+    # before its SELECT-back, or the second INSERT hits the unique). The lock
+    # makes each write atomic against the others on this single connection.
+    _write_lock: asyncio.Lock
+
     async def init(self) -> None:
         await super().init()
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
+        self._write_lock = asyncio.Lock()
 
     async def _post_init(self) -> None:
         """Upgrade an EXISTING database whose agent_grants table still has the
@@ -140,30 +150,34 @@ class AgentGrantsStore(BaseStore):
             raise RuntimeError("AgentGrantsStore not initialised — call init() first")
 
         now = datetime.now(timezone.utc).isoformat()
-        # Remove any existing row for the exact key first (NULL-safe match).
-        await self._db.execute(
-            "DELETE FROM agent_grants "
-            "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
-            (canonical_id, scope, project_id),
-        )
-        await self._db.execute(
-            """
-            INSERT INTO agent_grants
-                (canonical_id, scope, tier, project_id, granted_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (canonical_id, scope, tier, project_id, now, expires_at),
-        )
-        await self._db.commit()
-        row = await (
+        # Serialize the delete+insert+select so two concurrent same-key writes
+        # cannot interleave (which would either drop each other's row before the
+        # SELECT-back returns None, or collide on the UNIQUE at INSERT).
+        async with self._write_lock:
+            # Remove any existing row for the exact key first (NULL-safe match).
             await self._db.execute(
-                # Select by the full 3-column key. project_id is nullable, so
-                # match NULL with IS (a plain ``=`` would never match NULL).
-                "SELECT * FROM agent_grants "
+                "DELETE FROM agent_grants "
                 "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
                 (canonical_id, scope, project_id),
             )
-        ).fetchone()
+            await self._db.execute(
+                """
+                INSERT INTO agent_grants
+                    (canonical_id, scope, tier, project_id, granted_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (canonical_id, scope, tier, project_id, now, expires_at),
+            )
+            await self._db.commit()
+            row = await (
+                await self._db.execute(
+                    # Select by the full 3-column key. project_id is nullable, so
+                    # match NULL with IS (a plain ``=`` would never match NULL).
+                    "SELECT * FROM agent_grants "
+                    "WHERE canonical_id = ? AND scope = ? AND project_id IS ?",
+                    (canonical_id, scope, project_id),
+                )
+            ).fetchone()
         return _row_to_dict(row)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
