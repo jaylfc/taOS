@@ -1197,16 +1197,33 @@ async def _do_single_worker_update(cluster, worker) -> dict:
     Shared helper called by both the single-worker ``update_worker`` route
     and the rolling ``update_all_workers`` route (taOS #1876).
 
-    Returns a dict with at least ``"success": bool`` and ``"worker"``.
+    Returns a dict with at least ``"success": bool``, ``"worker"``, and
+    ``"drain_cancelled": bool`` (whether ``cancel_drain`` was actually called).
     On success: ``{"success": True, "worker": ..., "status": "updating", ...}``.
     On failure: ``{"success": False, "worker": ..., "error": "..."}``.
     Never raises — all exceptions are caught and converted into error dicts.
     """
     name = worker.name
-    # Step 1: Begin draining
-    drain_result = await cluster.drain_worker(name, graceful=True)
+
+    # Step 1: Begin draining (with exception isolation — drain_worker
+    # may raise from notification or background-task failures).
+    try:
+        drain_result = await cluster.drain_worker(name, graceful=True)
+    except Exception as exc:
+        logger.exception("drain_worker('%s') raised during update", name)
+        return {
+            "success": False,
+            "worker": name,
+            "error": f"Worker drain failed: {exc}",
+            "drain_cancelled": False,
+        }
     if "error" in drain_result:
-        return {"success": False, "worker": name, "error": drain_result["error"]}
+        return {
+            "success": False,
+            "worker": name,
+            "error": drain_result["error"],
+            "drain_cancelled": False,
+        }
 
     # Step 2: Trigger the update-worker deploy command on the worker
     import httpx
@@ -1232,6 +1249,7 @@ async def _do_single_worker_update(cluster, worker) -> dict:
             "previous_status": drain_result["previous_status"],
             "drain": drain_result,
             "deploy": None,
+            "drain_cancelled": False,
             "message": (
                 "Worker accepted the update and is restarting. The connection "
                 "dropped as expected during the restart; the monitor loop will "
@@ -1241,20 +1259,32 @@ async def _do_single_worker_update(cluster, worker) -> dict:
     except httpx.ConnectError as exc:
         # Connection refused / DNS failure: the worker is unreachable and the
         # update was never delivered. Cancel the drain so it keeps serving.
-        await cluster.cancel_drain(name)
+        drain_cancelled = False
+        try:
+            await cluster.cancel_drain(name)
+            drain_cancelled = True
+        except Exception:
+            logger.exception("cancel_drain('%s') raised after ConnectError", name)
         return {
             "success": False,
             "worker": name,
             "error": f"Worker unreachable for update: {exc}",
+            "drain_cancelled": drain_cancelled,
         }
     except Exception as exc:
         # Non-2xx worker response (raise_for_status) or any other unexpected
         # error: real failure, cancel drain so worker can still serve traffic.
-        await cluster.cancel_drain(name)
+        drain_cancelled = False
+        try:
+            await cluster.cancel_drain(name)
+            drain_cancelled = True
+        except Exception:
+            logger.exception("cancel_drain('%s') raised after deploy failure", name)
         return {
             "success": False,
             "worker": name,
             "error": f"Worker update deploy failed: {exc}",
+            "drain_cancelled": drain_cancelled,
         }
 
     return {
@@ -1264,6 +1294,7 @@ async def _do_single_worker_update(cluster, worker) -> dict:
         "previous_status": drain_result["previous_status"],
         "drain": drain_result,
         "deploy": deploy_result,
+        "drain_cancelled": False,
         "message": (
             "Worker is draining and updating. It will restart and re-register. "
             "The controller monitor loop will auto-complete the drain once "
@@ -1299,7 +1330,7 @@ async def update_worker(request: Request, name: str):
     result = await _do_single_worker_update(cluster, worker)
     if not result["success"]:
         return JSONResponse(
-            {**result, "drain_cancelled": True},
+            {**result, "drain_cancelled": result.get("drain_cancelled", False)},
             status_code=502,
         )
     return result
@@ -1311,8 +1342,13 @@ async def update_all_workers(request: Request):
 
     Updates every online worker sequentially, draining and updating at most
     one worker at any moment so the fleet never fully drains. Skips the
-    ``local`` worker (the controller itself). If one worker's update fails,
-    the roll continues to the remaining workers.
+    ``local`` worker (the controller itself) and any worker that is not
+    ``online``. Workers already ``draining`` are not counted as skipped — they
+    are likely mid-update from a prior action.
+
+    If one worker's update fails, the roll continues to the remaining workers.
+    After a successful update, the route waits (with a timeout) for the worker
+    to re-register as ``online`` before proceeding to the next target.
 
     Returns an aggregate ``{updated: [...], failed: [{name, error}], skipped: [...]}``
     so the admin can see exactly which workers were touched and which failed.
@@ -1324,20 +1360,60 @@ async def update_all_workers(request: Request):
 
     workers = cluster.get_workers()
     targets = [w for w in workers if w.status == "online" and w.name != "local"]
+    skipped: list[str] = [
+        w.name for w in workers
+        if w.name == "local" or w.status not in ("online", "draining")
+    ]
     if not targets:
-        return {"updated": [], "failed": [], "skipped": [], "message": "No online remote workers to update"}
+        return {
+            "updated": [],
+            "failed": [],
+            "skipped": skipped,
+            "total_targets": 0,
+            "message": "No online remote workers to update",
+        }
 
     updated: list[str] = []
     failed: list[dict] = []
-    skipped: list[str] = [
-        w.name for w in workers
-        if w.name == "local" or (w.status != "online" and w.name != "local")
-    ]
+
+    RE_REGISTER_TIMEOUT = 300  # seconds to wait for worker to come back online
+    RE_REGISTER_POLL = 5       # seconds between status checks
 
     for worker in targets:
-        result = await _do_single_worker_update(cluster, worker)
+        try:
+            result = await _do_single_worker_update(cluster, worker)
+        except Exception as exc:
+            logger.exception(
+                "update-all: unexpected exception for worker '%s' (continuing roll)",
+                worker.name,
+            )
+            failed.append({"name": worker.name, "error": f"Unexpected error: {type(exc).__name__}: {exc}"})
+            continue
+
         if result["success"]:
             updated.append(worker.name)
+            # Wait for the worker to re-register as "online" before proceeding
+            # to the next target. This guarantees at most one worker is actively
+            # updating at any moment (never more than one draining concurrently).
+            waited = 0
+            while waited < RE_REGISTER_TIMEOUT:
+                await asyncio.sleep(RE_REGISTER_POLL)
+                waited += RE_REGISTER_POLL
+                w = cluster.get_worker(worker.name)
+                if w is not None and w.status == "online":
+                    logger.info(
+                        "update-all: worker '%s' re-registered online after %ds",
+                        worker.name, waited,
+                    )
+                    break
+            else:
+                # Timeout: worker didn't come back online in time. Log it but
+                # continue the roll — the worker's status will resolve on its own.
+                logger.warning(
+                    "update-all: worker '%s' did not re-register within %ds timeout; "
+                    "continuing roll",
+                    worker.name, RE_REGISTER_TIMEOUT,
+                )
         else:
             failed.append({"name": worker.name, "error": result.get("error", "unknown")})
             logger.warning(
@@ -1345,10 +1421,6 @@ async def update_all_workers(request: Request):
                 worker.name, result.get("error", "unknown"),
             )
 
-    # Re-read latest statuses after the roll for accurate skipped count
-    # (workers that went offline during the roll are not "skipped" — they
-    # were either updated or failed; skipped is only for workers that were
-    # never online to begin with from the admin's perspective).
     return {
         "updated": updated,
         "failed": failed,

@@ -613,14 +613,50 @@ async def _register_workers(app, *names):
         )
 
 
+async def _fake_sleep(seconds):
+    """No-op sleep for tests — makes re-registration polling instant."""
+    pass
+
+
 @pytest.mark.asyncio
 async def test_update_all_workers_happy_path(client, app, monkeypatch):
-    """Two online workers: both restart-disconnect, both succeed."""
-    import httpx as _httpx
+    """Two online workers: both succeed via restart-disconnect, re-registration wait passes."""
+    import asyncio as _asyncio
     await _register_workers(app, "w1", "w2")
+
+    from tinyagentos.routes.cluster import _do_single_worker_update as _original_do
+
+    call_order: list[str] = []
+
+    async def _mock_do(cluster, worker):
+        call_order.append(worker.name)
+        # Simulate the drain→deploy step: set worker to draining, then return success.
+        # The re-registration loop will poll and break once status is "online".
+        # In the real helper, drain_worker sets draining; we simulate that here.
+        worker.status = "draining"
+        return {
+            "success": True,
+            "worker": worker.name,
+            "status": "updating",
+            "previous_status": "online",
+            "drain_cancelled": False,
+        }
+
+    # Simulate re-registration: after the first poll, the worker comes back online.
+    original_get_worker = app.state.cluster_manager.get_worker
+
+    def _get_worker(name):
+        w = original_get_worker(name)
+        if w is not None and w.status == "draining":
+            # Simulate re-registration: worker comes back online
+            w.status = "online"
+        return w
+
+    monkeypatch.setattr(app.state.cluster_manager, "get_worker", _get_worker)
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(
-        _httpx, "AsyncClient",
-        _client_raising(_httpx.RemoteProtocolError("server disconnected during restart")),
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
     )
 
     resp = await client.post("/api/cluster/workers/update-all")
@@ -629,25 +665,47 @@ async def test_update_all_workers_happy_path(client, app, monkeypatch):
     assert sorted(data["updated"]) == ["w1", "w2"]
     assert data["failed"] == []
     assert data["total_targets"] == 2
+    # Verify sequential: w1 must be processed before w2
+    assert call_order == ["w1", "w2"]
 
 
 @pytest.mark.asyncio
 async def test_update_all_workers_one_fails_others_continue(client, app, monkeypatch):
     """w1 fails with ConnectError, w2 succeeds — roll continues."""
-    import httpx as _httpx
+    import asyncio as _asyncio
     await _register_workers(app, "w1", "w2")
 
-    from tinyagentos.routes.cluster import _do_single_worker_update as _original_do
+    call_order: list[str] = []
 
     async def _mock_do(cluster, worker):
+        call_order.append(worker.name)
         if worker.name == "w1":
-            return {"success": False, "worker": "w1", "error": "Worker unreachable for update: test"}
-        return await _original_do(cluster, worker)
+            return {
+                "success": False,
+                "worker": "w1",
+                "error": "Worker unreachable for update: test",
+                "drain_cancelled": False,
+            }
+        worker.status = "draining"
+        return {
+            "success": True,
+            "worker": worker.name,
+            "status": "updating",
+            "previous_status": "online",
+            "drain_cancelled": False,
+        }
 
-    monkeypatch.setattr(
-        _httpx, "AsyncClient",
-        _client_raising(_httpx.RemoteProtocolError("server disconnected")),
-    )
+    # Simulate re-registration for w2
+    original_get_worker = app.state.cluster_manager.get_worker
+
+    def _get_worker(name):
+        w = original_get_worker(name)
+        if w is not None and w.status == "draining":
+            w.status = "online"
+        return w
+
+    monkeypatch.setattr(app.state.cluster_manager, "get_worker", _get_worker)
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(
         "tinyagentos.routes.cluster._do_single_worker_update",
         _mock_do,
@@ -661,21 +719,39 @@ async def test_update_all_workers_one_fails_others_continue(client, app, monkeyp
     assert data["failed"][0]["name"] == "w1"
     assert "unreachable" in data["failed"][0]["error"]
     assert data["total_targets"] == 2
+    # w1 must be processed before w2
+    assert call_order == ["w1", "w2"]
 
 
 @pytest.mark.asyncio
 async def test_update_all_workers_skips_local(client, app, monkeypatch):
     """The 'local' worker is never targeted for update."""
-    import httpx as _httpx
+    import asyncio as _asyncio
     await _register_workers(app, "r1", "r2")
     from tinyagentos.cluster.worker_protocol import WorkerInfo
     app.state.cluster_manager._workers["local"] = WorkerInfo(  # noqa: SLF001
         name="local", url="http://localhost:9000",
         capabilities=["chat"], load=0.0, status="online", platform="linux",
     )
+
+    async def _mock_do(cluster, worker):
+        worker.status = "draining"
+        return {"success": True, "worker": worker.name, "drain_cancelled": False}
+
+    # Simulate re-registration
+    original_get_worker = app.state.cluster_manager.get_worker
+
+    def _get_worker(name):
+        w = original_get_worker(name)
+        if w is not None and w.status == "draining":
+            w.status = "online"
+        return w
+
+    monkeypatch.setattr(app.state.cluster_manager, "get_worker", _get_worker)
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(
-        _httpx, "AsyncClient",
-        _client_raising(_httpx.RemoteProtocolError("server disconnected")),
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
     )
 
     resp = await client.post("/api/cluster/workers/update-all")
@@ -690,12 +766,28 @@ async def test_update_all_workers_skips_local(client, app, monkeypatch):
 @pytest.mark.asyncio
 async def test_update_all_workers_skips_offline(client, app, monkeypatch):
     """Offline workers are skipped, online workers are updated."""
-    import httpx as _httpx
+    import asyncio as _asyncio
     await _register_workers(app, "online-1", "online-2")
     app.state.cluster_manager._workers["online-2"].status = "offline"  # noqa: SLF001
+
+    async def _mock_do(cluster, worker):
+        worker.status = "draining"
+        return {"success": True, "worker": worker.name, "drain_cancelled": False}
+
+    # Simulate re-registration
+    original_get_worker = app.state.cluster_manager.get_worker
+
+    def _get_worker(name):
+        w = original_get_worker(name)
+        if w is not None and w.status == "draining":
+            w.status = "online"
+        return w
+
+    monkeypatch.setattr(app.state.cluster_manager, "get_worker", _get_worker)
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
     monkeypatch.setattr(
-        _httpx, "AsyncClient",
-        _client_raising(_httpx.RemoteProtocolError("server disconnected")),
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
     )
 
     resp = await client.post("/api/cluster/workers/update-all")
@@ -713,7 +805,128 @@ async def test_update_all_workers_no_online_workers(client, app):
     data = resp.json()
     assert data["updated"] == []
     assert data["failed"] == []
+    assert data["skipped"] == []
+    assert data["total_targets"] == 0
     assert "no online" in data.get("message", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_draining_excluded_from_skipped(client, app, monkeypatch):
+    """Draining workers are not counted as skipped — they are mid-update."""
+    import asyncio as _asyncio
+    await _register_workers(app, "w1", "w2")
+    # Set w2 to draining — it should NOT appear in skipped
+    app.state.cluster_manager._workers["w2"].status = "draining"  # noqa: SLF001
+
+    async def _mock_do(cluster, worker):
+        worker.status = "draining"
+        return {"success": True, "worker": worker.name, "drain_cancelled": False}
+
+    original_get_worker = app.state.cluster_manager.get_worker
+
+    def _get_worker(name):
+        w = original_get_worker(name)
+        if w is not None and w.status == "draining" and name != "w2":
+            w.status = "online"
+        return w
+
+    monkeypatch.setattr(app.state.cluster_manager, "get_worker", _get_worker)
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["updated"] == ["w1"]
+    # w2 is draining — NOT skipped
+    assert "w2" not in data["skipped"]
+    assert data["total_targets"] == 1  # only w1 was online
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_helper_exception_isolated(client, app, monkeypatch):
+    """If _do_single_worker_update raises unexpectedly, roll continues."""
+    import asyncio as _asyncio
+    await _register_workers(app, "w1", "w2")
+
+    call_order: list[str] = []
+
+    async def _mock_do(cluster, worker):
+        call_order.append(worker.name)
+        if worker.name == "w1":
+            raise RuntimeError("drain_worker exploded!")
+        worker.status = "draining"
+        return {
+            "success": True,
+            "worker": worker.name,
+            "status": "updating",
+            "previous_status": "online",
+            "drain_cancelled": False,
+        }
+
+    original_get_worker = app.state.cluster_manager.get_worker
+
+    def _get_worker(name):
+        w = original_get_worker(name)
+        if w is not None and w.status == "draining":
+            w.status = "online"
+        return w
+
+    monkeypatch.setattr(app.state.cluster_manager, "get_worker", _get_worker)
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["updated"] == ["w2"]
+    assert len(data["failed"]) == 1
+    assert data["failed"][0]["name"] == "w1"
+    assert "RuntimeError" in data["failed"][0]["error"]
+    assert data["total_targets"] == 2
+    assert call_order == ["w1", "w2"]
+
+
+@pytest.mark.asyncio
+async def test_update_all_workers_re_register_timeout(client, app, monkeypatch):
+    """When a worker never comes back online, the roll continues after timeout."""
+    import asyncio as _asyncio
+    await _register_workers(app, "w1", "w2")
+
+    call_order: list[str] = []
+
+    async def _mock_do(cluster, worker):
+        call_order.append(worker.name)
+        worker.status = "draining"
+        return {
+            "success": True,
+            "worker": worker.name,
+            "status": "updating",
+            "previous_status": "online",
+            "drain_cancelled": False,
+        }
+
+    # get_worker always returns "draining" — simulates worker never coming back
+    monkeypatch.setattr(_asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "tinyagentos.routes.cluster._do_single_worker_update",
+        _mock_do,
+    )
+
+    resp = await client.post("/api/cluster/workers/update-all")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # Both workers should still be listed as updated — the timeout just logs a warning
+    assert sorted(data["updated"]) == ["w1", "w2"]
+    assert data["failed"] == []
+    assert data["total_targets"] == 2
+    assert call_order == ["w1", "w2"]
 
 
 @pytest.mark.asyncio
