@@ -25,13 +25,14 @@ from tinyagentos.routes.desktop import SPA_DIR
 # real function directly and test it in isolation.
 # ---------------------------------------------------------------------------
 
-from fastapi import Request as _FastAPIRequest
+from starlette.requests import HTTPConnection as _HTTPConnection
 
 
-def _noop_verify_csrf(request: _FastAPIRequest | None = None) -> None:
-    # request is optional so this override is callable on websocket routes too
-    # (FastAPI injects no Request into a websocket scope), matching the real
-    # verify_csrf which no-ops when request is None.
+def _noop_verify_csrf(conn: _HTTPConnection) -> None:
+    # Typed as HTTPConnection (base of Request + WebSocket) so this override is
+    # FastAPI-injectable on both http and websocket routes, matching the real
+    # verify_csrf. A `Request` param TypeErrors on a websocket scope and
+    # `Request | None` is not a valid injectable type at all.
     return
 
 

@@ -30,6 +30,7 @@ import secrets
 
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import HTTPConnection
 from starlette.responses import Response
 
 _COOKIE_NAME = "csrf_token"
@@ -64,17 +65,22 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def verify_csrf(request: Request | None = None) -> None:
+def verify_csrf(conn: HTTPConnection) -> None:
     """FastAPI dependency — enforce the double-submit CSRF check.
+
+    Typed as ``HTTPConnection`` (the shared base of ``Request`` and
+    ``WebSocket``) so FastAPI injects it on BOTH http and websocket scopes.
+    A plain ``Request`` param would make FastAPI call the dependency with no
+    argument on a websocket route (TypeError), and ``Request | None`` is not a
+    valid injectable type at all — either one breaks route registration when
+    this dependency is attached at the router level (``dependencies=_csrf``)
+    and that router also carries an ``@router.websocket`` route.
 
     Scope
     -----
-    * WebSocket routes are exempt. When this dependency is attached at the
-      router level (``dependencies=_csrf``), it also applies to any
-      ``@router.websocket`` route on that router. FastAPI does not inject a
-      ``Request`` into a websocket scope, so ``request`` arrives as ``None``;
-      websocket connections are not susceptible to form-based CSRF (their
-      handshake is authenticated in-handler via the session cookie), so skip.
+    * WebSocket routes are exempt: a websocket connection has no HTTP method
+      and is not susceptible to form-based CSRF (its handshake is
+      authenticated in-handler via the session cookie), so skip.
     * Safe HTTP methods (GET / HEAD / OPTIONS) are always exempt.
     * Requests authenticated via ``Authorization: Bearer …`` are exempt —
       the bearer token itself is unforgeable from a third-party origin.
@@ -85,25 +91,22 @@ def verify_csrf(request: Request | None = None) -> None:
     For protected requests the ``X-CSRF-Token`` header must match the
     ``csrf_token`` cookie value (double-submit pattern).
     """
-    # WebSocket scope: no Request is injected. Not CSRF-able; skip.
-    if request is None:
-        return
-
-    # Safe methods need no protection.
-    if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):
+    # WebSocket scope has no HTTP method — not CSRF-able; skip.
+    method = getattr(conn, "method", None)
+    if method is None or method in ("GET", "HEAD", "OPTIONS", "TRACE"):
         return
 
     # Bearer-authenticated requests are not subject to CSRF.
-    auth_header = request.headers.get("authorization", "")
+    auth_header = conn.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         return
 
     # No session cookie → not cookie-authenticated → no CSRF risk.
-    if not request.cookies.get("taos_session"):
+    if not conn.cookies.get("taos_session"):
         return
 
-    cookie_token = request.cookies.get(_COOKIE_NAME, "")
-    header_token = request.headers.get(_HEADER_NAME, "")
+    cookie_token = conn.cookies.get(_COOKIE_NAME, "")
+    header_token = conn.headers.get(_HEADER_NAME, "")
 
     if not cookie_token or not header_token:
         raise HTTPException(status_code=403, detail="CSRF token missing")
