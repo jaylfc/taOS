@@ -65,9 +65,10 @@ export const useTaosAgentStore = create<TaosAgentStore>((set) => ({
 
   updateMessage: (index, content) =>
     set((s) => {
-      if (index < 0 || index >= s.messages.length) return s;
+      const existing = s.messages[index];
+      if (!existing) return s;
       const msgs = [...s.messages];
-      msgs[index] = { ...msgs[index], content };
+      msgs[index] = { ...existing, content };
       return { messages: msgs };
     }),
 
