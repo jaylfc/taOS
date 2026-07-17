@@ -61,6 +61,11 @@ VALID_SCOPES = frozenset({
     # named in the request.
     "canvas_read",
     "canvas_write",
+    # Raise decisions in the Decisions app: decisions_write (post), decisions_read
+    # (list own). A global (null-project) grant authorizes OS-level decisions; a
+    # per-project grant authorizes that project only. The route verifies the grant.
+    "decisions_read",
+    "decisions_write",
 })
 
 

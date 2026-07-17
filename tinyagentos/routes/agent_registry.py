@@ -94,6 +94,7 @@ _ALLOWED_SCOPES = frozenset({
     "tools_execute", "registry_feeds_read",
     "project_tasks",
     "canvas_read", "canvas_write",
+    "decisions_read", "decisions_write",
 })
 
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 import os
 
+from dataclasses import dataclass
+
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -119,8 +121,57 @@ class AnswerIn(BaseModel):
     answered_by: str = ""
 
 
+@dataclass
+class _DecisionActor:
+    """Who is creating a decision, and who should decide it."""
+
+    kind: str                # "agent" or "user"
+    from_agent: str | None   # agent handle (agent path); None on the human path
+    decider_user_id: str     # the human the decision is addressed to
+    is_admin: bool           # human-path admin flag; always False for agents
+
+
+async def _resolve_decision_actor(request: Request, project_id: str | None) -> _DecisionActor:
+    """Authorize the caller as either a granted agent or a human session.
+
+    Agent path (bearer token with a decisions_write grant): the decision is
+    attributed to the authenticated agent, and the decider is resolved from the
+    target - the project owner for a project decision, or the instance admin for
+    an OS-level (null-project) decision. A global grant authorizes only
+    null-project posts; a per-project grant authorizes only that project.
+
+    Human path (session, no bearer token): unchanged - the session user creates
+    and is the decider.
+    """
+    from tinyagentos.agent_token_auth import check_agent_scope_for_project
+
+    # Returns None when there is no Authorization header (a cookie-only human),
+    # the canonical_id when the agent holds the grant, or raises 401/403.
+    cid = await check_agent_scope_for_project(request, "decisions_write", project_id)
+    if cid is not None:
+        if project_id is not None:
+            project = await request.app.state.project_store.get_project(project_id)
+            if project is None:
+                raise HTTPException(status_code=400, detail="project_id not found")
+            decider = project.get("user_id") or ""
+            if not decider:
+                raise HTTPException(status_code=409, detail="project has no owner to decide")
+        else:
+            admins = [u for u in request.app.state.auth.list_users() if u.get("is_admin")]
+            if not admins:
+                raise HTTPException(status_code=409, detail="no admin to receive an OS-level decision")
+            decider = admins[0]["id"]
+        return _DecisionActor(kind="agent", from_agent=cid, decider_user_id=decider, is_admin=False)
+
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="authentication required")
+    is_admin = bool(getattr(request.state, "is_admin", False))
+    return _DecisionActor(kind="user", from_agent=None, decider_user_id=uid, is_admin=is_admin)
+
+
 @router.post("/api/decisions")
-async def create_decision(body: DecisionIn, request: Request, user: CurrentUser = Depends(current_user)):
+async def create_decision(body: DecisionIn, request: Request):
     if body.type not in DECISION_TYPES:
         return JSONResponse({"error": f"type must be one of {DECISION_TYPES}"}, status_code=400)
     if body.priority not in PRIORITIES:
@@ -128,25 +179,35 @@ async def create_decision(body: DecisionIn, request: Request, user: CurrentUser 
     if body.type in ("single_select", "multi_select") and not body.options:
         return JSONResponse({"error": "select types require options"}, status_code=400)
 
+    actor = await _resolve_decision_actor(request, body.project_id)
+    # Agent identity is authoritative; a human may set from_agent in the body.
+    from_agent = actor.from_agent or body.from_agent
+
     store = request.app.state.decision_store
 
     # L1 revisit/supersede: a decision may replace an earlier one going forward.
-    # Validate the parent belongs to this user before we create + supersede it.
+    # A human supersedes their own (or any, if admin); an agent supersedes only
+    # decisions it raised itself.
     parent_id = body.parent_decision_id
     if parent_id:
         parent = await store.get(parent_id)
-        if parent is None or (not user.is_admin and parent["user_id"] != user.user_id):
+        if parent is None:
+            return JSONResponse({"error": "parent_decision_id not found"}, status_code=400)
+        if actor.kind == "user":
+            if not actor.is_admin and parent["user_id"] != actor.decider_user_id:
+                return JSONResponse({"error": "parent_decision_id not found"}, status_code=400)
+        elif parent.get("from_agent") != from_agent:
             return JSONResponse({"error": "parent_decision_id not found"}, status_code=400)
 
     decision = await store.create(
-        from_agent=body.from_agent,
+        from_agent=from_agent,
         question=body.question,
         type=body.type,
         options=[o.model_dump() for o in body.options],
         context=body.context,
         priority=body.priority,
         project_id=body.project_id,
-        user_id=user.user_id,
+        user_id=actor.decider_user_id,
         deadline=body.deadline,
         parent_decision_id=parent_id,
         checkpoint_ref=body.checkpoint_ref,
@@ -164,7 +225,7 @@ async def create_decision(body: DecisionIn, request: Request, user: CurrentUser 
         try:
             await notifs.add(
                 title="Decision needed",
-                message=f"{body.from_agent} needs a decision: {body.question[:120]}",
+                message=f"{from_agent} needs a decision: {body.question[:120]}",
                 level="warning" if body.priority == "blocking" else "info",
                 source="decisions",
             )
