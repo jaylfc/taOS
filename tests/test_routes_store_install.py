@@ -430,6 +430,129 @@ class TestInstallV2:
         assert "compat" in body
         assert "chain" in body
 
+    # ------------------------------------------------------------------
+    # Code-signing tests (#647)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_tampered_manifest_rejected_403(self, client):
+        """When registry.verify_manifest_signature returns False, the
+        install is rejected with 403."""
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        manifest = _make_model_manifest()
+        reg = _make_registry(manifest)
+        reg.verify_manifest_signature = MagicMock(return_value=False)
+        client._transport.app.state.registry = reg
+
+        # Provide a signing keypair so the code-signing gate is active.
+        _, pub = generate_signing_keypair()
+        client._transport.app.state.store_signing_pubkey = pub
+
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-model",
+            "variant_id": "v1",
+        })
+        assert resp.status_code == 403
+        body = resp.json()
+        assert "manifest signature verification failed" == body["error"]
+        assert "install_id" in body
+
+    @pytest.mark.asyncio
+    async def test_valid_signature_allows_install(self, client):
+        """When registry.verify_manifest_signature returns True, the
+        install proceeds past the signing gate."""
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        manifest = _make_model_manifest()
+        reg = _make_registry(manifest)
+        reg.verify_manifest_signature = MagicMock(return_value=True)
+        reg.mark_installed = MagicMock()
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        _, pub = generate_signing_keypair()
+        client._transport.app.state.store_signing_pubkey = pub
+
+        cap = _cpu_cap(installed_backends=("llama-cpp",))
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=cap),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer",
+        ) as mock_get:
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.return_value = model_inst
+
+            resp = await client.post("/api/store/install-v2", json={
+                "manifest_id": "test-model",
+                "variant_id": "v1",
+            })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "chain" in body
+
+    @pytest.mark.asyncio
+    async def test_no_signing_key_skips_verification(self, client):
+        """When store_signing_pubkey is not set, the signing gate is
+        skipped and the install proceeds normally."""
+        manifest = _make_model_manifest()
+        reg = _make_registry(manifest)
+        reg.mark_installed = MagicMock()
+        client._transport.app.state.registry = reg
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        # No store_signing_pubkey — simulates a taOS instance without
+        # signing configured (graceful degradation).
+        client._transport.app.state.store_signing_pubkey = None
+
+        cap = _cpu_cap(installed_backends=("llama-cpp",))
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=cap),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer",
+        ) as mock_get:
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.return_value = model_inst
+
+            resp = await client.post("/api/store/install-v2", json={
+                "manifest_id": "test-model",
+                "variant_id": "v1",
+            })
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/store/signing-pubkey
+# ---------------------------------------------------------------------------
+
+
+class TestSigningPubkey:
+    @pytest.mark.asyncio
+    async def test_returns_public_key_when_configured(self, client):
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        _, pub = generate_signing_keypair()
+        client._transport.app.state.store_signing_pubkey = pub
+
+        resp = await client.get("/api/store/signing-pubkey")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "public_key_pem" in body
+        assert body["public_key_pem"] == pub.decode()
+
+    @pytest.mark.asyncio
+    async def test_returns_404_when_not_configured(self, client):
+        client._transport.app.state.store_signing_pubkey = None
+
+        resp = await client.get("/api/store/signing-pubkey")
+        assert resp.status_code == 404
+        body = resp.json()
+        assert "error" in body
+
 
 # ---------------------------------------------------------------------------
 # POST /api/store/install-v2 -- agent-framework manifests (method: script) (#1582)

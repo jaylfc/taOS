@@ -703,6 +703,35 @@ async def install_app(request: Request):
         progress.finish(install_id, success=False, error="manifest not found in registry")
         return await _legacy_install(request, body, manifest_id, target_remote)
 
+    # Code-signing gate (#647): verify the catalog manifest's Ed25519
+    # signature against the store signing public key.  A manifest that was
+    # tampered with on disk after the server signed it at boot will fail
+    # here, blocking any install that would pull untrusted scripts or images.
+    #
+    # Threat model: this protects against post-boot *catalog* tampering
+    # (an attacker modifying a manifest on disk while the server is running).
+    # It does NOT protect against an attacker who can also replace the
+    # signing keyfile and then restart the server — that is the OS-level
+    # trust boundary.  For defence-in-depth, deploy the keyfile on a
+    # read-only filesystem or use a hardware-backed key store.
+    _store_pub = getattr(request.app.state, "store_signing_pubkey", None)
+    if _store_pub is not None and registry is not None and hasattr(registry, "verify_manifest_signature"):
+        if not registry.verify_manifest_signature(manifest_id, _store_pub):
+            progress.finish(
+                install_id, success=False,
+                error="manifest signature verification failed — the catalog may have been tampered with",
+            )
+            return JSONResponse(
+                {
+                    "error": "manifest signature verification failed",
+                    "detail": "The catalog manifest for this app failed signature verification. "
+                              "The app may have been tampered with. Rebuild the catalog or "
+                              "reinstall the app from a trusted source.",
+                    "install_id": install_id,
+                },
+                status_code=403,
+            )
+
     # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
     # musicgen pulls Meta's CC-BY-NC 4.0 weights). Block the install until the
@@ -887,6 +916,20 @@ async def install_app(request: Request):
     progress.finish(install_id, success=True, detail="install complete")
 
     return JSONResponse({"chain": chain, "compat": classify(manifest_dict, device), "install_id": install_id})
+
+
+@router.get("/api/store/signing-pubkey")
+async def store_signing_pubkey(request: Request):
+    """Return the store signing public key (Ed25519, PEM).
+
+    Clients and auditing tools can use this to verify catalog manifest
+    signatures independently.  The corresponding private key never leaves
+    the node.
+    """
+    pub_pem = getattr(request.app.state, "store_signing_pubkey", None)
+    if pub_pem is None:
+        return JSONResponse({"error": "store signing key not configured"}, status_code=404)
+    return JSONResponse({"public_key_pem": pub_pem.decode()})
 
 
 @router.post("/api/store/uninstall-v2")

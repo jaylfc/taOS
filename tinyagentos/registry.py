@@ -51,6 +51,10 @@ class AppManifest:
     @classmethod
     def from_file(cls, path: Path) -> AppManifest:
         data = yaml.safe_load(path.read_text())
+        return cls.from_dict(data, manifest_dir=path.parent)
+
+    @classmethod
+    def from_dict(cls, data: dict, manifest_dir: Path | None = None) -> AppManifest:
         return cls(
             id=data["id"],
             name=data["name"],
@@ -70,7 +74,7 @@ class AppManifest:
             variants=data.get("variants", []),
             capabilities=data.get("capabilities", []),
             lifecycle=data.get("lifecycle", {}),
-            manifest_dir=path.parent,
+            manifest_dir=manifest_dir,
         )
 
     def is_compatible(self, profile_id: str) -> bool:
@@ -87,12 +91,19 @@ class AppManifest:
 
 
 class AppRegistry:
-    def __init__(self, catalog_dir: Path, installed_path: Path):
+    def __init__(self, catalog_dir: Path, installed_path: Path, signing_key: bytes | None = None):
         self.catalog_dir = catalog_dir
         self.installed_path = installed_path
+        self._signing_key = signing_key
         # Sentinel: None means catalog has not been loaded yet. Deferred so that
         # boot does not pay for walking + parsing every manifest under catalog_dir.
         self._catalog: list[AppManifest] | None = None
+        # Manifest signatures keyed by app_id.  Populated during _load_catalog()
+        # when a signing key is available.
+        self._signatures: dict[str, str] = {}
+        # Raw manifest dicts (stripped of _signature) keyed by app_id, used for
+        # re-verifying at install time.
+        self._manifest_dicts: dict[str, dict] = {}
         self._catalog_lock = threading.Lock()
 
     def _ensure_loaded(self) -> None:
@@ -105,6 +116,8 @@ class AppRegistry:
 
     def _load_catalog(self) -> None:
         catalog: list[AppManifest] = []
+        signatures: dict[str, str] = {}
+        manifest_dicts: dict[str, dict] = {}
         for type_dir in ("agents", "models", "services", "plugins"):
             base = self.catalog_dir / type_dir
             if not base.exists():
@@ -113,11 +126,20 @@ class AppRegistry:
                 manifest = app_dir / "manifest.yaml"
                 if manifest.exists():
                     try:
-                        catalog.append(AppManifest.from_file(manifest))
+                        raw_dict = yaml.safe_load(manifest.read_text())
+                        catalog.append(AppManifest.from_dict(raw_dict, manifest_dir=app_dir))
+                        if self._signing_key is not None:
+                            from tinyagentos.store_signing import sign_manifest
+
+                            sig = sign_manifest(raw_dict, self._signing_key)
+                            signatures[catalog[-1].id] = sig
+                            manifest_dicts[catalog[-1].id] = raw_dict
                     except (yaml.YAMLError, KeyError):
                         pass  # skip invalid manifests
         # Single atomic assignment: readers either see the old list or the fully built one.
         self._catalog = catalog
+        self._signatures = signatures
+        self._manifest_dicts = manifest_dicts
 
     def reload(self) -> None:
         with self._catalog_lock:
@@ -132,6 +154,38 @@ class AppRegistry:
     def get(self, app_id: str) -> AppManifest | None:
         self._ensure_loaded()
         return next((a for a in self._catalog if a.id == app_id), None)
+
+    def get_signature(self, app_id: str) -> str | None:
+        """Return the hex Ed25519 signature for *app_id*, or None."""
+        self._ensure_loaded()
+        return self._signatures.get(app_id)
+
+    def get_manifest_dict(self, app_id: str) -> dict | None:
+        """Return the raw manifest dict (without _signature field) for *app_id*."""
+        self._ensure_loaded()
+        return self._manifest_dicts.get(app_id)
+
+    def verify_manifest_signature(self, app_id: str, public_pem: bytes) -> bool:
+        """Re-verify the stored signature for *app_id* against *public_pem*.
+
+        Returns False when the manifest has no signature or verification fails.
+        This is called by install-v2 to detect post-boot catalog tampering.
+
+        When the catalog was loaded without a signing key (e.g. a test
+        instance or a deployment that hasn't enabled signing yet),
+        ``install-v2`` skips this gate entirely by checking
+        ``store_signing_pubkey`` on app state — so this method's False
+        return does not inadvertently block installs in that case.
+        """
+        self._ensure_loaded()
+        manifest_dict = self._manifest_dicts.get(app_id)
+        sig = self._signatures.get(app_id)
+        if manifest_dict is None or sig is None:
+            # No signature stored (e.g. signing key not available at load time).
+            return False
+        from tinyagentos.store_signing import verify_manifest_signature
+
+        return verify_manifest_signature(manifest_dict, sig, public_pem)
 
     def _read_installed(self) -> list[dict]:
         if not self.installed_path.exists():

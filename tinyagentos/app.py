@@ -256,7 +256,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     # hardware_path / hardware_profile already loaded above before the
     # auto-register loop; don't re-probe.
     installed_path = data_dir / "installed.json"
-    registry = AppRegistry(catalog_dir=catalog_dir, installed_path=installed_path)
+
+    from tinyagentos.store_signing import load_or_create_signing_keypair
+
+    _store_priv, _store_pub = load_or_create_signing_keypair(data_dir)
+    registry = AppRegistry(
+        catalog_dir=catalog_dir, installed_path=installed_path, signing_key=_store_priv,
+    )
 
     from tinyagentos.agent_registry_store import AgentRegistryStore, load_or_create_signing_keypair
     agent_registry_store = AgentRegistryStore(data_dir / "agent_registry.db")
@@ -1490,6 +1496,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.fallback = fallback
     app.state.scheduler = scheduler
     app.state.registry = registry
+    app.state.store_signing_pubkey = _store_pub
     app.state.hardware_profile = hardware_profile
     app.state.cluster_manager = cluster_manager
     app.state.task_router = task_router
