@@ -148,34 +148,32 @@ class LeaseManager:
         agent_name: str,
         ttl: float = DEFAULT_TTL,
     ) -> dict | None:
-        """Renew an existing lease. Only the holder can renew."""
+        """Renew an existing lease, atomically. Only the holder can renew.
+
+        Uses BEGIN IMMEDIATE so the read-check-update sequence is serialised:
+        two concurrent renewals from the same agent cannot both pass the
+        renewed_count cap.
+        """
         ttl = min(ttl, MAX_TTL)
-        now = time.time()
 
-        existing = self._conn.execute(
-            "SELECT * FROM leases WHERE resource_key = ? AND agent_name = ?",
-            (resource_key, agent_name),
-        ).fetchone()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            existing = self._conn.execute(
+                "SELECT * FROM leases WHERE resource_key = ? AND agent_name = ?",
+                (resource_key, agent_name),
+            ).fetchone()
 
-        if not existing:
-            return None
+            if not existing:
+                self._conn.execute("COMMIT")
+                return None
 
-        if existing["renewed_count"] >= MAX_RENEW_COUNT:
-            return None  # Force release — prevent lease hogging
-
-        self._conn.execute(
-            "UPDATE leases SET expires_at = ?, renewed_count = renewed_count + 1 WHERE id = ?",
-            (now + ttl, existing["id"]),
-        )
-
-        return {
-            "id": existing["id"],
-            "resource_key": resource_key,
-            "agent_name": agent_name,
-            "acquired_at": existing["acquired_at"],
-            "expires_at": now + ttl,
-            "renewed_count": existing["renewed_count"] + 1,
-        }
+            result = self._renew_locked(existing, ttl, now)
+            self._conn.execute("COMMIT")
+            return result
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     async def release(self, resource_key: str, agent_name: str) -> bool:
         """Release a lease. Only the holder can release."""

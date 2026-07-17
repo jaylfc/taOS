@@ -332,3 +332,64 @@ async def test_concurrent_acquire_different_resources(lease_pair):
     assert r2 is not None
     assert r1["resource_key"] == "kg:a"
     assert r2["resource_key"] == "kg:b"
+
+
+# ---------------------------------------------------------------------------
+# LeaseManager — renew atomicity
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_concurrent_renew_both_succeed(lease_pair: tuple[LeaseManager, LeaseManager]) -> None:
+    """Two managers renewing a lease held by the same agent — both should succeed
+    and the renewed_count must reflect exactly two increments."""
+    m1, m2 = lease_pair
+
+    # Acquire the lease via m1
+    lease = await m1.acquire("kg:shared", "agent-a")
+    assert lease is not None
+    assert lease["renewed_count"] == 0
+
+    # Both renew concurrently (same agent, same resource)
+    r1, r2 = await asyncio.gather(
+        m1.renew("kg:shared", "agent-a"),
+        m2.renew("kg:shared", "agent-a"),
+    )
+
+    assert r1 is not None
+    assert r2 is not None
+    # renewed_count must have been incremented exactly twice
+    assert {r1["renewed_count"], r2["renewed_count"]} == {1, 2}, (
+        f"Expected renewed_count in {{1, 2}} but got {r1['renewed_count']} and {r2['renewed_count']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_renew_respects_cap(lease_pair: tuple[LeaseManager, LeaseManager]) -> None:
+    """With renewed_count at MAX-1, two concurrent renews must not both
+    bypass the MAX_RENEW_COUNT cap."""
+    from tinyagentos.scheduling.leases import MAX_RENEW_COUNT
+
+    m1, m2 = lease_pair
+
+    # Acquire and renew until we're one short of the cap
+    await m1.acquire("kg:shared", "agent-a")
+    for _ in range(MAX_RENEW_COUNT - 1):
+        result = await m1.acquire("kg:shared", "agent-a")
+        assert result is not None
+
+    # At this point renewed_count == MAX_RENEW_COUNT - 1
+    lease_check = await m1.check("kg:shared")
+    assert lease_check is not None
+    assert lease_check["renewed_count"] == MAX_RENEW_COUNT - 1
+
+    # Both renew concurrently — at most one should succeed
+    r1, r2 = await asyncio.gather(
+        m1.renew("kg:shared", "agent-a"),
+        m2.renew("kg:shared", "agent-a"),
+    )
+
+    granted = [r for r in (r1, r2) if r is not None]
+    # At most one renewal succeeds because the cap is hit
+    assert len(granted) <= 1, (
+        f"Expected at most 1 renewal at cap {MAX_RENEW_COUNT}, got {len(granted)}: {granted}"
+    )
