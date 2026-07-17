@@ -45,6 +45,8 @@ export interface MessageInputProps {
   onFileUpload: () => void;
   onSlashPick: (slug: string, cmd: string) => void;
   onSlashClose: () => void;
+  /** Optional paste handler (e.g. image upload from clipboard). */
+  onPaste?: (e: React.ClipboardEvent) => void;
 }
 
 export function MessageInput({
@@ -71,6 +73,7 @@ export function MessageInput({
   onFileUpload,
   onSlashPick,
   onSlashClose,
+  onPaste,
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -162,6 +165,7 @@ export function MessageInput({
               onChange={(e) => !isArchived && onChange(e.target.value)}
               onKeyDown={(e) => !isArchived && handleKeyDown(e)}
               onBlur={() => onDismissMention()}
+              onPaste={onPaste}
               placeholder={
                 isArchived
                   ? "This chat is archived"

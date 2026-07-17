@@ -6,7 +6,6 @@ import {
   Users,
   Plus,
   Send,
-  Paperclip,
   Bot,
   X,
   AtSign,
@@ -29,7 +28,6 @@ import {
   CardTitle,
   CardContent,
   Input,
-  Textarea,
   Label,
 } from "@/components/ui";
 import { MobileSplitView } from "@/components/mobile/MobileSplitView";
@@ -41,13 +39,13 @@ import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { MessageAvatar } from "./chat/MessageAvatar";
 import { ChannelSettingsPanel } from "./chat/ChannelSettingsPanel";
 import { AgentContextMenu } from "./chat/AgentContextMenu";
-import { SlashMenu, type SlashCommandsBySlug } from "./chat/SlashMenu";
+import { type SlashCommandsBySlug } from "./chat/SlashMenu";
 import { TypingFooter, type AgentTyping } from "./chat/TypingFooter";
 import { useTypingEmitter } from "@/lib/use-typing-emitter";
 import { MessageHoverActions } from "./chat/MessageHoverActions";
 import { ThreadIndicator } from "./chat/ThreadIndicator";
 import { ThreadPanel } from "./chat/ThreadPanel";
-import { AttachmentsBar, type PendingAttachment } from "./chat/AttachmentsBar";
+import { type PendingAttachment } from "./chat/AttachmentsBar";
 import { AttachmentGallery } from "./chat/AttachmentGallery";
 import { uploadDiskFile, attachmentFromPath, type AttachmentRecord } from "@/lib/chat-attachments-api";
 import { useThreadPanel } from "@/lib/use-thread-panel";
@@ -62,6 +60,8 @@ import { AllThreadsList } from "./chat/AllThreadsList";
 import { ChannelSwitcher } from "./chat/ChannelSwitcher";
 import { useChatNotifications } from "./chat/useChatNotifications";
 import { PinRequestAffordance } from "./chat/PinRequestAffordance";
+import { ReactionBar } from "./chat/ReactionBar";
+import { MessageInput } from "./chat/MessageInput";
 import {
   pinMessage, unpinMessage, listPins,
   editMessage as apiEditMessage, deleteMessage as apiDeleteMessage,
@@ -1265,16 +1265,6 @@ export function MessagesApp({
     emitTyping();
   };
 
-  /* ---- key handler ---- */
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // The mention popover (when open) owns Enter/Tab via a capture listener
-    // that stops propagation, so this send handler never sees those keys.
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
-
   /* ---- file upload ---- */
   // Re-upload a File-based attachment (used by the retry affordance). Keeps the
   // success/failure state updates identical to a first attempt.
@@ -2014,26 +2004,12 @@ export function MessagesApp({
 
                   {/* reactions */}
                   {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {Object.entries(msg.reactions).map(([emoji, users]) => {
-                        const mine = currentUserId != null && users.includes(currentUserId);
-                        return (
-                          <button
-                            key={emoji}
-                            onClick={() => toggleReaction(msg.id, emoji)}
-                            aria-pressed={mine}
-                            className={`text-[12px] rounded-full px-2 py-0.5 flex items-center gap-1 border transition-colors ${
-                              mine
-                                ? "bg-accent-soft border-accent-line text-accent-strong"
-                                : "bg-shell-surface border-shell-border hover:bg-shell-surface-hover text-shell-text-secondary"
-                            }`}
-                          >
-                            <span>{emoji}</span>
-                            <span className={mine ? "text-accent-strong font-medium" : "text-shell-text-tertiary"}>{users.length}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <ReactionBar
+                      reactions={msg.reactions}
+                      messageId={msg.id}
+                      currentUserId={currentUserId}
+                      onToggle={toggleReaction}
+                    />
                   )}
 
                   {/* hover actions — always visible on mobile (no hover available), hover-gated on desktop */}
@@ -2233,24 +2209,7 @@ export function MessagesApp({
             </div>
           )}
 
-          {/* pending attachments bar */}
-          <AttachmentsBar
-            items={pendingAttachments}
-            onRemove={(id) => setPendingAttachments((p) => p.filter((x) => x.id !== id))}
-            onRetry={(id) => {
-              const entry = pendingAttachments.find((x) => x.id === id);
-              if (!entry) return;
-              if (!entry.file) {
-                // Path-based attachment (no File kept): can only re-add.
-                setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, error: "Can't retry, remove and re-add" } : x));
-                return;
-              }
-              if ((entry.retries ?? 0) >= 3) return;
-              setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, retries: (x.retries ?? 0) + 1 } : x));
-              uploadFileAttachment(id, entry.file);
-            }}
-          />
-
+          {/* A2A channel note */}
           {currentChannel?.settings?.kind === "a2a" && messages.length === 0 && (
             <div
               role="note"
@@ -2268,97 +2227,54 @@ export function MessagesApp({
             </div>
           )}
 
-          {/* input area */}
-          <div
-            className="px-4 py-3 border-t border-white/[0.06] shrink-0"
-            style={
-              isMobile
-                ? { paddingBottom: `max(env(safe-area-inset-bottom), ${keyboardInset}px)` }
-                : undefined
-            }
-          >
-            <div className="relative">
-              {showSlash && (
-                <SlashMenu
-                  commands={slashCommands}
-                  queryAfterSlash={slashQuery}
-                  members={currentChannel?.members || []}
-                  scopedAgent={slashAgent}
-                  onPick={(slug, cmd) => {
-                    setInput(`@${slug} /${cmd} `);
-                  }}
-                  onClose={() => { /* leave input as-is; user can Esc or delete */ }}
-                />
-              )}
-              {mention && mentionCandidates.length > 0 && !showSlash && (
-                <div
-                  role="listbox"
-                  aria-label="Mention a member"
-                  className="absolute bottom-full left-0 mb-2 w-full max-w-md bg-shell-surface border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto text-sm"
-                >
-                  {mentionCandidates.map((slug, i) => (
-                    <button
-                      key={slug}
-                      role="option"
-                      aria-selected={i === mentionSel}
-                      onMouseEnter={() => setMentionSel(i)}
-                      onMouseDown={(e) => { e.preventDefault(); insertMention(slug); }}
-                      className={`w-full text-left px-3 py-1.5 flex items-center gap-2 ${i === mentionSel ? "bg-white/10" : "hover:bg-white/5"}`}
-                    >
-                      <AtSign size={13} className="text-white/40" aria-hidden="true" />
-                      <span className="font-mono text-[13px]">@{slug}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className={`flex items-end gap-2 rounded-2xl border px-2 py-1.5 ${isCurrentArchived ? "bg-white/[0.02] border-white/[0.04] opacity-50" : "bg-shell-surface border-shell-border-strong"}`}>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleFileUpload}
-                  className="h-8 w-8 shrink-0 mb-0.5"
-                  aria-label="Upload file"
-                  disabled={isCurrentArchived}
-                >
-                  <Paperclip size={16} />
-                </Button>
-                <Textarea
-                  ref={inputRef}
-                  value={input}
-                  onChange={(e) => !isCurrentArchived && handleInputChange(e.target.value)}
-                  onKeyDown={(e) => !isCurrentArchived && handleKeyDown(e)}
-                  onBlur={() => setMention(null)}
-                  onPaste={(e) => {
-                    if (!e.clipboardData) return;
-                    const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
-                    if (files.length === 0) return;
-                    e.preventDefault();
-                    for (const f of files) {
-                      const id = Math.random().toString(36).slice(2);
-                      setPendingAttachments((p) => [...p, { id, filename: f.name || "pasted.png", size: f.size, uploading: true, file: f }]);
-                      uploadDiskFile(f, selectedChannel ?? undefined)
-                        .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
-                        .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
-                    }
-                  }}
-                  placeholder={isCurrentArchived ? "This chat is archived" : `Message #${currentChannel?.name ?? ""}...`}
-                  rows={1}
-                  disabled={isCurrentArchived}
-                  className="flex-1 bg-transparent border-0 px-1 py-1.5 min-h-0 text-[13px] focus-visible:ring-0 focus-visible:border-0 max-h-[120px] disabled:cursor-not-allowed"
-                  aria-label="Message input"
-                />
-                <Button
-                  size="icon"
-                  onClick={sendMessage}
-                  disabled={(!input.trim() && pendingAttachments.length === 0) || isCurrentArchived || pendingAttachments.some(a => a.uploading)}
-                  className="h-8 w-8 shrink-0 mb-0.5"
-                  aria-label="Send message"
-                >
-                  <Send size={15} />
-                </Button>
-              </div>
-            </div>
-          </div>
+          <MessageInput
+            value={input}
+            onChange={(v) => !isCurrentArchived && handleInputChange(v)}
+            onSend={sendMessage}
+            channel={currentChannel}
+            isArchived={isCurrentArchived}
+            isMobile={isMobile}
+            keyboardInset={keyboardInset}
+            slashCommands={slashCommands}
+            showSlash={showSlash}
+            slashQuery={slashQuery}
+            slashAgent={slashAgent}
+            mention={mention}
+            mentionCandidates={mentionCandidates}
+            mentionSel={mentionSel}
+            onMentionSelChange={setMentionSel}
+            onInsertMention={insertMention}
+            onDismissMention={() => setMention(null)}
+            pendingAttachments={pendingAttachments}
+            onRemoveAttachment={(id) => setPendingAttachments((p) => p.filter((x) => x.id !== id))}
+            onRetryAttachment={(id) => {
+              const entry = pendingAttachments.find((x) => x.id === id);
+              if (!entry) return;
+              if (!entry.file) {
+                setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, error: "Can't retry, remove and re-add" } : x));
+                return;
+              }
+              if ((entry.retries ?? 0) >= 3) return;
+              setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, retries: (x.retries ?? 0) + 1 } : x));
+              uploadFileAttachment(id, entry.file);
+            }}
+            onFileUpload={handleFileUpload}
+            onSlashPick={(slug, cmd) => setInput(`@${slug} /${cmd} `)}
+            onSlashClose={() => {}}
+            onPaste={(e) => {
+              if (!e.clipboardData) return;
+              const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+              if (files.length === 0) return;
+              e.preventDefault();
+              for (const f of files) {
+                const id = Math.random().toString(36).slice(2);
+                setPendingAttachments((p) => [...p, { id, filename: f.name || "pasted.png", size: f.size, uploading: true, file: f }]);
+                uploadDiskFile(f, selectedChannel ?? undefined)
+                  .then((rec) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, record: rec, uploading: false } : x)))
+                  .catch((err) => setPendingAttachments((p) => p.map((x) => x.id === id ? { ...x, uploading: false, error: (err as Error).message } : x)));
+              }
+            }}
+          />
         </>
       )}
     </div>
