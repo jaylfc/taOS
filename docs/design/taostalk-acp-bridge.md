@@ -168,3 +168,45 @@ client), Zed's open-source Claude Code adapter, and the ACP spec at agentclientp
 harness" (thin), not "build wrappers". Each harness owns its own model/tools/auth
 (consistent with the external-agent model); taOS owns the session-to-channel bridge,
 identity, grants, and the rendered surface.
+
+## Attach-existing is the primary path (adopt the claude-command-center mechanism)
+
+Correction to the ACP-spawn framing above: the primary need is bringing ALREADY-RUNNING
+CLI sessions into taOS, not spawning fresh ones. Vanilla ACP is spawn-oriented (the client
+launches the agent binary), so attach-existing is a separate, per-harness mechanism.
+`amirfish1/claude-command-center` (CCC) already solves it for Claude Code; adopt (do not
+fork) its approach:
+
+**Claude Code attach (proven by CCC):**
+- **Discover** running sessions: scan `~/.claude/sessions/<pid>.json` (presence = live session;
+  per-session metadata by PID).
+- **Live read**: poll `~/.claude/projects/*.jsonl` (Claude Code's transcript: turns, tool
+  calls, results, user/assistant direction); merge into the mapped chat channel.
+- **"Working now" signal**: install two hooks (`post-tool-use.py`, `stop.py`) into
+  `~/.claude/command-center/hooks/` (taOS namespace) + merge into `~/.claude/settings.json`;
+  hooks write recency sidecars under a live-state dir. Distinguishes idle-awaiting-input from
+  actively-executing (drives presence/typing indicators).
+- **Drive/reply**: headless `claude -p --input-format stream-json`, or continue a stopped
+  session via `claude --resume <session-id>`.
+
+**Honest constraint (CCC hits it too):** there is NO injection into an already-running
+INTERACTIVE foreground session. You can READ a live session and you can DRIVE dormant/resumed
+sessions headlessly, but you cannot push a taOS reply into the same live foreground process.
+Consequence:
+- Live-READ mirror of existing sessions = fully achievable, low risk -> **this is slice 1**.
+- Reply-FROM-taOS = taOS becomes the session driver (resume / stream-json). Works, but that
+  session is then taOS-driven, not co-driven with a terminal you are also typing in.
+
+**Per-harness attach matrix (research needed for kilo/grok/opencode):** each needs (a) how to
+discover a running session, (b) transcript/state location for live read, (c) an events/hook
+signal if available, (d) how to resume-drive it. Claude Code's is the CCC recipe above;
+kilo/grok/opencode equivalents are a slice-4 research item.
+
+**Revised slices:**
+1. **Live-read attach (Claude Code).** Discover + tail transcript + hooks -> this session shows
+   live in taOStalk (read-only mirror). Flagship "my session in taOS" moment.
+2. **Content-block renderer registry** (unchanged).
+3. **Reply/drive via resume** (Claude Code) + interactive questions synced (chat+Decisions).
+4. **Per-harness attach + drive: kilo, grok, opencode** (research each harness's transcript +
+   resume mechanism; ACP-spawn as the secondary "new session" path).
+5. **Parity finish + taOStalk surface** (unchanged).
