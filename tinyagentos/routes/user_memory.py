@@ -23,10 +23,16 @@ def _store(request: Request):
 def _taosmd_base(request: Request) -> str:
     """Base URL for the taosmd HTTP API.
 
-    Reads from app.state.taosmd_url when set (tests can override),
-    otherwise falls back to the local default.
+    Precedence: app.state.taosmd_url (explicit runtime override, used by
+    tests) → config.memory_url (persisted setting) → default localhost.
     """
-    return getattr(request.app.state, "taosmd_url", None) or "http://localhost:7900"
+    explicit = getattr(request.app.state, "taosmd_url", None)
+    if explicit:
+        return explicit
+    config = getattr(request.app.state, "config", None)
+    if config and getattr(config, "memory_url", None):
+        return config.memory_url
+    return "http://localhost:7900"
 
 
 # ---------------------------------------------------------------------------

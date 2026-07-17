@@ -285,3 +285,65 @@ async def test_migrate_error_response_does_not_leak_exception_text(mem_client, t
     assert resp.status_code == 500
     assert "internal-taosmd" not in resp.text
     assert resp.json()["error"] == "taosmd ingest failed"
+
+
+# ---------------------------------------------------------------------------
+# taOSmd base URL resolution (_taosmd_base)
+# ---------------------------------------------------------------------------
+
+
+def test_taosmd_base_reads_from_config_memory_url(mem_client):
+    """_taosmd_base returns config.memory_url when no state override is set."""
+    from tinyagentos.routes.user_memory import _taosmd_base
+
+    client, _store = mem_client
+    application = client._transport.app
+
+    class FakeReq:
+        app = application
+
+    application.state.taosmd_url = None
+    application.state.config.memory_url = "https://remote-taosmd:7900"
+    try:
+        url = _taosmd_base(FakeReq())
+        assert url == "https://remote-taosmd:7900"
+    finally:
+        application.state.config.memory_url = "http://localhost:7900"
+
+
+def test_taosmd_base_returns_default_when_nothing_set(mem_client):
+    """_taosmd_base returns default localhost when nothing is configured."""
+    from tinyagentos.routes.user_memory import _taosmd_base
+
+    client, _store = mem_client
+    application = client._transport.app
+
+    class FakeReq:
+        app = application
+
+    application.state.taosmd_url = None
+    application.state.config.memory_url = "http://localhost:7900"
+    try:
+        url = _taosmd_base(FakeReq())
+        assert url == "http://localhost:7900"
+    finally:
+        pass
+
+
+def test_taosmd_base_state_override_wins(mem_client):
+    """_taosmd_base uses app.state.taosmd_url even when config differs."""
+    from tinyagentos.routes.user_memory import _taosmd_base
+
+    client, _store = mem_client
+    application = client._transport.app
+
+    class FakeReq:
+        app = application
+
+    application.state.taosmd_url = "http://test-override:9999"
+    application.state.config.memory_url = "http://configured-url:7900"
+    try:
+        url = _taosmd_base(FakeReq())
+        assert url == "http://test-override:9999"
+    finally:
+        application.state.taosmd_url = None

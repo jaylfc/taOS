@@ -465,3 +465,53 @@ def test_auto_register_hailo_ollama_skipped_without_hailo10h(tmp_path):
     )
     assert added is False
     assert [b for b in cfg.backends if b["type"] == "hailo-ollama"] == []
+
+
+class TestMemoryUrl:
+    """Config persistence and defaults for memory_url (taOSmd)."""
+
+    def test_default_memory_url(self):
+        """memory_url defaults to http://localhost:7900."""
+        cfg = AppConfig()
+        assert cfg.memory_url == "http://localhost:7900"
+
+    def test_custom_memory_url(self):
+        """Custom memory_url survives to_dict + load_config roundtrip."""
+        from tinyagentos.config import load_config
+
+        cfg = AppConfig(memory_url="https://taosmd.example.com:7900")
+        assert cfg.memory_url == "https://taosmd.example.com:7900"
+
+        d = cfg.to_dict()
+        assert d["memory_url"] == "https://taosmd.example.com:7900"
+
+    def test_default_not_in_to_dict(self):
+        """Default memory_url should not appear in to_dict output."""
+        cfg = AppConfig()
+        d = cfg.to_dict()
+        assert "memory_url" not in d
+
+    def test_roundtrip(self, tmp_path):
+        """memory_url survives yaml save+load cycle."""
+        from tinyagentos.config import load_config, save_config
+
+        p = tmp_path / "config.yaml"
+        cfg = AppConfig(
+            memory_url="http://192.168.1.50:7900",
+            config_path=p,
+        )
+        save_config(cfg, p)
+        reloaded = load_config(p)
+        assert reloaded.memory_url == "http://192.168.1.50:7900"
+
+    def test_roundtrip_default_is_omitted(self, tmp_path):
+        """Default memory_url not in YAML, load_config fills it in."""
+        from tinyagentos.config import load_config, save_config
+
+        p = tmp_path / "config.yaml"
+        cfg = AppConfig(config_path=p)
+        save_config(cfg, p)
+        assert "memory_url" not in p.read_text()
+
+        reloaded = load_config(p)
+        assert reloaded.memory_url == "http://localhost:7900"

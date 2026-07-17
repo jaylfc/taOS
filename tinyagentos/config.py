@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
     "qmd": {"url": "http://localhost:7832"},
     "agents": [],
     "metrics": {"poll_interval": 30, "retention_days": 30},
+    "memory_url": "http://localhost:7900",
     "webhooks": [],
 }
 
@@ -53,6 +54,7 @@ class AppConfig:
     webhooks: list[dict] = field(default_factory=list)
     archived_agents: list[dict] = field(default_factory=list)
     archive: dict = field(default_factory=lambda: DEFAULT_ARCHIVE_CONFIG.copy())
+    memory_url: str = "http://localhost:7900"
     config_path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -70,6 +72,8 @@ class AppConfig:
         archive_target = (self.archive or {}).get("target", "pool:")
         if archive_target != "pool:":
             d["archive"] = self.archive
+        if self.memory_url != "http://localhost:7900":
+            d["memory_url"] = self.memory_url
         return d
 
 # rkllama's taOS default port moved from the upstream 8080 to 7833. Installs
@@ -169,6 +173,7 @@ def load_config(path: Path) -> AppConfig:
         webhooks=data.get("webhooks", []),
         archived_agents=data.get("archived_agents", []),
         archive=archive_cfg,
+        memory_url=data.get("memory_url", "http://localhost:7900"),
         config_path=path,
     )
     if _pin_applied:

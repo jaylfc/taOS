@@ -8,6 +8,7 @@ import shutil
 import tarfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
@@ -211,6 +212,7 @@ async def save_config_endpoint(request: Request, body: ConfigUpdate, validate_on
         agents=data.get("agents", []),
         metrics=data.get("metrics", {}),
         webhooks=data.get("webhooks", []),
+        memory_url=data.get("memory_url", "http://localhost:7900"),
         config_path=request.app.state.config_path,
     )
     errors = validate_config(new_config)
@@ -220,6 +222,9 @@ async def save_config_endpoint(request: Request, body: ConfigUpdate, validate_on
         return {"status": "valid", "message": "Config is valid"}
     await save_config_locked(new_config, request.app.state.config_path)
     request.app.state.config = new_config
+    # Clear stale runtime override so _taosmd_base picks up the new config value
+    if hasattr(request.app.state, "taosmd_url"):
+        del request.app.state.taosmd_url
     return {"status": "saved", "message": "Config saved successfully"}
 
 
@@ -328,9 +333,12 @@ async def restore_backup(request: Request, file: UploadFile):
                 agents=data.get("agents", []),
                 metrics=data.get("metrics", {}),
                 webhooks=data.get("webhooks", []),
+                memory_url=data.get("memory_url", "http://localhost:7900"),
                 config_path=config_path,
             )
             request.app.state.config = new_config
+            if hasattr(request.app.state, "taosmd_url"):
+                del request.app.state.taosmd_url
         except Exception:
             pass
     return {"status": "restored", "message": "Backup restored successfully"}
@@ -1061,3 +1069,37 @@ async def set_update_channel(request: Request, body: UpdateChannel):
         "recovery_tag": result.recovery_tag,
         "message": result.message,
     }
+
+
+# ---------------------------------------------------------------------------
+# Memory URL (taOSmd)
+# ---------------------------------------------------------------------------
+
+class MemoryUrlUpdate(BaseModel):
+    url: str
+
+
+@router.get("/api/settings/memory-url")
+async def get_memory_url(request: Request):
+    """Return the current taOSmd memory URL."""
+    config = request.app.state.config
+    return {"url": config.memory_url}
+
+
+@router.put("/api/settings/memory-url")
+async def set_memory_url(request: Request, body: MemoryUrlUpdate):
+    """Update the taOSmd memory URL and persist to config."""
+    url = body.url.strip()
+    if not url:
+        return JSONResponse({"error": "URL must not be empty"}, status_code=400)
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return JSONResponse({"error": "URL must use http:// or https:// scheme"}, status_code=400)
+    if not parsed.netloc:
+        return JSONResponse({"error": "URL must include a hostname"}, status_code=400)
+    config = request.app.state.config
+    config.memory_url = url
+    await save_config_locked(config, request.app.state.config_path)
+    # Keep app.state.taosmd_url in sync for runtime access
+    request.app.state.taosmd_url = url
+    return {"status": "saved", "url": url}
