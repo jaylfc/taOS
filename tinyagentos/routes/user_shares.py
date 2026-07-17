@@ -2,9 +2,11 @@ from __future__ import annotations
 
 """Routes for user-to-user resource sharing.
 
-POST   /api/shares       — share a resource with another user by username
-GET    /api/shares       — list shares (direction=out → owned, direction=in → received)
-DELETE /api/shares/{id}  — revoke a share (owner or admin)
+POST   /api/shares            — share a resource with another user by username
+GET    /api/shares            — list shares (direction=out → owned, direction=in → received)
+POST   /api/shares/{id}/accept — accept a pending share (target user only)
+POST   /api/shares/{id}/deny   — deny a pending share (target user only)
+DELETE /api/shares/{id}       — revoke a share (owner or admin)
 
 The consent loop mirrors the external-agent consent pattern in
 ``agent_auth_requests.py``: on share-create a notification is raised to the
@@ -143,6 +145,7 @@ async def create_share(
                 ),
                 level="info",
                 source="user_shares",
+                user_id=target_user_id,
                 data={
                     "share_id": record["id"],
                     "owner_user_id": user.user_id,
@@ -226,3 +229,63 @@ async def revoke_share(
 
     await store.revoke_share(share_id)
     return {"status": "revoked", "share_id": share_id}
+
+
+@router.post("/api/shares/{share_id}/accept")
+async def accept_share(
+    request: Request,
+    share_id: int,
+    user: CurrentUser = Depends(current_user),
+):
+    """Accept a pending share.  Target user only.
+
+    The target user (shared_with_user_id) must accept before the share
+    grants access.  Once accepted, ``user_can_access`` returns True.
+    """
+    store = _get_user_shares_store(request)
+
+    target = await _find_share_by_id(request, share_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="share not found")
+
+    if target["shared_with_user_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="only the target user may accept this share")
+
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"share is already {target.get('status', 'terminal')}")
+
+    updated = await store.accept_share(share_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="share not found")
+
+    return updated
+
+
+@router.post("/api/shares/{share_id}/deny")
+async def deny_share(
+    request: Request,
+    share_id: int,
+    user: CurrentUser = Depends(current_user),
+):
+    """Deny a pending share.  Target user only.
+
+    The target user (shared_with_user_id) can deny to reject the share.
+    The share row is preserved with status='denied' for audit.
+    """
+    store = _get_user_shares_store(request)
+
+    target = await _find_share_by_id(request, share_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="share not found")
+
+    if target["shared_with_user_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="only the target user may deny this share")
+
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"share is already {target.get('status', 'terminal')}")
+
+    updated = await store.deny_share(share_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="share not found")
+
+    return updated

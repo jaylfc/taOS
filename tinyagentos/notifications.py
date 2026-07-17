@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     read INTEGER NOT NULL DEFAULT 0,
     source TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
-    data TEXT
+    data TEXT,
+    user_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(timestamp DESC);
 CREATE TABLE IF NOT EXISTS notification_prefs (
@@ -37,7 +38,7 @@ def _serialize_row(r) -> dict:
     cannot silently corrupt the mapping. The SELECT queries must select exactly
     these columns in this order.
     """
-    COLS = ("id", "timestamp", "level", "title", "message", "read", "source", "data")
+    COLS = ("id", "timestamp", "level", "title", "message", "read", "source", "data", "user_id")
     row = dict(zip(COLS, r))
     data = None
     if row["data"]:
@@ -48,7 +49,7 @@ def _serialize_row(r) -> dict:
     return {
         "id": row["id"], "timestamp": row["timestamp"], "level": row["level"],
         "title": row["title"], "message": row["message"], "read": bool(row["read"]),
-        "source": row["source"], "data": data,
+        "source": row["source"], "data": data, "user_id": row["user_id"],
     }
 
 
@@ -119,6 +120,20 @@ class NotificationStore(BaseStore):
                 "ALTER TABLE notifications ADD COLUMN data TEXT"
             )
             await self._db.commit()
+        # `user_id` scopes notifications to a specific user. Guarded ALTER so
+        # existing databases gain the column without a destructive migration.
+        # NULL = broadcast (system-wide notice); non-NULL = scoped to that user.
+        if "user_id" not in cols:
+            await self._db.execute(
+                "ALTER TABLE notifications ADD COLUMN user_id TEXT"
+            )
+            await self._db.commit()
+        # Create the per-user index if it doesn't exist yet. Cannot live in
+        # the SCHEMA because the column is added via guarded ALTER after init.
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id)"
+        )
+        await self._db.commit()
 
     async def add(
         self,
@@ -127,12 +142,22 @@ class NotificationStore(BaseStore):
         level: str = "info",
         source: str = "system",
         data: dict | None = None,
+        user_id: str | None = None,
     ) -> None:
+        """Create a notification row and fan out to emitters + push.
+
+        Args:
+            user_id: Scope the notification to a specific user. When None
+                (default), the notification is a broadcast delivered to every
+                subscribed device (genuinely system-wide notices). When set to a
+                user id, web-push delivery fans out only to that user's
+                subscriptions.
+        """
         ts = int(time.time())
         data_json = json.dumps(data) if data is not None else None
         cursor = await self._db.execute(
-            "INSERT INTO notifications (timestamp, level, title, message, source, data) VALUES (?, ?, ?, ?, ?, ?)",
-            (ts, level, title, message, source, data_json),
+            "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ts, level, title, message, source, data_json, user_id),
         )
         await self._db.commit()
         # Fire webhook notifications in the background
@@ -151,6 +176,7 @@ class NotificationStore(BaseStore):
             "read": False,
             "source": source,
             "data": data,
+            "user_id": user_id,
         }
         if self._event_emitter:
             try:
@@ -176,7 +202,7 @@ class NotificationStore(BaseStore):
         if unread_only:
             conds.append("read = 0")
         sql = (
-            "SELECT id, timestamp, level, title, message, read, source, data FROM notifications"
+            "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
             f" WHERE {' AND '.join(conds)} ORDER BY timestamp DESC LIMIT ?"
         )
         async with self._db.execute(sql, (limit,)) as cursor:
@@ -187,7 +213,7 @@ class NotificationStore(BaseStore):
         # History view: the dismissed notifications, newest first. Nothing is
         # deleted, so this is the durable record (#62 / append-only #103).
         async with self._db.execute(
-            "SELECT id, timestamp, level, title, message, read, source, data FROM notifications"
+            "SELECT id, timestamp, level, title, message, read, source, data, user_id FROM notifications"
             " WHERE archived = 1 ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         ) as cursor:

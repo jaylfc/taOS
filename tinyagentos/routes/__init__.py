@@ -5,6 +5,12 @@ def register_all_routers(app):
     create_app) to preserve lazy import behaviour and avoid circular imports
     at package import time.
     """
+    from fastapi import Depends
+
+    from tinyagentos.middleware.csrf import verify_csrf
+
+    _csrf = [Depends(verify_csrf)]
+
     from tinyagentos.routes.auth import router as auth_router
     app.include_router(auth_router)
 
@@ -372,7 +378,7 @@ def register_all_routers(app):
     app.include_router(app_permissions_router)
 
     from tinyagentos.routes.user_shares import router as user_shares_router
-    app.include_router(user_shares_router)
+    app.include_router(user_shares_router, dependencies=_csrf)
 
     from tinyagentos.routes.agent_model_api import router as agent_model_api_router
     app.include_router(agent_model_api_router)

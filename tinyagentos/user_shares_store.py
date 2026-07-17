@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS user_shares (
     tier                TEXT NOT NULL DEFAULT 'once',
     granted_at          TEXT NOT NULL,
     expires_at          TEXT,
+    status              TEXT NOT NULL DEFAULT 'pending',
     UNIQUE(owner_user_id, resource_type, resource_id, shared_with_user_id, permission)
 );
 """
@@ -59,13 +60,22 @@ class UserSharesStore(BaseStore):
         self._write_lock = asyncio.Lock()
 
     async def _post_init(self) -> None:
-        """Reserved for future schema upgrades.
+        """Guarded schema upgrades for existing databases.
 
-        Currently the schema is on its first version — no migrations needed.
-        The method body is a no-op but the hook is here so future upgrades
-        can use the same guarded PRAGMA table_info + ALTER TABLE pattern
-        used by AgentGrantsStore.
+        Uses the PRAGMA table_info + ALTER TABLE pattern to add columns
+        without destructive migration, matching the approach used by
+        AgentGrantsStore and NotificationStore.
         """
+        cols = {row[1] for row in await (await self._db.execute(
+            "PRAGMA table_info(user_shares)")).fetchall()}
+        # `status` column — guarded ALTER so existing databases gain it.
+        # Existing rows (pre-status) are grandfathered as 'accepted' so
+        # previously working shares don't break on upgrade.
+        if "status" not in cols:
+            await self._db.execute(
+                "ALTER TABLE user_shares ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'"
+            )
+            await self._db.commit()
 
     # ------------------------------------------------------------------
     # Write
@@ -107,11 +117,11 @@ class UserSharesStore(BaseStore):
                 """
                 INSERT INTO user_shares
                     (owner_user_id, resource_type, resource_id,
-                     shared_with_user_id, permission, tier, granted_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     shared_with_user_id, permission, tier, granted_at, expires_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (owner_user_id, resource_type, resource_id,
-                 shared_with_user_id, permission, tier, now, expires_at),
+                 shared_with_user_id, permission, tier, now, expires_at, 'pending'),
             )
             await self._db.commit()
             row = await (
@@ -194,9 +204,45 @@ class UserSharesStore(BaseStore):
             "SELECT 1 FROM user_shares "
             "WHERE resource_type = ? AND resource_id = ? "
             "AND shared_with_user_id = ? "
+            "AND status = 'accepted' "
             "AND (expires_at IS NULL OR expires_at > ?) "
             "LIMIT 1",
             (resource_type, resource_id, user_id, now),
         )
         row = await cursor.fetchone()
         return row is not None
+
+    # ------------------------------------------------------------------
+    # Accept / Deny (consent gate)
+    # ------------------------------------------------------------------
+
+    async def accept_share(self, share_id: int) -> dict | None:
+        """Accept a pending share by id. Returns the updated row or None if not found."""
+        if self._db is None:
+            raise RuntimeError("UserSharesStore not initialised")
+        await self._db.execute(
+            "UPDATE user_shares SET status = 'accepted' WHERE id = ? AND status = 'pending'",
+            (share_id,),
+        )
+        await self._db.commit()
+        cursor = await self._db.execute(
+            "SELECT * FROM user_shares WHERE id = ?", (share_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+    async def deny_share(self, share_id: int) -> dict | None:
+        """Deny a pending share by id. Returns the updated row or None if not found."""
+        if self._db is None:
+            raise RuntimeError("UserSharesStore not initialised")
+        await self._db.execute(
+            "UPDATE user_shares SET status = 'denied' WHERE id = ? AND status = 'pending'",
+            (share_id,),
+        )
+        await self._db.commit()
+        cursor = await self._db.execute(
+            "SELECT * FROM user_shares WHERE id = ?", (share_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
