@@ -13,7 +13,7 @@ desktop SPA and a YAML app catalog. It runs hardware-frugally across a Python 3.
 1. **Target `dev`, never `master`.** `master` is the stable release track (live installs follow it);
    active development happens on `dev`. PRs go to `jaylfc/tinyagentos:dev`.
 2. **Python 3.11 floor.** The pyproject.toml pins `>=3.11,<3.14`. `match`/`case` and `X | None`
-   unions are fine (3.10+); most modules use `from __future__ import annotations`.
+   unions are available; most modules use `from __future__ import annotations`.
 3. **Conventional commits, no AI attribution.** `feat: fix: docs: refactor: test: chore:`. No
    "Co-authored-by" or "Generated with" trailers.
 4. **Draft-first; mark ready when the CODE is done, not when CI is green.** Fork PRs are gated

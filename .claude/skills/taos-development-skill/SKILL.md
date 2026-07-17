@@ -9,8 +9,8 @@ Procedures and architecture for contributing to
 [TinyAgentOS](https://github.com/jaylfc/tinyagentos). The non-negotiable rules live in
 `soul.md`; this skill is the *how*.
 
-> **Note:** this doc describes structure qualitatively and avoids hard-coded counts (line numbers,
-> test totals, app counts) on purpose — they rot fast in a living repo. Trust the tree, not tallies.
+> uses approximate counts (~N) as rough orientation only — actual numbers rot fast in a
+> living repo. Trust the tree, not tallies.
 
 ## Repository layout
 
@@ -115,7 +115,7 @@ No AI tool attribution in commit messages.
 
 Run **targeted tests first**, then the fast parallel gate. **Never run the un-parallelised full
 suite (`pytest tests/ -v`) locally** — it is massive and will take far too long. CI owns the
-full 3.11–3.13 matrix.
+full 3.12–3.13 matrix (3.11 on nightly cron only).
 
 ```bash
 # 1. Targeted — the changed module + related tests, always first:
@@ -285,4 +285,4 @@ cd desktop && npm install && npm run build && cd ..
 uv run pytest tests/ --ignore=tests/e2e -n auto
 ```
 
-Python 3.10+ and Node.js 22+ are required.
+Python 3.11+ and Node.js 22+ are required.
