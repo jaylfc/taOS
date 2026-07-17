@@ -517,7 +517,7 @@ class ClusterManager:
                 f"{'Tasks will complete before detach.' if graceful else 'All leases released immediately.'}"
             )
             try:
-                asyncio.get_running_loop().create_task(
+                task = asyncio.get_running_loop().create_task(
                     self._notifications.emit_event(
                         "worker.drain",
                         f"Worker '{name}' draining",
@@ -525,6 +525,8 @@ class ClusterManager:
                         level="info",
                     )
                 )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
@@ -551,7 +553,7 @@ class ClusterManager:
 
         if self._notifications:
             try:
-                asyncio.get_running_loop().create_task(
+                task = asyncio.get_running_loop().create_task(
                     self._notifications.emit_event(
                         "worker.online",
                         f"Worker '{name}' drain cancelled",
@@ -559,6 +561,8 @@ class ClusterManager:
                         level="info",
                     )
                 )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except RuntimeError:
                 pass
 
@@ -664,6 +668,13 @@ class ClusterManager:
         while True:
             now = time.time()
             for worker in list(self._workers.values()):
+                # The 'local' worker is the controller itself, kept alive by
+                # local_heartbeat_loop (15s) rather than remote heartbeats. It
+                # must never be marked offline or drained here: doing so would
+                # drop the controller's own leases and remove local backends
+                # from routing and the aggregate catalog (taOS #1690).
+                if worker.name == "local":
+                    continue
                 # Handle online workers that haven't heartbeated
                 if worker.status == "online" and (now - worker.last_heartbeat) > HEARTBEAT_TIMEOUT:
                     worker.status = "offline"

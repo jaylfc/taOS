@@ -103,6 +103,33 @@ class TestClusterManager:
 
         assert mgr.get_worker("gpu-box").status == "offline"
 
+    async def test_monitor_loop_never_offlines_local_worker(self):
+        """The controller's own 'local' worker is kept alive by
+        local_heartbeat_loop, not remote heartbeats. The monitor loop must
+        skip it so a heartbeat gap never marks the controller offline (which
+        would drop its own leases and remove local backends from routing).
+        A regular stale worker in the same pass is still marked offline
+        (taOS #1690)."""
+        mgr = ClusterManager()
+        await mgr.register_worker(_make_worker("local"))
+        await mgr.register_worker(_make_worker("gpu-box"))
+        stale = time.time() - HEARTBEAT_TIMEOUT - 5
+        mgr.get_worker("local").last_heartbeat = stale
+        mgr.get_worker("gpu-box").last_heartbeat = stale
+
+        task = asyncio.create_task(mgr._monitor_loop())
+        try:
+            await asyncio.sleep(0.05)  # let one iteration run
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert mgr.get_worker("local").status == "online"    # guard held
+        assert mgr.get_worker("gpu-box").status == "offline"  # normal path
+
     async def test_get_workers_for_capability_filters_and_sorts(self):
         mgr = ClusterManager()
         await mgr.register_worker(_make_worker("fast-gpu", capabilities=["chat", "embed"], load=0.2))

@@ -1233,8 +1233,37 @@ async def update_worker(request: Request, name: str):
             # reporting status:"updating" with the error body as deploy_result.
             resp.raise_for_status()
             deploy_result = resp.json()
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ReadTimeout):
+        # The deploy request blocks until update-worker restarts the worker
+        # service, which drops the connection mid-response. This is the
+        # EXPECTED happy path: the update was accepted and is running. Keep
+        # the worker draining; the monitor loop auto-completes the drain once
+        # the restarted worker re-registers and heartbeats. Reporting this as
+        # a failure (and cancelling the drain) was a regression — the update
+        # actually succeeds and self-heals on re-register.
+        return {
+            "worker": name,
+            "status": "updating",
+            "previous_status": drain_result["previous_status"],
+            "drain": drain_result,
+            "deploy": None,
+            "message": (
+                "Worker accepted the update and is restarting. The connection "
+                "dropped as expected during the restart; the monitor loop will "
+                "auto-complete the drain once it re-registers and heartbeats."
+            ),
+        }
+    except httpx.ConnectError as exc:
+        # Connection refused / DNS failure: the worker is unreachable and the
+        # update was never delivered. Cancel the drain so it keeps serving.
+        await cluster.cancel_drain(name)
+        return JSONResponse(
+            {"error": f"Worker unreachable for update: {exc}", "drain_cancelled": True},
+            status_code=502,
+        )
     except Exception as exc:
-        # Deploy failed — cancel drain so worker can still serve traffic
+        # Non-2xx worker response (raise_for_status) or any other unexpected
+        # error: real failure, cancel drain so worker can still serve traffic.
         await cluster.cancel_drain(name)
         return JSONResponse(
             {"error": f"Worker update deploy failed: {exc}", "drain_cancelled": True},

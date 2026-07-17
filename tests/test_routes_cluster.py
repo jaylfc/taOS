@@ -520,3 +520,72 @@ async def test_install_targets_matches_remote_to_worker_by_url_host(app, client,
     assert fedora is not None
     assert fedora["hardware_known"] is True, fedora
     assert fedora["tier_id"] not in ("", "unknown"), fedora
+
+
+# ---------------------------------------------------------------------------
+# Worker auto-update: deploy-connection classification (taOS #1690)
+# ---------------------------------------------------------------------------
+
+async def _register_online_worker(app, name="gpu-box", url="http://gpu-box:9000"):
+    from tinyagentos.cluster.worker_protocol import WorkerInfo
+    await app.state.cluster_manager.register_worker(
+        WorkerInfo(name=name, url=url, capabilities=["chat"],
+                   load=0.0, status="online", platform="linux")
+    )
+
+
+def _client_raising(exc):
+    """An httpx.AsyncClient stand-in whose .post always raises *exc*."""
+    class _Raising:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            raise exc
+
+    return _Raising
+
+
+@pytest.mark.asyncio
+async def test_update_worker_restart_disconnect_reports_updating(client, app, monkeypatch):
+    """The deploy request blocks until update-worker restarts the worker, which
+    drops the connection (RemoteProtocolError). That is the happy path: the
+    update was accepted, so the route must return 200 status='updating' and
+    keep the worker draining, not cancel the drain and return 502."""
+    import httpx as _httpx
+    await _register_online_worker(app)
+    monkeypatch.setattr(
+        _httpx, "AsyncClient",
+        _client_raising(_httpx.RemoteProtocolError("server disconnected during restart")),
+    )
+
+    resp = await client.post("/api/cluster/workers/gpu-box/update")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "updating"
+    # Drain must remain active so the monitor loop completes it on re-register.
+    assert app.state.cluster_manager.get_worker("gpu-box").status == "draining"
+
+
+@pytest.mark.asyncio
+async def test_update_worker_connect_error_cancels_drain(client, app, monkeypatch):
+    """Connection refused means the worker is unreachable and the update was
+    never delivered: the route must cancel the drain (worker keeps serving)
+    and return 502, not silently leave it draining."""
+    import httpx as _httpx
+    await _register_online_worker(app)
+    monkeypatch.setattr(
+        _httpx, "AsyncClient",
+        _client_raising(_httpx.ConnectError("connection refused")),
+    )
+
+    resp = await client.post("/api/cluster/workers/gpu-box/update")
+    assert resp.status_code == 502, resp.text
+    assert resp.json().get("drain_cancelled") is True
+    # Drain was cancelled, so the worker is back online and still routable.
+    assert app.state.cluster_manager.get_worker("gpu-box").status == "online"
