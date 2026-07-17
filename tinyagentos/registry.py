@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class AppState(str, Enum):
@@ -131,9 +134,15 @@ class AppRegistry:
                         if self._signing_key is not None:
                             from tinyagentos.store_signing import sign_manifest
 
-                            sig = sign_manifest(raw_dict, self._signing_key)
-                            signatures[catalog[-1].id] = sig
-                            manifest_dicts[catalog[-1].id] = raw_dict
+                            try:
+                                sig = sign_manifest(raw_dict, self._signing_key)
+                                signatures[catalog[-1].id] = sig
+                                manifest_dicts[catalog[-1].id] = raw_dict
+                            except Exception:
+                                logger.exception(
+                                    "failed to sign manifest %s — catalog load continues unsigned",
+                                    catalog[-1].id,
+                                )
                     except (yaml.YAMLError, KeyError):
                         pass  # skip invalid manifests
         # Single atomic assignment: readers either see the old list or the fully built one.

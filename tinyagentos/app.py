@@ -259,7 +259,16 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.store_signing import load_or_create_signing_keypair
 
-    _store_priv, _store_pub = load_or_create_signing_keypair(data_dir)
+    _store_priv: bytes | None = None
+    _store_pub: bytes | None = None
+    try:
+        _store_priv, _store_pub = load_or_create_signing_keypair(data_dir)
+    except OSError:
+        logger.warning(
+            "store signing keypair could not be created (data_dir=%s may be "
+            "read-only) — catalog signatures will not be available",
+            data_dir,
+        )
     registry = AppRegistry(
         catalog_dir=catalog_dir, installed_path=installed_path, signing_key=_store_priv,
     )
