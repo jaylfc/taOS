@@ -776,11 +776,17 @@ async def install_app(request: Request):
     # the on-disk manifest, but the install below uses the in-memory
     # manifest object loaded at boot.  An attacker who swaps the on-disk
     # file between verification and execution could bypass the gate.
-    # Re-read from disk and compare critical fields — if they differ,
-    # the manifest was modified after verification and the install is
-    # blocked.
+    # Re-read from disk and re-verify the signature — if it no longer
+    # verifies, the manifest was modified after the gate check and the
+    # install is blocked.
     _manifest_dir = getattr(manifest, "manifest_dir", None)
-    if _manifest_dir is not None and isinstance(_manifest_dir, Path):
+    if (
+        _manifest_dir is not None
+        and isinstance(_manifest_dir, Path)
+        and _store_pub is not None
+        and registry is not None
+        and hasattr(registry, "verify_manifest_signature")
+    ):
         disk_path = _manifest_dir / "manifest.yaml"
         try:
             import yaml as _yaml
@@ -788,36 +794,31 @@ async def install_app(request: Request):
         except Exception:
             on_disk = None
         if on_disk is not None:
-            # Compare the fields that affect install behaviour.
-            _disk_id = on_disk.get("id", "")
-            _disk_type = on_disk.get("type", "")
-            _disk_version = on_disk.get("version", "")
-            _disk_install = on_disk.get("install", {}) or {}
-            _disk_variants = on_disk.get("variants") or []
-            _mem_install = getattr(manifest, "install", {}) or {}
-            if (
-                _disk_id != manifest.id
-                or _disk_type != getattr(manifest, "type", "")
-                or _disk_version != getattr(manifest, "version", "")
-                or _disk_install.get("method") != (_mem_install.get("method") if isinstance(_mem_install, dict) else None)
-                or len(_disk_variants) != len(getattr(manifest, "variants", []) or [])
-            ):
-                progress.finish(
-                    install_id, success=False,
-                    error="manifest modified between signature verification and install",
-                )
-                return JSONResponse(
-                    {
-                        "error": "manifest modified between signature verification and install",
-                        "detail": (
-                            "The manifest on disk differs from the version that was "
-                            "verified. This may indicate post-verification tampering. "
-                            "Rebuild the catalog or reinstall the app from a trusted source."
-                        ),
-                        "install_id": install_id,
-                    },
-                    status_code=403,
-                )
+            # Re-verify the signature against the just-read bytes.
+            # This catches any change — not just the narrow set of fields
+            # the old comparison whitelisted — and does not false-positive
+            # on legitimate catalog reloads (which update signatures too).
+            stored_sig = registry.get_signature(manifest_id)
+            if stored_sig is not None:
+                from tinyagentos.store_signing import verify_manifest_signature as _verify_sig
+                if not _verify_sig(on_disk, stored_sig, _store_pub):
+                    progress.finish(
+                        install_id, success=False,
+                        error="manifest modified between signature verification and install",
+                    )
+                    return JSONResponse(
+                        {
+                            "error": "manifest modified between signature verification and install",
+                            "detail": (
+                                "The manifest on disk was modified after the initial "
+                                "signature verification. This may indicate post-verification "
+                                "tampering. Rebuild the catalog or reinstall the app from "
+                                "a trusted source."
+                            ),
+                            "install_id": install_id,
+                        },
+                        status_code=403,
+                    )
 
     # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.

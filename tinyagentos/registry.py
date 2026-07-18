@@ -193,28 +193,32 @@ class AppRegistry:
         catalog tampering — an attacker who modifies ``manifest.yaml`` after
         the server started will produce a mismatch and the install is blocked.
 
-        Returns ``True`` when:
+        Returns ``True`` only when the on-disk manifest successfully verifies
+        against the stored Ed25519 signature.
 
-        * the on-disk manifest matches the stored signature (valid), **or**
-        * no signature was stored for this app (unsigned — fail-open).
+        Returns ``False`` when:
 
-        Returns ``False`` only when a signature **was** stored but the
-        current on-disk manifest does not verify against it (tampered).
+        * no signature was stored for this app (unsigned — fail-closed), **or**
+        * the on-disk manifest does not verify against the stored signature
+          (tampered).
 
-        The fail-open policy for unsigned manifests is intentional: the
-        absence of a signature is not evidence of tampering, and rejecting
-        unsigned manifests would block every catalog entry that predates
-        the signing feature.  Once a manifest is signed, however, any
-        mismatch is treated as tampering and blocked with 403.
+        This primitive is fail-closed on purpose: a future caller that does
+        ``if not registry.verify_manifest_signature(...)`` gets the safe
+        default.  Callers that need a fail-open policy for unsigned manifests
+        (e.g. the install gate, which must not block catalog entries that
+        predate the signing feature) must check ``get_signature(app_id)``
+        first and short-circuit before calling this method.  See
+        ``_verify_manifest_for_install`` in ``routes/store_install.py`` for
+        the canonical fail-open pattern.
         """
         self._ensure_loaded()
         sig = self._signatures.get(app_id)
         if sig is None:
-            # Never signed — fail-open.  The absence of a signature is
-            # not evidence of tampering (the manifest may predate the
-            # signing feature).  Callers that need to distinguish
-            # unsigned from verified can check get_signature(app_id).
-            return True
+            # Never signed — fail-closed.  The absence of a signature
+            # means there is nothing to verify against.  Callers that
+            # want a fail-open policy for unsigned manifests must check
+            # get_signature() first.
+            return False
         manifest = self.get(app_id)
         if manifest is None or manifest.manifest_dir is None:
             return False
