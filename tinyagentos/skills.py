@@ -466,11 +466,11 @@ class SkillStore(BaseStore):
                 "description": "List the agent frameworks taOS can deploy, so the agent can offer one",
                 "tool_schema": {
                     "name": "list_frameworks",
-                    "description": "List the agent frameworks taOS can deploy (id, name, description, verification_status; beta = recommended). Use before offering to deploy/set up an agent so you name a real framework and prefer a beta one. Optional verified_only=true returns beta only.",
+                    "description": "List the agent frameworks taOS can deploy (id, name, description, verification_status; tested and beta are recommended, tested being the most verified). Use before offering to deploy/set up an agent so you name a real framework and prefer a tested or beta one. Optional verified_only=true returns the verified (tested + beta) frameworks.",
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "verified_only": {"type": "boolean", "description": "Only beta (recommended) frameworks. Default false."},
+                            "verified_only": {"type": "boolean", "description": "Only verified (tested + beta) frameworks. Default false."},
                         },
                     },
                 },

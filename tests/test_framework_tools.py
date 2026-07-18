@@ -26,11 +26,15 @@ async def test_lists_all_frameworks():
 
 
 @pytest.mark.asyncio
-async def test_verified_only_returns_beta_subset():
+async def test_verified_only_returns_verified_subset():
     all_res = await execute_list_frameworks({}, _req())
-    beta_res = await execute_list_frameworks({"verified_only": True}, _req())
-    assert beta_res["count"] <= all_res["count"]
-    assert all(f["verification_status"] == "beta" for f in beta_res["frameworks"])
-    # hermes and openclaw are beta, so verified_only must include them.
-    ids = {f["id"] for f in beta_res["frameworks"]}
+    verified_res = await execute_list_frameworks({"verified_only": True}, _req())
+    assert verified_res["count"] <= all_res["count"]
+    # tested and beta are the two verified tiers; nothing else may appear.
+    assert all(
+        f["verification_status"] in ("tested", "beta")
+        for f in verified_res["frameworks"]
+    )
+    # hermes is tested and openclaw is beta, so verified_only must include both.
+    ids = {f["id"] for f in verified_res["frameworks"]}
     assert "openclaw" in ids and "hermes" in ids

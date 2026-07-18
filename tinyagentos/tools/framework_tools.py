@@ -16,17 +16,18 @@ LIST_FRAMEWORKS_TOOL = {
     "name": "list_frameworks",
     "description": (
         "List the agent frameworks taOS can deploy (id, name, description, and "
-        "verification_status: beta is recommended, alpha is experimental). Use "
-        "this before offering to deploy or set up an agent for the user, so you "
-        "name a framework that actually exists and prefer a beta one. Read-only; "
-        "the user deploys from the Agents app."
+        "verification_status: tested and beta are recommended, tested being the "
+        "most verified; experimental is unverified). Use this before offering to "
+        "deploy or set up an agent for the user, so you name a framework that "
+        "actually exists and prefer a tested or beta one. Read-only; the user "
+        "deploys from the Agents app."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "verified_only": {
                 "type": "boolean",
-                "description": "If true, return only beta (recommended) frameworks. Default false (all).",
+                "description": "If true, return only verified (tested + beta) frameworks. Default false (all).",
             },
         },
     },
@@ -37,7 +38,11 @@ async def execute_list_frameworks(args: dict, request: Request) -> dict:
     verified_only = bool((args or {}).get("verified_only", False))
     frameworks = list_frameworks()
     if verified_only:
-        frameworks = [f for f in frameworks if f.get("verification_status") == "beta"]
+        # tested and beta are the two verified tiers (tested is the most verified);
+        # experimental and broken are not recommended.
+        frameworks = [
+            f for f in frameworks if f.get("verification_status") in ("tested", "beta")
+        ]
     slim = [
         {
             "id": f.get("id"),
