@@ -19,9 +19,20 @@ from tinyagentos.projects.invite_store import (
     InvitePendingCapError,
     InviteRevokedError,
 )
+from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _unknown_scopes(scopes: list[str]) -> list[str]:
+    """Scopes not in the consent system's VALID_SCOPES, sorted for the error.
+
+    Validated at MINT time (#1993): an invite minted with a bad scope would
+    otherwise pass silently and then fail (and burn) at every redeem attempt,
+    because scope validation only existed on the auth-request path.
+    """
+    return sorted(set(scopes) - VALID_SCOPES)
 
 
 class MintInviteIn(BaseModel):
@@ -618,6 +629,12 @@ async def mint_invite(
     if project is None:
         return JSONResponse({"error": "project not found"}, status_code=404)
     require_owner_or_admin(user, project["user_id"])
+    bad = _unknown_scopes(payload.scopes)
+    if bad:
+        return JSONResponse(
+            {"error": f"unknown scopes: {bad}; valid: {sorted(VALID_SCOPES)}"},
+            status_code=400,
+        )
     try:
         result = await store.mint(
             project_id=project_id,
@@ -710,6 +727,12 @@ async def mint_os_invite(
 ):
     _require_admin(user)
     store = request.app.state.project_invites
+    bad = _unknown_scopes(payload.scopes)
+    if bad:
+        return JSONResponse(
+            {"error": f"unknown scopes: {bad}; valid: {sorted(VALID_SCOPES)}"},
+            status_code=400,
+        )
     # OS-level invites carry no project, so drop any project-bound scopes rather
     # than granting them against a non-existent project (kilo review #1918).
     os_scopes = [s for s in payload.scopes if s not in _PROJECT_SCOPED]
@@ -876,6 +899,16 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
                 project_id=invite["project_id"],
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
+            # A failed approve must not consume the invite (#1993): return it
+            # to the pool so the agent can retry, and refuse the dangling
+            # auth request so it does not linger in the consent inbox.
+            await store.restore_pending(body.invite_id)
+            try:
+                await auth_store.set_decision(
+                    record["id"], "refused", decided_by="system:invite-rollback"
+                )
+            except Exception:  # noqa: BLE001 - cleanup best-effort
+                pass
             return JSONResponse({"error": str(exc)}, status_code=400)
     else:
         # manual: leave pending so the consent bell fires (handled by
@@ -954,6 +987,15 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
                 display_name=display_name,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
+            # Mirror the project-invite rollback (#1993): a failed approve must
+            # not consume the invite; refuse the dangling auth request.
+            await store.restore_pending(body.invite_id)
+            try:
+                await auth_store.set_decision(
+                    record["id"], "refused", decided_by="system:invite-rollback"
+                )
+            except Exception:  # noqa: BLE001 - cleanup best-effort
+                pass
             return JSONResponse({"error": str(exc)}, status_code=400)
     else:
         _notify_pending_invite(request, record)

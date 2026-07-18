@@ -163,6 +163,64 @@ async def _mint_invite(client, pid, *, approval_mode="auto", scopes=None, check_
 
 
 @pytest.mark.asyncio
+async def test_mint_rejects_unknown_scopes(client, app):
+    # #1993: an invite minted with a bad scope would silently pass and then
+    # fail (and previously burn) at every redeem. Validate at mint on BOTH
+    # endpoints.
+    pid = await _create_project(client, slug="badscope")
+    resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": ["a2a_send", "not_a_scope"], "approval_mode": "auto"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "not_a_scope" in resp.json()["error"]
+
+    os_resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": ["definitely_bogus"], "approval_mode": "auto"},
+    )
+    assert os_resp.status_code == 400, os_resp.text
+    assert "definitely_bogus" in os_resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_failed_approve_does_not_burn_invite(client, app, monkeypatch, tmp_path):
+    # #1993: if approve_request_record raises after the pending->redeemed CAS,
+    # the invite must return to the pool so the agent can retry.
+    await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
+    pid = await _create_project(client, slug="noburn")
+    iid, pin = await _mint_invite(client, pid, approval_mode="auto", scopes=["a2a_send"])
+
+    import tinyagentos.routes.agent_auth_requests as aar
+
+    real_approve = aar.approve_request_record
+    calls = {"n": 0}
+
+    async def flaky_approve(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated approve failure")
+        return await real_approve(*args, **kwargs)
+
+    monkeypatch.setattr(aar, "approve_request_record", flaky_approve)
+
+    first = await client.post(
+        "/api/projects/invites/redeem",
+        json={"invite_id": iid, "pin": pin, "harness": "claude"},
+    )
+    assert first.status_code == 400, first.text
+    assert "simulated approve failure" in first.json()["error"]
+
+    # The invite went back to pending, so the SAME invite+pin redeems fine.
+    second = await client.post(
+        "/api/projects/invites/redeem",
+        json={"invite_id": iid, "pin": pin, "harness": "claude"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["agent_handle"].startswith("noburn-claude")
+
+
+@pytest.mark.asyncio
 async def test_redeem_auto_mode_end_to_end(client, app, monkeypatch, tmp_path):
     registry, auth_store, grants = await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
     pid = await _create_project(client, slug="redauto")

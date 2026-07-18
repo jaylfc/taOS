@@ -300,6 +300,24 @@ class ProjectInviteStore(BaseStore):
         updated = await self._fetch_row(invite_id)
         return self._row_to_dict(updated)
 
+    async def restore_pending(self, invite_id: str) -> None:
+        """Return a just-redeemed invite to the open pool.
+
+        Called by the redeem route when the downstream approve fails AFTER the
+        atomic pending->redeemed flip in ``redeem`` (which stays the
+        concurrent-redeem race gate). Without this, any approve failure (bad
+        scope, handle 409) permanently consumes the invite (#1993). Guarded on
+        status='redeemed' so it can never resurrect an expired/revoked invite.
+        """
+        if self._db is None:
+            raise RuntimeError("ProjectInviteStore not initialised")
+        await self._db.execute(
+            "UPDATE project_invites SET status = 'pending' "
+            "WHERE invite_id = ? AND status = 'redeemed'",
+            (invite_id,),
+        )
+        await self._db.commit()
+
     async def mark_redeemed(
         self, invite_id: str, redeemed_by: str, redeemed_request_id: str
     ) -> None:
