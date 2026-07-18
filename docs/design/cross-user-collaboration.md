@@ -118,10 +118,19 @@ CREATE TABLE peer_links (
 ### Auth story for the peer channel
 
 - **Handshake (contact-accept, collab-invite, delegation-request):**
-  Ed25519-signed envelopes `{from_hub_username, to, kind, body, ts, nonce, sig}`,
-  verified against the pinned contact pubkey (trust-on-first-use at friend-accept;
-  hub lookup only for initial discovery). Signed envelopes are valid even when
-  relayed by the hub - the hub cannot forge them.
+  Ed25519-signed envelopes. Each envelope MUST bind the sender, recipient, and
+  message kind into the signature domain via canonical serialization
+  (`canonicalize({from_hub_username, to, kind, body, ts, nonce})` before signing)
+  so a captured envelope cannot be replayed against a different recipient or
+  reinterpreted as a different kind. The verifier MUST reject envelopes whose
+  `to` field does not match the local identity. A freshness window on `ts`
+  (default 300 s) plus a persistent replay cache keyed by
+  `(contact_id, kind, nonce)` records accepted nonces before triggering side
+  effects; stale, reused, or misaddressed envelopes are rejected.
+  Signatures are verified against the pinned contact pubkey (trust-on-first-use
+  at friend-accept; hub lookup only for initial discovery). Signed envelopes are
+  valid even when relayed by the hub - the hub cannot forge them, but the replay
+  cache and audience check prevent misrouting.
 - **Steady state:** bearer **peer token** (opaque, hashed at rest, same pattern as
   registry tokens), presented by the remote instance to a new, narrow route family
   `POST /api/peer/{inbox,chat,ack}`. `sub` concept: `contact:{hub_username}`. Peer
@@ -129,6 +138,15 @@ CREATE TABLE peer_links (
   scopes. This keeps the JWT/scope world (agents) and the peer world (instances)
   disjoint, so nothing in `VALID_SCOPES` needs to change for humans and the
   equality-tested `_ALLOWED_SCOPES` sync stays untouched.
+
+**Peer token vs. project-level authorization:** the peer token authenticates the
+  contact identity and unlocks the route family. However, operations that carry a
+  `project_id` payload (delegation requests, chat channel events, activity digests)
+  MUST additionally verify that the contact holds an active
+  `member_kind=\"human\"` row in the target project before accepting the data.
+  Contact identity and the UI-selected project or channel value are inputs, not
+  authorization; the receiver enforces project membership, target-project policy,
+  and channel membership independently on every peer operation.
 
 **Consequence accepted:** because remote humans do not hit the local API, "what a
 human member can do" in v1 is bounded by what the peer channel carries (section
@@ -242,9 +260,22 @@ ALTER TABLE agent_registry ADD COLUMN sponsor_contact_id TEXT;  -- NULL for all 
 - **Cascade:** revoking the contact (or their project membership) revokes tokens
   of all identities where `sponsor_contact_id` matches (scoped to that project for
   membership-revoke; all projects for contact-revoke), unassigns their in-flight
-  board tasks back to `ready`, and posts an A2A system line.
+  board tasks back to `ready`, and posts an A2A system line. Token revocation is
+  a bulk operation; additionally, **every delegated request** (task claims, A2A
+  calls, canvas reads, feed fetches) MUST perform a fail-closed runtime check:
+  verify current sponsor-contact status (`active`) and project membership
+  (`member_kind=\"human\"`, not removed) at call time, not just at token issuance.
+  A bearer JWT from a now-revoked sponsor is rejected even if the JWT itself has
+  not expired. Queued outbox deliveries for a revoked contact are purged, and
+  in-flight task assignments for their sponsored identities are unclaimed back to
+  `ready` atomically with the revocation transaction.
 - **Trust tiers:** default grant set for delegated agents is `{a2a_send,
-  a2a_receive, project_tasks, canvas_read, registry_feeds_read}`. Anything more
+  a2a_receive, project_tasks, canvas_read, registry_feeds_read}`. The
+  project-scoped grants (`project_tasks`, `canvas_read`) MUST carry a
+  non-null, owner-validated `project_id` claim in the minted JWT that is
+  immutable for the grant lifetime; reject null or mismatched `project_id`
+  at every project-scoped route, following the existing scope contract in
+  `agent_auth_requests.py`. Anything more
   (`files_read`, `canvas_write`, `memory_*`, `tools_execute`) requires an explicit,
   per-scope Decisions approval and is displayed permanently in the Agents app.
   `files_write` and `decisions_write` are **denied to sponsored identities in v1**
@@ -322,7 +353,11 @@ with data-on-your-node).
   created_at}` - store-and-forward with exponential backoff; drained on peer-link
   `last_seen` refresh.
 
-**Delivery semantics v1:** at-least-once with `remote_msg_id` dedupe; delivery
+**Delivery semantics v1:** at-least-once with `remote_msg_id` dedupe; the
+`chat_messages` table MUST enforce an atomic uniqueness constraint on
+`(contact_id, channel_id, remote_msg_id)` — insert and commit the message before
+sending the delivery acknowledgment, and treat uniqueness-constraint conflicts
+as successful duplicate deliveries (no second row, no error surface). Delivery
 acks (double-tick equivalent) via `POST /api/peer/ack`; **read receipts deferred**
 (optional v1.1, off by default). Ordering: per-channel sender timestamps,
 render-side sort - good enough for two humans.
@@ -521,9 +556,10 @@ owner's instance serves to member instances over the peer channel:
   members of that project; membership-revoke stops the feed and the member
   instance drops its cached projection (cascade, section 8).
 - **Scope of "public":** v1 the community view is **member-scoped** (collaborators
-  only). A truly public/anonymous view (project `visibility="public"`, an
-  unauthenticated read projection served via the hub) is a clean later toggle on
-  the same projection machinery - noted, not built in v1.
+  only). A truly public/anonymous view (adding a `projects.visibility` column defaulting to `'private'`, with `'public'`
+  enabling an unauthenticated read projection served via the hub) is a clean later
+  toggle on the same projection machinery — noted as a future schema change, not
+  built in v1.
 
 ### Reconciliation with earlier decisions
 
