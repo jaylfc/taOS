@@ -229,8 +229,20 @@ def _verify_manifest_for_install(
 
     stored_sig = registry.get_signature(manifest_id)
     if stored_sig is None:
-        # Never signed — manifest was loaded before signing was enabled.
-        # Skip the gate; absence of a signature is not evidence of tampering.
+        # No stored signature.  If signing is configured and this manifest
+        # failed to sign during catalog load, block it — treating a signing
+        # failure as "merely unsigned" would bypass the install gate.
+        if (
+            hasattr(registry, "is_signing_failure")
+            and registry.is_signing_failure(manifest_id)
+        ):
+            return False, (
+                f"manifest {manifest_id} failed to sign during catalog load — "
+                "the manifest may be malformed or the signing key may be invalid"
+            )
+        # Otherwise: never signed — manifest was loaded before signing was
+        # enabled.  Skip the gate; absence of a signature is not evidence of
+        # tampering.
         return True, None
 
     if not registry.verify_manifest_signature(manifest_id, store_signing_pubkey):
