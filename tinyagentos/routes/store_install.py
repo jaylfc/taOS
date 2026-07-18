@@ -937,48 +937,6 @@ async def install_app(request: Request):
                 },
                 status_code=403,
             )
-        # TOCTOU guard: the signing gate above verified the signature of the
-        # backend manifest, but the install below runs an untrusted script/image
-        # with no re-verification immediately before execution.  Re-read the
-        # backend manifest from disk and re-verify its signature — if it no
-        # longer verifies, the manifest was modified after the gate check and
-        # the install is blocked.
-        _be_manifest_dir = getattr(backend_manifest, "manifest_dir", None)
-        if (
-            _be_manifest_dir is not None
-            and isinstance(_be_manifest_dir, Path)
-            and _store_pub is not None
-            and registry is not None
-            and hasattr(registry, "verify_manifest_signature")
-        ):
-            be_disk_path = _be_manifest_dir / "manifest.yaml"
-            try:
-                import yaml as _yaml
-                on_disk_be = _yaml.safe_load(be_disk_path.read_text()) if be_disk_path.exists() else None
-            except Exception:
-                on_disk_be = None
-            if on_disk_be is not None:
-                be_stored_sig = registry.get_signature(result.backend_id)
-                if be_stored_sig is not None:
-                    from tinyagentos.store_signing import verify_manifest_signature as _verify_sig
-                    if not _verify_sig(on_disk_be, be_stored_sig, _store_pub):
-                        progress.finish(
-                            install_id, success=False,
-                            error="backend manifest modified between signature verification and install",
-                        )
-                        return JSONResponse(
-                            {
-                                "error": "backend manifest modified between signature verification and install",
-                                "detail": (
-                                    f"The backend manifest for {result.backend_id!r} was modified "
-                                    "on disk after the initial signature verification. "
-                                    "This may indicate post-verification tampering. "
-                                    "Rebuild the catalog or reinstall from a trusted source."
-                                ),
-                                "install_id": install_id,
-                            },
-                            status_code=403,
-                        )
         backend_installer = get_installer(backend_method)
         be_result = await backend_installer.install(
             result.backend_id,
