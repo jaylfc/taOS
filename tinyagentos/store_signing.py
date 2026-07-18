@@ -143,16 +143,12 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
             if keyfile.exists():
                 return load_or_create_signing_keypair(data_dir)
         # After a reasonable wait the keyfile still does not exist.
-        # Remove the stale tmp (the competing process may have
-        # crashed or is stuck) and create our own.
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        # The shared tmp is contested — skip straight to a unique
+        # PID-based name instead of unlinking (which could race with
+        # a still-running winner and crash it or leave inconsistent
+        # on-disk state).
         if keyfile.exists():
             return load_or_create_signing_keypair(data_dir)
-        # Retry with a unique tmp path so we never collide with a
-        # still-running winner that hasn't called os.replace yet.
         tmp = keyfile.with_suffix(f"{keyfile.suffix}.tmp.{os.getpid()}")
         try:
             fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
