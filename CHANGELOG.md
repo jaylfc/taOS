@@ -7,6 +7,24 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.41] - 2026-07-18
+
+### Added
+- External agents can be onboarded end to end: invite one to a project (or with no project and a chosen name/alias) as a URL plus PIN, the agent redeems it and receives an onboarding kit, you approve the request, and a project lead can mark board cards claimable so an invited agent knows what to pick up (#1858, #1867, #1918, #1971, #1975, #1976).
+- One agent identity can now hold per-project grants behind a grant-gated token, so the same agent can work across several projects without a shared credential (#1866).
+- The GPU arbiter is consolidated onto a single VRAM authority with eviction and heartbeat fixes, and workers can be rolling-updated one at a time with a drain step so a cluster update does not take everything down at once (#1859, #1878).
+- The taOSmd memory URL is configurable, and the deploy wizard now shows a framework's verification tier (tested, beta, experimental) so you can prefer the more-verified ones (#1904, #1963).
+- Desktop: a categorized wallpaper picker with a theme default in Settings, editing the last assistant message before resending, a release-channel selector in the Updates panel, automatic SPA reload when a new build is deployed, and off-screen windows clamped back into view on resize (#1882, #1886, #1906, #1933, #1874).
+- Phone web-push notifications are scoped per user ahead of multi-user (#1885).
+
+### Fixed
+- Creating a project, approving an agent access request, and other mutating actions no longer fail with "CSRF token missing"; the websocket path is also exempt so Messages/chat no longer 500s offline (#1969, #1977, #1898, #1922).
+- Security: torrent SHA256 verification is mandatory, installer downloads are pinned to a validated public IP to close a DNS-rebinding SSRF, auth gained XSS and session-race hardening, and the invite advert page HTML-escapes the project name (#1901, #1879, #1925, #1919).
+- Stores: an audit and regression gate ensures no SCHEMA index references a migration-added column (the recurring upgrade brick), and a scheduling lease renewal TOCTOU is closed (#1960, #1900).
+- The verified framework list returns tested and beta frameworks, not beta only, so the most-verified framework is no longer excluded (#1978).
+- qmd calls gained retry jitter and a per-call timeout override, and opencode turns time out instead of hanging the HTTP request (#1961, #1909).
+- Notification archiving persists to the backend so it survives a reload (#1917).
+
 ## [1.0.0-beta.40] - 2026-07-11
 
 ### Added
