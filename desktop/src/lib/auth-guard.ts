@@ -61,10 +61,17 @@ export function installAuthGuard(): void {
     else if (input instanceof URL) reqUrl = input.toString();
     else if (input && typeof (input as Request).url === "string") reqUrl = (input as Request).url;
     if (typeof input !== "object" || input instanceof URL) {
-      const sameOrigin =
-        reqUrl.startsWith("/") ||
-        (typeof window !== "undefined" && !!window.location &&
-          reqUrl.startsWith(window.location.origin));
+      // Resolve to an absolute origin and compare exactly. A prefix check would
+      // be bypassable by a protocol-relative URL (//evil.example) or a lookalike
+      // host (https://<origin>.evil.com), either of which would leak the token.
+      let sameOrigin = false;
+      try {
+        if (typeof window !== "undefined" && window.location) {
+          sameOrigin = new URL(reqUrl, window.location.href).origin === window.location.origin;
+        }
+      } catch {
+        sameOrigin = false;
+      }
       if (sameOrigin) effectiveInit = withCsrf(init);
     }
     const response = await originalFetch(input, effectiveInit);

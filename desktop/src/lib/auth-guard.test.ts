@@ -26,5 +26,15 @@ describe("installAuthGuard CSRF wiring", () => {
     await window.fetch("https://evil.example/x", { method: "POST" });
     const extInit = spy.mock.calls.at(-1)?.[1] as RequestInit;
     expect(new Headers(extInit.headers).get("X-CSRF-Token")).toBeNull();
+
+    // Protocol-relative and lookalike-host URLs must NOT be treated as
+    // same-origin (a prefix check would leak the token to these).
+    await window.fetch("//evil.example/x", { method: "POST" });
+    const protoRel = spy.mock.calls.at(-1)?.[1] as RequestInit;
+    expect(new Headers(protoRel.headers).get("X-CSRF-Token")).toBeNull();
+
+    await window.fetch(`${window.location.origin}.evil.com/x`, { method: "POST" });
+    const lookalike = spy.mock.calls.at(-1)?.[1] as RequestInit;
+    expect(new Headers(lookalike.headers).get("X-CSRF-Token")).toBeNull();
   });
 });
