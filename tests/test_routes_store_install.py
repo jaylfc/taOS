@@ -337,8 +337,8 @@ class TestInstallV2:
         assert "model install failed" in body["error"]
 
     @pytest.mark.asyncio
-    async def test_unknown_backend_returns_500(self, client):
-        """A backend not in _BACKEND_TO_METHOD returns 500, not an exception."""
+    async def test_unknown_backend_returns_422(self, client):
+        """A backend not in _BACKEND_TO_METHOD returns 422."""
         manifest = _make_model_manifest(backend_id="totally-unknown-backend")
         reg = _make_registry(manifest)
         client._transport.app.state.registry = reg
@@ -353,7 +353,7 @@ class TestInstallV2:
                 "manifest_id": "test-model",
                 "variant_id": "v1",
             })
-        assert resp.status_code == 500
+        assert resp.status_code == 422
         assert "_BACKEND_TO_METHOD" in resp.json()["error"]
 
     @pytest.mark.asyncio

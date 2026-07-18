@@ -16,12 +16,20 @@ Design decisions (see #647):
   each instance trusts its own catalog.  A future shared-catalog model
   (e.g. a taOS App Store) would use a network-fetched public key.
 
-- **Signatures live in the manifest YAML.**  A ``_signature`` field at the
-  root of the manifest holds the hex-encoded Ed25519 signature over the
-  canonical bytes of the manifest *with that field stripped*.  At load
-  time, the registry strips ``_signature``, computes the signature, and
-  stores it in-memory.  At verify time the same stripped view is used, so
-  flipping the signature doesn't change the bytes being verified.
+- **Signatures are detached and stored in-memory.**  Manifest YAML files
+  on disk are never modified.  The hex-encoded Ed25519 signature is
+  computed over the canonical bytes of the manifest and stored in
+  ``AppRegistry._signatures`` (in-memory).  At load time the registry
+  strips any ``_signature`` field from the dict, computes the signature,
+  and caches it.  At verify time the same stripped view is used, so the
+  signature does not affect the bytes being verified.
+
+  This is a *post-load* tamper-detection model: manifests are signed from
+  their contents as loaded from disk, so pre-load supply-chain or disk
+  tampering (before the server starts) is trusted rather than detected.
+  The signature protects against post-boot catalog tampering — an attacker
+  who modifies ``manifest.yaml`` while the server is running.
+
 """
 
 from __future__ import annotations
@@ -80,13 +88,15 @@ def _enforce_permissions(keyfile: Path) -> None:
 
     Called on every load so a migration, backup-restore, or manual
     ``chmod`` cannot leave the private key world/group-readable.
+
+    Raises ``PermissionError`` when the permissions cannot be confirmed
+    as 0600, allowing the caller to disable signing rather than read a
+    potentially group/world-readable private key.
     """
-    try:
-        st = keyfile.stat()
-        if (st.st_mode & 0o777) != 0o600:
-            os.chmod(keyfile, 0o600)
-    except OSError:
-        pass  # non-fatal on exotic filesystems
+    if (keyfile.stat().st_mode & 0o777) != 0o600:
+        os.chmod(keyfile, 0o600)
+    if (keyfile.stat().st_mode & 0o777) != 0o600:
+        raise PermissionError(f"cannot enforce 0600 permissions on {keyfile}")
 
 
 def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
@@ -156,12 +166,22 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
             if keyfile.exists():
                 return load_or_create_signing_keypair(data_dir)
             raise
-    # Write and atomically promote.
+    # Write and atomically promote.  Use os.link as a non-overwriting
+    # claim: link(2) fails with EEXIST if the target already exists,
+    # so a late-arriving contender cannot overwrite a winner's keyfile.
+    # After the link succeeds, the tmp is unlinked to clean up.
     try:
         os.write(fd, payload.encode("utf-8"))
     finally:
         os.close(fd)
-    os.replace(tmp, keyfile)
+    try:
+        os.link(tmp, keyfile)
+    except FileExistsError:
+        # Another process won the race — discard our key and load theirs.
+        tmp.unlink(missing_ok=True)
+        return load_or_create_signing_keypair(data_dir)
+    else:
+        tmp.unlink(missing_ok=True)
     logger.info("store signing keypair created at %s", keyfile)
     return priv, pub
 

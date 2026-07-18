@@ -93,34 +93,67 @@ class AppManifest:
         return False
 
 
+@dataclass(frozen=True)
+class _CatalogState:
+    """Immutable snapshot of the catalog at one point in time.
+
+    The entire snapshot is atomically replaced on reload so no reader can
+    observe a mix of old and new state (e.g. a manifest from the new catalog
+    paired with an old signatures dict that lacks its signature).
+    """
+
+    catalog: list[AppManifest]
+    signatures: dict[str, str]
+    manifest_dicts: dict[str, dict]
+    signing_failures: frozenset[str] = frozenset()
+
+
 class AppRegistry:
+    """Catalog + signing registry for the app store.
+
+    The catalog state (manifests, signatures, raw dicts) is bundled into a
+    single ``_CatalogState`` snapshot that is atomically replaced on reload.
+    This prevents TOCTOU bugs where a reader could see a mix of old and new
+    state (e.g. a new manifest from _catalog paired with an old _signatures
+    dict that is missing its signature).
+    """
+
     def __init__(self, catalog_dir: Path, installed_path: Path, signing_key: bytes | None = None):
         self.catalog_dir = catalog_dir
         self.installed_path = installed_path
         self._signing_key = signing_key
-        # Sentinel: None means catalog has not been loaded yet. Deferred so that
-        # boot does not pay for walking + parsing every manifest under catalog_dir.
-        self._catalog: list[AppManifest] | None = None
-        # Manifest signatures keyed by app_id.  Populated during _load_catalog()
-        # when a signing key is available.
-        self._signatures: dict[str, str] = {}
-        # Raw manifest dicts (stripped of _signature) keyed by app_id, used for
-        # re-verifying at install time.
-        self._manifest_dicts: dict[str, dict] = {}
+        # Sentinel: None means catalog has not been loaded yet.  Deferred so
+        # that boot does not pay for walking + parsing every manifest under
+        # catalog_dir.
+        self._state: _CatalogState | None = None
         self._catalog_lock = threading.Lock()
+
+    # -- backward-compat aliases so existing callers read through the snapshot --
+    @property
+    def _catalog(self) -> list[AppManifest] | None:
+        return self._state.catalog if self._state is not None else None
+
+    @property
+    def _signatures(self) -> dict[str, str]:
+        return self._state.signatures if self._state is not None else {}
+
+    @property
+    def _manifest_dicts(self) -> dict[str, dict]:
+        return self._state.manifest_dicts if self._state is not None else {}
 
     def _ensure_loaded(self) -> None:
         # Double-checked locking: cheap path when already loaded, lock only on first miss.
-        if self._catalog is not None:
+        if self._state is not None:
             return
         with self._catalog_lock:
-            if self._catalog is None:
+            if self._state is None:
                 self._load_catalog()
 
     def _load_catalog(self) -> None:
         catalog: list[AppManifest] = []
         signatures: dict[str, str] = {}
         manifest_dicts: dict[str, dict] = {}
+        signing_failures: set[str] = set()
         for type_dir in ("agents", "models", "services", "plugins"):
             base = self.catalog_dir / type_dir
             if not base.exists():
@@ -140,19 +173,35 @@ class AppRegistry:
                                 manifest_dicts[catalog[-1].id] = raw_dict
                             except Exception:
                                 logger.exception(
-                                    "failed to sign manifest %s — catalog load continues unsigned",
+                                    "failed to sign manifest %s — install gate will block it",
                                     catalog[-1].id,
                                 )
+                                signing_failures.add(catalog[-1].id)
                     except (yaml.YAMLError, KeyError):
                         pass  # skip invalid manifests
-        # Single atomic assignment: readers either see the old list or the fully built one.
-        self._catalog = catalog
-        self._signatures = signatures
-        self._manifest_dicts = manifest_dicts
+        # Single atomic assignment: the entire snapshot is replaced at once,
+        # so readers never see a mix of old and new state (e.g. a new manifest
+        # from the new catalog paired with an old signatures dict).
+        self._state = _CatalogState(
+            catalog=catalog,
+            signatures=signatures,
+            manifest_dicts=manifest_dicts,
+            signing_failures=frozenset(signing_failures),
+        )
 
     def reload(self) -> None:
         with self._catalog_lock:
             self._load_catalog()
+
+    def is_signing_failure(self, app_id: str) -> bool:
+        """Return True if *app_id* failed to sign during catalog load.
+
+        When signing is configured and a manifest fails to sign, the
+        install gate should block it rather than treating it as merely
+        unsigned (which would be a bypass).
+        """
+        self._ensure_loaded()
+        return app_id in self._state.signing_failures
 
     def set_signing_key(self, key: bytes | None) -> None:
         """Set (or clear) the signing key and reload the catalog.
