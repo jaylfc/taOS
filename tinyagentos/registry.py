@@ -154,6 +154,16 @@ class AppRegistry:
         with self._catalog_lock:
             self._load_catalog()
 
+    def set_signing_key(self, key: bytes | None) -> None:
+        """Set (or clear) the signing key and reload the catalog.
+
+        Call this after the keypair has been loaded (e.g. in the lifespan)
+        so the catalog is signed with the actual key.  Passing ``None``
+        disables signing.
+        """
+        self._signing_key = key
+        self.reload()
+
     def list_available(self, type_filter: str | None = None) -> list[AppManifest]:
         self._ensure_loaded()
         if type_filter:
@@ -183,19 +193,28 @@ class AppRegistry:
         catalog tampering — an attacker who modifies ``manifest.yaml`` after
         the server started will produce a mismatch and the install is blocked.
 
-        Returns ``True`` when the on-disk manifest matches the stored
-        signature.  Returns ``False`` when no signature was stored for this
-        app_id **or** when the current on-disk manifest does not verify
-        against the stored signature (i.e. the manifest was tampered with).
+        Returns ``True`` when:
 
-        Callers MUST check ``get_signature(app_id)`` to distinguish the two
-        cases: ``None`` = never signed (graceful skip), non-``None`` +
-        ``False`` = tampered (hard block).
+        * the on-disk manifest matches the stored signature (valid), **or**
+        * no signature was stored for this app (unsigned — fail-open).
+
+        Returns ``False`` only when a signature **was** stored but the
+        current on-disk manifest does not verify against it (tampered).
+
+        The fail-open policy for unsigned manifests is intentional: the
+        absence of a signature is not evidence of tampering, and rejecting
+        unsigned manifests would block every catalog entry that predates
+        the signing feature.  Once a manifest is signed, however, any
+        mismatch is treated as tampering and blocked with 403.
         """
         self._ensure_loaded()
         sig = self._signatures.get(app_id)
         if sig is None:
-            return False
+            # Never signed — fail-open.  The absence of a signature is
+            # not evidence of tampering (the manifest may predate the
+            # signing feature).  Callers that need to distinguish
+            # unsigned from verified can check get_signature(app_id).
+            return True
         manifest = self.get(app_id)
         if manifest is None or manifest.manifest_dir is None:
             return False

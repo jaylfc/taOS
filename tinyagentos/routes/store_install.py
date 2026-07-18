@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
@@ -771,6 +772,53 @@ async def install_app(request: Request):
             status_code=403,
         )
 
+    # TOCTOU guard: the signing gate above verified the signature against
+    # the on-disk manifest, but the install below uses the in-memory
+    # manifest object loaded at boot.  An attacker who swaps the on-disk
+    # file between verification and execution could bypass the gate.
+    # Re-read from disk and compare critical fields — if they differ,
+    # the manifest was modified after verification and the install is
+    # blocked.
+    _manifest_dir = getattr(manifest, "manifest_dir", None)
+    if _manifest_dir is not None and isinstance(_manifest_dir, Path):
+        disk_path = _manifest_dir / "manifest.yaml"
+        try:
+            import yaml as _yaml
+            on_disk = _yaml.safe_load(disk_path.read_text()) if disk_path.exists() else None
+        except Exception:
+            on_disk = None
+        if on_disk is not None:
+            # Compare the fields that affect install behaviour.
+            _disk_id = on_disk.get("id", "")
+            _disk_type = on_disk.get("type", "")
+            _disk_version = on_disk.get("version", "")
+            _disk_install = on_disk.get("install", {}) or {}
+            _disk_variants = on_disk.get("variants") or []
+            _mem_install = getattr(manifest, "install", {}) or {}
+            if (
+                _disk_id != manifest.id
+                or _disk_type != getattr(manifest, "type", "")
+                or _disk_version != getattr(manifest, "version", "")
+                or _disk_install.get("method") != (_mem_install.get("method") if isinstance(_mem_install, dict) else None)
+                or len(_disk_variants) != len(getattr(manifest, "variants", []) or [])
+            ):
+                progress.finish(
+                    install_id, success=False,
+                    error="manifest modified between signature verification and install",
+                )
+                return JSONResponse(
+                    {
+                        "error": "manifest modified between signature verification and install",
+                        "detail": (
+                            "The manifest on disk differs from the version that was "
+                            "verified. This may indicate post-verification tampering. "
+                            "Rebuild the catalog or reinstall the app from a trusted source."
+                        ),
+                        "install_id": install_id,
+                    },
+                    status_code=403,
+                )
+
     # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
     # musicgen pulls Meta's CC-BY-NC 4.0 weights). Block the install until the
@@ -927,7 +975,7 @@ async def install_app(request: Request):
                 ),
                 "install_id": install_id,
             },
-            status_code=500,
+            status_code=422,
         )
     model_installer = get_installer(install_method)
     install_config = dict(getattr(manifest, "install", None) or {})

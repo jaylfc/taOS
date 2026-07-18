@@ -526,6 +526,7 @@ class TestInstallV2:
         # 2. Build a real AppRegistry with a signing key.
         priv, pub = generate_signing_keypair()
         installed_path = Path(tempfile.mkstemp(suffix=".json")[1])
+        installed_path.write_text("[]")  # initialise with valid JSON
         reg = AppRegistry(
             catalog_dir=catalog_dir,
             installed_path=installed_path,

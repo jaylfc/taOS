@@ -97,13 +97,15 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
     """
     keyfile = data_dir / _KEYPAIR_FILE
     if keyfile.exists():
+        # Enforce restrictive permissions BEFORE reading so a key
+        # written under a loose umask is repaired before the bytes
+        # touch process memory.  A migration / backup-restore /
+        # manual chmod cannot leave the private key world/group-
+        # readable across a restart.
+        _enforce_permissions(keyfile)
         try:
             data = json.loads(keyfile.read_text())
             priv = data["private_pem"].encode()
-            # Enforce restrictive permissions on every load so a
-            # migration / backup-restore / manual chmod cannot leave
-            # the private key world/group-readable.
-            _enforce_permissions(keyfile)
             # Derive the public key from the loaded private key so
             # a keyfile whose public_pem was replaced still yields
             # the correct keypair (the private key is the root of

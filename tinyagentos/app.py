@@ -259,18 +259,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     from tinyagentos.store_signing import load_or_create_signing_keypair
 
+    # Keypair loading is deferred to the lifespan so a read-only data_dir
+    # does not block create_app().  The registry starts with signing_key=None;
+    # the lifespan will attempt to load the keypair and call
+    # registry.set_signing_key() if it succeeds.
     _store_priv: bytes | None = None
     _store_pub: bytes | None = None
-    try:
-        _store_priv, _store_pub = load_or_create_signing_keypair(data_dir)
-    except OSError:
-        logger.warning(
-            "store signing keypair could not be created (data_dir=%s may be "
-            "read-only) — catalog signatures will not be available",
-            data_dir,
-        )
     registry = AppRegistry(
-        catalog_dir=catalog_dir, installed_path=installed_path, signing_key=_store_priv,
+        catalog_dir=catalog_dir, installed_path=installed_path, signing_key=None,
     )
 
     from tinyagentos.agent_registry_store import AgentRegistryStore, load_or_create_signing_keypair
@@ -1505,6 +1501,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.fallback = fallback
     app.state.scheduler = scheduler
     app.state.registry = registry
+    # Load the store signing keypair lazily here in the lifespan, not in
+    # create_app(), so a read-only data_dir does not brick startup.
+    # When the keypair cannot be loaded (missing cryptography, unwritable
+    # data_dir), signing is simply disabled — the install gate falls
+    # through to unsigned (fail-open) and the pubkey endpoint returns 404.
+    _store_pub: bytes | None = None
+    try:
+        _store_priv, _store_pub = load_or_create_signing_keypair(data_dir)
+        if _store_priv is not None:
+            registry.set_signing_key(_store_priv)
+    except OSError:
+        logger.warning(
+            "store signing keypair could not be created (data_dir=%s may be "
+            "read-only) — catalog signatures will not be available",
+            data_dir,
+        )
     app.state.store_signing_pubkey = _store_pub
     app.state.hardware_profile = hardware_profile
     app.state.cluster_manager = cluster_manager
