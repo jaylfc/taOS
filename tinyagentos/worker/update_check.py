@@ -274,9 +274,12 @@ class WorkerUpdateService:
 
     async def _loop(self) -> None:
         """Main loop: small initial delay, then poll on configured interval."""
-        # Small initial delay so we don't slam the endpoint on startup.
+        # Initial delay: use the configured interval, capped at 90 s
+        # so we don't slam the endpoint on startup.
+        config = load_config(self._state_dir)
+        initial_delay = min(config.check_interval, 90)
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=90)
+            await asyncio.wait_for(self._stop_event.wait(), timeout=initial_delay)
             return
         except asyncio.TimeoutError:
             pass
@@ -336,8 +339,6 @@ class WorkerUpdateService:
         if not latest_version:
             return
 
-        self._latest_version = latest_version
-
         # --- Version comparison ---
         # Pin check: if pinned, only consider versions <= pinned
         if not version_matches_pin(latest_version, config.pinned_version):
@@ -363,6 +364,9 @@ class WorkerUpdateService:
             self._update_available = False
             self._update_message = ""
             return
+
+        # All checks passed — record the latest available version.
+        self._latest_version = latest_version
 
         # Avoid re-notifying for a version we've already flagged.
         if config.last_notified_version == latest_version:
