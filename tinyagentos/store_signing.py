@@ -93,9 +93,17 @@ def _enforce_permissions(keyfile: Path) -> None:
     as 0600, allowing the caller to disable signing rather than read a
     potentially group/world-readable private key.
     """
-    if (keyfile.stat().st_mode & 0o777) != 0o600:
+    try:
+        mode = keyfile.stat().st_mode & 0o777
+    except OSError as exc:
+        raise PermissionError(f"cannot stat keyfile {keyfile}: {exc}")
+    if mode != 0o600:
         os.chmod(keyfile, 0o600)
-    if (keyfile.stat().st_mode & 0o777) != 0o600:
+    try:
+        mode_after = keyfile.stat().st_mode & 0o777
+    except OSError as exc:
+        raise PermissionError(f"cannot stat keyfile {keyfile}: {exc}")
+    if mode_after != 0o600:
         raise PermissionError(f"cannot enforce 0600 permissions on {keyfile}")
 
 
