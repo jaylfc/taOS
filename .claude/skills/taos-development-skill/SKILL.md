@@ -191,15 +191,19 @@ findings **before** surfacing the PR for human maintainer review.
 ### Procedure
 
 1. **Push PR and mark ready.** Wait ~10 minutes for bot reviews to complete.
-2. **Pull bot findings - reviews AND inline comments, all bots.** Bot logins have NO `[bot]`
-   suffix in the JSON (`kilo-code-bot`, `gitar-bot`, `coderabbitai`, `qodo-code-review`):
+2. **Pull bot findings - reviews AND inline comments, all bots.** The login FORM differs by API
+   surface, so filter accordingly: the GraphQL command (`gh pr view --json`) returns BARE logins
+   (`kilo-code-bot`, `gitar-bot`, `coderabbitai`, `qodo-code-review`), while the REST command
+   (`gh api .../comments`) returns the `[bot]`-suffixed form (`kilo-code-bot[bot]`). The GraphQL
+   filter below uses a substring `test()` so it matches the bare form; the REST command does not
+   filter, so the suffix is harmless there.
    ```bash
-   # Review summaries + issue comments:
+   # Review summaries + issue comments (GraphQL, bare logins):
    gh pr view <PR#> --repo jaylfc/taOS --json reviews,comments --jq \
      '(.reviews[], .comments[]) | select((.author.login? // "") | test("kilo-code-bot|gitar-bot|coderabbitai|qodo")) | {login: .author.login, body: .body}'
-   # Inline (line-anchored) review comments - Kilo/CodeRabbit post most findings here:
+   # Inline (line-anchored) review comments (REST, [bot]-suffixed) - Kilo/CodeRabbit post most findings here:
    gh api repos/jaylfc/taOS/pulls/<PR#>/comments --jq \
-     '.[] | {login: .user.login, path, line, body}'
+     '.[] | {login: (.user.login? // ""), path, line, body}'
    ```
    Check which commit SHA each bot actually reviewed - a "pass" on a stale commit is not a pass
    on your head.
