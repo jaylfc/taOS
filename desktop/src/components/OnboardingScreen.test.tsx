@@ -8,7 +8,7 @@ const okJson = (body: unknown) =>
     headers: { "Content-Type": "application/json" },
   });
 
-/** Fill and submit the first-run account form so we reach the username step. */
+/** Fill and submit the first-run account setup form. */
 async function completeAccountStep() {
   fireEvent.change(screen.getByLabelText(/^Username/), {
     target: { value: "jay" },
@@ -42,13 +42,25 @@ describe("OnboardingScreen username step (slice 5)", () => {
     expect(screen.getByRole("button", { name: "Get started" })).toBeInTheDocument();
   });
 
-  it("advances to the free username step after account creation", async () => {
+  it("finishes onboarding after account creation (username step gated off, #141)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(okJson({ ok: true }));
-    render(<OnboardingScreen onDone={() => {}} />);
+    const onDone = vi.fn();
+    render(<OnboardingScreen onDone={onDone} />);
     await completeAccountStep();
-    expect(await screen.findByText("Claim your free taOS username")).toBeInTheDocument();
-    expect(screen.getByLabelText("taOS username")).toBeInTheDocument();
+    // The taos.my username-claim step is gated off until its backend exists, so
+    // account creation completes onboarding directly rather than advancing.
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(screen.queryByText("Claim your free taOS username")).not.toBeInTheDocument();
   });
+});
+
+// The free-username-claim step is gated off in OnboardingScreen until its
+// backend route (/api/account/username) lands (#141). The UsernameStep code and
+// these tests are kept as-is so the flow can be re-enabled by restoring
+// setStep("username"); they are skipped meanwhile so CI stays green.
+describe.skip("OnboardingScreen username step (gated off, #141)", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  beforeEach(() => { vi.restoreAllMocks(); });
 
   it("labels the username step as free and defers the paid subdomain upsell to Settings", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(okJson({ ok: true }));
