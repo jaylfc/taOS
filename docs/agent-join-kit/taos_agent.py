@@ -80,6 +80,12 @@ def _req(base, path, payload=None, method=None):
     return json.loads(body) if body else {}
 
 
+def _msgs(channel, limit=5):
+    """Recent messages on an A2A channel, tolerant of list-or-dict responses."""
+    d = _req(BUS, f"/a2a/messages?thread={channel}&limit={limit}")
+    return d if isinstance(d, list) else d.get("messages", [])
+
+
 def _claimable(t):
     """A card this agent may pick up: open, unclaimed, labelled `claimable`, and
     in the open pool (@any / unassigned) or assigned to this agent."""
@@ -93,17 +99,35 @@ def _claimable(t):
     return asg in ("", "@any", "@all", "unassigned", "none") or asg == ME.lower()
 
 
+# Universal channels every agent monitors, regardless of project membership:
+# `general` (announcements / coordination) and `agent-rules` (the standing rules
+# all agents follow). Extra channels to watch (e.g. your project's build channel)
+# can be added via TAOS_WATCH (comma-separated).
+UNIVERSAL = ("general", "agent-rules")
+
+
 def cmd_check():
-    # A2A mentions (best effort; skip silently if the bus is not reachable).
+    # A2A, best effort (skip silently if the bus is down):
+    #  1. Universal channels -- latest messages, so you stay aware of
+    #     announcements and rule changes even without being mentioned.
+    #  2. Any @mention of you in ANY channel -- including a project you are NOT a
+    #     member of, where you may REPLY on that thread only (never claim or work
+    #     that project's board).
     if BUS:
+        watch = set(UNIVERSAL) | {
+            c.strip() for c in (os.environ.get("TAOS_WATCH") or "").split(",") if c.strip()
+        }
         try:
-            chans = _req(BUS, "/a2a/channels").get("channels", [])
-            for ch in chans:
-                name = ch.get("channel")
-                msgs = _req(BUS, f"/a2a/messages?thread={name}&limit=5")
-                for m in (msgs if isinstance(msgs, list) else msgs.get("messages", [])):
+            names = [c.get("channel") for c in _req(BUS, "/a2a/channels").get("channels", [])]
+            for name in names:
+                if name not in watch:
+                    continue
+                for m in _msgs(name)[-3:]:
+                    print(f"[watch:{name}] {m.get('from')}: {(m.get('body') or '')[:200]}")
+            for name in names:
+                for m in _msgs(name):
                     if ME.lower() in (m.get("body") or "").lower():
-                        print(f"[a2a:{name}] {m.get('from')}: {m.get('body', '')[:200]}")
+                        print(f"[mention:{name}] {m.get('from')}: {(m.get('body') or '')[:200]}")
         except Exception:
             pass
     # Next claimable board card (highest priority first).
