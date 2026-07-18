@@ -20,9 +20,22 @@
  * - Idempotent install — calling installAuthGuard() twice is a no-op.
  */
 
-import { withCsrf } from "./csrf";
+import { withCsrf, getCsrfToken } from "./csrf";
 
 const SESSION_EXPIRED_EVENT = "taos-session-expired";
+const CSRF_MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+// Same-origin iff the resolved URL origin matches this page's. Parse the URL
+// (not a string prefix, which a protocol-relative //evil.example or a lookalike
+// host <origin>.evil.com would defeat, leaking the token).
+function isSameOrigin(u: string): boolean {
+  try {
+    if (typeof window === "undefined" || !window.location) return false;
+    return new URL(u, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
 
 // API prefixes whose 401s do NOT mean the controller session expired.
 // /api/account/* proxies to the taos.my cloud account, a separate auth
@@ -50,31 +63,34 @@ export function installAuthGuard(): void {
   ): Promise<Response> {
     // Attach the CSRF double-submit header to same-origin mutating requests so
     // the backend's router-wide verify_csrf gate is satisfied at every call
-    // site, not only the handful that wrap withCsrf() by hand. withCsrf is a
-    // no-op for non-mutating methods and when no csrf_token cookie is present,
-    // and never overwrites an X-CSRF-Token a caller already set. Gated to
-    // same-origin (relative paths or this origin) so the token is never sent to
-    // an external host. Request-object callers already carry their own headers.
+    // site, not only the handful that wrap withCsrf() by hand. Covers both
+    // string/URL inputs (via withCsrf on init) and Request-object inputs (by
+    // rebuilding the Request with the header). Gated to same-origin so the token
+    // never leaks off-site; never overwrites an X-CSRF-Token a caller already set.
+    let effectiveInput: RequestInfo | URL = input;
     let effectiveInit = init;
-    let reqUrl = "";
-    if (typeof input === "string") reqUrl = input;
-    else if (input instanceof URL) reqUrl = input.toString();
-    else if (input && typeof (input as Request).url === "string") reqUrl = (input as Request).url;
-    if (typeof input !== "object" || input instanceof URL) {
-      // Resolve to an absolute origin and compare exactly. A prefix check would
-      // be bypassable by a protocol-relative URL (//evil.example) or a lookalike
-      // host (https://<origin>.evil.com), either of which would leak the token.
-      let sameOrigin = false;
+    if (typeof input === "string" || input instanceof URL) {
+      if (isSameOrigin(input.toString())) effectiveInit = withCsrf(init);
+    } else if (typeof Request !== "undefined" && input instanceof Request) {
       try {
-        if (typeof window !== "undefined" && window.location) {
-          sameOrigin = new URL(reqUrl, window.location.href).origin === window.location.origin;
+        const method = (input.method || "GET").toUpperCase();
+        if (
+          CSRF_MUTATING.has(method) &&
+          isSameOrigin(input.url) &&
+          !input.headers.has("X-CSRF-Token")
+        ) {
+          const token = getCsrfToken();
+          if (token) {
+            const headers = new Headers(input.headers);
+            headers.set("X-CSRF-Token", token);
+            effectiveInput = new Request(input, { headers });
+          }
         }
       } catch {
-        sameOrigin = false;
+        effectiveInput = input;
       }
-      if (sameOrigin) effectiveInit = withCsrf(init);
     }
-    const response = await originalFetch(input, effectiveInit);
+    const response = await originalFetch(effectiveInput, effectiveInit);
     if (response.status === 401) {
       let url = "";
       if (typeof input === "string") url = input;
