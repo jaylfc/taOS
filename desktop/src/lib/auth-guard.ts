@@ -20,6 +20,8 @@
  * - Idempotent install — calling installAuthGuard() twice is a no-op.
  */
 
+import { withCsrf } from "./csrf";
+
 const SESSION_EXPIRED_EVENT = "taos-session-expired";
 
 // API prefixes whose 401s do NOT mean the controller session expired.
@@ -46,7 +48,26 @@ export function installAuthGuard(): void {
     input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> {
-    const response = await originalFetch(input, init);
+    // Attach the CSRF double-submit header to same-origin mutating requests so
+    // the backend's router-wide verify_csrf gate is satisfied at every call
+    // site, not only the handful that wrap withCsrf() by hand. withCsrf is a
+    // no-op for non-mutating methods and when no csrf_token cookie is present,
+    // and never overwrites an X-CSRF-Token a caller already set. Gated to
+    // same-origin (relative paths or this origin) so the token is never sent to
+    // an external host. Request-object callers already carry their own headers.
+    let effectiveInit = init;
+    let reqUrl = "";
+    if (typeof input === "string") reqUrl = input;
+    else if (input instanceof URL) reqUrl = input.toString();
+    else if (input && typeof (input as Request).url === "string") reqUrl = (input as Request).url;
+    if (typeof input !== "object" || input instanceof URL) {
+      const sameOrigin =
+        reqUrl.startsWith("/") ||
+        (typeof window !== "undefined" && !!window.location &&
+          reqUrl.startsWith(window.location.origin));
+      if (sameOrigin) effectiveInit = withCsrf(init);
+    }
+    const response = await originalFetch(input, effectiveInit);
     if (response.status === 401) {
       let url = "";
       if (typeof input === "string") url = input;
