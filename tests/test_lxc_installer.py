@@ -78,7 +78,7 @@ class TestLXCInstallerHappyPath:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13000,
             ),
         ):
@@ -130,7 +130,7 @@ class TestLXCInstallerHappyPath:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13001,
             ),
         ):
@@ -179,7 +179,7 @@ class TestLXCInstallerHappyPath:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13500,
             ),
         ):
@@ -239,7 +239,7 @@ class TestLXCInstallerRestoreMode:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13002,
             ),
         ):
@@ -302,7 +302,7 @@ class TestLXCInstallerRestoreMode:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13003,
             ),
         ):
@@ -367,7 +367,7 @@ class TestLXCInstallerRestoreMode:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13004,
             ),
         ):
@@ -427,7 +427,7 @@ class TestLXCInstallerRestoreMode:
                 return_value={"success": True},
             ),
             patch(
-                "tinyagentos.installers.lxc_installer._find_free_port",
+                "tinyagentos.installers.lxc_installer.allocate_host_port",
                 return_value=13005,
             ),
         ):
