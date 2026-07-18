@@ -58,6 +58,11 @@ _AGENT_TASK_ROUTES = (
     # PATCH (free task-field mutation) is intentionally NOT here: it is broader
     # than the "read + lifecycle + comments" the project_tasks scope documents.
     ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/(claim|release|close|reopen)$")),
+    # Mark-claimable curation: reachable by a Bearer token, but the handler
+    # (_authorize_project_lead) then restricts it to THIS project's LEAD agent --
+    # a plain project_tasks worker is refused. Toggles only the "claimable"
+    # label, so it does not widen the scope into free field edits (cf. PATCH).
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}/claimable$")),
 )
 
 _AGENT_CANVAS_ROUTES = (

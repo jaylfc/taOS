@@ -448,3 +448,71 @@ class TestAgentElementFilter:
             )
         assert resp.status_code == 200
         assert [t["id"] for t in resp.json()["items"]] == [tagged]
+
+
+@pytest.mark.asyncio
+class TestLeadAgentMarkClaimable:
+    """The project LEAD agent may flag cards claimable; a non-lead project_tasks
+    agent may not (curation is lead-only, narrower than the read/claim scope)."""
+
+    async def test_lead_agent_marks_and_unmarks_claimable(self, ctx):
+        pid = await _new_project(ctx, "claimable-lead")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            on = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": True},
+                headers=_hdr(token),
+            )
+            assert on.status_code == 200, on.text
+            assert "claimable" in on.json()["labels"]
+            off = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": False},
+                headers=_hdr(token),
+            )
+            assert off.status_code == 200
+            assert "claimable" not in off.json()["labels"]
+
+    async def test_non_lead_agent_cannot_mark_claimable(self, ctx):
+        pid = await _new_project(ctx, "claimable-nonlead")
+        tid = await _new_task(ctx, pid)
+        _cid, token = await _mint_agent(ctx, pid)  # project_tasks but NOT the lead
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": True},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 404, resp.text  # existence-hiding refusal
+
+    async def test_claimable_preserves_other_labels(self, ctx):
+        pid = await _new_project(ctx, "claimable-preserve")
+        tid = await _new_task(ctx, pid)
+        await ctx.client.patch(
+            f"/api/projects/{pid}/tasks/{tid}", json={"labels": ["urgent"]}
+        )
+        cid, token = await _mint_agent(ctx, pid)
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks/{tid}/claimable",
+                json={"claimable": True},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200, resp.text
+        labels = resp.json()["labels"]
+        assert "claimable" in labels and "urgent" in labels
+
+    async def test_session_owner_marks_claimable(self, ctx):
+        pid = await _new_project(ctx, "claimable-owner")
+        tid = await _new_task(ctx, pid)
+        resp = await ctx.client.post(
+            f"/api/projects/{pid}/tasks/{tid}/claimable", json={"claimable": True}
+        )
+        assert resp.status_code == 200, resp.text
+        assert "claimable" in resp.json()["labels"]

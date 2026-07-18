@@ -489,6 +489,52 @@ async def _authorize_task_actor(
     return (caller, True, project)
 
 
+async def _authorize_project_lead(
+    request: Request, pstore, project_id: str
+) -> "tuple[str, bool, dict] | JSONResponse":
+    """Authorize a LEAD-only curation action (mark a card claimable).
+
+    Accepts EITHER a session owner/admin OR the project's LEAD agent's registry
+    JWT (scope ``project_tasks`` bound to THIS project AND the agent is this
+    project's ``lead_member_id``).  This is deliberately narrower than
+    ``_authorize_task_actor``: a plain ``project_tasks`` agent (a worker lane)
+    can claim/work cards but may NOT curate the board.  Only the lead flags
+    which cards the fleet may pick up.
+
+    Mirrors ``_authorize_task_actor``'s existence-hiding 404 for every refusal
+    (non-owner session, wrong-project token, or a non-lead agent) so a caller
+    can never distinguish "exists but I am not the lead" from "does not exist".
+    """
+    uid = getattr(request.state, "user_id", None)
+    if uid:
+        user = CurrentUser(
+            user_id=uid, is_admin=bool(getattr(request.state, "is_admin", False))
+        )
+        project_or_err = await _get_owned_project(pstore, project_id, user)
+        if isinstance(project_or_err, JSONResponse):
+            return project_or_err
+        return (user.user_id, False, project_or_err)
+
+    try:
+        caller = await check_agent_scope_for_project(
+            request, "project_tasks", project_id
+        )
+    except HTTPException as exc:
+        if exc.status_code == 403 and exc.detail == PROJECT_SCOPE_MISMATCH_DETAIL:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        raise
+    if caller is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    project = await pstore.get_project(project_id)
+    if project is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Curation is lead-only: a non-lead agent (even one holding project_tasks)
+    # is collapsed into the same existence-hiding 404 as a non-owner session.
+    if project.get("lead_member_id") != caller:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return (caller, True, project)
+
+
 def _resolve_actor(
     is_agent: bool, actor_id: str, body_actor: "str | None"
 ) -> "str | None | JSONResponse":
@@ -708,6 +754,51 @@ async def claim_task(
     notifs = getattr(request.app.state, "notifications", None)
     if notifs is not None:
         await notifs.emit_event("task.claimed", "Task claimed", f"{task_id} claimed by {claimer_id}")
+    return await store.get_task(task_id)
+
+
+class MarkClaimableIn(BaseModel):
+    claimable: bool
+
+
+@router.post("/api/projects/{project_id}/tasks/{task_id}/claimable")
+async def mark_task_claimable(
+    project_id: str,
+    task_id: str,
+    payload: MarkClaimableIn,
+    request: Request,
+):
+    """Add or remove the ``claimable`` label on a task (fleet-pickup flag).
+
+    LEAD-only curation: a project LEAD (session owner/admin, or the lead agent's
+    ``project_tasks`` token) flags which cards the build fleet may pick up. This
+    is deliberately narrower than PATCH ``update_task`` (which stays session-only
+    per #1774): it touches ONLY the ``claimable`` label and preserves every other
+    label, so granting it to the lead agent does not widen the ``project_tasks``
+    scope into free field edits.
+    """
+    pstore = request.app.state.project_store
+    auth = await _authorize_project_lead(request, pstore, project_id)
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, _is_agent, _project = auth
+    store = request.app.state.project_task_store
+    existing = await store.get_task(task_id)
+    if existing is None or existing["project_id"] != project_id:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    labels = list(existing.get("labels") or [])
+    has = "claimable" in labels
+    if payload.claimable and not has:
+        labels.append("claimable")
+    elif not payload.claimable and has:
+        labels = [lbl for lbl in labels if lbl != "claimable"]
+    else:
+        return await store.get_task(task_id)  # already in the requested state
+    await store.update_task(task_id, labels=labels)
+    _beads_mark_dirty(request, project_id)
+    await pstore.log_activity(
+        project_id, actor_id, "task.claimable", {"task_id": task_id, "claimable": payload.claimable}
+    )
     return await store.get_task(task_id)
 
 
