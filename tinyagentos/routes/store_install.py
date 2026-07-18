@@ -204,6 +204,40 @@ def _registry_get(registry, app_id: str):
     return registry.get(app_id)
 
 
+def _verify_manifest_for_install(
+    manifest_id: str,
+    registry,
+    store_signing_pubkey: bytes | None,
+) -> tuple[bool, str | None]:
+    """Verify a manifest's Ed25519 signature before installing.
+
+    Returns ``(allowed, error_detail)``:
+    - ``(True, None)`` — proceed with install.
+    - ``(False, reason)`` — block install with the given error string.
+
+    When the signing pubkey is not configured, the gate is skipped (allowed).
+    When a manifest has no stored signature (e.g. it was catalog-loaded
+    before signing was enabled), the gate is also skipped (allowed) rather
+    than returning a hard 403 — the absence of a signature is not evidence
+    of tampering.
+    """
+    if store_signing_pubkey is None or registry is None:
+        return True, None
+    if not hasattr(registry, "verify_manifest_signature"):
+        return True, None
+
+    stored_sig = registry.get_signature(manifest_id)
+    if stored_sig is None:
+        # Never signed — manifest was loaded before signing was enabled.
+        # Skip the gate; absence of a signature is not evidence of tampering.
+        return True, None
+
+    if not registry.verify_manifest_signature(manifest_id, store_signing_pubkey):
+        return False, "manifest signature verification failed"
+
+    return True, None
+
+
 async def _install_agent_framework(
     request: Request, manifest, app_id: str, meta: dict, body: dict,
 ) -> JSONResponse:
@@ -704,33 +738,38 @@ async def install_app(request: Request):
         return await _legacy_install(request, body, manifest_id, target_remote)
 
     # Code-signing gate (#647): verify the catalog manifest's Ed25519
-    # signature against the store signing public key.  A manifest that was
-    # tampered with on disk after the server signed it at boot will fail
-    # here, blocking any install that would pull untrusted scripts or images.
+    # signature against the store signing public key.  Re-reads the
+    # manifest from disk at install time so post-boot tampering is
+    # detected.  Manifests that were catalog-loaded without a signing
+    # key configured are allowed through — no stored signature means
+    # no tampering evidence.
     #
     # Threat model: this protects against post-boot *catalog* tampering
-    # (an attacker modifying a manifest on disk while the server is running).
-    # It does NOT protect against an attacker who can also replace the
-    # signing keyfile and then restart the server — that is the OS-level
-    # trust boundary.  For defence-in-depth, deploy the keyfile on a
-    # read-only filesystem or use a hardware-backed key store.
+    # (an attacker modifying a manifest on disk while the server is
+    # running).  It does NOT protect against an attacker who can also
+    # replace the signing keyfile and then restart the server — that is
+    # the OS-level trust boundary.  For defence-in-depth, deploy the
+    # keyfile on a read-only filesystem or use a hardware-backed key
+    # store.
     _store_pub = getattr(request.app.state, "store_signing_pubkey", None)
-    if _store_pub is not None and registry is not None and hasattr(registry, "verify_manifest_signature"):
-        if not registry.verify_manifest_signature(manifest_id, _store_pub):
-            progress.finish(
-                install_id, success=False,
-                error="manifest signature verification failed — the catalog may have been tampered with",
-            )
-            return JSONResponse(
-                {
-                    "error": "manifest signature verification failed",
-                    "detail": "The catalog manifest for this app failed signature verification. "
-                              "The app may have been tampered with. Rebuild the catalog or "
-                              "reinstall the app from a trusted source.",
-                    "install_id": install_id,
-                },
-                status_code=403,
-            )
+    verified, verify_err = _verify_manifest_for_install(
+        manifest_id, registry, _store_pub,
+    )
+    if not verified:
+        progress.finish(
+            install_id, success=False,
+            error=verify_err or "manifest signature verification failed — the catalog may have been tampered with",
+        )
+        return JSONResponse(
+            {
+                "error": verify_err or "manifest signature verification failed",
+                "detail": "The catalog manifest for this app failed signature verification. "
+                          "The app may have been tampered with. Rebuild the catalog or "
+                          "reinstall the app from a trusted source.",
+                "install_id": install_id,
+            },
+            status_code=403,
+        )
 
     # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
@@ -821,6 +860,25 @@ async def install_app(request: Request):
             return JSONResponse(
                 {"error": f"backend {result.backend_id!r} has no install.method", "install_id": install_id},
                 status_code=500,
+            )
+        # Verify the backend manifest's signature before running its installer.
+        # A backend manifest that was tampered with after catalog load would
+        # run an untrusted script/image — reject it here.
+        be_verified, be_verify_err = _verify_manifest_for_install(
+            result.backend_id, registry, _store_pub,
+        )
+        if not be_verified:
+            progress.finish(
+                install_id, success=False,
+                error=be_verify_err or "backend manifest signature verification failed",
+            )
+            return JSONResponse(
+                {
+                    "error": be_verify_err or "backend manifest signature verification failed",
+                    "detail": f"The backend manifest for {result.backend_id!r} failed signature verification.",
+                    "install_id": install_id,
+                },
+                status_code=403,
             )
         backend_installer = get_installer(backend_method)
         be_result = await backend_installer.install(

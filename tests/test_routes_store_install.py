@@ -494,6 +494,86 @@ class TestInstallV2:
         assert "chain" in body
 
     @pytest.mark.asyncio
+    async def test_real_registry_detects_post_load_tampering(self, client):
+        """End-to-end test: a real AppRegistry re-reads the manifest from
+        disk at install time and rejects a manifest that was tampered with
+        after catalog load with 403.
+
+        Unlike the mocked tests above that stub verify_manifest_signature,
+        this exercises the full path: sign-at-load, mutate-the-file,
+        verify-at-install.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        # 1. Create a catalog directory with one service manifest on disk.
+        catalog_dir = Path(tempfile.mkdtemp())
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\n"
+            "name: Test Service\n"
+            "type: service\n"
+            "version: \"1.0\"\n"
+            "install:\n"
+            "  method: download\n",
+        )
+
+        # 2. Build a real AppRegistry with a signing key.
+        priv, pub = generate_signing_keypair()
+        installed_path = Path(tempfile.mkstemp(suffix=".json")[1])
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        # Load the catalog to populate _signatures.
+        reg._ensure_loaded()
+        assert reg.get_signature("test-svc") is not None, (
+            "expected a stored signature for test-svc"
+        )
+
+        # 3. Wire the real registry into the app state.
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        # 4. Before tampering: the signature should verify and the install
+        # proceeds past the gate.  (The legacy installer may fail because
+        # there is no real download URL, but the HTTP status is NOT 403.)
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code != 403, (
+            f"expected install to pass the signing gate, got 403: {resp.json()}"
+        )
+
+        # 5. Tamper with the manifest on disk.
+        manifest_path.write_text(
+            "id: test-svc\n"
+            "name: EVIL Service\n"
+            "type: service\n"
+            "version: \"1.0\"\n"
+            "install:\n"
+            "  method: download\n",
+        )
+
+        # 6. Now the install MUST be rejected with 403.
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code == 403, (
+            f"expected 403 after tampering, got {resp.status_code}: {resp.json()}"
+        )
+        body = resp.json()
+        assert body["error"] == "manifest signature verification failed"
+        assert "install_id" in body
+
+    @pytest.mark.asyncio
     async def test_no_signing_key_skips_verification(self, client):
         """When store_signing_pubkey is not set, the signing gate is
         skipped and the install proceeds normally."""

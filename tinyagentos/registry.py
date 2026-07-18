@@ -177,24 +177,38 @@ class AppRegistry:
     def verify_manifest_signature(self, app_id: str, public_pem: bytes) -> bool:
         """Re-verify the stored signature for *app_id* against *public_pem*.
 
-        Returns False when the manifest has no signature or verification fails.
-        This is called by install-v2 to detect post-boot catalog tampering.
+        **Re-reads the manifest from disk at verify time**, then checks the
+        stored Ed25519 signature (computed at catalog-load time) against the
+        canonical bytes of the current on-disk YAML.  This detects post-boot
+        catalog tampering — an attacker who modifies ``manifest.yaml`` after
+        the server started will produce a mismatch and the install is blocked.
 
-        When the catalog was loaded without a signing key (e.g. a test
-        instance or a deployment that hasn't enabled signing yet),
-        ``install-v2`` skips this gate entirely by checking
-        ``store_signing_pubkey`` on app state — so this method's False
-        return does not inadvertently block installs in that case.
+        Returns ``True`` when the on-disk manifest matches the stored
+        signature.  Returns ``False`` when no signature was stored for this
+        app_id **or** when the current on-disk manifest does not verify
+        against the stored signature (i.e. the manifest was tampered with).
+
+        Callers MUST check ``get_signature(app_id)`` to distinguish the two
+        cases: ``None`` = never signed (graceful skip), non-``None`` +
+        ``False`` = tampered (hard block).
         """
         self._ensure_loaded()
-        manifest_dict = self._manifest_dicts.get(app_id)
         sig = self._signatures.get(app_id)
-        if manifest_dict is None or sig is None:
-            # No signature stored (e.g. signing key not available at load time).
+        if sig is None:
+            return False
+        manifest = self.get(app_id)
+        if manifest is None or manifest.manifest_dir is None:
+            return False
+        manifest_path = manifest.manifest_dir / "manifest.yaml"
+        if not manifest_path.exists():
+            return False
+        try:
+            on_disk = yaml.safe_load(manifest_path.read_text())
+        except (yaml.YAMLError, OSError):
             return False
         from tinyagentos.store_signing import verify_manifest_signature
 
-        return verify_manifest_signature(manifest_dict, sig, public_pem)
+        return verify_manifest_signature(on_disk, sig, public_pem)
 
     def _read_installed(self) -> list[dict]:
         if not self.installed_path.exists():

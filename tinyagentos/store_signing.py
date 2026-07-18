@@ -99,13 +99,19 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
         try:
             data = json.loads(keyfile.read_text())
             priv = data["private_pem"].encode()
-            pub = data["public_pem"].encode()
             # Enforce restrictive permissions on every load so a
             # migration / backup-restore / manual chmod cannot leave
             # the private key world/group-readable.
             _enforce_permissions(keyfile)
-            # Sanity-check: can we deserialize the key?
-            _load_private_key(priv)
+            # Derive the public key from the loaded private key so
+            # a keyfile whose public_pem was replaced still yields
+            # the correct keypair (the private key is the root of
+            # trust, not its companion field).
+            key = _load_private_key(priv)
+            pub = key.public_key().public_bytes(
+                encoding=Encoding.PEM,
+                format=PublicFormat.SubjectPublicKeyInfo,
+            )
             return priv, pub
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
             logger.warning(
@@ -117,10 +123,43 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
     payload = json.dumps(
         {"private_pem": priv.decode(), "public_pem": pub.decode()},
     )
-    # Atomic write + restrictive permissions (mirrors hub identity).
+
+    # Atomic creation with exclusive open + restrictive permissions.
+    # O_CREAT|O_EXCL guarantees at most one process wins the race;
+    # the loser loads the winner's key instead of overwriting it.
+    # The file descriptor starts with mode 0o600 so there is never
+    # a world-readable window — no separate chmod call is needed.
+    import os as _os_module
+    import time as _time
+
     tmp = keyfile.with_suffix(keyfile.suffix + ".tmp")
-    tmp.write_text(payload)
-    os.chmod(tmp, 0o600)
+    try:
+        fd = _os_module.open(tmp, _os_module.O_CREAT | _os_module.O_EXCL | _os_module.O_WRONLY, 0o600)
+    except FileExistsError:
+        # Another process is creating the keypair.  Wait for the
+        # winner to promote tmp→keyfile, then load its result.
+        for _ in range(30):  # up to 3 s
+            _time.sleep(0.1)
+            if keyfile.exists():
+                return load_or_create_signing_keypair(data_dir)
+        # After a reasonable wait the keyfile still does not exist.
+        # Remove the stale tmp (the competing process may have
+        # crashed or is stuck) and create our own.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            fd = _os_module.open(tmp, _os_module.O_CREAT | _os_module.O_EXCL | _os_module.O_WRONLY, 0o600)
+        except FileExistsError:
+            if keyfile.exists():
+                return load_or_create_signing_keypair(data_dir)
+            raise
+    # Write and atomically promote.
+    try:
+        _os_module.write(fd, payload.encode("utf-8"))
+    finally:
+        _os_module.close(fd)
     os.replace(tmp, keyfile)
     logger.info("store signing keypair created at %s", keyfile)
     return priv, pub

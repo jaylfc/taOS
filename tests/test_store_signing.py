@@ -46,8 +46,11 @@ class TestSignAndVerify:
 
     def test_verify_tampered_signature(self):
         sig = sign_manifest(self.manifest, self.priv)
-        # Flip a byte in the signature
-        bad_sig = sig[:-2] + "ff"
+        # Flip the last byte so it ALWAYS differs from the original.
+        # sig[:-2]+"ff" fails ~1/256 of the time when the last byte
+        # already happens to be "ff".
+        last_byte = int(sig[-2:], 16) ^ 0x01
+        bad_sig = sig[:-2] + f"{last_byte:02x}"
         assert not verify_manifest_signature(self.manifest, bad_sig, self.pub)
 
     def test_verify_tampered_manifest(self):
