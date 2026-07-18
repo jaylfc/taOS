@@ -1,3 +1,5 @@
+import { withCsrf } from "@/lib/csrf";
+
 export type Project = {
   id: string;
   name: string;
@@ -133,11 +135,14 @@ export type TaskContext = {
 };
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(path, {
+  // withCsrf attaches X-CSRF-Token on mutating methods (POST/PUT/PATCH/DELETE);
+  // without it, cookie-authenticated project create/update/delete 403 with
+  // "CSRF token missing". Non-mutating GETs pass through unchanged.
+  const r = await fetch(path, withCsrf({
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
-  });
+  }));
   if (!r.ok) {
     const text = await r.text().catch(() => r.statusText);
     throw new Error(`${r.status}: ${text}`);
