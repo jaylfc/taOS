@@ -7,7 +7,7 @@ import socket
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from tinyagentos.agent_registry_store import _slugify
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
@@ -39,7 +39,21 @@ class MintOsInviteIn(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     approval_mode: str = Field(default="auto", pattern="^(auto|manual)$")
     check_interval_secs: int = Field(default=1800, ge=60)
-    display_name: str | None = None
+    display_name: str | None = Field(default=None, max_length=64)
+
+    @field_validator("display_name")
+    @classmethod
+    def _clean_display_name(cls, v: str | None) -> str | None:
+        # Stored verbatim and echoed back, so trim and reject control chars;
+        # an all-whitespace alias collapses to None (no alias).
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if any(ord(c) < 0x20 for c in v):
+            raise ValueError("display_name must not contain control characters")
+        return v
 
 
 class RedeemInviteIn(BaseModel):
@@ -61,6 +75,12 @@ class RedeemInviteIn(BaseModel):
 # suffix is the fallback for same-harness/same-label re-invites.
 
 _CANCEL_SCOPES = {"canvas_read", "canvas_write"}
+
+# Scopes that only mean anything bound to a specific project. An OS-level
+# (project-less) invite has no project to bind them to, so they are stripped
+# before minting rather than granted verbatim: an OS invite must never hand out
+# project-scoped authority that resolves to no project.
+_PROJECT_SCOPED = {"project_tasks", "canvas_read", "canvas_write"}
 
 
 def _derive_handle(project_slug: str, harness: str, label: str | None) -> str:
@@ -690,10 +710,13 @@ async def mint_os_invite(
 ):
     _require_admin(user)
     store = request.app.state.project_invites
+    # OS-level invites carry no project, so drop any project-bound scopes rather
+    # than granting them against a non-existent project (kilo review #1918).
+    os_scopes = [s for s in payload.scopes if s not in _PROJECT_SCOPED]
     try:
         result = await store.mint(
             project_id=None,
-            scopes=list(payload.scopes),
+            scopes=os_scopes,
             approval_mode=payload.approval_mode,
             check_interval_secs=payload.check_interval_secs,
             created_by=user.user_id,

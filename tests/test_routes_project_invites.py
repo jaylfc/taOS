@@ -411,6 +411,38 @@ async def _mint_os_invite(client, *, approval_mode="auto", scopes=None, display_
 
 
 @pytest.mark.asyncio
+async def test_os_invite_strips_project_scoped_grants(client, app):
+    # An OS-level (project-less) invite must not carry project-bound scopes.
+    resp = await client.post(
+        "/api/agents/invites",
+        json={
+            "scopes": ["a2a_send", "project_tasks", "canvas_read", "canvas_write"],
+            "approval_mode": "auto",
+            "check_interval_secs": 1800,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["scopes"] == ["a2a_send"]
+
+
+@pytest.mark.asyncio
+async def test_os_invite_display_name_validation(client, app):
+    # Control characters are rejected.
+    bad = await client.post(
+        "/api/agents/invites",
+        json={"scopes": ["a2a_send"], "display_name": "bad\x00name"},
+    )
+    assert bad.status_code == 422, bad.text
+    # All-whitespace collapses to no alias.
+    blank = await client.post(
+        "/api/agents/invites",
+        json={"scopes": ["a2a_send"], "display_name": "   "},
+    )
+    assert blank.status_code == 200, blank.text
+    assert blank.json()["display_name"] is None
+
+
+@pytest.mark.asyncio
 async def test_os_redeem_mints_chat_agent_no_project_grant(client, app, monkeypatch, tmp_path):
     _registry, _auth, grants = await _setup_agent_ecosystem(app, monkeypatch, tmp_path)
     iid, pin = await _mint_os_invite(client, scopes=["a2a_send"], display_name="Scout")
