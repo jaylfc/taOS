@@ -196,7 +196,7 @@ findings **before** surfacing the PR for human maintainer review.
    ```bash
    # Review summaries + issue comments:
    gh pr view <PR#> --repo jaylfc/taOS --json reviews,comments --jq \
-     '(.reviews[], .comments[]) | select(.author.login | test("kilo-code-bot|gitar-bot|coderabbitai|qodo")) | {login: .author.login, body: .body}'
+     '(.reviews[], .comments[]) | select((.author.login? // "") | test("kilo-code-bot|gitar-bot|coderabbitai|qodo")) | {login: .author.login, body: .body}'
    # Inline (line-anchored) review comments - Kilo/CodeRabbit post most findings here:
    gh api repos/jaylfc/taOS/pulls/<PR#>/comments --jq \
      '.[] | {login: .user.login, path, line, body}'
