@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -129,17 +130,14 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
     # the loser loads the winner's key instead of overwriting it.
     # The file descriptor starts with mode 0o600 so there is never
     # a world-readable window — no separate chmod call is needed.
-    import os as _os_module
-    import time as _time
-
     tmp = keyfile.with_suffix(keyfile.suffix + ".tmp")
     try:
-        fd = _os_module.open(tmp, _os_module.O_CREAT | _os_module.O_EXCL | _os_module.O_WRONLY, 0o600)
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         # Another process is creating the keypair.  Wait for the
         # winner to promote tmp→keyfile, then load its result.
         for _ in range(30):  # up to 3 s
-            _time.sleep(0.1)
+            time.sleep(0.1)
             if keyfile.exists():
                 return load_or_create_signing_keypair(data_dir)
         # After a reasonable wait the keyfile still does not exist.
@@ -149,17 +147,22 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        if keyfile.exists():
+            return load_or_create_signing_keypair(data_dir)
+        # Retry with a unique tmp path so we never collide with a
+        # still-running winner that hasn't called os.replace yet.
+        tmp = keyfile.with_suffix(f"{keyfile.suffix}.tmp.{os.getpid()}")
         try:
-            fd = _os_module.open(tmp, _os_module.O_CREAT | _os_module.O_EXCL | _os_module.O_WRONLY, 0o600)
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             if keyfile.exists():
                 return load_or_create_signing_keypair(data_dir)
             raise
     # Write and atomically promote.
     try:
-        _os_module.write(fd, payload.encode("utf-8"))
+        os.write(fd, payload.encode("utf-8"))
     finally:
-        _os_module.close(fd)
+        os.close(fd)
     os.replace(tmp, keyfile)
     logger.info("store signing keypair created at %s", keyfile)
     return priv, pub
