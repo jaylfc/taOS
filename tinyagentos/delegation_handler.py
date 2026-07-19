@@ -321,6 +321,22 @@ async def complete_delegation_approval(
     if not all([contact_id, agent_slug, display_name, project_id]):
         return {"status": "error", "error": "incomplete decision metadata"}
 
+    # Re-validate project membership at approval time: the contact may have
+    # been removed from the project between decision creation and approval.
+    # This is the fail-closed runtime check required by section 5 of the
+    # cross-user-collab design spec.
+    project_store = getattr(request.app.state, "project_store", None)
+    if project_store is not None and not await project_store.is_project_member(
+        project_id, contact_id, member_kind="human"
+    ):
+        return {
+            "status": "error",
+            "error": (
+                f"contact {contact_id} is no longer a human collaborator "
+                f"on project {project_id}"
+            ),
+        }
+
     invite_store = getattr(request.app.state, "project_invite_store", None)
     if invite_store is None:
         return {"status": "error", "error": "invite store not available"}
@@ -429,20 +445,14 @@ async def cascade_sponsor_revoke(
                     canonical_id, exc_info=True,
                 )
 
-    # Post A2A system line.  When project_id is set, post to that project's
-    # A2A channel.  When None (contact-wide revoke), post to all projects the
-    # contact is a member of so every affected project sees the audit event.
-    try:
-        from tinyagentos.projects.a2a import ensure_a2a_channel
+    # Post A2A system line to the affected project (when scoped).
+    # Contact-wide revoke does not emit A2A — each project's membership-revoke
+    # path handles its own audit event when the cascade fires per-project.
+    if project_id:
+        try:
+            from tinyagentos.projects.a2a import ensure_a2a_channel
 
-        msg_store = request.app.state.chat_messages
-        msg = (
-            f"Collaboration with {contact_id} has been revoked. "
-            f"{len(revoked_ids)} delegated agent(s) revoked, "
-            f"{unassigned_count} task(s) unassigned."
-        )
-
-        if project_id:
+            msg_store = request.app.state.chat_messages
             channel = await ensure_a2a_channel(
                 request.app.state.chat_channels,
                 request.app.state.project_store,
@@ -453,38 +463,17 @@ async def cascade_sponsor_revoke(
                 channel_id=channel["id"],
                 author_id="system",
                 author_type="user",
-                content=msg,
+                content=(
+                    f"Collaboration with {contact_id} has been revoked. "
+                    f"{len(revoked_ids)} delegated agent(s) revoked, "
+                    f"{unassigned_count} task(s) unassigned."
+                ),
             )
-        elif project_store is not None:
-            # Contact-wide: find all projects the contact is a member of.
-            try:
-                memberships = await project_store.list_projects_for_member(contact_id)
-            except AttributeError:
-                memberships = []
-            for proj in (memberships or []):
-                pid = proj.get("id") or proj.get("project_id")
-                if not pid:
-                    continue
-                try:
-                    channel = await ensure_a2a_channel(
-                        request.app.state.chat_channels,
-                        request.app.state.project_store,
-                        pid,
-                        config=getattr(request.app.state, "config", None),
-                    )
-                    await msg_store.send_message(
-                        channel_id=channel["id"],
-                        author_id="system",
-                        author_type="user",
-                        content=msg,
-                    )
-                except Exception:
-                    pass
-    except Exception:
-        logger.warning(
-            "cascade_revoke: A2A system line failed for %s",
-            contact_id, exc_info=True,
-        )
+        except Exception:
+            logger.warning(
+                "cascade_revoke: A2A system line failed for %s",
+                contact_id, exc_info=True,
+            )
 
     return {
         "status": "revoked",
