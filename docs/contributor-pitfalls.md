@@ -99,7 +99,11 @@ and #2027 before being consolidated into #2023.
 Bot reviews (Kilo, CodeRabbit) are not CI. If `test (3.12/3.13)`, `lint`, and
 `spa-build` are absent from the checks list, the workflow never fired; rebase
 or push an empty commit to trigger it. A PR is mergeable only on genuine green
-from those jobs at the CURRENT head.
+from those jobs at the CURRENT head, against the CURRENT base: a green computed
+before the base branch moved is stale, because two individually green PRs can
+conflict semantically with no textual conflict (see the #2009/#1932 App-key
+incident, fixed in #2041). If the base has advanced since the last CI run,
+rebase or re-run before merging.
 
 **15. Fold every review finding before merge.**
 Findings are gated on severity of content, not review state. Address each one
