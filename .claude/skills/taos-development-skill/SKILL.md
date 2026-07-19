@@ -222,6 +222,60 @@ findings **before** surfacing the PR for human maintainer review.
 | WARNING | Must fix before blocking for review |
 | SUGGESTION | Fix or explain why not applicable |
 
+## PR lifecycle discipline (fold-first, rebase, closures)
+
+The review pipeline only works if the open-PR set stays small and every finding
+gets closed out. These rules are load-bearing; the maintainer gates on them.
+
+### Fold-first: findings outrank new work
+
+If ANY of your open PRs has an unaddressed maintainer fold list or bot finding,
+addressing it comes BEFORE opening a new PR. Priority order each work session:
+
+1. Fold open findings on existing PRs (maintainer comments first, then bot findings).
+2. Rebase any of your PRs that show CONFLICTING against the base branch.
+3. Only then start a new slice.
+
+A finding folded within hours merges the same day; a finding left while you open
+new PRs stalls the whole train behind it (the maintainer will not merge past an
+open finding, ever).
+
+### Rebase cadence and the stale-base rule
+
+- dev moves fast. When your PR shows CONFLICTING, rebase onto current dev
+  promptly - a CONFLICTING PR is invisible to the merge queue.
+- A green CI run computed BEFORE the base branch moved is STALE. Two individually
+  green PRs can conflict semantically with zero textual conflict (see the
+  #2009/#1932 App-key incident, fixed in #2041). If dev advanced since your last
+  CI run, rebase (or push an empty commit) so CI re-runs against the current base
+  before asking for merge.
+- Keep your open-PR count small (aim under 10). A wide-open set guarantees most
+  of it is permanently CONFLICTING and re-review effort is wasted.
+
+### Closing PRs: always link the successor
+
+Never close a PR silently. In the closing comment state exactly one of:
+
+- "Superseded by #NNNN" (and confirm every still-open finding from this PR is
+  in the successor's scope), or
+- "Landed via #NNNN" (when the content merged through another PR), or
+- "Abandoned because <reason>".
+
+A close without a successor link reads as lost work and forces the maintainer
+into git forensics (this happened with #1927/#1924 - both were legitimate
+"landed via" closures that looked like data loss for hours).
+
+### One PR per slice
+
+- A fix and the test that proves it belong in ONE PR (pitfall 13 in
+  docs/contributor-pitfalls.md).
+- Never open a sibling PR for a slice that already has one. If a fresh branch is
+  genuinely needed, open the new PR, link it, and close the old one with the
+  supersede note in the same action.
+
+Read docs/contributor-pitfalls.md before every PR - fold lists reference its
+items by number (for example "pitfall 5").
+
 ## Common fix patterns
 
 - **New route:** `routes/<feature>.py` with `router = APIRouter()` → register in
