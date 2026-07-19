@@ -107,7 +107,7 @@ CREATE TABLE contacts (
 CREATE TABLE peer_links (
     contact_id        TEXT PRIMARY KEY REFERENCES contacts(contact_id),
     inbound_token_hash  TEXT NOT NULL,        -- token WE minted for their instance
-    outbound_token      TEXT NOT NULL,        -- token THEY minted for us (encrypted at rest)
+    outbound_token      TEXT NOT NULL,        -- token THEY minted for us (stored in plaintext; encryption deferred to post-MVP)
     endpoints         TEXT NOT NULL DEFAULT '[]',  -- their advertised endpoints (LAN/mesh/relay)
     established_at    REAL NOT NULL,
     last_seen_at      REAL,

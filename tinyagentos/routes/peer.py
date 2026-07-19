@@ -40,8 +40,10 @@ _MAX_ENVELOPE_BYTES = 32 * 1024  # 32 KB
 
 # In-memory per-contact rate limiter: contact_id -> (window_start, count).
 # Per-process only — under multi-worker deployments each worker maintains its
-# own counter.  A shared store (Redis or sqlite) is needed for accurate
-# limits across workers.
+# own counter, so the effective aggregate limit is 60×N/min across N workers.
+# FIXME(post-MVP): back with a shared store (Redis or sqlite contacts.db) for
+# accurate cross-worker limits.  The current eviction (``_RATE_HITS_MAX_SIZE``)
+# keeps memory bounded but does not coordinate across processes.
 _rate_hits: dict[str, tuple[float, int]] = {}
 # Max entries before stale-window cleanup triggers.  Keeps the dict bounded
 # for long-running servers that see many distinct contacts over time.
