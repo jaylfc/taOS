@@ -120,7 +120,7 @@ async def _get_app_installation_token(
         from tinyagentos.github_app import get_installation_token
 
         token = await get_installation_token(
-            cfg.github_app_id, cfg.github_app_private_key, installation_id,
+            cfg.github_app_id, private_key, installation_id,
             http_client,
         )
         if token:
