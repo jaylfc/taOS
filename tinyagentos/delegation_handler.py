@@ -325,10 +325,22 @@ async def complete_delegation_approval(
     if invite_store is None:
         return {"status": "error", "error": "invite store not available"}
 
+    # Re-apply scope denylist to ensure hard-denied scopes are stripped even
+    # if the stored metadata was tampered with between decision creation and
+    # approval.  The denylist is the authoritative gate; the stored scopes are
+    # the human-approved set, but the code must never mint tokens for
+    # hard-denied scopes regardless.
+    safe_scopes, re_denied = validate_delegation_scopes(granted_scopes)
+    if re_denied:
+        logger.warning(
+            "complete_delegation_approval: re-stripped hard-denied scopes %r from stored grant",
+            re_denied,
+        )
+
     try:
         invite = await invite_store.mint(
             project_id=project_id,
-            scopes=granted_scopes,
+            scopes=safe_scopes,
             approval_mode="auto",
             check_interval_secs=1800,
             created_by=contact_id,
@@ -363,9 +375,9 @@ async def cascade_sponsor_revoke(
 ) -> dict:
     """Revoke all sponsored agent identities for a contact.
 
-    When *project_id* is provided, only revoke tokens bound to that project
-    (membership-revoke).  When None, revoke ALL sponsored identities
-    (contact-revoke).
+    When *project_id* is provided, only revoke agents that are members of
+    that project (membership-revoke).  When None, revoke ALL sponsored
+    identities (contact-revoke).
 
     Also unassigns in-flight board tasks and posts an A2A system line.
     Returns a summary dict of what was revoked.
@@ -374,12 +386,23 @@ async def cascade_sponsor_revoke(
     if registry is None:
         return {"status": "error", "error": "registry not available"}
 
+    project_store = getattr(request.app.state, "project_store", None)
+
     # Find all active agents sponsored by this contact.
     sponsored = await registry.list_by_sponsor(contact_id, status="active")
     revoked_ids: list[str] = []
 
     for agent in sponsored:
         canonical_id = agent["canonical_id"]
+
+        # When scoped to a project, only revoke agents that are members of
+        # that project.  Contact-wide revoke (project_id=None) hits all.
+        if project_id is not None and project_store is not None:
+            if not await project_store.is_project_member(
+                project_id, canonical_id
+            ):
+                continue
+
         try:
             await registry.set_status(canonical_id, "revoked", actor=contact_id)
             revoked_ids.append(canonical_id)
@@ -406,9 +429,18 @@ async def cascade_sponsor_revoke(
                     canonical_id, exc_info=True,
                 )
 
-    # Post A2A system line.
+    # Post A2A system line.  When project_id is set, post to that project's
+    # A2A channel.  When None (contact-wide revoke), post to all projects the
+    # contact is a member of so every affected project sees the audit event.
     try:
         from tinyagentos.projects.a2a import ensure_a2a_channel
+
+        msg_store = request.app.state.chat_messages
+        msg = (
+            f"Collaboration with {contact_id} has been revoked. "
+            f"{len(revoked_ids)} delegated agent(s) revoked, "
+            f"{unassigned_count} task(s) unassigned."
+        )
 
         if project_id:
             channel = await ensure_a2a_channel(
@@ -417,17 +449,37 @@ async def cascade_sponsor_revoke(
                 project_id,
                 config=getattr(request.app.state, "config", None),
             )
-            msg_store = request.app.state.chat_messages
             await msg_store.send_message(
                 channel_id=channel["id"],
                 author_id="system",
                 author_type="user",
-                content=(
-                    f"Collaboration with {contact_id} has been revoked. "
-                    f"{len(revoked_ids)} delegated agent(s) revoked, "
-                    f"{unassigned_count} task(s) unassigned."
-                ),
+                content=msg,
             )
+        elif project_store is not None:
+            # Contact-wide: find all projects the contact is a member of.
+            try:
+                memberships = await project_store.list_projects_for_member(contact_id)
+            except AttributeError:
+                memberships = []
+            for proj in (memberships or []):
+                pid = proj.get("id") or proj.get("project_id")
+                if not pid:
+                    continue
+                try:
+                    channel = await ensure_a2a_channel(
+                        request.app.state.chat_channels,
+                        request.app.state.project_store,
+                        pid,
+                        config=getattr(request.app.state, "config", None),
+                    )
+                    await msg_store.send_message(
+                        channel_id=channel["id"],
+                        author_id="system",
+                        author_type="user",
+                        content=msg,
+                    )
+                except Exception:
+                    pass
     except Exception:
         logger.warning(
             "cascade_revoke: A2A system line failed for %s",
@@ -524,12 +576,23 @@ async def kill_switch_per_instance(request) -> dict:
 
     Sets a flag on app.state that the peer routes check on every request.
     Does NOT revoke tokens — just blocks all new peer traffic.
-    Reversible by clearing the flag.
+    Use ``kill_switch_reenable()`` to restore peer routes.
     """
-    # Set a flag that the peer routes check.
     request.app.state._peer_disabled = True
     logger.warning("kill_switch: per-instance panic — peer routes DISABLED")
     return {"status": "panic", "peer_routes": "disabled"}
+
+
+async def kill_switch_reenable(request) -> dict:
+    """Re-enable peer routes after a per-instance panic.
+
+    Clears the panic flag set by ``kill_switch_per_instance``.
+    Does NOT re-establish revoked peer links or re-mint tokens —
+    those must be restored manually via the contacts/peer-link flow.
+    """
+    request.app.state._peer_disabled = False
+    logger.info("kill_switch: per-instance panic cleared — peer routes RE-ENABLED")
+    return {"status": "recovered", "peer_routes": "enabled"}
 
 
 def is_peer_disabled(request) -> bool:
