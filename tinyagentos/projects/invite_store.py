@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS project_invites (
     display_name         TEXT,
     kind                 TEXT NOT NULL DEFAULT 'agent',
     pin_required         INTEGER NOT NULL DEFAULT 1,
-    contact_id           TEXT
+    contact_id           TEXT,
+    metadata             TEXT NOT NULL DEFAULT '{}'
 );
 """
 
@@ -110,6 +111,11 @@ class ProjectInviteStore(BaseStore):
                 "ALTER TABLE project_invites ADD COLUMN contact_id TEXT"
             )
             await self._db.commit()
+        if "metadata" not in existing_cols:
+            await self._db.execute(
+                "ALTER TABLE project_invites ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
+            await self._db.commit()
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_invites_project "
             "ON project_invites(project_id)"
@@ -132,7 +138,8 @@ class ProjectInviteStore(BaseStore):
                    kind: str = "agent",
                    pin_required: bool = True,
                    contact_id: str | None = None,
-                   ttl_secs: int | None = None) -> dict:
+                   ttl_secs: int | None = None,
+                   metadata: dict | None = None) -> dict:
         if self._db is None:
             raise RuntimeError("ProjectInviteStore not initialised")
 
@@ -197,8 +204,8 @@ class ProjectInviteStore(BaseStore):
                     INSERT INTO project_invites
                         (invite_id, project_id, pin_hash, scopes, approval_mode,
                          check_interval_secs, created_by, created_ts, expires_ts, status,
-                         display_name, kind, pin_required, contact_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                         display_name, kind, pin_required, contact_id, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
                     """,
                     (
                         invite_id,
@@ -214,6 +221,7 @@ class ProjectInviteStore(BaseStore):
                         kind,
                         int(pin_required),
                         contact_id,
+                        json.dumps(metadata or {}),
                     ),
                 )
                 await self._db.commit()
@@ -249,6 +257,7 @@ class ProjectInviteStore(BaseStore):
                 "kind": kind,
                 "pin_required": int(pin_required),
                 "contact_id": contact_id,
+                "metadata": metadata or {},
             },
             "pin": pin,
         }
@@ -458,4 +467,12 @@ class ProjectInviteStore(BaseStore):
     def _row_to_dict(self, row: aiosqlite.Row) -> dict:
         if row is None:
             return {}
-        return dict(row)
+        d = dict(row)
+        # Deserialise JSON columns.
+        for field in ("scopes", "metadata"):
+            if field in d and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (ValueError, TypeError):
+                    pass
+        return d

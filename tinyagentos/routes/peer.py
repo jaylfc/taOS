@@ -86,6 +86,11 @@ async def _authenticate_peer(request: Request) -> str:
     if store is None:
         raise HTTPException(status_code=503, detail="peer channel not available")
 
+    # Per-instance panic kill-switch (D1 level 3): blocks all peer traffic.
+    from tinyagentos.delegation_handler import is_peer_disabled
+    if is_peer_disabled(request):
+        raise HTTPException(status_code=503, detail="peer routes disabled (per-instance panic)")
+
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="bearer token required")
@@ -209,7 +214,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     # Mark peer as seen
     await store.mark_peer_seen(contact_id)
 
-    # Dispatch the envelope by kind.
+    # Log the envelope kind for debugging; dispatch known kinds to their handlers.
     kind = envelope.get("kind", "unknown")
     body_data = envelope.get("body", {})
 
@@ -224,6 +229,16 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
         "peer_inbox: contact=%s kind=%s nonce=%s (unrecognised kind — accepted, no dispatch)",
         contact_id, kind, envelope.get("nonce", "?"),
     )
+
+    # Dispatch delegation requests to the cross-user collab handler (D1).
+    if kind == "delegation_request":
+        from tinyagentos.delegation_handler import process_delegation_request
+
+        body_data = envelope.get("body", {})
+        result = await process_delegation_request(
+            request, contact_id=contact_id, envelope_body=body_data,
+        )
+        return {"status": result.get("status", "unknown"), "detail": result}
 
     return {"status": "received", "kind": kind, "nonce": envelope.get("nonce")}
 
