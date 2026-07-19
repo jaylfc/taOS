@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 CREATE TABLE IF NOT EXISTS peer_links (
     contact_id              TEXT PRIMARY KEY REFERENCES contacts(contact_id),
     inbound_token_hash      TEXT NOT NULL,    -- token WE minted for their instance (SHA-256); indexed for lookup
-    outbound_token          TEXT NOT NULL,    -- token THEY minted for us (stored in plaintext; encryption deferred to post-MVP)
+    outbound_token          TEXT NOT NULL,    -- token THEY minted for us (stored in plaintext — must be presented on outbound requests; at-rest encryption deferred to post-MVP)
     endpoints               TEXT NOT NULL DEFAULT '[]',  -- JSON list of advertised endpoints
     established_at          REAL NOT NULL,
     last_seen_at            REAL,
@@ -260,11 +260,13 @@ class ContactsStore(BaseStore):
         """
         now = time.time()
         # Prune expired nonces (opportunistic, one DELETE per insert keeps the
-        # table small without a separate vacuum job).
+        # table small without a separate vacuum job).  Commit the prune in its
+        # own transaction so a replay (IntegrityError) does not roll it back.
         cutoff = now - NONCE_MAX_AGE_SECS
         await self._db.execute(
             "DELETE FROM peer_nonces WHERE seen_at < ?", (cutoff,)
         )
+        await self._db.commit()
         try:
             await self._db.execute(
                 "INSERT INTO peer_nonces (nonce, contact_id, kind, seen_at) VALUES (?, ?, ?, ?)",
