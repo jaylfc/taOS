@@ -188,6 +188,13 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
         # Another process won the race — discard our key and load theirs.
         tmp.unlink(missing_ok=True)
         return load_or_create_signing_keypair(data_dir)
+    except OSError:
+        # os.link may fail on filesystems without hardlink support
+        # (overlayfs, FUSE, some container layers, FAT, etc.).
+        # Fall back to os.replace — universally supported, but carries
+        # a small overwrite-race window that the tmp file's 0600 perms
+        # and exclusive-open already bound.
+        os.replace(tmp, keyfile)
     else:
         tmp.unlink(missing_ok=True)
     logger.info("store signing keypair created at %s", keyfile)
