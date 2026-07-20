@@ -585,3 +585,39 @@ async def test_guide_markdown_contains_required_instructions(client, app, monkey
     # Timed-check instruction mentions the interval value.
     assert "1800" in guide
 
+
+
+@pytest.mark.asyncio
+async def test_mint_default_ttl_is_one_hour(client, app):
+    pid = await _create_project(client)
+    before = time.time()
+    resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto"},
+    )
+    assert resp.status_code == 200, resp.text
+    ttl = resp.json()["expires_ts"] - before
+    assert 3500 < ttl <= 3610
+
+
+@pytest.mark.asyncio
+async def test_mint_honours_ttl_secs(client, app):
+    pid = await _create_project(client)
+    before = time.time()
+    resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto", "ttl_secs": 86400},
+    )
+    assert resp.status_code == 200, resp.text
+    ttl = resp.json()["expires_ts"] - before
+    assert 86300 < ttl <= 86410
+
+
+@pytest.mark.asyncio
+async def test_mint_rejects_ttl_over_cap(client, app):
+    pid = await _create_project(client)
+    resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto", "ttl_secs": 999999},
+    )
+    assert resp.status_code == 422, resp.text

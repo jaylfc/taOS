@@ -10,7 +10,7 @@ import aiosqlite
 
 from tinyagentos.base_store import BaseStore
 
-_EXPIRY_SECS = 15 * 60
+_EXPIRY_SECS = 60 * 60
 _MAX_ATTEMPTS = 5
 _PENDING_CAP = 10
 
@@ -131,7 +131,8 @@ class ProjectInviteStore(BaseStore):
                    display_name: str | None = None,
                    kind: str = "agent",
                    pin_required: bool = True,
-                   contact_id: str | None = None) -> dict:
+                   contact_id: str | None = None,
+                   ttl_secs: int | None = None) -> dict:
         if self._db is None:
             raise RuntimeError("ProjectInviteStore not initialised")
 
@@ -180,7 +181,9 @@ class ProjectInviteStore(BaseStore):
         pin = self._generate_pin()
         pin_hash = hashlib.sha256(pin.encode()).hexdigest()
         now = _now()
-        expires_ts = now + _EXPIRY_SECS
+        if ttl_secs is not None and ttl_secs <= 0:
+            raise ValueError("ttl_secs must be positive")
+        expires_ts = now + (ttl_secs if ttl_secs is not None else _EXPIRY_SECS)
 
         # 6-digit invite IDs have a non-trivial collision chance under load
         # (~12 % at 500 pending).  Retry on UNIQUE constraint violation so a
