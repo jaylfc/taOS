@@ -652,3 +652,35 @@ async def test_mint_rejects_ttl_over_cap(client, app):
         json={"scopes": [], "approval_mode": "auto", "ttl_secs": 999999},
     )
     assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_revoke_redeemed_returns_409(client, app):
+    pid = await _create_project(client)
+    mint_resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto"},
+    )
+    body = mint_resp.json()
+    store = app.state.project_invites
+    await store.redeem(body["invite_id"], body["pin"])
+    resp = await client.delete(f"/api/projects/{pid}/invites/{body['invite_id']}")
+    assert resp.status_code == 409, resp.text
+
+
+@pytest.mark.asyncio
+async def test_revoke_claimed_returns_409_with_mid_redeem_message(client, app):
+    pid = await _create_project(client)
+    mint_resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto"},
+    )
+    iid = mint_resp.json()["invite_id"]
+    store = app.state.project_invites
+    await store._db.execute(
+        "UPDATE project_invites SET status = 'claimed' WHERE invite_id = ?", (iid,)
+    )
+    await store._db.commit()
+    resp = await client.delete(f"/api/projects/{pid}/invites/{iid}")
+    assert resp.status_code == 409, resp.text
+    assert "mid-redeem" in resp.json()["error"]
