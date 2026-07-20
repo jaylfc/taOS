@@ -605,6 +605,22 @@ def _build_os_guide_markdown(
     return "\n".join(lines)
 
 
+
+def _scopes_as_list(raw) -> list:
+    """The store keeps scopes as a JSON-encoded TEXT column; the API contract
+    is a list. Parse defensively so a malformed row degrades to [] instead of
+    crashing every client that renders the list."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            import json as _json
+            v = _json.loads(raw)
+            return v if isinstance(v, list) else []
+        except Exception:
+            return []
+    return []
+
 @router.post("/api/projects/{project_id}/invites")
 async def mint_invite(
     project_id: str,
@@ -663,7 +679,7 @@ async def list_invites(
     return [
         {
             "invite_id": i["invite_id"],
-            "scopes": i["scopes"],
+            "scopes": _scopes_as_list(i["scopes"]),
             "status": i["status"],
             "expires_ts": i["expires_ts"],
             "redeemed_by": i.get("redeemed_by"),
@@ -768,7 +784,7 @@ async def list_os_invites(
     return [
         {
             "invite_id": i["invite_id"],
-            "scopes": i["scopes"],
+            "scopes": _scopes_as_list(i["scopes"]),
             "status": i["status"],
             "expires_ts": i["expires_ts"],
             "redeemed_by": i.get("redeemed_by"),
