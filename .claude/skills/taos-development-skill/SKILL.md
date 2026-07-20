@@ -240,6 +240,15 @@ A finding folded within hours merges the same day; a finding left while you open
 new PRs stalls the whole train behind it (the maintainer will not merge past an
 open finding, ever).
 
+Folding means code AND a reply: answer every numbered item in the PR thread
+with the commit that addresses it or a concrete rebuttal. Code pushed without
+in-thread replies leaves the fold formally open and the verdict at HOLD.
+
+Bot review freshness is part of folding: check WHICH commit a bot actually
+reviewed. A rate-limited or stale "SUCCESS" on an older head is not a pass -
+after pushing fixes, re-trigger the review (for CodeRabbit: comment
+`@coderabbitai review`).
+
 ### Rebase cadence and the stale-base rule
 
 - dev moves fast. When your PR shows CONFLICTING, rebase onto current dev
@@ -264,6 +273,16 @@ Never close a PR silently. In the closing comment state exactly one of:
 A close without a successor link reads as lost work and forces the maintainer
 into git forensics (this happened with #1927/#1924 - both were legitimate
 "landed via" closures that looked like data loss for hours).
+
+### Scope honesty per slice
+
+- The PR body states exactly what it ships versus what its issue scopes. Any
+  deferred part gets an explicit deferral note AND a follow-up issue filed in
+  the same push; the parent issue never auto-closes on a partial slice.
+- Before committing, `git status` must show only intended source changes -
+  runtime artifacts (anything under `data/`) never enter a commit, and a new
+  component that writes under `data/` gitignores its directory in the same PR
+  (pitfall 16).
 
 ### One PR per slice
 
