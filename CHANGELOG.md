@@ -7,6 +7,33 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.42] - 2026-07-20
+
+### Added
+- GitHub App installation flow with per-agent GitHub token grants: install the App, grant repos to agents, short-lived tokens minted per installation, RSA key stored encrypted in Secrets (#1932, #2036, #2009, #1997)
+- Cross-user collaboration foundations: contacts store with signed-envelope peer channel (A1), human project membership with collab invite kind and two-sided consent (B1) (#2025, #2045)
+- Todo app backend: TodoStore with ordering and due dates, list-to-Todo migration with idempotent endpoint, whitespace validation (#1944, #2028, #2049)
+- Worker self-update foundations: WorkerUpdateService version polling and graceful pause + drain protocol (#1907, #1903)
+- Mesh: guest peer nodes surfaced in mesh_status with guest-preauth proxy endpoint (#2038)
+- taOSmd memory URL connection-test and reachability reporting in Settings (#1931)
+- Agent kill-switch: Ctrl+Shift+K shortcut with SIGTERM to SIGKILL grace window (#1962)
+- Registry hygiene: revoked/rejected/suspended entries collapsed by default; @taOS-dev granted board scopes (#2004, #2022)
+- 109+ new frontend component tests across chat and desktop (#2051, #2052, #2053, #2054)
+- Design specs merged: Library app universal ingestion, taOStalk slice 1 session bridge, cross-user collaboration epic (#2056, #2029, #2011)
+- Contributor docs: recurring review pitfalls checklist and PR lifecycle discipline in the development skill (#2040, #2055)
+
+### Fixed
+- Security: store-signing hardening (5 findings: 422 on unknown backend, narrow excepts, perms), GPG fingerprint resolution uses the primary key across all VALIDSIG shapes, invite no longer burned on failed approve with scope validation at mint (#2023, #1983, #2002)
+- GitHub App key semantic conflict between two green PRs resolved: app key read from SecretsStore everywhere (#2041)
+- SQLite stores: WAL mode enabled and sync-in-async fixed (#1905)
+- Agents: removed task.cancel() that defeated asyncio.shield in kill-switch handlers (#1988)
+- Catalog: standardized install scripts for Hermes/OpenClaw/DeerFlow, corrected qwen2.5 rkllm context window (#1934, #2008)
+- Desktop: MessageList findings, wallpaper bot-fix v2, port allocation centralized for userspace deploys (#1877, #1982, #1990)
+- Framework registry: retired alpha verification_status, dead-code cleanup from the Fable audit (#1995, #2003)
+
+### Changed
+- Dependencies: setup-node 4 to 7, desktop spa-deps group (12 packages) (#2030, #2031)
+
 ## [1.0.0-beta.41] - 2026-07-18
 
 ### Added
