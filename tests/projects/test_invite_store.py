@@ -315,6 +315,44 @@ async def test_revoke_nonexistent_returns_false(store):
     assert await store.revoke("000000") is False
 
 
+@pytest.mark.asyncio
+async def test_revoke_expired_invite(store):
+    """An expired invite can still be revoked (cleanup from the pending list)."""
+    result = await store.mint(
+        project_id="prj-1",
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+    )
+    iid = result["record"]["invite_id"]
+    await store._db.execute(
+        "UPDATE project_invites SET expires_ts = 1 WHERE invite_id = ?", (iid,)
+    )
+    await store._db.commit()
+    row = await store.get(iid)
+    assert row["status"] == "expired"
+    ok = await store.revoke(iid)
+    assert ok is True
+    row = await store.get(iid)
+    assert row["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_revoke_redeemed_invite_returns_false(store):
+    result = await store.mint(
+        project_id="prj-1",
+        scopes=[],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="u",
+    )
+    iid = result["record"]["invite_id"]
+    pin = result["pin"]
+    await store.redeem(iid, pin)
+    assert await store.revoke(iid) is False
+
+
 # ---------------------------------------------------------------------------
 # redeem
 # ---------------------------------------------------------------------------

@@ -325,7 +325,8 @@ class ProjectInviteStore(BaseStore):
         if self._db is None:
             raise RuntimeError("ProjectInviteStore not initialised")
         cursor = await self._db.execute(
-            "UPDATE project_invites SET status = 'revoked' WHERE invite_id = ? AND status = 'pending'",
+            "UPDATE project_invites SET status = 'revoked' "
+            "WHERE invite_id = ? AND status IN ('pending', 'expired')",
             (invite_id,),
         )
         await self._db.commit()

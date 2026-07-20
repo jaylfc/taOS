@@ -139,6 +139,37 @@ async def test_revoke_nonexistent_returns_404(client, app):
     assert resp.status_code == 404, resp.text
 
 
+@pytest.mark.asyncio
+async def test_revoke_expired_returns_204(client, app):
+    pid = await _create_project(client)
+    mint_resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto"},
+    )
+    iid = mint_resp.json()["invite_id"]
+    store = app.state.project_invites
+    await store._db.execute(
+        "UPDATE project_invites SET expires_ts = 1 WHERE invite_id = ?", (iid,)
+    )
+    await store._db.commit()
+    resp = await client.delete(f"/api/projects/{pid}/invites/{iid}")
+    assert resp.status_code == 204, resp.text
+
+
+@pytest.mark.asyncio
+async def test_revoke_already_revoked_returns_409(client, app):
+    pid = await _create_project(client)
+    mint_resp = await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto"},
+    )
+    iid = mint_resp.json()["invite_id"]
+    first = await client.delete(f"/api/projects/{pid}/invites/{iid}")
+    assert first.status_code == 204, first.text
+    second = await client.delete(f"/api/projects/{pid}/invites/{iid}")
+    assert second.status_code == 409, second.text
+
+
 # ---------------------------------------------------------------------------
 # Redeem slice (S2): auto + manual approval, handle derivation, bundle, errors
 # ---------------------------------------------------------------------------
