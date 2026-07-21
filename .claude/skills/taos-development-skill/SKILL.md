@@ -280,14 +280,16 @@ into git forensics (this happened with #1927/#1924 - both were legitimate
   It cannot tell correct behaviour from total failure. Assert equality and
   assert the resulting state (pitfall 20).
 - Mocking internals or injecting unreproducible errors is fine. Mocking an
-  EXTERNAL service contract is where tests lie. Capture a real response and
-  commit it as the fixture rather than composing one from what your code
-  expects, keep one real integration test per external contract (feature
-  detecting so it skips when the service is unreachable), and if you can do
-  neither, mark the mock provisional in code with its source and verification
-  date. A follow-up issue does not count: it separates the caveat from the code.
-  A green test over a fictional contract is worse than no test, it certifies the
-  bug. This happened three times in one PR cycle (pitfall 23).
+  external service CONTRACT is where tests lie. For sibling services (taOSmd,
+  the website) the contract has a reachable owner on the A2A bus: ASK them
+  rather than inferring from their source. Every mock failure in the #2062
+  cycle was a guess at something one message would have answered. External
+  contributors ask in the PR and the lead relays. For genuine third parties,
+  capture a real response and commit it rather than composing a fixture from
+  what your code expects. Then keep one feature detecting integration test per
+  contract, or mark the mock provisional in code with its source and date. A
+  follow-up issue does not count: it separates the caveat from the code. A
+  green test over a fictional contract certifies the bug (pitfall 23).
 - Typecheck or run the thing before opening the PR. A frontend change that does
   not compile wastes a full review round, and the executor now gates on
   `tsc --noEmit` for exactly that reason (pitfall 21).

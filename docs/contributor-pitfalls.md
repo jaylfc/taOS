@@ -195,15 +195,31 @@ else's API, and when the belief is wrong the test proves nothing while going
 green. This happened three times in one PR cycle (#2062): an invented `dbPath`
 request shape, an un-nested poll response, and a tolerance assertion over both.
 
-Requirements for that class, strongest first:
+First, split the class by whether the contract has a reachable OWNER.
 
-1. **Capture, do not compose.** Call the real service once and commit its
-   response as the fixture. A recorded response cannot encode a wrong belief.
-2. **Keep one real integration test per external contract.** Have it feature
+**Sibling services (taOSmd, taOS website): ASK. Do not guess.** These are not
+third parties. Their maintainer is on the A2A bus, and asking costs one message.
+Every failure in the #2062 cycle came from inferring a contract that was free to
+obtain: the builder guessed a request shape, and the reviewer verified against
+source rather than asking the owner. When we finally asked, we got the envelope
+documented, a wrong stats key list corrected by its own author, and a
+`/version` capabilities endpoint built to make the contract machine-checkable.
+Reverse-engineering a sibling's API from its source is a smell, not diligence:
+source tells you what it does today, the owner tells you what it guarantees.
+Contributors without bus access (external collaborators) ask in the PR, and the
+lead relays.
+
+**Genuinely third-party (GitHub, OpenRouter, Reddit): capture, do not compose.**
+There is no one to ask, so call the real service once and commit its response as
+the fixture. A recorded response cannot encode a wrong belief.
+
+For both, then:
+
+1. **Keep one real integration test per external contract.** Have it feature
    detect and skip when the service is unreachable, so CI stays green offline
    but drift surfaces the moment anyone runs it against a live instance. For
    taosmd, `GET /version` returns a capabilities list for exactly this.
-3. **If neither is possible, mark the mock provisional IN CODE** with the
+2. **If that is impossible, mark the mock provisional IN CODE** with the
    contract source and the date it was verified. A follow-up issue is not
    sufficient: it detaches the caveat from the code and, in a tracker with
    hundreds of open items, functions as indefinite deferral.
