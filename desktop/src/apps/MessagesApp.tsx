@@ -74,6 +74,7 @@ import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { SearchPanel } from "./chat/SearchPanel";
 import { ChannelSidebar } from "./chat/ChannelSidebar";
 import { A2aBusMessageView, useBusChannels } from "./chat/A2aBusPanel";
+import { ConnectWizard } from "./chat/ConnectWizard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -166,16 +167,19 @@ interface Message {
   content: string;
   /** Parent message id when this message is a thread reply. */
   thread_id?: string;
-  content_type?: "text" | "canvas" | string;
+  content_type?: "text" | "canvas" | "session_turn" | string;
+  content_blocks?: ContentBlock[];
   metadata?: {
     canvas_id?: string;
     canvas_url?: string;
     canvas_title?: string;
     pin_requested?: boolean;
+    session_id?: string;
+    turn_id?: string;
     [key: string]: unknown;
   };
   state?: "pending" | "streaming" | "complete" | "error";
-  // Server uses Python time.time() — Unix epoch in seconds. The runtime
+  // Server uses Python time.time() -- Unix epoch in seconds. The runtime
   // value is a number; the type was historically annotated string and
   // fed straight into Date() (which expects ms), so every chat message
   // rendered as 21/01/1970. Pass through toMs() before instantiating.
@@ -186,6 +190,18 @@ interface Message {
   attachments?: AttachmentRecord[];
   reply_count?: number;
   last_reply_at?: number | null;
+}
+
+export interface ContentBlock {
+  kind: "text" | "thinking" | "tool_call" | "tool_result" | "status" | "question";
+  text?: string;
+  call_id?: string;
+  name?: string;
+  input_preview?: string;
+  result_preview?: string;
+  status?: "running" | "done" | "error";
+  collapsed?: boolean;
+  options?: string[];
 }
 
 type WsStatus = "connecting" | "connected" | "disconnected";

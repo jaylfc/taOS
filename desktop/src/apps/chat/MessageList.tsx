@@ -26,7 +26,8 @@ import { PinRequestAffordance } from "./PinRequestAffordance";
 import { ReactionBar } from "./ReactionBar";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { startDrag, endDrag } from "@/shell/dnd/dnd-bus";
-import { renderContent, dayLabel, relativeTime, toMs, resolveAuthorDisplayState } from "../MessagesApp";
+import { renderContent, dayLabel, relativeTime, toMs, resolveAuthorDisplayState, type ContentBlock } from "../MessagesApp";
+import { TextBlock, ThinkingBlock, ToolCallBlock, StatusBlock, UnknownBlock } from "./blocks";
 import type { AttachmentRecord } from "@/lib/chat-attachments-api";
 import { displayAuthor } from "./format-author";
 import type { LiveAgent, ArchivedAgentEntry, Channel } from "./types";
@@ -538,7 +539,25 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                             : "text-shell-text"
                         }`}
                       >
-                        {renderContent(msg.content)}
+                        {msg.content_blocks && msg.content_blocks.length > 0
+                          ? msg.content_blocks.map((block, i) => {
+                              switch (block.kind) {
+                                case "text":
+                                  return <TextBlock key={i} text={block.text || ""} />;
+                                case "thinking":
+                                  return <ThinkingBlock key={i} text={block.text || ""} collapsed={block.collapsed} />;
+                                case "tool_call":
+                                  return <ToolCallBlock key={i} block={block} />;
+                                case "tool_result":
+                                  return <ToolCallBlock key={i} block={{ ...block, kind: "tool_call", status: block.status || "done", name: block.name || "result" }} />;
+                                case "status":
+                                case "question":
+                                  return <StatusBlock key={i} block={block} />;
+                                default:
+                                  return <UnknownBlock key={i} kind={block.kind} />;
+                              }
+                            })
+                          : renderContent(msg.content)}
                         {msg.state === "pending" && (
                           <span className="ml-1 text-shell-text-tertiary">
                             ...
