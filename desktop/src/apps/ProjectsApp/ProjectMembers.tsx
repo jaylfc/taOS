@@ -571,7 +571,12 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
           projectId={project.id}
           onClose={() => setInviteOpen(false)}
           onMinted={() => {
-            setInviteOpen(false);
+            // Do NOT close the dialog here. The mint succeeds and the dialog
+            // then renders the invite URL and PIN, which are shown exactly
+            // once and cannot be recovered afterwards. Closing on mint threw
+            // that away and the user saw a dialog that vanished on success
+            // (reported 2026-07-21). Refresh the member list only; the user
+            // closes the dialog themselves once they have copied the details.
             onChanged();
           }}
         />

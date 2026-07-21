@@ -82,6 +82,25 @@ function safeBounds(
 
 let idCounter = 0;
 
+// Window z-indexes are a bounded stacking ORDER, not an ever-growing counter.
+//
+// Every open, focus, restore and recenter used to increment `nextZIndex`
+// forever. Portal overlays (dialogs, menus) sit at a FIXED z such as
+// `z-[10001]`, so once a long session pushed the window counter past that
+// constant, windows rendered ON TOP of modal dialogs. Reported 2026-07-21:
+// the invite dialog appeared behind the Projects window after a day of use.
+//
+// Renumbering the stack to 1..N after each change keeps window z far below the
+// overlay layer no matter how long the session runs, and preserves relative
+// order because the existing values are sorted first.
+function normaliseStack(windows: WindowState[]): WindowState[] {
+  const rank = new Map<string, number>();
+  [...windows]
+    .sort((a, b) => a.zIndex - b.zIndex)
+    .forEach((w, i) => rank.set(w.id, i + 1));
+  return windows.map((w) => ({ ...w, zIndex: rank.get(w.id) ?? 1 }));
+}
+
 export const useProcessStore = create<ProcessStore>((set, get) => ({
   windows: [],
   nextZIndex: 1,
@@ -123,8 +142,10 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
       launchNonce: 0,
     };
     set((s) => ({
-      windows: s.windows.map((w) => ({ ...w, focused: false })).concat(win),
-      nextZIndex: z + 1,
+      windows: normaliseStack(
+        s.windows.map((w) => ({ ...w, focused: false })).concat(win),
+      ),
+      nextZIndex: s.windows.length + 2,
     }));
     return id;
   },
@@ -147,12 +168,14 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
   focusWindow(id) {
     const z = get().nextZIndex;
     set((s) => ({
-      windows: s.windows.map((w) => ({
-        ...w,
-        focused: w.id === id,
-        zIndex: w.id === id ? z : w.zIndex,
-      })),
-      nextZIndex: z + 1,
+      windows: normaliseStack(
+        s.windows.map((w) => ({
+          ...w,
+          focused: w.id === id,
+          zIndex: w.id === id ? z : w.zIndex,
+        })),
+      ),
+      nextZIndex: s.windows.length + 1,
     }));
   },
 
@@ -167,15 +190,15 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
   restoreWindow(id) {
     const z = get().nextZIndex;
     set((s) => ({
-      windows: s.windows.map((w) => {
+      windows: normaliseStack(s.windows.map((w) => {
         if (w.id !== id) return { ...w, focused: false };
         // Showing a window again: if it drifted off-screen while hidden, pull
         // it back into view. A maximized window keeps its stored bounds for
         // when it is later un-maximized.
         const safe = w.maximized ? {} : safeBounds(w.position, w.size);
         return { ...w, ...safe, minimized: false, focused: true, zIndex: z };
-      }),
-      nextZIndex: z + 1,
+      })),
+      nextZIndex: s.windows.length + 1,
     }));
   },
 
@@ -197,15 +220,15 @@ export const useProcessStore = create<ProcessStore>((set, get) => ({
   recenterWindow(id) {
     const z = get().nextZIndex;
     set((s) => ({
-      windows: s.windows.map((w) => {
+      windows: normaliseStack(s.windows.map((w) => {
         if (w.id !== id) return { ...w, focused: false };
         // Force a recenter (far-off position guarantees safeBounds recenters),
         // and ensure the window is shown and not maximized so the user can see
         // and move it. The recovery path for a window lost off-screen.
         const safe = safeBounds({ x: -1e6, y: -1e6 }, w.size);
         return { ...w, ...safe, minimized: false, maximized: false, focused: true, zIndex: z };
-      }),
-      nextZIndex: z + 1,
+      })),
+      nextZIndex: s.windows.length + 1,
     }));
   },
 
