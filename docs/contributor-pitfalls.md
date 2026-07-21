@@ -154,3 +154,34 @@ say so in the PR body and file the follow-up issue in the same push. Never let
 a partial slice close the parent issue. Silent shortfalls read as done, get
 caught in review anyway, and cost a full extra round (#2042: community chat
 and peer access absent with no deferral note).
+
+**20. A tolerance is not a test of an invariant.**
+An assertion like `assert abs(after - before) <= 2` cannot distinguish correct
+behaviour from catastrophic failure. In PR #2062 that exact assertion ran green
+while reprocess destroyed the user's original uploaded file: the observed values
+were `before=2, after=0`, which the tolerance accepted, and the same tolerance
+would equally have accepted a doubling to 4. If the property is "the count does
+not change", assert equality and assert the resulting status, so the test fails
+loudly on both loss and duplication. Reserve tolerances for genuinely
+approximate quantities such as timings, and even then bound them tightly.
+
+**21. Shell snippets inside template literals must escape `${`.**
+A bash or PowerShell snippet stored in a JavaScript template literal collides
+with the language's own interpolation: `${VAR:-default}` is parsed as JS, not
+shell. In PR #2077 this produced 225 TypeScript syntax errors from a single
+cause, in one of four otherwise-clean files, and read like incoherent output
+rather than one mechanical mistake. Escape as `\${`, or keep snippets in plain
+non-template strings or separate asset files. The class generalises to any
+language sharing `${...}` with the shell, and it is invisible to anything that
+does not actually compile the file, which is why the frontend typecheck gate
+exists before a PR is opened.
+
+**22. Conflict resolution is a decision, not a mechanical act.**
+Taking the wrong side of a hunk silently reverts fixes that were just made. When
+a base branch has moved substantially under a long-lived branch, read what
+changed underneath before resolving: the four defects fixed in Library P1
+(nested response envelope, the guard preventing reprocess from deleting the
+source upload, the compare-and-swap status transition, exact artifact-count
+assertions) are all reintroducible by a plausible-looking resolution. Rebase
+rather than merging the base in, so the diff stays reviewable and each conflict
+is seen individually.

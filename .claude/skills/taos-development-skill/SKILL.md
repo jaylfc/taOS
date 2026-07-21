@@ -274,6 +274,22 @@ A close without a successor link reads as lost work and forces the maintainer
 into git forensics (this happened with #1927/#1924 - both were legitimate
 "landed via" closures that looked like data loss for hours).
 
+### Verify before you claim, and compile before you PR
+
+- An assertion with a tolerance (`abs(a - b) <= n`) does not test an invariant.
+  It cannot tell correct behaviour from total failure. Assert equality and
+  assert the resulting state (pitfall 20).
+- A test that mocks an external service must build its fixture from that
+  service's documented response, never from the shape the calling code expects.
+  A green test over a fictional contract is worse than no test: it certifies the
+  bug. This happened three times in one PR cycle.
+- Typecheck or run the thing before opening the PR. A frontend change that does
+  not compile wastes a full review round, and the executor now gates on
+  `tsc --noEmit` for exactly that reason (pitfall 21).
+- When the base branch has moved under you, rebase and read what changed before
+  resolving conflicts. Taking the wrong side of a hunk silently reverts fixes
+  that were just merged (pitfall 22).
+
 ### Scope honesty per slice
 
 - The PR body states exactly what it ships versus what its issue scopes. Any
