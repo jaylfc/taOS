@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 const SCOPE_PRESETS: { value: string; label: string; defaultOn: boolean; disabled?: boolean; hint?: string }[] = [
   { value: "project_tasks", label: "project_tasks", defaultOn: true, disabled: true, hint: "required for project invites" },
+  { value: "project_tasks_create", label: "project_tasks_create", defaultOn: false, hint: "author NEW cards. project_tasks alone is read, lifecycle and comments only" },
   { value: "canvas_read", label: "canvas_read", defaultOn: true },
   { value: "canvas_write", label: "canvas_write", defaultOn: true },
 ];

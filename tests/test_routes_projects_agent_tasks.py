@@ -297,7 +297,10 @@ class TestExcludedRoutes:
     """Invariant 2 + 5: project_tasks must NOT reach create-task, members, or
     project-lifecycle routes; the token authenticates nothing off the allowlist."""
 
-    async def test_cannot_create_task(self, ctx):
+    async def test_project_tasks_alone_cannot_create_task(self, ctx):
+        """project_tasks is read + lifecycle + comments. Authoring requires the
+        SEPARATE project_tasks_create grant, so an agent approved only for
+        project_tasks must still be refused (Invariant 2 + 5 preserved)."""
         pid = await _new_project(ctx, "alpha")
         _cid, token = await _mint_agent(ctx, pid)
         async with _bare(ctx.app) as bare:
@@ -516,3 +519,54 @@ class TestLeadAgentMarkClaimable:
         )
         assert resp.status_code == 200, resp.text
         assert "claimable" in resp.json()["labels"]
+
+@pytest.mark.asyncio
+class TestTaskCreationScope:
+    """project_tasks_create is a separate, narrower grant for AUTHORING cards.
+
+    Both halves matter: an agent WITH it can create, an agent WITHOUT it cannot.
+    A test that only asserted the refusal would pass against a route nobody can
+    reach, and one that only asserted success would not prove the scope is
+    enforced at all.
+    """
+
+    async def test_project_tasks_create_allows_authoring(self, ctx):
+        pid = await _new_project(ctx, "alpha")
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_create",))
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/tasks",
+                json={"title": "authored by an agent"},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["title"] == "authored by an agent"
+        # Authorship is attributed to the AGENT, not to the project owner.
+        assert body["created_by"] == cid
+
+    async def test_create_scope_is_project_bound(self, ctx):
+        """A grant on project A must not authorise creation on project B."""
+        pid_a = await _new_project(ctx, "alpha")
+        pid_b = await _new_project(ctx, "beta")
+        _cid, token = await _mint_agent(ctx, pid_a, scopes=("project_tasks_create",))
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid_b}/tasks",
+                json={"title": "cross project"},
+                headers=_hdr(token),
+            )
+        # Existence-hiding: indistinguishable from a project that is not theirs.
+        assert resp.status_code == 404, resp.text
+
+    async def test_create_scope_does_not_widen_other_routes(self, ctx):
+        """project_tasks_create authorises AUTHORING only, not member management."""
+        pid = await _new_project(ctx, "alpha")
+        _cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_create",))
+        async with _bare(ctx.app) as bare:
+            resp = await bare.post(
+                f"/api/projects/{pid}/members",
+                json={"mode": "native", "agent_id": "x"},
+                headers=_hdr(token),
+            )
+        assert resp.status_code in (401, 403, 404)

@@ -42,14 +42,20 @@ _AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE
 # paths (/api/projects/{pid}/tasks...), so an exact frozenset can't match them;
 # a (method, compiled-regex) allowlist is used instead.  Each pattern is fully
 # anchored and uses a slash-free segment ([^/]+) with an exact segment count, so
-# sibling routes that must stay session-only -- POST .../tasks (create),
-# /members, /relationships, /audit, /activity, project lifecycle -- never match.
+# sibling routes that must stay session-only -- /members, /relationships,
+# /audit, /activity, project lifecycle -- never match. POST .../tasks IS
+# reachable, but only with project_tasks_create, never with project_tasks.
 # This is the project-scoped analogue of the exact _AGENT_TOKEN_PATHS contract:
 # the token only reaches the handler, which then verifies the JWT + grant +
 # project binding.  Anything not listed here is NOT reachable by a registry JWT.
 _SEG = r"[^/]+"
 _AGENT_TASK_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks$")),
+    # Task CREATION, gated by the SEPARATE project_tasks_create scope (not
+    # project_tasks, which stays read + lifecycle + comments per Invariant 2+5).
+    # Reaching the handler is not authorisation: it then verifies the JWT, the
+    # project binding, and that narrower scope.
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/tasks$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/ready$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/tasks/{_SEG}$")),
     ("GET", re.compile(rf"^/api/projects/tasks/{_SEG}/context$")),

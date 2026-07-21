@@ -452,11 +452,15 @@ async def _require_task_in_project(
 
 
 async def _authorize_task_actor(
-    request: Request, pstore, project_id: str
+    request: Request, pstore, project_id: str, scope: str = "project_tasks"
 ) -> "tuple[str, bool, dict] | JSONResponse":
     """Resolve the actor for a task route that accepts EITHER a session
-    owner/admin OR an approved external agent's registry JWT (scope
-    project_tasks) bound to THIS project.
+    owner/admin OR an approved external agent's registry JWT holding ``scope``
+    (default ``project_tasks``) bound to THIS project.
+
+    ``scope`` is a parameter because authoring uses a SEPARATE, narrower grant
+    (``project_tasks_create``): project_tasks is documented and tested as read
+    plus lifecycle plus comments, so creation must not ride on it.
 
     Returns ``(actor_id, is_agent, project)`` on success, or a JSONResponse to
     return directly.  These routes take ``request: Request`` and auth INSIDE the
@@ -482,7 +486,7 @@ async def _authorize_task_actor(
 
     try:
         caller = await check_agent_scope_for_project(
-            request, "project_tasks", project_id
+            request, scope, project_id
         )
     except HTTPException as exc:
         if exc.status_code == 403 and exc.detail == PROJECT_SCOPE_MISMATCH_DETAIL:
@@ -588,14 +592,25 @@ async def create_task(
     project_id: str,
     payload: CreateTaskIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
+    """Create a task as a session owner/admin, or as an approved external agent
+    holding ``project_tasks_create`` on THIS project.
+
+    Authoring is a SEPARATE scope from ``project_tasks`` on purpose: that scope
+    is documented and tested as read + lifecycle + comments ("Invariant 2 + 5"),
+    so widening it would retroactively grant authoring to every agent already
+    approved for it. Existence-hiding 404 behaviour matches the other task
+    routes.
+    """
     store = request.app.state.project_task_store
     pstore = request.app.state.project_store
     estore = request.app.state.project_element_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    actor_or_err = await _authorize_task_actor(
+        request, pstore, project_id, scope="project_tasks_create"
+    )
+    if isinstance(actor_or_err, JSONResponse):
+        return actor_or_err
+    actor_id, _is_agent, _project = actor_or_err
     if payload.parent_task_id is not None:
         parent = await store.get_task(payload.parent_task_id)
         if parent is None or parent["project_id"] != project_id:
@@ -614,10 +629,10 @@ async def create_task(
         assignee_id=payload.assignee_id,
         parent_task_id=payload.parent_task_id,
         element_id=element_id,
-        created_by=user.user_id,
+        created_by=actor_id,
     )
     _beads_mark_dirty(request, project_id)
-    await pstore.log_activity(project_id, user.user_id, "task.created", {"task_id": t["id"], "title": t["title"]})
+    await pstore.log_activity(project_id, actor_id, "task.created", {"task_id": t["id"], "title": t["title"]})
     return t
 
 

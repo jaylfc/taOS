@@ -55,6 +55,13 @@ VALID_SCOPES = frozenset({
     # agent's OWN project only (bound by the token's project_id claim). Does NOT
     # grant task create, member management, or project lifecycle.
     "project_tasks",
+    # Authoring cards, deliberately SEPARATE from project_tasks. project_tasks
+    # is documented and tested as read + lifecycle + comments only ("Invariant
+    # 2 + 5"), so widening it would retroactively grant authoring to every agent
+    # already approved for it, invisibly to whoever approved them. A distinct
+    # scope keeps an existing approval meaning exactly what it meant when it was
+    # given, and makes authoring an explicit per-agent opt-in.
+    "project_tasks_create",
     # Canvas access: read and write on a specific project's canvas. Like
     # project_tasks, a project_id is required so the token is bound to the
     # operator-validated project rather than whatever the unauthenticated agent
