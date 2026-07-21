@@ -274,6 +274,31 @@ A close without a successor link reads as lost work and forces the maintainer
 into git forensics (this happened with #1927/#1924 - both were legitimate
 "landed via" closures that looked like data loss for hours).
 
+### Asking another team's agent a question
+
+taOS depends on sibling services with their own maintainer agents (taOSmd, the
+website). Their contracts are theirs to state, so ASK rather than inferring from
+their source (pitfall 23). How to reach them depends on where you sit:
+
+- **On the A2A bus** (internal agents): post on the relevant channel, name the
+  agent, and expect a reply inside the hour.
+- **Outside the bus** (external contributors): open an issue on
+  `jaylfc/taos-agent-commons`, the private invite-only coordination repo. Label
+  it `contract-question` and name the service. @taOS-dev sweeps it hourly and
+  relays to the owning agent on the bus, then carries the answer back.
+- `jaylfc/taosmd` is public with issues enabled, so a taosmd contract question
+  can also go straight there.
+- `jaylfc/taos-website` is private, so commons or the relay is the only route.
+
+If a question sits unanswered for more than about two hours, escalate by also
+raising it on the PR. The relay is a person-shaped hop and can stall; silence
+should never be mistaken for progress.
+
+This arrangement is TEMPORARY scaffolding. It retires when an external
+contributor can hold a taOS identity and reach the bus directly, which is the
+same capability as agent sharing. Do not build tooling that assumes it is
+permanent.
+
 ### Verify before you claim, and compile before you PR
 
 - An assertion with a tolerance (`abs(a - b) <= n`) does not test an invariant.
