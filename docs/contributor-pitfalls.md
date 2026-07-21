@@ -185,3 +185,28 @@ source upload, the compare-and-swap status transition, exact artifact-count
 assertions) are all reintroducible by a plausible-looking resolution. Rebase
 rather than merging the base in, so the diff stays reviewable and each conflict
 is seen individually.
+
+**23. Mocks of EXTERNAL service contracts need a real source, not a guess.**
+Mocking our own internals or injecting errors you cannot produce on demand (a
+500, a timeout, an ImportError) is fine and unavoidable. The dangerous class is
+narrow: a mock of a service we do not control, whose fixture was hand-written
+from what the calling code expects. That fixture encodes a BELIEF about someone
+else's API, and when the belief is wrong the test proves nothing while going
+green. This happened three times in one PR cycle (#2062): an invented `dbPath`
+request shape, an un-nested poll response, and a tolerance assertion over both.
+
+Requirements for that class, strongest first:
+
+1. **Capture, do not compose.** Call the real service once and commit its
+   response as the fixture. A recorded response cannot encode a wrong belief.
+2. **Keep one real integration test per external contract.** Have it feature
+   detect and skip when the service is unreachable, so CI stays green offline
+   but drift surfaces the moment anyone runs it against a live instance. For
+   taosmd, `GET /version` returns a capabilities list for exactly this.
+3. **If neither is possible, mark the mock provisional IN CODE** with the
+   contract source and the date it was verified. A follow-up issue is not
+   sufficient: it detaches the caveat from the code and, in a tracker with
+   hundreds of open items, functions as indefinite deferral.
+
+Reviewer's job: ask where the fixture came from. A green test over a fictional
+contract is worse than no test, because it certifies the bug.
