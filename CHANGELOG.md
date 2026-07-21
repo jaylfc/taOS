@@ -7,6 +7,42 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.43] - 2026-07-21
+
+### Added
+
+- **Library app P1**: LibraryStore, ingest pipeline, cheap-tier processors (file,
+  text, PDF, image) and the collections handoff to taOSmd. Ingested items are
+  copied into a per-item directory and registered as a taOSmd collection over the
+  live Collections API, with async index polling and typed link rows (#2062).
+- Invite mint accepts an optional `ttl_secs` (60s to 24h) so a longer-lived
+  invite is a deliberate choice rather than a code change (#2072).
+
+### Fixed
+
+- **Invite dialog crashed the desktop.** The invite list endpoints returned
+  `scopes` as a JSON-encoded string while the UI typed it as an array, so the
+  dialog threw and tripped the SPA error boundary whenever any pending invite
+  existed. This also caused the post-mint refresh to unmount the dialog before
+  the URL and PIN were shown (#2066).
+- **Expired invites could not be revoked.** `revoke` only matched `pending`, so an
+  invite that lazily flipped to `expired` returned 404 while still listed, leaving
+  dead rows against the pending cap. Revoke now covers expired, and terminal
+  states return 409 with the actual state (#2071).
+- Default invite TTL raised from 15 minutes to 1 hour. Handing a URL and PIN to a
+  human who then configures an agent is not a 15 minute flow (#2072).
+
+### Changed
+
+- `docs/getting-started.md` documents the Hailo-10H AI HAT+2 and the Raspberry Pi
+  5 M.2 slot conflict: the HAT occupies the only M.2 slot, so it cannot be used
+  alongside an NVMe boot drive (#2075).
+- Contributor docs gained seven new defect classes drawn from real review
+  findings, covering runtime state in commits, mobile view registries, retrofit
+  migrations on shipped stores, scope honesty, tolerance assertions, shell
+  snippets in template literals, conflict resolution, and how an external
+  contributor reaches another team's agent (#2069, #2079).
+
 ## [1.0.0-beta.42] - 2026-07-20
 
 ### Added
