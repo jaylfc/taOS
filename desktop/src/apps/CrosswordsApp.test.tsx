@@ -66,7 +66,7 @@ describe("CrosswordsApp", () => {
     expect(within(firstCell).queryByText("S")).toBeNull();
   });
 
-  it("navigates to a clue's starting cell and direction when the clue is clicked", async () => {
+  it("navigates to a clue\'s starting cell and direction when the clue is clicked", async () => {
     render(<CrosswordsApp windowId="win-cw-4" />);
     await flush();
 
@@ -81,5 +81,27 @@ describe("CrosswordsApp", () => {
 
     const activeClueItem = screen.getByRole("button", { name: /1 across: celestial objects/i });
     expect(activeClueItem).toHaveStyle({ background: "rgba(251, 191, 36, 0.25)" });
+  });
+
+  it("clicks check answers button to enter check mode", async () => {
+    render(<CrosswordsApp windowId="win-cw-5" />);
+    await flush();
+
+    const checkButton = screen.getByRole("button", { name: /check answers/i });
+    fireEvent.click(checkButton);
+    await flush();
+
+    expect(checkButton).toBeInTheDocument();
+  });
+
+  it("switches to next puzzle", async () => {
+    render(<CrosswordsApp windowId="win-cw-6" />);
+    await flush();
+
+    const newPuzzleButton = screen.getByRole("button", { name: /new puzzle/i });
+    fireEvent.click(newPuzzleButton);
+    await flush();
+
+    expect(screen.getByText(/crossword #2/i)).toBeTruthy();
   });
 });
