@@ -22,7 +22,7 @@ Any of the following will work. More RAM means bigger, more capable models.
 |--------|-----|-------|
 | **Orange Pi 5 Plus** (recommended) | 16 GB | RK3588 chip with 6 TOPS NPU for fast inference |
 | **Orange Pi 5** | 8–16 GB | Same NPU, slightly fewer I/O ports |
-| **Raspberry Pi 5** | 8 GB minimum | CPU-only inference unless you add an accelerator HAT |
+| **Raspberry Pi 5** | 8 GB minimum | CPU-only inference unless you add an accelerator HAT; with the **AI HAT+2 (Hailo-10H, 40 TOPS)** you get NPU-accelerated LLM inference |
 | **Any x86/x64 PC or laptop** | 4 GB+ | Budget PC, old laptop, NUC, etc. GPU optional |
 | **NVIDIA GPU system** | 4 GB+ VRAM | GTX 1050 Ti and up; CUDA acceleration |
 | **AMD GPU system** | 8 GB+ VRAM | RX 6600 and up; ROCm acceleration |
@@ -30,6 +30,8 @@ Any of the following will work. More RAM means bigger, more capable models.
 The platform itself uses roughly 345 MB of RAM when idle, so it runs comfortably alongside your OS on any of the above.
 
 **Not sure which to buy?** The Orange Pi 5 Plus with 16 GB is the recommended starting point. It has a built-in NPU (neural processing unit) that runs models significantly faster than the CPU alone, and 16 GB gives you room to run multiple agents at once.
+
+> **AI HAT+2 (Hailo-10H) and the Pi 5 M.2 slot:** The AI HAT+2 NPU accelerator occupies the Raspberry Pi 5's only M.2 slot, the same slot normally used for an NVMe boot drive. You cannot use the HAT and an NVMe SSD at the same time. If you want fast storage alongside Hailo LLM acceleration, use a USB SSD instead.
 
 ### Software
 
