@@ -7,6 +7,32 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.44] - 2026-07-22
+
+### Added
+
+- **Assistant Studio**: a workspace app for a personal-assistant agent. Pick a
+  registered agent as your PA, then work out of one hub with Overview, Journal,
+  Calendar/time, Tasks, Comms, Canvas, and a Deliverables area (#2103, #2104).
+- **Agent project-file access**: the `files_read` / `files_write` scopes are now
+  enforced on the project-files routes, and the invite bundle surfaces the Files
+  API, so a member agent can read and add project files (#2100).
+- **Nous Portal** as a first-class cloud model provider (#2102).
+- **Scope requests**: an existing agent (or its owner/admin) can request
+  additional scope grants on the same identity, owner/admin approved (#1921).
+- Library item-card component with thumbnail, status, and artifacts (#2097).
+
+### Fixed
+
+- **Agent terminal/TUI shortcuts failed with "Instance not found."** The PTY
+  path opened `incus exec` with no `--project`, so it used the client default
+  project and could not reach a container in another project (e.g. a legacy one
+  in `default`). It now resolves the container's real project and starts it if
+  stopped (#2105).
+- Scope-request approval security fixes: global-capable scopes no longer bind to
+  an agent-supplied `project_id`, approval/deny take the per-request lock, and
+  create authorizes before scope-vocabulary validation (#1921).
+
 ## [1.0.0-beta.43] - 2026-07-21
 
 ### Added
