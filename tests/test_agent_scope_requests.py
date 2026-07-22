@@ -400,3 +400,62 @@ async def test_approve_wrong_agent_path_404(client, monkeypatch, tmp_path):
         assert resp.status_code == 404, resp.text
     finally:
         await env.close()
+
+
+@pytest.mark.asyncio
+async def test_global_scope_ignores_agent_supplied_project_id(client, monkeypatch, tmp_path):
+    """A global-capable scope requested with an agent-named project_id must NOT
+    bind the grant to that unvalidated project when the operator approves without
+    an explicit project_id: it is granted globally (project_id=None). Guards the
+    cross-project escalation the old agent-supplied fallback allowed."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        # The agent names a project it should not reach, on the request itself.
+        rec = await env.scope_store.create(
+            canonical_id=cid,
+            requested_scopes=["decisions_write"],
+            project_id="prj-victim",
+        )
+        # Operator approves WITHOUT an explicit body.project_id.
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/approve",
+            json={"granted_scopes": ["decisions_write"]},
+        )
+        assert resp.status_code == 200, resp.text
+        grants = await env.grants.list_grants(cid)
+        assert {g["scope"] for g in grants} == {"decisions_write"}
+        # Bound globally, NEVER to the agent-named project.
+        assert all(g["project_id"] is None for g in grants)
+        assert all(g["project_id"] != "prj-victim" for g in grants)
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_create_authorizes_before_scope_vocab(client, monkeypatch, tmp_path):
+    """An unauthorized caller is rejected BEFORE scope-vocabulary validation, so an
+    authz failure cannot leak whether a scope name is valid."""
+    app = client._transport.app
+    code = app.state.auth.add_user_invite("carol", "admin")
+    app.state.auth.complete_invite("carol", code, "Carol", "", "carolpass123")
+    carol = app.state.auth.find_user("carol")
+    carol_session = app.state.auth.create_session(user_id=carol["id"], long_lived=True)
+
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)  # owned by admin, not carol
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"taos_session": carol_session},
+        ) as carol_client:
+            resp = await carol_client.post(
+                f"/api/agents/registry/{cid}/scope-requests",
+                json={"requested_scopes": ["not_a_real_scope"]},
+            )
+        # Authz runs first -> 403, NOT a 400 vocab error confirming the bad scope.
+        assert resp.status_code == 403, resp.text
+        assert "not_a_real_scope" not in resp.text
+    finally:
+        await env.close()

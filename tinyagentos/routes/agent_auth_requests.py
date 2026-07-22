@@ -902,6 +902,12 @@ async def create_scope_request(
             status_code=404, detail="agent not found or not active"
         )
 
+    # Authorize BEFORE any request-shape validation so an unauthorized caller
+    # cannot probe scope validity (an authz failure must not leak whether a
+    # scope name is valid). The record fetch above is the minimum needed to
+    # authorize against the agent's owner.
+    await _authorize_scope_request_creation(request, canonical_id, record)
+
     if not body.requested_scopes:
         raise HTTPException(status_code=400, detail="requested_scopes must not be empty")
 
@@ -912,8 +918,6 @@ async def create_scope_request(
             status_code=400,
             detail=f"unknown scopes: {unknown}; valid: {sorted(VALID_SCOPES)}",
         )
-
-    await _authorize_scope_request_creation(request, canonical_id, record)
 
     store = _get_scope_requests_store(request)
     pending_count = await store.count_pending_for(canonical_id)
@@ -982,84 +986,102 @@ async def approve_scope_request(
     require_owner_or_admin(user, record["user_id"])
 
     store = _get_scope_requests_store(request)
-    req = await store.get(req_id)
-    if req is None or req.get("canonical_id") != canonical_id:
-        raise HTTPException(status_code=404, detail="scope request not found")
-    if req["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"request is already {req['status']!r}; cannot approve",
+
+    # Serialize concurrent approvals of the SAME request (mirror the consent
+    # approve path). All the state-changing work runs inside the lock with a
+    # pending re-check, so two racing approvals cannot both write grants and flip
+    # the decision. Grants are written before the decision flip; that ordering is
+    # safe only under this lock plus idempotent add_grant.
+    lock = _get_approve_lock(request, req_id)
+    async with lock:
+        req = await store.get(req_id)
+        if req is None or req.get("canonical_id") != canonical_id:
+            raise HTTPException(status_code=404, detail="scope request not found")
+        if req["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"request is already {req['status']!r}; cannot approve",
+            )
+
+        if not body.granted_scopes:
+            raise HTTPException(
+                status_code=400, detail="granted_scopes must not be empty"
+            )
+
+        # Narrow-not-widen: granted must be a subset of the requested scopes, and
+        # every granted scope must be in the closed vocabulary.
+        requested = set(req["requested_scopes"] or [])
+        granted = set(body.granted_scopes)
+        invalid = sorted((granted - requested) | (granted - VALID_SCOPES))
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"granted scopes must be a subset of the requested scopes; "
+                    f"not grantable: {invalid}"
+                ),
+            )
+
+        # Project binding: ONLY the operator's explicit picker value binds a grant
+        # to a project. NEVER fall back to the agent-named req.project_id -- an
+        # agent can self-request (see _authorize_scope_request_creation), so the
+        # request could name any project the operator never validated, and a
+        # global-capable scope (decisions_*) silently bound to it would be a
+        # cross-project escalation. A global-capable scope with no operator
+        # project is granted globally (project_id=None).
+        validated_project = (
+            body.project_id if (body.project_id and body.project_id.strip()) else None
         )
 
-    if not body.granted_scopes:
-        raise HTTPException(status_code=400, detail="granted_scopes must not be empty")
+        # project_tasks and the canvas scopes bind the grant to a specific project
+        # and add a membership row, so they require an explicit validated project.
+        needs_project = bool(granted & _SCOPE_PROJECT_SCOPES)
+        if needs_project and validated_project is None:
+            missing = sorted(granted & _SCOPE_PROJECT_SCOPES)
+            raise HTTPException(
+                status_code=400,
+                detail=f"project_id is required when granting {missing}",
+            )
 
-    # Narrow-not-widen: granted must be a subset of the requested scopes, and
-    # every granted scope must be in the closed vocabulary.
-    requested = set(req["requested_scopes"] or [])
-    granted = set(body.granted_scopes)
-    invalid = sorted((granted - requested) | (granted - VALID_SCOPES))
-    if invalid:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"granted scopes must be a subset of the requested scopes; "
-                f"not grantable: {invalid}"
-            ),
-        )
+        grants_store = _get_grants_store(request)
+        rel_mgr = _get_relationships(request)
 
-    # Resolve project binding: the admin's picker value wins; fall back to the
-    # project_id the agent named on the request.
-    effective_project = (
-        body.project_id if body.project_id is not None else req.get("project_id")
-    )
+        # Global (non-project) grants: write the grant + relationship edge bound
+        # to the validated project (None = global). Project-scoped grants: route
+        # through add_agent_to_project so the membership + a2a channel are synced,
+        # exactly like the consent-approve path. add_grant is idempotent, so
+        # re-approving an already-granted scope changes nothing.
+        project_scopes = [
+            s for s in body.granted_scopes if s in _SCOPE_PROJECT_SCOPES
+        ]
+        other_scopes = [
+            s for s in body.granted_scopes if s not in _SCOPE_PROJECT_SCOPES
+        ]
+        for scope in other_scopes:
+            await grants_store.add_grant(
+                canonical_id, scope, tier="once", project_id=validated_project
+            )
+            await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
+        if project_scopes:
+            await add_agent_to_project(
+                request,
+                canonical_id=canonical_id,
+                project_id=validated_project,
+                granted_scopes=project_scopes,
+                decided_by=user.user_id,
+            )
 
-    # project_tasks and the canvas scopes bind the grant to a specific project
-    # and add a membership row, so require an EXPLICIT picker project_id for them
-    # (the agent-named fallback is not an operator-validated binding). decisions
-    # scopes are global-capable, so they do not require a project_id.
-    needs_project = bool(granted & _SCOPE_PROJECT_SCOPES)
-    if needs_project and not (body.project_id and body.project_id.strip()):
-        missing = sorted(granted & _SCOPE_PROJECT_SCOPES)
-        raise HTTPException(
-            status_code=400,
-            detail=f"project_id is required when granting {missing}",
-        )
-
-    grants_store = _get_grants_store(request)
-    rel_mgr = _get_relationships(request)
-
-    # Global (non-project) grants: write the grant + relationship edge directly.
-    # Project-scoped grants: route through add_agent_to_project so the membership
-    # + a2a channel are synced, exactly like the consent-approve path. add_grant
-    # is idempotent, so re-approving an already-granted scope changes nothing.
-    project_scopes = [s for s in body.granted_scopes if s in _SCOPE_PROJECT_SCOPES]
-    other_scopes = [s for s in body.granted_scopes if s not in _SCOPE_PROJECT_SCOPES]
-    for scope in other_scopes:
-        await grants_store.add_grant(
-            canonical_id, scope, tier="once", project_id=effective_project
-        )
-        await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
-    if project_scopes:
-        await add_agent_to_project(
-            request,
-            canonical_id=canonical_id,
-            project_id=effective_project,
-            granted_scopes=project_scopes,
+        result = await store.set_decision(
+            req_id,
+            "accepted",
+            granted_scopes=body.granted_scopes,
             decided_by=user.user_id,
         )
-
-    result = await store.set_decision(
-        req_id,
-        "accepted",
-        granted_scopes=body.granted_scopes,
-        decided_by=user.user_id,
-    )
-    if result is None:
-        raise HTTPException(
-            status_code=409,
-            detail="request was decided concurrently; check current status",
-        )
+        if result is None:
+            raise HTTPException(
+                status_code=409,
+                detail="request was decided concurrently; check current status",
+            )
 
     await _retire_scope_request_notification(request, req_id)
     return {
