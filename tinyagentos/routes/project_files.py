@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Request, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -30,6 +31,60 @@ def _get_project_files_root(request: Request, slug: str) -> Path | None:
     root = request.app.state.projects_root / slug / "files"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+_FILES_READ_SCOPE = "files_read"
+_FILES_WRITE_SCOPE = "files_write"
+
+
+async def _authorize_files_actor(
+    request: Request, slug: str, mode: Literal["read", "write"]
+) -> "tuple[str, str] | JSONResponse":
+    """Resolve + authorize the actor for a project-files route.
+
+    Mirrors ``_authorize_canvas_actor``: accepts EITHER a session owner/admin
+    (human behavior unchanged) OR an approved agent's registry JWT holding the
+    matching files scope bound to THIS project:
+
+      * read mode  -> ``files_read`` grant on the project
+      * write mode -> ``files_write`` grant on the project
+
+    Returns ``(actor_kind, actor_id)`` on success, or a JSONResponse to return
+    directly. A token bound to a DIFFERENT project (or an unknown slug)
+    collapses into an existence-hiding 404 (never confirms the project exists).
+    """
+    ps = request.app.state.project_store
+    project = await ps.get_project_by_slug(slug)
+    uid = getattr(request.state, "user_id", None)
+    if uid:
+        # Session path: project visibility gate. A non-owner non-admin human
+        # collapses into the SAME existence-hiding 404 the agent path uses.
+        is_admin = bool(getattr(request.state, "is_admin", False))
+        if project is not None and not is_admin and project.get("user_id") != uid:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return ("user", uid)
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        # Middleware normally 401s unauthenticated requests before the route
+        # runs; a middleware-bypassing test context reaches here, so fall back
+        # to a system actor (there is no real principal to attribute to).
+        return ("user", "system")
+    if project is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    from tinyagentos.agent_token_auth import (
+        check_agent_scope_for_project,
+        PROJECT_SCOPE_MISMATCH_DETAIL,
+    )
+    scope = _FILES_READ_SCOPE if mode == "read" else _FILES_WRITE_SCOPE
+    try:
+        cid = await check_agent_scope_for_project(request, scope, project["id"])
+    except HTTPException as exc:
+        if exc.status_code == 403 and exc.detail == PROJECT_SCOPE_MISMATCH_DETAIL:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        raise
+    if cid is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return ("agent", cid)
 
 
 def _get_project_trash_dir(request: Request, slug: str) -> Path:
@@ -87,6 +142,9 @@ def _dir_signature(entries: list[dict]) -> str:
 @router.get("/api/projects/{slug}/files")
 async def api_project_list_files(request: Request, slug: str, path: str = ""):
     """List files in the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -100,6 +158,9 @@ async def api_project_list_files(request: Request, slug: str, path: str = ""):
 @router.get("/api/projects/{slug}/files/watch")
 async def api_project_watch_files(request: Request, slug: str, path: str = "", interval: float = 1.0):
     """SSE watch stream for the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -138,6 +199,9 @@ async def api_project_watch_files(request: Request, slug: str, path: str = "", i
 @router.post("/api/projects/{slug}/files/upload")
 async def api_project_upload_file(request: Request, slug: str, path: str = "", file: UploadFile = File(...)):
     """Upload a file to the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "write")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -163,6 +227,9 @@ async def api_project_upload_file(request: Request, slug: str, path: str = "", f
 @router.post("/api/projects/{slug}/mkdir")
 async def api_project_mkdir(request: Request, slug: str, body: MkdirRequest):
     """Create a directory in the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "write")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -184,6 +251,9 @@ async def api_project_mkdir(request: Request, slug: str, body: MkdirRequest):
 @router.get("/api/projects/{slug}/files/{file_path:path}")
 async def api_project_get_file(request: Request, slug: str, file_path: str):
     """Stream a single file from the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -202,6 +272,9 @@ async def api_project_delete_file(request: Request, slug: str, file_path: str):
     See ``tinyagentos/routes/user_workspace.py::api_delete_file`` for why —
     this mirrors the same move-to-trash behavior for project files.
     """
+    auth = await _authorize_files_actor(request, slug, "write")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -222,6 +295,9 @@ async def api_project_delete_file(request: Request, slug: str, file_path: str):
 @router.get("/api/projects/{slug}/trash")
 async def api_project_list_trash(request: Request, slug: str):
     """List items in a project's trash, newest-deleted first."""
+    auth = await _authorize_files_actor(request, slug, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
     if _get_project_files_root(request, slug) is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
     trash_dir = _get_project_trash_dir(request, slug)
@@ -231,6 +307,9 @@ async def api_project_list_trash(request: Request, slug: str):
 @router.post("/api/projects/{slug}/trash/{item_id}/restore")
 async def api_project_restore_trash_item(request: Request, slug: str, item_id: str):
     """Restore a trashed item back to its original path in the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "write")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
@@ -249,6 +328,9 @@ async def api_project_restore_trash_item(request: Request, slug: str, item_id: s
 @router.delete("/api/projects/{slug}/trash/{item_id}")
 async def api_project_purge_trash_item(request: Request, slug: str, item_id: str):
     """Permanently delete one item from a project's trash."""
+    auth = await _authorize_files_actor(request, slug, "write")
+    if isinstance(auth, JSONResponse):
+        return auth
     if _get_project_files_root(request, slug) is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
     trash_dir = _get_project_trash_dir(request, slug)
@@ -264,6 +346,9 @@ async def api_project_purge_trash_item(request: Request, slug: str, item_id: str
 @router.delete("/api/projects/{slug}/trash")
 async def api_project_empty_trash(request: Request, slug: str):
     """Permanently delete every item in a project's trash."""
+    auth = await _authorize_files_actor(request, slug, "write")
+    if isinstance(auth, JSONResponse):
+        return auth
     if _get_project_files_root(request, slug) is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
     trash_dir = _get_project_trash_dir(request, slug)
@@ -274,6 +359,9 @@ async def api_project_empty_trash(request: Request, slug: str):
 @router.get("/api/projects/{slug}/stats")
 async def api_project_stats(request: Request, slug: str):
     """Return total file count and total size for the project's files folder."""
+    auth = await _authorize_files_actor(request, slug, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
     workspace = _get_project_files_root(request, slug)
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)

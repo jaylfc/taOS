@@ -88,6 +88,24 @@ _AGENT_DECISIONS_ROUTES = (
     ("POST", re.compile(r"^/api/decisions$")),
 )
 
+# Project-files routes a files_read / files_write token may reach. Reads
+# (list/watch/get/trash-list/stats) require a files_read grant; writes
+# (upload/mkdir/delete/restore/purge/empty) require files_write. The route
+# verifies the JWT + grant + project binding (slug resolves to the project).
+_AGENT_FILES_ROUTES = (
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/files$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/files/watch$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/files/upload$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/mkdir$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/files/.+$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/files/.+$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/trash$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/trash/{_SEG}/restore$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/trash/{_SEG}$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/trash$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/stats$")),
+)
+
 
 def _is_agent_task_path(method: str, path: str) -> bool:
     """True only for the exact subset of task routes a project_tasks token may
@@ -107,6 +125,13 @@ def _is_agent_decisions_path(method: str, path: str) -> bool:
     """True only for POST /api/decisions, which a decisions_write-bound agent
     token may reach.  The route verifies the JWT + grant."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_DECISIONS_ROUTES)
+
+
+def _is_agent_files_path(method: str, path: str) -> bool:
+    """True only for the project-files routes a files_read / files_write token
+    may reach.  Strict method + anchored-regex match; the route verifies the
+    JWT + grant + project binding."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_FILES_ROUTES)
 # Bundle assets and the SPA shell HTML must be reachable without auth so:
 #   1. The browser can install and cache the shell for offline / PWA use.
 #   2. After a backend restart the cached shell loads immediately without
@@ -349,6 +374,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             or _is_agent_task_path(request.method, path)
             or _is_agent_canvas_path(request.method, path)
             or _is_agent_decisions_path(request.method, path)
+            or _is_agent_files_path(request.method, path)
         ) and auth_header.lower().startswith("bearer "):
             request.state.user_id = None
             request.state.is_admin = False

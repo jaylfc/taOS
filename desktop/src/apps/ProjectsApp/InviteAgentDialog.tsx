@@ -6,6 +6,8 @@ const SCOPE_PRESETS: { value: string; label: string; defaultOn: boolean; disable
   { value: "project_tasks_create", label: "project_tasks_create", defaultOn: false, hint: "author NEW cards. project_tasks alone is read, lifecycle and comments only" },
   { value: "canvas_read", label: "canvas_read", defaultOn: true },
   { value: "canvas_write", label: "canvas_write", defaultOn: true },
+  { value: "files_read", label: "files_read", defaultOn: true, hint: "read the project's Files" },
+  { value: "files_write", label: "files_write", defaultOn: false, hint: "add or edit files in the project's Files" },
 ];
 
 const INTERVAL_PRESETS: { label: string; secs: number }[] = [
