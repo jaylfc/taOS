@@ -32,6 +32,7 @@ ALL_TYPES: set[str] = {
     "openrouter",
     "kilocode",
     "deepseek",
+    "nous",
     "openai-compatible",
     # -- local image-generation backends --
     "sd-cpp",
@@ -46,6 +47,7 @@ CLOUD_TYPES: set[str] = {
     "openrouter",
     "kilocode",
     "deepseek",
+    "nous",
     "openai-compatible",
 }
 
@@ -74,6 +76,7 @@ BACKEND_TYPE_MAP: dict[str, str] = {
     "openrouter": "openrouter",
     "kilocode": "openai",  # kilocode is OpenAI-compatible; api_base set explicitly
     "deepseek": "deepseek",  # native LiteLLM provider; api_base set to official base
+    "nous": "openai",  # Nous Portal is OpenAI-compatible; api_base set explicitly
     "openai-compatible": "openai",  # user-supplied OpenAI-compatible endpoint
 }
 

@@ -18,7 +18,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 /* ------------------------------------------------------------------ */
 
 /** Fallback constants used before the API call completes. */
-const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "deepseek", "openai-compatible"] as const;
+const FALLBACK_CLOUD_TYPES = ["openai", "anthropic", "openrouter", "kilocode", "deepseek", "nous", "openai-compatible"] as const;
 const FALLBACK_LOCAL_TYPES = ["rkllama", "ollama", "llama-cpp", "vllm", "exo", "mlx", "sd-cpp"] as const;
 
 /** Active cloud types — seeded with fallback, updated from /api/providers/types.
@@ -35,6 +35,7 @@ const DEFAULT_URLS: Partial<Record<ProviderType, string>> = {
   openrouter: "https://openrouter.ai/api/v1",
   kilocode: "https://api.kilo.ai/api/gateway",
   deepseek: "https://api.deepseek.com",
+  nous: "https://inference-api.nousresearch.com/v1",
   ollama: "http://localhost:11434",
   // taOS default rkllama port since the 7833 migration (adjacent to qmd on
   // 7832) -- see _DEFAULT_RKLLAMA_PORT in rkllama_installer.py. 8080 is the
@@ -82,6 +83,12 @@ const CLOUD_PROVIDER_META: Record<string, CloudProviderMeta> = {
     description: "DeepSeek V4 Pro, Flash, Reasoner",
     url: "https://api.deepseek.com",
     keyPlaceholder: "sk-...",
+  },
+  nous: {
+    label: "Nous Portal",
+    description: "Hermes 4 and frontier models via Nous Research",
+    url: "https://inference-api.nousresearch.com/v1",
+    keyPlaceholder: "your Portal token",
   },
   "openai-compatible": {
     label: "OpenAI-Compatible",

@@ -27,6 +27,7 @@ PROVIDER_URL_DEFAULTS: dict[str, str] = {
     "anthropic": "https://api.anthropic.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "deepseek": "https://api.deepseek.com",
+    "nous": "https://inference-api.nousresearch.com/v1",
 }
 
 # Seed model list for cloud providers that don't expose an openly-listable
@@ -45,6 +46,14 @@ PROVIDER_DEFAULT_MODELS: dict[str, list[dict]] = {
         {"id": "deepseek-v4-flash"},
         {"id": "deepseek-chat"},
         {"id": "deepseek-reasoner"},
+    ],
+    # Nous Portal authenticates with an OAuth-minted bearer, so a fresh add
+    # without a working credential can't auto-discover /v1/models. Seed the
+    # flagship Hermes models so the entry registers routable models either way.
+    "nous": [
+        {"id": "Hermes-4-405B"},
+        {"id": "Hermes-4-70B"},
+        {"id": "Hermes-4.3-36B"},
     ],
 }
 
