@@ -1106,21 +1106,26 @@ async def deny_scope_request(
     require_owner_or_admin(user, record["user_id"])
 
     store = _get_scope_requests_store(request)
-    req = await store.get(req_id)
-    if req is None or req.get("canonical_id") != canonical_id:
-        raise HTTPException(status_code=404, detail="scope request not found")
-    if req["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"request is already {req['status']!r}; cannot deny",
-        )
 
-    result = await store.set_decision(req_id, "refused", decided_by=user.user_id)
-    if result is None:
-        raise HTTPException(
-            status_code=409,
-            detail="request was decided concurrently; check current status",
-        )
+    # Serialize against a concurrent approve of the same request (same per-req
+    # lock the approve path uses), with a pending re-check inside the lock.
+    lock = _get_approve_lock(request, req_id)
+    async with lock:
+        req = await store.get(req_id)
+        if req is None or req.get("canonical_id") != canonical_id:
+            raise HTTPException(status_code=404, detail="scope request not found")
+        if req["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"request is already {req['status']!r}; cannot deny",
+            )
+
+        result = await store.set_decision(req_id, "refused", decided_by=user.user_id)
+        if result is None:
+            raise HTTPException(
+                status_code=409,
+                detail="request was decided concurrently; check current status",
+            )
 
     await _retire_scope_request_notification(request, req_id)
     return {"status": "refused"}
