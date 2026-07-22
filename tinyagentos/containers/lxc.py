@@ -65,14 +65,60 @@ class _IncusPtyHandle(PtyHandle):
                 pass
 
 
+def _resolve_project_and_state_sync(container: str) -> tuple[str | None, str | None]:
+    """Return (project, state) for *container* by searching ALL incus projects.
+
+    ``incus exec`` targets the client's default project only, so a container
+    that lives in ``default`` while the client default is a per-user project
+    (e.g. ``user-999``) would be reported as "Instance not found". The async
+    path uses ``_resolve_container_project``; this is the synchronous sibling
+    the PTY path needs. Returns (None, None) if the container is not found or
+    the lookup fails, so the caller falls back to the default project.
+    """
+    try:
+        result = subprocess.run(
+            ["incus", "list", "--all-projects", "-f", "json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return (None, None)
+        for inst in json.loads(result.stdout or "[]"):
+            if inst.get("name") == container:
+                return (inst.get("project"), inst.get("status"))
+    except Exception:
+        logger.debug("resolve project for %s failed", container, exc_info=True)
+    return (None, None)
+
+
 def _open_incus_pty(container: str, shell_cmd: str) -> _IncusPtyHandle:
-    """Open an incus exec session with a real PTY."""
+    """Open an incus exec session with a real PTY.
+
+    Resolves the container's actual project (agents may live in a per-user
+    project like ``user-999`` or, for legacy containers, ``default``) and
+    starts it if it is stopped, so the shortcut works regardless of project or
+    run state instead of erroring with "Instance not found" / "not running".
+    """
+    project, state = _resolve_project_and_state_sync(container)
+    proj_args = ["--project", project] if project else []
+
+    # A dev-access terminal on a stopped container should just start it; incus
+    # exec fails on a non-running instance. Best effort: ignore an "already
+    # running" race and let the exec below surface any real failure.
+    if state is not None and state.lower() != "running":
+        try:
+            subprocess.run(
+                ["incus", "start", *proj_args, container],
+                capture_output=True, text=True, timeout=60,
+            )
+        except Exception:
+            logger.debug("start %s before pty failed", container, exc_info=True)
+
     master_fd, slave_fd = pty.openpty()
     # `incus exec` has no --tty/--interactive flags; -t/--force-interactive
     # forces pseudo-terminal allocation. stdin/stdout are wired to the PTY slave
     # below, so this gives a real interactive terminal in the container.
     proc = subprocess.Popen(
-        ["incus", "exec", "--force-interactive", container, "--",
+        ["incus", "exec", *proj_args, "--force-interactive", container, "--",
          "bash", "-lc", shell_cmd],
         stdin=slave_fd,
         stdout=slave_fd,
