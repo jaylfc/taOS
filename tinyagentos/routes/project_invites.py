@@ -366,19 +366,32 @@ async def build_connection_bundle(
     apis: dict = {}
     scopeset = set(granted_scopes)
     has_tasks = "project_tasks" in scopeset
+    has_tasks_create = "project_tasks_create" in scopeset
     has_canvas_read = "canvas_read" in scopeset
     has_canvas_write = "canvas_write" in scopeset
+    has_files_read = "files_read" in scopeset
+    has_files_write = "files_write" in scopeset
 
     if has_tasks:
         apis["tasks_list"] = f"/api/projects/{pid}/tasks"
         apis["tasks_ready"] = f"/api/projects/{pid}/tasks/ready"
         apis["task_lifecycle"] = f"/api/projects/{pid}/tasks/{{task_id}}/(claim|release|close|reopen)"
         apis["task_comments"] = f"/api/projects/{pid}/tasks/{{task_id}}/comments"
+    if has_tasks_create:
+        apis["task_create"] = f"/api/projects/{pid}/tasks"
     if has_canvas_read:
         apis["canvas_elements"] = f"/api/projects/{pid}/canvas/elements"
         apis["canvas_snapshot"] = f"/api/projects/{pid}/canvas/snapshot.png"
     if has_canvas_write:
         apis["canvas_element"] = f"/api/projects/{pid}/canvas/elements/{{eid}}"
+    # Files routes key on the project SLUG (not the id) in the path.
+    if has_files_read:
+        apis["files_list"] = f"/api/projects/{project_slug}/files"
+        apis["file_get"] = f"/api/projects/{project_slug}/files/{{path}}"
+        apis["files_stats"] = f"/api/projects/{project_slug}/stats"
+    if has_files_write:
+        apis["file_upload"] = f"/api/projects/{project_slug}/files/upload"
+        apis["files_mkdir"] = f"/api/projects/{project_slug}/mkdir"
 
     # A2A bus routes are always advertised (a2a_send / a2a_receive are part of
     # the invite's default scope set, but include them whenever either scope is
@@ -420,6 +433,8 @@ async def build_connection_bundle(
         has_tasks=has_tasks,
         has_canvas_read=has_canvas_read,
         has_canvas_write=has_canvas_write,
+        has_files_read=has_files_read,
+        has_files_write=has_files_write,
         check_interval_secs=check_interval_secs,
     )
 
@@ -453,6 +468,8 @@ def _build_guide_markdown(
     has_tasks: bool,
     has_canvas_read: bool,
     has_canvas_write: bool,
+    has_files_read: bool = False,
+    has_files_write: bool = False,
     check_interval_secs: int,
 ) -> str:
     """Generate the personalized capability guide from granted scopes + project
@@ -503,6 +520,27 @@ def _build_guide_markdown(
         lines.append("- Canvas write: NOT granted.")
     if not has_canvas_read and not has_canvas_write:
         lines.append("- You have no canvas access in this project.")
+    lines.append("")
+    lines.append("## Your capabilities in the project Files")
+    lines.append("")
+    if has_files_read:
+        lines.append(
+            f"- Files read: list and download this project's Files. "
+            f"List with `GET /api/projects/{project_slug}/files?path=<subdir>` and read one "
+            f"with `GET /api/projects/{project_slug}/files/<path>`. Use the project slug "
+            f"`{project_slug}` in the path (not the internal id)."
+        )
+    else:
+        lines.append("- Files read: NOT granted.")
+    if has_files_write:
+        lines.append(
+            f"- Files write: add and edit Files. Upload with "
+            f"`POST /api/projects/{project_slug}/files/upload?path=<subdir>` as multipart "
+            f"`file=@...`, and make folders with `POST /api/projects/{project_slug}/mkdir` "
+            f"`{{\"path\": \"<subdir>\"}}`."
+        )
+    else:
+        lines.append("- Files write: NOT granted.")
     lines.append("")
     lines.append("## A2A bus contract (authenticated proxy)")
     lines.append("")

@@ -105,12 +105,21 @@ The surface, by scope:
 - **project_tasks** (the kanban board): `GET /api/projects/{pid}/tasks`,
   `.../tasks/ready`, `.../tasks/{id}`, `.../tasks/{id}/comments` (GET + POST),
   `POST .../tasks/{id}/(claim|release|close|reopen)`, and
-  `GET /api/projects/tasks/{id}/context`. Granting project_tasks also makes the
-  agent a project member.
+  `GET /api/projects/tasks/{id}/context`. This is read + lifecycle + comments
+  only. Granting project_tasks also makes the agent a project member.
+- **project_tasks_create**: `POST /api/projects/{pid}/tasks` (author new cards).
+  This is a SEPARATE scope from project_tasks and is off by default; grant it
+  explicitly when an agent needs to create cards.
 - **canvas_read**: `GET .../canvas/elements`, `.../canvas/snapshot.png|.tldr`,
   `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`.
-- **project_doc_review**: `GET .../doc-reviews`, `GET|PUT .../doc-review/{path}`.
+- **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
+  `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
+  `POST .../files/upload` (multipart), `POST .../mkdir`, `DELETE .../files/{path}`,
+  and the trash restore/purge/empty routes. NOTE: the files routes key on the
+  project SLUG in the path, not the id.
+- **decisions_write**: `POST /api/decisions` (raise a human-in-the-loop
+  decision). Listing/answering decisions stays session-only.
 - **a2a_send / a2a_receive**: the authenticated bus proxy above
   (`/api/a2a/bus/send|messages|channels|stream`), which forces `from` to the
   agent's own handle.
@@ -119,9 +128,11 @@ Access is per-project: a token is authorized for a project only when the agent
 holds an active grant + membership there; a request for a project it has no
 grant on returns an existence-hiding 404. External agents onboard via the
 consent flow (`POST /api/agents/auth-requests`) or a project invite (link +
-PIN; see issue #1780). When you change the
-allowlist in `tinyagentos/auth_middleware.py`, update this section in the same
-PR (the doc-gate enforces it).
+PIN; see issue #1780). When you change the agent allowlist in
+`tinyagentos/auth_middleware.py`, update this section in the same PR. Note the
+doc-gate only fires on files ADDED or DELETED, not edits to an existing file,
+so it will NOT catch allowlist drift here on its own; keep this list in sync by
+hand.
 
 Multi-project identities (taOS #1862): one agent identity (the registry JWT) may
 belong to several projects at once. The grants table keys a grant on
