@@ -29,4 +29,8 @@ reviews:
     - "!**/package-lock.json"
     - "!**/uv.lock"
     - "!desktop/dist/**"
-    - "!static/**"
+    # Only the BUILT desktop bundle under static/, not all of static/: sw.js and
+    # the PWA manifests there are human-authored runtime behaviour and exactly
+    # the kind of change a reviewer should see (Qodo caught the over-broad
+    # original).
+    - "!static/desktop/**"
