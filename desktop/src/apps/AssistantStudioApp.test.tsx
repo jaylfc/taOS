@@ -1,8 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import type { ReactNode } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AssistantStudioApp } from "./AssistantStudioApp";
 
 const mockAgents = [{ name: "hermes" }, { name: "other" }];
+
+const PA_LABEL = "Select the agent to act as your personal assistant";
 
 vi.mock("lucide-react", () => ({
   LayoutDashboard: () => <span />,
@@ -25,7 +28,7 @@ vi.mock("@/components/ui", () => ({
     onClick,
     "aria-label": ariaLabel,
   }: {
-    children: React.ReactNode;
+    children: ReactNode;
     onClick?: () => void;
     "aria-label"?: string;
   }) => (
@@ -35,9 +38,34 @@ vi.mock("@/components/ui", () => ({
   ),
 }));
 
+// The component fetches /api/agents on mount in EVERY test, so every test needs
+// the stub -- without it the others hit jsdom's real fetch and update state
+// outside act(). Stubbing per-test also leaked the mock into whatever ran next,
+// so it is installed and torn down here instead.
 beforeEach(() => {
   localStorage.clear();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(mockAgents) }),
+  );
 });
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/** Wait until the mount fetch has resolved and defaulted the PA.
+ *
+ * The selector exists on the first render, so waiting for it proves nothing:
+ * the journal and task controls are `disabled={!pa}`, and fireEvent on a
+ * disabled control silently does nothing. Waiting for the PA to actually be
+ * set is what makes those tests deterministic rather than timing-dependent.
+ */
+async function waitForPa() {
+  const select = await screen.findByLabelText(PA_LABEL);
+  await waitFor(() => expect((select as HTMLSelectElement).value).toBe("hermes"));
+  return select;
+}
 
 describe("AssistantStudioApp", () => {
   it("renders all 7 rail sections", () => {
@@ -69,26 +97,33 @@ describe("AssistantStudioApp", () => {
 
   it("the PA selector renders with an accessible label", async () => {
     render(<AssistantStudioApp windowId="win-1" />);
-    await waitFor(() => {
-      expect(
-        screen.getByLabelText("Select the agent to act as your personal assistant")
-      ).toBeInTheDocument();
-    });
+    expect(await screen.findByLabelText(PA_LABEL)).toBeInTheDocument();
+  });
+
+  it("defaults the PA to hermes once the agent list loads", async () => {
+    render(<AssistantStudioApp windowId="win-1" />);
+    const select = await waitForPa();
+    expect((select as HTMLSelectElement).value).toBe("hermes");
   });
 
   it("adding a journal entry shows the text in the list", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(mockAgents) }));
     render(<AssistantStudioApp windowId="win-1" />);
-    await waitFor(() => {
-      expect(screen.getByLabelText("Select the agent to act as your personal assistant")).toBeInTheDocument();
-    });
+    await waitForPa();
     fireEvent.click(screen.getByRole("button", { name: "Journal" }));
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Journal" })).toBeInTheDocument();
     });
-    const textarea = screen.getByLabelText("New journal entry");
+
+    // Assert the controls are live before driving them. Without this the test
+    // can pass on a disabled textarea by accident and stops testing anything.
+    const textarea = screen.getByLabelText("New journal entry") as HTMLTextAreaElement;
+    expect(textarea).not.toBeDisabled();
+
     fireEvent.change(textarea, { target: { value: "Test journal entry text" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add entry" }));
+    const addButton = screen.getByRole("button", { name: "Add entry" });
+    expect(addButton).not.toBeDisabled();
+    fireEvent.click(addButton);
+
     await waitFor(() => {
       expect(screen.getByText("Test journal entry text")).toBeInTheDocument();
     });
