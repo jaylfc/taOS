@@ -198,9 +198,17 @@ export function WallpaperPicker({ open, onClose }: Props) {
                     <div className="pt-2">
                       <WallhavenBrowser
                         onSelect={(url, label) => {
-                          // Escape single-quotes and backslashes to prevent CSS injection
-                          // and render breakage from special characters in remote URLs.
-                          const safeUrl = url.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+                          // Escape backslashes, single-quotes, and parens to prevent
+                          // CSS injection and render breakage from remote URLs.
+                          // ')' prematurely terminates url('...'); '(' is also unsafe.
+                          const safeUrl = url
+                            .replace(/\\/g, "\\\\")
+                            .replace(/'/g, "\\'")
+                            .replace(/\(/g, "%28")
+                            .replace(/\)/g, "%29")
+                            .replace(/[\x00-\x1f\x7f]/g, "");
+                          // Reject non-http(s) schemes (data:, javascript:, etc.)
+                          if (!/^https?:\/\//i.test(safeUrl)) return;
                           const id = `wallhaven-${Date.now()}`;
                           const image = `url('${safeUrl}')`;
                           // Route through a state updater so wallpaperIdByTheme is set for
