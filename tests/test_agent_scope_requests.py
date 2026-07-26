@@ -321,7 +321,11 @@ async def test_agent_cannot_approve_its_own_request(client, monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {token}"},
                 json={"granted_scopes": ["memory_read"]},
             )
-        assert resp.status_code in (401, 403), resp.text
+        # The middleware allowlist only exposes the create path to a registry JWT;
+        # an agent token on /approve is NOT matched (the regex anchors at the
+        # scope-requests segment), so it falls through to the session gate and
+        # returns 401 (Authentication required), not 403.
+        assert resp.status_code == 401, resp.text
         assert await env.grants.list_grants(cid) == []
         # Request is still pending — the agent could not self-approve.
         assert (await env.scope_store.get(rec["id"]))["status"] == "pending"
@@ -457,5 +461,91 @@ async def test_create_authorizes_before_scope_vocab(client, monkeypatch, tmp_pat
         # Authz runs first -> 403, NOT a 400 vocab error confirming the bad scope.
         assert resp.status_code == 403, resp.text
         assert "not_a_real_scope" not in resp.text
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_deny_its_own_request(client, monkeypatch, tmp_path):
+    """The agent's own registry token cannot reach the deny endpoint: the
+    middleware allowlist only exposes the create path to a registry JWT, so an
+    agent token on /deny falls through to the session gate and is rejected."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+        rec = await env.scope_store.create(
+            canonical_id=cid, requested_scopes=["memory_read"]
+        )
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                f"/api/agents/registry/{cid}/scope-requests/{rec['id']}/deny",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        # Same auth model as approve: middleware does not pass a registry JWT
+        # through to the deny handler, so it falls to the session gate → 401.
+        assert resp.status_code == 401, resp.text
+        assert await env.grants.list_grants(cid) == []
+        # Request is still pending — the agent could not self-deny.
+        assert (await env.scope_store.get(rec["id"]))["status"] == "pending"
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_approved_scope_grant_unlocks_route_e2e(client, monkeypatch, tmp_path):
+    """End-to-end: agent requests decisions_write scope, admin approves, then
+    the agent's token actually reaches the decisions endpoint with a 200.
+    This proves the grant enforcement chain is wired end to end — the scope
+    request flow, the grant store, and the middleware + route handler all
+    cooperate so the agent can use the granted scope.  Guards against the
+    class of bug where a grant appears to land but the enforcement path never
+    checks it (regression guard for issue #2095)."""
+    env = await _wire(client, monkeypatch, tmp_path)
+    try:
+        cid = await _register_active(env)
+
+        # Step 1: agent self-requests decisions_write
+        token = env.agent_token(cid)
+        app = client._transport.app
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                f"/api/agents/registry/{cid}/scope-requests",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"requested_scopes": ["decisions_write"]},
+            )
+        assert resp.status_code == 200, resp.text
+        req_id = resp.json()["request_id"]
+
+        # Step 2: admin approves the scope request
+        resp = await client.post(
+            f"/api/agents/registry/{cid}/scope-requests/{req_id}/approve",
+            json={"granted_scopes": ["decisions_write"]},
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Step 3: agent uses the granted scope on the decisions POST endpoint
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as bare:
+            resp = await bare.post(
+                "/api/decisions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "from_agent": cid,
+                    "question": "Should we deploy?",
+                    "type": "approve_deny",
+                    "priority": "normal",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        decision = resp.json()
+        assert decision.get("from_agent") == cid
+        assert decision.get("question") == "Should we deploy?"
     finally:
         await env.close()
