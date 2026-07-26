@@ -127,7 +127,6 @@ export async function reprocessLibraryItem(itemId: string): Promise<boolean> {
 
 export interface IngestLibraryOptions {
   title?: string;
-  source?: string;
 }
 
 export async function ingestLibraryUrl(
