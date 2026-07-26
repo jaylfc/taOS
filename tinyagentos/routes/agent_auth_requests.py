@@ -187,6 +187,16 @@ async def _retire_scope_request_notification(request: Request, request_id: str) 
         pass
 
 
+# Single source of truth for which scopes are meaningless without a project
+# binding. This lived in three places (two function-local copies plus a module
+# one), and fixing only one of them left the auth-request approval path -- the
+# path an invite actually takes -- still granting files_* and
+# project_tasks_create globally. One definition, referenced everywhere.
+_CANVAS_SCOPES = {"canvas_read", "canvas_write"}
+_FILES_SCOPES = {"files_read", "files_write"}
+_PROJECT_SCOPES = {"project_tasks", "project_tasks_create"} | _CANVAS_SCOPES | _FILES_SCOPES
+
+
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
     """Per-request-id lock preventing concurrent approve races."""
     locks = getattr(request.app.state, "_approve_locks", None)
@@ -375,8 +385,6 @@ async def approve_request_record(
             ),
         )
 
-    _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
-    _PROJECT_SCOPES = {"project_tasks"} | _CANVAS_SCOPES
 
     # project_tasks and the canvas scopes bind the token to a specific project
     # and add a membership row, so require a real project_id for these grants.
@@ -627,8 +635,6 @@ async def add_agent_to_project(
     grants_store = _get_grants_store(request)
     rel_mgr = _get_relationships(request)
 
-    _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
-    _PROJECT_SCOPES = {"project_tasks"} | _CANVAS_SCOPES
 
     # Write the grants bound to this project and the relationship edge.
     for scope in granted_scopes:
@@ -869,16 +875,16 @@ _SCOPE_REQUEST_PENDING_CAP = 10
 # Scopes that bind a grant to a specific project (and add a membership row), so
 # a real project_id is required for them. decisions_read/decisions_write are
 # NOT here: they may be granted globally (project_id=None) or per-project.
-_SCOPE_CANVAS_SCOPES = {"canvas_read", "canvas_write"}
-_SCOPE_FILES_SCOPES = {"files_read", "files_write"}
-# Every scope whose authority is meaningless without a project binding. Missing
-# one here is not harmless: the approval would succeed with no project_id, the
-# grant would be written global (project_id=None), and check_agent_scope_for_project
-# would then never match it -- so the operator believes they granted access and
-# the agent silently has none.
-_SCOPE_PROJECT_SCOPES = (
-    {"project_tasks", "project_tasks_create"} | _SCOPE_CANVAS_SCOPES | _SCOPE_FILES_SCOPES
-)
+#
+# These are aliases, not copies. Missing a scope here is not harmless: the
+# approval would succeed with no project_id, the grant would be written global
+# (project_id=None), and check_agent_scope_for_project would then never match it
+# -- so the operator believes they granted access and the agent silently has
+# none. Re-listing the members instead of aliasing is how the three earlier
+# copies drifted apart, so keep these as plain aliases.
+_SCOPE_CANVAS_SCOPES = _CANVAS_SCOPES
+_SCOPE_FILES_SCOPES = _FILES_SCOPES
+_SCOPE_PROJECT_SCOPES = _PROJECT_SCOPES
 
 
 async def _authorize_scope_request_creation(
