@@ -138,7 +138,7 @@ export async function ingestLibraryUrl(
     const res = await fetch("/api/library/ingest", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ url, title: opts?.title ?? "" }),
+      body: JSON.stringify({ url, title: opts?.title ?? "", source: opts?.source ?? "" }),
     });
     if (!res.ok) return null;
     const ct = res.headers.get("content-type") ?? "";
