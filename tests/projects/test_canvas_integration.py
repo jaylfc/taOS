@@ -133,7 +133,8 @@ async def test_post_then_snapshot_then_sse(app_env):
         await asyncio.sleep(0.05)
     assert target.exists(), f"snapshot not written to {target}"
     body = json.loads(target.read_text())
-    assert any(k.startswith("shape:") for k in body["store"].keys())
+    # Shapes live in the records array, not a store dict keyed by id.
+    assert any(r["typeName"] == "shape" for r in body["records"])
 
 
 @pytest.mark.asyncio

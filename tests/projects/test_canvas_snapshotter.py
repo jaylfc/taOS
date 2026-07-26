@@ -49,9 +49,12 @@ async def test_add_element_writes_tldr_within_debounce(env):
         await asyncio.sleep(0.05)
     assert target.exists()
     body = json.loads(target.read_text())
-    assert "store" in body
-    shape_keys = [k for k in body["store"].keys() if k.startswith("shape:")]
-    assert len(shape_keys) == 1
+    # A .tldr file is {tldrawFileFormatVersion, schema, records[]}. The old
+    # {schema, store{}} shape asserted here was an in-memory store snapshot,
+    # which tldraw rejects outright as notATldrawFile.
+    assert body["tldrawFileFormatVersion"] == 1
+    shapes = [r for r in body["records"] if r["typeName"] == "shape"]
+    assert len(shapes) == 1
 
 
 @pytest.mark.asyncio
