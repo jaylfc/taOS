@@ -14,6 +14,9 @@ MAX_SCREENSHOT_LEN = 4_000_000
 # Maximum body text length.
 MAX_BODY_LEN = 20_000
 
+# Maximum feedback submissions per user in a 24-hour window.
+MAX_FEEDBACK_PER_USER_PER_DAY = 20
+
 
 class FeedbackStore(BaseStore):
     SCHEMA = """
@@ -62,6 +65,16 @@ class FeedbackStore(BaseStore):
             "app": app,
             "created_at": created_at,
         }
+
+    async def count_recent(self, user_id: str, since: str) -> int:
+        """Return the number of submissions by user_id created since the given ISO timestamp."""
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM feedback WHERE user_id = ? AND created_at >= ?",
+            (user_id, since),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def list_for_user(self, user_id: str) -> list[dict]:
         """Return all submissions for a user, most recent first, without screenshot blobs."""

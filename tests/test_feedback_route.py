@@ -1,10 +1,12 @@
 """Tests for POST/GET /api/feedback endpoints."""
 from __future__ import annotations
 
+from httpx import ASGITransport, AsyncClient
+
 import pytest
 import pytest_asyncio
 
-from tinyagentos.feedback_store import FeedbackStore, MAX_SCREENSHOT_LEN
+from tinyagentos.feedback_store import FeedbackStore, MAX_FEEDBACK_PER_USER_PER_DAY, MAX_SCREENSHOT_LEN
 
 
 # ---------------------------------------------------------------------------
@@ -153,3 +155,47 @@ async def test_oversized_screenshot_rejected(client):
 async def test_get_unknown_id_returns_404(client):
     resp = await client.get("/api/feedback/does-not-exist")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_feedback_rate_limit_exceeded(client):
+    for i in range(MAX_FEEDBACK_PER_USER_PER_DAY):
+        resp = await client.post(
+            "/api/feedback",
+            json={"type": "bug", "title": f"Bug {i}", "body": ""},
+        )
+        assert resp.status_code == 201
+    resp = await client.post(
+        "/api/feedback",
+        json={"type": "bug", "title": "Over limit", "body": ""},
+    )
+    assert resp.status_code == 429
+    assert "Too many" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_post_feedback_rate_limit_per_user(client, app):
+    for i in range(MAX_FEEDBACK_PER_USER_PER_DAY):
+        resp = await client.post(
+            "/api/feedback",
+            json={"type": "bug", "title": f"Admin bug {i}", "body": ""},
+        )
+        assert resp.status_code == 201
+
+    invite_code = app.state.auth.add_user_invite("user2", "admin")
+    app.state.auth.complete_invite("user2", invite_code, "User Two", "", "password")
+    record = app.state.auth.find_user("user2")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as user2_client:
+        resp = await user2_client.post(
+            "/api/feedback",
+            json={"type": "feature", "title": "User2 feature", "body": ""},
+        )
+        assert resp.status_code == 201
