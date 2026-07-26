@@ -16,8 +16,12 @@ describe("AssistantStudioApp", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders all 7 rail sections", () => {
+  it("renders all 7 rail sections", async () => {
     render(<AssistantStudioApp windowId="win-1" />);
+    // Drain the mount-time /api/agents fetch so its setState lands inside act().
+    await waitFor(() =>
+      expect(screen.queryByText("Loading agents...")).not.toBeInTheDocument(),
+    );
     const nav = document.querySelector("nav[aria-label='Assistant Studio sections']");
     expect(nav).toBeInTheDocument();
     const railLabels = [
@@ -36,6 +40,10 @@ describe("AssistantStudioApp", () => {
 
   it("switches visible panel when a rail button is clicked", async () => {
     render(<AssistantStudioApp windowId="win-1" />);
+    // Drain the mount-time /api/agents fetch so its setState lands inside act().
+    await waitFor(() =>
+      expect(screen.queryByText("Loading agents...")).not.toBeInTheDocument(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Journal" }));
     expect(screen.getByRole("heading", { name: "Journal" })).toBeInTheDocument();
   });
