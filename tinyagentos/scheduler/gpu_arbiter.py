@@ -86,6 +86,7 @@ class GpuArbiter:
         vram_reservation: VramReservationManager | None = None,
         max_queue_size: int = 100,
         eviction_enabled: bool = True,
+        drain_tick_seconds: float = 2.0,
     ):
         self._scheduler = scheduler
         self._cluster_manager = cluster_manager
@@ -131,6 +132,10 @@ class GpuArbiter:
         # ── taOS #796: pause/resume queue control ────────────────────────
         self._paused: bool = False
         self._paused_at: float | None = None
+
+        # ── taOS #1864 A3: event-driven wakeup ───────────────────────────
+        self._drain_tick_seconds = max(drain_tick_seconds, 0.01)
+        self._wake: asyncio.Event = asyncio.Event()
 
     async def start(self) -> None:
         if self._queue_processor_task is not None:
@@ -242,6 +247,7 @@ class GpuArbiter:
         if reservation_id is not None:
             self._vram.release(reservation_id)
             logger.debug("gpu-arbiter: released reservation %s for task %s", reservation_id, task_id)
+            self._signal_capacity()  # taOS #1864 A3: wake drain loop immediately
 
     async def _reserve_and_check(self, task_id: str, required_vram_mb: int) -> GpuAdmission:
         """Atomically check admission and reserve VRAM if admitted.
@@ -439,6 +445,7 @@ class GpuArbiter:
             async with self._running_lock:
                 entry = self._running.pop(task.id, None)
                 self._running_tasks.pop(task.id, None)
+            # _release_reservation above calls _signal_capacity (taOS #1864 A3).
             # Release the lease only for normal completion (not eviction).
             # When _evict_task evicts us it pops self._running first and
             # handles the lease — our pop above returns None, so we skip.
@@ -533,11 +540,25 @@ class GpuArbiter:
                      task_id, _pri, _vram, asyncio_task is not None)
         return 1
 
+    def _signal_capacity(self) -> None:
+        """Wake the drain loop on every reservation release and op completion.
+
+        Decision 7 (taOS #1864 A3): a release immediately wakes the drain so
+        a queued op admits in << 2 s instead of ≤ 2 s.  ``Event.set()`` is
+        idempotent — multiple callers may fire it without harm.
+        """
+        self._wake.set()
+
     async def _process_queue(self) -> None:
         try:
             while True:
-                await asyncio.sleep(2)
-                if not self._paused:  # taOS #796: skip drain while paused
+                try:
+                    await asyncio.wait_for(self._wake.wait(),
+                                           timeout=self._drain_tick_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                self._wake.clear()
+                if not self._paused:
                     await self._drain_queue()
         except asyncio.CancelledError:
             raise
