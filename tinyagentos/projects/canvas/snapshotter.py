@@ -275,12 +275,18 @@ def _tldraw_shape_record(el: dict, index: str) -> dict:
     # keeps the lossless copy. Splitting the two jobs is what makes each reliable;
     # asking one file to be both is how you get neither. The raw blob also stays
     # in the DB payload untouched (#2132's append-only rule).
+    # Read every field defensively. This is the recovery path, so it runs
+    # precisely on the boards whose rows are already ragged, and one raised
+    # KeyError/AttributeError aborts the export for the WHOLE project -- the
+    # user loses everything because one row was odd. Missing or wrong-typed
+    # fields degrade to a placeholder shape instead.
+    kind = _str_or(el.get("kind"), "unknown")
     base = {
-        "id": f"shape:{el['id']}",
+        "id": f"shape:{el.get('id') or 'unknown'}",
         "typeName": "shape",
-        "x": el["x"],
-        "y": el["y"],
-        "rotation": el["rotation"] or 0,
+        "x": _num_or(el.get("x"), 0.0),
+        "y": _num_or(el.get("y"), 0.0),
+        "rotation": _num_or(el.get("rotation"), 0.0),
         "index": index,
         "parentId": "page:page",
         "isLocked": False,
@@ -289,36 +295,60 @@ def _tldraw_shape_record(el: dict, index: str) -> dict:
         # It must not go in props: tldraw validates props per shape type and
         # rejects unknown keys.
         "meta": {
-            "taos_kind": el["kind"],
+            "taos_kind": kind,
             "taos_author_id": el.get("author_id"),
             "taos_author_kind": el.get("author_kind"),
         },
     }
 
-    kind = el["kind"]
+    w = _num_or(el.get("w"), 200.0)
+    h = _num_or(el.get("h"), 100.0)
     if kind == "note":
         base["type"] = "note"
         base["props"] = _note_props(_element_text(el))
     elif kind == "text":
         base["type"] = "text"
-        base["props"] = _text_props(_element_text(el), el["w"])
+        base["props"] = _text_props(_element_text(el), w)
     else:
         # Everything else (link, image, mermaid, flowchart, unknown kinds) becomes
         # a labelled rectangle. It is not the original rendering, but it is
         # visible and carries the content as text, which beats vanishing.
         base["type"] = "geo"
-        base["props"] = _geo_props(_element_text(el), el["w"], el["h"])
+        base["props"] = _geo_props(_element_text(el), w, h)
     return base
 
 
+def _num_or(value, default: float) -> float:
+    """Coerce a stored coordinate to a float, or fall back.
+
+    bool is excluded deliberately: it is an int subclass, so True would sail
+    through as 1.0 and silently place a shape at the wrong coordinate.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return float(value)
+
+
+def _str_or(value, default: str) -> str:
+    return value if isinstance(value, str) and value else default
+
+
 def _element_text(el: dict) -> str:
-    """Best-effort human-readable content for an element, for the export label."""
-    payload = el.get("payload") or {}
-    for key in ("text", "title", "label", "source", "url", "caption"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return el["kind"]
+    """Best-effort human-readable content for an element, for the export label.
+
+    payload is whatever JSON was stored, which is not guaranteed to be an
+    object: a list or bare string decodes truthy and would make .get() raise,
+    taking the whole export down over one odd row.
+    """
+    payload = el.get("payload")
+    if isinstance(payload, dict):
+        for key in ("text", "title", "label", "source", "url", "caption"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    elif isinstance(payload, str) and payload.strip():
+        return payload
+    return _str_or(el.get("kind"), "unknown")
 
 
 def _rich_text(text: str) -> dict:

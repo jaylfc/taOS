@@ -157,3 +157,61 @@ def test_z_index_drives_export_order():
     ]
 
     assert [s["id"] for s in shapes] == ["shape:bottom", "shape:top"]
+
+
+# A recovery export runs precisely on boards whose rows are already damaged, so
+# every read has to survive garbage. Both CodeRabbit and Qodo caught that the
+# original raised on a non-dict payload: one bad row aborted the export for the
+# entire project, losing everything the user was trying to rescue.
+HOSTILE_ROWS = [
+    {"id": "list-payload", "kind": "note", "payload": ["not", "a", "dict"]},
+    {"id": "str-payload", "kind": "note", "payload": "bare string"},
+    {"id": "int-payload", "kind": "note", "payload": 42},
+    {"id": "no-kind"},
+    {"kind": "text"},  # no id
+    {"id": "bad-types", "kind": "note", "x": "oops", "y": None,
+     "w": True, "h": [], "rotation": "x", "payload": {}},
+]
+
+
+def test_export_survives_every_malformed_row():
+    snap = _build_tldraw_snapshot(HOSTILE_ROWS)
+    shapes = [r for r in snap["records"] if r["typeName"] == "shape"]
+
+    assert len(shapes) == len(HOSTILE_ROWS), "a damaged row must degrade, not vanish"
+    for s in shapes:
+        assert isinstance(s["x"], float)
+        assert isinstance(s["y"], float)
+        assert isinstance(s["rotation"], float)
+        assert not s["type"].startswith("taos")
+
+
+def test_non_dict_payload_does_not_raise():
+    """The specific crash both bots found: payload.get on a non-mapping."""
+    for payload in (["a"], "text", 42, 3.5, True):
+        row = {"id": "x", "kind": "note", "payload": payload}
+        shapes = [
+            r for r in _build_tldraw_snapshot([row])["records"]
+            if r["typeName"] == "shape"
+        ]
+        assert len(shapes) == 1
+
+
+def test_a_string_payload_is_used_as_the_label():
+    """If the payload is just text, that text is the most useful thing to show."""
+    row = {"id": "x", "kind": "note", "payload": "recover me"}
+    shape = next(
+        r for r in _build_tldraw_snapshot([row])["records"] if r["typeName"] == "shape"
+    )
+    text = shape["props"]["richText"]["content"][0]["content"][0]["text"]
+    assert text == "recover me"
+
+
+def test_bool_dimensions_do_not_pass_as_numbers():
+    """bool is an int subclass, so True would silently become a width of 1.0."""
+    from tinyagentos.projects.canvas.snapshotter import _num_or
+
+    assert _num_or(True, 200.0) == 200.0
+    assert _num_or(False, 200.0) == 200.0
+    assert _num_or(7, 200.0) == 7.0
+    assert _num_or("x", 200.0) == 200.0
