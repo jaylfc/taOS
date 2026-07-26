@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderContent, dayLabel } from "../../MessagesApp";
+import type { ContentBlock } from "../../MessagesApp";
 
 describe("renderContent", () => {
   it("passes plain text through", () => {
@@ -56,6 +57,44 @@ describe("renderContent", () => {
     const a = link.querySelector("a");
     expect(a?.getAttribute("href")).toBe("https://example.com");
     expect(a?.getAttribute("target")).toBe("_blank");
+  });
+});
+
+describe("renderContent with content_blocks", () => {
+  it("renders unknown-kind fallback for every block kind", () => {
+    const blocks: ContentBlock[] = [
+      { kind: "text", text: "hello" },
+      { kind: "thinking", text: "thinking...", collapsed: true },
+      { kind: "tool_call", call_id: "c1", name: "bash", status: "running" },
+      { kind: "status", text: "done" },
+      { kind: "unknown" },
+    ];
+    const { container } = render(<div>{renderContent("", blocks)}</div>);
+    const text = container.textContent || "";
+    expect(text).toContain("unsupported block: text");
+    expect(text).toContain("unsupported block: thinking");
+    expect(text).toContain("unsupported block: tool_call");
+    expect(text).toContain("unsupported block: status");
+    expect(text).toContain("unsupported block: unknown");
+  });
+
+  it("falls through to markdown when content_blocks is empty", () => {
+    const { container } = render(<div>{renderContent("hello world", [])}</div>);
+    expect(container.textContent).toContain("hello world");
+  });
+
+  it("falls through to markdown when content_blocks is undefined", () => {
+    const { container } = render(<div>{renderContent("hello world")}</div>);
+    expect(container.textContent).toContain("hello world");
+  });
+
+  it("renders one fallback line per block", () => {
+    const blocks: ContentBlock[] = [
+      { kind: "text", text: "a" },
+      { kind: "status", text: "b" },
+    ];
+    const { container } = render(<div>{renderContent("", blocks)}</div>);
+    expect(container.querySelectorAll("div").length).toBeGreaterThanOrEqual(2);
   });
 });
 

@@ -158,12 +158,50 @@ export function resolveAuthorDisplayState(
   return "removed";
 }
 
+export interface TextContentBlock {
+  kind: "text";
+  text: string;
+}
+
+export interface ThinkingContentBlock {
+  kind: "thinking";
+  text: string;
+  collapsed?: boolean;
+}
+
+export interface ToolCallContentBlock {
+  kind: "tool_call";
+  call_id: string;
+  name: string;
+  input_preview?: string;
+  status: "running" | "done" | "error";
+  result_preview?: string;
+}
+
+export interface StatusContentBlock {
+  kind: "status";
+  text: string;
+}
+
+export interface UnknownContentBlock {
+  kind: "unknown";
+  [key: string]: unknown;
+}
+
+export type ContentBlock =
+  | TextContentBlock
+  | ThinkingContentBlock
+  | ToolCallContentBlock
+  | StatusContentBlock
+  | UnknownContentBlock;
+
 interface Message {
   id: string;
   channel_id: string;
   author_id: string;
   author_type: "user" | "agent";
   content: string;
+  content_blocks?: ContentBlock[];
   /** Parent message id when this message is a thread reply. */
   thread_id?: string;
   content_type?: "text" | "canvas" | string;
@@ -217,7 +255,26 @@ export function relativeTime(ts: number | string, nowMs: number = Date.now()): s
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-export function renderContent(text: string) {
+function renderContentBlock(block: ContentBlock, index: number): React.ReactElement {
+  switch (block.kind) {
+    case "text":
+    case "thinking":
+    case "tool_call":
+    case "status":
+    case "unknown":
+    default:
+      return (
+        <div key={`block-${index}`} className="text-shell-text-tertiary text-xs italic">
+          unsupported block: {block.kind}
+        </div>
+      );
+  }
+}
+
+export function renderContent(text: string, content_blocks?: ContentBlock[]) {
+  if (content_blocks && content_blocks.length > 0) {
+    return content_blocks.map((block, i) => renderContentBlock(block, i));
+  }
   // Split on fenced code blocks first, then apply inline markdown to non-code segments.
   const result: (string | React.ReactElement)[] = [];
   const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
