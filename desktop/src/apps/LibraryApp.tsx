@@ -96,6 +96,74 @@ const SOURCE_LABELS: Record<string, string> = {
   manual: "Manual",
 };
 
+interface SourceStorage {
+  source_type: string;
+  bytes: number;
+  item_count: number;
+}
+
+interface ItemStorageRow {
+  id: string;
+  title: string;
+  source_type: string;
+  bytes: number;
+}
+
+interface StorageViewData {
+  total_bytes: number;
+  cap_bytes: number;
+  paused_at_cap: boolean;
+  sources: SourceStorage[];
+  items: ItemStorageRow[];
+}
+
+const STORAGE_CAP_BYTES = 50 * 1024 * 1024 * 1024;
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+const fmtBytes = (b: number): string => {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
+const mockItemBytes = (id: string): number => {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash) + id.charCodeAt(i);
+    hash |= 0;
+  }
+  return (Math.abs(hash) % 4000 + 100) * 1024 * 1024;
+};
+
+const deriveMockStorageData = (items: KnowledgeItem[]): StorageViewData => {
+  const itemRows: ItemStorageRow[] = items.map((item) => ({
+    id: item.id,
+    title: item.title || "Untitled",
+    source_type: item.source_type,
+    bytes: mockItemBytes(item.id),
+  }));
+  const totalBytes = itemRows.reduce((sum, row) => sum + row.bytes, 0);
+  const sourceMap = new Map<string, { bytes: number; count: number }>();
+  for (const row of itemRows) {
+    const existing = sourceMap.get(row.source_type) || { bytes: 0, count: 0 };
+    sourceMap.set(row.source_type, { bytes: existing.bytes + row.bytes, count: existing.count + 1 });
+  }
+  const sources: SourceStorage[] = Array.from(sourceMap.entries())
+    .map(([source_type, data]) => ({ source_type, bytes: data.bytes, item_count: data.count }))
+    .sort((a, b) => b.bytes - a.bytes);
+  return {
+    total_bytes: totalBytes,
+    cap_bytes: STORAGE_CAP_BYTES,
+    paused_at_cap: totalBytes >= STORAGE_CAP_BYTES,
+    sources,
+    items: itemRows.sort((a, b) => b.bytes - a.bytes),
+  };
+};
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -159,6 +227,8 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
     status: null,
     monitor: null,
   });
+
+  const [activeView, setActiveView] = useState<"items" | "storage">("items");
 
   /* ---------- detail state ---------- */
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -621,6 +691,21 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
               ))}
             </div>
           )}
+          <div className="flex items-center gap-1 shrink-0" role="radiogroup" aria-label="View mode">
+            {(["items", "storage"] as const).map((v) => (
+              <Button
+                key={v}
+                variant={activeView === v ? "secondary" : "ghost"}
+                size="sm"
+                role="radio"
+                aria-checked={activeView === v}
+                onClick={() => setActiveView(v)}
+                className="capitalize text-xs"
+              >
+                {v}
+              </Button>
+            ))}
+          </div>
         </div>
 
         {/* Mobile: search mode + filters inline panel */}
@@ -907,6 +992,117 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       </div>
     </main>
   );
+
+  /* ---------------------------------------------------------------- */
+  /*  Storage Accounting View                                          */
+  /* ---------------------------------------------------------------- */
+
+  const storageViewUI = items.length === 0 ? (
+    <main className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
+        <span className="text-xs font-medium">Storage Accounting</span>
+        <span className="text-[11px] text-shell-text-tertiary">(mock)</span>
+      </div>
+      <div className="flex-1 flex items-center justify-center text-shell-text-tertiary text-sm">
+        No items to account for
+      </div>
+    </main>
+  ) : (() => {
+    const data = deriveMockStorageData(items);
+    const totalPct = Math.min(100, (data.total_bytes / data.cap_bytes) * 100);
+    return (
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium">Storage Accounting</span>
+            <span className="text-[11px] text-shell-text-tertiary">(mock)</span>
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-shell-text-secondary">
+                {fmtBytes(data.total_bytes)} used of {fmtBytes(data.cap_bytes)} cap
+              </span>
+              <span className="tabular-nums text-shell-text-tertiary">{totalPct.toFixed(1)}%</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-white/5" role="progressbar" aria-valuenow={totalPct} aria-valuemin={0} aria-valuemax={100}>
+              <div
+                className={`h-full rounded-full transition-all ${totalPct >= 100 ? "bg-red-500" : totalPct >= 80 ? "bg-amber-500" : "bg-sky-500"}`}
+                style={{ width: `${totalPct}%` }}
+              />
+            </div>
+            {data.paused_at_cap && (
+              <div className="flex items-center gap-1.5 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1">
+                <AlertCircle size={12} aria-hidden="true" />
+                Paused at cap: new heavy-tier downloads are blocked.
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <section>
+            <p className="text-[10px] uppercase tracking-wider text-shell-text-tertiary mb-2">By source</p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-shell-text-tertiary border-b border-white/5">
+                  <th className="text-left pb-1.5 font-normal" scope="col">Source</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Items</th>
+                  <th className="text-right pb-1.5 font-normal" scope="col">Bytes</th>
+                  <th className="pb-1.5 font-normal w-32" scope="col">Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.sources.map((src) => {
+                  const pct = data.total_bytes > 0 ? (src.bytes / data.total_bytes) * 100 : 0;
+                  return (
+                    <tr key={src.source_type} className="border-t border-white/5">
+                      <td className="py-1.5 pr-3 text-shell-text-secondary">{SOURCE_LABELS[src.source_type] ?? src.source_type}</td>
+                      <td className="py-1.5 pr-3 text-shell-text-tertiary tabular-nums">{src.item_count}</td>
+                      <td className="py-1.5 pr-3 text-shell-text-secondary text-right tabular-nums">{fmtBytes(src.bytes)}</td>
+                      <td className="py-1.5">
+                        <div className="h-1.5 w-full rounded-full bg-white/5" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+                          <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${pct}%` }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+          <section>
+            <p className="text-[10px] uppercase tracking-wider text-shell-text-tertiary mb-2">By item</p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-shell-text-tertiary border-b border-white/5">
+                  <th className="text-left pb-1.5 font-normal" scope="col">Title</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Source</th>
+                  <th className="text-right pb-1.5 font-normal" scope="col">Bytes</th>
+                  <th className="pb-1.5 font-normal w-32" scope="col">Share of cap</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((item) => {
+                  const pct = data.cap_bytes > 0 ? (item.bytes / data.cap_bytes) * 100 : 0;
+                  return (
+                    <tr key={item.id} className="border-t border-white/5">
+                      <td className="py-1.5 pr-3 text-shell-text-secondary truncate max-w-[200px]">{item.title}</td>
+                      <td className="py-1.5 pr-3 text-shell-text-tertiary">{SOURCE_LABELS[item.source_type] ?? item.source_type}</td>
+                      <td className="py-1.5 pr-3 text-shell-text-secondary text-right tabular-nums">{fmtBytes(item.bytes)}</td>
+                      <td className="py-1.5">
+                        <div className="h-1.5 w-full rounded-full bg-white/5" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+                          <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${pct}%` }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </main>
+    );
+  })();
 
   /* ---------------------------------------------------------------- */
   /*  Detail View UI                                                   */
@@ -1485,22 +1681,28 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
         detailTitle={selectedItem ? (selectedItem.title || "Untitled") : undefined}
         listWidth={700}
         list={
-          /* List pane: sidebar filters + item list side by side on desktop,
-             stacked (filters embedded above list) on mobile */
-          <div className="flex h-full min-h-0 overflow-hidden">
-            {/* Sidebar — always visible on desktop; hidden on mobile */}
-            {!isMobile && sidebarUI}
-            {listViewUI}
-          </div>
+          activeView === "items" ? (
+            /* List pane: sidebar filters + item list side by side on desktop,
+               stacked (filters embedded above list) on mobile */
+            <div className="flex h-full min-h-0 overflow-hidden">
+              {/* Sidebar — always visible on desktop; hidden on mobile */}
+              {!isMobile && sidebarUI}
+              {listViewUI}
+            </div>
+          ) : (
+            storageViewUI
+          )
         }
         detail={
-          detailViewUI ?? (
-            !isMobile ? (
-              <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
-                {loading ? "Loading..." : items.length === 0 ? "Add items to get started" : "Select an item"}
-              </div>
-            ) : null
-          )
+          activeView === "items"
+            ? detailViewUI ?? (
+                !isMobile ? (
+                  <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
+                    {loading ? "Loading..." : items.length === 0 ? "Add items to get started" : "Select an item"}
+                  </div>
+                ) : null
+              )
+            : null
         }
       />
       {categoryManagerUI}
