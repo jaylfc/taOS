@@ -9,3 +9,28 @@ reviews:
     base_branches:
       - master
       - dev
+    # The plan has a finite review quota, and it was being spent in the wrong
+    # places: repeatedly "review limit reached" on real code PRs while lockfile
+    # bumps consumed reviews. #2127 and #2131 both went unreviewed for this
+    # reason on the day this was written.
+    #
+    # Dependabot PRs are version bumps plus a regenerated lockfile. There is no
+    # human-authored logic for a reviewer to reason about, and CI already gates
+    # them, so they are the cheapest thing to stop spending quota on.
+    ignore_usernames:
+      - dependabot
+      - dependabot[bot]
+    # A draft is explicitly not ready. Reviewing it burns a review that will be
+    # burned again when it is marked ready.
+    drafts: false
+  # Generated artefacts dominate the diff without carrying reviewable intent.
+  # A single spa-deps bump is a 2000+ line package-lock diff.
+  path_filters:
+    - "!**/package-lock.json"
+    - "!**/uv.lock"
+    - "!desktop/dist/**"
+    # Only the BUILT desktop bundle under static/, not all of static/: sw.js and
+    # the PWA manifests there are human-authored runtime behaviour and exactly
+    # the kind of change a reviewer should see (Qodo caught the over-broad
+    # original).
+    - "!static/desktop/**"
