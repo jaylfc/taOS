@@ -6,13 +6,14 @@ GET  /api/feedback/{id} -- fetch a single submission including its screenshot
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from tinyagentos.auth import get_current_user
-from tinyagentos.feedback_store import MAX_BODY_LEN, MAX_SCREENSHOT_LEN
+from tinyagentos.feedback_store import MAX_BODY_LEN, MAX_FEEDBACK_PER_USER_PER_DAY, MAX_SCREENSHOT_LEN
 
 router = APIRouter()
 
@@ -68,7 +69,13 @@ async def submit_feedback(
 ) -> dict:
     """Create a new feedback submission for the authenticated user."""
     store = request.app.state.feedback_store
-    item = await store.create(
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    # Cap enforcement lives in the store as one statement. Counting here and
+    # inserting after would let concurrent requests all read the same count and
+    # all insert, which a user with several tabs open trips without trying.
+    item = await store.create_within_cap(
+        since=since.isoformat(),
+        cap=MAX_FEEDBACK_PER_USER_PER_DAY,
         user_id=current_user["id"],
         type=payload.type,
         title=payload.title,
@@ -76,6 +83,14 @@ async def submit_feedback(
         screenshot=payload.screenshot,
         app=payload.app,
     )
+    if item is None:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Too many feedback submissions. "
+                f"Maximum {MAX_FEEDBACK_PER_USER_PER_DAY} per 24 hours."
+            ),
+        )
     # Return without the screenshot blob to keep the response light.
     return {
         "id": item["id"],

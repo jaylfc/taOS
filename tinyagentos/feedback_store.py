@@ -14,6 +14,9 @@ MAX_SCREENSHOT_LEN = 4_000_000
 # Maximum body text length.
 MAX_BODY_LEN = 20_000
 
+# Maximum feedback submissions per user in a 24-hour window.
+MAX_FEEDBACK_PER_USER_PER_DAY = 20
+
 
 class FeedbackStore(BaseStore):
     SCHEMA = """
@@ -51,6 +54,64 @@ class FeedbackStore(BaseStore):
             """,
             (item_id, user_id, type, title, body, screenshot, app, created_at),
         )
+        await self._db.commit()
+        return {
+            "id": item_id,
+            "user_id": user_id,
+            "type": type,
+            "title": title,
+            "body": body,
+            "screenshot": screenshot,
+            "app": app,
+            "created_at": created_at,
+        }
+
+    async def create_within_cap(
+        self,
+        *,
+        user_id: str,
+        type: str,
+        title: str,
+        body: str,
+        screenshot: str = "",
+        app: str = "",
+        since: str,
+        cap: int,
+    ) -> dict | None:
+        """Insert only if the user is under `cap` submissions since `since`.
+
+        Returns the created row, or None if the cap was already reached.
+
+        Counting and inserting as two calls looks correct and is not: two
+        concurrent requests both read the same count, both see room, and both
+        insert, so the cap is exceeded by however many requests raced. A user
+        with several tabs open hits this without trying, and a scripted client
+        defeats the limit entirely.
+
+        One INSERT ... SELECT ... WHERE (SELECT COUNT(*) ...) < ? evaluates the
+        count and performs the write inside a single statement, so SQLite's
+        write lock makes the check-and-insert indivisible. rowcount tells us
+        which way it went.
+        """
+        assert self._db is not None
+        item_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            """
+            INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, created_at)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE (
+                SELECT COUNT(*) FROM feedback WHERE user_id = ? AND created_at >= ?
+            ) < ?
+            """,
+            (
+                item_id, user_id, type, title, body, screenshot, app, created_at,
+                user_id, since, cap,
+            ),
+        )
+        if not cursor.rowcount:
+            await self._db.rollback()
+            return None
         await self._db.commit()
         return {
             "id": item_id,

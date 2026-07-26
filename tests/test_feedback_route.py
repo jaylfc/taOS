@@ -1,10 +1,12 @@
 """Tests for POST/GET /api/feedback endpoints."""
 from __future__ import annotations
 
+from httpx import ASGITransport, AsyncClient
+
 import pytest
 import pytest_asyncio
 
-from tinyagentos.feedback_store import FeedbackStore, MAX_SCREENSHOT_LEN
+from tinyagentos.feedback_store import FeedbackStore, MAX_FEEDBACK_PER_USER_PER_DAY, MAX_SCREENSHOT_LEN
 
 
 # ---------------------------------------------------------------------------
@@ -153,3 +155,94 @@ async def test_oversized_screenshot_rejected(client):
 async def test_get_unknown_id_returns_404(client):
     resp = await client.get("/api/feedback/does-not-exist")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_feedback_rate_limit_exceeded(client):
+    for i in range(MAX_FEEDBACK_PER_USER_PER_DAY):
+        resp = await client.post(
+            "/api/feedback",
+            json={"type": "bug", "title": f"Bug {i}", "body": ""},
+        )
+        assert resp.status_code == 201
+    resp = await client.post(
+        "/api/feedback",
+        json={"type": "bug", "title": "Over limit", "body": ""},
+    )
+    assert resp.status_code == 429
+    assert "Too many" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_post_feedback_rate_limit_per_user(client, app):
+    for i in range(MAX_FEEDBACK_PER_USER_PER_DAY):
+        resp = await client.post(
+            "/api/feedback",
+            json={"type": "bug", "title": f"Admin bug {i}", "body": ""},
+        )
+        assert resp.status_code == 201
+
+    invite_code = app.state.auth.add_user_invite("user2", "admin")
+    app.state.auth.complete_invite("user2", invite_code, "User Two", "", "password")
+    record = app.state.auth.find_user("user2")
+    uid = record["id"] if record else ""
+    token = app.state.auth.create_session(user_id=uid, long_lived=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"taos_session": token},
+    ) as user2_client:
+        resp = await user2_client.post(
+            "/api/feedback",
+            json={"type": "feature", "title": "User2 feature", "body": ""},
+        )
+        assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_concurrent_submissions_cannot_exceed_the_cap(client):
+    """The cap must hold when requests race, not just when they arrive in order.
+
+    Counting and inserting as two separate calls passes every sequential test
+    and still lets N concurrent requests all read the same count, all see room,
+    and all insert. A user with several tabs open hits this without trying.
+    """
+    import asyncio
+
+    # One slot left, then fire more requests at it than can possibly fit.
+    for i in range(MAX_FEEDBACK_PER_USER_PER_DAY - 1):
+        resp = await client.post(
+            "/api/feedback", json={"type": "bug", "title": f"Bug {i}", "body": ""}
+        )
+        assert resp.status_code == 201
+
+    results = await asyncio.gather(*[
+        client.post("/api/feedback", json={"type": "bug", "title": f"Race {i}", "body": ""})
+        for i in range(8)
+    ])
+    created = [r for r in results if r.status_code == 201]
+    limited = [r for r in results if r.status_code == 429]
+
+    assert len(created) == 1, "exactly one racer may take the last slot"
+    assert len(limited) == 7
+    assert len(created) + len(limited) == 8, "every request got a definite answer"
+
+
+@pytest.mark.asyncio
+async def test_rejected_submission_is_not_persisted(client):
+    """A 429 must leave no row behind, or the cap tightens on every retry."""
+    for i in range(MAX_FEEDBACK_PER_USER_PER_DAY):
+        assert (await client.post(
+            "/api/feedback", json={"type": "bug", "title": f"Bug {i}", "body": ""}
+        )).status_code == 201
+
+    assert (await client.post(
+        "/api/feedback", json={"type": "bug", "title": "Rejected", "body": ""}
+    )).status_code == 429
+
+    listed = (await client.get("/api/feedback")).json()
+    items = listed["items"] if isinstance(listed, dict) else listed
+    assert len(items) == MAX_FEEDBACK_PER_USER_PER_DAY
+    assert not any(i["title"] == "Rejected" for i in items)
