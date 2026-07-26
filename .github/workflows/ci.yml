@@ -36,10 +36,20 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # 45 min cap accommodates the cron run that includes 3.11 (~30 min);
-    # 3.12/3.13 PR runs finish in ~16 min, so this only kicks in if 3.11
-    # ever drifts further.
-    timeout-minutes: 45
+    # Measured 2026-07-26 over the last 12 job records: 3.13 runs 31-35 min and
+    # 3.12 runs 38-41 min. The previous comment claimed "~16 min", which had
+    # stopped being true, so the 45 min cap sat about 4 minutes above the slowest
+    # normal run and 3.12 kept crossing it.
+    #
+    # A cap that close to the median does not catch hangs, it manufactures red
+    # PRs: two of those 12 records were killed mid-suite with nothing wrong. That
+    # is worse than no cap, because a timeout kill looks exactly like a genuine
+    # failure until you check the clock.
+    #
+    # 75 leaves real headroom while still bounding a truly hung job. The suite
+    # growing from ~16 to ~40 min is a separate problem worth fixing on its own
+    # merits; raising this stops it corrupting merge decisions in the meantime.
+    timeout-minutes: 75
     strategy:
       matrix:
         # PR + push runs cover the latest two; the daily cron run
