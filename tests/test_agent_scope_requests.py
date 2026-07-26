@@ -549,3 +549,51 @@ async def test_approved_scope_grant_unlocks_route_e2e(client, monkeypatch, tmp_p
         assert decision.get("question") == "Should we deploy?"
     finally:
         await env.close()
+
+
+def test_project_scope_set_is_a_single_definition():
+    """Which scopes require a project binding must be defined exactly once.
+
+    This existed as three parallel copies (two function-local, one module-level).
+    Fixing only the module-level one left the auth-request approval path -- the
+    path an invite actually takes -- still granting files_* and
+    project_tasks_create globally: grants written with project_id=None, which
+    check_agent_scope_for_project never matches, so the operator sees a
+    successful approval and the agent silently has no access.
+
+    Aliases are checked by identity, not equality, so a re-introduced copy that
+    happens to agree today still fails here rather than drifting later.
+    """
+    from tinyagentos.routes import agent_auth_requests as mod
+
+    assert mod._PROJECT_SCOPES == {
+        "project_tasks",
+        "project_tasks_create",
+        "canvas_read",
+        "canvas_write",
+        "files_read",
+        "files_write",
+    }
+    assert mod._SCOPE_PROJECT_SCOPES is mod._PROJECT_SCOPES
+    assert mod._SCOPE_CANVAS_SCOPES is mod._CANVAS_SCOPES
+    assert mod._SCOPE_FILES_SCOPES is mod._FILES_SCOPES
+
+    # No shadowing re-definition anywhere in the module source.
+    import inspect
+    import re
+
+    src = inspect.getsource(mod)
+    for name in ("_CANVAS_SCOPES", "_FILES_SCOPES", "_PROJECT_SCOPES"):
+        assigns = re.findall(rf"^\s*{name}\s*=", src, re.MULTILINE)
+        assert len(assigns) == 1, f"{name} is assigned {len(assigns)} times, expected 1"
+
+
+def test_every_project_bound_scope_is_a_valid_scope():
+    """The project-scope set must not name a scope the vocabulary rejects.
+
+    A typo here fails open in the confusing direction: the scope never matches
+    the needs_project check, so it is granted globally without anyone noticing.
+    """
+    from tinyagentos.routes.agent_auth_requests import VALID_SCOPES, _PROJECT_SCOPES
+
+    assert _PROJECT_SCOPES <= set(VALID_SCOPES)
