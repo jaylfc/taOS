@@ -667,6 +667,22 @@ async def add_agent_to_project(
                             can_read=("canvas_read" in granted_canvas),
                             can_write=("canvas_write" in granted_canvas),
                         )
+                    # role="lead" above is only a LABEL on the member row. The
+                    # project's actual lead is the projects.lead_member_id
+                    # pointer, and set_lead is its only writer, so without this
+                    # call the member reads as lead in the UI while every
+                    # lead-gated check refuses them (taOS #2113: exactly what
+                    # happened to Hermes on taOSrabbit). Best-effort like the
+                    # rest of this block: the membership + grant already stand.
+                    if is_lead:
+                        try:
+                            await pstore.set_lead(project_id, canonical_id)
+                        except KeyError:
+                            logger.warning(
+                                "add_agent_to_project: could not set %s as lead of %s",
+                                canonical_id, project_id,
+                            )
+
                     if "project_tasks" in granted_scopes:
                         from tinyagentos.projects.a2a import ensure_a2a_channel
 
