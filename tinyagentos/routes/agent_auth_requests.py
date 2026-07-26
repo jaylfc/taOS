@@ -62,6 +62,11 @@ VALID_SCOPES = frozenset({
     # scope keeps an existing approval meaning exactly what it meant when it was
     # given, and makes authoring an explicit per-agent opt-in.
     "project_tasks_create",
+    # Lists access: idea capture with agent triage (statuses, checkboxes, agent tidy)
+    # Least-privilege read + write on the agent's OWN project only, bound by the
+    # token's project_id claim.
+    "lists_read",
+    "lists_write",
     # Canvas access: read and write on a specific project's canvas. Like
     # project_tasks, a project_id is required so the token is bound to the
     # operator-validated project rather than whatever the unauthenticated agent
@@ -194,7 +199,13 @@ async def _retire_scope_request_notification(request: Request, request_id: str) 
 # project_tasks_create globally. One definition, referenced everywhere.
 _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
 _FILES_SCOPES = {"files_read", "files_write"}
-_PROJECT_SCOPES = {"project_tasks", "project_tasks_create"} | _CANVAS_SCOPES | _FILES_SCOPES
+_LISTS_SCOPES = {"lists_read", "lists_write"}
+_PROJECT_SCOPES = {
+    "project_tasks",
+    "project_tasks_create",
+    "lists_read",
+    "lists_write",
+} | _CANVAS_SCOPES | _FILES_SCOPES | _LISTS_SCOPES
 
 
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:

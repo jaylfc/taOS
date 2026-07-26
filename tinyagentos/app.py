@@ -398,8 +398,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.projects.canvas.store import ProjectCanvasStore as ProjectCanvasStoreImpl
     from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
     from tinyagentos.projects.invite_store import ProjectInviteStore
+    from tinyagentos.projects.lists_store import ProjectListsStore, ProjectListEntriesStore
     project_store = ProjectStore(data_dir / "projects.db")
     project_invite_store = ProjectInviteStore(data_dir / "project_invites.db")
+    project_lists_store = ProjectListsStore(data_dir / "project_lists.db")
+    project_list_entries_store = ProjectListEntriesStore(data_dir / "project_list_entries.db")
     project_event_broker = ProjectEventBroker()
     from tinyagentos.desktop_control import DesktopCommandBroker
     desktop_command_broker = DesktopCommandBroker()
@@ -575,6 +578,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_task_store.init()
         await project_element_store.init()
         await routine_store.init()
+        await project_lists_store.init()
+        await project_list_entries_store.init()
         await project_canvas_store.init()
         await decision_store.init()
         await execution_policy_store.init()
@@ -1606,6 +1611,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.coding_session_store = coding_session_store
     app.state.beads_bridge = None
     app.state.canvas_snapshotter = None
+    app.state.project_lists_store = project_lists_store
+    app.state.project_list_entries_store = project_list_entries_store
     projects_root.mkdir(parents=True, exist_ok=True)
     app.state.projects_root = projects_root
     app.state.chat_hub = chat_hub
