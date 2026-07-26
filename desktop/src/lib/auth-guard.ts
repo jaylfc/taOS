@@ -65,7 +65,7 @@ export function installAuthGuard(): void {
     // the backend's router-wide verify_csrf gate is satisfied at every call
     // site, not only the handful that wrap withCsrf() by hand. Covers both
     // string/URL inputs (via withCsrf on init) and Request-object inputs (by
-    // rebuilding the Request with the header). Gated to same-origin so the token
+    // merging the CSRF token into effectiveInit). Gated to same-origin so the token
     // never leaks off-site; never overwrites an X-CSRF-Token a caller already set.
     let effectiveInput: RequestInfo | URL = input;
     let effectiveInit = init;
@@ -73,21 +73,28 @@ export function installAuthGuard(): void {
       if (isSameOrigin(input.toString())) effectiveInit = withCsrf(init);
     } else if (typeof Request !== "undefined" && input instanceof Request) {
       try {
-        const method = (input.method || "GET").toUpperCase();
-        if (
-          CSRF_MUTATING.has(method) &&
-          isSameOrigin(input.url) &&
-          !input.headers.has("X-CSRF-Token")
-        ) {
+        const method = (init?.method || input.method || "GET").toUpperCase();
+        if (CSRF_MUTATING.has(method) && isSameOrigin(input.url)) {
           const token = getCsrfToken();
           if (token) {
+            // Merge BOTH sources rather than picking one. `init?.headers ||
+            // input.headers` silently discarded the Request's own headers
+            // whenever init also carried headers, so
+            //   fetch(new Request(url, {headers: {Authorization}}), {method, headers})
+            // lost the Authorization header entirely. init wins on conflict,
+            // matching how fetch itself resolves the two.
             const headers = new Headers(input.headers);
-            headers.set("X-CSRF-Token", token);
-            effectiveInput = new Request(input, { headers });
+            if (init?.headers) {
+              new Headers(init.headers).forEach((v, k) => headers.set(k, v));
+            }
+            if (!headers.has("X-CSRF-Token")) {
+              headers.set("X-CSRF-Token", token);
+              effectiveInit = { ...init, headers };
+            }
           }
         }
       } catch {
-        effectiveInput = input;
+        // Fallback to original input/init on error
       }
     }
     const response = await originalFetch(effectiveInput, effectiveInit);

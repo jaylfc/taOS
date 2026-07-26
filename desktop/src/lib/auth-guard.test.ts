@@ -37,10 +37,32 @@ describe("installAuthGuard CSRF wiring", () => {
     const lookalike = spy.mock.calls.at(-1)?.[1] as RequestInit;
     expect(new Headers(lookalike.headers).get("X-CSRF-Token")).toBeNull();
 
-    // Request-object input for a same-origin mutating call: the wrapper rebuilds
-    // the Request with the header attached (first arg is the Request).
+    // Request-object input for a same-origin mutating call: the wrapper merges
+    // the CSRF token into effectiveInit so native fetch respects any
+    // init-provided method/headers and preserves the original body stream.
     await window.fetch(new Request(`${window.location.origin}/api/x`, { method: "POST" }));
-    const reqArg = spy.mock.calls.at(-1)?.[0] as Request;
-    expect(reqArg.headers.get("X-CSRF-Token")).toBe("tok123");
+    const reqInit = spy.mock.calls.at(-1)?.[1] as RequestInit;
+    expect(new Headers(reqInit.headers).get("X-CSRF-Token")).toBe("tok123");
+
+    // Request headers AND init headers together: `init?.headers || input.headers`
+    // discarded the Request's own headers whenever init carried any, so an
+    // Authorization set on the Request went missing on every mutating call that
+    // also passed init.headers. Both sources must survive, init winning ties.
+    // (These assertions live in this block deliberately: installAuthGuard has a
+    // module-level `installed` guard, so a second install in a new it() is a
+    // no-op and window.fetch would be the bare spy.)
+    await window.fetch(
+      new Request(`${window.location.origin}/api/y`, {
+        method: "POST",
+        headers: { Authorization: "Bearer abc", "X-From-Request": "1" },
+      }),
+      { headers: { "X-From-Init": "2" } },
+    );
+    const merged = new Headers((spy.mock.calls.at(-1)?.[1] as RequestInit).headers);
+    expect(merged.get("Authorization")).toBe("Bearer abc");
+    expect(merged.get("X-From-Request")).toBe("1");
+    expect(merged.get("X-From-Init")).toBe("2");
+    expect(merged.get("X-CSRF-Token")).toBe("tok123");
   });
+
 });
