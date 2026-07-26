@@ -1,6 +1,7 @@
 import { Download, Link, AlertCircle, Image as ImageIcon, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui";
+import { useState } from "react";
 import type { LibraryItem, LibraryArtifact, LibraryJob } from "@/lib/library";
 
 /* ------------------------------------------------------------------ */
@@ -94,6 +95,7 @@ export function LibraryItemCard({
   onDownload,
   onOpenSource,
 }: LibraryItemCardProps) {
+  const [thumbFailed, setThumbFailed] = useState(false);
   const itemMeta = parseMeta(item.meta_json);
   const duration = itemMeta.duration ? Number(itemMeta.duration) : 0;
   const durationStr = formatDuration(duration);
@@ -105,6 +107,8 @@ export function LibraryItemCard({
 
   const thumbnailArtifact = artifacts.find((a) => a.kind === "thumbnail");
   const textArtifacts = artifacts.filter((a) => TEXT_ARTIFACT_KINDS.includes(a.kind));
+
+  const showPlaceholder = !thumbnailArtifact || thumbFailed;
 
   return (
     <Card className="w-full max-w-sm">
@@ -147,21 +151,18 @@ export function LibraryItemCard({
 
       <CardContent className="space-y-3">
         {/* Thumbnail */}
-        {thumbnailArtifact ? (
-          <img
-            src={thumbnailArtifact.path}
-            alt={`Thumbnail for ${item.title || "item"}`}
-            className="w-full aspect-video object-cover rounded-lg bg-shell-surface"
-            onError={(e) => {
-              const target = e.target as HTMLImageElement;
-              target.style.display = "none";
-            }}
-          />
-        ) : (
+        {showPlaceholder ? (
           <div className="flex flex-col items-center justify-center w-full aspect-video rounded-lg bg-shell-surface text-shell-text-tertiary">
             <ImageIcon size={20} />
             <span className="text-[10px] mt-1">No thumbnail</span>
           </div>
+        ) : (
+          <img
+            src={thumbnailArtifact?.path}
+            alt={`Thumbnail for ${item.title || "item"}`}
+            className="w-full aspect-video object-cover rounded-lg bg-shell-surface"
+            onError={() => setThumbFailed(true)}
+          />
         )}
 
         {/* Error state -- failure must be visible, never silent */}
