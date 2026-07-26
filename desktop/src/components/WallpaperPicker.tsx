@@ -1,8 +1,8 @@
-import { useThemeStore, type UserWallpaper } from "@/stores/theme-store";
+import { useThemeStore } from "@/stores/theme-store";
 import type { Wallpaper } from "@/stores/theme-store";
-import { Check, Globe, Trash2, Upload, X } from "lucide-react";
+import { Check, Globe } from "lucide-react";
 import { WallhavenBrowser } from "./WallhavenBrowser";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 interface Props {
   open: boolean;
@@ -90,18 +90,11 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-const ALLOWED_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
-
 export function WallpaperPicker({ open, onClose }: Props) {
   const {
     wallpaperId,
     setWallpaper,
     getWallpapersBySection,
-    getWallpapers,
-    userWallpapers,
-    addUserWallpaper,
-    removeUserWallpaper,
     wallpaperOverlayText,
     showOverlayText,
     toggleOverlayText,
@@ -116,74 +109,7 @@ export function WallpaperPicker({ open, onClose }: Props) {
   const isThemeDefault = wallpaperId === themeDefaultId;
   const [browseOnlineOpen, setBrowseOnlineOpen] = useState(false);
 
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   if (!open) return null;
-
-  const handleFile = async (file: File) => {
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      setUploadError("Only PNG, JPEG, and WebP images are supported");
-      return;
-    }
-    if (file.size > MAX_SIZE) {
-      setUploadError("Image must be under 10 MB");
-      return;
-    }
-
-    setUploading(true);
-    setUploadError(null);
-
-    try {
-      const form = new FormData();
-      form.append("file", file);
-
-      const res = await fetch("/api/desktop/wallpapers", {
-        method: "POST",
-        credentials: "include",
-        body: form,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        setUploadError(err.error ?? "Upload failed");
-        return;
-      }
-
-      const wp = (await res.json()) as UserWallpaper;
-      addUserWallpaper(wp);
-      setWallpaper(`user-${wp.id}`);
-    } catch {
-      setUploadError("Network error — try again");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = () => setDragOver(false);
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  };
-
-  const handleDelete = async (e: React.MouseEvent, wpId: string) => {
-    e.stopPropagation();
-    // If the deleted wallpaper is the active one, reset to default
-    if (wallpaperId === `user-${wpId}`) {
-      setWallpaper("graphite");
-    }
-    await removeUserWallpaper(wpId);
-  };
 
   return (
     <div

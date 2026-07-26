@@ -380,6 +380,7 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
       },
     ];
     return sections;
+  },
 
   fetchUserWallpapers: async () => {
     try {
