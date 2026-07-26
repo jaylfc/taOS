@@ -1032,7 +1032,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             </div>
             {data.paused_at_cap && (
               <div className="flex items-center gap-1.5 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1">
-                <AlertCircle size={12} />
+                <AlertCircle size={12} aria-hidden="true" />
                 Paused at cap: new heavy-tier downloads are blocked.
               </div>
             )}
@@ -1044,10 +1044,10 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-shell-text-tertiary border-b border-white/5">
-                  <th className="text-left pb-1.5 font-normal">Source</th>
-                  <th className="text-left pb-1.5 font-normal">Items</th>
-                  <th className="text-right pb-1.5 font-normal">Bytes</th>
-                  <th className="pb-1.5 font-normal w-32">Share</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Source</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Items</th>
+                  <th className="text-right pb-1.5 font-normal" scope="col">Bytes</th>
+                  <th className="pb-1.5 font-normal w-32" scope="col">Share</th>
                 </tr>
               </thead>
               <tbody>
@@ -1074,10 +1074,10 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-shell-text-tertiary border-b border-white/5">
-                  <th className="text-left pb-1.5 font-normal">Title</th>
-                  <th className="text-left pb-1.5 font-normal">Source</th>
-                  <th className="text-right pb-1.5 font-normal">Bytes</th>
-                  <th className="pb-1.5 font-normal w-32">Share of cap</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Title</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Source</th>
+                  <th className="text-right pb-1.5 font-normal" scope="col">Bytes</th>
+                  <th className="pb-1.5 font-normal w-32" scope="col">Share of cap</th>
                 </tr>
               </thead>
               <tbody>
