@@ -204,6 +204,20 @@ describe("LibraryItemCard", () => {
       expect(img.src).toContain("/tmp/thumb.jpg");
     });
 
+    it("shows placeholder when thumbnail fails to load", () => {
+      render(
+        <LibraryItemCard
+          item={doneItem}
+          artifacts={doneArtifacts}
+          jobs={doneJobs}
+        />,
+      );
+      const img = screen.getByAltText("Thumbnail for notes.txt") as HTMLImageElement;
+      fireEvent.error(img);
+      expect(screen.getByText("No thumbnail")).toBeInTheDocument();
+      expect(screen.queryByAltText(/Thumbnail/)).not.toBeInTheDocument();
+    });
+
     it("shows the duration for media items", () => {
       render(
         <LibraryItemCard
