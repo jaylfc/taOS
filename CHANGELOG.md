@@ -7,7 +7,7 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
-## [1.0.0-beta.44] - 2026-07-22
+## [1.0.0-beta.44] - 2026-07-26
 
 ### Added
 
@@ -20,10 +20,18 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 - **Nous Portal** as a first-class cloud model provider (#2102).
 - **Scope requests**: an existing agent (or its owner/admin) can request
   additional scope grants on the same identity, owner/admin approved (#1921).
+- **`project_tasks_create` scope**, so an external agent can author board cards.
+  Deliberately separate from `project_tasks`, which stays read plus lifecycle
+  plus comments, so an existing approval keeps meaning what it meant when it was
+  given (#2098).
 - Library item-card component with thumbnail, status, and artifacts (#2097).
 
 ### Fixed
 
+- **Dialogs rendered behind windows, and minting an invite never showed the URL
+  and PIN.** The window z-index counter grew unbounded until it passed the
+  overlay layer, and the mint dialog unmounted before it could render the
+  result (#2092).
 - **Agent terminal/TUI shortcuts failed with "Instance not found."** The PTY
   path opened `incus exec` with no `--project`, so it used the client default
   project and could not reach a container in another project (e.g. a legacy one
