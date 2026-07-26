@@ -270,7 +270,7 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
   const archiveRead = useNotificationStore((s) => s.archiveRead);
   const Icon = LEVEL_ICONS[notif.level];
   const isAgentPaused = notif.source === "agent.paused";
-  const consent = notif.source === "auth_requests" ? consentPayload(notif.data) : null;
+  const consent = (notif.source === "auth_requests" || notif.source === "agent_scope_requests") ? consentPayload(notif.data) : null;
   // Stable boolean for the effect dependency — using the `consent` object
   // would recreate the timer on every render because consentPayload() returns
   // a new object reference each time.
@@ -307,6 +307,8 @@ function ToastItem({ notif, onExpire }: { notif: Notification; onExpire: () => v
             requestId={consent.requestId}
             scopes={consent.scopes}
             requestedProjectId={consent.projectId}
+            source={notif.source}
+            canonicalId={consent.canonicalId}
             onResolved={() => archiveRead(notif.id)}
           />
         )}

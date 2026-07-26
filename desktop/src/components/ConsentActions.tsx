@@ -38,11 +38,15 @@ export function ConsentActions({
   scopes,
   requestedProjectId,
   onResolved,
+  source = "auth_requests",
+  canonicalId,
 }: {
   requestId: string;
   scopes: string[];
   requestedProjectId?: string;
   onResolved?: () => void;
+  source?: string;
+  canonicalId?: string;
 }) {
   const needsProject = scopes.some((s) => PROJECT_SCOPES.has(s));
   const [busy, setBusy] = useState(false);
@@ -133,9 +137,15 @@ export function ConsentActions({
       setBusy(false);
       return;
     }
-    const url = approved
-      ? `/api/agents/auth-requests/${encodeURIComponent(requestId)}/approve`
-      : `/api/agents/auth-requests/${encodeURIComponent(requestId)}/deny`;
+    if (source === "agent_scope_requests" && !canonicalId) {
+      setError("Missing agent identifier; cannot process this scope request.");
+      setBusy(false);
+      return;
+    }
+    const baseUrl = source === "agent_scope_requests"
+      ? `/api/agents/registry/${encodeURIComponent(canonicalId!)}/scope-requests/${encodeURIComponent(requestId)}`
+      : `/api/agents/auth-requests/${encodeURIComponent(requestId)}`;
+    const url = `${baseUrl}/${approved ? "approve" : "deny"}`;
     let body: string | undefined;
     if (approved) {
       const payload: { granted_scopes: string[]; project_id?: string } = { granted_scopes: scopes };
@@ -276,12 +286,13 @@ export function ConsentActions({
  *  is missing. */
 export function consentPayload(
   data: Record<string, unknown> | undefined,
-): { requestId: string; scopes: string[]; projectId?: string } | null {
+): { requestId: string; scopes: string[]; projectId?: string; canonicalId?: string } | null {
   if (!data) return null;
   const requestId = data.request_id;
   if (typeof requestId !== "string") return null;
   const raw = data.requested_scopes;
   const scopes = Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
   const projectId = typeof data.project_id === "string" ? data.project_id : undefined;
-  return { requestId, scopes, projectId };
+  const canonicalId = typeof data.canonical_id === "string" ? data.canonical_id : undefined;
+  return { requestId, scopes, projectId, canonicalId };
 }

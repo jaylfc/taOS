@@ -39,7 +39,7 @@ function NotificationItem({
 }) {
   // Agent access-requests carry inline Allow/Deny actions. These nested buttons
   // live outside the clickable row to keep the markup valid.
-  const consent = n.source === "auth_requests" ? consentPayload(n.data) : null;
+  const consent = (n.source === "auth_requests" || n.source === "agent_scope_requests") ? consentPayload(n.data) : null;
   return (
     <div className={`border-b border-white/5 ${!n.read ? "bg-accent/5" : ""}`}>
       <button
@@ -77,6 +77,8 @@ function NotificationItem({
             requestId={consent.requestId}
             scopes={consent.scopes}
             requestedProjectId={consent.projectId}
+            source={n.source}
+            canonicalId={consent.canonicalId}
             onResolved={() => onResolveConsent(n.id)}
           />
         </div>
