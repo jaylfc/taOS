@@ -127,7 +127,6 @@ export async function reprocessLibraryItem(itemId: string): Promise<boolean> {
 
 export interface IngestLibraryOptions {
   title?: string;
-  source?: string;
 }
 
 export async function ingestLibraryUrl(
@@ -138,7 +137,7 @@ export async function ingestLibraryUrl(
     const res = await fetch("/api/library/ingest", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ url, title: opts?.title ?? "", source: opts?.source ?? "" }),
+      body: JSON.stringify({ url, title: opts?.title ?? "" }),
     });
     if (!res.ok) return null;
     const ct = res.headers.get("content-type") ?? "";
