@@ -17,4 +17,17 @@
 - **Activity**: live feed of everything agents do (tool calls, model calls, errors).
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
-- Other bundled apps (Library, Channels, Secrets, Tasks, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
+- **Project Files**: read and write files in projects via REST API.
+
+## Project Files
+
+Agents can read and write project files using REST APIs with project-level permissions:
+
+- `GET /api/projects/{slug}/files?path=<subdir>` - list files (requires `files_read`)
+- `GET /api/projects/{slug}/files/{path}` - download a file (requires `files_read`)
+- `POST /api/projects/{slug}/files/upload?path=<subdir>` - upload files, multipart field `file` (requires `files_write`)
+- `POST /api/projects/{slug}/mkdir` with `{"path": "<subdir>"}` (requires `files_write`)
+
+These routes use the project SLUG in the path, not the internal project ID. Agents authenticate with their registry JWT (`Authorization: Bearer <token>`). Access is project-specific; tokens for different projects return 404.
+
+Other bundled apps (Library, Channels, Secrets, Tasks, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
