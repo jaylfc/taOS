@@ -27,6 +27,7 @@ import { ReactionBar } from "./ReactionBar";
 import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { startDrag, endDrag } from "@/shell/dnd/dnd-bus";
 import { renderContent, dayLabel, relativeTime, toMs, resolveAuthorDisplayState } from "../MessagesApp";
+import type { ContentBlock } from "../MessagesApp";
 import type { AttachmentRecord } from "@/lib/chat-attachments-api";
 import { displayAuthor } from "./format-author";
 import type { LiveAgent, ArchivedAgentEntry, Channel } from "./types";
@@ -41,6 +42,7 @@ export interface MessageRow {
   content: string;
   thread_id?: string;
   content_type?: "text" | "canvas" | string;
+  content_blocks?: ContentBlock[];
   metadata?: {
     canvas_id?: string;
     canvas_url?: string;
@@ -538,7 +540,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                             : "text-shell-text"
                         }`}
                       >
-                        {renderContent(msg.content)}
+                        {renderContent(msg.content, msg.content_blocks)}
                         {msg.state === "pending" && (
                           <span className="ml-1 text-shell-text-tertiary">
                             ...
