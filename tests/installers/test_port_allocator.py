@@ -1,6 +1,7 @@
 """Tests for host-port allocation: every handed-out port is probed free."""
 import socket
 
+from tinyagentos.installers.base import AppInstaller
 from tinyagentos.installers.docker_installer import DockerInstaller
 from tinyagentos.installers.lxc_installer import LXCInstaller
 from tinyagentos.installers.port_allocator import (
@@ -129,5 +130,5 @@ class TestLxcUsesCentralizedAllocator:
         )
 
     def test_installer_class_available(self):
-        """LXCInstaller is importable (sanity check — no import errors from the refactor)."""
-        assert LXCInstaller is not None
+        """LXCInstaller is a proper AppInstaller subclass (class hierarchy regression check)."""
+        assert issubclass(LXCInstaller, AppInstaller)
