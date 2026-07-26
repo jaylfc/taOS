@@ -18,3 +18,12 @@
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
 - Other bundled apps (Library, Channels, Secrets, Tasks, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
+
+## Project Files
+
+Agents that are project members can read and write the project's Files through the HTTP API. All routes are keyed on the project SLUG (not the internal project id) and the agent authenticates with its registry JWT via `Authorization: Bearer <token>`. Access is granted per project, so a token issued for a different project returns 404.
+
+- `GET /api/projects/{slug}/files?path=<subdir>` - list files (requires the `files_read` scope)
+- `GET /api/projects/{slug}/files/{path}` - download one file (`files_read`)
+- `POST /api/projects/{slug}/files/upload?path=<subdir>` - upload, multipart form field `file` (requires `files_write`)
+- `POST /api/projects/{slug}/mkdir` with body `{"path": "<subdir>"}` (`files_write`)
