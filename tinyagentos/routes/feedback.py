@@ -70,16 +70,12 @@ async def submit_feedback(
     """Create a new feedback submission for the authenticated user."""
     store = request.app.state.feedback_store
     since = datetime.now(timezone.utc) - timedelta(days=1)
-    recent_count = await store.count_recent(current_user["id"], since.isoformat())
-    if recent_count >= MAX_FEEDBACK_PER_USER_PER_DAY:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"Too many feedback submissions. "
-                f"Maximum {MAX_FEEDBACK_PER_USER_PER_DAY} per 24 hours."
-            ),
-        )
-    item = await store.create(
+    # Cap enforcement lives in the store as one statement. Counting here and
+    # inserting after would let concurrent requests all read the same count and
+    # all insert, which a user with several tabs open trips without trying.
+    item = await store.create_within_cap(
+        since=since.isoformat(),
+        cap=MAX_FEEDBACK_PER_USER_PER_DAY,
         user_id=current_user["id"],
         type=payload.type,
         title=payload.title,
@@ -87,6 +83,14 @@ async def submit_feedback(
         screenshot=payload.screenshot,
         app=payload.app,
     )
+    if item is None:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Too many feedback submissions. "
+                f"Maximum {MAX_FEEDBACK_PER_USER_PER_DAY} per 24 hours."
+            ),
+        )
     # Return without the screenshot blob to keep the response light.
     return {
         "id": item["id"],
