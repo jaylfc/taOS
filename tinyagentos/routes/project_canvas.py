@@ -334,7 +334,13 @@ async def get_canvas_tldr(project_id: str, request: Request):
     path = await snap.export_now(project_id)
     if path is None or not path.exists():
         return JSONResponse({"error": "project not found"}, status_code=404)
-    return FileResponse(path, media_type="application/json")
+    # This is a recovery download, not a page: without the attachment
+    # disposition the browser renders the JSON inline and the user has no file.
+    return FileResponse(
+        path,
+        media_type="application/json",
+        filename=f"{project_id}-canvas.tldr",
+    )
 
 
 @router.patch("/api/projects/{project_id}/canvas/permissions/{agent_id}")
