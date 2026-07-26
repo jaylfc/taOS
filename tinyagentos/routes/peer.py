@@ -17,7 +17,7 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from tinyagentos.peer import (
@@ -29,9 +29,10 @@ from tinyagentos.peer import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/peer", tags=["peer"])
-# IMPORTANT: every route under this prefix MUST call _authenticate_peer.
-# Do not add a route here without bearer-auth — this is an instance-to-instance
-# surface facing other nodes, not an end-user API.
+# Auth is enforced centrally via the router-level ``_peer_auth_dep`` dependency
+# (Kilo #2).  Route handlers read the authenticated ``contact_id`` from
+# ``request.state.peer_contact_id`` — no per-route call to ``_authenticate_peer``
+# is needed.  Adding a route here automatically gets bearer-auth.
 
 # Rate limits per spec section 8: 60 req/min/contact, 32KB envelope cap.
 _RATE_WINDOW_SECS = 60.0
@@ -40,8 +41,10 @@ _MAX_ENVELOPE_BYTES = 32 * 1024  # 32 KB
 
 # In-memory per-contact rate limiter: contact_id -> (window_start, count).
 # Per-process only — under multi-worker deployments each worker maintains its
-# own counter.  A shared store (Redis or sqlite) is needed for accurate
-# limits across workers.
+# own counter, so the effective aggregate limit is 60×N/min across N workers.
+# FIXME(post-MVP): back with a shared store (Redis or sqlite contacts.db) for
+# accurate cross-worker limits.  The current eviction (``_RATE_HITS_MAX_SIZE``)
+# keeps memory bounded but does not coordinate across processes.
 _rate_hits: dict[str, tuple[float, int]] = {}
 # Max entries before stale-window cleanup triggers.  Keeps the dict bounded
 # for long-running servers that see many distinct contacts over time.
@@ -70,6 +73,12 @@ def _rate_limit_ok(contact_id: str) -> bool:
         ]
         for cid in expired:
             del _rate_hits[cid]
+        # LRU fallback (Kilo #5): when all windows are still active
+        # (>2000 concurrent contacts each within 60s), evict the oldest
+        # entry so the dict does not grow unbounded under sustained load.
+        if len(_rate_hits) >= _RATE_HITS_MAX_SIZE:
+            oldest = min(_rate_hits.keys(), key=lambda cid: _rate_hits[cid][0])
+            del _rate_hits[oldest]
 
     count += 1
     _rate_hits[contact_id] = (window_start, count)
@@ -129,6 +138,23 @@ async def _authenticate_peer(request: Request) -> str:
     return contact_id
 
 
+async def _peer_auth_dep(request: Request) -> str:
+    """Router-level dependency: authenticate EVERY /api/peer route.
+
+    Kilo #2 — applying this as a router dependency ensures a future route
+    added under /api/peer that forgets ``_authenticate_peer`` cannot become
+    an unauthenticated surface.  The contact_id is stored on request.state
+    so route handlers can read it directly.
+    """
+    contact_id = await _authenticate_peer(request)
+    request.state.peer_contact_id = contact_id
+    return contact_id
+
+
+# Apply the dependency to the router now that _peer_auth_dep is defined.
+router.dependencies.append(Depends(_peer_auth_dep))
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -141,7 +167,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     The envelope body is verified against the sender's pinned Ed25519 pubkey
     (from the contacts store).  Rate-limited per contact.
     """
-    contact_id = await _authenticate_peer(request)
+    contact_id = request.state.peer_contact_id
     store = request.app.state.contacts_store
 
     # Rate limit
@@ -241,7 +267,7 @@ async def peer_chat(body: PeerEnvelope, request: Request):
     path for chat-specific limits (600 msgs/day/contact per spec, but enforced
     per-minute for simplicity in v1).
     """
-    contact_id = await _authenticate_peer(request)
+    contact_id = request.state.peer_contact_id
     store = request.app.state.contacts_store
 
     if not _rate_limit_ok(contact_id):
@@ -325,7 +351,7 @@ async def peer_ack(body: PeerAck, request: Request):
     The remote instance calls this after successfully processing an envelope
     so the sender can mark it as delivered.
     """
-    contact_id = await _authenticate_peer(request)
+    contact_id = request.state.peer_contact_id
     store = request.app.state.contacts_store
 
     # The ack must come from the contact named in the body.
@@ -337,6 +363,12 @@ async def peer_ack(body: PeerAck, request: Request):
 
     if not _rate_limit_ok(contact_id):
         raise HTTPException(status_code=429, detail="rate limit exceeded")
+
+    # Nonce replay protection — record the ack's envelope_id as a nonce.
+    # Without this a valid contact can replay POST /ack indefinitely.  A
+    # replayed ack returns 409 Conflict (same contract as /inbox and /chat).
+    if not await store.record_nonce(body.envelope_id, contact_id, "ack"):
+        raise HTTPException(status_code=409, detail="ack replay detected")
 
     await store.mark_peer_seen(contact_id)
 
