@@ -59,6 +59,11 @@ async def _authorize_files_actor(
     if uid:
         # Session path: project visibility gate. A non-owner non-admin human
         # collapses into the SAME existence-hiding 404 the agent path uses.
+        # An UNKNOWN slug is deliberately allowed through for session users:
+        # the project files tree is slug-addressed and lazily created, which
+        # test_list_unknown_slug_returns_empty documents as intended. The agent
+        # path below is strict (unknown slug -> 404) because an agent must not
+        # be able to address a project it was never granted.
         is_admin = bool(getattr(request.state, "is_admin", False))
         if project is not None and not is_admin and project.get("user_id") != uid:
             return JSONResponse({"error": "not found"}, status_code=404)

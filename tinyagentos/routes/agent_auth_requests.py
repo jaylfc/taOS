@@ -854,7 +854,15 @@ _SCOPE_REQUEST_PENDING_CAP = 10
 # a real project_id is required for them. decisions_read/decisions_write are
 # NOT here: they may be granted globally (project_id=None) or per-project.
 _SCOPE_CANVAS_SCOPES = {"canvas_read", "canvas_write"}
-_SCOPE_PROJECT_SCOPES = {"project_tasks"} | _SCOPE_CANVAS_SCOPES
+_SCOPE_FILES_SCOPES = {"files_read", "files_write"}
+# Every scope whose authority is meaningless without a project binding. Missing
+# one here is not harmless: the approval would succeed with no project_id, the
+# grant would be written global (project_id=None), and check_agent_scope_for_project
+# would then never match it -- so the operator believes they granted access and
+# the agent silently has none.
+_SCOPE_PROJECT_SCOPES = (
+    {"project_tasks", "project_tasks_create"} | _SCOPE_CANVAS_SCOPES | _SCOPE_FILES_SCOPES
+)
 
 
 async def _authorize_scope_request_creation(
