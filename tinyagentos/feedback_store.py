@@ -66,16 +66,6 @@ class FeedbackStore(BaseStore):
             "created_at": created_at,
         }
 
-    async def count_recent(self, user_id: str, since: str) -> int:
-        """Return the number of submissions by user_id created since the given ISO timestamp."""
-        assert self._db is not None
-        cursor = await self._db.execute(
-            "SELECT COUNT(*) FROM feedback WHERE user_id = ? AND created_at >= ?",
-            (user_id, since),
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else 0
-
     async def create_within_cap(
         self,
         *,
