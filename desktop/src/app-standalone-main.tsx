@@ -7,6 +7,9 @@ import { restoreActiveTheme, installWebkitRepaintGuards } from "./stores/theme-s
 import { getApp } from "./registry/app-registry";
 import "./theme/tokens.css";
 
+// Wrap window.fetch so any 401 from /api/* triggers a session-expired
+// event that LoginGate picks up and shows the login screen (same guard
+// installed by main.tsx for the desktop shell PWA).
 installAuthGuard();
 
 // Apply the user's persisted theme on boot, same as chat-main.tsx.
