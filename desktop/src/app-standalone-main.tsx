@@ -2,9 +2,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AppStandalone } from "./AppStandalone";
 import { AppShell } from "./components/AppShell";
+import { installAuthGuard } from "./lib/auth-guard";
 import { restoreActiveTheme, installWebkitRepaintGuards } from "./stores/theme-store";
 import { getApp } from "./registry/app-registry";
 import "./theme/tokens.css";
+
+installAuthGuard();
 
 // Apply the user's persisted theme on boot, same as chat-main.tsx.
 void restoreActiveTheme();

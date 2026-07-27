@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { installAuthGuard, SESSION_EXPIRED_EVENT } from "../auth-guard";
 
 describe("auth-guard", () => {
@@ -6,7 +8,7 @@ describe("auth-guard", () => {
 
   beforeEach(() => {
     originalFetch = window.fetch;
-    // Reset the module-level `installed` flag by re-importing — Vitest
+    // Reset the module-level `installed` flag by re-importing -- Vitest
     // caches the module, so each test starts with the wrapper already
     // potentially installed from a previous test. We work around that
     // by resetting the modules. Cheaper alternative for this single
@@ -49,7 +51,7 @@ describe("auth-guard", () => {
 
   it("does not dispatch on 401 from /api/account/* paths", async () => {
     // The account proxy (taos.my cloud account) is a separate auth boundary
-    // and returns 401 when the user simply is not signed into the cloud —
+    // and returns 401 when the user simply is not signed into the cloud --
     // account-client maps that to a signed-out state. Treating it as a
     // controller-session expiry flashed the login gate and bounced the user
     // out of the Account pane. Reported by jay 2026-07-01.
@@ -96,5 +98,26 @@ describe("auth-guard", () => {
     window.removeEventListener(SESSION_EXPIRED_EVENT, handler);
 
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("every SPA entry module installs the auth guard", () => {
+    const viteConfig = readFileSync(join(process.cwd(), "vite.config.ts"), "utf-8");
+    const htmlPaths = Array.from(viteConfig.matchAll(/path\.resolve\(__dirname,\s*"([^"]+\.html)"\)/g)).map(
+      (m) => join(process.cwd(), m[1]),
+    );
+
+    const scriptRegex = /<script[^>]*type="module"[^>]*src="([^"]+)"/g;
+
+    for (const htmlPath of htmlPaths) {
+      const html = readFileSync(htmlPath, "utf-8");
+      const match = html.match(scriptRegex);
+      expect(match, `no module script found in ${htmlPath}`).toBeTruthy();
+
+      const scriptSrc = match![0].match(/src="([^"]+)"/)![1];
+      const entryModule = join(dirname(htmlPath), scriptSrc.replace(/^\//, ""));
+      const entrySource = readFileSync(entryModule, "utf-8");
+
+      expect(entrySource, `installAuthGuard missing in ${entryModule}`).toContain("installAuthGuard()");
+    }
   });
 });

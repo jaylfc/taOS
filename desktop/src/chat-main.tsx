@@ -2,8 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ChatStandalone } from "./ChatStandalone";
 import { AppShell } from "./components/AppShell";
+import { installAuthGuard } from "./lib/auth-guard";
 import { restoreActiveTheme, installWebkitRepaintGuards } from "./stores/theme-store";
 import "./theme/tokens.css";
+
+installAuthGuard();
 
 // Apply the user's persisted theme (light/dark/etc.) on boot, the same as the
 // desktop shell does in App.tsx. Without this the standalone chat PWA always
