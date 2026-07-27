@@ -257,7 +257,7 @@ export function renderInline(text: string, keyPrefix: string) {
               return <code className={className} {...props}>{children}</code>;
             }
             return (
-              <code className="bg-white/10 px-1.5 py-0.5 rounded text-[13px] font-mono" {...props}>
+              <code className="bg-shell-surface-active px-1.5 py-0.5 rounded text-[13px] font-mono" {...props}>
                 {children}
               </code>
             );
@@ -265,10 +265,10 @@ export function renderInline(text: string, keyPrefix: string) {
           ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-1" {...props} />,
           ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-1" {...props} />,
           blockquote: ({ node, ...props }) => (
-            <blockquote className="border-l-2 border-white/20 pl-3 text-white/70" {...props} />
+            <blockquote className="border-l-2 border-shell-border pl-3 text-shell-text-secondary" {...props} />
           ),
           pre: ({ node, ...props }) => (
-            <pre className="my-2 overflow-x-auto max-w-full bg-black/30 border border-white/10 rounded p-2 text-[13px]" {...props} />
+            <pre className="my-2 overflow-x-auto max-w-full bg-shell-bg-deep border border-shell-border rounded p-2 text-[13px]" {...props} />
           ),
           table: ({ node, ...props }) => (
             <div className="my-2 overflow-x-auto">
@@ -276,10 +276,10 @@ export function renderInline(text: string, keyPrefix: string) {
             </div>
           ),
           th: ({ node, ...props }) => (
-            <th className="border-b border-white/10 px-2 py-1 font-semibold" {...props} />
+            <th className="border-b border-shell-border px-2 py-1 font-semibold" {...props} />
           ),
           td: ({ node, ...props }) => (
-            <td className="border-b border-white/5 px-2 py-1 align-top" {...props} />
+            <td className="border-b border-shell-border px-2 py-1 align-top" {...props} />
           ),
           h1: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
           h2: ({ node, ...props }) => <p className="font-semibold mb-1" {...props} />,
@@ -1627,7 +1627,7 @@ export function MessagesApp({
       )}
       {!selectedChannel ? (
         /* empty state: nothing selected yet */
-        <div className="flex-1 flex items-center justify-center text-white/20">
+        <div className="flex-1 flex items-center justify-center text-shell-text-tertiary">
           <div className="text-center px-6">
             <MessageCircle size={48} className="mx-auto mb-3 opacity-30" />
             <p className="text-sm mb-3">Pick a channel or start a DM</p>
@@ -1639,10 +1639,10 @@ export function MessagesApp({
       ) : (
         <>
           {/* channel header — MobileSplitView owns back nav on mobile */}
-          <div className="px-4 py-2.5 border-b border-white/[0.06] flex items-center gap-3 shrink-0">
-            {currentChannel?.type === "topic" ? <Hash size={16} className="text-white/40" /> :
-             currentChannel?.type === "group" ? <Users size={16} className="text-white/40" /> :
-             <AtSign size={16} className="text-white/40" />}
+<div className="px-4 py-2.5 border-b border-shell-border flex items-center gap-3 shrink-0">
+             {currentChannel?.type === "topic" ? <Hash size={16} className="text-shell-text-tertiary" /> :
+              currentChannel?.type === "group" ? <Users size={16} className="text-shell-text-tertiary" /> :
+              <AtSign size={16} className="text-shell-text-tertiary" />}
             {(() => {
               // For DM channels, prefix the header with the paired agent's
               // emoji (or framework default) so the user can see at a glance
@@ -1715,8 +1715,8 @@ export function MessagesApp({
                       setShowAllThreads(true);
                     }
                   }}
-                  className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
-                  aria-label={showAllThreads ? "Hide all threads" : "Show all threads"}
+className="ml-2 p-1 rounded hover:bg-shell-surface-active text-shell-text-secondary hover:text-shell-text"
+                   aria-label={showAllThreads ? "Hide all threads" : "Show all threads"}
                   aria-expanded={showAllThreads}
                   aria-controls="all-threads-panel"
                   title="All threads"
@@ -1735,8 +1735,8 @@ export function MessagesApp({
                       setShowSearch(true);
                     }
                   }}
-                  className="ml-2 p-1 rounded hover:bg-white/10 text-white/60 hover:text-white"
-                  aria-label={showSearch ? "Hide search" : "Search messages"}
+className="ml-2 p-1 rounded hover:bg-shell-surface-active text-shell-text-secondary hover:text-shell-text"
+                   aria-label={showSearch ? "Hide search" : "Search messages"}
                   aria-expanded={showSearch}
                   aria-controls="search-panel"
                   title="Search"
@@ -1744,12 +1744,12 @@ export function MessagesApp({
                   <Search size={14} aria-hidden="true" />
                 </button>
               </div>
-              {currentChannel?.description && (
-                <div className="text-[11px] text-white/35 truncate">{currentChannel.description}</div>
-              )}
-            </div>
-            {currentChannel?.members && (
-              <div className="text-[11px] text-white/30 flex items-center gap-1">
+{currentChannel?.description && (
+                 <div className="text-[11px] text-shell-text-tertiary truncate">{currentChannel.description}</div>
+               )}
+             </div>
+             {currentChannel?.members && (
+               <div className="text-[11px] text-shell-text-tertiary flex items-center gap-1">
                 <Users size={12} /> {currentChannel.members.length}
               </div>
             )}
@@ -1833,15 +1833,15 @@ export function MessagesApp({
           {/* #1741: stall banner — surfaces only when a response is abnormally
               slow or has gone quiet, so a stalled generation no longer looks
               like a frozen window. */}
-          {stallInfo && (
-            <div
-              role="status"
-              className={`mx-4 mb-2 px-3 py-2 rounded-lg border text-[12px] flex items-center gap-2 shrink-0 ${
-                stallInfo.stalled
-                  ? "bg-amber-500/10 border-amber-500/25 text-amber-300/90"
-                  : "bg-white/[0.04] border-white/10 text-white/55"
-              }`}
-            >
+{stallInfo && (
+             <div
+               role="status"
+               className={`mx-4 mb-2 px-3 py-2 rounded-lg border text-[12px] flex items-center gap-2 shrink-0 ${
+                 stallInfo.stalled
+                   ? "bg-amber-500/10 border-amber-500/25 text-amber-300/90"
+                   : "bg-shell-surface border-shell-border text-shell-text-secondary"
+               }`}
+             >
               {stallInfo.stalled ? (
                 <AlertTriangle size={13} aria-hidden="true" className="shrink-0" />
               ) : (
@@ -1895,8 +1895,8 @@ export function MessagesApp({
                   setPrefillBanner(null);
                   setInput("");
                 }}
-                className="shrink-0 p-0.5 rounded hover:bg-white/10 transition-colors"
-                aria-label="Dismiss prefill"
+className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-colors"
+                 aria-label="Dismiss prefill"
               >
                 <X size={12} aria-hidden="true" />
               </button>
