@@ -92,6 +92,31 @@ class ChatMessageStore(BaseStore):
             await self._db.commit()
         except Exception:
             pass
+        # E1 collab: remote message dedup columns
+        try:
+            await self._db.execute("ALTER TABLE chat_messages ADD COLUMN remote_msg_id TEXT")
+            await self._db.commit()
+        except Exception:
+            pass
+        try:
+            await self._db.execute("ALTER TABLE chat_messages ADD COLUMN delivered_at REAL")
+            await self._db.commit()
+        except Exception:
+            pass
+        # Dedup index MUST be created here (not in SCHEMA) because it references
+        # columns added by _post_init — per BaseStore boot-brick rule.
+        try:
+            await self._db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_remote_dedup "
+                "ON chat_messages(channel_id, remote_msg_id) "
+                "WHERE remote_msg_id IS NOT NULL"
+            )
+            await self._db.commit()
+        except Exception:
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning("chat_messages: could not create remote dedup index — "
+                         "pre-existing data may violate uniqueness constraint")
 
     async def send_message(
         self,
@@ -133,6 +158,78 @@ class ChatMessageStore(BaseStore):
         )
         await self._db.commit()
         return await self.get_message(msg_id)
+
+    async def send_remote_message(
+        self,
+        channel_id: str,
+        author_id: str,
+        contact_id: str,
+        remote_msg_id: str,
+        content: str,
+        *,
+        content_type: str = "text",
+        thread_id: str | None = None,
+        content_blocks: list | None = None,
+        metadata: dict | None = None,
+        created_at: float | None = None,
+    ) -> dict | None:
+        """Insert a DM received from a remote contact, deduplicating on
+        ``(channel_id, remote_msg_id)``.
+
+        Returns the message dict on success, or ``None`` when the message
+        was already delivered (duplicate).  ``author_id`` is namespaced as
+        ``hub:{username}`` per the collab spec.
+
+        The caller MUST commit the message before sending the delivery ack.
+        """
+        import sqlite3
+
+        if not remote_msg_id or not isinstance(remote_msg_id, str):
+            raise ValueError("remote_msg_id must be a non-empty string")
+
+        msg_id = uuid.uuid4().hex[:12]
+        now = created_at if created_at is not None else time.time()
+
+        # Stash the contact_id in metadata so downstream consumers can
+        # resolve the sender without parsing author_id.
+        merged_meta = dict(metadata or {})
+        merged_meta.setdefault("contact_id", contact_id)
+
+        try:
+            await self._db.execute(
+                """INSERT INTO chat_messages
+                   (id, channel_id, thread_id, author_id, author_type, content,
+                    content_type, content_blocks, embeds, components, attachments,
+                    reactions, state, pinned, ephemeral, metadata, created_at,
+                    remote_msg_id, delivered_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)""",
+                (
+                    msg_id, channel_id, thread_id, author_id, "user", content,
+                    content_type,
+                    json.dumps(content_blocks or []),
+                    json.dumps([]),  # embeds
+                    json.dumps([]),  # components
+                    json.dumps([]),  # attachments
+                    json.dumps({}),  # reactions
+                    "complete",
+                    json.dumps(merged_meta),
+                    now,
+                    remote_msg_id,
+                    time.time(),  # delivered_at — actual receipt time, not sender's created_at
+                ),
+            )
+            await self._db.commit()
+            return await self.get_message(msg_id)
+        except sqlite3.IntegrityError as exc:
+            # Re-raise on structural integrity violations (e.g. NOT NULL on
+            # channel_id) — only the dedup index violation is benign.
+            if "UNIQUE" not in str(exc) or "remote_msg_id" not in str(exc):
+                await self._db.rollback()
+                raise
+            # Duplicate — the (channel_id, remote_msg_id) unique constraint
+            # caught a replay.  Treat as successful delivery.
+            await self._db.rollback()
+            return None
 
     async def get_message(self, message_id: str) -> dict | None:
         async with self._db.execute(

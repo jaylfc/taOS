@@ -92,6 +92,7 @@ from tinyagentos.channel_hub.router import MessageRouter
 from tinyagentos.channel_hub.adapter_manager import AdapterManager
 from tinyagentos.chat.message_store import ChatMessageStore
 from tinyagentos.chat.channel_store import ChatChannelStore
+from tinyagentos.chat.peer_outbox import PeerOutboxStore
 from tinyagentos.chat.hub import ChatHub
 from tinyagentos.chat.canvas import CanvasStore
 from tinyagentos.desktop_settings import DesktopSettingsStore
@@ -392,6 +393,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     adapter_manager = AdapterManager(channel_hub_router)
     chat_messages = ChatMessageStore(data_dir / "chat.db")
     chat_channels = ChatChannelStore(data_dir / "chat.db")
+    peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
     from tinyagentos.projects.project_store import ProjectStore
     from tinyagentos.projects.task_store import ProjectTaskStore
     from tinyagentos.projects.element_store import ProjectElementStore
@@ -573,6 +575,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await expert_agents.init()
         await chat_messages.init()
         await chat_channels.init()
+        await peer_outbox_store.init()
         await project_store.init()
         await project_invite_store.init()
         await board_audit_store.init()
@@ -1451,6 +1454,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_store.close()
         await chat_channels.close()
         await chat_messages.close()
+        await peer_outbox_store.close()
         await expert_agents.close()
         await streaming_sessions.close()
         await shared_folders.close()
@@ -1637,6 +1641,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.song_store = song_store
     app.state.design_docs = design_docs
     app.state.contacts_store = contacts_store
+    app.state.peer_outbox = peer_outbox_store
     app.state.coding_workspaces = coding_workspaces_store
     app.state.install_registry = install_registry_store
     app.state.store_submissions = store_submissions
