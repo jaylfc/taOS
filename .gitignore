@@ -155,11 +155,11 @@ data/*.token
 
 # Key material and secrets. Added 2026-07-27 after data/hub/identity.json was
 # committed to PR #2043 with signing_private and encryption_private in
-# PLAINTEXT. It was removed before merge and the repo squash-merges, so it never
-# reached dev, but nothing STOPPED it. The data/ rules above are a per-file
-# allowlist, so any new data file slips through; these are pattern-based so a
-# future one cannot. Verified against every tracked file: none become ignored.
-data/hub/
+# PLAINTEXT. data/hub/ is already covered above; these patterns close the REST
+# of the surface, which was open: an identity.json or a *.key written anywhere
+# outside data/hub/ had nothing stopping it. Pattern-based on purpose, since a
+# per-file allowlist cannot catch a file that does not exist yet.
+# Verified against every tracked file: none become ignored.
 *.key
 *_private.*
 *_private_key*
