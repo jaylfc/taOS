@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from tinyagentos.board_audit import BoardAuditLog
     from tinyagentos.projects.events import ProjectEventBroker
     from tinyagentos.projects.project_store import ProjectStore
+    from tinyagentos.projects.strike_store import StrikeStore
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +111,13 @@ class ProjectTaskStore(BaseStore):
         broker: "ProjectEventBroker | None" = None,
         audit: "BoardAuditLog | None" = None,
         project_store: "ProjectStore | None" = None,
+        strikes: "StrikeStore | None" = None,
     ) -> None:
         super().__init__(db_path)
         self._broker = broker
         self._audit = audit
         self._project_store = project_store
+        self._strikes = strikes
 
     async def _publish(self, project_id: str, kind: str, payload: dict) -> None:
         if self._broker is not None:
@@ -373,6 +376,15 @@ class ProjectTaskStore(BaseStore):
             existing = await self.get_task(task_id)
             if existing is not None:
                 await self._publish(existing["project_id"], "task.closed", {"id": task_id, "closed_by": closed_by})
+            # A closed card can never be re-landed, so any lingering strikes
+            # are stale garbage that would make the dispatch lanes redo landed
+            # work.  Clear them automatically (best-effort; the close itself
+            # has already committed).
+            if self._strikes is not None:
+                try:
+                    await self._strikes.clear_strikes(task_id)
+                except Exception:
+                    logger.warning("clear_strikes failed for task %s on close", task_id, exc_info=True)
             # Derive the pre-close status race-free from the committed row rather
             # than a separate pre-read (which would have a TOCTOU gap). close does
             # not clear claimed_by, so a set claimer means it was 'claimed'.
@@ -403,6 +415,73 @@ class ProjectTaskStore(BaseStore):
                 await self._publish(existing["project_id"], "task.reopened", {"id": task_id, "reopened_by": reopened_by})
             await self._record_audit(
                 task_id, "task.reopened", reopened_by, "closed", "open",
+                project_id=existing["project_id"] if existing else "",
+            )
+        return changed
+
+    async def quarantine_task(self, task_id: str, actor: str) -> bool:
+        """Move a task into the ``quarantined`` status.
+
+        A quarantined card is visible on the board (distinct column) but is
+        removed from the ready pool -- the fleet will not pick it up until a
+        lead explicitly un-quarantines it.  Only acts on a task that is not
+        already closed/cancelled; returns False otherwise.
+        """
+        now = time.time()
+        cursor = await self._db.execute(
+            """UPDATE project_tasks
+               SET status = 'quarantined', updated_at = ?
+               WHERE id = ? AND status NOT IN ('closed', 'cancelled', 'quarantined')""",
+            (now, task_id),
+        )
+        await self._db.commit()
+        changed = cursor.rowcount == 1
+        if changed:
+            existing = await self.get_task(task_id)
+            if existing is not None:
+                await self._publish(
+                    existing["project_id"],
+                    "task.quarantined",
+                    {"id": task_id, "actor": actor},
+                )
+            await self._record_audit(
+                task_id, "task.quarantined", actor, "open", "quarantined",
+                project_id=existing["project_id"] if existing else "",
+            )
+        return changed
+
+    async def unquarantine_task(self, task_id: str, actor: str) -> bool:
+        """Return a quarantined task to the open pool and clear its strikes.
+
+        This is the explicit un-quarantine / retry action: the card re-enters
+        the ready pool so the fleet may pick it up again.  Strikes are cleared
+        so a fresh failure count starts from zero.  Only acts on a quarantined
+        task; returns False otherwise.
+        """
+        now = time.time()
+        cursor = await self._db.execute(
+            """UPDATE project_tasks
+               SET status = 'open', updated_at = ?
+               WHERE id = ? AND status = 'quarantined'""",
+            (now, task_id),
+        )
+        await self._db.commit()
+        changed = cursor.rowcount == 1
+        if changed:
+            if self._strikes is not None:
+                try:
+                    await self._strikes.clear_strikes(task_id)
+                except Exception:
+                    logger.warning("clear_strikes failed for task %s on unquarantine", task_id, exc_info=True)
+            existing = await self.get_task(task_id)
+            if existing is not None:
+                await self._publish(
+                    existing["project_id"],
+                    "task.unquarantined",
+                    {"id": task_id, "actor": actor},
+                )
+            await self._record_audit(
+                task_id, "task.unquarantined", actor, "quarantined", "open",
                 project_id=existing["project_id"] if existing else "",
             )
         return changed
