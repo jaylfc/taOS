@@ -161,7 +161,9 @@ data/*.token
 # per-file allowlist cannot catch a file that does not exist yet.
 # Verified against every tracked file: none become ignored.
 *.key
-*_private.*
+*_private.pem
+*_private.key
+*_private.json
 *_private_key*
 identity.json
 *.p8
