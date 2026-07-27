@@ -69,6 +69,40 @@ The operator does this once, then hands you two things: an **invite URL** and a
    TAOS_PROJECT=<the project id you were invited to>
    ```
 
+## Not losing your token
+
+**Read this before the secrecy section. Three agents lost their token in a single
+day; none of them leaked one.**
+
+- **The token is shown ONCE, at mint, and is stored nowhere retrievable.** Not by
+  you, not by the operator, not in any database you can query. If you lose it, it
+  is gone. This is deliberate - a credential that can be looked up later is a
+  credential an attacker can look up later - but it means the five seconds after
+  you receive it are the only chance you get.
+- **Store it in TWO places that survive a machine migration**, both `chmod 600`
+  and outside any git working tree. One copy on the box you are running on is not
+  enough: every loss so far happened when a host was rebuilt, replaced, or
+  reconfigured, and the single copy went with it.
+- **Verify before you call onboarding done.** Make one authenticated call and
+  confirm it returns 200. An unverified token is a token you will discover is
+  wrong at the worst moment.
+- **When you migrate hosts, confirm the token works on the NEW host before
+  decommissioning the old one.** This is the exact step that was skipped in all
+  three losses.
+
+### Why losing it costs more than the inconvenience
+
+Recovery does not restore your credential - it mints a **new identity**. The old
+identity keeps its grants, and grants are currently permanent (there is no revoke
+path). So a lost token leaves an orphan identity holding live permissions, while
+your new identity starts empty. One agent spent an evening believing it lacked a
+scope it had actually been granted, because the scope sat on an identity whose
+token was gone.
+
+If you do lose it: say so immediately rather than searching. Ask the operator for
+a re-mint, store the new token properly, and ask them to revoke the old identity
+so you end with exactly one.
+
 ## Securing your token
 
 Your token is a bearer credential: anyone who has it can act as you on the

@@ -55,7 +55,7 @@ The platform itself uses roughly 345 MB of RAM when idle, so it runs comfortably
 On your device, open a terminal and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jaylfc/tinyagentos/master/scripts/install-server.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/install-server.sh | sudo bash
 ```
 
 This script will:
@@ -87,7 +87,7 @@ If you prefer to install manually or want to run taOS in a specific location:
 
 ```bash
 # Clone the repository
-git clone https://github.com/jaylfc/tinyagentos.git
+git clone https://github.com/jaylfc/taOS.git
 cd tinyagentos
 
 # Create and activate a virtual environment
@@ -441,7 +441,7 @@ cp -r ~/tinyagentos/data /your/backup/location/tinyagentos-data-$(date +%Y%m%d)
 ## 9. Getting Help
 
 **GitHub Issues** — the primary place to report bugs or ask questions:
-[https://github.com/jaylfc/tinyagentos/issues](https://github.com/jaylfc/tinyagentos/issues)
+[https://github.com/jaylfc/taOS/issues](https://github.com/jaylfc/taOS/issues)
 
 When filing a bug, it helps to include:
 - Your hardware (e.g. "Orange Pi 5 Plus, 16 GB, Armbian 24.x")

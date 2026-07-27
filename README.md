@@ -11,7 +11,7 @@
 > **A heads-up on the catalogs:** with 100+ apps, 16 frameworks, and a large model catalog, plenty of install manifests have not been exercised on real hardware yet, so some apps, frameworks, and models will fail to install. If one does, [open an issue](https://github.com/jaylfc/taOS/issues) with the name and the error you saw and I will fix the manifest as soon as I can. These reports are genuinely useful, most manifest fixes ship same-day.
 
 <p align="center">
-<a href="https://www.star-history.com/?repos=jaylfc%2Ftinyagentos&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=jaylfc%2FtaOS&type=date&legend=top-left">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jaylfc/taOS&type=date&theme=dark&legend=top-left" />
    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jaylfc/taOS&type=date&legend=top-left" />
@@ -249,7 +249,7 @@ Hidden internal gateway that unifies all inference providers behind a single Ope
 Features unlock automatically based on your hardware and cluster. Solo Pi sees core features. Add a GPU worker and image generation, video, and training appear. No configuration, the platform just knows what's possible.
 
 ### Creative Studios
-Dedicated studio apps for every kind of project, each a focused, native taOS workspace that runs entirely on your own cluster. Two are bundled (Images, Game Studio); Coding, App, Design, Music, Office, Web, and Video studios are implemented but gated as optional apps (App Studio is taOS's own app builder, so agents and users can build and share new apps).
+Dedicated studio apps for every kind of project, each a focused, native taOS workspace that runs entirely on your own cluster. Two are bundled (Images, Game Studio); Coding, App, Design, Music, Office, Web, Video, and Assistant studios are implemented but gated as optional apps (App Studio is taOS's own app builder, so agents and users can build and share new apps).
 
 <p align="center">
   <img src="docs/images/images-studio.jpg" alt="Images Studio -- generate from a prompt and edit on a local GPU" width="49%">

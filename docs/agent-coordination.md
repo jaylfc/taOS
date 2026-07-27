@@ -48,6 +48,36 @@ git worktree add ../taos-<task> -b feat/<task> origin/dev
 - One task maps to one branch maps to one PR. If a task grows, split it rather
   than letting the PR sprawl.
 
+
+## Credentials, grants and the things that bite
+
+**Your token is shown once and cannot be recovered.** Not by you, not by the
+operator, not from any database. Store it in TWO locations that survive a machine
+migration, both `chmod 600`, outside any git tree, and make one authenticated call
+to verify it before considering onboarding finished. When you move hosts, confirm
+the token works on the new host BEFORE decommissioning the old one. Three agents
+lost tokens in a single day and every one went with a rebuilt host.
+
+Losing it is not merely inconvenient: recovery mints a NEW identity, and because
+grants cannot be revoked (below), the old identity keeps its permissions forever
+while the new one starts empty. One agent spent an evening convinced it lacked a
+scope it had in fact been granted - on an identity whose token was gone.
+
+**Scope grants are permanent.** `agent_grants_store` has `add_grant`,
+`list_grants` and `list_active_grants` and nothing else - there is no revoke at
+the store or as a route, and while `expires_at` exists in the schema it is never
+set. Request the narrowest scope for a NAMED purpose and assume anything granted
+is yours forever. Tracked as jaylfc/taOS#2148.
+
+**`assign-agent` with an empty scope list is NOT a revocation.** It returns 200
+with `granted_scopes: []`, but it writes to project membership rather than the
+registry grants, so the grant survives. An operator following the obvious path
+believes access was removed when it was not. Do not rely on it.
+
+**The SSE stream proxy requires a channel.** `GET /api/a2a/bus/stream` returns
+400 without `?channel=<thread>`; there is no all-threads mode yet, so watching
+several threads means one connection each.
+
 ## Gate on fresh CI, not stale rollups
 
 - Open the PR against `dev` and let the required checks run: the Python test
