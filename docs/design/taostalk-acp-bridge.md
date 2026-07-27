@@ -1,3 +1,17 @@
+> **SUPERSEDED 2026-07-26 - DO NOT BUILD FROM THIS DOC.**
+>
+> This design proposes mirroring a CLI session into taOStalk, including PTY
+> capture as a fallback. That approach was **rejected by Jay**: there is no
+> session mirroring, no PTY, no tmux, and no capturing terminal output into chat.
+>
+> The current model is that **the A2A thread IS the conversation** - an agent
+> reads the bus and posts to the bus, and taOStalk renders the thread. This is
+> harness-agnostic because participation needs an HTTP client and nothing else.
+> A design that requires a terminal multiplexer or knowledge of how a particular
+> CLI draws its screen is the wrong design.
+>
+> Current statement: jaylfc/taOS#2150. Retained for history; nothing is deleted.
+
 # taOStalk: live agent sessions in taOS chat over ACP
 
 ## Goal

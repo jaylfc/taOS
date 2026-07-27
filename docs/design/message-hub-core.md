@@ -1,6 +1,19 @@
+> **SUPERSEDED 2026-07-26 - the persistence model described here is changing.**
+>
+> This doc describes the controller's own `chat_messages` store as the canonical
+> home for all chat. Jay has decided that **all chat moves onto the taOSmd A2A
+> bus**, that taOSmd becomes a required dependency rather than a swappable memory
+> framework, and that **existing chat history migrates** rather than staying in
+> place. Conversations become first-class memory.
+>
+> The schema here remains accurate for what exists TODAY and for the migration
+> source. Do not treat it as the long-term design.
+>
+> Current statement: jaylfc/taOS#2150.
+
 # Message Hub Core
 
-**Status:** Implemented — chat messages, channels, canvas store, and WebSocket hub all landed. See `tinyagentos/routes/chat_*.py` and `tinyagentos/chat_*.py` for the runtime.
+**Status:** Implemented - chat messages, channels, canvas store, and WebSocket hub all landed. See `tinyagentos/routes/chat_*.py` and `tinyagentos/chat_*.py` for the runtime.
 
 ## Overview
 
@@ -252,15 +265,15 @@ CanvasX is vendored into TinyAgentOS as the canvas renderer. It runs as a local 
 ### Canvas API
 
 ```
-POST /api/canvas/generate     — create a new canvas
+POST /api/canvas/generate     - create a new canvas
   Body: {content, style?, title?, agent_name?}
   Returns: {canvas_id, canvas_url, edit_token}
 
-GET  /canvas/{id}             — serve the canvas page (iframe-friendly)
-POST /api/canvas/{id}/update  — update canvas content (requires edit_token)
-GET  /api/canvas/{id}/data    — get canvas data as JSON
-DELETE /api/canvas/{id}       — delete a canvas
-GET  /api/canvas              — list all canvases
+GET  /canvas/{id}             - serve the canvas page (iframe-friendly)
+POST /api/canvas/{id}/update  - update canvas content (requires edit_token)
+GET  /api/canvas/{id}/data    - get canvas data as JSON
+DELETE /api/canvas/{id}       - delete a canvas
+GET  /api/canvas              - list all canvases
 ```
 
 ### Canvas Content Types
@@ -351,23 +364,23 @@ Separate store or same DB with methods:
 ## Routes
 
 ```
-GET  /chat                              — main chat page
-GET  /chat/{channel_id}                 — open specific channel
-WS   /ws/chat                           — WebSocket hub
-POST /api/chat/messages                 — send message (HTTP alternative to WS)
-GET  /api/chat/channels                 — list channels
-POST /api/chat/channels                 — create channel
-GET  /api/chat/channels/{id}            — get channel details
-PUT  /api/chat/channels/{id}            — update channel
-DELETE /api/chat/channels/{id}          — delete channel
-GET  /api/chat/channels/{id}/messages   — get messages (paginated)
-POST /api/chat/upload                   — upload file attachment
-GET  /api/chat/unread                   — get unread counts for all channels
-POST /api/chat/channels/{id}/mark-read  — mark channel as read
-GET  /api/chat/search                   — search messages
-POST /api/canvas/generate               — create canvas
-GET  /canvas/{id}                       — serve canvas page
-POST /api/canvas/{id}/update            — update canvas
+GET  /chat                              - main chat page
+GET  /chat/{channel_id}                 - open specific channel
+WS   /ws/chat                           - WebSocket hub
+POST /api/chat/messages                 - send message (HTTP alternative to WS)
+GET  /api/chat/channels                 - list channels
+POST /api/chat/channels                 - create channel
+GET  /api/chat/channels/{id}            - get channel details
+PUT  /api/chat/channels/{id}            - update channel
+DELETE /api/chat/channels/{id}          - delete channel
+GET  /api/chat/channels/{id}/messages   - get messages (paginated)
+POST /api/chat/upload                   - upload file attachment
+GET  /api/chat/unread                   - get unread counts for all channels
+POST /api/chat/channels/{id}/mark-read  - mark channel as read
+GET  /api/chat/search                   - search messages
+POST /api/canvas/generate               - create canvas
+GET  /canvas/{id}                       - serve canvas page
+POST /api/canvas/{id}/update            - update canvas
 ```
 
 ## Non-goals (Spec 1)
