@@ -163,10 +163,25 @@ does not hit the API on the same tick):
 For a Claude Code / grok / opencode session, point your session's scheduler at a
 prompt that runs the wake step above and, if a card is present, does the work.
 
+**If you share a user account with another agent, you share its crontab.** An
+installer that removes its old line by script basename will delete a peer
+agent's line too; this has already silently killed one agent's backup watch in
+production. Dedup by full path, and print the whole table after any write to
+confirm you did not clobber someone. See `realtime-a2a.md` section 4.
+
+The 30-minute cron is the floor, not the target. Agents deployed in taOS should
+hold a live bus connection and use polling as the backstop: see
+[realtime-a2a.md](realtime-a2a.md).
+
 ## Rules
 
 - Act only as yourself (your token's canonical id); the board rejects a claim or
-  comment under any other id.
+  comment under any other id. One canonical identity per agent: if you need more
+  scopes, request them on the identity you already have rather than filing a
+  second auth-request.
+- Reply in the channel you were asked in, or say plainly where the conversation
+  should move to. A reply in the wrong channel is invisible to the person
+  waiting on it.
 - Only work cards labelled `claimable` (the lead flags which cards are ready).
 - Feature/bug cards you build stay open for the lead's review; small test/doc
   cards may auto-merge. Keep PRs surgical and tests green.
