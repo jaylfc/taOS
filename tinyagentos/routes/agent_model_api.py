@@ -7,12 +7,11 @@ consent flow) and gets THEIR agent(s) exposed as models. The key maps to
 
 GET /v1/models lists the agents the caller's key is consented for, each as an
 OpenAI model entry. POST /v1/chat/completions enforces the same consent contract
-(valid key, requested model in the key's agent_ids) but does NOT yet run the
-agent turn: that step drives the agent's harness and is the next slice, pending
-the turn-seam choice (see ~/.taos-team/pending-decisions.md), so a valid request
-returns 501. Scope (per-capability) enforcement and rate limiting also build on
-this binding. Per the spec, the endpoint must never resolve a model without a
-valid consent key, so the auth + scope contract lands first.
+(valid key, requested model in the key's agent_ids) and drives one non-streaming
+agent turn through the opencode host-server seam, returning an OpenAI
+ChatCompletion envelope. Scope (per-capability) enforcement and rate limiting
+build on this binding. Per the spec, the endpoint must never resolve a model
+without a valid consent key, so the auth + scope contract lands first.
 """
 from __future__ import annotations
 
@@ -22,7 +21,18 @@ import time
 from datetime import datetime
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
+# Runtime calls referenced by module-level name so tests can monkeypatch them
+# (no opencode binary required in CI; the live path uses the real servers).
+try:
+    from tinyagentos.opencode_runtime import drive_turn
+except Exception:  # pragma: no cover - import shape guard
+    drive_turn = None
+try:
+    from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
+except Exception:  # pragma: no cover - import shape guard
+    ensure_taos_opencode_server = None
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +175,10 @@ async def _run_agent_turn(app_state, agent_id: str, messages: list) -> str:
     Reuses the host opencode server lifecycle (ensure_taos_opencode_server) and
     the opencode turn driver (drive_turn). Collects the 'final' reply from the
     sink; degrades to _TurnError on transport failure so the caller returns 502.
-    """
-    from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
-    from tinyagentos.opencode_runtime import drive_turn
 
+    The two runtime calls are referenced via module-level names so tests can
+    monkeypatch them (no opencode binary required in CI).
+    """
     # The last user message is the prompt; system/earlier messages are context
     # the agent harness already carries per-turn, so we pass the latest user text.
     user_text = ""
