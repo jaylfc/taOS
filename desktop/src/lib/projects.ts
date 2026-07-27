@@ -15,7 +15,7 @@ export type Project = {
 export type ProjectMember = {
   project_id: string;
   member_id: string;
-  member_kind: "native" | "clone";
+  member_kind: "native" | "clone" | "human";
   role: string;
   source_agent_id: string | null;
   memory_seed: "none" | "snapshot" | "empty";
@@ -342,4 +342,65 @@ export const projectsApi = {
     };
     return () => es.close();
   },
+
+  // Community View (Milestone F)
+  community: {
+    snapshot: (pid: string) =>
+      http<CommunitySnapshot>(`/api/projects/${pid}/community/snapshot`),
+    stats: (pid: string) =>
+      http<CommunityStats>(`/api/projects/${pid}/community/stats`),
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Community View types (Milestone F)
+// ---------------------------------------------------------------------------
+
+export type CommunityTask = {
+  id: string;
+  title: string;
+  status: string;
+  priority: number;
+  labels: string[];
+  claimed_by: string | null;
+  claimed_at: number | null;
+  closed_at: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ContributorStat = {
+  actor: string;
+  claims: number;
+  closes: number;
+  total: number;
+};
+
+export type ActivityFeedItem = {
+  id: string;
+  task_id: string;
+  event: string;
+  actor: string;
+  ts: string;
+};
+
+export type CommunitySnapshot = {
+  project: {
+    id: string;
+    name: string;
+    slug: string;
+    description: string;
+    status: string;
+  };
+  tasks: CommunityTask[];
+  status_counts: Record<string, number>;
+  contributors: ContributorStat[];
+  recent_activity: ActivityFeedItem[];
+};
+
+export type CommunityStats = {
+  project_id: string;
+  project_name: string;
+  status_counts: Record<string, number>;
+  leaderboard: ContributorStat[];
 };

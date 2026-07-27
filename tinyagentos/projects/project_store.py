@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 
 from tinyagentos.base_store import BaseStore
 from tinyagentos.projects.ids import new_id
+
+logger = logging.getLogger(__name__)
 
 PROJECTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -263,6 +266,16 @@ class ProjectStore(BaseStore):
     ) -> None:
         if member_kind not in ("native", "clone", "human"):
             raise ValueError(f"invalid member_kind: {member_kind}")
+        if member_kind == "human":
+            # Human members are remote collaborators — no agent lifecycle fields.
+            if memory_seed != "none" or source_agent_id is not None:
+                logger.warning(
+                    "add_member: overriding memory_seed=%r source_agent_id=%r "
+                    "for human member %r in project %r",
+                    memory_seed, source_agent_id, member_id, project_id,
+                )
+            memory_seed = "none"
+            source_agent_id = None
         if memory_seed not in ("none", "snapshot", "empty"):
             raise ValueError(f"invalid memory_seed: {memory_seed}")
         await self._db.execute(

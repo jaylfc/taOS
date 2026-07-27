@@ -68,6 +68,9 @@ def register_all_routers(app):
     from tinyagentos.routes import projects as projects_routes
     app.include_router(projects_routes.router, dependencies=_csrf)
 
+    from tinyagentos.routes.community import router as community_router
+    app.include_router(community_router, dependencies=_csrf)
+
     from tinyagentos.routes import routines as routines_routes
     app.include_router(routines_routes.router, dependencies=_csrf)
 

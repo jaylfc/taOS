@@ -678,3 +678,240 @@
     min-height: 280px;
   }
 }
+
+/* ---- Community View (Milestone F) ---- */
+.communityView {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.communityView h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  color: var(--color-shell-text);
+}
+
+/* Overview Stats */
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 0.5rem;
+}
+
+.statCard {
+  background: var(--color-shell-bg-deep);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.statCount {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-shell-text);
+}
+
+.statLabel {
+  font-size: 0.75rem;
+}
+
+.statusBadge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+/* Leaderboard */
+.leaderboardTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.leaderboardTable th,
+.leaderboardTable td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+
+.leaderboardTable th {
+  font-weight: 600;
+  color: var(--color-shell-text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.rank {
+  width: 2rem;
+  text-align: center;
+  font-weight: 700;
+  color: var(--color-shell-text-secondary);
+}
+
+.actor {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.barWrap {
+  position: relative;
+  min-width: 60px;
+  height: 1.2rem;
+  background: var(--color-shell-bg-deep);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar {
+  height: 100%;
+  background: var(--pico-color-blue-500, #3b82f6);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  opacity: 0.5;
+}
+
+.barLabel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--color-shell-text);
+}
+
+/* Live Kanban (read-only) */
+.kanbanGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+}
+
+.kanbanColumn {
+  background: var(--color-shell-bg-deep);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  min-height: 80px;
+}
+
+.kanbanColTitle {
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.kanbanCount {
+  font-size: 0.7rem;
+  background: var(--color-shell-border);
+  color: var(--color-shell-text-secondary);
+  padding: 0.1rem 0.4rem;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.kanbanList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.kanbanCard {
+  background: var(--color-shell-bg);
+  border: 1px solid var(--color-shell-border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.kanbanCardTitle {
+  font-weight: 500;
+  color: var(--color-shell-text);
+  margin-bottom: 0.25rem;
+}
+
+.kanbanClaimant {
+  font-size: 0.7rem;
+  color: var(--color-shell-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanbanLabels {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+}
+
+.kanbanLabel {
+  font-size: 0.65rem;
+  background: var(--color-shell-border);
+  color: var(--color-shell-text-secondary);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+}
+
+/* Activity Feed */
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.feedItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--color-shell-border);
+}
+
+.feedEvent {
+  font-weight: 600;
+  color: var(--pico-color-blue-500, #3b82f6);
+  min-width: 90px;
+  font-size: 0.7rem;
+}
+
+.feedActor {
+  color: var(--color-shell-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.feedTs {
+  color: var(--color-shell-text-secondary);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
