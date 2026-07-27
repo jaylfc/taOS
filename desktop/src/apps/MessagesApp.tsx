@@ -11,8 +11,6 @@ import {
   Archive,
   CircleDot,
   PauseCircle,
-  MessagesSquare,
-  Search,
   AlertTriangle,
   Loader2,
 } from "lucide-react";
@@ -41,8 +39,7 @@ import { useThreadPanel } from "@/lib/use-thread-panel";
 import { openFilePicker } from "@/shell/file-picker-api";
 import { MessageOverflowMenu } from "./chat/MessageOverflowMenu";
 import { BottomSheet } from "@/shell/BottomSheet";
-import { PinBadge } from "./chat/PinBadge";
-import { PinnedMessagesPopover, type PinnedMessage } from "./chat/PinnedMessagesPopover";
+import { type PinnedMessage } from "./chat/PinnedMessagesPopover";
 import { AllThreadsList } from "./chat/AllThreadsList";
 import { ChannelSwitcher } from "./chat/ChannelSwitcher";
 import { useChatNotifications } from "./chat/useChatNotifications";
@@ -70,7 +67,6 @@ import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { resolveAgentEmoji } from "@/lib/agent-emoji";
 import { SearchPanel } from "./chat/SearchPanel";
 import { ChannelSidebar } from "./chat/ChannelSidebar";
 import { A2aBusMessageView, useBusChannels } from "./chat/A2aBusPanel";
@@ -1702,123 +1698,6 @@ export function MessagesApp({
         </div>
       ) : (
         <>
-          {/* channel header — MobileSplitView owns back nav on mobile */}
-<div className="px-4 py-2.5 border-b border-shell-border flex items-center gap-3 shrink-0">
-             {currentChannel?.type === "topic" ? <Hash size={16} className="text-shell-text-tertiary" /> :
-              currentChannel?.type === "group" ? <Users size={16} className="text-shell-text-tertiary" /> :
-              <AtSign size={16} className="text-shell-text-tertiary" />}
-            {(() => {
-              // For DM channels, prefix the header with the paired agent's
-              // emoji (or framework default) so the user can see at a glance
-              // who they are chatting with.
-              if (currentChannel?.type !== "dm") return null;
-              const agentName = (currentChannel.members ?? []).find((m) => m !== "user");
-              if (!agentName) return null;
-              const agent = liveAgents.find((a) => a.name === agentName);
-              if (!agent) return null;
-              return (
-                <span
-                  className="text-base leading-none shrink-0"
-                  aria-hidden="true"
-                >
-                  {resolveAgentEmoji(agent.emoji, agent.framework)}
-                </span>
-              );
-            })()}
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium truncate flex items-center gap-1">
-                {currentChannel?.name ?? "Unknown"}
-                {currentChannel && currentChannel.type !== "dm" && (
-                  <button
-                    aria-label="Channel settings"
-                    onClick={handleOpenSettings}
-                    className="ml-1 opacity-60 hover:opacity-100"
-                  >ⓘ</button>
-                )}
-                <a
-                  aria-label="Open chat guide"
-                  href="https://github.com/jaylfc/tinyagentos/blob/master/docs/chat-guide.md"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="ml-1 opacity-60 hover:opacity-100 text-[12px]"
-                >?</a>
-                <div className="relative">
-                  <PinBadge
-                    count={pinnedMessages.length}
-                    onClick={() => setPinnedPopoverOpen((open) => !open)}
-                  />
-                  {pinnedPopoverOpen && (
-                    <PinnedMessagesPopover
-                      pins={pinnedMessages}
-                      authorCtx={{ currentUserId, currentUserDisplayName }}
-                      onJumpTo={(id) => {
-                        setPinnedPopoverOpen(false);
-                        const el = document.querySelector(`[data-message-id="${id}"]`) as HTMLElement | null;
-                        if (el) {
-                          el.scrollIntoView({ behavior: "smooth", block: "center" });
-                          el.classList.add("data-highlight");
-                          setTimeout(() => el.classList.remove("data-highlight"), 2000);
-                        } else {
-                          // Only ~50 messages load; a pin older than that is not in the DOM.
-                          setSendError("Message is older than the loaded history");
-                        }
-                      }}
-                      onClose={() => setPinnedPopoverOpen(false)}
-                    />
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (showAllThreads) {
-                      setShowAllThreads(false);
-                    } else {
-                      closeThread();
-                      setShowSettings(false);
-                      setShowSearch(false);
-                      setShowAllThreads(true);
-                    }
-                  }}
-className="ml-2 p-1 rounded hover:bg-shell-surface-active text-shell-text-secondary hover:text-shell-text"
-                   aria-label={showAllThreads ? "Hide all threads" : "Show all threads"}
-                  aria-expanded={showAllThreads}
-                  aria-controls="all-threads-panel"
-                  title="All threads"
-                >
-                  <MessagesSquare size={14} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (showSearch) {
-                      setShowSearch(false);
-                    } else {
-                      closeThread();
-                      setShowSettings(false);
-                      setShowAllThreads(false);
-                      setShowSearch(true);
-                    }
-                  }}
-className="ml-2 p-1 rounded hover:bg-shell-surface-active text-shell-text-secondary hover:text-shell-text"
-                   aria-label={showSearch ? "Hide search" : "Search messages"}
-                  aria-expanded={showSearch}
-                  aria-controls="search-panel"
-                  title="Search"
-                >
-                  <Search size={14} aria-hidden="true" />
-                </button>
-              </div>
-{currentChannel?.description && (
-                 <div className="text-[11px] text-shell-text-tertiary truncate">{currentChannel.description}</div>
-               )}
-             </div>
-             {currentChannel?.members && (
-               <div className="text-[11px] text-shell-text-tertiary flex items-center gap-1">
-                <Users size={12} /> {currentChannel.members.length}
-              </div>
-            )}
-          </div>
-
           <MessageList
             ref={messageListHandleRef}
             messages={messages}
