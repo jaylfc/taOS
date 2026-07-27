@@ -57,6 +57,47 @@ describe("renderContent", () => {
     expect(a?.getAttribute("href")).toBe("https://example.com");
     expect(a?.getAttribute("target")).toBe("_blank");
   });
+
+  it("dispatches to content_blocks when non-empty", () => {
+    const { container } = render(<div>{renderContent("", [{ kind: "text", text: "hello" }])}</div>);
+    expect(container.textContent).toContain("unsupported block: text");
+  });
+
+  it("falls through to markdown when content_blocks is empty", () => {
+    const { container } = render(<div>{renderContent("hello world", [])}</div>);
+    expect(container.textContent).toContain("hello world");
+  });
+
+  it("renders unknown fallback for unrecognized block kinds", () => {
+    const { container } = render(<div>{renderContent("", [{ kind: "question", text: "what?" }])}</div>);
+    expect(container.textContent).toContain("unsupported block: question");
+  });
+
+  it("renders unknown fallback for all known kinds (separate cards)", () => {
+    const { container } = render(
+      <div>{renderContent("", [
+        { kind: "text", text: "hi" },
+        { kind: "thinking", text: "thinking...", collapsed: true },
+        { kind: "tool_call", call_id: "c1", name: "Bash", status: "running" as const },
+        { kind: "status", text: "done" },
+      ])}</div>,
+    );
+    expect(container.textContent).toContain("unsupported block: text");
+    expect(container.textContent).toContain("unsupported block: thinking");
+    expect(container.textContent).toContain("unsupported block: tool_call");
+    expect(container.textContent).toContain("unsupported block: status");
+  });
+
+  it("renders one fallback line per block", () => {
+    const { container } = render(
+      <div>{renderContent("", [
+        { kind: "text", text: "a" },
+        { kind: "status", text: "b" },
+      ])}</div>,
+    );
+    const text = container.textContent || "";
+    expect(text.match(/unsupported block/g)?.length).toBe(2);
+  });
 });
 
 describe("dayLabel", () => {

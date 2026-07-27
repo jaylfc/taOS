@@ -158,6 +158,44 @@ export function resolveAuthorDisplayState(
   return "removed";
 }
 
+interface TextContentBlock {
+  kind: "text";
+  text: string;
+}
+
+interface ThinkingContentBlock {
+  kind: "thinking";
+  text: string;
+  collapsed?: boolean;
+}
+
+interface ToolCallContentBlock {
+  kind: "tool_call";
+  call_id: string;
+  name: string;
+  input_preview?: string;
+  status: "running" | "done" | "error";
+  result_preview?: string;
+}
+
+interface StatusContentBlock {
+  kind: "status";
+  text: string;
+}
+
+/**
+ * Structured message content for taOStalk session turns.
+ * Known kinds are handled by dedicated block components (separate cards);
+ * any unrecognized kind falls through to the unknown-block fallback in
+ * renderContent, which is the slice-2 seam.
+ */
+export type ContentBlock =
+  | TextContentBlock
+  | ThinkingContentBlock
+  | ToolCallContentBlock
+  | StatusContentBlock
+  | { kind: string; [key: string]: unknown };
+
 interface Message {
   id: string;
   channel_id: string;
@@ -167,6 +205,7 @@ interface Message {
   /** Parent message id when this message is a thread reply. */
   thread_id?: string;
   content_type?: "text" | "canvas" | string;
+  content_blocks?: ContentBlock[];
   metadata?: {
     canvas_id?: string;
     canvas_url?: string;
@@ -217,7 +256,32 @@ export function relativeTime(ts: number | string, nowMs: number = Date.now()): s
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-export function renderContent(text: string) {
+/**
+ * Dispatch a single content block to its renderer. Known kinds (text,
+ * thinking, tool_call, status) are dispatched to dedicated block components
+ * in separate cards; until those land, they fall through to the unknown
+ * fallback. This is the slice-2 seam: add a case per kind and return the
+ * block component.
+ */
+function renderContentBlock(block: ContentBlock, index: number): React.ReactElement {
+  switch (block.kind) {
+    case "text":
+    case "thinking":
+    case "tool_call":
+    case "status":
+    default:
+      return (
+        <div key={`block-${index}`} className="text-shell-text-tertiary text-[12px]">
+          unsupported block: {block.kind}
+        </div>
+      );
+  }
+}
+
+export function renderContent(text: string, content_blocks?: ContentBlock[]) {
+  if (content_blocks && content_blocks.length > 0) {
+    return content_blocks.map((block, i) => renderContentBlock(block, i));
+  }
   // Split on fenced code blocks first, then apply inline markdown to non-code segments.
   const result: (string | React.ReactElement)[] = [];
   const fenceRegex = /```(?:[^\n]*)?\n([\s\S]*?)```/g;
