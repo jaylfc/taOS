@@ -2,8 +2,13 @@
 >
 > Teams unifies what this doc describes (role-benchmarked models) with the task
 > dispatcher and the agent org model into a single app: members, routing,
-> benchmarks and org chart. "Council" survives only as the internal name for the
-> benchmark methodology.
+> benchmarks and org chart.
+>
+> **"Council" is retired in user-facing text only.** It remains in the codebase
+> as the package name (`tinyagentos/council`), the route prefix
+> (`/api/council/*`) and the name of the benchmark methodology. Renaming those
+> is a separate change and is not implied by this notice, so do not treat a
+> `council` identifier in the runtime as stale.
 >
 > Current statement: jaylfc/taOS#2142.
 
