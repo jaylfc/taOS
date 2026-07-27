@@ -128,3 +128,10 @@ data/pending-restart.json
 # Stray dev screenshot artifacts
 desktop-initial.png
 venv/
+
+# Credential material must never be committable. An agent stored a registry
+# token at /opt/taos/secrets/ on 2026-07-27 - correct permissions, but inside the
+# deployed git checkout and one "git add -A" away from a public repo.
+secrets/
+*.token
+*.cred
