@@ -106,6 +106,17 @@ describe("auth-guard", () => {
       (m) => join(process.cwd(), m[1]),
     );
 
+    // The list is derived by regex over vite.config.ts, so a reformat, a
+    // variable, or different quoting there yields an EMPTY array -- the loop
+    // below would never run and this test would PASS while checking nothing.
+    // That is precisely the failure it exists to catch (the gap it guards
+    // existed because the suite was green with the guard in 1 of 3 entries).
+    // Assert the discovery worked before asserting anything about what it found.
+    expect(
+      htmlPaths.length,
+      "no HTML entrypoints parsed out of vite.config.ts - the discovery regex has drifted, so this test would pass vacuously",
+    ).toBeGreaterThanOrEqual(3);
+
     const scriptRegex = /<script[^>]*type="module"[^>]*src="([^"]+)"/g;
 
     for (const htmlPath of htmlPaths) {
