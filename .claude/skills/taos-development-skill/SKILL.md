@@ -180,6 +180,25 @@ I have read the CLA Document and I hereby sign the CLA
 3. Once code is done and local tests pass, `gh pr ready`. Address review feedback with additional
    commits on the same branch. The maintainer merges upstream.
 
+### Do not spend turns waiting
+
+You pay per turn. Spend them on judgement (reading a diff, diagnosing a failure,
+deciding whether a green check is trustworthy), not on waiting or repetition.
+
+- **Do not poll CI in a loop.** `gh pr checks <PR#> --watch` blocks in one call
+  and returns when the run finishes. Re-running `gh pr checks` every minute
+  costs a turn each time and tells you nothing new. (A malformed watch once
+  exited early and reported success while shards were still running, so read
+  the final status rather than trusting that the command returned.)
+- **If you have hand-verified the same property twice, write the test.** Two
+  manual checks is the signal. A test costs nothing per run; re-reading costs
+  every time.
+- **Ask the narrow question.** A targeted `grep` or a symbol-level diff against
+  `origin/dev` usually decides the matter far more cheaply than reading a whole
+  diff. Work out what single fact settles it, then fetch only that.
+- **Do not re-poll a blocked run.** See `action_required` above: surface it and
+  stop. Repeatedly checking a run that is waiting on a human is pure cost.
+
 ## Post-Push Bot Review Cycle
 
 After pushing a PR and marking it ready, automated bots review it. The reliable gate is
