@@ -202,9 +202,34 @@ Run a specific test file:
 pytest tests/test_catalog_sync.py -v
 ```
 
-The project has ~3,590 tests. CI runs against Python 3.12 and 3.13 on every pull request (two matrix jobs). Python 3.11 is added on the nightly scheduled run. A PR cannot be merged until all matrix jobs pass.
+The project has ~10,250 tests. CI runs against Python 3.12 and 3.13 on every pull request. Python 3.11 is added on the nightly scheduled run. A PR cannot be merged until all required checks pass.
 
 When adding a feature, add tests that cover the new behaviour. When fixing a bug, add a regression test.
+
+---
+
+## Verifying your work
+
+**A passing signal is a claim, not evidence.** Most bad merges in this project came from something that looked like success without being one. Before trusting a green tick, ask what would have to be true for it to be lying.
+
+Cases that have actually happened here:
+
+- **A PR passed every required check while containing only a version bump.** Green proves the suite ran, not that the work happened.
+- **A test file reported green while every test in it skipped.** `pytest.importorskip` is the correct way to land tests ahead of the code they cover, and it asserts nothing until that code exists. Once the implementation merges, confirm the skips became real passes. If the import path in the guard does not match what shipped, they skip forever and look identical to passing.
+- **`cmd | tail && echo OK` prints OK when `cmd` failed**, because `&&` sees `tail`'s exit status. Check the exit code of the command that matters.
+- **Green on a branch with conflicts tested the old base**, not the result of merging.
+
+Applied to your own changes:
+
+- **If you add a gate, prove it fails.** A check only ever observed passing is unproven where it counts. Make it go red deliberately once.
+- **Verify a review comment against the code before acting on it**, including automated ones. Bot findings are often wrong, and confidently phrased.
+- **Report honestly.** If tests fail, say so and include the output. If you skipped a step, name it. "Done" should mean verified, not attempted.
+
+## Avoiding collisions with other contributors
+
+- **Check whether an open PR already adds the file you are adding.** Two PRs that both create the same path cannot both merge, and whichever lands first silently decides the design. This has cost duplicated implementations of the same feature more than once.
+- **Renaming a CI job orphans its required check.** Branch protection matches required checks by name, so a rename means the old name is never reported again and later PRs block on a check that can no longer exist. Keep the old name reported (an aggregate job whose explicit `name:` reproduces it) or update protection first.
+- **Stage explicit paths rather than `git add -A`**, which sweeps in untracked files you did not write.
 
 ---
 
