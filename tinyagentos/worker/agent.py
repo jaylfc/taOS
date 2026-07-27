@@ -1179,16 +1179,71 @@ class WorkerAgent:
         """Notify the controller that the worker's drain is complete.
 
         After in-flight work finishes, the worker sends one final
-        heartbeat with status="updating" to signal readiness for
-        the update. The controller can then proceed with the update
-        deploy.
+        heartbeat to confirm readiness for the update. The controller
+        can then proceed with the update deploy.
 
         Returns the HTTP status code from the controller.
         """
         logger.info("worker '%s': drain complete, ready for update", self.name)
-        self._lifecycle_status = "updating"
-        self._lifecycle_reason = "drain-complete"
-        return await self.heartbeat(status="updating")
+        return await self.heartbeat()
+
+    # ── Self-update trigger (taOS #890 C3) ─────────────────────────────
+
+    async def _check_update_trigger(self) -> bool:
+        """Check for a pending self-update trigger file and execute it.
+
+        The trigger file is written atomically by an external mechanism
+        (e.g. the controller via a deploy command or a cron-managed poller).
+        Its presence signals that the worker should run the full self-update
+        lifecycle (checkpoint → drain → pull → deps → restart).
+
+        Returns True if a trigger was found and processed; False otherwise.
+        """
+        trigger_path = self._state_dir / "update-trigger.json"
+        if not trigger_path.exists():
+            return False
+
+        try:
+            trigger = json.loads(trigger_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            logger.warning("update trigger file unreadable — removing")
+            trigger_path.unlink(missing_ok=True)
+            return False
+
+        target_ref = trigger.get("target_ref", "")
+        if not target_ref:
+            logger.warning("update trigger missing target_ref — removing")
+            trigger_path.unlink(missing_ok=True)
+            return False
+
+        graceful = trigger.get("graceful", True)
+
+        logger.info(
+            "self-update: trigger received — target=%s graceful=%s",
+            target_ref, graceful,
+        )
+
+        # Remove the trigger file BEFORE running the update so a
+        # duplicate run is never launched.
+        trigger_path.unlink(missing_ok=True)
+
+        try:
+            from tinyagentos.worker.self_update import run_full_update
+            result = await run_full_update(
+                target_ref=target_ref,
+                controller_url=self.controller_url,
+                agent=self,
+                state_dir=self._state_dir,
+                graceful=graceful,
+            )
+            if not result.get("ok"):
+                logger.error(
+                    "self-update: update failed: %s", result.get("error", "unknown")
+                )
+        except Exception:
+            logger.error("self-update: update threw exception", exc_info=True)
+
+        return True
 
     def _log_repair_instruction(self) -> None:
         logger.error(
@@ -1238,6 +1293,29 @@ class WorkerAgent:
                     if result is True:
                         logger.info(f"worker '{self.name}' registered with {self.controller_url}")
                         _in_repair = False
+
+                        # ── Post-update startup hook (taOS #890 C3) ─────────
+                        # If an update-in-progress marker exists from a
+                        # pre-restart checkpoint, run the health-check and
+                        # signal the outcome (success or rollback) to the
+                        # controller.
+                        try:
+                            from tinyagentos.worker.self_update import post_update_startup
+                            outcome = await post_update_startup(
+                                controller_url=self.controller_url,
+                                agent=self,
+                                state_dir=self._state_dir,
+                            )
+                            if outcome is not None:
+                                logger.info(
+                                    "self-update: post-restart outcome=%s",
+                                    outcome.get("outcome", "unknown"),
+                                )
+                        except Exception:
+                            logger.warning(
+                                "post_update_startup hook failed — continuing",
+                                exc_info=True,
+                            )
                         continue
                     if result == _NEEDS_REPAIR:
                         # Controller rejected our key -- enter needs-re-pair state.
@@ -1283,6 +1361,12 @@ class WorkerAgent:
                     # registered flag yet; the controller may still know
                     # us when it comes back. Just retry on next tick.
                     pass
+
+                # Check for pending self-update trigger on each heartbeat
+                # cycle. The check is cheap (a file stat) and the trigger
+                # file is removed atomically before the update runs.
+                await self._check_update_trigger()
+
                 await asyncio.sleep(5)
         finally:
             if self._update_service is not None:

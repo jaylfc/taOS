@@ -1139,3 +1139,114 @@ async def test_get_workers_for_capability_excludes_yielded():
     assert len(result) == 1
     assert result[0].name == "online-gpu"
 
+
+
+# ── Update-outcome endpoint (taOS #890 C3) ───────────────────────────
+
+
+@pytest.mark.asyncio
+class TestUpdateOutcomeEndpoint:
+    async def test_update_outcome_success(self, client, app):
+        """Worker reports successful self-update."""
+        from unittest.mock import patch
+
+        # Register a worker so the endpoint can find it
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "success",
+            "from_version": "abc1234def",
+            "to_version": "def5678abc",
+        }
+
+        # Bypass HMAC for the test — we test HMAC separately
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: None,
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["worker"] == "gpu-box"
+            assert data["outcome"] == "success"
+            assert data["acknowledged"] is True
+
+    async def test_update_outcome_rollback(self, client, app):
+        """Worker reports a rollback after failed update."""
+        from unittest.mock import patch
+
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "rollback",
+            "from_version": "abc1234def",
+            "to_version": "def5678abc",
+            "failure_reason": "health-check: port not listening",
+            "rollback_to": "abc1234def",
+        }
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: None,
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["outcome"] == "rollback"
+            assert data["acknowledged"] is True
+
+    async def test_update_outcome_worker_not_found(self, client):
+        """404 when the worker is not registered."""
+        from unittest.mock import patch
+
+        payload = {
+            "name": "nonexistent",
+            "outcome": "success",
+            "from_version": "aaa",
+            "to_version": "bbb",
+        }
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: None,
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/nonexistent/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 404
+
+    async def test_update_outcome_unknown_outcome(self, client, app):
+        """400 when the outcome is not 'success' or 'rollback'."""
+        from unittest.mock import patch
+
+        mgr = app.state.cluster_manager
+        w = _make_worker("gpu-box")
+        await mgr.register_worker(w)
+
+        payload = {
+            "name": "gpu-box",
+            "outcome": "unknown-status",
+        }
+
+        with patch(
+            "tinyagentos.routes.cluster.require_worker_hmac",
+            side_effect=lambda r: None,
+        ):
+            resp = await client.post(
+                "/api/cluster/workers/gpu-box/update-outcome",
+                json=payload,
+            )
+            assert resp.status_code == 400

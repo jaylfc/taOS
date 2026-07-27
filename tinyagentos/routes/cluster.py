@@ -673,7 +673,21 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     if not ok:
         return JSONResponse({"error": "Worker not registered"}, status_code=404)
     cluster = request.app.state.cluster_manager
-    return {"status": "ok", "generation": cluster.generation}
+
+    # Include drain status in the response so the worker's self-update
+    # orchestrator can detect when in-flight leases are all released and
+    # proceed with the update without waiting the full timeout (taOS #890 C3).
+    worker_obj = cluster.get_worker(body.name)
+    drain_complete = False
+    if worker_obj is not None and worker_obj.status == "draining":
+        active = [
+            lid for lid, lease in cluster._leases.items()
+            if (parsed := cluster._parse_resource_id(lease.resource_id))
+            and parsed[0] == body.name
+        ]
+        drain_complete = len(active) == 0
+
+    return {"status": "ok", "generation": cluster.generation, "drain_complete": drain_complete}
 
 
 @router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
@@ -1908,3 +1922,101 @@ async def get_update_all_job_status(request: Request, job_id: str):
     if job is None:
         return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
     return job
+
+
+# ── Worker self-update outcome reporting (taOS #890 C3) ──────────────────
+
+
+class UpdateOutcomeBody(BaseModel):
+    """Payload for the worker to report its update outcome."""
+    name: str
+    outcome: str  # "success" | "rollback"
+    from_version: str = ""
+    to_version: str = ""
+    failure_reason: str = ""
+    rollback_to: str = ""
+
+
+@router.post("/api/cluster/workers/{name}/update-outcome")
+async def report_update_outcome(request: Request, name: str, body: UpdateOutcomeBody):
+    """Record the outcome of a worker self-update.
+
+    Called by the worker after restart + health-check, or on rollback.
+
+    HMAC-signed: the worker's signing key validates that the outcome
+    came from the actual worker, not a spoofed request.
+    """
+    try:
+        await require_worker_hmac(request)
+    except _HMACError:
+        return JSONResponse({"error": "hmac verification failed"}, status_code=403)
+
+    cluster = request.app.state.cluster_manager
+    worker = cluster.get_worker(name)
+    if not worker:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+
+    outcome = body.outcome
+    logger.info(
+        "worker '%s' reported update outcome: %s (from=%s to=%s)",
+        name, outcome, body.from_version[:8], body.to_version[:8],
+    )
+
+    notifications = getattr(request.app.state, "notifications", None)
+
+    if outcome == "success":
+        # Worker is already back online via re-registration.
+        # Nothing to do — the heartbeat loop handles it.
+        logger.info("worker '%s' self-update SUCCESS", name)
+        # Emit a success notification so the operator has an audit trail.
+        if notifications:
+            try:
+                await notifications.emit_event(
+                    "worker.update-success",
+                    f"Worker '{name}' self-update succeeded",
+                    (
+                        f"Updated from {body.from_version[:8] or 'unknown'} "
+                        f"to {body.to_version[:8] or 'unknown'}."
+                    ),
+                    level="info",
+                )
+            except Exception:
+                logger.exception(
+                    "notification emit failed for update success"
+                )
+
+    elif outcome == "rollback":
+        # Worker rolled back after a failed health-check.
+        logger.warning(
+            "worker '%s' self-update ROLLBACK: %s (from %s to %s, rolled back to %s)",
+            name,
+            body.failure_reason or "unknown failure",
+            body.from_version[:8],
+            body.to_version[:8],
+            body.rollback_to[:8] or "checkpoint",
+        )
+        if notifications:
+            try:
+                await notifications.emit_event(
+                    "worker.update-rollback",
+                    f"Worker '{name}' rolled back after failed update",
+                    (
+                        f"Update from {body.from_version[:8]} to {body.to_version[:8]} "
+                        f"failed: {body.failure_reason or 'health check failed'}. "
+                        f"Rolled back to {body.rollback_to[:8] or 'checkpoint'}."
+                    ),
+                    level="warning",
+                )
+            except Exception:
+                logger.exception("notification emit failed for update rollback")
+
+    else:
+        return JSONResponse(
+            {"error": f"unknown outcome: {outcome}"}, status_code=400
+        )
+
+    return {
+        "worker": name,
+        "outcome": outcome,
+        "acknowledged": True,
+    }
