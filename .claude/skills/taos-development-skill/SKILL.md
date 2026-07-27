@@ -429,6 +429,32 @@ Run `scripts/install-git-hooks.sh` to enable local hooks (`.githooks/pre-commit`
   are available. Most modules use `from __future__ import annotations`.
 - Code style: match surrounding code, one concern per module
 - Use `uv` for dependency management and test running: `uv sync --extra dev`, `uv run pytest`
+- **Read `CONTRIBUTING.md` sections "Verifying your work" and "Avoiding collisions with
+  other contributors".** They are the canonical statement of both; this file does not
+  restate them so the two cannot drift. What follows is only the part specific to
+  working here as an agent.
+
+## Verification (agent specifics)
+
+Green is a claim, not evidence. The repo-level cases are in CONTRIBUTING.md. These are
+the ones that bite agents in particular:
+
+- **Do not report work as done without a PR link.** A branch with commits and no PR is
+  not delivered. A lane once announced completion on an empty branch; the check now runs
+  before any completion is claimed, and the same standard applies to you.
+- **A PR that passes CI can still be empty.** Before saying a card is finished, look at
+  the actual diff and confirm it contains the change described.
+- **Never infer merge conflicts from `git merge-tree`** against branches you have not
+  fetched; it produces confident nonsense. Use GitHub's `mergeable_state`, and treat
+  `unknown` as "not computed yet" and re-query rather than as an answer.
+- **Check the exit status of the command that matters**, not the last one in a pipe.
+  `cmd | tail && echo OK` prints OK when `cmd` failed.
+- **An empty fetch is not a match.** If two files that cannot be identical hash the same,
+  your request failed rather than the contents agreeing.
+- **Verify a bot finding against the code before folding it.** Automated review is often
+  wrong and always confident. Fold what is real, say plainly what is not.
+- **Report honestly.** If tests fail, include the output. If a step was skipped, name it.
+  "Done" means verified.
 
 ## Desktop SPA build + test
 
