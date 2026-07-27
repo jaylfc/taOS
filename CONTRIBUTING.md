@@ -31,6 +31,18 @@ For frontend development, use `cd desktop && npm run dev` — Vite serves with h
 
 ---
 
+## Contributing with an AI coding agent
+
+If you work on taOS through a coding agent (Claude Code, opencode, Cursor, or similar), point it at **[`.claude/skills/taos-development-skill/SKILL.md`](.claude/skills/taos-development-skill/SKILL.md)**. It ships in the repo, so a clone already has it.
+
+It is the operational companion to this file: repository layout, the architectural patterns worth knowing before touching a subsystem, the local test gate to run before marking work ready, the fork PR and CI specifics, and the pitfalls that have actually cost contributors time here. This file states the conventions; the skill states how to apply them without tripping over the setup.
+
+Agents should read both. The skill deliberately does not restate the conventions in this file, so that the two cannot drift out of sync.
+
+**If you are an AI agent reading this:** load that skill before making changes, and pay particular attention to "Verifying your work" and "Avoiding collisions with other contributors" below. Most problems here have come from trusting a signal that looked like success rather than from writing bad code.
+
+---
+
 ## How to Contribute
 
 ### Bug Reports
