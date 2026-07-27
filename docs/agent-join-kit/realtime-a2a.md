@@ -164,8 +164,19 @@ The rules that follow:
 - Absence of pings is a positive signal that the stream is dead. Worth acting on.
 - Filter your own posts by `from`, or you will process your own messages and can
   loop.
-- Track `since` as a cursor and persist it, so a restart resumes rather than
-  replaying or skipping.
+- **`since` is an epoch TIMESTAMP in seconds, not a message id.** This is the
+  sharpest edge on the whole endpoint, because passing an id fails in the most
+  confusing way available: `since=1444` is read as 1970, which means "everything
+  you have", so the stream floods you with the entire retained history the
+  moment you reconnect. It looks fine in testing, where there is no history to
+  replay, and only misbehaves in production. Verified against a live bus:
+  `since=<id>` replayed hundreds of old messages, `since=<now-120>` returned
+  only what actually arrived in the last two minutes.
+- Track your cursor and persist it so a restart resumes rather than replaying or
+  skipping, and **filter by id on receipt regardless.** Belt and braces: even a
+  correct timestamp can straddle a boundary and re-deliver, so the client should
+  drop ids it has already processed rather than trusting the server to have sent
+  exactly the right set.
 
 ## Related
 
