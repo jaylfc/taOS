@@ -1,12 +1,218 @@
 import { useState, useEffect, useCallback } from "react";
-import { Save, RefreshCw, CheckCircle, AlertTriangle } from "lucide-react";
+import { Save, RefreshCw, CheckCircle, AlertTriangle, Wifi, WifiOff, Monitor, Globe } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { fetchSettingsSchema, fetchMemorySettings, updateMemorySettings } from "@/lib/memory";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { fetchSettingsSchema, fetchMemorySettings, updateMemorySettings, fetchMemoryEndpoint, updateMemoryEndpoint, fetchBackendCapabilities } from "@/lib/memory";
+import type { TaOSmdEndpoint } from "@/lib/memory";
 import { fetchMemoryModel, setMemoryModel } from "@/lib/memory-api";
 import { ModelPickerModal } from "@/components/ModelPickerModal";
 import type { AgentModel } from "@/components/ModelPickerFlow";
 import { SchemaFormRenderer } from "./SchemaFormRenderer";
+
+/* ------------------------------------------------------------------ */
+/*  TaOSmdEndpointCard — running mode + switch-to-remote                */
+/* ------------------------------------------------------------------ */
+
+const LOCAL_URL = "http://localhost:7900";
+
+function TaOSmdEndpointCard() {
+  const [endpoint, setEndpoint] = useState<TaOSmdEndpoint | null>(null);
+  const [capabilities, setCapabilities] = useState<{ name: string; version: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [switching, setSwitching] = useState(false);
+  const [switchErr, setSwitchErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setSwitchErr(null);
+    try {
+      const [ep, caps] = await Promise.all([
+        fetchMemoryEndpoint(),
+        fetchBackendCapabilities(),
+      ]);
+      setEndpoint(ep);
+      setCapabilities({ name: caps.name, version: caps.version });
+      setRemoteUrl((ep?.url && ep.url !== LOCAL_URL) ? ep.url : "");
+    } catch {
+      /* graceful — will show fallback */
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSwitch = async () => {
+    const url = remoteUrl.trim();
+    if (!url) return;
+    setSwitching(true);
+    setSwitchErr(null);
+    try {
+      const result = await updateMemoryEndpoint(url);
+      setEndpoint(result);
+      if (!result.reachable && !result.is_local) {
+        setSwitchErr("Server is not reachable. Check the URL and try again.");
+      }
+    } catch (e: any) {
+      setSwitchErr(String(e?.message ?? e));
+    }
+    setSwitching(false);
+  };
+
+  const handleRevert = async () => {
+    setSwitching(true);
+    setSwitchErr(null);
+    try {
+      const result = await updateMemoryEndpoint(LOCAL_URL);
+      setEndpoint(result);
+      setRemoteUrl("");
+    } catch (e: any) {
+      setSwitchErr(String(e?.message ?? e));
+    }
+    setSwitching(false);
+  };
+
+  if (loading) {
+    return (
+      <Card className="bg-white/[0.02] border-white/8">
+        <CardContent className="p-4">
+          <p className="text-xs text-shell-text-tertiary" aria-label="Loading taOSmd status">
+            Loading taOSmd status…
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!endpoint) return null;
+
+  const isLocal = endpoint.is_local;
+  const modeLabel = isLocal ? "LOCAL" : "REMOTE";
+  const ModeIcon = isLocal ? Monitor : Globe;
+  const modeClasses = isLocal
+    ? "bg-green-500/15 text-green-400 border-green-500/30"
+    : "bg-blue-500/15 text-blue-400 border-blue-500/30";
+
+  return (
+    <Card className="bg-white/[0.02] border-white/8">
+      <CardContent className="p-4 flex flex-col gap-3">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <p className="text-xs uppercase opacity-60">taOSmd Status</p>
+            <span
+              className={`text-[10px] font-semibold px-1.5 py-px rounded-full border ${modeClasses}`}
+              aria-label={`Mode: ${modeLabel}`}
+            >
+              <ModeIcon size={10} className="inline mr-0.5" aria-hidden="true" />
+              {modeLabel}
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={load}
+            disabled={loading}
+            aria-label="Refresh taOSmd status"
+            className="h-7 px-2.5 text-xs"
+          >
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} aria-hidden="true" />
+            Refresh
+          </Button>
+        </div>
+
+        {/* Reachability */}
+        <div className="flex items-center gap-2 text-xs">
+          {endpoint.reachable ? (
+            <Wifi size={13} className="text-green-400 shrink-0" aria-hidden="true" />
+          ) : (
+            <WifiOff size={13} className="text-red-400 shrink-0" aria-hidden="true" />
+          )}
+          <span
+            className={endpoint.reachable ? "text-green-400" : "text-red-400"}
+            aria-label={endpoint.reachable ? "Reachable" : "Not reachable"}
+          >
+            {endpoint.reachable ? "Reachable" : "Not reachable"}
+          </span>
+          <span className="opacity-40" aria-label="Server URL">{endpoint.url || LOCAL_URL}</span>
+        </div>
+
+        {/* Capabilities / Tier */}
+        <div className="flex items-center gap-3 text-xs flex-wrap">
+          {capabilities && (
+            <span className="opacity-50" aria-label={`Backend ${capabilities.name} v${capabilities.version}`}>
+              {capabilities.name} v{capabilities.version}
+            </span>
+          )}
+          {endpoint.tier && (
+            <span
+              className="px-1.5 py-px rounded-full border border-white/10 bg-white/[0.03] text-[10px] font-medium opacity-60"
+              aria-label={`Memory tier: ${endpoint.tier}`}
+            >
+              Tier: {endpoint.tier}
+            </span>
+          )}
+        </div>
+
+        {/* Switch to remote */}
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="taosmd-remote-url" className="text-xs font-normal opacity-60">
+            Switch to remote instance
+          </Label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="taosmd-remote-url"
+              type="url"
+              placeholder="http://192.168.1.x:7900"
+              value={remoteUrl}
+              onChange={(e) => { setRemoteUrl(e.target.value); setSwitchErr(null); }}
+              disabled={switching}
+              className="h-8 text-xs bg-white/[0.04] border-white/10"
+              aria-label="Remote taOSmd URL"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSwitch}
+              disabled={switching || !remoteUrl.trim() || remoteUrl.trim() === (endpoint.url || LOCAL_URL)}
+              aria-label="Connect to remote taOSmd"
+              className="h-8 px-3 text-xs shrink-0"
+            >
+              {switching ? <RefreshCw size={12} className="animate-spin" aria-hidden="true" /> : "Connect"}
+            </Button>
+          </div>
+        </div>
+
+        {/* Revert to local */}
+        {!isLocal && (
+          <div className="flex">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleRevert}
+              disabled={switching}
+              aria-label="Revert to local taOSmd"
+              className="h-7 px-2.5 text-xs opacity-70 hover:opacity-100"
+            >
+              <Monitor size={12} className="mr-1" aria-hidden="true" />
+              Revert to local
+            </Button>
+          </div>
+        )}
+
+        {/* Errors */}
+        {switchErr && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-red-500/10 border border-red-500/20" role="alert" aria-live="assertive">
+            <AlertTriangle size={13} className="text-red-400 shrink-0" aria-hidden="true" />
+            <p className="text-xs text-red-300">{switchErr}</p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  MemoryModelSection                                                 */
@@ -188,6 +394,9 @@ export function MemorySettings() {
     <section className="flex flex-col gap-5 p-4 overflow-auto h-full" aria-label="Memory settings">
       {/* System-wide memory model */}
       <MemoryModelSection />
+
+      {/* taOSmd endpoint status */}
+      <TaOSmdEndpointCard />
 
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-shell-text">Backend Settings</h2>

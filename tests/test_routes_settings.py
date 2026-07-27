@@ -376,7 +376,7 @@ class TestMemoryUrlSettings:
         assert resp.status_code == 200
         data = resp.json()
         assert data["url"] == "http://192.168.1.100:7900"
-        assert data["is_local"] is True  # 192.168.x.x is private
+        assert data["is_local"] is False  # 192.168.x.x is private LAN, not local
         assert isinstance(data["reachable"], bool)
         # Verify it persisted on config
         assert app.state.config.memory_url == "http://192.168.1.100:7900"
@@ -421,8 +421,8 @@ class TestMemoryUrlSettings:
         assert _is_local_url("http://localhost:7900") is True
         assert _is_local_url("http://127.0.0.1:7900") is True
         assert _is_local_url("http://[::1]:7900") is True
-        assert _is_local_url("http://10.0.0.1:7900") is True   # private
-        assert _is_local_url("http://192.168.1.1:7900") is True  # private
+        assert _is_local_url("http://10.0.0.1:7900") is False   # private LAN — not local machine
+        assert _is_local_url("http://192.168.1.1:7900") is False  # private LAN — not local machine
         assert _is_local_url("https://example.com:7900") is False
         assert _is_local_url("http://8.8.8.8:7900") is False  # public IP
 

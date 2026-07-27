@@ -1155,7 +1155,10 @@ _MEMORY_URL_PROBE_CACHE: OrderedDict = OrderedDict()  # {url: (timestamp, bool)}
 
 
 def _is_local_url(url: str) -> bool:
-    """Return True if *url* points to the local machine (loopback or private)."""
+    """Return True if *url* points to the local machine (loopback only).
+
+    Private-LAN addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x) are NOT
+    classified as local — they may be other machines on the same network."""
     parsed = urlparse(url)
     hostname = parsed.hostname
     if not hostname:
@@ -1164,22 +1167,33 @@ def _is_local_url(url: str) -> bool:
         return True
     try:
         addr = ipaddress.ip_address(hostname)
-        return addr.is_loopback or addr.is_private
+        return addr.is_loopback
     except ValueError:
         return False
 
 
-async def _probe_taosmd(request: Request, url: str) -> bool:
-    """Probe the taOSmd /health endpoint.  Returns True if reachable."""
+async def _probe_taosmd(request: Request, url: str) -> tuple[bool, str | None]:
+    """Probe the taOSmd /health endpoint.
+
+    Returns (reachable, tier) — *reachable* is True when the endpoint responds
+    with 200, and *tier* is extracted from the JSON response body when available
+    (None if the probe fails or the response omits it)."""
     try:
         client = request.app.state.http_client
         resp = await client.get(
             f"{url}/health",
             timeout=httpx.Timeout(3.0, connect=2.0),
         )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+                tier = body.get("tier") if isinstance(body, dict) else None
+            except (ValueError, AttributeError):
+                tier = None
+            return True, tier
+        return False, None
     except (httpx.RequestError, httpx.InvalidURL):
-        return False
+        return False, None
 
 
 class MemoryUrlUpdate(BaseModel):
@@ -1197,14 +1211,17 @@ async def get_memory_url(request: Request):
     cached = _MEMORY_URL_PROBE_CACHE.get(url)
     now = time.monotonic()
     if cached and (now - cached[0]) < 30:
-        reachable = cached[1]
+        reachable, tier = cached[1], cached[2]
     else:
-        reachable = await _probe_taosmd(request, url)
-        _MEMORY_URL_PROBE_CACHE[url] = (now, reachable)
+        reachable, tier = await _probe_taosmd(request, url)
+        _MEMORY_URL_PROBE_CACHE[url] = (now, reachable, tier)
         if len(_MEMORY_URL_PROBE_CACHE) > 32:
             _MEMORY_URL_PROBE_CACHE.popitem(last=False)
 
-    return {"url": url, "is_local": is_local, "reachable": reachable}
+    resp: dict[str, str | bool | None] = {"url": url, "is_local": is_local, "reachable": reachable}
+    if tier:
+        resp["tier"] = tier
+    return resp
 
 
 @router.put("/api/settings/memory-url")
@@ -1226,7 +1243,7 @@ async def set_memory_url(request: Request, body: MemoryUrlUpdate):
         return JSONResponse({"error": "URL must include a hostname"}, status_code=400)
 
     is_local = _is_local_url(url)
-    reachable = await _probe_taosmd(request, url)
+    reachable, tier = await _probe_taosmd(request, url)
 
     config = request.app.state.config
     config.memory_url = url
@@ -1235,8 +1252,11 @@ async def set_memory_url(request: Request, body: MemoryUrlUpdate):
     request.app.state.taosmd_url = url
 
     # Cache the probe result so the next GET is instant.
-    _MEMORY_URL_PROBE_CACHE[url] = (time.monotonic(), reachable)
+    _MEMORY_URL_PROBE_CACHE[url] = (time.monotonic(), reachable, tier)
     if len(_MEMORY_URL_PROBE_CACHE) > 32:
         _MEMORY_URL_PROBE_CACHE.popitem(last=False)
 
-    return {"url": url, "is_local": is_local, "reachable": reachable}
+    resp: dict[str, str | bool | None] = {"url": url, "is_local": is_local, "reachable": reachable}
+    if tier:
+        resp["tier"] = tier
+    return resp

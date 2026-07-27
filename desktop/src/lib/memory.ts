@@ -16,6 +16,22 @@ async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promi
   }
 }
 
+/** Like fetchJson but throws on HTTP errors, network failures, and non-JSON
+ *  responses so callers can surface errors instead of fabricating state. */
+async function fetchJsonOrThrow<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, { ...init, headers: { Accept: 'application/json', ...init?.headers } });
+  if (!res.ok) {
+    let detail = '';
+    try { const body = await res.json(); detail = body?.detail || body?.error || ''; } catch { /* ignore */ }
+    throw new Error(detail || `HTTP ${res.status}: ${res.statusText}`);
+  }
+  const ct = res.headers.get('content-type') ?? '';
+  if (!ct.includes('application/json')) {
+    throw new Error(`Expected JSON response, got ${ct || 'unknown content type'}`);
+  }
+  return (await res.json()) as T;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -24,6 +40,13 @@ export interface BackendCapabilities {
   name: string;
   version: string;
   capabilities: string[];
+}
+
+export interface TaOSmdEndpoint {
+  url: string;
+  is_local: boolean;
+  reachable: boolean;
+  tier?: string;
 }
 
 export interface CatalogSession {
@@ -40,7 +63,7 @@ export interface CatalogSession {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Stats / capabilities                                               */
+/*  Stats / capabilities / endpoint                                   */
 /* ------------------------------------------------------------------ */
 
 export async function fetchMemoryStats(): Promise<Record<string, any>> {
@@ -64,6 +87,18 @@ export async function updateMemorySettings(settings: Record<string, any>): Promi
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
+  });
+}
+
+export async function fetchMemoryEndpoint(): Promise<TaOSmdEndpoint> {
+  return fetchJsonOrThrow<TaOSmdEndpoint>(`${API}/settings/memory-url`);
+}
+
+export async function updateMemoryEndpoint(url: string): Promise<TaOSmdEndpoint> {
+  return fetchJsonOrThrow<TaOSmdEndpoint>(`${API}/settings/memory-url`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
   });
 }
 
