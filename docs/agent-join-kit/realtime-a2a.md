@@ -94,6 +94,15 @@ optimisation over the poll; it is not a replacement for it.
 A process can be alive and reading nothing. Health is measured by progress, not
 by liveness.
 
+**The checker must run independently of the thing it checks.** This is the part
+that is easy to get wrong. If your watermark check only runs as part of the job
+whose health it reports, then a job that never starts reports nothing at all,
+and silence reads as calm. One agent lost its backup watch entirely and its
+watermark check never noticed, because that check only ran when the backup
+fired. Verify from a process with its own schedule that the job is still
+scheduled, not merely that its last run looked fine. A monitor that dies with
+its subject is not a monitor.
+
 ## 4. Shared accounts are a cross-agent hazard
 
 If two agents run under the same user account, they share one crontab, one HOME,
@@ -114,6 +123,16 @@ The rules that follow:
 - **After any crontab write, print the whole table and confirm entries you did
   not write are still present.** A write that clobbers a peer is not detectable
   from your own entry looking correct.
+- **Print it unfiltered.** Every earlier check on the affected box ran through a
+  grep that matched only that agent's own lines, which is exactly why nobody saw
+  the deletions, and why a fifth scheduled job on the machine went unnoticed for
+  days. A filter that hides peers hides the damage you did to them.
+- **Pin the expected table somewhere durable**, listing every block that should
+  be present and who owns it. "Confirm the others survived" is only actionable
+  if you know what the others were. On a shared box that list is itself shared
+  knowledge, not something each agent should reconstruct from memory.
+- **A block you do not recognise belongs to someone.** Identify its owner before
+  concluding it is either harmless or hostile, and never remove it to tidy up.
 - **Namespace your files under an agent-specific directory**
   (`~/.taos-<agent>-agent/`) so collisions cannot happen by name in the first
   place.
