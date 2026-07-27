@@ -152,3 +152,19 @@ data/.seeded-agent-tokens.json
 data/secrets.db*
 data/*.key
 data/*.token
+
+# Key material and secrets. Added 2026-07-27 after data/hub/identity.json was
+# committed to PR #2043 with signing_private and encryption_private in
+# PLAINTEXT. data/hub/ is already covered above; these patterns close the REST
+# of the surface, which was open: an identity.json or a *.key written anywhere
+# outside data/hub/ had nothing stopping it. Pattern-based on purpose, since a
+# per-file allowlist cannot catch a file that does not exist yet.
+# Verified against every tracked file: none become ignored.
+*.key
+*_private.pem
+*_private.key
+*_private.json
+*_private_key*
+identity.json
+*.p8
+*credentials.json
