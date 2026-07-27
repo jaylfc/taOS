@@ -34,7 +34,15 @@ jobs:
   # run at once instead of queueing behind the 2 self-hosted boxes. The VPS +
   # Fedora runners stay free for the kilo lane and GPU/bench work.
 
-  test:
+  # Renamed from "test" to "shards" because sharding changes the check-run names
+  # this job reports. Branch protection matches required checks by NAME, so the
+  # sharded jobs report "test (3.12, 1)" etc and the required contexts
+  # "test (3.12)" / "test (3.13)" would never be reported again. Protection then
+  # waits forever on checks that cannot exist and blocks every PR, including the
+  # one that would fix it. The aggregate "test" job below keeps reporting those
+  # two exact names, so no protection change is needed and there is no window
+  # where dev is wedged.
+  shards:
     runs-on: ubuntu-latest
     # Measured 2026-07-26 over the last 12 job records: 3.13 runs 31-35 min and
     # 3.12 runs 38-41 min. The previous comment claimed "~16 min", which had
@@ -61,7 +69,8 @@ jobs:
         # Cores per job were the bottleneck, not the tests.
         #
         # A public repo gets ~20 concurrent jobs free and we were using 2, so
-        # this costs nothing. 2 versions x 4 shards = 8 jobs.
+        # this costs nothing. 2 versions x 4 shards = 8 jobs on PR/push, and
+        # 12 on the scheduled run that adds 3.11.
         shard: [1, 2, 3, 4]
 
     steps:
@@ -103,11 +112,37 @@ jobs:
           uv run --no-sync pytest tests/ --tb=short --ignore=tests/e2e
           -n auto --splits 4 --group ${{ matrix.shard }}
 
-      # Import smoke check: identical in every shard, so run it once rather
-      # than 8 times.
+      # Import smoke check: identical in every shard, so run it once per Python
+      # version (shard 1 only) rather than in all 4 shards.
       - name: Verify app starts
         if: matrix.shard == 1
         run: uv run --no-sync python -c "from tinyagentos.app import create_app; print('OK')"
+
+  # Aggregate gate. Reports the exact check names branch protection requires
+  # ("test (3.12)", "test (3.13)") so the required-context list does not have to
+  # change when the shard count does. An explicit `name:` is used verbatim by
+  # GitHub rather than having the matrix values appended, which is what makes
+  # reproducing the old names possible at all.
+  #
+  # `if: always()` is load-bearing. Without it this job is SKIPPED when the
+  # shards fail, and GitHub treats a skipped required check as satisfied -- so a
+  # red suite would report a green gate. It must run and fail explicitly.
+  test:
+    name: test (${{ matrix.python-version }})
+    needs: shards
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Gate on shard results
+        run: |
+          echo "shards concluded: ${{ needs.shards.result }}"
+          if [ "${{ needs.shards.result }}" != "success" ]; then
+            echo "::error::test shards did not all pass"
+            exit 1
+          fi
 
   lint:
     runs-on: ubuntu-latest
