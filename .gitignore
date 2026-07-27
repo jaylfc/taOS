@@ -168,3 +168,11 @@ data/*.token
 identity.json
 *.p8
 *credentials.json
+
+# Credential bundles. Added 2026-07-27: @taOS-website-dev ran the same audit
+# on its repo and found shapes my first pass (PR #2171) missed. Verified on
+# origin/dev: creds.json, my_creds.json and data/creds.json were all NOT
+# ignored, while *credentials.json already was. Matching the *creds* stem
+# closes the shorter spelling, which is the one people actually type.
+# Verified against every tracked file on origin/dev: 0 become ignored.
+*creds*.json
