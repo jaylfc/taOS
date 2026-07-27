@@ -16,10 +16,15 @@ valid consent key, so the auth + scope contract lands first.
 """
 from __future__ import annotations
 
+import json
+import logging
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -125,10 +130,111 @@ async def chat_completions(request: Request):
             code="model_not_found",
             status=404,
         )
-    # Contract satisfied; the turn execution is the next slice.
-    return _openai_error(
-        "agent turn execution is not yet implemented for this surface",
-        type="server_error",
-        code="not_implemented",
-        status=501,
+
+    # --- Turn execution slice (tsk-gkh4mi) ---------------------------------
+    # Consent + scope contract satisfied. Drive ONE non-streaming turn through
+    # the agent's opencode host-server (seam: consent key -> agent -> that
+    # agent's opencode server + LiteLLM virtual key -> one turn -> OpenAI shape).
+    # The requested `model` is the agent_id; the host runs the taOS agent's
+    # opencode server, so we resolve it the same way the chat endpoint does.
+    stream = bool(body.get("stream", False))
+    try:
+        reply_text = await _run_agent_turn(request.app.state, model, messages)
+    except _TurnError as e:
+        return _openai_error(str(e), type="server_error", code="agent_error", status=502)
+    except Exception as e:  # defensive: never leak internals as a 500 trace
+        logger.exception("agent_model_api: turn failed")
+        return _openai_error(
+            "agent turn failed", type="server_error", code="agent_error", status=502
+        )
+
+    if stream:
+        # Streaming not in the locked seam for this slice; return the completed
+        # turn as a single SSE chunk so standard clients still work.
+        return _chat_completion_stream(reply_text, model)
+    return _chat_completion(reply_text, model)
+
+
+class _TurnError(Exception):
+    """Raised when the agent turn cannot be driven (server not ready, etc.)."""
+
+
+async def _run_agent_turn(app_state, agent_id: str, messages: list) -> str:
+    """Drive one non-streaming agent turn and return the final reply text.
+
+    Reuses the host opencode server lifecycle (ensure_taos_opencode_server) and
+    the opencode turn driver (drive_turn). Collects the 'final' reply from the
+    sink; degrades to _TurnError on transport failure so the caller returns 502.
+    """
+    from tinyagentos.taos_agent_runtime import ensure_taos_opencode_server
+    from tinyagentos.opencode_runtime import drive_turn
+
+    # The last user message is the prompt; system/earlier messages are context
+    # the agent harness already carries per-turn, so we pass the latest user text.
+    user_text = ""
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            user_text = m.get("content", "")
+            if isinstance(user_text, list):  # content parts -> flatten
+                user_text = " ".join(
+                    p.get("text", "") for p in user_text if isinstance(p, dict)
+                )
+            break
+    if not user_text:
+        raise _TurnError("no user message found in request")
+
+    server = await ensure_taos_opencode_server(app_state, agent_id)
+    collected: dict = {"final": None}
+
+    def _sink(reply: dict) -> None:
+        if reply.get("kind") == "final":
+            collected["final"] = reply.get("content", "")
+        elif reply.get("kind") == "error" and collected["final"] is None:
+            collected["_error"] = reply.get("error", "agent turn failed")
+
+    await drive_turn(
+        user_text,
+        trace_id=None,
+        sink=_sink,
+        base_url=server.base_url,
+        model_id=agent_id,
+        model_provider_id="litellm",
+        server_password=getattr(app_state, "taos_opencode_password", None),
     )
+    if collected.get("_error") and collected["final"] is None:
+        raise _TurnError(collected["_error"])
+    if collected["final"] is None:
+        raise _TurnError("agent returned no reply")
+    return collected["final"]
+
+
+def _chat_completion(content: str, model: str) -> JSONResponse:
+    """OpenAI ChatCompletion (non-streaming) envelope."""
+    return JSONResponse({
+        "id": f"chatcmpl-{_short_id()}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    })
+
+
+def _chat_completion_stream(content: str, model: str):
+    """OpenAI SSE stream envelope (single completion chunk)."""
+    from fastapi.responses import StreamingResponse
+
+    def _gen():
+        yield f"data: {json.dumps({'id': f'chatcmpl-{_short_id()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}]})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+def _short_id() -> str:
+    import secrets
+    return secrets.token_hex(8)
