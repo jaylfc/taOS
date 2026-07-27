@@ -1951,6 +1951,16 @@ async def report_update_outcome(request: Request, name: str, body: UpdateOutcome
     except _HMACError:
         return JSONResponse({"error": "hmac verification failed"}, status_code=403)
 
+    # Verify the HMAC-authenticated worker matches the body name.
+    # Without this, worker A could spoof an outcome report for
+    # worker B (the HMAC only proves the caller IS a paired worker,
+    # not WHICH worker).
+    if getattr(request.state, "hmac_worker_name", None) != name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match path"},
+            status_code=403,
+        )
+
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
     if not worker:
