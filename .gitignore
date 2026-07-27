@@ -128,3 +128,24 @@ data/pending-restart.json
 # Stray dev screenshot artifacts
 desktop-initial.png
 venv/
+
+# Credential material must never be committable. An agent stored a registry
+# token at /opt/taos/secrets/ on 2026-07-27 - correct permissions, but inside the
+# deployed git checkout and one "git add -A" away from a public repo.
+secrets/
+*.token
+*.cred
+
+# Credential material under data/. On 2026-07-27 three of these sat UNTRACKED in
+# the deployed checkout - one 'git add -A' from a public repo. Never committed
+# (verified against full history), but untracked is not the same as safe.
+#
+# Deliberately NOT using 'data/*' deny-all: data/archive, data/sessions and
+# data/guides.yaml are legitimately tracked, and a blanket rule would silently
+# ignore NEW files there - trading a credential risk for a data-loss-by-
+# invisibility one. Enumerate the secrets instead, and keep this list current.
+data/.secrets_key
+data/.seeded-agent-tokens.json
+data/secrets.db*
+data/*.key
+data/*.token

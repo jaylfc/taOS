@@ -17,7 +17,7 @@ To keep this sustainable, **all contributors must agree to the Contributor Licen
 ## Getting Started for Contributors
 
 ```bash
-git clone https://github.com/jaylfc/tinyagentos.git
+git clone https://github.com/jaylfc/taOS.git
 cd tinyagentos
 uv sync --extra dev
 # Build the desktop SPA — static/desktop/ is gitignored (generated artifact)
