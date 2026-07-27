@@ -366,21 +366,24 @@ class ProjectInviteStore(BaseStore):
         if attempts >= _MAX_ATTEMPTS:
             raise InvitePinError("invalid invite id or pin")
 
-        pin_hash = hashlib.sha256(pin.encode()).hexdigest()
-        if not hmac.compare_digest(pin_hash, row["pin_hash"] or ""):
-            await self._db.execute(
-                "UPDATE project_invites SET redeem_attempts = redeem_attempts + 1 WHERE invite_id = ?",
-                (invite_id,),
-            )
-            await self._db.commit()
-            new_attempts = attempts + 1
-            if new_attempts >= _MAX_ATTEMPTS:
+        # When pin_required is False the invite carries no PIN gate; any
+        # pin value (including empty string) is accepted (A2 fix #2048).
+        if row["pin_required"]:
+            pin_hash = hashlib.sha256(pin.encode()).hexdigest()
+            if not hmac.compare_digest(pin_hash, row["pin_hash"] or ""):
                 await self._db.execute(
-                    "UPDATE project_invites SET status = 'expired' WHERE invite_id = ?",
+                    "UPDATE project_invites SET redeem_attempts = redeem_attempts + 1 WHERE invite_id = ?",
                     (invite_id,),
                 )
                 await self._db.commit()
-            raise InvitePinError("invalid invite id or pin")
+                new_attempts = attempts + 1
+                if new_attempts >= _MAX_ATTEMPTS:
+                    await self._db.execute(
+                        "UPDATE project_invites SET status = 'expired' WHERE invite_id = ?",
+                        (invite_id,),
+                    )
+                    await self._db.commit()
+                raise InvitePinError("invalid invite id or pin")
 
         # Atomically claim the invite (pending→claimed) rather than immediately
         # marking it redeemed.  The caller must flip claimed→redeemed on success
