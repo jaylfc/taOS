@@ -1,12 +1,12 @@
-"""SQLite-backed store for shared notes and lists.
+"""SQLite-backed store for shared notes.
 
-A document is a note (``kind="note"``) or a list (``kind="list"``). Both are
-ordered collections of entries; a list entry additionally tracks a ``done``
-flag. A document has members: the owner (a user) plus any number of agents,
-each agent share carrying a ``standing_instruction`` that says what the agent
-should do when a new entry appears. The reaction itself is dispatched by the
-route layer; this store only records the data and reports which agents to
-notify after an entry is added.
+A document is a note (``kind="note"``). Each note is an ordered collection
+of entries. Todo lists have been split into their own module (``tinyagentos.todo``)
+and use a separate store. A document has members: the owner (a user) plus any
+number of agents, each agent share carrying a ``standing_instruction`` that says
+what the agent should do when a new entry appears. The reaction itself is
+dispatched by the route layer; this store only records the data and reports
+which agents to notify after an entry is added.
 
 Append-only-friendly: archiving sets ``archived_at`` rather than deleting, so
 nothing is truly lost (#103).

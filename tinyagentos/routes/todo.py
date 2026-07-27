@@ -308,7 +308,10 @@ async def reorder_items(
         return err
 
     items = [{"id": e.id, "position": e.position} for e in body.items]
-    await store.reorder_items(list_id, items)
+    try:
+        await store.reorder_items(list_id, items)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     return JSONResponse({"ok": True})
 
 

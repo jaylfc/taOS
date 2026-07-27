@@ -117,12 +117,6 @@ async def test_create_and_get_doc(client):
 
 
 @pytest.mark.asyncio
-async def test_invalid_kind_returns_400(client):
-    resp = await client.post("/api/notes", json={"kind": "spreadsheet", "title": "x"})
-    assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
 async def test_patch_doc_title_and_archive(client):
     doc = (await client.post("/api/notes", json={"kind": "list", "title": "Old"})).json()
     doc_id = doc["id"]

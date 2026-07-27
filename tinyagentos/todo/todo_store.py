@@ -240,14 +240,47 @@ class TodoStore(BaseStore):
         await self._db.commit()
 
     async def reorder_items(self, list_id: str, items: list[dict]) -> None:
-        """Batch-update positions. Each item: {id: str, position: int}."""
-        now = time.time()
-        for item in items:
-            await self._db.execute(
-                "UPDATE todo_items SET position = ?, updated_at = ? WHERE id = ? AND list_id = ?",
-                (item["position"], now, item["id"], list_id),
-            )
-        await self._db.execute(
-            "UPDATE todo_lists SET updated_at = ? WHERE id = ?", (now, list_id)
+        """Batch-update positions atomically within a transaction.
+
+        Each item: {id: str, position: int}. All items must belong to
+        *list_id* and positions must be unique — invalid payloads raise
+        ValueError before any writes.
+        """
+        # Validate that all items are present in the list
+        cur = await self._db.execute(
+            "SELECT id FROM todo_items WHERE list_id = ?", (list_id,)
         )
-        await self._db.commit()
+        existing_ids = {row[0] for row in await cur.fetchall()}
+        payload_ids = {item["id"] for item in items}
+        if payload_ids != existing_ids:
+            raise ValueError(
+                "Reorder payload must include exactly every item in the list"
+            )
+
+        # Validate unique, contiguous positions
+        positions = [item["position"] for item in items]
+        if len(set(positions)) != len(positions):
+            raise ValueError("Positions must be unique")
+        sorted_positions = sorted(positions)
+        if sorted_positions != list(range(len(items))):
+            raise ValueError(
+                "Positions must be contiguous starting from 0"
+            )
+
+        now = time.time()
+        await self._db.execute("BEGIN")
+        try:
+            for item in items:
+                await self._db.execute(
+                    "UPDATE todo_items SET position = ?, updated_at = ?"
+                    " WHERE id = ? AND list_id = ?",
+                    (item["position"], now, item["id"], list_id),
+                )
+            await self._db.execute(
+                "UPDATE todo_lists SET updated_at = ? WHERE id = ?",
+                (now, list_id),
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.execute("ROLLBACK")
+            raise

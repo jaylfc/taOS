@@ -1,9 +1,12 @@
-"""Shared notes and lists REST API.
+"""Shared notes REST API.
 
-Documents (notes and lists) are created by a user, who can invite agent
-members. Each agent member carries a standing_instruction that describes
-what the agent should do when a new entry is added. When an entry is
-added, the route posts a message to each agent's DM channel (best-effort).
+Notes are created by a user, who can invite agent members. Each agent
+member carries a standing_instruction that describes what the agent should
+do when a new entry is added. When an entry is added, the route posts a
+message to each agent's DM channel (best-effort).
+
+Todo lists have been split into their own API at ``/api/todo`` using a
+dedicated ``TodoStore`` (``tinyagentos.todo``).
 """
 
 from __future__ import annotations
@@ -35,7 +38,6 @@ _ACTION_DIRECTIVE = {
 # --------------------------------------------------------------------- models
 
 class CreateDocIn(BaseModel):
-    kind: str
     title: str = ""
 
 
@@ -127,7 +129,7 @@ async def create_doc(
 ):
     store = _get_store(request)
     try:
-        doc = await store.create_doc(user.user_id, body.kind, body.title)
+        doc = await store.create_doc(user.user_id, "note", body.title)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return doc

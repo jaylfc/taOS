@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   StickyNote,
-  ListChecks,
   Plus,
   Clock,
   Users,
@@ -23,7 +22,7 @@ import { Button, Textarea } from "@/components/ui";
 
 interface NoteDoc {
   id: string;
-  kind: "note" | "list";
+  kind: "note";
   title: string;
   updated_at: string;
   archived_at: string | null;
@@ -47,7 +46,7 @@ interface NoteMember {
 
 interface NoteDetail {
   id: string;
-  kind: "note" | "list";
+  kind: "note";
   title: string;
   updated_at: string;
   entries: NoteEntry[];
@@ -89,12 +88,11 @@ const ACTION_OPTIONS = [
 ] as const;
 
 // ---- Kind config ----
-// Notes and lists share one component, one store, and one API; they differ only
-// in copy, icon, and whether entries carry a done checkbox. A config object
-// keeps both variants in sync instead of forking ~1000 lines.
+// NotesApp is now notes-only (todos live in TodoApp). The config object
+// keeps copy and behaviour centralised instead of scattering magic strings.
 
 interface DocKindConfig {
-  kind: "note" | "list";
+  kind: "note";
   appName: string; // header + listing aria
   icon: LucideIcon;
   noun: string; // doc-level aria: New {noun}, Create {noun}, Share {noun}
@@ -117,19 +115,6 @@ const NOTES_CONFIG: DocKindConfig = {
   emptyEntries: "Nothing here yet. Add your first note above.",
   selectPrompt: "Select a note to get started.",
   showDone: false,
-};
-
-const TODO_CONFIG: DocKindConfig = {
-  kind: "list",
-  appName: "Todo",
-  icon: ListChecks,
-  noun: "list",
-  titlePlaceholder: "List title...",
-  addPlaceholder: "Add a task...",
-  emptyDocs: "No lists yet.",
-  emptyEntries: "Nothing here yet. Add your first task above.",
-  selectPrompt: "Select a list to get started.",
-  showDone: true,
 };
 
 // ---- Sub-components ----
@@ -334,7 +319,7 @@ function SharePanel({ doc, onClose }: { doc: NoteDetail; onClose: () => void }) 
     <div
       className="flex flex-col gap-4 rounded-xl border border-shell-border bg-shell-bg-deep p-4"
       role="dialog"
-      aria-label={`Share ${doc.kind === "list" ? "list" : "note"}`}
+      aria-label="Share note"
     >
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1.5 text-sm font-semibold text-shell-text">
@@ -1170,8 +1155,4 @@ function DocsApp({ config }: { config: DocKindConfig }) {
 
 export function NotesApp({ windowId: _windowId }: { windowId: string }) {
   return <DocsApp config={NOTES_CONFIG} />;
-}
-
-export function TodoApp({ windowId: _windowId }: { windowId: string }) {
-  return <DocsApp config={TODO_CONFIG} />;
 }
