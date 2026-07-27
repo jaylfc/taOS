@@ -1,7 +1,7 @@
 import pytest
 import pytest_asyncio
 
-from tinyagentos.projects.project_store import ProjectStore
+from tinyagentos.projects.project_store import ProjectConflict, ProjectStore
 
 
 @pytest_asyncio.fixture

@@ -10,6 +10,19 @@ from tinyagentos.projects.ids import new_id
 
 logger = logging.getLogger(__name__)
 
+
+class ProjectConflict(ValueError):
+    """Raised when a project name or slug collides with an existing one.
+
+    Carries the collided ``field`` ('name' or 'slug') and the ``taken`` value
+    so the route can build an actionable 409 with suggestions.
+    """
+
+    def __init__(self, field: str, taken: str) -> None:
+        self.field = field
+        self.taken = taken
+        super().__init__(f"{field} already used: {taken}")
+
 PROJECTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
@@ -147,6 +160,12 @@ class ProjectStore(BaseStore):
     ) -> dict:
         pid = new_id("prj")
         now = time.time()
+        # Enforce case-insensitive name uniqueness via a query check (not a
+        # schema constraint) so existing duplicate names are not destructively
+        # rejected on upgrade. A UNIQUE(slug) constraint remains as the
+        # backstop for slug collisions caught via IntegrityError below.
+        if await self.get_project_by_name(name) is not None:
+            raise ProjectConflict("name", name)
         try:
             await self._db.execute(
                 """INSERT INTO projects
@@ -156,9 +175,10 @@ class ProjectStore(BaseStore):
             )
             await self._db.commit()
         except sqlite3.IntegrityError as exc:
-            # UNIQUE(slug) is the only uniqueness constraint a caller can trigger.
+            # UNIQUE(slug) is the only schema-level uniqueness a caller can
+            # trigger here; the name check above guards name collisions.
             if "slug" in str(exc).lower():
-                raise ValueError(f"slug already used: {slug}") from exc
+                raise ProjectConflict("slug", slug) from exc
             raise
         return await self.get_project(pid)
 
@@ -174,6 +194,15 @@ class ProjectStore(BaseStore):
     async def get_project_by_slug(self, slug: str) -> dict | None:
         async with self._db.execute(
             "SELECT * FROM projects WHERE slug = ?", (slug,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return _row_to_project(row, cur.description)
+
+    async def get_project_by_name(self, name: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM projects WHERE LOWER(name) = LOWER(?)", (name,)
         ) as cur:
             row = await cur.fetchone()
             if row is None:

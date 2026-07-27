@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time as _time
+import uuid
 
 import asyncio as _asyncio
 import json as _json
@@ -21,12 +22,54 @@ from tinyagentos.projects.folders import (
     ensure_project_layout,
     write_project_yaml,
 )
+from tinyagentos.projects.project_store import ProjectConflict
 from tinyagentos.projects.task_store import _ELEMENT_CLEAR
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
+
+async def _is_field_free(store, field: str, value: str) -> bool:
+    """Return True when no project uses ``value`` for ``field``."""
+    if field == "name":
+        return await store.get_project_by_name(value) is None
+    return await store.get_project_by_slug(value) is None
+
+
+async def _free_suggestions(store, field: str, taken: str) -> list[str]:
+    """Generate 2-3 free suggestions for a collided name or slug.
+
+    Each candidate is verified against the store so it is genuinely free.
+    Formats: numeric suffix (<value>-2), prefixed (<prefix>-<value>),
+    and short random suffix (<value>-<shortid>).
+    """
+    suggestions: list[str] = []
+
+    # 1. Numeric suffix: <value>-2, <value>-3, ...
+    for i in range(2, 10):
+        cand = f"{taken}-{i}"
+        if await _is_field_free(store, field, cand):
+            suggestions.append(cand)
+            break
+
+    # 2. Prefixed: <prefix>-<value>
+    for prefix in ("team", "new", "app"):
+        cand = f"{prefix}-{taken}"
+        if await _is_field_free(store, field, cand):
+            suggestions.append(cand)
+            break
+
+    # 3. Short random suffix: <value>-<shortid>
+    for _ in range(20):
+        shortid = uuid.uuid4().hex[:5]
+        cand = f"{taken}-{shortid}"
+        if await _is_field_free(store, field, cand):
+            suggestions.append(cand)
+            break
+
+    return suggestions
 
 
 class CreateProjectIn(BaseModel):
@@ -91,6 +134,17 @@ async def create_project(
             settings=payload.settings,
             created_by=user.user_id,
             user_id=user.user_id,
+        )
+    except ProjectConflict as e:
+        suggestions = await _free_suggestions(store, e.field, e.taken)
+        return JSONResponse(
+            {
+                "error": str(e),
+                "field": e.field,
+                "taken": e.taken,
+                "suggestions": suggestions,
+            },
+            status_code=409,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=409)
