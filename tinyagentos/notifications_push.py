@@ -25,6 +25,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -34,7 +35,9 @@ from tinyagentos.base_store import BaseStore
 
 logger = logging.getLogger(__name__)
 
-_VAPID_SUB = "mailto:admin@taos.local"
+# A real, routable address. Apple's push service is stricter than other push
+# services about the VAPID `sub` claim; a reserved .local domain risks rejection.
+_VAPID_SUB = "mailto:info@taos.my"
 _SEND_TIMEOUT = 5.0  # seconds per upstream push-service call
 
 NOTIF_PUSH_SCHEMA = """
@@ -202,6 +205,27 @@ def _build_payload(row: dict) -> dict:
     }
 
 
+def _vapid_signing_key(private_pem: str) -> str:
+    """Convert the stored VAPID PEM into the base64url-DER form pywebpush wants.
+
+    ``load_or_create_vapid_keypair`` returns the private key as a PEM string, but
+    ``pywebpush.webpush(vapid_private_key=...)`` feeds it to ``py_vapid`` via
+    ``Vapid.from_string``, which base64-decodes and DER-parses its input. A raw
+    PEM fails that as "Could not deserialize key data" on EVERY send, and the
+    per-subscription handler swallowed it as a generic warning -- so web push was
+    100% broken for every user with no obvious signal. Convert once at fan-out.
+    """
+    from cryptography.hazmat.primitives import serialization
+
+    key = serialization.load_pem_private_key(private_pem.encode(), password=None)
+    der = key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    return base64.urlsafe_b64encode(der).decode().rstrip("=")
+
+
 def _sync_send(subscription_info: dict, data: str, private_pem: str, vapid_claims: dict) -> None:
     """Blocking pywebpush call - run in a worker thread."""
     import pywebpush
@@ -259,6 +283,14 @@ async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple
         return {"sent": 0, "failed": 0, "removed": 0}
     _, private_pem = vapid
     try:
+        signing_key = _vapid_signing_key(private_pem)
+    except Exception:  # noqa: BLE001
+        # A key that cannot be converted breaks EVERY send, not one. Log it loud
+        # (error, not the swallowed per-send warning) so a global misconfig is
+        # visible instead of silently disabling all push.
+        logger.error("notif-push: VAPID key unusable; web push disabled", exc_info=True)
+        return {"sent": 0, "failed": 0, "removed": 0}
+    try:
         user_id = row.get("user_id")
         subs = await (store.list_all_for_user(user_id) if user_id else store.list_all())
     except Exception:  # noqa: BLE001 - store read must never break add()
@@ -269,7 +301,7 @@ async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple
 
     data_str = json.dumps(_build_payload(row))
     results = await asyncio.gather(
-        *[_send_one(sub, data_str, private_pem, store) for sub in subs],
+        *[_send_one(sub, data_str, signing_key, store) for sub in subs],
         return_exceptions=True,
     )
     sent = failed = removed = 0

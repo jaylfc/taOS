@@ -523,3 +523,21 @@ class TestPushRoutes:
                 json={"endpoint": "https://push.example.com/never-subscribed"},
             )
         assert resp.status_code == 404
+
+
+def test_vapid_signing_key_is_accepted_by_pywebpush_vapid():
+    """Regression guard for the silent-100%-failure bug: the stored VAPID PEM
+    must convert to a key that py_vapid.Vapid.from_string accepts. Passing raw
+    PEM here raised 'Could not deserialize key data' on every push send, which
+    the per-subscription handler swallowed, disabling all web push invisibly."""
+    from pathlib import Path
+    import tempfile
+    from tinyagentos.routes.desktop_browser.vapid import load_or_create_vapid_keypair
+    from tinyagentos.notifications_push import _vapid_signing_key
+    from py_vapid import Vapid01
+
+    with tempfile.TemporaryDirectory() as d:
+        _pub, private_pem = load_or_create_vapid_keypair(Path(d), filename="notif_vapid.pem")
+        signing_key = _vapid_signing_key(private_pem)
+        # The whole point: this must NOT raise. Raw PEM would.
+        Vapid01.from_string(private_key=signing_key)
