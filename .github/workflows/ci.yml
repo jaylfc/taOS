@@ -133,6 +133,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     strategy:
+      # Both gates must report their own conclusion. With the default
+      # fail-fast, the first gate to fail CANCELS its sibling, so a red suite
+      # reported "test (3.12) failure, test (3.13) cancelled" -- observed on a
+      # deliberate-failure branch. Cancelled is not success so protection still
+      # blocks, but which version broke becomes a coin flip, and a required
+      # check whose conclusion depends on scheduling order is not a gate worth
+      # trusting.
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
