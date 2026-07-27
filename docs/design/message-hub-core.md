@@ -1,3 +1,16 @@
+> **SUPERSEDED 2026-07-26 - the persistence model described here is changing.**
+>
+> This doc describes the controller's own `chat_messages` store as the canonical
+> home for all chat. Jay has decided that **all chat moves onto the taOSmd A2A
+> bus**, that taOSmd becomes a required dependency rather than a swappable memory
+> framework, and that **existing chat history migrates** rather than staying in
+> place. Conversations become first-class memory.
+>
+> The schema here remains accurate for what exists TODAY and for the migration
+> source. Do not treat it as the long-term design.
+>
+> Current statement: jaylfc/taOS#2150.
+
 # Message Hub Core
 
 **Status:** Implemented — chat messages, channels, canvas store, and WebSocket hub all landed. See `tinyagentos/routes/chat_*.py` and `tinyagentos/chat_*.py` for the runtime.

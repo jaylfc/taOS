@@ -1,3 +1,11 @@
+> **PARTIALLY SUPERSEDED 2026-07-26.**
+>
+> Anything in this doc that translates a captured CLI session into synthetic chat
+> rows is superseded - there is no session mirroring and no tmux capture. The
+> content-block renderers and the taOStalk surface work remain valid.
+>
+> Current statement: jaylfc/taOS#2150.
+
 # taOStalk Slice 1: Tier 0 Network Push+Poll Session Bridge
 
 **Spec + phased plan for #1953 (epic #1952-1957).** Status: draft for owner review.

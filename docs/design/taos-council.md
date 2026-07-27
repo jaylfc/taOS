@@ -1,3 +1,12 @@
+> **RENAMED 2026-07-26: "Council" is retired as a product name - this is now taOS Teams.**
+>
+> Teams unifies what this doc describes (role-benchmarked models) with the task
+> dispatcher and the agent org model into a single app: members, routing,
+> benchmarks and org chart. "Council" survives only as the internal name for the
+> benchmark methodology.
+>
+> Current statement: jaylfc/taOS#2142.
+
 # taOS Council: a role-benchmarked background model team (founding design)
 
 Status: founding design, no code yet. PR slices at the end.

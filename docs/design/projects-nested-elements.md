@@ -1,3 +1,14 @@
+> **PARTIALLY SUPERSEDED 2026-07-26 - the one-board-many-repos premise no longer holds.**
+>
+> This design argues for collapsing taOS, taOSmd and the website into one project
+> with one board spanning several repos. The operating rule is now **one project,
+> one repo, one dedicated agent**: cross-repo work is a REQUEST to that repo's
+> lead, who cards it on their own board and owns the merge, because the lead who
+> owns a repo is accountable for what lands in it.
+>
+> Nested elements remain valid WITHIN a single repo's project. The multi-repo
+> board is not the direction.
+>
 # Projects rework: one project, nested typed elements (founding design)
 
 Status: DECIDED architecture (four locked decisions below), DRAFT data model

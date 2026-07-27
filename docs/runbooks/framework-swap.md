@@ -1,3 +1,13 @@
+> **PARTIALLY SUPERSEDED 2026-07-26.**
+>
+> This runbook states that chat history lives durably in the host `data/chat.db`
+> and survives a framework swap. That is true today but is changing: chat moves
+> onto the taOSmd bus, and **taOSmd is no longer swappable** - it becomes a
+> required dependency, at minimum to power the bus. Other memory frameworks may
+> replace or complement parts of it, but it stays present.
+>
+> Current statement: jaylfc/taOS#2150.
+
 # Framework Swap
 
 **Goal:** change the framework a running agent uses — LangChain to Autogen,
@@ -10,7 +20,7 @@ If this runbook stops working, the rule has been violated somewhere and the
 violation is a bug.
 
 > **Snapshot model (Phase 2.A):** workspace, memory, and home all live **inside the
-> container rootfs** — not in host-side bind mounts. A framework swap therefore works
+> container rootfs** - not in host-side bind mounts. A framework swap therefore works
 > differently from the old bind-mount model: you must export the agent's state from the
 > old container before destroying it, then import it into the new one. The trace directory
 > (`{data_dir}/trace/{name}/`) remains on the host as the sole bind mount and is
