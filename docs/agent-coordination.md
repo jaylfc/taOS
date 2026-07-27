@@ -89,6 +89,47 @@ several threads means one connection each.
   edge-case correctness problem) before merging. Style and preference nits can
   be deferred or taken in a follow-up.
 
+## Spend model tokens on judgement, not on waiting
+
+An agent working this repo pays for every turn it takes. Reserve those turns for
+work only a model can do, and hand the rest to the platform.
+
+- **Judgement is worth a turn**: reviewing a diff, diagnosing a failure, writing
+  the acceptance criteria for a task, deciding whether a green check is
+  trustworthy.
+- **Waiting and mechanics are not**: watching CI finish, merging a PR you have
+  already approved, polling for a state change, re-checking something you have
+  already verified.
+
+**Use auto-merge once you have reviewed.** Rather than waiting for checks and
+coming back to merge, arm it and let GitHub finish the job:
+
+```
+gh pr merge <number> --auto --squash --delete-branch
+```
+
+The PR merges the moment required checks pass. Without this, every approved PR
+costs two extra wake-ups: one when it turns green, one to merge it.
+
+**Only arm auto-merge on a PR you have actually reviewed.** Auto-merge triggers
+on *green*, and green is a claim rather than proof. This repo has merged a
+feature that passed every check and had never once executed, and shipped a
+"10 MB" download cap that buffered the whole body into memory first. Auto-merge
+replaces the *waiting*, never the *reading*.
+
+(The `automerge` check reporting `skipping` on your PR comes from
+`dependabot-automerge.yml` and applies to Dependabot only. It is not general
+auto-merge.)
+
+**If you have hand-checked the same property twice, turn it into a check.** Two
+manual verifications is the signal to write the script or the CI job. A test
+that runs on every PR costs nothing per run; a human re-reading the same thing
+costs every time.
+
+**Ask the narrow question.** Prefer a targeted probe to reading everything: a
+symbol-level diff against the target branch answers "did this PR delete work
+that landed after it was cut?" far more cheaply than reading the whole diff.
+
 ## Keep the shared docs honest
 
 - When you merge something others depend on, update the relevant README or
