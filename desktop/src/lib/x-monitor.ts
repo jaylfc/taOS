@@ -2,6 +2,8 @@
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+import { withCsrf } from "./csrf";
+
 export interface TweetMedia {
   type: string;
   url: string;
@@ -62,19 +64,19 @@ async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promi
 }
 
 async function postJson<T>(url: string, body: unknown, fallback: T): Promise<T> {
-  return fetchJson(url, fallback, {
+  return fetchJson(url, fallback, withCsrf({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
 }
 
 async function putJson<T>(url: string, body: unknown, fallback: T): Promise<T> {
-  return fetchJson(url, fallback, {
+  return fetchJson(url, fallback, withCsrf({
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -148,7 +150,7 @@ export async function deleteWatch(handle: string): Promise<boolean> {
   const result = await fetchJson<{ deleted?: boolean } | null>(
     `/api/x/watch/${encodeURIComponent(handle)}`,
     null,
-    { method: "DELETE" },
+    withCsrf({ method: "DELETE" }),
   );
   return result?.deleted === true;
 }

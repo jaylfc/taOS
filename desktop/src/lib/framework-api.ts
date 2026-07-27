@@ -1,6 +1,8 @@
 export type FrameworkVersion = { tag: string | null; sha: string | null };
 export type LatestVersion = { tag: string; sha: string; published_at?: string };
 
+import { withCsrf } from "./csrf";
+
 export interface FrameworkState {
   framework: string;
   installed: FrameworkVersion;
@@ -19,11 +21,11 @@ export async function fetchFrameworkState(slug: string): Promise<FrameworkState>
 }
 
 export async function startFrameworkUpdate(slug: string, targetVersion?: string): Promise<void> {
-  const r = await fetch(`/api/agents/${encodeURIComponent(slug)}/framework/update`, {
+  const r = await fetch(`/api/agents/${encodeURIComponent(slug)}/framework/update`, withCsrf({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(targetVersion ? { target_version: targetVersion } : {}),
-  });
+  }));
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new Error(body.error || `update start ${r.status}`);
@@ -51,11 +53,11 @@ export async function fetchPermittedModels(name: string): Promise<PermittedModel
 }
 
 export async function setPermittedModels(name: string, models: string[]): Promise<PermittedModelsState> {
-  const r = await fetch(`/api/agents/${encodeURIComponent(name)}/permitted-models`, {
+  const r = await fetch(`/api/agents/${encodeURIComponent(name)}/permitted-models`, withCsrf({
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ models }),
-  });
+  }));
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new Error(body.error || `permitted-models set ${r.status}`);
