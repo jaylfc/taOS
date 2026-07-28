@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from tinyagentos.projects.canvas.store import CanvasPermissionError
 from tinyagentos.projects.canvas.unfurl import fetch_link_metadata
 from tinyagentos.projects.canvas.render import render_snapshot_png
+from tinyagentos.projects.canvas.watch_projection import build_watch_projection
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -195,6 +196,16 @@ async def list_canvas_elements(
     cs = request.app.state.project_canvas_store
     elements = await cs.list_elements(project_id, element_id=element_id)
     return {"elements": elements}
+
+
+@router.get("/api/projects/{project_id}/canvas/watch-projection")
+async def watch_project_canvas(project_id: str, request: Request):
+    auth = await _authorize_canvas_actor(request, project_id, "read")
+    if isinstance(auth, JSONResponse):
+        return auth
+    cs = request.app.state.project_canvas_store
+    elements = await cs.list_elements(project_id)
+    return build_watch_projection(elements)
 
 
 @router.post("/api/projects/{project_id}/canvas/elements", status_code=201)
