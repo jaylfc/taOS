@@ -93,6 +93,7 @@ class CreateAuthRequest(BaseModel):
 class ApproveBody(BaseModel):
     granted_scopes: list[str]
     project_id: Optional[str] = None
+    defer_binding: bool = False
 
 
 class AssignAgentBody(BaseModel):
@@ -350,6 +351,7 @@ async def approve_request_record(
     decided_by: str,
     project_id: str | None = None,
     display_name: str | None = None,
+    defer_binding: bool = False,
 ) -> dict:
     """Register an agent, mint its token, write grants + relationships +
     membership + a2a sync, and record the decision.
@@ -362,11 +364,18 @@ async def approve_request_record(
     the consent route it is the approving admin's user_id, for invite auto-mode
     it is the invite's ``created_by``.
 
+    When ``defer_binding`` is true the token and grants are minted UNBOUND
+    (``project_id=None``): the project_id-required 400 guard is skipped, no
+    membership row or a2a channel is created, and project-scoped calls 403
+    until the agent is later bound to a project via
+    ``POST /api/projects/{id}/members/assign-agent``. This complements the
+    create-new path (which binds to the picked project at mint time).
+
     Returns ``{"status": "accepted", "canonical_id": ...}``.
 
     Raises ``HTTPException`` for the same guard failures as the consent route:
-    a project-scoped grant without a project_id (400), or an active-handle
-    collision (409).
+    a project-scoped grant without a project_id (400, unless deferred), or an
+    active-handle collision (409).
     """
     auth_store = _get_auth_requests_store(request)
 
@@ -388,21 +397,31 @@ async def approve_request_record(
 
     # project_tasks and the canvas scopes bind the token to a specific project
     # and add a membership row, so require a real project_id for these grants.
-    # The check uses ``project_id`` — the EXPLICIT picker value the human (or
-    # the invite) supplied — NOT the agent-supplied fallback that produced
+    # The check uses ``project_id`` -- the EXPLICIT picker value the human (or
+    # the invite) supplied -- NOT the agent-supplied fallback that produced
     # ``effective_project``. Never fall back to the agent-supplied project_id for
     # these grants: POST /api/agents/auth-requests is unauthenticated, so the
     # request could name any existing project the operator never validated. A
     # blank/None project_id is not a real binding and must fail closed exactly
     # like a missing one; the redeem path passes the invite's project (always
     # non-empty for a project invite), so it passes this guard.
+    #
+    # When ``defer_binding`` is set the operator has explicitly chosen to mint
+    # the token unbound: the project-scoped grants are written with
+    # project_id=None and the operator will bind them to a project later via
+    # POST /api/projects/{id}/members/assign-agent. Skip the 400 in that path.
     needs_project = bool(set(granted_scopes) & _PROJECT_SCOPES)
-    if needs_project and not (project_id and project_id.strip()):
+    if needs_project and not defer_binding and not (project_id and project_id.strip()):
         missing = sorted(set(granted_scopes) & _PROJECT_SCOPES)
         raise HTTPException(
             status_code=400,
             detail=f"project_id is required when granting {missing}",
         )
+
+    # When deferring, the token and grants are minted unbound (project_id=None)
+    # regardless of effective_project; project-scoped calls 403 until the agent
+    # is bound to a project later via assign-agent.
+    binding_project = None if defer_binding else effective_project
 
     registry = _get_registry_store(request)
     private_pem, _public_pem = _get_keypair(request)
@@ -438,7 +457,7 @@ async def approve_request_record(
         # fallback for global scopes) would be safe only by invariant. Gate and
         # bind on project_id so cross-project escalation is impossible by
         # construction (kilo review, taOS #1862).
-        if project_id and set(granted_scopes) & _PROJECT_SCOPES:
+        if not defer_binding and project_id and set(granted_scopes) & _PROJECT_SCOPES:
             existing_cid = existing_active["canonical_id"]
             token = mint_registry_token(
                 existing_cid,
@@ -527,18 +546,22 @@ async def approve_request_record(
             ),
         )
 
-    # Issue the identity token.
+    # Issue the identity token. When deferring, binding_project is None so the
+    # token carries no project_id claim and is valid for identity/global calls
+    # only; project-scoped calls 403 until assign-agent binds it.
     token = mint_registry_token(
         canonical_id,
         private_pem,
         user_id=decided_by,
         framework=record["framework"],
-        project_id=effective_project,
+        project_id=binding_project,
     )
 
-    # Record grants for each approved scope.
+    # Record grants for each approved scope. When deferring, grants are written
+    # unbound (project_id=None); assign-agent later writes the project-bound
+    # grant that makes project-scoped calls succeed.
     for scope in granted_scopes:
-        await grants_store.add_grant(canonical_id, scope, tier="once", project_id=effective_project)
+        await grants_store.add_grant(canonical_id, scope, tier="once", project_id=binding_project)
         # Also write a RelationshipManager permission edge so the existing
         # permission-check path (can_communicate etc.) is aware of the agent.
         await rel_mgr.set_permission(canonical_id, "taos-instance", scope)
@@ -547,8 +570,8 @@ async def approve_request_record(
     # member of that project so it shows up in the project's Members and joins the
     # project a2a channel (membership is synced into the channel). Best-effort: a
     # membership failure never blocks the approval, which the token + grant already
-    # authorize.
-    if effective_project and set(granted_scopes) & _PROJECT_SCOPES:
+    # authorize. Skipped entirely when deferring (binding_project is None).
+    if binding_project and set(granted_scopes) & _PROJECT_SCOPES:
         try:
             pstore = getattr(request.app.state, "project_store", None)
             if pstore is not None:
@@ -563,14 +586,14 @@ async def approve_request_record(
                 # how the consent card scopes are narrowed.
                 if "project_tasks" in granted_scopes or granted_canvas:
                     await pstore.add_member(
-                        project_id=effective_project,
+                        project_id=binding_project,
                         member_id=canonical_id,
                         member_kind="native",
                         role="member",
                     )
                     if granted_canvas:
                         await pstore.set_member_canvas(
-                            project_id=effective_project,
+                            project_id=binding_project,
                             member_id=canonical_id,
                             can_read=("canvas_read" in granted_canvas),
                             can_write=("canvas_write" in granted_canvas),
@@ -581,14 +604,14 @@ async def approve_request_record(
                         await ensure_a2a_channel(
                             request.app.state.chat_channels,
                             pstore,
-                            effective_project,
+                            binding_project,
                             config=getattr(request.app.state, "config", None),
                         )
         except Exception:  # noqa: BLE001 - membership is best-effort, never blocks approval
             logger.warning(
                 "auth-approve: could not sync %s membership/a2a channel for project %s",
                 canonical_id,
-                effective_project,
+                binding_project,
                 exc_info=True,
             )
 
