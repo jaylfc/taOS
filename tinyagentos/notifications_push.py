@@ -193,15 +193,27 @@ def _build_payload(row: dict) -> dict:
     ``url`` is the notification's own deep link if it carries a safe one in its
     JSON data, else the desktop shell. ``tag`` collapses re-notifies for the
     same source+id so a newer push replaces the older banner.
+
+    Routing fields (``source``, ``id``, and ``target`` when present) are copied
+    into the inner ``data`` dict so the service worker can route on them. The
+    SW only reads ``event.notification.data``, not the top-level payload.
     """
     data = row.get("data") if isinstance(row.get("data"), dict) else {}
     url = _safe_url(data.get("url"))
+    payload_data: dict = {"url": url}
+    if "source" in row:
+        payload_data["source"] = row["source"]
+    if "id" in row:
+        payload_data["id"] = row["id"]
+    target = data.get("target")
+    if isinstance(target, dict):
+        payload_data["target"] = target
     return {
         "title": row.get("title") or "taOS",
         "body": row.get("message") or "",
         "tag": f"{row.get('source', 'system')}:{row.get('id', '')}",
         "source": row.get("source", "system"),
-        "data": {"url": url},
+        "data": payload_data,
     }
 
 

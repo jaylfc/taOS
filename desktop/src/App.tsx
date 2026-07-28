@@ -12,6 +12,7 @@ import { useDeviceMode } from "@/hooks/use-device-mode";
 import { useIsPwa } from "@/hooks/use-is-pwa";
 import { useThemeStore, restoreActiveTheme, installWebkitRepaintGuards } from "@/stores/theme-store";
 import { useOnAuthReady } from "@/hooks/use-on-auth-ready";
+import { usePushClickHandler } from "@/hooks/use-push-click";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp } from "@/registry/app-registry";
@@ -249,6 +250,8 @@ export function App() {
   }, [setActiveWindowId]);
 
   useSessionPersistence();
+
+  usePushClickHandler(openWindow);
 
   // First-run GPU auto-detect: probe the frame rate once and enable Reduce
   // effects on a struggling device, so low-end hardware is smooth out of the

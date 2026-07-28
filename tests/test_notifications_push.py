@@ -144,8 +144,18 @@ class TestSendWebPush:
         assert payload["body"] == "agent x wants chat"
         assert payload["tag"] == "auth_requests:7"
         assert payload["source"] == "auth_requests"
-        # No explicit url on the row -> desktop shell deep link.
         assert payload["data"]["url"] == "/desktop"
+        assert payload["data"]["source"] == "auth_requests"
+        assert payload["data"]["id"] == 7
+
+    async def test_payload_includes_target_when_present(self, push_store):
+        await _seed(push_store, _ENDPOINT_A)
+        row = {**_ROW, "data": {"target": {"kind": "project_file", "project_id": "p1"}}}
+        with patch("pywebpush.webpush") as mock:
+            await send_web_push(row, store=push_store, vapid=FAKE_VAPID)
+        import json
+        payload = json.loads(mock.call_args.kwargs["data"])
+        assert payload["data"]["target"] == {"kind": "project_file", "project_id": "p1"}
 
     async def test_uses_row_deep_link_when_present(self, push_store):
         await _seed(push_store, _ENDPOINT_A)

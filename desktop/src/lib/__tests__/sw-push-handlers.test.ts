@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { sourceToTarget, targetToAction } from "../server-notifications";
 
 // ---------------------------------------------------------------------------
 // Replicated handler logic (must stay in sync with sw.ts)
@@ -58,9 +59,8 @@ async function handleNotificationClick(
   openWindow: ((url: string) => Promise<null>) | null,
 ): Promise<unknown> {
   const data = notificationData || {};
-  // Same-origin guard mirroring sw.ts: resolve the deep link against our own
-  // origin and refuse anything cross-origin before openWindow.
-  let target = typeof data["url"] === "string" && data["url"] ? (data["url"] as string) : "/";
+  const rawUrl = typeof data["url"] === "string" && data["url"] ? (data["url"] as string) : "";
+  let target = rawUrl ? rawUrl : "/";
   try {
     const u = new URL(target, origin);
     target = u.origin === origin && u.pathname.startsWith("/")
@@ -68,6 +68,18 @@ async function handleNotificationClick(
       : "/";
   } catch {
     target = "/";
+  }
+  if (target === "/" && !rawUrl && data.source) {
+    const route = targetToAction(data.target);
+    const { action, meta } = route.action ? route : sourceToTarget(data.source as string);
+    if (action) {
+      const params = new URLSearchParams();
+      params.set("app", action);
+      if (meta && Object.keys(meta).length) {
+        params.set("appProps", JSON.stringify(meta));
+      }
+      target = `/desktop?${params.toString()}`;
+    }
   }
   for (const client of clients) {
     if (client.url && new URL(client.url).origin === origin) {
@@ -187,6 +199,52 @@ describe("sw notificationclick handler — handleNotificationClick", () => {
     const openWindow = vi.fn();
     await handleNotificationClick({}, [client], origin, openWindow);
     expect(openWindow).not.toHaveBeenCalled();
+  });
+
+  it("opens /desktop?app=decisions for a decision push with no client open", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick({ source: "decisions" }, [], origin, openWindow);
+    expect(openWindow).toHaveBeenCalledWith("/desktop?app=decisions");
+  });
+
+  it("opens /desktop?app=settings for a disk_quota push with no client open", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick({ source: "disk_quota" }, [], origin, openWindow);
+    expect(openWindow).toHaveBeenCalledWith(
+      "/desktop?app=settings&appProps=%7B%22section%22%3A%22storage%22%7D",
+    );
+  });
+
+  it("includes appProps in the deep link when meta is present", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick({ source: "system.update" }, [], origin, openWindow);
+    expect(openWindow).toHaveBeenCalledWith("/desktop?app=settings&appProps=%7B%22section%22%3A%22updates%22%7D");
+  });
+
+  it("still refuses a cross-origin url even when source is present", async () => {
+    const openWindow = vi.fn().mockResolvedValue(null);
+    await handleNotificationClick(
+      { source: "decisions", url: "https://evil.example.com/phish" },
+      [],
+      origin,
+      openWindow,
+    );
+    expect(openWindow).toHaveBeenCalledWith("/");
+  });
+
+  it("posts the full data payload including source and target to an existing client", async () => {
+    const client = makeClient("http://localhost:6969/desktop/");
+    await handleNotificationClick(
+      { source: "decisions", id: 42, target: { kind: "project_file", project_id: "p1" } },
+      [client],
+      origin,
+      null,
+    );
+    expect(client.postMessage).toHaveBeenCalledWith({
+      type: "taos-push:click",
+      data: { source: "decisions", id: 42, target: { kind: "project_file", project_id: "p1" } },
+    });
+    expect(client.focus).toHaveBeenCalledOnce();
   });
 });
 

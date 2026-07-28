@@ -18,6 +18,7 @@
  * No app logic, no postMessage, no polling. The reconnect / version
  * UX lives entirely in app code.
  */
+import { sourceToTarget, targetToAction } from "@/lib/server-notifications";
 declare const self: ServiceWorkerGlobalScope;
 declare const __TAOS_VERSION__: string;
 export {};
@@ -200,13 +201,15 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
   // Close the notification, then focus an existing same-origin window
   // (posting the click data so the shell can route to the right tab) or
   // open a new one at the notification's deep link (data.url), falling back
-  // to root.
+  // to a source-derived deep link so the right app opens even when no
+  // explicit url was set on the notification row.
   event.notification.close();
   const data = (event.notification.data as Record<string, unknown>) || {};
   // Resolve the deep link against our own origin and refuse anything
   // cross-origin (open-redirect / phishing guard): a hostile push cannot make
   // openWindow() navigate to an external site.
-  let target = typeof data["url"] === "string" && data["url"] ? (data["url"] as string) : "/";
+  const rawUrl = typeof data["url"] === "string" && data["url"] ? (data["url"] as string) : "";
+  let target = rawUrl ? rawUrl : "/";
   try {
     const u = new URL(target, self.location.origin);
     target = u.origin === self.location.origin && u.pathname.startsWith("/")
@@ -214,6 +217,18 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
       : "/";
   } catch {
     target = "/";
+  }
+  if (target === "/" && !rawUrl && data.source) {
+    const route = targetToAction(data.target);
+    const { action, meta } = route.action ? route : sourceToTarget(data.source as string);
+    if (action) {
+      const params = new URLSearchParams();
+      params.set("app", action);
+      if (meta && Object.keys(meta).length) {
+        params.set("appProps", JSON.stringify(meta));
+      }
+      target = `/desktop?${params.toString()}`;
+    }
   }
   event.waitUntil(
     self.clients

@@ -7,6 +7,16 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Fixed
+
+- **Push notifications never routed to the correct app.** Three independent faults
+  in the service-worker click path meant tapping any notification either opened
+  the desktop root or did nothing: the backend dropped routing fields before the
+  SW saw them, the deep-link fallback was always root, and no shell listener
+  existed for the common mobile-PWA case where the app is already open. Decision
+  pushes now open Decisions (or the mapped target app) whether or not a window
+  is already open, and the cross-origin guard remains intact.
+
 ## [1.0.0-beta.44] - 2026-07-26
 
 ### Added
