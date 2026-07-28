@@ -50,6 +50,8 @@ async def list_share_destinations(request: Request):
             if registry is not None:
                 try:
                     agent = await registry.get(member)
+                    if agent is None:
+                        agent = await registry.get_by_slug(member)
                     if agent and agent.get("status") == "active":
                         seen.add(member)
                         destinations.append({

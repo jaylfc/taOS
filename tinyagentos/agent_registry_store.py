@@ -539,6 +539,29 @@ class AgentRegistryStore(BaseStore):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    async def get_by_slug(self, slug: str, *, status: str = "active") -> Optional[dict]:
+        """Return the oldest entry whose canonical_id starts with *slug*, or ``None``.
+
+        DM channels created by the deploy route store the agent slug (not the
+        canonical_id) as the channel member, so callers that need to resolve a
+        channel member back to an agent record must look up by slug. Pass
+        ``status=None`` to match any status.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if status is None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE canonical_id LIKE ? ORDER BY id LIMIT 1",
+                (f"{slug}-%",),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE canonical_id LIKE ? AND status = ? ORDER BY id LIMIT 1",
+                (f"{slug}-%", status),
+            )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
     async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
         """Return the oldest entry with *handle* and *status*, or ``None``.
 

@@ -231,6 +231,51 @@ further project via `POST /api/projects/{project_id}/members/assign-agent`
 active identity (the existing canonical_id and token are reused instead of
 409ing).
 
+## Share destinations (device bearer)
+
+`GET /api/share/destinations` lets a paired device discover the ingest endpoints it
+is allowed to write to. It is reachable by agents and devices, not by the browser
+session.
+
+**Auth model.** Device bearer only: the caller sends
+`Authorization: Bearer <scoped_token>` (the device's scoped token, issued at
+`POST /api/devices/register`). This route is **not** gated by the user session
+cookie (`taos_session`) and is listed in `EXEMPT_PATHS` in
+`tinyagentos/auth_middleware.py`. CSRF is still registered on the router
+(`dependencies=_csrf`) so that future POST routes on this router inherit the
+double-submit check; the GET itself is exempt because safe methods are always
+CSRF-exempt.
+
+**Response shape.**
+
+```json
+{
+  "destinations": [
+    {"kind": "library",      "id": "library",        "label": "Library"},
+    {"kind": "project_files","id": "<project-slug>", "label": "<project name>"},
+    {"kind": "agent_chat",   "id": "<agent-slug>",   "label": "<display name>"}
+  ]
+}
+```
+
+Each entry has `kind`, `id`, and `label`. Authorization filtering holds: a device
+token only sees projects belonging to its own `user_id`, and only agent DM
+channels that include that user (or `"user"`) as a member.
+
+**Destination kinds and the endpoint each maps to:**
+
+- **library** -- `POST /api/library/ingest` (file upload or URL reference into the
+  shared library). Always present for any paired device.
+- **project_files** -- `POST /api/projects/{slug}/files/upload` (multipart upload
+  into the project's file tree). One entry per project owned by the device's
+  `user_id`; the `id` is the project slug.
+- **agent_chat** -- `POST /api/chat/messages` (send a message into the agent's DM
+  channel; the request body carries `channel_id`). One entry per active agent that
+  shares a DM channel with the user. The `id` is the agent slug as stored in the
+  channel member list (the deploy route writes the slug, not the canonical_id, as
+  the member); the route resolves the slug to the agent record at read time via
+  `AgentRegistryStore.get_by_slug`.
+
 ## Requesting more scope for an existing identity (scope requests)
 
 The auth-request flow (`POST /api/agents/auth-requests`) MINTS A NEW identity on
