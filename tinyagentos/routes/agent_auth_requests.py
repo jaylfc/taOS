@@ -62,6 +62,11 @@ VALID_SCOPES = frozenset({
     # scope keeps an existing approval meaning exactly what it meant when it was
     # given, and makes authoring an explicit per-agent opt-in.
     "project_tasks_create",
+    # Editing a card's own fields (title, body, labels, status, priority).
+    # Distinct from project_tasks (read + lifecycle + comments) and
+    # project_tasks_create (authoring): an agent may PATCH only its OWN cards or
+    # those on a project it leads, and only the whitelisted fields.
+    "project_tasks_update",
     # Canvas access: read and write on a specific project's canvas. Like
     # project_tasks, a project_id is required so the token is bound to the
     # operator-validated project rather than whatever the unauthenticated agent
@@ -194,7 +199,7 @@ async def _retire_scope_request_notification(request: Request, request_id: str) 
 # project_tasks_create globally. One definition, referenced everywhere.
 _CANVAS_SCOPES = {"canvas_read", "canvas_write"}
 _FILES_SCOPES = {"files_read", "files_write"}
-_PROJECT_SCOPES = {"project_tasks", "project_tasks_create"} | _CANVAS_SCOPES | _FILES_SCOPES
+_PROJECT_SCOPES = {"project_tasks", "project_tasks_create", "project_tasks_update"} | _CANVAS_SCOPES | _FILES_SCOPES
 
 
 def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:

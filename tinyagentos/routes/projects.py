@@ -451,6 +451,7 @@ class UpdateTaskIn(BaseModel):
     body: str | None = None
     priority: int | None = None
     labels: list[str] | None = None
+    status: str | None = None
     assignee_id: str | None = None
     parent_task_id: str | None = None
     # Omit to leave the element tag unchanged; send "none" to clear it to
@@ -736,26 +737,56 @@ async def get_task(
     return t
 
 
+# Fields an agent holding project_tasks_update may PATCH. Everything else in
+# UpdateTaskIn (assignee_id, parent_task_id, element_id, and any future field)
+# is rejected 400 for agents so the surface stays minimal and future task
+# fields are protected by default. Session owner/admin is unaffected.
+_AGENT_EDITABLE_FIELDS = frozenset({"title", "body", "labels", "status", "priority"})
+
+
 @router.patch("/api/projects/{project_id}/tasks/{task_id}")
 async def update_task(
     project_id: str,
     task_id: str,
     payload: UpdateTaskIn,
     request: Request,
-    user: CurrentUser = Depends(current_user),
 ):
-    # Session owner/admin only. A project_tasks agent drives its board through
-    # read + the lifecycle actions (claim/release/close/reopen) + comments; free
-    # PATCH of title/body/assignee_id/parent is a broader mutation than that
-    # scope grants, so it stays off the agent allowlist (Kilo review on #1774).
+    # Dual-auth: session owner/admin OR an agent holding project_tasks_update
+    # bound to THIS project. The agent gate (authorship/lead) and field
+    # whitelist are enforced below.
     pstore = request.app.state.project_store
-    project_or_err = await _get_owned_project(pstore, project_id, user)
-    if isinstance(project_or_err, JSONResponse):
-        return project_or_err
+    auth = await _authorize_task_actor(
+        request, pstore, project_id, scope="project_tasks_update"
+    )
+    if isinstance(auth, JSONResponse):
+        return auth
+    actor_id, is_agent, project = auth
     store = request.app.state.project_task_store
     existing = await store.get_task(task_id)
     if existing is None or existing["project_id"] != project_id:
         return JSONResponse({"error": "not found"}, status_code=404)
+
+    # Agent gate: an agent may PATCH only its OWN cards or cards on a project it
+    # leads. A non-author non-lead agent is refused 403 (it has the scope, so the
+    # project is not hidden; the refusal is an authorization failure, not a
+    # scope mismatch).
+    if is_agent:
+        lead_id = project.get("lead_member_id")
+        if existing.get("created_by") != actor_id and lead_id != actor_id:
+            return JSONResponse(
+                {"error": "agent may only edit its own cards or those it leads"},
+                status_code=403,
+            )
+
+    # Field whitelist for agents: title, body, labels, status, priority ONLY.
+    # Any other field that is set is rejected 400 (future fields included).
+    if is_agent:
+        for f in payload.model_fields:
+            if f not in _AGENT_EDITABLE_FIELDS and getattr(payload, f) is not None:
+                return JSONResponse(
+                    {"error": f"field {f!r} is not editable by agents"},
+                    status_code=400,
+                )
 
     if payload.parent_task_id is not None:
         if payload.parent_task_id == task_id:
@@ -774,7 +805,7 @@ async def update_task(
 
     estore = request.app.state.project_element_store
     update_fields: dict = {}
-    for f in ("title", "body", "priority", "labels", "assignee_id", "parent_task_id"):
+    for f in ("title", "body", "priority", "labels", "status", "assignee_id", "parent_task_id"):
         v = getattr(payload, f)
         if v is not None:
             update_fields[f] = v

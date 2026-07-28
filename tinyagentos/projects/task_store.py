@@ -250,6 +250,7 @@ class ProjectTaskStore(BaseStore):
         body: str | None = None,
         priority: int | None = None,
         labels: list[str] | None = None,
+        status: str | None = None,
         assignee_id: str | None = None,
         parent_task_id: str | None = None,
         element_id: object = _ELEMENT_UNCHANGED,
@@ -259,6 +260,7 @@ class ProjectTaskStore(BaseStore):
             ("body", body, body),
             ("priority", priority, priority),
             ("labels", labels, json.dumps(labels) if labels is not None else None),
+            ("status", status, status),
             ("assignee_id", assignee_id, assignee_id),
             ("parent_task_id", parent_task_id, parent_task_id),
         ]
