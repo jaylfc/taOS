@@ -24,6 +24,21 @@ export interface AppManifest {
    * backend. A fuller DRY source (shared with the backend) is a follow-up.
    */
   pwa?: boolean;
+  /**
+   * Launcher tiering (issue #2143). Controls which apps the desktop launcher
+   * (launchpad, search) surfaces:
+   *   1 - always shown (default for apps without an explicit tier)
+   *   2 - shown, grouped under `group` (e.g. "System")
+   *   3 - hidden from launcher (lives in Settings)
+   *   4 - file handler (hidden from launcher, openable by id)
+   *   5 - Store-optional, off by default
+   */
+  tier?: 1 | 2 | 3 | 4 | 5;
+  /** Group heading for tier 2 apps in the launcher (e.g. "System"). */
+  group?: string;
+  /** If true, the app is a file handler: hidden from the launcher but still
+   *  openable by id (agents open them directly). */
+  handler?: boolean;
 }
 
 const apps: AppManifest[] = [
@@ -36,20 +51,20 @@ const apps: AppManifest[] = [
   { id: "store", name: "Store", icon: "shopping-bag", category: "platform", component: () => import("@/apps/StoreApp").then((m) => ({ default: m.StoreApp })), defaultSize: { w: 1000, h: 700 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: true, launchpadOrder: 4 },
   { id: "guides", name: "Guides", icon: "book-open", category: "platform", component: () => import("@/apps/GuidesApp").then((m) => ({ default: m.GuidesApp })), defaultSize: { w: 900, h: 650 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 4.25 },
   { id: "settings", name: "Settings", icon: "settings", category: "platform", component: () => import("@/apps/SettingsApp").then((m) => ({ default: m.SettingsApp })), defaultSize: { w: 800, h: 550 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: true, launchpadOrder: 5 },
-  { id: "models", name: "Models", icon: "brain", category: "platform", component: () => import("@/apps/ModelsApp").then((m) => ({ default: m.ModelsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6 },
-  { id: "providers", name: "Providers", icon: "cloud", category: "platform", component: () => import("@/apps/ProvidersApp").then((m) => ({ default: m.ProvidersApp })), defaultSize: { w: 950, h: 640 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6.5 },
+  { id: "models", name: "Models", icon: "brain", category: "platform", component: () => import("@/apps/ModelsApp").then((m) => ({ default: m.ModelsApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6, tier: 2, group: "System" },
+  { id: "providers", name: "Providers", icon: "cloud", category: "platform", component: () => import("@/apps/ProvidersApp").then((m) => ({ default: m.ProvidersApp })), defaultSize: { w: 950, h: 640 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 6.5, tier: 3 },
   { id: "dashboard", name: "Activity", icon: "activity", category: "platform", component: () => import("@/apps/ActivityApp").then((m) => ({ default: m.ActivityApp })), defaultSize: { w: 1100, h: 720 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 7 },
-  { id: "cluster", name: "Cluster", icon: "network", category: "platform", component: () => import("@/apps/ClusterApp").then((m) => ({ default: m.ClusterApp })), defaultSize: { w: 1000, h: 680 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 7.5 },
-  { id: "memory", name: "Memory", icon: "database", category: "platform", component: () => import("@/apps/MemoryApp").then((m) => ({ default: m.MemoryApp })), defaultSize: { w: 850, h: 550 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 8 },
-  { id: "mcp", name: "MCP", icon: "plug", category: "platform", component: () => import("@/apps/MCPApp").then((m) => ({ default: m.MCPApp })), defaultSize: { w: 1000, h: 680 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 9.5 },
+  { id: "cluster", name: "Cluster", icon: "network", category: "platform", component: () => import("@/apps/ClusterApp").then((m) => ({ default: m.ClusterApp })), defaultSize: { w: 1000, h: 680 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 7.5, tier: 2, group: "System" },
+  { id: "memory", name: "Memory", icon: "database", category: "platform", component: () => import("@/apps/MemoryApp").then((m) => ({ default: m.MemoryApp })), defaultSize: { w: 850, h: 550 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 8, tier: 2, group: "System" },
+  { id: "mcp", name: "MCP", icon: "plug", category: "platform", component: () => import("@/apps/MCPApp").then((m) => ({ default: m.MCPApp })), defaultSize: { w: 1000, h: 680 }, minSize: { w: 600, h: 400 }, singleton: true, pinned: false, launchpadOrder: 9.5, tier: 3 },
   { id: "taos-agent", name: "taOS Agent", icon: "bot", category: "platform", component: () => import("@/apps/TaosAssistantWindow").then((m) => ({ default: m.TaosAssistantWindow })), defaultSize: { w: 420, h: 640 }, minSize: { w: 320, h: 420 }, singleton: false, pinned: false, launchpadOrder: 8.5 },
-  { id: "channels", name: "Channels", icon: "radio", category: "platform", component: () => import("@/apps/ChannelsApp").then((m) => ({ default: m.ChannelsApp })), defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 9 },
-  { id: "secrets", name: "Secrets", icon: "key-round", category: "platform", component: () => import("@/apps/SecretsApp").then((m) => ({ default: m.SecretsApp })), defaultSize: { w: 750, h: 500 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 10 },
+  { id: "channels", name: "Channels", icon: "radio", category: "platform", component: () => import("@/apps/ChannelsApp").then((m) => ({ default: m.ChannelsApp })), defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 9, tier: 3 },
+  { id: "secrets", name: "Secrets", icon: "key-round", category: "platform", component: () => import("@/apps/SecretsApp").then((m) => ({ default: m.SecretsApp })), defaultSize: { w: 750, h: 500 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 10, tier: 2, group: "System" },
   { id: "tasks", name: "Tasks", icon: "calendar-clock", category: "platform", component: () => import("@/apps/TasksApp").then((m) => ({ default: m.TasksApp })), defaultSize: { w: 800, h: 500 }, minSize: { w: 450, h: 350 }, singleton: true, pinned: false, launchpadOrder: 11 },
   { id: "import", name: "Import", icon: "upload", category: "platform", component: () => import("@/apps/ImportApp").then((m) => ({ default: m.ImportApp })), defaultSize: { w: 700, h: 450 }, minSize: { w: 400, h: 300 }, singleton: true, pinned: false, launchpadOrder: 12 },
   { id: "images", name: "Images", icon: "image", category: "platform", component: () => import("@/apps/ImagesApp").then((m) => ({ default: m.ImagesApp })), defaultSize: { w: 900, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 13 },
-  { id: "coding-studio", name: "Coding Studio", icon: "code-2", category: "studio", component: () => import("@/apps/CodingStudioApp").then((m) => ({ default: m.CodingStudioApp })), defaultSize: { w: 1080, h: 760 }, minSize: { w: 680, h: 540 }, singleton: true, pinned: false, launchpadOrder: 13.25, optional: true },
-  { id: "design-studio", name: "Design Studio", icon: "palette", category: "studio", component: () => import("@/apps/DesignStudioApp").then((m) => ({ default: m.DesignStudioApp })), defaultSize: { w: 1080, h: 720 }, minSize: { w: 680, h: 520 }, singleton: true, pinned: false, launchpadOrder: 13.26, optional: true },
+  { id: "coding-studio", name: "Coding Studio", icon: "code-2", category: "studio", component: () => import("@/apps/CodingStudioApp").then((m) => ({ default: m.CodingStudioApp })), defaultSize: { w: 1080, h: 760 }, minSize: { w: 680, h: 540 }, singleton: true, pinned: false, launchpadOrder: 13.25, optional: true, tier: 5 },
+  { id: "design-studio", name: "Design Studio", icon: "palette", category: "studio", component: () => import("@/apps/DesignStudioApp").then((m) => ({ default: m.DesignStudioApp })), defaultSize: { w: 1080, h: 720 }, minSize: { w: 680, h: 520 }, singleton: true, pinned: false, launchpadOrder: 13.26, optional: true, tier: 5 },
   { id: "music-studio", name: "Music Studio", icon: "music", category: "studio", component: () => import("@/apps/MusicStudioApp").then((m) => ({ default: m.MusicStudioApp })), defaultSize: { w: 1080, h: 720 }, minSize: { w: 700, h: 540 }, singleton: true, pinned: false, launchpadOrder: 13.27, optional: true },
   { id: "app-studio", name: "App Studio", icon: "blocks", category: "studio", component: () => import("@/apps/AppStudioApp").then((m) => ({ default: m.AppStudioApp })), defaultSize: { w: 1080, h: 720 }, minSize: { w: 680, h: 520 }, singleton: true, pinned: false, launchpadOrder: 13.28, optional: true },
   { id: "office-studio", name: "Office Studio", icon: "file-text", category: "studio", component: () => import("@/apps/OfficeStudioApp").then((m) => ({ default: m.OfficeStudioApp })), defaultSize: { w: 1080, h: 720 }, minSize: { w: 680, h: 520 }, singleton: true, pinned: false, launchpadOrder: 13.29, optional: true },
@@ -65,7 +80,7 @@ const apps: AppManifest[] = [
   { id: "feedback", name: "Feedback", icon: "flag", category: "platform", component: () => import("@/apps/FeedbackApp").then((m) => ({ default: m.FeedbackApp })), defaultSize: { w: 700, h: 560 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.5 },
   { id: "decisions", name: "Decisions", icon: "inbox", category: "platform", component: () => import("@/apps/DecisionsApp").then((m) => ({ default: m.DecisionsApp })), defaultSize: { w: 640, h: 620 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.6 },
   { id: "notification-archive", name: "Archive", icon: "archive", category: "platform", component: () => import("@/apps/NotificationArchiveApp").then((m) => ({ default: m.NotificationArchiveApp })), defaultSize: { w: 800, h: 600 }, minSize: { w: 500, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.65 },
-  { id: "observatory", name: "Observatory", icon: "radar", category: "platform", component: () => import("@/apps/ObservatoryApp").then((m) => ({ default: m.ObservatoryApp })), defaultSize: { w: 620, h: 600 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.7 },
+  { id: "observatory", name: "Observatory", icon: "radar", category: "platform", component: () => import("@/apps/ObservatoryApp").then((m) => ({ default: m.ObservatoryApp })), defaultSize: { w: 620, h: 600 }, minSize: { w: 420, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.7, tier: 2, group: "System" },
   { id: "notes", name: "Notes", icon: "sticky-note", category: "platform", component: () => import("@/apps/NotesApp").then((m) => ({ default: m.NotesApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.8 },
   { id: "todo", name: "Todo", icon: "list-checks", category: "platform", component: () => import("@/apps/TodoApp").then((m) => ({ default: m.TodoApp })), defaultSize: { w: 860, h: 620 }, minSize: { w: 520, h: 400 }, singleton: true, pinned: false, launchpadOrder: 16.85 },
   { id: "hub", name: "Hub", icon: "users", category: "platform", component: () => import("@/apps/HubApp/HubApp").then((m) => ({ default: m.HubApp })), defaultSize: { w: 760, h: 640 }, minSize: { w: 480, h: 420 }, singleton: true, pinned: false, launchpadOrder: 16.9 },
