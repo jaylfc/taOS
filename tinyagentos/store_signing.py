@@ -235,7 +235,9 @@ def _canonical_manifest_bytes(manifest_dict: dict) -> bytes:
     keys or change scalar representations.
     """
     stripped = {k: v for k, v in manifest_dict.items() if k != SIGNATURE_FIELD}
-    return json.dumps(stripped, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        stripped, sort_keys=True, ensure_ascii=False,
+    ).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------

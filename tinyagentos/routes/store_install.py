@@ -791,6 +791,9 @@ async def install_app(request: Request):
     # Re-read from disk and re-verify the signature — if it no longer
     # verifies, the manifest was modified after the gate check and the
     # install is blocked.
+    #
+    # Run via asyncio.to_thread to avoid blocking the event loop on disk
+    # I/O + Ed25519 verification under concurrent load.
     _manifest_dir = getattr(manifest, "manifest_dir", None)
     if (
         _manifest_dir is not None
@@ -799,38 +802,46 @@ async def install_app(request: Request):
         and registry is not None
         and hasattr(registry, "verify_manifest_signature")
     ):
-        disk_path = _manifest_dir / "manifest.yaml"
-        try:
-            import yaml as _yaml
-            on_disk = _yaml.safe_load(disk_path.read_text()) if disk_path.exists() else None
-        except Exception:
-            on_disk = None
-        if on_disk is not None:
-            # Re-verify the signature against the just-read bytes.
-            # This catches any change — not just the narrow set of fields
-            # the old comparison whitelisted — and does not false-positive
-            # on legitimate catalog reloads (which update signatures too).
-            stored_sig = registry.get_signature(manifest_id)
-            if stored_sig is not None:
+
+        def _toctou_reverify():
+            # Fail-closed: any inability to re-read or re-verify the
+            # manifest blocks the install.  The first gate already proved
+            # the manifest was valid; at this point a missing, unreadable,
+            # or unsigned manifest means post-verification tampering.
+            disk_path = _manifest_dir / "manifest.yaml"
+            try:
+                import yaml as _yaml
+                if not disk_path.exists():
+                    return False
+                on_disk = _yaml.safe_load(disk_path.read_text())
+                if not on_disk:
+                    return False
+                stored_sig = registry.get_signature(manifest_id)
+                if stored_sig is None:
+                    return False
                 from tinyagentos.store_signing import verify_manifest_signature as _verify_sig
-                if not _verify_sig(on_disk, stored_sig, _store_pub):
-                    progress.finish(
-                        install_id, success=False,
-                        error="manifest modified between signature verification and install",
-                    )
-                    return JSONResponse(
-                        {
-                            "error": "manifest modified between signature verification and install",
-                            "detail": (
-                                "The manifest on disk was modified after the initial "
-                                "signature verification. This may indicate post-verification "
-                                "tampering. Rebuild the catalog or reinstall the app from "
-                                "a trusted source."
-                            ),
-                            "install_id": install_id,
-                        },
-                        status_code=403,
-                    )
+                return _verify_sig(on_disk, stored_sig, _store_pub)
+            except Exception:
+                return False
+
+        if not await asyncio.to_thread(_toctou_reverify):
+            progress.finish(
+                install_id, success=False,
+                error="manifest modified between signature verification and install",
+            )
+            return JSONResponse(
+                {
+                    "error": "manifest modified between signature verification and install",
+                    "detail": (
+                        "The manifest on disk was modified after the initial "
+                        "signature verification. This may indicate post-verification "
+                        "tampering. Rebuild the catalog or reinstall the app from "
+                        "a trusted source."
+                    ),
+                    "install_id": install_id,
+                },
+                status_code=403,
+            )
 
     # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
