@@ -579,6 +579,12 @@ apps:
     version: 1.22.0
     name: Gitea (LXC)
     description: "Self-hosted Git server in an isolated LXC container"
+  - id: taosr1
+    type: service
+    category: agent-bridge
+    version: 0.1.0
+    name: taOSr1
+    description: "Rabbit R1 push-to-talk bridge to the taOS Personal Agent (PA) via the agent-as-a-model surface. Three agent slots."
   - id: code-server
     type: dev-tool
     version: 4.96.0
