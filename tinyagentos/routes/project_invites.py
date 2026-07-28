@@ -84,7 +84,7 @@ class RedeemInviteIn(BaseModel):
 # (project-less) invite has no project to bind them to, so they are stripped
 # before minting rather than granted verbatim: an OS invite must never hand out
 # project-scoped authority that resolves to no project.
-_PROJECT_SCOPED = {"project_tasks", "canvas_read", "canvas_write"}
+_PROJECT_SCOPED = {"project_tasks", "project_tasks_create", "project_tasks_update", "canvas_read", "canvas_write"}
 
 
 def _derive_handle(project_slug: str, harness: str, label: str | None) -> str:

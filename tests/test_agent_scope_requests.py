@@ -569,6 +569,7 @@ def test_project_scope_set_is_a_single_definition():
     assert mod._PROJECT_SCOPES == {
         "project_tasks",
         "project_tasks_create",
+        "project_tasks_update",
         "canvas_read",
         "canvas_write",
         "files_read",
