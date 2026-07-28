@@ -62,9 +62,25 @@ def _library_dir(request: Request) -> Path:
 
 
 async def _get_library_store(request: Request):
-    """Get the LibraryStore from app.state (lazily initialised)."""
+    """Get the LibraryStore from app.state (lazily initialised).
+
+    Uses an asyncio.Lock to close the TOCTOU race where two concurrent
+    requests both see ``store is None`` and both call ``LibraryStore(...)``.
+    """
     store = getattr(request.app.state, "library_store", None)
-    if store is None:
+    if store is not None:
+        return store
+
+    lock = getattr(request.app.state, "_library_store_init_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        request.app.state._library_store_init_lock = lock
+
+    async with lock:
+        store = getattr(request.app.state, "library_store", None)
+        if store is not None:
+            return store
+
         from tinyagentos.library_store import LibraryStore
 
         data_dir = getattr(request.app.state, "data_dir", None)

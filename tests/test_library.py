@@ -14,6 +14,8 @@ from tinyagentos.library_pipeline import (
     ImageProcessor,
     PdfProcessor,
     TextProcessor,
+    WebProcessor,
+    YouTubeProcessor,
     detect_kind,
     run_pipeline,
 )
@@ -401,6 +403,381 @@ class TestRunPipeline:
 
 
 # ---------------------------------------------------------------------------
+# YouTube processor
+# ---------------------------------------------------------------------------
+
+
+class TestYouTubeProcessor:
+    @pytest.mark.asyncio
+    async def test_process_youtube_url(self, lib_store, storage_dir):
+        """YouTube processor fetches metadata, transcript, chapters."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=test123",
+        )
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Test Video",
+            "author": "TestChannel",
+            "content": "This is a transcript.",
+            "thumbnail": None,
+            "metadata": {
+                "video_id": "test123",
+                "channel": "TestChannel",
+                "duration": 120,
+                "views": 1000,
+                "upload_date": "20260101",
+                "chapters": [
+                    {"start_time": 0, "title": "Intro"},
+                    {"start_time": 60, "title": "Main"},
+                ],
+            },
+        }
+
+        from unittest.mock import patch
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            artifacts = await proc.process(item)
+
+        kinds = {a["kind"] for a in artifacts}
+        assert "metadata" in kinds
+        assert "transcript" in kinds
+        assert "chapters" in kinds
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["video_id"] == "test123"
+        assert meta["channel"] == "TestChannel"
+
+    @pytest.mark.asyncio
+    async def test_process_youtube_url_no_source(self, lib_store, storage_dir):
+        """YouTube processor returns empty when source_url is missing."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube", source_url="", title="",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = YouTubeProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_youtube_pipeline_integration(self, lib_store, storage_dir):
+        """run_pipeline routes url:youtube items to YouTubeProcessor."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=pipeline-test",
+        )
+
+        mock_result = {
+            "title": "Pipeline Video",
+            "author": "PipelineChannel",
+            "content": "Pipeline transcript.",
+            "thumbnail": None,
+            "metadata": {
+                "video_id": "pipeline-test",
+                "channel": "PipelineChannel",
+            },
+        }
+
+        from unittest.mock import patch
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "ready"
+
+        artifacts = await lib_store.get_artifacts(item_id)
+        artifact_kinds = {a["kind"] for a in artifacts}
+        assert "metadata" in artifact_kinds
+        assert "transcript" in artifact_kinds
+
+
+# ---------------------------------------------------------------------------
+# Web processor
+# ---------------------------------------------------------------------------
+
+
+class TestWebProcessor:
+    @pytest.mark.asyncio
+    async def test_process_web_url(self, lib_store, storage_dir):
+        """Web processor fetches HTML, extracts text, stores artifacts."""
+        html = (
+            "<html><head><title>Test Page</title></head>"
+            "<body><article><p>This is the main article text "
+            "with enough content to pass the readability minimum "
+            "character count for extraction purposes now.</p>"
+            "<p>Second paragraph with more detailed content about "
+            "the topic being discussed on this test page.</p></article></body>"
+            "</html>"
+        )
+
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/article",
+            title="",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = WebProcessor(lib_store, storage_dir)
+
+        mock_resp = _mock_httpx_response(html, 200)
+        from unittest.mock import patch
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ),
+        ):
+            mock_client_cls.return_value.__aenter__.return_value.stream = (
+                _mock_stream_callable(mock_resp)
+            )
+            artifacts = await proc.process(item)
+
+        kinds = {a["kind"] for a in artifacts}
+        assert "metadata" in kinds
+        assert "text" in kinds
+
+        text_artifacts = [a for a in artifacts if a["kind"] == "text"]
+        assert len(text_artifacts) == 1
+        text_path = Path(text_artifacts[0]["path"])
+        assert text_path.exists()
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert "preview" in meta
+
+    @pytest.mark.asyncio
+    async def test_process_web_url_no_source(self, lib_store, storage_dir):
+        """Web processor returns empty when source_url is missing."""
+        item_id = await lib_store.create_item(
+            kind="url:web", source_url="", title="",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = WebProcessor(lib_store, storage_dir)
+        artifacts = await proc.process(item)
+        assert artifacts == []
+
+    @pytest.mark.asyncio
+    async def test_web_extracts_title_from_html(self, lib_store, storage_dir):
+        """Web processor auto-titles from <title> tag when item has no title."""
+        html = (
+            "<html><head><title>Auto Title Here</title></head>"
+            "<body><article><p>This article has enough text content "
+            "to ensure that the readability extractor returns a full "
+            "result instead of falling back to the simple tag stripper "
+            "which would otherwise happen for very short pages.</p></article>"
+            "</body></html>"
+        )
+
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/titled",
+            title="https://example.com/titled",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = WebProcessor(lib_store, storage_dir)
+
+        mock_resp = _mock_httpx_response(html, 200)
+        from unittest.mock import patch
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ),
+        ):
+            mock_client_cls.return_value.__aenter__.return_value.stream = (
+                _mock_stream_callable(mock_resp)
+            )
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        assert "Auto Title Here" in updated["title"]
+
+    @pytest.mark.asyncio
+    async def test_web_pipeline_integration(self, lib_store, storage_dir):
+        """run_pipeline routes url:web items to WebProcessor."""
+        html = (
+            "<html><head><title>Pipeline Web</title></head>"
+            "<body><p>Pipeline test content that is sufficiently "
+            "long to pass the readability minimum character count."
+            "</p></body></html>"
+        )
+
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/pipeline-web",
+        )
+
+        mock_resp = _mock_httpx_response(html, 200)
+        from unittest.mock import patch
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ),
+        ):
+            mock_client_cls.return_value.__aenter__.return_value.stream = (
+                _mock_stream_callable(mock_resp)
+            )
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "ready"
+
+        artifacts = await lib_store.get_artifacts(item_id)
+        artifact_kinds = {a["kind"] for a in artifacts}
+        assert "metadata" in artifact_kinds
+        assert "text" in artifact_kinds
+
+    # -- SSRF, size cap, content-type, and redirect tests — these test
+    #    actual guard paths rather than patching them out.
+
+    @pytest.mark.asyncio
+    async def test_web_ssrf_block_loopback(self, lib_store, storage_dir):
+        """validate_url_or_raise blocks loopback addresses."""
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            SsrfBlockedError,
+            validate_url_or_raise,
+        )
+        import pytest as _pytest
+        with _pytest.raises(SsrfBlockedError):
+            validate_url_or_raise("http://127.0.0.1:8080/")
+
+    @pytest.mark.asyncio
+    async def test_web_ssrf_block_private(self, lib_store, storage_dir):
+        """validate_url_or_raise blocks RFC1918 private addresses."""
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            SsrfBlockedError,
+            validate_url_or_raise,
+        )
+        import pytest as _pytest
+        with _pytest.raises(SsrfBlockedError):
+            validate_url_or_raise("http://10.0.0.1/admin")
+
+    @pytest.mark.asyncio
+    async def test_web_redirect_hop_validated(self, lib_store, storage_dir):
+        """Each redirect hop passes through validate_url_or_raise."""
+        from tinyagentos.routes.desktop_browser.ssrf import (
+            SsrfBlockedError,
+            validate_url_or_raise,
+        )
+        from unittest.mock import patch, MagicMock, AsyncMock
+        import pytest as _pytest
+
+        html = "<html><p>Redirected content that is long enough for readability extraction now.</p></html>"
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://safe.example.com/page",
+        )
+        item = await lib_store.get_item(item_id)
+        proc = WebProcessor(lib_store, storage_dir)
+
+        # Simulate one redirect: safe → safe
+        mock_resp1 = MagicMock()
+        mock_resp1.status_code = 302
+        mock_resp1.headers = {"location": "https://safe.example.com/real", "content-type": "text/html"}
+        mock_resp1.is_redirect = True
+
+        mock_resp2 = _mock_httpx_response(html, 200)
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.stream = MagicMock(
+            side_effect=[_mock_stream_ctx(mock_resp1), _mock_stream_ctx(mock_resp2)]
+        )
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ) as mock_validate,
+        ):
+            artifacts = await proc.process(item)
+
+        # Both hops should have been validated
+        assert mock_validate.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_web_size_cap(self, lib_store, storage_dir):
+        """Responses exceeding the size cap raise ValueError."""
+        from unittest.mock import patch, MagicMock
+        import pytest as _pytest
+
+        html = "x" * 1000  # small content
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/huge",
+        )
+        item = await lib_store.get_item(item_id)
+        proc = WebProcessor(lib_store, storage_dir)
+
+        # Override cap to a tiny value for test speed
+        proc._MAX_WEB_BYTES = 100
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_resp.encoding = "utf-8"
+
+        async def _aiter_bytes_oversized(_chunk_size=8192):
+            yield b"x" * 200
+
+        mock_resp.aiter_bytes = _aiter_bytes_oversized
+
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ),
+        ):
+            mock_client_cls.return_value.__aenter__.return_value.stream = (
+                _mock_stream_callable(mock_resp)
+            )
+            with _pytest.raises(ValueError, match="exceeds"):
+                await proc.process(item)
+
+    @pytest.mark.asyncio
+    async def test_web_content_type_gate(self, lib_store, storage_dir):
+        """Non-text/* content types raise ValueError."""
+        from unittest.mock import patch, MagicMock
+        import pytest as _pytest
+
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/video.mp4",
+        )
+        item = await lib_store.get_item(item_id)
+        proc = WebProcessor(lib_store, storage_dir)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "video/mp4"}
+
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ),
+        ):
+            mock_client_cls.return_value.__aenter__.return_value.stream = (
+                _mock_stream_callable(mock_resp)
+            )
+            with _pytest.raises(ValueError, match="Non-text content-type"):
+                await proc.process(item)
+
+
+# ---------------------------------------------------------------------------
 # Collections handoff
 # ---------------------------------------------------------------------------
 
@@ -733,3 +1110,47 @@ def _create_test_image(path: Path):
     from PIL import Image
     img = Image.new("RGB", (100, 50), color="blue")
     img.save(path)
+
+
+def _async_return(value):
+    """Return an async callable that returns ``value`` (for mocking async functions)."""
+    async def _inner(*args, **kwargs):
+        return value
+    return _inner
+
+
+def _mock_httpx_response(html: str, status_code: int = 200):
+    """Return a mock httpx Response with the given HTML body."""
+    from unittest.mock import MagicMock
+    mock = MagicMock()
+    mock.text = html
+    mock.status_code = status_code
+    mock.is_redirect = False
+    mock.encoding = "utf-8"
+    mock.headers = {"content-type": "text/html; charset=utf-8"}
+
+    async def _aiter_bytes(_chunk_size: int = 8192):
+        yield html.encode("utf-8")
+
+    mock.aiter_bytes = _aiter_bytes
+    return mock
+
+
+def _mock_stream_ctx(mock_resp):
+    """Return an async context manager that yields ``mock_resp`` from stream()."""
+    class _StreamCtx:
+        async def __aenter__(self):
+            return mock_resp
+
+        async def __aexit__(self, *args):
+            pass
+
+    return _StreamCtx()
+
+
+def _mock_stream_callable(mock_resp):
+    """Return a callable that when invoked returns a stream async context manager."""
+    from unittest.mock import MagicMock
+    ctx = _mock_stream_ctx(mock_resp)
+    fn = MagicMock(return_value=ctx)
+    return fn

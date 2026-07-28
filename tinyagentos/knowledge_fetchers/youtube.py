@@ -14,6 +14,19 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Tracked subprocesses so they can be killed on timeout or cancel.
+_tracked_procs: list[asyncio.subprocess.Process] = []
+
+
+def _cleanup_procs() -> None:
+    """Kill all tracked subprocesses (called on timeout or cancel)."""
+    for p in _tracked_procs:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    _tracked_procs.clear()
+
 # Quality format map for yt-dlp -f flag
 _QUALITY_FORMATS: dict[str, str] = {
     "360": "bestvideo[height<=360]+bestaudio/best[height<=360]",
@@ -129,6 +142,7 @@ async def fetch(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    _tracked_procs.append(proc)
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = stderr.decode(errors="replace").strip()
@@ -171,6 +185,7 @@ async def fetch(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    _tracked_procs.append(thumb_proc)
     await thumb_proc.communicate()
     if thumb_proc.returncode != 0:
         logger.warning("yt-dlp thumbnail download failed for %s", url)
@@ -190,6 +205,7 @@ async def fetch(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    _tracked_procs.append(cap_proc)
     await cap_proc.communicate()
     if cap_proc.returncode != 0:
         logger.warning("yt-dlp caption extraction failed for %s", url)
@@ -255,6 +271,7 @@ async def download_video(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    _tracked_procs.append(proc)
     stdout, stderr = await proc.communicate()
 
     if proc.returncode != 0:

@@ -29,7 +29,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Text artifact kinds that should be indexed into collections
-_TEXT_ARTIFACT_KINDS = frozenset({"text", "transcript", "description", "ocr"})
+_TEXT_ARTIFACT_KINDS = frozenset({"text", "transcript", "description", "ocr", "chapters"})
 
 # Maximum polls while waiting for async index to complete.
 _MAX_INDEX_POLLS = 30
