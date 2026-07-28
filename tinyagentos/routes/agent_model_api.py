@@ -147,9 +147,13 @@ async def chat_completions(request: Request):
     # agent's opencode server + LiteLLM virtual key -> one turn -> OpenAI shape).
     # The requested `model` is the agent_id; the host runs the taOS agent's
     # opencode server, so we resolve it the same way the chat endpoint does.
-    stream = bool(body.get("stream", False))
+    # `stream` must be an explicit JSON boolean; a string like "false" must
+    # NOT coerce to True (bool("false") is True). Kilo finding.
+    stream = body.get("stream") is True
     try:
         reply_text = await _run_agent_turn(request.app.state, model, messages)
+    except _BadRequest as e:
+        return _openai_error(str(e), type="invalid_request_error", code="invalid_request", status=400)
     except _TurnError as e:
         return _openai_error(str(e), type="server_error", code="agent_error", status=502)
     except Exception as e:  # defensive: never leak internals as a 500 trace
@@ -169,6 +173,10 @@ class _TurnError(Exception):
     """Raised when the agent turn cannot be driven (server not ready, etc.)."""
 
 
+class _BadRequest(Exception):
+    """Raised when the request body is malformed (client error, -> 400)."""
+
+
 async def _run_agent_turn(app_state, agent_id: str, messages: list) -> str:
     """Drive one non-streaming agent turn and return the final reply text.
 
@@ -181,17 +189,33 @@ async def _run_agent_turn(app_state, agent_id: str, messages: list) -> str:
     """
     # The last user message is the prompt; system/earlier messages are context
     # the agent harness already carries per-turn, so we pass the latest user text.
-    user_text = ""
+    # Validate content type before forwarding to drive_turn (Kilo finding: a
+    # non-str / non-list content must not reach the adapter as a string).
+    user_text: str | None = None
     for m in reversed(messages):
         if isinstance(m, dict) and m.get("role") == "user":
-            user_text = m.get("content", "")
-            if isinstance(user_text, list):  # content parts -> flatten
-                user_text = " ".join(
-                    p.get("text", "") for p in user_text if isinstance(p, dict)
-                )
+            content = m.get("content", "")
+            if isinstance(content, str):
+                user_text = content
+            elif isinstance(content, list):  # content parts -> flatten to text
+                parts = []
+                for p in content:
+                    if isinstance(p, dict):
+                        if isinstance(p.get("text"), str):
+                            parts.append(p["text"])
+                        elif isinstance(p.get("text"), list):
+                            parts.append(" ".join(str(x) for x in p["text"]))
+                    elif isinstance(p, str):
+                        parts.append(p)
+                user_text = " ".join(parts)
+            else:
+                # content is int/null/object — malformed request.
+                raise _BadRequest("message content must be a string or list of parts")
             break
     if not user_text:
-        raise _TurnError("no user message found in request")
+        # Absent/empty user role is a client validation failure -> 400,
+        # not a transport error (Kilo finding: was mapped to 502).
+        raise _BadRequest("no user message found in request")
 
     server = await ensure_taos_opencode_server(app_state, agent_id)
     collected: dict = {"final": None}

@@ -166,6 +166,36 @@ async def test_chat_turn_transport_failure_returns_502(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_missing_user_message_returns_400(client, monkeypatch):
+    """A request with no user role is a client error (400), not a 502."""
+    import tinyagentos.routes.agent_model_api as api
+
+    class _FakeServer:
+        base_url = "http://127.0.0.1:4188"
+
+    async def _fake_ensure(app_state, agent_id):
+        return _FakeServer()
+
+    async def _fake_drive_turn(text, trace_id, sink, *, base_url, model_id,
+                               model_provider_id="litellm", server_password=None,
+                               adapter_factory=None, turn_timeout=300.0):
+        sink({"kind": "final", "content": text})
+
+    monkeypatch.setattr(api, "ensure_taos_opencode_server", _fake_ensure)
+    monkeypatch.setattr(api, "drive_turn", _fake_drive_turn)
+
+    store = client._transport.app.state.agent_model_keys
+    token, _ = await store.mint("u1", ["agent-a"], [])
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={"model": "agent-a", "messages": [{"role": "system", "content": "x"}]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
 async def test_chat_revoked_key_is_rejected(client):
     store = client._transport.app.state.agent_model_keys
     token, rec = await store.mint("u1", ["agent-a"], [])

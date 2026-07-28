@@ -38,41 +38,40 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
     if not getattr(app_state, "taos_opencode_password", None):
         app_state.taos_opencode_password = secrets.token_hex(16)
 
-    existing: OpenCodeServer | None = getattr(app_state, "taos_opencode_server", None)
-    existing_model: str | None = getattr(app_state, "taos_opencode_model", None)
+    # Per-agent server cache: each consented agent_id (or LLM model, for the
+    # desktop path) gets its OWN server keyed by `model`, so concurrent
+    # requests for different agents do not churn a shared singleton and race.
+    servers = getattr(app_state, "taos_opencode_servers", None)
+    if servers is None:
+        servers = {}
+        app_state.taos_opencode_servers = servers
+    sessions = getattr(app_state, "taos_opencode_sessions", None)
+    if sessions is None:
+        sessions = {}
+        app_state.taos_opencode_sessions = sessions
+
+    existing: OpenCodeServer | None = servers.get(model)
+    born_degraded = getattr(app_state, "taos_opencode_born_degraded", {})
+
 
     # Self-heal: if the cached server was born before LiteLLM was ready and
     # LiteLLM is now running, tear down the degraded server and fall through
     # to a fresh build so the key re-scope and model_ids are applied properly.
-    if existing is not None and getattr(app_state, "taos_opencode_born_degraded", False):
+    if existing is not None and born_degraded.get(model, False):
         llm_proxy_check = getattr(app_state, "llm_proxy", None)
         if llm_proxy_check is not None and llm_proxy_check.is_running():
             logger.info(
                 "taos_agent_runtime: LiteLLM now ready; rebuilding taOS opencode server "
-                "that was born degraded"
+                "for %s that was born degraded", model,
             )
             try:
                 await existing.stop()
             except Exception:
                 logger.debug("taos_agent_runtime: error stopping degraded server", exc_info=True)
-            app_state.taos_opencode_server = None
-            app_state.taos_opencode_session_id = None
-            app_state.taos_opencode_born_degraded = False
+            servers.pop(model, None)
+            sessions.pop(model, None)
+            born_degraded[model] = False
             existing = None
-
-    if existing is not None and existing_model != model:
-        # Model changed — stop old server so it picks up the new config.
-        logger.info(
-            "taos_agent_runtime: model changed (%s -> %s); restarting opencode server",
-            existing_model, model,
-        )
-        try:
-            await existing.stop()
-        except Exception:
-            logger.debug("taos_agent_runtime: error stopping old server", exc_info=True)
-        app_state.taos_opencode_server = None
-        app_state.taos_opencode_session_id = None
-        existing = None
 
     if existing is None:
         # Read the taos_agent prefs once: the permitted set (to scope the key)
@@ -100,9 +99,9 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
         # alias collision — persisting the value avoids that and keeps it stable.
         llm_proxy = getattr(app_state, "llm_proxy", None)
         litellm_key: str | None = None
-        born_degraded = False
+        born_degraded_now = False
         if llm_proxy is None or not llm_proxy.is_running():
-            born_degraded = True
+            born_degraded_now = True
         if stored_key:
             litellm_key = stored_key
             if llm_proxy is not None:
@@ -132,7 +131,7 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
         app_state.taos_opencode_key = litellm_key
 
         data_dir = getattr(app_state, "data_dir", None)
-        home = str(data_dir / "taos-agent-opencode") if data_dir else "taos-agent-opencode"
+        home = str(data_dir / f"taos-agent-opencode-{model}") if data_dir else f"taos-agent-opencode-{model}"
 
         cfg = OpenCodeServerConfig(
             home=home,
@@ -143,13 +142,17 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
             model_ids=permitted_models,
         )
         server = OpenCodeServer(cfg)
-        app_state.taos_opencode_server = server
-        app_state.taos_opencode_model = model
-        app_state.taos_opencode_born_degraded = born_degraded
-        if not hasattr(app_state, "taos_opencode_session_id"):
-            app_state.taos_opencode_session_id = None
+        servers[model] = server
+        born_degraded[model] = born_degraded.get(model, False) or born_degraded_now
+        if model not in sessions:
+            sessions[model] = None
 
-    server = app_state.taos_opencode_server
+    server = servers[model]
+    session_id = sessions.get(model)
+    if session_id is not None:
+        # Expose the chosen server's session on the legacy singleton attr so
+        # the desktop chat path (taos_agent.py) can read it without change.
+        app_state.taos_opencode_session_id = session_id
     # Generous deadline: opencode's first run on a fresh home performs a one-time
     # SQLite migration that can take a couple of minutes; a short deadline would
     # spuriously time out the very first taOS-agent chat.
@@ -158,17 +161,22 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
 
 
 async def stop_taos_opencode_server(app_state) -> None:
-    """Stop the taOS agent opencode server if it was started.
+    """Stop all per-agent taOS opencode servers if they were started.
 
-    Safe to call even if the server was never created.
+    Safe to call even if no server was ever created. Iterates the per-agent
+    cache (taos_opencode_servers) added for concurrent agent support.
     """
-    server = getattr(app_state, "taos_opencode_server", None)
-    if server is None:
+    servers = getattr(app_state, "taos_opencode_servers", None)
+    if not servers:
         return
-    try:
-        await server.stop()
-    except Exception:
-        logger.debug("taos_agent_runtime: error during stop", exc_info=True)
-    finally:
-        app_state.taos_opencode_server = None
-        app_state.taos_opencode_session_id = None
+    for model, server in list(servers.items()):
+        if server is None:
+            continue
+        try:
+            await server.stop()
+        except Exception:
+            logger.debug("taos_agent_runtime: error during stop", exc_info=True)
+    app_state.taos_opencode_servers = {}
+    app_state.taos_opencode_sessions = {}
+    app_state.taos_opencode_born_degraded = {}
+    app_state.taos_opencode_session_id = None
