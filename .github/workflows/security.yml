@@ -3,10 +3,26 @@ name: Security
 on:
   push:
     branches: [master]
+  # dev is where work actually lands: every exec PR targets dev, and master only
+  # receives it later at a release promotion. Auditing master-only meant the
+  # dependency audit NEVER ran on a pull request, so a vulnerable dependency
+  # could merge into dev and ship in a beta without anything looking at it. The
+  # weekly cron still covers master, but that is after the fact and on the wrong
+  # branch. Verified clean on dev before enabling: pip-audit reports no known
+  # vulnerabilities, so this does not block the open queue.
   pull_request:
-    branches: [master]
+    branches: [master, dev]
   schedule:
     - cron: "0 6 * * 1"
+
+# Mirror ci.yml: this now runs on every dev PR update, so superseded runs must
+# cancel or each push leaves an orphaned audit burning runner minutes. Pushes to
+# master and dev are deliberately NOT cancelled, so the branch record stays
+# complete. (qodo on #2189, verified: ci.yml carries this block and security.yml
+# did not, which only started to matter once the dev trigger was added.)
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/dev' }}
 
 permissions:
   contents: read
