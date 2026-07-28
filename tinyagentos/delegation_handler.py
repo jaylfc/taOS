@@ -276,12 +276,12 @@ async def _auto_approve_delegation(
             approval_mode="auto",
             check_interval_secs=1800,
             created_by=contact_id,
+            pin_required=False,
             metadata={
                 "kind": "delegation_sponsored",
                 "sponsor_contact_id": contact_id,
                 "agent_slug": agent_slug,
                 "display_name": display_name,
-                "pin_required": False,
             },
         )
     except Exception:
@@ -293,7 +293,7 @@ async def _auto_approve_delegation(
 
     return {
         "status": "approved",
-        "invite_id": invite["id"],
+        "invite_id": invite["record"]["invite_id"],
         "agent_slug": agent_slug,
     }
 
@@ -360,12 +360,12 @@ async def complete_delegation_approval(
             approval_mode="auto",
             check_interval_secs=1800,
             created_by=contact_id,
+            pin_required=False,
             metadata={
                 "kind": "delegation_sponsored",
                 "sponsor_contact_id": contact_id,
                 "agent_slug": agent_slug,
                 "display_name": display_name,
-                "pin_required": False,
             },
         )
     except Exception:
@@ -377,7 +377,7 @@ async def complete_delegation_approval(
 
     return {
         "status": "approved",
-        "invite_id": invite["id"],
+        "invite_id": invite["record"]["invite_id"],
         "agent_slug": agent_slug,
     }
 
@@ -413,7 +413,9 @@ async def cascade_sponsor_revoke(
 
         # When scoped to a project, only revoke agents that are members of
         # that project.  Contact-wide revoke (project_id=None) hits all.
-        if project_id is not None and project_store is not None:
+        if project_id is not None:
+            if project_store is None:
+                return {"status": "error", "error": "project store not available"}
             if not await project_store.is_project_member(
                 project_id, canonical_id
             ):

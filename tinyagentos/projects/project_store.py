@@ -487,12 +487,15 @@ class ProjectStore(ProjectsDBStore):
         """Read a single key from the project's JSON settings dict.
 
         Returns *default* if the project does not exist, has no settings, or
-        the key is absent.
+        the key is absent.  Also returns *default* when the settings value is
+        not a dict (malformed DB row guard).
         """
         project = await self.get_project(project_id)
         if project is None:
             return default
         settings = project.get("settings") or {}
+        if not isinstance(settings, dict):
+            return default
         return settings.get(key, default)
 
     async def set_project_setting(

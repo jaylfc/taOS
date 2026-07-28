@@ -941,6 +941,9 @@ class AgentRegistryStore(BaseStore):
     ) -> Optional[dict]:
         """Set (or, with ``None``, clear) the sponsor_contact_id on a registry row.
 
+        Does NOT re-parent an identity that already has a sponsor — once
+        sponsored, the sponsor is immutable (cross-user collab D1 guard).
+
         Returns the updated record, or None if *canonical_id* does not exist.
         """
         if self._db is None:
@@ -948,6 +951,10 @@ class AgentRegistryStore(BaseStore):
         record = await self.get(canonical_id)
         if record is None:
             return None
+        # Guard: never overwrite an existing sponsor (clearing with None is
+        # always allowed so revoke cascades can reset the field).
+        if sponsor_contact_id is not None and record.get("sponsor_contact_id"):
+            return record
         await self._db.execute(
             "UPDATE agent_registry SET sponsor_contact_id = ? WHERE canonical_id = ?",
             (sponsor_contact_id, canonical_id),
