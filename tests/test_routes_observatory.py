@@ -1,6 +1,67 @@
 import pytest
+from httpx import ASGITransport, AsyncClient
 
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.agent_registry_store import mint_registry_token
+
+
+# --- helpers ------------------------------------------------------------------
+
+
+async def _mint_agent(app, project_id, scopes, handle="@taOS-dev"):
+    """Register an active agent, grant it *scopes* for *project_id*, return
+    (canonical_id, bearer_token). project_id=None grants globally."""
+    registry = app.state.agent_registry
+    grants = app.state.agent_grants
+    for store in (registry, grants):
+        if store._db is None:
+            await store.init()
+    priv, _pub = app.state.agent_registry_keypair
+    rec = await registry.register(
+        framework="claude-code",
+        display_name="taOS dev",
+        origin="internal",
+        handle=handle,
+    )
+    cid = rec["canonical_id"]
+    if rec.get("status") != "active":
+        await registry.set_status(cid, "active")
+    for scope in scopes:
+        await grants.add_grant(cid, scope, project_id=project_id)
+    token = mint_registry_token(
+        cid, priv, user_id="u", framework="claude-code", project_id=project_id
+    )
+    return cid, token
+
+
+def _agent_client(app, token):
+    """Cookieless client that authenticates only via the agent bearer token."""
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _non_admin_client(app, username="bob"):
+    """Client authenticated as a non-admin human user."""
+    invite = app.state.auth.add_user_invite(username, "admin")
+    app.state.auth.complete_invite(username, invite, username.title(), "", "testpass1")
+    user = app.state.auth.find_user(username)
+    token = app.state.auth.create_session(user_id=user["id"], long_lived=True)
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+    )
+
+
+async def _new_project(client, name="alpha", slug="alpha"):
+    resp = await client.post("/api/projects", json={"name": name, "slug": slug})
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()["id"]
+
+
+# --- pause --------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -42,13 +103,12 @@ async def test_empty_scope_rejected(client):
 
 @pytest.mark.asyncio
 async def test_non_admin_cannot_pause(app, client):
-    # Override the auth dependency to a non-admin user for this request.
-    app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
-    try:
-        resp = await client.post("/api/observatory/pause", json={"scope": "global", "paused": True})
-        assert resp.status_code == 403
-    finally:
-        app.dependency_overrides.pop(current_user, None)
+    async with _non_admin_client(app) as ac:
+        resp = await ac.post("/api/observatory/pause", json={"scope": "global", "paused": True})
+    assert resp.status_code == 403
+
+
+# --- throttle -----------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -89,12 +149,126 @@ async def test_throttle_empty_scope_rejected(client):
 
 @pytest.mark.asyncio
 async def test_non_admin_cannot_throttle(app, client):
-    app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
-    try:
-        resp = await client.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 1})
-        assert resp.status_code == 403
-    finally:
-        app.dependency_overrides.pop(current_user, None)
+    async with _non_admin_client(app) as ac:
+        resp = await ac.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 1})
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_agent_with_observatory_control_can_set_throttle(app, client):
+    """An agent JWT with the observatory_control scope can PATCH the throttle dial."""
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("observatory_control",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 4})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["global"] == 4
+    # Value persists across a fresh read.
+    resp = await client.get("/api/observatory/throttle")
+    assert resp.json()["global"] == 4
+
+
+@pytest.mark.asyncio
+async def test_agent_without_observatory_control_cannot_set_throttle(app, client):
+    """An agent JWT without the observatory_control scope gets 403 on throttle writes."""
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("project_tasks",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/observatory/throttle", json={"scope": "global", "max_concurrent": 1})
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_agent_can_read_throttle(app, client):
+    """Any active agent token can read throttle state."""
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("project_tasks",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.get("/api/observatory/throttle")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"global": None, "lanes": {}}
+
+
+# --- queue --------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_queue_defaults_to_empty(client):
+    resp = await client.get("/api/observatory/queue")
+    assert resp.status_code == 200
+    assert resp.json() == {"global": None, "lanes": {}}
+
+
+@pytest.mark.asyncio
+async def test_global_queue_round_trips(client):
+    resp = await client.post("/api/observatory/queue", json={"scope": "global", "max_queue": 2})
+    assert resp.status_code == 200
+    assert resp.json()["global"] == 2
+    resp = await client.get("/api/observatory/queue")
+    assert resp.json()["global"] == 2
+    resp = await client.post("/api/observatory/queue", json={"scope": "global", "max_queue": 0})
+    assert resp.json()["global"] is None
+
+
+@pytest.mark.asyncio
+async def test_per_lane_queue_set_and_clear(client):
+    lane = "@taOS-dev-kilo-owl-alpha"
+    resp = await client.post("/api/observatory/queue", json={"scope": lane, "max_queue": 3})
+    assert resp.json()["lanes"].get(lane) == 3
+    assert resp.json()["global"] is None
+    resp = await client.post("/api/observatory/queue", json={"scope": lane, "max_queue": None})
+    assert lane not in resp.json()["lanes"]
+
+
+@pytest.mark.asyncio
+async def test_queue_empty_scope_rejected(client):
+    resp = await client.post("/api/observatory/queue", json={"scope": "  ", "max_queue": 2})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_set_queue(app, client):
+    async with _non_admin_client(app) as ac:
+        resp = await ac.post("/api/observatory/queue", json={"scope": "global", "max_queue": 1})
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_agent_with_observatory_control_can_set_queue(app, client):
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("observatory_control",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/observatory/queue", json={"scope": "global", "max_queue": 4})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["global"] == 4
+
+
+@pytest.mark.asyncio
+async def test_agent_without_observatory_control_cannot_set_queue(app, client):
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("project_tasks",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.post("/api/observatory/queue", json={"scope": "global", "max_queue": 1})
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_agent_can_read_queue(app, client):
+    pid = await _new_project(client)
+    _cid, token = await _mint_agent(app, pid, ("project_tasks",))
+
+    async with _agent_client(app, token) as ac:
+        resp = await ac.get("/api/observatory/queue")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"global": None, "lanes": {}}
+
+
+# --- approval-mode (session-only, unchanged) ----------------------------------
 
 
 @pytest.mark.asyncio
@@ -157,12 +331,12 @@ async def test_approval_mode_empty_scope_rejected(client):
 
 @pytest.mark.asyncio
 async def test_non_admin_cannot_set_approval_mode(app, client):
-    app.dependency_overrides[current_user] = lambda: CurrentUser(user_id="bob", is_admin=False)
-    try:
-        resp = await client.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "dont_ask"})
-        assert resp.status_code == 403
-    finally:
-        app.dependency_overrides.pop(current_user, None)
+    async with _non_admin_client(app) as ac:
+        resp = await ac.post("/api/observatory/approval-mode", json={"scope": "global", "mode": "dont_ask"})
+    assert resp.status_code == 403
+
+
+# --- fleet (session-only, unchanged) ------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -361,9 +535,9 @@ async def test_fleet_idle_agent_carries_its_framework(app, client):
     await reg.register(framework="hermes", display_name="Idle Fw",
                        handle="@lane-fw-idle", user_id="admin")
     agents = (await client.get("/api/observatory/fleet")).json()["agents"]
-    mine = [a for a in agents if a["handle"] == "@lane-fw-idle"]
-    assert len(mine) == 1
-    assert mine[0]["framework"] == "hermes"
+    idle = [a for a in agents if a["handle"] == "@lane-fw-idle"]
+    assert len(idle) == 1
+    assert idle[0]["framework"] == "hermes"
 
 
 @pytest.mark.asyncio

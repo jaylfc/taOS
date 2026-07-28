@@ -32,10 +32,19 @@ _A2A_BUS_READ_PATHS = frozenset({
 _A2A_BUS_WRITE_PATHS = frozenset({
     "/api/a2a/bus/send",
 })
+# Observatory OS-control routes an agent may reach with its own registry JWT.
+# Reads accept any active agent token; writes require the observatory_control
+# scope (verified by the route, which also accepts an admin session). Exact
+# path allowlist, closed to everything else.
+_AGENT_OBSERVATORY_PATHS = frozenset({
+    "/api/observatory/throttle",
+    "/api/observatory/queue",
+    "/api/observatory/pause",
+})
 # Every path that accepts a registry JWT in place of the admin session.  The
 # passthrough is allowlisted to exactly these paths -- a registry JWT must never
 # authenticate an arbitrary route (no skeleton key).
-_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE_PATHS
+_AGENT_TOKEN_PATHS = _REGISTRY_FEED_PATHS | _A2A_BUS_READ_PATHS | _A2A_BUS_WRITE_PATHS | _AGENT_OBSERVATORY_PATHS
 
 # Project kanban routes an agent may reach with its own registry JWT (scope
 # project_tasks, verified + project-bound by the route).  These are DYNAMIC

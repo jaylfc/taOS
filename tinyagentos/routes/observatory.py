@@ -32,7 +32,7 @@ _DEFAULT_STATE: dict = {"global": False, "lanes": {}}
 # no-trace-progress check is phase 2 once the lane->trace-slug mapping is wired.
 STALE_CLAIM_SECONDS = 1800
 
-# Serialise read-modify-write of the pause/throttle state files so two
+# Serialise read-modify-write of the pause/throttle/queue state files so two
 # concurrent admin POSTs cannot lose an update (each reads the same prior
 # state and the second os.replace clobbers the first). The writes are
 # infrequent admin actions, so a single in-process lock is sufficient.
@@ -85,19 +85,45 @@ class PauseBody(BaseModel):
     paused: bool
 
 
+# --- Observatory auth resolver -------------------------------------------------
+# Read routes accept any active agent token or a logged-in human session.
+# Write routes accept an admin session or an agent JWT that holds the
+# observatory_control scope grant.
+# Never session-only: the registry JWT path is the primary agent control surface.
+
+async def _require_observatory_read(request: Request) -> None:
+    from tinyagentos.agent_token_auth import check_agent_identity
+    cid = await check_agent_identity(request)
+    if cid is not None:
+        return
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="authentication required")
+
+
+async def _require_observatory_write(request: Request) -> str:
+    from tinyagentos.agent_token_auth import check_agent_scope
+    cid = await check_agent_scope(request, "observatory_control")
+    if cid is not None:
+        return cid
+    uid = getattr(request.state, "user_id", None)
+    if uid and getattr(request.state, "is_admin", False):
+        return uid
+    raise HTTPException(status_code=403, detail="forbidden")
+
+
 @router.get("/api/observatory/pause")
-async def get_pause(request: Request, user: CurrentUser = Depends(current_user)):
+async def get_pause(request: Request, _auth: None = Depends(_require_observatory_read)):
     """Current pause state. Any authenticated caller (and the dispatch loop,
     which polls this each iteration) may read it."""
     return _read_state(request)
 
 
 @router.post("/api/observatory/pause")
-async def set_pause(body: PauseBody, request: Request, user: CurrentUser = Depends(current_user)):
-    """Pause or resume the queue globally or for a single lane. Admin only,
-    since it steers the whole fleet."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="forbidden")
+async def set_pause(body: PauseBody, request: Request, _actor: str = Depends(_require_observatory_write)):
+    """Pause or resume the queue globally or for a single lane. Admin session
+    or agent JWT with observatory_control scope only, since it steers the
+    whole fleet."""
     scope = body.scope.strip()
     if not scope:
         return JSONResponse({"error": "scope required"}, status_code=400)
@@ -154,16 +180,15 @@ class ThrottleBody(BaseModel):
 
 
 @router.get("/api/observatory/throttle")
-async def get_throttle(request: Request, user: CurrentUser = Depends(current_user)):
+async def get_throttle(request: Request, _auth: None = Depends(_require_observatory_read)):
     """Current concurrency caps. The dispatch loop polls this each iteration."""
     return _read_throttle(request)
 
 
 @router.post("/api/observatory/throttle")
-async def set_throttle(body: ThrottleBody, request: Request, user: CurrentUser = Depends(current_user)):
-    """Set or clear a concurrency cap globally or for a single lane. Admin only."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="forbidden")
+async def set_throttle(body: ThrottleBody, request: Request, _actor: str = Depends(_require_observatory_write)):
+    """Set or clear a concurrency cap globally or for a single lane. Admin session
+    or agent JWT with observatory_control scope only."""
     scope = body.scope.strip()
     if not scope:
         return JSONResponse({"error": "scope required"}, status_code=400)
@@ -177,6 +202,63 @@ async def set_throttle(body: ThrottleBody, request: Request, user: CurrentUser =
         else:
             state["lanes"].pop(scope, None)
         _atomic_write(_throttle_path(request), state)
+    return state
+
+
+# --- Dispatch queue control (read + write). Agents drive the queue through
+# this endpoint; reads are open to any active agent, writes require the
+# observatory_control scope just like throttle/pause. State is a JSON file in
+# data_dir so it survives restarts. ---
+
+
+def _queue_path(request: Request) -> Path:
+    return Path(request.app.state.data_dir) / "observatory_queue.json"
+
+
+def _read_queue(request: Request) -> dict:
+    p = _queue_path(request)
+    if not p.exists():
+        return {"global": None, "lanes": {}}
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {"global": None, "lanes": {}}
+    lanes = {}
+    for k, v in (data.get("lanes") or {}).items():
+        lim = _coerce_limit(v)
+        if lim is not None:
+            lanes[str(k)] = lim
+    return {"global": _coerce_limit(data.get("global")), "lanes": lanes}
+
+
+class QueueBody(BaseModel):
+    scope: str  # "global" or a lane handle
+    max_queue: int | None = None  # None or <= 0 clears the cap
+
+
+@router.get("/api/observatory/queue")
+async def get_queue(request: Request, _auth: None = Depends(_require_observatory_read)):
+    """Current dispatch queue caps."""
+    return _read_queue(request)
+
+
+@router.post("/api/observatory/queue")
+async def set_queue(body: QueueBody, request: Request, _actor: str = Depends(_require_observatory_write)):
+    """Set or clear a dispatch queue cap globally or for a single lane. Admin session
+    or agent JWT with observatory_control scope only."""
+    scope = body.scope.strip()
+    if not scope:
+        return JSONResponse({"error": "scope required"}, status_code=400)
+    limit = _coerce_limit(body.max_queue)
+    async with _write_lock:
+        state = _read_queue(request)
+        if scope == "global":
+            state["global"] = limit
+        elif limit is not None:
+            state["lanes"][scope] = limit
+        else:
+            state["lanes"].pop(scope, None)
+        _atomic_write(_queue_path(request), state)
     return state
 
 
