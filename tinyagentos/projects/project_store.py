@@ -379,6 +379,64 @@ class ProjectStore(BaseStore):
             keys = [d[0] for d in cur.description]
         return dict(zip(keys, row))
 
+    async def is_project_member(
+        self, project_id: str, member_id: str, *, member_kind: str | None = None
+    ) -> bool:
+        """Return True if *member_id* is a member of *project_id*.
+
+        When *member_kind* is provided, only match members of that kind
+        (e.g. ``"human"`` for cross-user collab delegation checks).
+        """
+        if member_kind is not None:
+            async with self._db.execute(
+                "SELECT 1 FROM project_members "
+                "WHERE project_id = ? AND member_id = ? AND member_kind = ?",
+                (project_id, member_id, member_kind),
+            ) as cur:
+                return (await cur.fetchone()) is not None
+        else:
+            async with self._db.execute(
+                "SELECT 1 FROM project_members "
+                "WHERE project_id = ? AND member_id = ?",
+                (project_id, member_id),
+            ) as cur:
+                return (await cur.fetchone()) is not None
+
+    async def get_project_setting(
+        self, project_id: str, key: str, default=None
+    ):
+        """Read a single key from the project's JSON settings dict.
+
+        Returns *default* if the project does not exist, has no settings, or
+        the key is absent.
+        """
+        project = await self.get_project(project_id)
+        if project is None:
+            return default
+        settings = project.get("settings") or {}
+        return settings.get(key, default)
+
+    async def set_project_setting(
+        self, project_id: str, key: str, value
+    ) -> bool:
+        """Set a single key in the project's JSON settings dict.
+
+        Returns True if the project was found and updated, False otherwise.
+        """
+        project = await self.get_project(project_id)
+        if project is None:
+            return False
+        settings = project.get("settings") or {}
+        if not isinstance(settings, dict):
+            settings = {}
+        settings[key] = value
+        await self._db.execute(
+            "UPDATE projects SET settings = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(settings), time.time(), project_id),
+        )
+        await self._db.commit()
+        return True
+
     async def log_activity(
         self,
         project_id: str,

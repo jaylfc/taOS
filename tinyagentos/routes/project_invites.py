@@ -1121,6 +1121,15 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
     if "project_tasks" not in scopes:
         scopes = ["project_tasks"] + scopes
 
+    # Extract sponsor_contact_id from delegation-sponsored invites (D1).
+    invite_metadata = invite.get("metadata") or {}
+    if isinstance(invite_metadata, str):
+        try:
+            invite_metadata = json.loads(invite_metadata)
+        except (ValueError, TypeError):
+            invite_metadata = {}
+    sponsor_contact_id = invite_metadata.get("sponsor_contact_id") if isinstance(invite_metadata, dict) else None
+
     handle = _derive_handle(project.get("slug") or invite["project_id"], body.harness, body.label)
     handle = await _dedupe_handle(request, handle)
 
@@ -1155,6 +1164,7 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
                 effective_project=invite["project_id"],
                 decided_by=invite["created_by"],
                 project_id=invite["project_id"],
+                sponsor_contact_id=sponsor_contact_id,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
             await store.rollback_to_pending(body.invite_id)
@@ -1211,6 +1221,15 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
             raw_scopes = []
     scopes = list(raw_scopes)
 
+    # Extract sponsor_contact_id from delegation-sponsored invites (D1).
+    invite_metadata = invite.get("metadata") or {}
+    if isinstance(invite_metadata, str):
+        try:
+            invite_metadata = json.loads(invite_metadata)
+        except (ValueError, TypeError):
+            invite_metadata = {}
+    sponsor_contact_id = invite_metadata.get("sponsor_contact_id") if isinstance(invite_metadata, dict) else None
+
     display_name = invite.get("display_name")
     handle = _derive_os_handle(display_name, body.harness, body.label)
     handle = await _dedupe_handle(request, handle)
@@ -1238,6 +1257,7 @@ async def _redeem_os_level(request: Request, body: RedeemInviteIn, invite: dict,
                 decided_by=invite["created_by"],
                 project_id=None,
                 display_name=display_name,
+                sponsor_contact_id=sponsor_contact_id,
             )
         except Exception as exc:  # noqa: BLE001 - surface as JSON error
             await store.rollback_to_pending(body.invite_id)

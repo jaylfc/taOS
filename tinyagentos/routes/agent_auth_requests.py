@@ -355,6 +355,7 @@ async def approve_request_record(
     decided_by: str,
     project_id: str | None = None,
     display_name: str | None = None,
+    sponsor_contact_id: str | None = None,
 ) -> dict:
     """Register an agent, mint its token, write grants + relationships +
     membership + a2a sync, and record the decision.
@@ -366,6 +367,10 @@ async def approve_request_record(
     from the invite. ``decided_by`` is the actor recorded on the decision; for
     the consent route it is the approving admin's user_id, for invite auto-mode
     it is the invite's ``created_by``.
+
+    ``sponsor_contact_id`` is set for delegated agents (cross-user collab D1)
+    — the contact_id of the human who sponsored this agent.  Omitted (None) for
+    normal consent and invite flows.
 
     Returns ``{"status": "accepted", "canonical_id": ...}``.
 
@@ -452,6 +457,10 @@ async def approve_request_record(
                 framework=record["framework"],
                 project_id=project_id,
             )
+            # For sponsored agents (cross-user collab D1), set the sponsor
+            # on the existing identity when reusing it for a new project.
+            if sponsor_contact_id:
+                await registry.set_sponsor(existing_cid, sponsor_contact_id)
             await add_agent_to_project(
                 request,
                 canonical_id=existing_cid,
@@ -502,6 +511,7 @@ async def approve_request_record(
             # auth-request record / invite, not the registry origin column.
             origin="external-selfjoin",
             handle=handle,
+            sponsor_contact_id=sponsor_contact_id,
         )
         canonical_id = reg_record["canonical_id"]
 

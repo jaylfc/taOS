@@ -112,6 +112,7 @@ async def _authenticate_peer(request: Request) -> str:
     """Verify the bearer peer token and return the contact_id.
 
     Raises 401 if the token is missing, invalid, or the contact is not active.
+    Raises 503 if the per-instance peer panic switch is active.
 
     The peer token is stored hashed in peer_links.inbound_token_hash.  We
     look up the contact via an indexed hash lookup on the inbound_token_hash
@@ -120,6 +121,11 @@ async def _authenticate_peer(request: Request) -> str:
     store = request.app.state.contacts_store
     if store is None:
         raise HTTPException(status_code=503, detail="peer channel not available")
+
+    # Per-instance panic kill-switch (D1 level 3): blocks all peer traffic.
+    from tinyagentos.delegation_handler import is_peer_disabled
+    if is_peer_disabled(request):
+        raise HTTPException(status_code=503, detail="peer routes disabled (per-instance panic)")
 
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
@@ -240,7 +246,7 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     # Mark peer as seen
     await store.mark_peer_seen(contact_id)
 
-    # Dispatch the envelope by kind.
+    # Log the envelope kind for debugging; dispatch known kinds to their handlers.
     kind = envelope.get("kind", "unknown")
     body_data = envelope.get("body", {})
 
@@ -250,12 +256,20 @@ async def peer_inbox(body: PeerEnvelope, request: Request):
     if kind in ("collab_invite_accept", "collab_invite_decline"):
         return await _handle_collab_response(request, contact_id, envelope, body_data, kind)
 
+    # Dispatch delegation requests to the cross-user collab handler (D1).
+    if kind == "delegation_request":
+        from tinyagentos.delegation_handler import process_delegation_request
+
+        result = await process_delegation_request(
+            request, contact_id=contact_id, envelope_body=body_data,
+        )
+        return {"status": result.get("status", "unknown"), "detail": result}
+
     # Log unrecognised kinds for debugging; they are accepted but not dispatched.
     logger.info(
-        "peer_inbox: contact=%s kind=%s nonce=%s (unrecognised kind — accepted, no dispatch)",
+        "peer_inbox: contact=%s kind=%s nonce=%s (unrecognised kind -- accepted, no dispatch)",
         contact_id, kind, envelope.get("nonce", "?"),
     )
-
     return {"status": "received", "kind": kind, "nonce": envelope.get("nonce")}
 
 

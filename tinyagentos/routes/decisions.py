@@ -317,7 +317,8 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     routed_app = await _apply_app_grant(request, updated, body.value)
     routed_exec = await _apply_execution_grant(request, updated, body.value)
     routed_deleg = await _apply_delegation_grant(request, updated, body.value)
-    if not (routed_app or routed_exec or routed_deleg):
+    routed_collab = await _apply_collab_delegation_grant(request, updated, body.value)
+    if not (routed_app or routed_exec or routed_deleg or routed_collab):
         await _route_answer_to_agent(updated, body.value)
     return updated
 
@@ -414,15 +415,60 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
                     "delegate grant write failed for agent %s (decision %s)",
                     from_agent, decision.get("id"), exc_info=True,
                 )
-    # Tell the agent the truth: only claim the task was assigned when the
-    # completion actually succeeded, so a failed assign is not reported as done.
-    if not approved:
-        reply = "delegation denied"
-    elif completed:
-        reply = "delegation approved - the task has been assigned"
     else:
-        reply = "delegation approved, but assigning the task failed - please retry"
+        reply = f"The delegation to {to_agent} was denied."
     await _route_answer_to_agent(decision, reply)
+    return True
+
+
+async def _apply_collab_delegation_grant(request: Request, decision: dict, value) -> bool:
+    """Side effect for a cross-user collab delegation-gate Decision (D1).
+
+    The decision's metadata carries {kind: \"collab_delegation_gate\", contact_id,
+    agent_slug, display_name, granted_scopes, denied_scopes, project_id}.
+
+    Approving it mints a project invite for the sponsored agent and returns
+    the connection bundle over the peer channel.  Denying just routes the answer
+    (the remote contact's instance polls for the decision result).
+
+    Mirrors ``_apply_delegation_grant``: the answer is already persisted, so a
+    delegation-completion hiccup must not fail the answer.
+    """
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "collab_delegation_gate":
+        return False
+
+    approved = value == "approve"
+    if not approved:
+        # Denied -- just route the deny back so the remote contact knows.
+        deny_text = f"Delegation of {meta.get('agent_slug', '')} by {meta.get('contact_id', '')} was denied."
+        await _route_answer_to_agent(decision, deny_text)
+        return True
+
+    # Approved -- mint the project invite via the delegation handler.
+    try:
+        from tinyagentos.delegation_handler import complete_delegation_approval
+
+        result = await complete_delegation_approval(
+            request, decision_metadata=meta,
+        )
+        if result.get("status") == "approved":
+            invite_id = result.get("invite_id", "")
+            reply = (
+                f"Delegation approved. Agent '{meta.get('agent_slug', '')}' "
+                f"sponsored by {meta.get('contact_id', '')}. "
+                f"Invite ID: {invite_id}. "
+                f"Share this invite with the remote contact so their agent can join."
+            )
+            await _route_answer_to_agent(decision, reply)
+        else:
+            error_text = f"Delegation approval failed: {result.get('error', 'unknown error')}"
+            await _route_answer_to_agent(decision, error_text)
+    except Exception:
+        logger.warning(
+            "collab delegation completion failed for decision %s",
+            decision.get("id"), exc_info=True,
+        )
     return True
 
 

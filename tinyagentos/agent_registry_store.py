@@ -34,18 +34,19 @@ logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_registry (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    canonical_id    TEXT    NOT NULL UNIQUE,
-    display_name    TEXT    NOT NULL DEFAULT '',
-    framework       TEXT    NOT NULL DEFAULT '',
-    user_id         TEXT    NOT NULL DEFAULT '',
-    origin          TEXT    NOT NULL DEFAULT 'taos-deployed',
-    handle          TEXT    NOT NULL DEFAULT '',
-    role            TEXT,
-    capabilities    TEXT    NOT NULL DEFAULT '[]',
-    created_ts      TEXT    NOT NULL,
-    revoked_at      TEXT,
-    status          TEXT    NOT NULL DEFAULT 'active'
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_id        TEXT    NOT NULL UNIQUE,
+    display_name        TEXT    NOT NULL DEFAULT '',
+    framework           TEXT    NOT NULL DEFAULT '',
+    user_id             TEXT    NOT NULL DEFAULT '',
+    origin              TEXT    NOT NULL DEFAULT 'taos-deployed',
+    handle              TEXT    NOT NULL DEFAULT '',
+    role                TEXT,
+    capabilities        TEXT    NOT NULL DEFAULT '[]',
+    created_ts          TEXT    NOT NULL,
+    revoked_at          TEXT,
+    status              TEXT    NOT NULL DEFAULT 'active',
+    sponsor_contact_id  TEXT
 );
 """
 
@@ -202,6 +203,26 @@ async def _migration_v4_dedupe_active_handles(conn) -> None:
             canonical_id,
         )
     if demoted:
+        await conn.commit()
+
+
+async def _migration_v5_add_sponsor_contact_id(conn) -> None:
+    """Add sponsor_contact_id column (idempotent) for Cross-User Collab D1.
+
+    Delegated agents (those minted via a contact's delegation-request flow)
+    carry ``sponsor_contact_id`` linking back to the sponsoring contact.
+    Existing rows (non-delegated) get NULL.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "sponsor_contact_id" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN sponsor_contact_id TEXT"
+        )
         await conn.commit()
 
 
@@ -417,6 +438,7 @@ class AgentRegistryStore(BaseStore):
         # Dedupe BEFORE the index so a pre-invariant DB with duplicate active
         # handles cannot make the CREATE UNIQUE INDEX (hence boot) fail.
         await _migration_v4_dedupe_active_handles(self._db)
+        await _migration_v5_add_sponsor_contact_id(self._db)
         # Created after the status migration so the partial index's WHERE clause
         # can reference the status column on the pre-status migration path.
         # Guard the index creation too: if some path we did not anticipate still
@@ -447,12 +469,17 @@ class AgentRegistryStore(BaseStore):
         title: Optional[str] = None,
         reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
+        sponsor_contact_id: Optional[str] = None,
     ) -> dict:
         """Mint a canonical_id, persist the record, and return it.
 
         ``reports_to`` is stored as-is with no validation here (the row does
         not exist yet, so it cannot be part of an existing cycle) - use
         ``set_reporting`` after registration to validate a manager change.
+
+        ``sponsor_contact_id`` is set for delegated agents (cross-user collab
+        D1) — the contact_id of the human who sponsored this agent.  NULL for
+        all other origins.
 
         Raises ``RuntimeError`` if the store is not initialised.
         """
@@ -487,11 +514,13 @@ class AgentRegistryStore(BaseStore):
             """
             INSERT INTO agent_registry
                 (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, title, reports_to, capabilities, created_ts, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 handle, role, title, reports_to, capabilities, created_ts,
+                 status, sponsor_contact_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (canonical_id, display_name, framework, user_id, origin,
-             handle, role, title, reports_to, caps_json, created_ts, initial_status),
+             handle, role, title, reports_to, caps_json, created_ts,
+             initial_status, sponsor_contact_id),
         )
         await self._db.commit()
 
@@ -614,6 +643,51 @@ class AgentRegistryStore(BaseStore):
         )
         rows = await cursor.fetchall()
         return [{"canonical_id": r["canonical_id"], "status": r["status"]} for r in rows]
+
+    async def list_by_sponsor(
+        self, sponsor_contact_id: str, *, status: Optional[str] = None
+    ) -> list[dict]:
+        """Return all registry records sponsored by *sponsor_contact_id*.
+
+        Used for cascade revocation: when a contact or their project membership
+        is revoked, all sponsored agent identities are revoked and their tokens
+        invalidated.  Optionally filtered by *status*.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if status is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry "
+                "WHERE sponsor_contact_id = ? AND status = ? ORDER BY id",
+                (sponsor_contact_id, status),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry "
+                "WHERE sponsor_contact_id = ? ORDER BY id",
+                (sponsor_contact_id,),
+            )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def set_sponsor(
+        self, canonical_id: str, sponsor_contact_id: Optional[str]
+    ) -> Optional[dict]:
+        """Set (or, with ``None``, clear) the sponsor_contact_id on a registry row.
+
+        Returns the updated record, or None if *canonical_id* does not exist.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            return None
+        await self._db.execute(
+            "UPDATE agent_registry SET sponsor_contact_id = ? WHERE canonical_id = ?",
+            (sponsor_contact_id, canonical_id),
+        )
+        await self._db.commit()
+        return await self.get(canonical_id)
 
     # ------------------------------------------------------------------
     # Lifecycle state machine
