@@ -237,6 +237,24 @@ describe("createWatch", () => {
     const result = await createWatch("baduser");
     expect(result).toBeNull();
   });
+
+  it("forwards CSRF token from a Headers instance through fetchJson", async () => {
+    // Regression: spreading a Headers object into an object literal
+    // drops all entries because Headers entries are not own-enumerable.
+    // withCsrf() returns a Headers instance; fetchJson must normalise it.
+    vi.stubGlobal("document", {
+      cookie: "csrf_token=hdr-token",
+    } as unknown as Document);
+    globalThis.fetch = mockFetchJson(MOCK_WATCH);
+    await createWatch("elonmusk");
+    const [, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    // init.headers may be a Headers instance or a plain object depending
+    // on the code path — in either case the CSRF token must survive.
+    const hdr = init.headers instanceof Headers
+      ? init.headers.get("X-CSRF-Token")
+      : (init.headers as Record<string, string>)["X-CSRF-Token"];
+    expect(hdr).toBe("hdr-token");
+  });
 });
 
 /* ------------------------------------------------------------------ */
