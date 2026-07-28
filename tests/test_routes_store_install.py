@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -593,6 +594,236 @@ class TestInstallV2:
 
         # Restore the original so teardown is clean.
         reg.verify_manifest_signature = original_verify  # type: ignore[method-assign]
+
+    # ── TOCTOU refusal-path tests ──────────────────────────────────────
+    # Each test exercises one failure mode of the install-time TOCTOU
+    # re-verification guard.  The first gate is monkeypatched to return
+    # success so the TOCTOU guard is what actually catches the failure;
+    # each test asserts 403 to prove the gate goes red where it counts.
+
+    @pytest.mark.asyncio
+    async def test_toctou_manifest_missing_returns_403(self, client, tmp_path):
+        """TOCTOU re-verify returns 403 when manifest.yaml is deleted
+        between the initial gate check and the install."""
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        catalog_dir = tmp_path / "catalog"
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\nname: Test Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        priv, pub = generate_signing_keypair()
+        installed_path = tmp_path / "installed.json"
+        installed_path.write_text("[]")
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        reg._ensure_loaded()
+
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        # Make the first gate pass so the TOCTOU guard runs.
+        reg.verify_manifest_signature = lambda aid, pem: True  # type: ignore[method-assign]
+
+        # Sabotage: delete the manifest from disk.
+        os.remove(manifest_path)
+
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code == 403
+        assert resp.json()["error"] == (
+            "manifest modified between signature verification and install"
+        )
+
+    @pytest.mark.asyncio
+    async def test_toctou_manifest_unreadable_returns_403(self, client, tmp_path):
+        """TOCTOU re-verify returns 403 when manifest.yaml cannot be read
+        (permissions revoked) between the initial gate and the install."""
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        catalog_dir = tmp_path / "catalog"
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\nname: Test Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        priv, pub = generate_signing_keypair()
+        installed_path = tmp_path / "installed.json"
+        installed_path.write_text("[]")
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        reg._ensure_loaded()
+
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        reg.verify_manifest_signature = lambda aid, pem: True  # type: ignore[method-assign]
+
+        # Sabotage: revoke read permission.
+        try:
+            os.chmod(manifest_path, 0o000)
+            resp = await client.post("/api/store/install-v2", json={
+                "manifest_id": "test-svc",
+            })
+            assert resp.status_code == 403
+            assert resp.json()["error"] == (
+                "manifest modified between signature verification and install"
+            )
+        finally:
+            os.chmod(manifest_path, 0o644)  # restore so tmp_path can clean up
+
+    @pytest.mark.asyncio
+    async def test_toctou_safe_load_empty_returns_403(self, client, tmp_path):
+        """TOCTOU re-verify returns 403 when the on-disk YAML parses to
+        an empty/falsy value (truncated or corrupted manifest)."""
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        catalog_dir = tmp_path / "catalog"
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\nname: Test Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        priv, pub = generate_signing_keypair()
+        installed_path = tmp_path / "installed.json"
+        installed_path.write_text("[]")
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        reg._ensure_loaded()
+
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        reg.verify_manifest_signature = lambda aid, pem: True  # type: ignore[method-assign]
+
+        # Sabotage: truncate the manifest to empty.
+        manifest_path.write_text("")
+
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code == 403
+        assert resp.json()["error"] == (
+            "manifest modified between signature verification and install"
+        )
+
+    @pytest.mark.asyncio
+    async def test_toctou_stored_sig_none_returns_403(self, client, tmp_path):
+        """TOCTOU re-verify returns 403 when the registry has no stored
+        signature for the manifest (signature was lost or never persisted).
+
+        The first gate sees ``stored_sig is None`` and, because the
+        manifest is not a signing failure, allows the install through.
+        The TOCTOU guard then re-checks on its own and blocks — proving
+        the two gates are independently fail-closed for this case too."""
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        catalog_dir = tmp_path / "catalog"
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\nname: Test Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        priv, pub = generate_signing_keypair()
+        installed_path = tmp_path / "installed.json"
+        installed_path.write_text("[]")
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        reg._ensure_loaded()
+        # Clear the stored signature so both gates see None.
+        reg._signatures.pop("test-svc", None)
+
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code == 403
+        assert resp.json()["error"] == (
+            "manifest modified between signature verification and install"
+        )
+
+    @pytest.mark.asyncio
+    async def test_toctou_signature_mismatch_returns_403(self, client, tmp_path):
+        """TOCTOU re-verify returns 403 when the on-disk manifest has been
+        tampered with between the initial gate check and the install."""
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        catalog_dir = tmp_path / "catalog"
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\nname: Test Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        priv, pub = generate_signing_keypair()
+        installed_path = tmp_path / "installed.json"
+        installed_path.write_text("[]")
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        reg._ensure_loaded()
+
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        # Make the first gate pass so the TOCTOU guard runs.
+        reg.verify_manifest_signature = lambda aid, pem: True  # type: ignore[method-assign]
+
+        # Sabotage: tamper with the manifest on disk.
+        manifest_path.write_text(
+            "id: test-svc\nname: EVIL Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code == 403
+        assert resp.json()["error"] == (
+            "manifest modified between signature verification and install"
+        )
 
     @pytest.mark.asyncio
     async def test_no_signing_key_skips_verification(self, client):

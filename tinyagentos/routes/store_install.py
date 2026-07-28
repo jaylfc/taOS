@@ -814,15 +814,15 @@ async def install_app(request: Request):
                 if not disk_path.exists():
                     return False
                 on_disk = _yaml.safe_load(disk_path.read_text())
+                if not on_disk:
+                    return False
+                stored_sig = registry.get_signature(manifest_id)
+                if stored_sig is None:
+                    return False
+                from tinyagentos.store_signing import verify_manifest_signature as _verify_sig
+                return _verify_sig(on_disk, stored_sig, _store_pub)
             except Exception:
                 return False
-            if not on_disk:
-                return False
-            stored_sig = registry.get_signature(manifest_id)
-            if stored_sig is None:
-                return False
-            from tinyagentos.store_signing import verify_manifest_signature as _verify_sig
-            return _verify_sig(on_disk, stored_sig, _store_pub)
 
         if not await asyncio.to_thread(_toctou_reverify):
             progress.finish(
