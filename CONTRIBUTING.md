@@ -176,6 +176,7 @@ The UI is a React SPA (`desktop/`) built with Vite. Static assets are served fro
 - Follow existing React patterns in `desktop/src/` - no server-rendered templates for new features
 - ARIA labels are required on interactive elements without visible text labels
 - One concern per component; keep API calls in dedicated hooks or service files
+- Every surface is a LIVE surface: refetch on focus/visibility (S1 hook, `tsk-vp7tt6`) and subscribe to the OS event stream (S2 hook, `tsk-yh36f7`). Fetch-on-mount-once is a defect. See `docs/design/live-surface-law.md` for the full convention.
 
 ### Tests
 

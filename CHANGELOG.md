@@ -7,6 +7,16 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Changed
+
+- **New design law: every surface is a LIVE surface.** Windows, panes, and PWAs
+  must auto-refresh on focus/visibility (S1 hook, `tsk-vp7tt6`) and subscribe
+  to the OS event stream (S2 hook, `tsk-yh36f7`). State changes animate where
+  motion aids comprehension, respecting `prefers-reduced-motion` and low-end
+  hardware paths. Any PR touching a non-conforming surface must bring it up to
+  the convention in the same PR unless the work dwarfs the original change.
+  See `docs/design/live-surface-law.md`.
+
 ### Fixed
 
 - **Push notifications never routed to the correct app.** Three independent faults
