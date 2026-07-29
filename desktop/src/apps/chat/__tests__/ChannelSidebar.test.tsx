@@ -586,6 +586,75 @@ describe("ChannelSidebar — projects", () => {
     fireEvent.click(screen.getByText(/Projects/));
     expect(onToggleProjects).toHaveBeenCalledOnce();
   });
+
+  it("renders project group names on desktop", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({ projectGroups: [projectGroup] })}
+      />,
+    );
+    expect(screen.getByText("My Project")).toBeInTheDocument();
+  });
+
+  it("renders Bot icon for A2A project channels on desktop", () => {
+    const a2aCh = makeA2aChannel({ id: "pc-a2a", name: "a2a-proj" });
+    const pg = { id: "proj-a2a", name: "A2A Project", channels: [a2aCh] };
+    const { container } = render(
+      <ChannelSidebar {...buildProps({ projectGroups: [pg] })} />,
+    );
+    expect(screen.getByText("a2a-proj")).toBeInTheDocument();
+    // The A2A Bot icon should be inside the project channel button
+    const channelBtn = screen.getByRole("button", {
+      name: `Channel ${a2aCh.name}`,
+    });
+    expect(channelBtn.querySelector("svg")).toBeTruthy();
+  });
+
+  it("calls onToggleProjectChannel on mobile project group header click", () => {
+    const onToggleProjectChannel = vi.fn();
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          projectGroups: [projectGroup],
+          projectsExpanded: true,
+          projectChannelExpanded: { "proj-1": false },
+          onToggleProjectChannel,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByText("My Project"));
+    expect(onToggleProjectChannel).toHaveBeenCalledWith("proj-1");
+  });
+
+  it("shows unread badge on mobile project channels", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          projectGroups: [projectGroup],
+          projectsExpanded: true,
+          projectChannelExpanded: { "proj-1": true },
+          unread: { "pc-1": 7 },
+        })}
+      />,
+    );
+    // Project channel "proj-general" should show "7" badge
+    expect(screen.getByText("7")).toBeInTheDocument();
+  });
+
+  it("hides Projects section on mobile when scope has projectId", () => {
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          projectGroups: [projectGroup],
+          scope: { projectId: "proj-1" },
+        })}
+      />,
+    );
+    expect(screen.queryByText(/Projects/)).not.toBeInTheDocument();
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -709,5 +778,29 @@ describe("ChannelSidebar — edge cases", () => {
     render(<ChannelSidebar {...buildProps({ sections })} />);
     const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
     expect(btn).not.toHaveAttribute("title");
+  });
+
+  it("passes nowMs to formatRelativeTime for mobile channel timestamps", () => {
+    const nowMs = 1700000000000;
+    const formatRelativeTime = vi.fn().mockReturnValue("just now");
+    const ch = makeChannel({
+      id: "ch-ts",
+      last_message_at: "2026-01-01T00:00:00Z",
+    });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({
+          isMobile: true,
+          sections,
+          nowMs,
+          formatRelativeTime,
+        })}
+      />,
+    );
+    expect(formatRelativeTime).toHaveBeenCalledWith(
+      "2026-01-01T00:00:00Z",
+      nowMs,
+    );
   });
 });
