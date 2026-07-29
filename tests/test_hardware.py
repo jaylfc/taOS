@@ -130,6 +130,34 @@ class TestDetectNpuRknpuModernPaths:
         npu = hardware_mod._detect_npu()
         assert npu.type == "rknpu"
 
+    def test_device_tree_fallback_no_driver_paths(self, monkeypatch):
+        """When no rknpu driver paths exist but device-tree reports RK3588,
+        _detect_npu still returns an rknpu NpuInfo (fresh flash / early boot)."""
+        # No driver paths exist
+        monkeypatch.setattr(hardware_mod, "_path_exists_safe", lambda p: False)
+        monkeypatch.setattr(hardware_mod, "_drm_has_rknpu", lambda: False)
+        # Neutralise lspci / non-rknpu probes
+        monkeypatch.setattr(hardware_mod, "_run", lambda *a, **k: "")
+        # No /dev/apex_* or hailo* globs
+        monkeypatch.setattr(Path, "glob", lambda self, pattern: iter([]))
+        # Device-tree reports RK3588
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/proc/device-tree/model":
+                return "Orange Pi 5 Plus"
+            if str(self) == "/proc/device-tree/compatible":
+                return "rockchip,rk3588\0rockchip,rk3588-orangepi-5-plus"
+            raise OSError("stubbed")
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        monkeypatch.setattr(Path, "exists", lambda self: str(self) in (
+            "/proc/device-tree/model", "/proc/device-tree/compatible",
+        ))
+
+        npu = hardware_mod._detect_npu()
+        assert npu.type == "rknpu"
+        assert npu.device == "rk3588"
+        assert npu.tops == 6
+        assert npu.cores == 3
+
 
 class TestGetHardwareProfile:
     def test_always_reprobes_on_startup(self, tmp_path, monkeypatch):

@@ -285,6 +285,25 @@ def _detect_npu() -> NpuInfo:
             pass
         tops = 6 if cores == 3 else (6 if cores == 1 else 1)
         return NpuInfo(type="rknpu", device=soc or "rknpu", tops=tops, cores=cores)
+    # Fallback: detect Rockchip SoC from device-tree even when the rknpu
+    # driver hasn't been loaded yet (fresh flash, early boot, kernel
+    # without the module). The SoC is known from device-tree/model and
+    # device-tree/compatible without any driver — report the NPU so the
+    # setup wizard can offer the backend install step (#1535).
+    try:
+        dt_text = ""
+        for dt in ("/proc/device-tree/model", "/proc/device-tree/compatible"):
+            p = Path(dt)
+            if p.exists():
+                dt_text += " " + p.read_text().replace("\x00", " ").lower()
+        if "rk3588" in dt_text:
+            return NpuInfo(type="rknpu", device="rk3588", tops=6, cores=3)
+        if "rk3576" in dt_text:
+            return NpuInfo(type="rknpu", device="rk3576", tops=6, cores=1)
+        if "rk3568" in dt_text:
+            return NpuInfo(type="rknpu", device="rk3568", tops=1, cores=1)
+    except (OSError, ValueError):
+        pass
     # Hailo — distinguish 8L (13 TOPS, vision only) from 10H (40 TOPS, LLM capable)
     for p in Path("/dev").glob("hailo*"):
         hailo_info = _run(["lspci", "-d", "1e60:"])
