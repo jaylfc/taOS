@@ -261,7 +261,7 @@ async def _auto_approve_delegation(
     Mints a project invite (kind="agent", pin_required=false) and returns
     the invite_id + connection_bundle.
     """
-    invite_store = getattr(request.app.state, "project_invite_store", None)
+    invite_store = getattr(request.app.state, "project_invites", None)
     if invite_store is None:
         return {"status": "error", "error": "invite store not available"}
 
@@ -337,7 +337,7 @@ async def complete_delegation_approval(
             ),
         }
 
-    invite_store = getattr(request.app.state, "project_invite_store", None)
+    invite_store = getattr(request.app.state, "project_invites", None)
     if invite_store is None:
         return {"status": "error", "error": "invite store not available"}
 
