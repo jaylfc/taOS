@@ -66,6 +66,15 @@ describe("MessageInput", () => {
     expect(screen.getByPlaceholderText("Message #general...")).toBeInTheDocument();
   });
 
+  it("renders without error when channel is undefined", () => {
+    // channel is typed as Channel | undefined — the component uses
+    // channel?.name ?? "" so it should degrade gracefully.
+    expect(() =>
+      render(<MessageInput {...defaultProps({ channel: undefined })} />),
+    ).not.toThrow();
+    expect(screen.getByPlaceholderText("Message #...")).toBeInTheDocument();
+  });
+
   it("shows 'This chat is archived' placeholder when channel is archived", () => {
     render(<MessageInput {...defaultProps({ isArchived: true })} />);
     expect(
@@ -93,6 +102,32 @@ describe("MessageInput", () => {
       key: "Enter",
       shiftKey: false,
     });
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it("does NOT call onSend when Shift+Enter is pressed", () => {
+    const onSend = vi.fn();
+    render(<MessageInput {...defaultProps({ onSend })} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /message input/i }), {
+      key: "Enter",
+      shiftKey: true,
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call onSend when a non-Enter key is pressed", () => {
+    const onSend = vi.fn();
+    render(<MessageInput {...defaultProps({ onSend })} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /message input/i }), {
+      key: "a",
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("calls onSend when send button is clicked", () => {
+    const onSend = vi.fn();
+    render(<MessageInput {...defaultProps({ value: "hello", onSend })} />);
+    fireEvent.click(screen.getByRole("button", { name: /send message/i }));
     expect(onSend).toHaveBeenCalled();
   });
 
@@ -132,6 +167,20 @@ describe("MessageInput", () => {
       <MessageInput
         {...defaultProps({
           value: "",
+          pendingAttachments: [
+            { id: "a1", filename: "img.png", size: 100, uploading: false },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /send message/i })).not.toBeDisabled();
+  });
+
+  it("enables send button when value is whitespace-only but completed attachments exist", () => {
+    render(
+      <MessageInput
+        {...defaultProps({
+          value: "   ",
           pendingAttachments: [
             { id: "a1", filename: "img.png", size: 100, uploading: false },
           ],
@@ -203,6 +252,51 @@ describe("MessageInput", () => {
 
   it("does not show SlashMenu when showSlash is false", () => {
     render(<MessageInput {...defaultProps({ showSlash: false })} />);
+    expect(
+      screen.queryByRole("listbox", { name: /slash commands/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders SlashMenu with scopedAgent when slashAgent is provided", () => {
+    const commands: SlashCommandsBySlug = {
+      tom: [{ name: "help", description: "Show help" }],
+    };
+    // scopedAgent is passed to SlashMenu; the menu renders
+    // identically regardless — we verify no error is thrown.
+    expect(() =>
+      render(
+        <MessageInput
+          {...defaultProps({
+            slashCommands: commands,
+            showSlash: true,
+            slashQuery: "",
+            slashAgent: "tom",
+          })}
+        />,
+      ),
+    ).not.toThrow();
+    expect(screen.getByRole("listbox", { name: /slash commands/i })).toBeInTheDocument();
+  });
+
+  it("renders SlashMenu without error when channel is undefined", () => {
+    // Covers the channel?.members || [] fallback on line 113.
+    // When channel is undefined, members is [], so SlashMenu returns null
+    // (no matching agents) — but the input area must still render cleanly.
+    const commands: SlashCommandsBySlug = {
+      tom: [{ name: "help", description: "Show help" }],
+    };
+    const { container } = render(
+      <MessageInput
+        {...defaultProps({
+          channel: undefined,
+          slashCommands: commands,
+          showSlash: true,
+          slashQuery: "",
+        })}
+      />,
+    );
+    // Input area still renders; SlashMenu gracefully returns null.
+    expect(container.querySelector(".border-t")).toBeTruthy();
     expect(
       screen.queryByRole("listbox", { name: /slash commands/i }),
     ).not.toBeInTheDocument();
@@ -297,6 +391,22 @@ describe("MessageInput", () => {
     );
     fireEvent.mouseDown(screen.getByText("@tom"));
     expect(onInsertMention).toHaveBeenCalledWith("tom");
+  });
+
+  it("marks the selected mention candidate with aria-selected", () => {
+    render(
+      <MessageInput
+        {...defaultProps({
+          mention: { partial: "@t", atIndex: 0 },
+          mentionCandidates: ["tom", "don"],
+          mentionSel: 1,
+        })}
+      />,
+    );
+    const tom = screen.getByRole("option", { name: "@tom" });
+    const don = screen.getByRole("option", { name: "@don" });
+    expect(tom).toHaveAttribute("aria-selected", "false");
+    expect(don).toHaveAttribute("aria-selected", "true");
   });
 
   /* ---- attachments bar ---- */
