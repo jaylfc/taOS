@@ -10,7 +10,7 @@ import json as _json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tinyagentos.agent_token_auth import (
     PROJECT_SCOPE_MISMATCH_DETAIL,
@@ -436,7 +436,31 @@ async def remove_member(
 # Task models
 # ---------------------------------------------------------------------------
 
-class CreateTaskIn(BaseModel):
+class _TaskRequestModelMixin:
+    """Shared base for task request models (tsk-kqzpjt).
+
+    Observation phase: unknown request-body keys are silently accepted
+    (extra="allow") but logged as a single warning so bad clients can be
+    detected before a future flip to extra="forbid". No behaviour change for
+    any caller; every currently-working request keeps working.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _log_unknown_keys(self):
+        extra = self.model_extra
+        if extra:
+            logger.warning(
+                "%s received unknown keys %s; valid fields are %s",
+                type(self).__name__,
+                sorted(extra.keys()),
+                sorted(type(self).model_fields.keys()),
+            )
+        return self
+
+
+class CreateTaskIn(_TaskRequestModelMixin, BaseModel):
     title: str
     body: str = ""
     priority: int = 0
@@ -446,7 +470,7 @@ class CreateTaskIn(BaseModel):
     element_id: str | None = None
 
 
-class UpdateTaskIn(BaseModel):
+class UpdateTaskIn(_TaskRequestModelMixin, BaseModel):
     title: str | None = None
     body: str | None = None
     priority: int | None = None
@@ -459,24 +483,24 @@ class UpdateTaskIn(BaseModel):
     element_id: str | None = None
 
 
-class ClaimIn(BaseModel):
+class ClaimIn(_TaskRequestModelMixin, BaseModel):
     claimer_id: str
 
 
-class ReleaseIn(BaseModel):
+class ReleaseIn(_TaskRequestModelMixin, BaseModel):
     releaser_id: str
 
 
-class CloseIn(BaseModel):
+class CloseIn(_TaskRequestModelMixin, BaseModel):
     closed_by: str
     reason: str | None = None
 
 
-class ReopenIn(BaseModel):
+class ReopenIn(_TaskRequestModelMixin, BaseModel):
     reopened_by: str | None = None
 
 
-class AddRelIn(BaseModel):
+class AddRelIn(_TaskRequestModelMixin, BaseModel):
     to_task_id: str
     kind: str
 
@@ -865,7 +889,7 @@ async def claim_task(
     return await store.get_task(task_id)
 
 
-class MarkClaimableIn(BaseModel):
+class MarkClaimableIn(_TaskRequestModelMixin, BaseModel):
     claimable: bool
 
 
@@ -1100,7 +1124,7 @@ async def add_relationship(
     return rel
 
 
-class AddCommentIn(BaseModel):
+class AddCommentIn(_TaskRequestModelMixin, BaseModel):
     body: str
     # Optional: an agent caller may omit it and the route pins it to the token
     # canonical_id. A session caller must still supply it (route enforces).

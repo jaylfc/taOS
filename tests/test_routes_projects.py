@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -776,4 +778,68 @@ async def test_old_per_member_lead_route_removed(client):
         f"/api/projects/{pid}/members/agent-a/lead", json={"is_lead": True}
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# tsk-kqzpjt: observation phase for silent key-drops on task request models.
+# Unknown keys are accepted (extra="allow") but logged as a warning. These
+# tests pin: (a) a wrong key still returns 200 and emits the warning naming
+# the unknown key; (b) the correct key logs nothing and persists; (c) create
+# with a wrong key (tags) emits the warning naming tags.
+# ---------------------------------------------------------------------------
+
+_LOGGER = "tinyagentos.routes.projects"
+
+
+@pytest.mark.asyncio
+async def test_close_with_unknown_key_warns_and_succeeds(client, caplog):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    t = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "A"})).json()
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        resp = await client.post(
+            f"/api/projects/{pid}/tasks/{t['id']}/close",
+            json={"closed_by": "agent-1", "close_reason": "done"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "closed"
+    warns = [r for r in caplog.records if "unknown keys" in r.message]
+    assert warns, "expected a warning for unknown key close_reason"
+    msg = warns[0].message
+    assert "CloseIn" in msg
+    assert "close_reason" in msg
+
+
+@pytest.mark.asyncio
+async def test_close_with_correct_key_no_warning_and_persists(client, caplog):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+    t = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "A"})).json()
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        resp = await client.post(
+            f"/api/projects/{pid}/tasks/{t['id']}/close",
+            json={"closed_by": "agent-1", "reason": "done"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "closed"
+    assert resp.json()["close_reason"] == "done"
+    warns = [r for r in caplog.records if "unknown keys" in r.message]
+    assert not warns, "no warning expected for the correct key reason"
+
+
+@pytest.mark.asyncio
+async def test_create_with_unknown_key_tags_warns(client, caplog):
+    pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        resp = await client.post(
+            f"/api/projects/{pid}/tasks",
+            json={"title": "T", "tags": ["bug"]},
+        )
+    assert resp.status_code == 200
+    warns = [r for r in caplog.records if "unknown keys" in r.message]
+    assert warns, "expected a warning for unknown key tags"
+    msg = warns[0].message
+    assert "CreateTaskIn" in msg
+    assert "tags" in msg
 
