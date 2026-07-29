@@ -522,3 +522,143 @@ async def test_repo_endpoint_still_uses_app_token():
     assert resp.status_code == 200
     data = resp.json()
     assert data["name"] == "myrepo"
+
+
+# ---------------------------------------------------------------------------
+# Token resolution priority: PAT > App token (both configured)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pat_wins_over_app_on_user_scoped_endpoint():
+    """When PAT AND App are both configured, user-scoped endpoint (/starred)
+    uses the PAT and never mints an App installation token."""
+    starred_data = [{
+        "name": "pat-repo", "owner": {"login": "pat-user"},
+        "full_name": "pat-user/pat-repo", "description": "PAT repo",
+        "stargazers_count": 5, "language": "Rust",
+        "updated_at": "2026-03-01T00:00:00Z",
+        "html_url": "https://github.com/pat-user/pat-repo",
+    }]
+    http_client = _make_http_client(_make_response(starred_data))
+    app = _build_app_with_app_config(
+        token="ghp_pat_token",  # PAT is set
+        http_client=http_client,
+    )
+
+    transport = ASGITransport(app=app)
+    with patch(
+        "tinyagentos.github_app.get_installation_token",
+    ) as mock_mint:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as c:
+            resp = await c.get("/api/github/starred?page=1")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["repos"][0]["name"] == "pat-repo"
+    # App token must NOT have been minted — PAT takes priority
+    mock_mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pat_wins_over_app_on_repo_scoped_endpoint():
+    """When PAT AND App are both configured, repo-scoped endpoint (/repo/...)
+    uses the PAT (step 1 in resolution order) and never mints an App token."""
+    meta_data = {
+        "name": "pat-repo", "owner": {"login": "pat-user"},
+        "description": "PAT-owned repo", "stargazers_count": 42,
+        "forks_count": 3, "language": "Python",
+        "license": {"name": "MIT"}, "topics": ["api"],
+        "updated_at": "2026-04-01T00:00:00Z",
+    }
+    readme_resp = MagicMock()
+    readme_resp.status_code = 200
+    readme_resp.text = "# PAT Repo"
+    readme_resp.raise_for_status = MagicMock()
+
+    http_client = _make_http_client(_make_response(meta_data), readme_resp)
+    app = _build_app_with_app_config(
+        token="ghp_pat_token",  # PAT is set
+        http_client=http_client,
+    )
+
+    transport = ASGITransport(app=app)
+    with patch(
+        "tinyagentos.github_app.get_installation_token",
+    ) as mock_mint:
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as c:
+            resp = await c.get("/api/github/repo/pat-user/pat-repo")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "pat-repo"
+    assert data["stars"] == 42
+    # App token must NOT have been minted — PAT takes priority
+    mock_mint.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# User-scoped endpoints: App configured but no PAT and no gh CLI → 401
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_starred_returns_401_when_app_configured_no_pat_no_gh_cli():
+    """When App is configured but there's no PAT and gh CLI is unavailable,
+    /starred (user-scoped) returns 401 because App tokens are skipped."""
+    app = _build_app_with_app_config(
+        token=None,  # No PAT
+        http_client=MagicMock(),
+    )
+
+    transport = ASGITransport(app=app)
+    with patch(
+        "tinyagentos.routes.github.asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError,  # gh CLI not installed
+    ):
+        with patch(
+            "tinyagentos.github_app.get_installation_token",
+        ) as mock_mint:
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as c:
+                resp = await c.get("/api/github/starred")
+
+    assert resp.status_code == 401
+    data = resp.json()
+    assert "error" in data
+    # App token must NOT have been minted for a user-scoped endpoint
+    mock_mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notifications_returns_401_when_app_configured_no_pat_no_gh_cli():
+    """When App is configured but there's no PAT and gh CLI is unavailable,
+    /notifications (user-scoped) returns 401 because App tokens are skipped."""
+    app = _build_app_with_app_config(
+        token=None,  # No PAT
+        http_client=MagicMock(),
+    )
+
+    transport = ASGITransport(app=app)
+    with patch(
+        "tinyagentos.routes.github.asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError,  # gh CLI not installed
+    ):
+        with patch(
+            "tinyagentos.github_app.get_installation_token",
+        ) as mock_mint:
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as c:
+                resp = await c.get("/api/github/notifications")
+
+    assert resp.status_code == 401
+    data = resp.json()
+    assert "error" in data
+    # App token must NOT have been minted for a user-scoped endpoint
+    mock_mint.assert_not_called()
