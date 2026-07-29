@@ -260,22 +260,25 @@ describe("MessageInput", () => {
   it("renders SlashMenu with scopedAgent when slashAgent is provided", () => {
     const commands: SlashCommandsBySlug = {
       tom: [{ name: "help", description: "Show help" }],
+      jerry: [{ name: "status", description: "Show status" }],
     };
-    // scopedAgent is passed to SlashMenu; the menu renders
-    // identically regardless — we verify no error is thrown.
-    expect(() =>
-      render(
-        <MessageInput
-          {...defaultProps({
-            slashCommands: commands,
-            showSlash: true,
-            slashQuery: "",
-            slashAgent: "tom",
-          })}
-        />,
-      ),
-    ).not.toThrow();
+    // When scopedAgent="tom", only tom's commands should render.
+    render(
+      <MessageInput
+        {...defaultProps({
+          channel: { ...baseChannel, members: ["user", "tom", "jerry"] },
+          slashCommands: commands,
+          showSlash: true,
+          slashQuery: "",
+          slashAgent: "tom",
+        })}
+      />,
+    );
     expect(screen.getByRole("listbox", { name: /slash commands/i })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /\/help/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /\/status/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders SlashMenu without error when channel is undefined", () => {
