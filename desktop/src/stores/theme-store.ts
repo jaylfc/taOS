@@ -346,7 +346,7 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
   },
 
   getWallpapersBySection: () => {
-    const state = useThemeStore.getState();
+    const state = get();
     // The theme's declared default wallpaper id, or the global fallback.
     const themeDefaultId =
       state.themeDefaultWallpaperId[state.activeThemeId] || "graphite";
