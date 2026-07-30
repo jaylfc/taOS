@@ -330,7 +330,7 @@ class TestMintReturnShape:
 
         request = MagicMock()
         request.app.state.project_store = project_store
-        request.app.state.project_invite_store = store
+        request.app.state.project_invites = store
 
         envelope_body = {
             "agent_slug": "sponsored-agent",
@@ -378,7 +378,7 @@ class TestMintReturnShape:
 
         request = MagicMock()
         request.app.state.project_store = project_store
-        request.app.state.project_invite_store = store
+        request.app.state.project_invites = store
 
         result = await process_delegation_request(
             request,
@@ -550,7 +550,7 @@ class TestDelegationE2E:
 
         request = MagicMock()
         request.app.state.project_store = project_store
-        request.app.state.project_invite_store = store
+        request.app.state.project_invites = store
 
         # Step 1: process delegation request (auto-approve)
         result = await process_delegation_request(
