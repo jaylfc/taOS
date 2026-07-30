@@ -29,6 +29,8 @@ export const BUILTIN_THEMES: BuiltinTheme[] = [
         "--color-shell-surface-active": "rgba(0, 0, 0, 0.08)",
         "--color-shell-border": "rgba(0, 0, 0, 0.09)",
         "--color-shell-border-strong": "rgba(0, 0, 0, 0.15)",
+        "--color-shell-scrim": "rgba(0, 0, 0, 0.45)",
+        "--color-shell-subtle": "rgba(0, 0, 0, 0.055)",
         // Near-black ink: 14:1 / 6.4:1 / 4.0:1 on the #f4f5f7 body.
         "--color-shell-text": "rgba(0, 0, 0, 0.85)",
         "--color-shell-text-secondary": "rgba(0, 0, 0, 0.55)",
