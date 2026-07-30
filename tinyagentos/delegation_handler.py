@@ -277,12 +277,7 @@ async def _auto_approve_delegation(
             check_interval_secs=1800,
             created_by=contact_id,
             pin_required=False,
-            metadata={
-                "kind": "delegation_sponsored",
-                "sponsor_contact_id": contact_id,
-                "agent_slug": agent_slug,
-                "display_name": display_name,
-            },
+            display_name=display_name,
         )
     except Exception:
         logger.warning(
@@ -361,12 +356,7 @@ async def complete_delegation_approval(
             check_interval_secs=1800,
             created_by=contact_id,
             pin_required=False,
-            metadata={
-                "kind": "delegation_sponsored",
-                "sponsor_contact_id": contact_id,
-                "agent_slug": agent_slug,
-                "display_name": display_name,
-            },
+            display_name=display_name,
         )
     except Exception:
         logger.warning(
