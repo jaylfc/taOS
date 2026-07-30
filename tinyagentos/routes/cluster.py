@@ -1189,6 +1189,12 @@ REMOTE_EXEC_ALLOWLIST = [
 ]
 
 
+# Per-worker deploy locks -- prevents concurrent install/restart on the
+# same worker (CodeRabbit finding on PR #1910).
+import collections
+_worker_deploy_locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
+
+
 @router.post("/api/cluster/workers/{name}/deploy", dependencies=_ADMIN)
 async def deploy_backend(request: Request, name: str, body: DeployRequest):
     """Trigger a backend install on a remote worker.
@@ -1196,7 +1202,26 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
     The controller proxies this to the worker's deploy endpoint. The
     worker runs taos-deploy-helper.sh via passwordless sudo. Only
     commands in the fixed allowlist are accepted.
+
+    HMAC-gated: the worker signs the request with its pairing key, and
+    the authenticated worker name must match the URL path. This prevents
+    worker A from triggering a deploy on worker B (CodeRabbit, PR #1910).
+
+    Per-worker asyncio.Lock prevents concurrent install/restart calls on
+    the same worker from double-installing.
     """
+    # HMAC gate -- only paired workers may trigger deploys, and only on themselves.
+    try:
+        await require_worker_hmac(request)
+    except _HMACError as exc:
+        return exc.response
+    # Verify the HMAC-authenticated worker matches the path name.
+    if getattr(request.state, "hmac_worker_name", None) != name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match path"},
+            status_code=403,
+        )
+
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
     if not worker:
@@ -1209,16 +1234,19 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
             status_code=400,
         )
 
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=620) as client:
-            resp = await client.post(
-                f"{worker.url}/api/worker/deploy",
-                json={"command": body.command},
-            )
-            return resp.json()
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=502)
+    # Serialise deploys per worker -- concurrent calls can double-install.
+    lock = _worker_deploy_locks[name]
+    async with lock:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=620) as client:
+                resp = await client.post(
+                    f"{worker.url}/api/worker/deploy",
+                    json={"command": body.command},
+                )
+                return resp.json()
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
 
 
 @router.post("/api/cluster/workers/{name}/remote", dependencies=_ADMIN)
@@ -1663,7 +1691,20 @@ async def _do_single_worker_update(cluster, worker) -> dict:
     On success: ``{"success": True, "worker": ..., "status": "updating", ...}``.
     On failure: ``{"success": False, "worker": ..., "error": "..."}``.
     Never raises -- all exceptions are caught and converted into error dicts.
+
+    Per-worker asyncio.Lock prevents concurrent update calls on the same
+    worker from double-draining or double-deploying (CodeRabbit, PR #1910).
     """
+    name = worker.name
+
+    # Serialise updates per worker -- concurrent calls can double-drain/deploy.
+    lock = _worker_deploy_locks[name]
+    async with lock:
+        return await _do_single_worker_update_locked(cluster, worker)
+
+
+async def _do_single_worker_update_locked(cluster, worker) -> dict:
+    """Inner implementation of _do_single_worker_update (lock held)."""
     name = worker.name
 
     # Step 1: Begin draining (with exception isolation -- drain_worker
