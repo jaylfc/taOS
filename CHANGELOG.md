@@ -7,6 +7,15 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Added
+
+- **OS-level typed change-event stream + `useOsEvents` hook.** A new authenticated
+  SSE endpoint (`GET /api/os/events`) streams typed change events carrying only
+  the event kind and id, never the payload, so apps can opt into live updates
+  with a single hook call. The shared `useOsEvents(kinds, onEvent)` hook manages
+  the single per-client connection, exposes `connected` and `stale` flags, and
+  handles reconnect with exponential backoff.
+
 ### Fixed
 
 - **Push notifications never routed to the correct app.** Three independent faults

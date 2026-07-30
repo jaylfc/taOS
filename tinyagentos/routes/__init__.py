@@ -340,6 +340,9 @@ def register_all_routers(app):
     from tinyagentos.routes.event_stream import router as event_stream_router
     app.include_router(event_stream_router, dependencies=_csrf)
 
+    from tinyagentos.routes.os_events import router as os_events_router
+    app.include_router(os_events_router, dependencies=_csrf)
+
     # OTLP/HTTP+JSON receiver -- Phase 2 observability.
     # POST /v1/traces accepts ExportTraceServiceRequest JSON and writes spans
     # to the per-agent SpanStore (app.state.span_store_registry).
