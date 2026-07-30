@@ -95,7 +95,7 @@ jobs:
       # not from a fresh unpinned resolve that can pull in a regressed
       # release (see the fastapi 0.137 incident, #903).
       - name: Install dependencies
-        run: uv sync --frozen --extra dev --python ${{ matrix.python-version }}
+        run: uv sync --frozen --python ${{ matrix.python-version }}
 
       # SPA bundle is stubbed by tests/conftest.py — see pytest_configure.
       # The real build is exercised in the spa-build job below.
@@ -168,7 +168,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen --extra dev --python 3.12
+        run: uv sync --frozen --python 3.12
 
       - name: Check for syntax errors
         run: uv run --no-sync python -m compileall tinyagentos/ -q

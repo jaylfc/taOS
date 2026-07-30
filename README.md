@@ -686,7 +686,7 @@ uv run exo
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run pytest tests/ --ignore=tests/e2e -n auto   # ~7,400 tests
 cd desktop && npx vitest run                       # ~1,900 desktop tests
 ```

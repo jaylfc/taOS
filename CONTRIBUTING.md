@@ -19,7 +19,7 @@ To keep this sustainable, **all contributors must agree to the Contributor Licen
 ```bash
 git clone https://github.com/jaylfc/taOS.git
 cd tinyagentos
-uv sync --extra dev
+uv sync
 # Build the desktop SPA - static/desktop/ is gitignored (generated artifact)
 cd desktop && npm install && npm run build && cd ..
 uv run pytest tests/ --ignore=tests/e2e -n auto
