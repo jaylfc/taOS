@@ -53,8 +53,8 @@ export interface XAuthStatus {
 
 async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promise<T> {
   try {
-    const headers = new Headers({ Accept: "application/json" });
-    new Headers(init?.headers).forEach((v, k) => headers.set(k, v));
+    const headers = new Headers(init?.headers);
+    headers.set("Accept", "application/json");
     const res = await fetch(url, { ...init, headers });
     if (!res.ok) return fallback;
     const ct = res.headers.get("content-type") ?? "";

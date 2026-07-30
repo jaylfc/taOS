@@ -6,7 +6,9 @@ const API = '/api';
 
 async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promise<T> {
   try {
-    const res = await fetch(url, { ...init, headers: { Accept: 'application/json', ...init?.headers } });
+    const headers = new Headers(init?.headers);
+    headers.set("Accept", "application/json");
+    const res = await fetch(url, { ...init, headers });
     if (!res.ok) return fallback;
     const ct = res.headers.get('content-type') ?? '';
     if (!ct.includes('application/json')) return fallback;
@@ -19,7 +21,9 @@ async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promi
 /** Like fetchJson but throws on HTTP errors, network failures, and non-JSON
  *  responses so callers can surface errors instead of fabricating state. */
 async function fetchJsonOrThrow<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, headers: { Accept: 'application/json', ...init?.headers } });
+  const headers = new Headers(init?.headers);
+  headers.set("Accept", "application/json");
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
     let detail = '';
     try { const body = await res.json(); detail = body?.detail || body?.error || ''; } catch { /* ignore */ }
