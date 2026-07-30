@@ -784,11 +784,18 @@ async def install_app(request: Request):
             status_code=403,
         )
 
+    # Capture whether the install gate saw a stored signature, so the TOCTOU
+    # guard below can distinguish a never-signed manifest (allow, matching the
+    # gate's fail-open policy for legacy unsigned entries) from one whose
+    # signature was lost after the gate saw it (block as post-verification
+    # tampering).
+    _gate_had_sig = registry.get_signature(manifest_id) is not None
+
     # TOCTOU guard: the signing gate above verified the signature against
     # the on-disk manifest, but the install below uses the in-memory
     # manifest object loaded at boot.  An attacker who swaps the on-disk
     # file between verification and execution could bypass the gate.
-    # Re-read from disk and re-verify the signature — if it no longer
+    # Re-read from disk and re-verify the signature, if it no longer
     # verifies, the manifest was modified after the gate check and the
     # install is blocked.
     #
@@ -805,9 +812,14 @@ async def install_app(request: Request):
 
         def _toctou_reverify():
             # Fail-closed: any inability to re-read or re-verify the
-            # manifest blocks the install.  The first gate already proved
-            # the manifest was valid; at this point a missing, unreadable,
-            # or unsigned manifest means post-verification tampering.
+            # manifest blocks the install, EXCEPT for a manifest that was
+            # never signed.  The first gate already proved the manifest was
+            # valid; at this point a missing, unreadable, or tampered
+            # manifest means post-verification tampering.  A manifest that
+            # was never signed (legacy entry loaded before signing was
+            # enabled) is allowed through, matching the gate's fail-open
+            # policy, only a signature present at the gate but gone now
+            # is treated as post-verification tampering.
             disk_path = _manifest_dir / "manifest.yaml"
             try:
                 import yaml as _yaml
@@ -818,7 +830,14 @@ async def install_app(request: Request):
                     return False
                 stored_sig = registry.get_signature(manifest_id)
                 if stored_sig is None:
-                    return False
+                    # The gate allowed this manifest, so it was never signed
+                    # unless the gate saw a signature that has since vanished.
+                    # Match the gate's fail-open policy for never-signed
+                    # manifests; only block when a signature was present at
+                    # the gate but is now gone.
+                    if _gate_had_sig:
+                        return False
+                    return True
                 from tinyagentos.store_signing import verify_manifest_signature as _verify_sig
                 return _verify_sig(on_disk, stored_sig, _store_pub)
             except Exception:  # noqa: BLE001 - fail-closed, never allow on error

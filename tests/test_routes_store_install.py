@@ -735,14 +735,16 @@ class TestInstallV2:
         )
 
     @pytest.mark.asyncio
-    async def test_toctou_stored_sig_none_returns_403(self, client, tmp_path):
-        """TOCTOU re-verify returns 403 when the registry has no stored
-        signature for the manifest (signature was lost or never persisted).
+    async def test_toctou_never_signed_manifest_allowed(self, client, tmp_path):
+        """A legacy unsigned manifest (never signed, not a signing failure)
+        with a signing pubkey configured installs successfully end to end.
 
-        The first gate sees ``stored_sig is None`` and, because the
-        manifest is not a signing failure, allows the install through.
-        The TOCTOU guard then re-checks on its own and blocks — proving
-        the two gates are independently fail-closed for this case too."""
+        Both the install gate and the TOCTOU guard agree: absence of a
+        signature on a manifest that was never signed is not evidence of
+        tampering.  This is the fail-open policy for pre-signing catalog
+        entries, the gate and the TOCTOU guard must not contradict each
+        other here.  (Previously the TOCTOU guard returned 403 for this
+        state, contradicting the gate's docstring and #2050's adjudication.)"""
         from tinyagentos.registry import AppRegistry
         from tinyagentos.store_signing import generate_signing_keypair
 
@@ -764,12 +766,64 @@ class TestInstallV2:
             signing_key=priv,
         )
         reg._ensure_loaded()
-        # Clear the stored signature so both gates see None.
+        # Clear the stored signature so both gates see None, simulating a
+        # manifest loaded before signing was enabled.
         reg._signatures.pop("test-svc", None)
 
         client._transport.app.state.registry = reg
         client._transport.app.state.store_signing_pubkey = pub
         client._transport.app.state.installed_apps = _make_installed_apps()
+
+        resp = await client.post("/api/store/install-v2", json={
+            "manifest_id": "test-svc",
+        })
+        assert resp.status_code == 200, (
+            f"expected install to succeed for never-signed manifest, got {resp.status_code}: {resp.json()}"
+        )
+        body = resp.json()
+        assert body["app_id"] == "test-svc"
+        assert body["status"] == "installed"
+
+    @pytest.mark.asyncio
+    async def test_toctou_signature_lost_after_gate_returns_403(self, client, tmp_path):
+        """When the registry's signature is present at the install gate but
+        disappears before the TOCTOU re-verification, the install is blocked
+        with 403: the gate saw a signature, so its absence at re-verify is
+        treated as post-verification tampering (not a legacy unsigned entry)."""
+        from tinyagentos.registry import AppRegistry
+        from tinyagentos.store_signing import generate_signing_keypair
+
+        catalog_dir = tmp_path / "catalog"
+        svc_dir = catalog_dir / "services" / "test-svc"
+        svc_dir.mkdir(parents=True)
+        manifest_path = svc_dir / "manifest.yaml"
+        manifest_path.write_text(
+            "id: test-svc\nname: Test Service\ntype: service\n"
+            "version: \"1.0\"\ninstall:\n  method: download\n",
+        )
+
+        priv, pub = generate_signing_keypair()
+        installed_path = tmp_path / "installed.json"
+        installed_path.write_text("[]")
+        reg = AppRegistry(
+            catalog_dir=catalog_dir,
+            installed_path=installed_path,
+            signing_key=priv,
+        )
+        reg._ensure_loaded()
+        assert reg.get_signature("test-svc") is not None
+
+        client._transport.app.state.registry = reg
+        client._transport.app.state.store_signing_pubkey = pub
+        client._transport.app.state.installed_apps = _make_installed_apps()
+
+        # The gate calls get_signature once (inside _verify_manifest_for_install),
+        # then _gate_had_sig captures it again, then the TOCTOU guard calls it
+        # a third time.  Return the real signature on the first two calls so
+        # the gate allows the install, then return None on the third call to
+        # simulate the signature vanishing between the gate and re-verify.
+        real_sig = reg._signatures["test-svc"]
+        reg.get_signature = MagicMock(side_effect=[real_sig, real_sig, None])  # type: ignore[method-assign]
 
         resp = await client.post("/api/store/install-v2", json={
             "manifest_id": "test-svc",
