@@ -42,7 +42,7 @@ describe("listItems", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/knowledge/items");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     expect(result.items).toHaveLength(2);
     expect(result.items[0].id).toBe("ki-1");
     expect(result.count).toBe(2);
@@ -104,7 +104,7 @@ describe("getItem", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/knowledge/items/ki-1");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     expect(result).toEqual({ id: "ki-1", title: "Hello", source_type: "web" });
   });
 
