@@ -7,6 +7,13 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Added
+
+- Lead agents can edit their own board cards: the seeded internal lead now
+  carries the `project_tasks_update` scope (title/body/labels/priority on
+  own-or-lead cards; a plain `project_tasks` grant still gets 403 on PATCH,
+  pinned by a regression test) (#2244).
+
 ## [1.0.0-beta.45] - 2026-08-02
 
 ### Added

@@ -196,6 +196,11 @@ The surface, by scope:
 - **project_tasks_create**: `POST /api/projects/{pid}/tasks` (author new cards).
   This is a SEPARATE scope from project_tasks and is off by default; grant it
   explicitly when an agent needs to create cards.
+- **project_tasks_update**: `PATCH /api/projects/{pid}/tasks/{tid}` on the
+  whitelisted fields (title, body, labels, priority), own-or-lead cards only.
+  Also SEPARATE from project_tasks - a plain project_tasks token gets 403 on
+  PATCH. The seeded internal lead (@taOS-dev) carries it by default so it can
+  edit its own board's cards; assignee_id and parent_task_id stay human-only.
 - **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
   `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`.
