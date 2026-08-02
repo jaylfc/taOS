@@ -1,6 +1,10 @@
 # Bounded Postgres adoption, and an 8GB hardware floor
 
-**Status:** PROPOSED, not adopted. Needs Jay's decision before any code lands.
+**Status:** DEFERRED by Jay's decision, 2026-08-02 (decision dec-u6354s).
+Not rejected: the reasoning stands and the bounded shape is the one to build when
+it is built. Jay's call was to WAIT until the multi-user work needs row-level
+security, so a single adoption serves both the corpus tier and multi-user rather
+than paying the migration cost twice. Revisit when that work starts.
 **Date:** 2026-08-02 (revised same day: hardware floor decoupled, 4GB stays supported)
 **Supersedes nothing. Blocks nothing currently in flight.**
 
