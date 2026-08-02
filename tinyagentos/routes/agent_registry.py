@@ -178,13 +178,15 @@ _INTERNAL_AGENTS = (
     {
         "handle": "@taOS-dev",
         "slug": "taos-dev",
-        # Lead curator: needs project-task + canvas access on the build fleet project
-        # so it can curate the board (mark cards claimable) and read/write the
-        # project canvas — all via Bearer auth (CSRF-exempt).  Bound to prj-5y722y
-        # (the fleet project) per #1968 C1.
+        # Lead curator: needs project_tasks + project_tasks_update + canvas
+        # access on the build fleet project so it can curate the board (mark
+        # cards claimable) and read/write the project canvas -- all via Bearer
+        # auth (CSRF-exempt). project_tasks_update is required to PATCH card
+        # bodies/priority (project_tasks alone is read + lifecycle + comments).
+        # Bound to prj-5y722y (the fleet project) per #1968 C1.
         "scopes": [
             "a2a_send", "a2a_receive",
-            "project_tasks", "canvas_read", "canvas_write",
+            "project_tasks", "project_tasks_update", "canvas_read", "canvas_write",
         ],
         "project_id": "prj-5y722y",
     },
@@ -411,15 +413,16 @@ async def seed_internal_agents(
 ):
     """Idempotently mint the four internal driver agents and return their tokens.
 
-    Admin only.  Each of @taOS-dev, @taOS-website-dev, @taOSmd-dev, @Hermes is
-    minted with the a2a_send + a2a_receive scopes.  Re-running creates no
-    duplicate rows.  ``adopt`` (query param) is a comma-separated list of the
-    specific handles to vouch for when they already exist under a non-internal
-    origin (e.g. ``?adopt=@taOS-dev``); each adoption grants driver scopes and
-    a token to a pre-existing identity, so it must name each handle explicitly
-    rather than blanket-vouch for all four (a driver handle claimed by someone
-    else via the consent flow must not be adopted as a side effect).  A bare
-    ``adopt=true`` is rejected.  Response: {"seeded": [{handle, canonical_id,
+    Admin only.  Each of the four agents is minted with the baseline a2a_send +
+    a2a_receive scopes; @taOS-dev (the fleet lead) additionally receives
+    project_tasks + project_tasks_update + canvas_read + canvas_write bound to
+    prj-5y722y.  Re-running creates no duplicate rows.  ``adopt`` (query param)
+    is a comma-separated list of the specific handles to vouch for when they
+    already exist under a non-internal origin (e.g. ``?adopt=@taOS-dev``); each
+    adoption grants driver scopes and a token to a pre-existing identity, so it
+    must name each handle explicitly rather than blanket-vouch for all four (a
+    driver handle claimed by someone else via the consent flow must not be
+    adopted as a side effect).  Response: {"seeded": [{handle, canonical_id,
     created, adopted, scopes, token}, ...]}.
     """
     if not user.is_admin:

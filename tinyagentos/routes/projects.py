@@ -769,7 +769,7 @@ async def get_task(
     return t
 
 
-# Fields an agent holding project_tasks may PATCH. Everything else in
+# Fields an agent holding project_tasks_update may PATCH. Everything else in
 # UpdateTaskIn (assignee_id, parent_task_id, element_id, status, and any
 # future field) is rejected 403 for agents so the surface stays minimal and
 # future task fields are protected by default. Session owner/admin is unaffected.
@@ -783,13 +783,12 @@ async def update_task(
     payload: UpdateTaskIn,
     request: Request,
 ):
-    # Dual-auth: session owner/admin OR an agent holding project_tasks bound
-    # to THIS project (the same scope the claim/close/release lifecycle routes
-    # require). The agent gate (authorship/lead) and field whitelist are
-    # enforced below.
+    # Dual-auth: session owner/admin OR an agent holding project_tasks_update
+    # bound to THIS project. The agent gate (authorship/lead) and field
+    # whitelist are enforced below.
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(
-        request, pstore, project_id, scope="project_tasks"
+        request, pstore, project_id, scope="project_tasks_update"
     )
     if isinstance(auth, JSONResponse):
         return auth

@@ -344,18 +344,22 @@ class TestMintInternalRoute:
             assert s["created"] is True
             assert s["token"]
             if s["handle"] == "@taOS-dev":
-                # Lead curator: gets project_tasks + canvas on prj-5y722y
-                # in addition to the baseline a2a scopes (#1968 C1).
+                # Lead curator: gets project_tasks + project_tasks_update +
+                # canvas on prj-5y722y in addition to the baseline a2a scopes
+                # (#1968 C1). project_tasks_update is what authorizes PATCH
+                # field mutation on the lead's own board (tsk-b6ugu5).
                 assert set(s["scopes"]) == {
                     "a2a_send", "a2a_receive",
-                    "project_tasks", "canvas_read", "canvas_write",
+                    "project_tasks", "project_tasks_update",
+                    "canvas_read", "canvas_write",
                 }
                 # Grants should be project-scoped.
                 grants = await mint_client._app.state.agent_grants.list_grants(
                     s["canonical_id"]
                 )
                 for g in grants:
-                    if g["scope"] in ("project_tasks", "canvas_read", "canvas_write"):
+                    if g["scope"] in ("project_tasks", "project_tasks_update",
+                                      "canvas_read", "canvas_write"):
                         assert g.get("project_id") == "prj-5y722y", (
                             f"scope {g['scope']!r} not bound to prj-5y722y"
                         )
@@ -370,6 +374,32 @@ class TestMintInternalRoute:
         rows = await mint_client._app.state.agent_registry.list_all()
         internal = [r for r in rows if r["origin"] == "taos-internal"]
         assert len(internal) == 4
+
+    async def test_seed_internal_reseed_reasserts_lead_grant(self, mint_client):
+        """seed-internal is idempotent per handle: re-seeding an EXISTING lead
+        identity does not create a duplicate row, and re-asserts the lead's
+        grants (add_grant is idempotent). After a second seed, @taOS-dev must
+        still hold project_tasks_update bound to prj-5y722y (tsk-b6ugu5)."""
+        r1 = await mint_client.post("/api/agents/registry/seed-internal")
+        assert r1.status_code == 200, r1.text
+        lead1 = next(s for s in r1.json()["seeded"] if s["handle"] == "@taOS-dev")
+        cid = lead1["canonical_id"]
+
+        # Re-seed: same canonical_id, created=False.
+        r2 = await mint_client.post("/api/agents/registry/seed-internal")
+        assert r2.status_code == 200
+        lead2 = next(s for s in r2.json()["seeded"] if s["handle"] == "@taOS-dev")
+        assert lead2["canonical_id"] == cid
+        assert lead2["created"] is False
+
+        # The project_tasks_update grant survives re-seed (re-asserted by add_grant).
+        grants = await mint_client._app.state.agent_grants.list_grants(cid)
+        scopes = {g["scope"] for g in grants}
+        assert "project_tasks_update" in scopes
+        update_grant = next(
+            g for g in grants if g["scope"] == "project_tasks_update"
+        )
+        assert update_grant.get("project_id") == "prj-5y722y"
 
     async def test_minted_token_reads_the_bus(self, mint_client):
         """End to end: a token from seed-internal reads the A2A bus (a2a_receive)."""

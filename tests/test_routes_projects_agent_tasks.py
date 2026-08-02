@@ -13,6 +13,9 @@ the five non-negotiable security invariants:
   4. Session owner/admin behavior is unchanged (regression).
   5. The token is not a skeleton key: it authenticates no route off the
      allowlist.
+
+PATCH field mutation (title/body/labels/priority) is gated by the NARROWER
+project_tasks_update scope, not the read+lifecycle project_tasks scope (tsk-b6ugu5).
 """
 from __future__ import annotations
 
@@ -118,11 +121,11 @@ class TestAgentCanDriveOwnBoard:
         assert resp.json()["id"] == tid
 
     async def test_lead_agent_patch_body_succeeds(self, ctx):
-        """An agent holding project_tasks may PATCH a card body on a board it
-        leads -> 200 and the change is reflected in the response."""
+        """An agent holding project_tasks_update may PATCH a card body on a board
+        it leads -> 200 and the change is reflected in the response."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -138,7 +141,9 @@ class TestAgentCanDriveOwnBoard:
         """The patched body survives a fresh read."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(
+            ctx, pid, scopes=("project_tasks", "project_tasks_update")
+        )
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -156,7 +161,7 @@ class TestAgentCanDriveOwnBoard:
     async def test_lead_agent_patch_priority_succeeds(self, ctx):
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -171,7 +176,7 @@ class TestAgentCanDriveOwnBoard:
     async def test_lead_agent_patch_labels_succeeds(self, ctx):
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -186,7 +191,7 @@ class TestAgentCanDriveOwnBoard:
     async def test_lead_agent_patch_title_succeeds(self, ctx):
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -202,7 +207,7 @@ class TestAgentCanDriveOwnBoard:
         """assignee_id stays human-only: an agent PATCH of it -> 403."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -217,7 +222,7 @@ class TestAgentCanDriveOwnBoard:
         """parent_task_id stays human-only: an agent PATCH of it -> 403."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -233,11 +238,31 @@ class TestAgentCanDriveOwnBoard:
         its cards -> 403."""
         pid = await _new_project(ctx, "alpha")
         tid = await _new_task(ctx, pid)
-        _cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks_update",))
         async with _bare(ctx.app) as bare:
             resp = await bare.patch(
                 f"/api/projects/{pid}/tasks/{tid}",
                 json={"body": "hacked"},
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 403
+
+    async def test_project_tasks_only_token_cannot_patch(self, ctx):
+        """Regression pin (tsk-b6ugu5): a plain project_tasks grant (read +
+        lifecycle + comments) must NOT authorize PATCH field mutation -- that
+        requires the narrower project_tasks_update scope. A lead agent carrying
+        only project_tasks must be refused 403, not allowed to edit card
+        bodies/priority. This fails RED against the PR 2240 branch (which
+        collapsed the PATCH scope to project_tasks) and passes after the fix."""
+        pid = await _new_project(ctx, "alpha")
+        tid = await _new_task(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid, scopes=("project_tasks",))
+        await ctx.app.state.project_store.add_member(pid, cid, "native")
+        await ctx.app.state.project_store.set_lead(pid, cid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.patch(
+                f"/api/projects/{pid}/tasks/{tid}",
+                json={"body": "hacked by read-only token"},
                 headers=_hdr(token),
             )
         assert resp.status_code == 403
@@ -582,7 +607,7 @@ class TestLeadAgentMarkClaimable:
     async def test_lead_agent_marks_and_unmarks_claimable(self, ctx):
         pid = await _new_project(ctx, "claimable-lead")
         tid = await _new_task(ctx, pid)
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)  # project_tasks (claimable route scope)
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
@@ -619,7 +644,7 @@ class TestLeadAgentMarkClaimable:
         await ctx.client.patch(
             f"/api/projects/{pid}/tasks/{tid}", json={"labels": ["urgent"]}
         )
-        cid, token = await _mint_agent(ctx, pid)
+        cid, token = await _mint_agent(ctx, pid)  # project_tasks (claimable route scope)
         await ctx.app.state.project_store.add_member(pid, cid, "native")
         await ctx.app.state.project_store.set_lead(pid, cid)
         async with _bare(ctx.app) as bare:
