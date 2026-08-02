@@ -270,6 +270,9 @@ async def register_agent(
             status_code=409,
             detail="handle is already owned by another active agent",
         )
+    except ValueError as exc:
+        # The reserved-prefix guard rejected the name. Client error, not 500.
+        raise HTTPException(status_code=422, detail=str(exc))
 
     token = mint_registry_token(
         record["canonical_id"],
@@ -332,6 +335,9 @@ async def _mint_internal_identity(
                 origin=_INTERNAL_ORIGIN,
                 handle=handle,
                 capabilities=[],
+                # Internal driver identities legitimately live under the
+                # reserved taos- prefix; this path is admin-only.
+                allow_reserved=True,
             )
             created = True
 

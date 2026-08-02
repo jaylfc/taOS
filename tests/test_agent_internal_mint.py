@@ -38,7 +38,7 @@ class TestGetByHandle:
     async def test_returns_active_match(self, tmp_path):
         s = await self._store(tmp_path / "reg.db")
         try:
-            rec = await s.register(framework="taos-internal", display_name="taos-dev", handle="@taOS-dev")
+            rec = await s.register(framework="taos-internal", display_name="taos-dev", handle="@taOS-dev", allow_reserved=True)
             got = await s.get_by_handle("@taOS-dev")
             assert got is not None
             assert got["canonical_id"] == rec["canonical_id"]
@@ -200,6 +200,9 @@ class TestMintInternalRoute:
         rec = await mint_client._app.state.agent_registry.register(
             framework="claude-code", display_name="taos-dev",
             origin="external-selfjoin", handle="@taOS-dev",
+            # Simulates a row minted BEFORE the reserved-prefix era; the guard
+            # (rightly) blocks creating this via register() today.
+            allow_reserved=True,
         )
         # external-selfjoin starts 'pending'; the real @taOS-dev was approved -> active.
         await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
@@ -228,6 +231,9 @@ class TestMintInternalRoute:
         rec = await mint_client._app.state.agent_registry.register(
             framework="claude-code", display_name="taos-dev",
             origin="external-selfjoin", handle="@taOS-dev",
+            # Simulates a row minted BEFORE the reserved-prefix era; the guard
+            # (rightly) blocks creating this via register() today.
+            allow_reserved=True,
         )
         await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
         with patch("tinyagentos.routes.agent_registry._audit_governance",
@@ -250,6 +256,9 @@ class TestMintInternalRoute:
         rec = await mint_client._app.state.agent_registry.register(
             framework="claude-code", display_name="taos-dev",
             origin="external-selfjoin", handle="@taOS-dev",
+            # Simulates a row minted BEFORE the reserved-prefix era; the guard
+            # (rightly) blocks creating this via register() today.
+            allow_reserved=True,
         )
         await mint_client._app.state.agent_registry.set_status(rec["canonical_id"], "active")
         resp = await mint_client.post(
@@ -271,6 +280,8 @@ class TestMintInternalRoute:
             rec = await reg.register(
                 framework="claude-code", display_name=name,
                 origin="external-selfjoin", handle=handle,
+                # Pre-reserved-prefix-era row; see the adopt tests above.
+                allow_reserved=True,
             )
             await reg.set_status(rec["canonical_id"], "active")
         resp = await mint_client.post(
@@ -301,6 +312,8 @@ class TestMintInternalRoute:
             rec = await reg.register(
                 framework="claude-code", display_name=name,
                 origin="external-selfjoin", handle=handle,
+                # Pre-reserved-prefix-era row; see the adopt tests above.
+                allow_reserved=True,
             )
             await reg.set_status(rec["canonical_id"], "active")
         resp = await mint_client.post(
