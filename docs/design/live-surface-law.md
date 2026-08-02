@@ -1,6 +1,6 @@
 # Live Surface Law
 
-**Status:** Active — design law. Every implementer and reviewer applies this to
+**Status:** Active, design law. Every implementer and reviewer applies this to
 every taOS surface: windows, panes, embedded views, and PWAs.
 
 The default state of every taOS surface is **live**. A surface that only fetches
