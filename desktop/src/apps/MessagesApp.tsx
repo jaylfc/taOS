@@ -1935,7 +1935,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
   /* ---------------------------------------------------------------- */
 
   return (
-    <div className="relative flex flex-col h-full bg-shell-base text-white overflow-hidden">
+    <div className="relative flex flex-col h-full bg-shell-base text-shell-text overflow-hidden">
       {/* Toolbar — hidden on mobile when a channel is selected */}
       {showToolbar && (
         <div className="relative flex items-center px-3 py-2.5 border-b border-white/[0.06] shrink-0">
