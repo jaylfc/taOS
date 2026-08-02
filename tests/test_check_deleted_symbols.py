@@ -197,6 +197,7 @@ class TestCheckDeletedSymbols:
         )
         base_tip = _get_head(repo)
         _branch(repo, "pr-branch")
+        _checkout(repo, "pr-branch")
         # On PR branch: add function_x then remove it.
         _commit_file(
             repo, "tinyagentos/foo.py",

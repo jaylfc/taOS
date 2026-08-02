@@ -184,7 +184,7 @@ def check_deleted_symbols(
 
     violations: list[Violation] = []
     waived_in_signal: set[str] = set()
-    for symbol, kind in signal.items():
+    for symbol, kind in sorted(signal.items()):
         if symbol in waived_set:
             waived_in_signal.add(symbol)
             continue
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     if violations:
         print(
             f"DELETED-SYMBOLS FAIL: this PR deletes {len(violations)} symbol(s) that "
-            f"landed on dev after your branch was cut:"
+            f"exist on the base branch but are missing from the merge result:"
         )
         for v in violations:
             print(f"  - {v.symbol} (added by {v.added_by})")
