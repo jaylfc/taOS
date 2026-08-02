@@ -1,3 +1,4 @@
+import aiosqlite
 import pytest
 import pytest_asyncio
 
@@ -10,6 +11,56 @@ async def store(tmp_path):
     await store.init()
     yield store
     await store.close()
+
+
+# --- init / _post_init app-id rename migration ---
+
+@pytest.mark.asyncio
+async def test_post_init_renames_old_app_id_to_new(tmp_path):
+    s = InstalledAppsStore(tmp_path / "renamed.db")
+    db = await aiosqlite.connect(":memory:")
+    try:
+        s._db = db
+        await db.executescript(InstalledAppsStore.SCHEMA)
+        await db.commit()
+        await db.execute("INSERT INTO installed_apps (app_id, installed_at) VALUES (?, ?)", ("office-suite", 1.0))
+        await db.execute("INSERT INTO app_runtime (app_id, runtime_host, runtime_port) VALUES (?, ?, ?)", ("office-suite", "h", 1))
+        await db.commit()
+        await s._post_init()
+        row = await (await db.execute("SELECT app_id FROM installed_apps WHERE app_id = ?", ("office-studio",))).fetchone()
+        assert row is not None
+        row = await (await db.execute("SELECT app_id FROM app_runtime WHERE app_id = ?", ("office-studio",))).fetchone()
+        assert row is not None
+        row = await (await db.execute("SELECT app_id FROM installed_apps WHERE app_id = ?", ("office-suite",))).fetchone()
+        assert row is None
+        row = await (await db.execute("SELECT app_id FROM app_runtime WHERE app_id = ?", ("office-suite",))).fetchone()
+        assert row is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_post_init_keeps_new_id_when_both_exist(tmp_path):
+    s = InstalledAppsStore(tmp_path / "both.db")
+    db = await aiosqlite.connect(":memory:")
+    try:
+        s._db = db
+        await db.executescript(InstalledAppsStore.SCHEMA)
+        await db.commit()
+        await db.execute("INSERT INTO installed_apps (app_id, installed_at, version) VALUES (?, ?, ?)", ("office-studio", 2.0, "2"))
+        await db.execute("INSERT INTO installed_apps (app_id, installed_at, version) VALUES (?, ?, ?)", ("office-suite", 1.0, "1"))
+        await db.execute("INSERT INTO app_runtime (app_id, runtime_host, runtime_port) VALUES (?, ?, ?)", ("office-studio", "h_new", 2))
+        await db.execute("INSERT INTO app_runtime (app_id, runtime_host, runtime_port) VALUES (?, ?, ?)", ("office-suite", "h_old", 1))
+        await db.commit()
+        await s._post_init()
+        rows = await (await db.execute("SELECT app_id, version, installed_at FROM installed_apps ORDER BY app_id")).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("office-studio", "2", 2.0)
+        rows = await (await db.execute("SELECT app_id, runtime_host, runtime_port FROM app_runtime ORDER BY app_id")).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("office-studio", "h_new", 2)
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio
@@ -48,12 +99,36 @@ async def test_install_replace_existing(store):
 
 
 @pytest.mark.asyncio
-async def test_list_installed_order(store):
+async def test_list_installed_order(store, monkeypatch):
+    import time as _time
+    t = 1000.0
+    def fake_time():
+        nonlocal t
+        t += 1.0
+        return t
+    monkeypatch.setattr(_time, "time", fake_time)
     await store.install("app-a", version="1.0")
     await store.install("app-b", version="1.0")
     await store.install("app-c", version="1.0")
     rows = await store.list_installed()
     assert [r["app_id"] for r in rows] == ["app-c", "app-b", "app-a"]
+
+
+@pytest.mark.asyncio
+async def test_install_replace_updates_version(store, monkeypatch):
+    import time as _time
+    t = 1000.0
+    def fake_time():
+        nonlocal t
+        t += 1.0
+        return t
+    monkeypatch.setattr(_time, "time", fake_time)
+    await store.install("myapp", version="1.0")
+    v1_ts = (await store.list_installed())[0]["installed_at"]
+    await store.install("myapp", version="2.0")
+    apps = await store.list_installed()
+    assert apps[0]["version"] == "2.0"
+    assert apps[0]["installed_at"] > v1_ts
 
 
 @pytest.mark.asyncio
