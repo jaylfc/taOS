@@ -320,7 +320,9 @@ def find_all_violations(root: Path = STORES_ROOT) -> list[Violation]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    violations = find_all_violations()
+    args = argv if argv is not None else sys.argv[1:]
+    root = Path(args[0]) if args else STORES_ROOT
+    violations = find_all_violations(root)
     if not violations:
         print("retrofit-migration-guard: clean")
         return 0
