@@ -121,8 +121,13 @@ async def bus_messages(
     false`` and HTTP 200.
     """
     await _authorize_bus_read(request)
-    if not channel or channel == "*":
+    if not channel:
         return JSONResponse({"error": "channel required"}, status_code=400)
+    if channel == "*":
+        return JSONResponse(
+            {"error": "wildcard channel not supported here; use /api/a2a/bus/stream for all-threads"},
+            status_code=400,
+        )
 
     limit = max(1, min(500, limit))
     params: dict = {"thread": channel, "limit": limit}
