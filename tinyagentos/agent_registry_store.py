@@ -371,6 +371,37 @@ def mint_canonical_id(slug: str, ts: datetime) -> str:
     return f"{slug}-{date_part}-{time_part}"
 
 
+_RESERVED_PREFIXES = ("user-", "human-", "admin-", "taos-")
+
+
+def _check_reserved_prefix(slug: str, raw_name: str = "") -> None:
+    """Raise ValueError if *slug* (or the raw display name) would collide with a
+    reserved canonical-id prefix.
+
+    The check catches:
+    - slug equals a bare reserved word (e.g. ``user`` -> ``user-YYYYMMDD-HHMMSS``)
+    - slug starts with a reserved prefix (e.g. ``user-agent``)
+    - raw display names that obfuscate a reserved word with spacing or
+      punctuation (e.g. ``U s e r``, ``user!``)
+    """
+    for prefix in _RESERVED_PREFIXES:
+        bare = prefix.rstrip("-")
+        if slug == bare or slug.startswith(prefix):
+            raise ValueError(
+                f"cannot register agent: name {raw_name!r} resolves to reserved "
+                f"prefix {prefix!r}; choose a different name"
+            )
+    if raw_name:
+        normalized = re.sub(r"[^a-z0-9]", "", raw_name.lower())
+        for prefix in _RESERVED_PREFIXES:
+            bare = prefix.rstrip("-")
+            if normalized == bare:
+                raise ValueError(
+                    f"cannot register agent: name {raw_name!r} resolves to reserved "
+                    f"prefix {prefix!r}; choose a different name"
+                )
+
+
 # ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
@@ -461,7 +492,9 @@ class AgentRegistryStore(BaseStore):
 
         capabilities = capabilities or []
         now_utc = datetime.now(timezone.utc)
-        slug = _slugify(display_name) if display_name else _slugify(framework)
+        source_name = display_name if display_name else framework
+        slug = _slugify(source_name)
+        _check_reserved_prefix(slug, source_name)
         base_id = mint_canonical_id(slug, now_utc)
         canonical_id = base_id
         created_ts = now_utc.isoformat()
@@ -659,6 +692,24 @@ class AgentRegistryStore(BaseStore):
         )
         rows = await cursor.fetchall()
         return [{"canonical_id": r["canonical_id"], "status": r["status"]} for r in rows]
+
+    async def find_reserved_prefix_identities(self) -> list[dict]:
+        """Return all registry records whose canonical_id begins with a reserved prefix.
+
+        Used to audit existing data for namespace collisions after a prefix
+        reservation is introduced.  Does not rename or delete rows; surfaces
+        them for a manual decision.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        rows = []
+        for prefix in _RESERVED_PREFIXES:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE canonical_id LIKE ? ORDER BY id",
+                (f"{prefix}%",),
+            )
+            rows.extend(await cursor.fetchall())
+        return [_row_to_dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Lifecycle state machine
