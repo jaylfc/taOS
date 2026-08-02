@@ -115,3 +115,86 @@ class TestShareDestinations:
         finally:
             await registry.close()
             app.state.agent_registry = registry
+
+    async def _prep_registry_and_device(self, app, client):
+        """Init a fresh registry and register a paired device for *app*.
+
+        Returns (registry, user_id, device_token). Shared by the bare-slug
+        regression tests so they can seed a DM channel member stored as a slug.
+        """
+        registry = app.state.agent_registry
+        if registry._db is not None:
+            await registry.close()
+        await registry.init()
+        primary = app.state.auth.get_primary_user()
+        user_id = primary["id"] if primary else "admin"
+        reg = await client.post("/api/devices/register", json={"platform": "ios"})
+        assert reg.status_code == 200
+        token = reg.json()["scoped_token"]
+        return registry, user_id, token
+
+    async def test_agent_chat_resolves_bare_slug_member(self, client, app):
+        """A DM member stored as a bare slug (not canonical_id) still resolves to
+        an active-agent destination. Storing the canonical_id would make
+        ``registry.get(member)`` succeed and never exercise the ``get_by_slug``
+        fallback, so this pins the fallback path itself."""
+        registry, user_id, token = await self._prep_registry_and_device(app, client)
+        try:
+            agent = await registry.register(
+                framework="openclaw", display_name="Alpha", user_id=user_id
+            )
+            slug = "alpha"
+            assert agent["canonical_id"].startswith(f"{slug}-")
+
+            await app.state.chat_channels.create_channel(
+                name="dm",
+                type="dm",
+                created_by=user_id,
+                members=[user_id, slug],
+            )
+
+            resp = await client.get(
+                "/api/share/destinations",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            chats = [d for d in body["destinations"] if d["kind"] == "agent_chat"]
+            ids = {d["id"] for d in chats}
+            assert slug in ids
+            assert chats[0]["label"] == "Alpha"
+        finally:
+            await registry.close()
+
+    async def test_agent_chat_bare_slug_does_not_match_longer_slug(
+        self, client, app
+    ):
+        """Negative boundary: member ``alpha`` must NOT match a record slotted
+        ``alpha-beta-YYYYMMDD-HHMMSS``. ``get_by_slug('alpha')`` must not
+        prefix-match the longer slug."""
+        registry, user_id, token = await self._prep_registry_and_device(app, client)
+        try:
+            wider = await registry.register(
+                framework="openclaw", display_name="Alpha Beta", user_id=user_id
+            )
+            assert wider["canonical_id"].startswith("alpha-beta-")
+
+            await app.state.chat_channels.create_channel(
+                name="dm2",
+                type="dm",
+                created_by=user_id,
+                members=[user_id, "alpha"],
+            )
+
+            resp = await client.get(
+                "/api/share/destinations",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            chats = [d for d in body["destinations"] if d["kind"] == "agent_chat"]
+            ids = {d["id"] for d in chats}
+            assert "alpha" not in ids
+            assert all(d["id"] != wider["canonical_id"] for d in chats)
+        finally:
+            await registry.close()

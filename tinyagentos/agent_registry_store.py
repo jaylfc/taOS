@@ -539,6 +539,46 @@ class AgentRegistryStore(BaseStore):
         ).fetchone()
         return _row_to_dict(row) if row else None
 
+    async def get_by_slug(self, slug: str, *, status: str = "active") -> Optional[dict]:
+        """Return the oldest entry whose canonical_id decodes to *slug*, or ``None``.
+
+        DM channels created by the deploy route store the agent slug (not the
+        canonical_id) as the channel member, so callers that need to resolve a
+        channel member back to an agent record look up by slug. Pass
+        ``status=None`` to match any status.
+
+        The match is bounded to a real canonical_id tail
+        ``-{YYYYMMDD}-{HHMMSS}`` (optionally followed by a 2-hex collision
+        suffix) so that slug ``alpha`` does NOT match a sibling agent slotted
+        ``alpha-beta-YYYYMMDD-HHMMSS`` -- a plain ``LIKE 'slug-%'`` would, since
+        it prefix-matches any canonical_id beginning ``alpha-``. The same
+        tail shape is enforced by tinyagentos/chat/orphan_reconcile._CANONICAL_AGENT_ID_RE.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        # mint_canonical_id yields {slug}-{YYYYMMDD}-{HHMMSS} (and, on a
+        # same-second slug collision, a -{2hex} suffix). GLOBing the 8-6 digit
+        # tail pins the slug to its own canonical-id boundary.
+        pattern = (
+            f"{slug}-"
+            "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"
+            "-"
+            "[0-9][0-9][0-9][0-9][0-9][0-9]"
+            "*"
+        )
+        if status is None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE canonical_id GLOB ? ORDER BY id LIMIT 1",
+                (pattern,),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE canonical_id GLOB ? AND status = ? ORDER BY id LIMIT 1",
+                (pattern, status),
+            )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
     async def get_by_handle(self, handle: str, *, status: str = "active") -> Optional[dict]:
         """Return the oldest entry with *handle* and *status*, or ``None``.
 

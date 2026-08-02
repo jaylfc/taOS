@@ -388,6 +388,75 @@ class TestGet:
 
 
 # ---------------------------------------------------------------------------
+# AgentRegistryStore: get_by_slug
+# ---------------------------------------------------------------------------
+
+
+class TestGetBySlug:
+    @pytest.mark.asyncio
+    async def test_matches_bare_slug(self, store):
+        """A DM member stored as a bare slug resolves via the slug lookup."""
+        agent = await store.register(framework="openclaw", display_name="Alpha")
+        slug = "alpha"
+        fetched = await store.get_by_slug(slug)
+        assert fetched is not None
+        assert fetched["canonical_id"] == agent["canonical_id"]
+        assert fetched["canonical_id"].startswith(f"{slug}-")
+
+    @pytest.mark.asyncio
+    async def test_does_not_prefix_match_longer_slug(self, store):
+        """Slug ``alpha`` must NOT match a sibling slotted ``alpha-beta-...``.
+
+        A plain ``LIKE 'alpha-%'`` prefix would match ``alpha-beta-YYYYMMDD-HHMMSS``
+        because it begins with ``alpha-``; the bounded tail match must not.
+        """
+        wider = await store.register(framework="openclaw", display_name="Alpha Beta")
+        assert wider["canonical_id"].startswith("alpha-beta-")
+        assert await store.get_by_slug("alpha") is None
+        assert await store.get_by_slug("alpha-beta") is not None
+
+    @pytest.mark.asyncio
+    async def test_matches_collision_suffix(self, store):
+        """A canonical_id carrying a 2-hex collision suffix still resolves."""
+        await store._db.execute(
+            "INSERT INTO agent_registry "
+            "(canonical_id, display_name, framework, user_id, origin, handle, "
+            "capabilities, created_ts, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "alpha-20260101-000000-01",
+                "Alpha",
+                "openclaw",
+                "user-1",
+                "taos-deployed",
+                "",
+                "[]",
+                "2026-01-01T00:00:00",
+                "active",
+            ),
+        )
+        await store._db.commit()
+        fetched = await store.get_by_slug("alpha")
+        assert fetched is not None
+        assert fetched["canonical_id"] == "alpha-20260101-000000-01"
+
+    @pytest.mark.asyncio
+    async def test_filters_inactive_by_default(self, store):
+        agent = await store.register(framework="openclaw", display_name="Gamma")
+        await store.set_status(agent["canonical_id"], "suspended")
+        assert await store.get_by_slug("gamma") is None
+        fetched = await store.get_by_slug("gamma", status=None)
+        assert fetched is not None
+        assert fetched["canonical_id"] == agent["canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_not_initialized_raises(self, tmp_path):
+        s = AgentRegistryStore(tmp_path / "not_init.db")
+        with pytest.raises(RuntimeError, match="not initialised"):
+            await s.get_by_slug("anything")
+
+
+# ---------------------------------------------------------------------------
 # AgentRegistryStore: list_all
 # ---------------------------------------------------------------------------
 
