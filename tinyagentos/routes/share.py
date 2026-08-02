@@ -56,7 +56,9 @@ async def list_share_destinations(request: Request):
                     if auth.find_user(member) is not None:
                         continue
                 except Exception:
-                    pass
+                    # Fail CLOSED: if we cannot verify the member is not a
+                    # human, do not offer it as an agent destination.
+                    continue
             if registry is not None:
                 try:
                     agent = await registry.get(member)
