@@ -13,6 +13,11 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
   carries the `project_tasks_update` scope (title/body/labels/priority on
   own-or-lead cards; a plain `project_tasks` grant still gets 403 on PATCH,
   pinned by a regression test) (#2244).
+- **Doc-review stamps reconciled into dev** (#1835 / #2247): the review-state
+  store, routes, `project_doc_review` agent scope (now requestable via the
+  consent flow and internal mint) and the Files-app review UI. The feature has
+  shipped on every install since beta.43 but lived only on the release branch;
+  it is now developed and reviewed like everything else.
 
 ## [1.0.0-beta.45] - 2026-08-02
 

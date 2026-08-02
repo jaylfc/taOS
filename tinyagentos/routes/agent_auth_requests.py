@@ -78,6 +78,10 @@ VALID_SCOPES = frozenset({
     # per-project grant authorizes that project only. The route verifies the grant.
     "decisions_read",
     "decisions_write",
+    # Doc-review stamps: read/set review state on a project's docs
+    # (project-bound like project_tasks). Reconciled from master at beta.45 -
+    # the routes shipped on every install while the scope was missing here.
+    "project_doc_review",
     "observatory_control",
 })
 
