@@ -137,7 +137,7 @@ describe("updateMemorySettings", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/memory/settings");
     expect(opts.method).toBe("PUT");
-    expect(opts.headers["Content-Type"]).toBe("application/json");
+    expect((opts.headers?.get?.("Content-Type") ?? opts.headers?.["Content-Type"])).toBe("application/json");
     expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.model).toBe("gpt-4o");
@@ -239,7 +239,7 @@ describe("triggerCatalogIndex", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/memory/catalog/index");
     expect(opts.method).toBe("POST");
-    expect(opts.headers["Content-Type"]).toBe("application/json");
+    expect((opts.headers?.get?.("Content-Type") ?? opts.headers?.["Content-Type"])).toBe("application/json");
     expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const sentBody = JSON.parse(opts.body);
     expect(sentBody.date).toBe("2025-01-01");
@@ -341,7 +341,7 @@ describe("updateAgentMemoryConfig", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/agents/agent-1/memory-config");
     expect(opts.method).toBe("PUT");
-    expect(opts.headers["Content-Type"]).toBe("application/json");
+    expect((opts.headers?.get?.("Content-Type") ?? opts.headers?.["Content-Type"])).toBe("application/json");
     expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.auto_recall).toBe(false);

@@ -350,7 +350,7 @@ describe("saveToLibrary", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/knowledge/ingest");
     expect(opts.method).toBe("POST");
-    expect(opts.headers["Content-Type"]).toBe("application/json");
+    expect((opts.headers?.get?.("Content-Type") ?? opts.headers?.["Content-Type"])).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.url).toBe("https://github.com/octocat/hello-world");
     expect(body.source).toBe("github-browser");
