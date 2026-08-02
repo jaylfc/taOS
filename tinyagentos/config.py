@@ -62,6 +62,8 @@ class AppConfig:
     memory_url: str = "http://localhost:7900"
     wallhaven_api_key: str | None = None
     github_app_id: str = ""
+    registry_token_lifetime_seconds: int = 86400
+    registry_token_migration_cutoff_ts: float | None = None
     config_path: Path | None = None
 
     def to_dict(self) -> dict:
@@ -194,6 +196,8 @@ def load_config(path: Path) -> AppConfig:
         github_app_id=str(data.get("github_app_id", "") or ""),
         config_path=path,
         wallhaven_api_key=wallhaven_api_key,
+        registry_token_lifetime_seconds=int(data.get("registry_token_lifetime_seconds", 86400)),
+        registry_token_migration_cutoff_ts=float(data["registry_token_migration_cutoff_ts"]) if "registry_token_migration_cutoff_ts" in data else None,
     )
     if "github_app_private_key" in data:
         global _deprecation_warned_github_key

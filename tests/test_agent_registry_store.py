@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from tinyagentos.agent_registry_store import (
     load_or_create_signing_keypair,
     mint_canonical_id,
     mint_registry_token,
+    renew_registry_token,
     verify_registry_token,
     VALID_STATUSES,
 )
@@ -255,6 +257,14 @@ class TestTokenMinting:
         payload = verify_registry_token(token, pub)
         assert "iat" in payload
         assert isinstance(payload["iat"], int)
+
+    def test_token_has_exp(self, signing_keypair):
+        priv, pub = signing_keypair
+        token = mint_registry_token("agent-008", priv)
+        payload = verify_registry_token(token, pub)
+        assert "exp" in payload
+        assert isinstance(payload["exp"], int)
+        assert payload["exp"] > payload["iat"]
 
 
 # ---------------------------------------------------------------------------
@@ -1256,10 +1266,112 @@ class TestDirectReportsAndOrgTree:
 
 @pytest.mark.asyncio
 async def test_get_by_slug_rejects_glob_metacharacters(store):
-    # A caller-supplied member string with GLOB metachars must not reach the
+    # A caller-supplied member string with GLOB metachrs must not reach the
     # matcher: it returns None instead of matching or raising.
     assert await store.get_by_slug("alpha[a-z]") is None
     assert await store.get_by_slug("alpha*") is None
     assert await store.get_by_slug("alpha?") is None
     assert await store.get_by_slug("") is None
     assert await store.get_by_slug("Alpha") is None
+
+
+# ---------------------------------------------------------------------------
+# Token exp claim: minting, verification, renewal, migration window
+# ---------------------------------------------------------------------------
+
+
+def _build_token_no_exp(priv_pem, sub="agent-noexp") -> str:
+    header = _b64url_encode(
+        json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
+    )
+    claims = {
+        "sub": sub,
+        "iss": "taos-registry",
+        "iat": int(time.time()),
+        "jti": "test-jti-noexp",
+    }
+    payload_b64 = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
+    signing_input = f"{header}.{payload_b64}".encode()
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    priv = load_pem_private_key(priv_pem, password=None)
+    sig = _b64url_encode(priv.sign(signing_input))
+    return f"{header}.{payload_b64}.{sig}"
+
+
+class TestTokenExpiration:
+    def test_mint_includes_exp(self, signing_keypair):
+        priv, pub = signing_keypair
+        token = mint_registry_token("agent-exp-check", priv)
+        payload = verify_registry_token(token, pub)
+        assert "exp" in payload
+        assert isinstance(payload["exp"], int)
+        assert payload["exp"] > payload["iat"]
+
+    def test_expired_token_is_rejected(self, signing_keypair, monkeypatch):
+        priv, pub = signing_keypair
+        token = mint_registry_token("agent-expired", priv, lifetime_seconds=0)
+        real_now = time.time()
+        monkeypatch.setattr(
+            "tinyagentos.agent_registry_store.time.time",
+            lambda: real_now + 1,
+        )
+        with pytest.raises(ValueError, match="expired"):
+            verify_registry_token(token, pub)
+
+    def test_token_without_exp_accepted_during_migration(self, signing_keypair, monkeypatch):
+        priv, pub = signing_keypair
+        token = _build_token_no_exp(priv)
+        cutoff = time.time() + 3600
+        monkeypatch.setattr(
+            "tinyagentos.agent_registry_store.time.time",
+            lambda: cutoff - 1800,
+        )
+        payload = verify_registry_token(token, pub, allow_no_exp_until=cutoff)
+        assert payload["sub"] == "agent-noexp"
+
+    def test_token_without_exp_rejected_after_migration(self, signing_keypair, monkeypatch):
+        priv, pub = signing_keypair
+        token = _build_token_no_exp(priv)
+        cutoff = time.time() + 3600
+        monkeypatch.setattr(
+            "tinyagentos.agent_registry_store.time.time",
+            lambda: cutoff + 1800,
+        )
+        with pytest.raises(ValueError, match="no exp claim"):
+            verify_registry_token(token, pub, allow_no_exp_until=cutoff)
+
+    def test_decode_fails_closed_without_exp(self, signing_keypair):
+        priv, pub = signing_keypair
+        token = _build_token_no_exp(priv)
+        with pytest.raises(ValueError, match="no exp claim"):
+            verify_registry_token(token, pub)
+
+
+class TestTokenRenewal:
+    def test_renewal_issues_working_token(self, signing_keypair):
+        priv, pub = signing_keypair
+        original = mint_registry_token(
+            "agent-renew", priv, user_id="u1", framework="fw", lifetime_seconds=60
+        )
+        renewed = renew_registry_token(original, pub, priv)
+        payload = verify_registry_token(renewed, pub)
+        assert payload["sub"] == "agent-renew"
+        assert payload["user_id"] == "u1"
+        assert payload["framework"] == "fw"
+        assert payload["exp"] > payload["iat"]
+
+    def test_renewal_preserves_project_id(self, signing_keypair):
+        priv, pub = signing_keypair
+        original = mint_registry_token(
+            "agent-renew-proj", priv, project_id="proj-99", lifetime_seconds=60
+        )
+        renewed = renew_registry_token(original, pub, priv)
+        payload = verify_registry_token(renewed, pub)
+        assert payload["project_id"] == "proj-99"
+
+    def test_renewal_rejects_bad_signature(self, signing_keypair, tmp_path):
+        priv, _ = signing_keypair
+        _, wrong_pub = load_or_create_signing_keypair(tmp_path / "other_keys")
+        token = mint_registry_token("agent-bad-renew", priv)
+        with pytest.raises(ValueError, match="signature verification failed"):
+            renew_registry_token(token, wrong_pub, priv)

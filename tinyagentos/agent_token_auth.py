@@ -36,6 +36,13 @@ def _get_store(request: Request):
     return store
 
 
+def _get_migration_cutoff(request: Request) -> float | None:
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        return None
+    return getattr(config, "registry_token_migration_cutoff_ts", None)
+
+
 def _get_grants_store(request: Request):
     store = getattr(request.app.state, "agent_grants", None)
     if store is None:
@@ -96,7 +103,7 @@ async def _verify_agent_scope(
     # Verify the EdDSA signature using the registry public key.
     _private_pem, public_pem = _get_keypair(request)
     try:
-        payload = verify_registry_token(raw_token, public_pem)
+        payload = verify_registry_token(raw_token, public_pem, allow_no_exp_until=_get_migration_cutoff(request))
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid or malformed registry token")
 
@@ -178,7 +185,7 @@ async def check_agent_identity(request: Request) -> Optional[str]:
 
     _private_pem, public_pem = _get_keypair(request)
     try:
-        payload = verify_registry_token(raw_token, public_pem)
+        payload = verify_registry_token(raw_token, public_pem, allow_no_exp_until=_get_migration_cutoff(request))
     except ValueError:
         raise HTTPException(status_code=401, detail="invalid or malformed registry token")
 

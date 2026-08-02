@@ -273,6 +273,8 @@ class TestTokenRoundTrip:
         assert payload["sub"] == "agent-20260609-120000"
         assert payload["iss"] == "taos-registry"
         assert "iat" in payload
+        assert "exp" in payload
+        assert payload["exp"] > payload["iat"]
         assert payload["user_id"] == "user-1"
         assert payload["framework"] == "openclaw"
 
@@ -577,6 +579,42 @@ class TestAgentRegistryRoutes:
     async def test_revoked_feed_admin_can_read(self, registry_client):
         resp = await registry_client.get("/api/agents/registry/revoked")
         assert resp.status_code == 200
+
+    async def test_renew_token_returns_new_token(self, registry_client):
+        """POST /api/agents/registry/token/renew issues a fresh token."""
+        reg_resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Renew Me"},
+        )
+        assert reg_resp.status_code == 200
+        old_token = reg_resp.json()["token"]
+
+        renew_resp = await registry_client.post(
+            "/api/agents/registry/token/renew",
+            headers={"Authorization": f"Bearer {old_token}"},
+        )
+        assert renew_resp.status_code == 200
+        new_token = renew_resp.json()["token"]
+        assert new_token != old_token
+
+        pubkey_resp = await registry_client.get("/api/agents/registry/pubkey")
+        pub_pem = pubkey_resp.json()["public_key"].encode()
+        old_payload = verify_registry_token(old_token, pub_pem)
+        new_payload = verify_registry_token(new_token, pub_pem)
+        assert new_payload["sub"] == old_payload["sub"]
+        assert new_payload["user_id"] == old_payload["user_id"]
+        assert new_payload["exp"] > new_payload["iat"]
+
+    async def test_renew_token_requires_bearer(self, registry_client):
+        resp = await registry_client.post("/api/agents/registry/token/renew")
+        assert resp.status_code == 401
+
+    async def test_renew_token_rejects_invalid_token(self, registry_client):
+        resp = await registry_client.post(
+            "/api/agents/registry/token/renew",
+            headers={"Authorization": "Bearer not-a-valid-token"},
+        )
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------

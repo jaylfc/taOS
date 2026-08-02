@@ -263,6 +263,10 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
 # Token minting (compact JWT-style - header.payload.signature, base64url)
 # ---------------------------------------------------------------------------
 
+DEFAULT_REGISTRY_TOKEN_LIFETIME = 86400  # 24 hours: long enough for multi-turn agent
+# tasks, short enough that a leaked bearer credential is not permanent.
+
+
 def _b64url_encode(data: bytes) -> str:
     import base64
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -276,61 +280,11 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-def mint_registry_token(
-    canonical_id: str,
-    private_key_pem: bytes,
-    *,
-    user_id: str = "",
-    framework: str = "",
-    project_id: Optional[str] = None,
-) -> str:
-    """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
+def _verify_signature_only(token: str, public_key_pem: bytes) -> dict:
+    """Verify EdDSA signature and return payload without checking exp.
 
-    The JWT header is exactly ``{"alg":"EdDSA","typ":"JWT"}`` so any standard
-    Ed25519 JWT verifier (e.g. PyJWT, jose, or the cryptography lib directly)
-    can verify it without importing tinyagentos code.
-
-    Claims:
-      sub        - canonical_id (immutable agent identity)
-      iss        - "taos-registry"
-      iat        - unix timestamp of issuance
-      user_id    - owning user_id at registration time
-      framework  - agent framework at registration time
-      project_id - project binding, present only when non-empty; absent means
-                   the token is global (not bound to any project)
-
-    Signed with Ed25519 over the UTF-8 bytes of ``<header_b64url>.<payload_b64url>``.
-    """
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
-    private_key = load_pem_private_key(private_key_pem, password=None)
-
-    header = _b64url_encode(
-        json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
-    )
-    claims: dict = {
-        "sub": canonical_id,
-        "iss": "taos-registry",
-        "iat": int(time.time()),
-        "jti": uuid.uuid4().hex,
-        "user_id": user_id,
-        "framework": framework,
-    }
-    if project_id:
-        claims["project_id"] = project_id
-    payload = _b64url_encode(
-        json.dumps(claims, separators=(",", ":")).encode()
-    )
-    signing_input = f"{header}.{payload}".encode()
-    signature = _b64url_encode(private_key.sign(signing_input))
-    return f"{header}.{payload}.{signature}"
-
-
-def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
-    """Verify *token* against *public_key_pem*.
-
-    Returns the decoded payload dict on success.
-    Raises ``ValueError`` on invalid format or bad signature.
+    Internal helper for the renewal path, which must accept expired tokens
+    so an agent can rotate its credential without human intervention.
     """
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
     from cryptography.exceptions import InvalidSignature
@@ -351,6 +305,110 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
 
     payload = json.loads(_b64url_decode(payload_b64))
     return payload
+
+
+def mint_registry_token(
+    canonical_id: str,
+    private_key_pem: bytes,
+    *,
+    user_id: str = "",
+    framework: str = "",
+    project_id: Optional[str] = None,
+    lifetime_seconds: int | None = None,
+) -> str:
+    """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
+
+    The JWT header is exactly ``{"alg":"EdDSA","typ":"JWT"}`` so any standard
+    Ed25519 JWT verifier (e.g. PyJWT, jose, or the cryptography lib directly)
+    can verify it without importing tinyagentos code.
+
+    Claims:
+      sub        - canonical_id (immutable agent identity)
+      iss        - "taos-registry"
+      iat        - unix timestamp of issuance
+      exp        - unix timestamp of expiry (iat + lifetime_seconds)
+      user_id    - owning user_id at registration time
+      framework  - agent framework at registration time
+      project_id - project binding, present only when non-empty; absent means
+                   the token is global (not bound to any project)
+
+    Signed with Ed25519 over the UTF-8 bytes of ``<header_b64url>.<payload_b64url>``.
+    """
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    private_key = load_pem_private_key(private_key_pem, password=None)
+
+    header = _b64url_encode(
+        json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
+    )
+    if lifetime_seconds is None:
+        lifetime_seconds = DEFAULT_REGISTRY_TOKEN_LIFETIME
+    claims: dict = {
+        "sub": canonical_id,
+        "iss": "taos-registry",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + lifetime_seconds,
+        "jti": uuid.uuid4().hex,
+        "user_id": user_id,
+        "framework": framework,
+    }
+    if project_id:
+        claims["project_id"] = project_id
+    payload = _b64url_encode(
+        json.dumps(claims, separators=(",", ":")).encode()
+    )
+    signing_input = f"{header}.{payload}".encode()
+    signature = _b64url_encode(private_key.sign(signing_input))
+    return f"{header}.{payload}.{signature}"
+
+
+def verify_registry_token(
+    token: str,
+    public_key_pem: bytes,
+    allow_no_exp_until: float | None = None,
+) -> dict:
+    """Verify *token* against *public_key_pem*.
+
+    Returns the decoded payload dict on success.
+    Raises ``ValueError`` on invalid format, bad signature, missing exp (after
+    the migration window), or expired token.
+    """
+    payload = _verify_signature_only(token, public_key_pem)
+
+    now = time.time()
+    exp = payload.get("exp")
+    if exp is not None:
+        if now >= exp:
+            raise ValueError("token has expired")
+    elif allow_no_exp_until is None or now >= allow_no_exp_until:
+        raise ValueError("token has no exp claim")
+
+    return payload
+
+
+def renew_registry_token(
+    token: str,
+    public_key_pem: bytes,
+    private_key_pem: bytes,
+    *,
+    lifetime_seconds: int | None = None,
+) -> str:
+    """Renew an existing registry token.
+
+    Verifies the EdDSA signature (but does not require the token to be
+    unexpired) and returns a freshly-minted token with the same claims and
+    a new exp.  This is the self-service path for agents whose token has
+    expired without human re-minting.
+    """
+    payload = _verify_signature_only(token, public_key_pem)
+    return mint_registry_token(
+        payload["sub"],
+        private_key_pem,
+        user_id=payload.get("user_id", ""),
+        framework=payload.get("framework", ""),
+        project_id=payload.get("project_id"),
+        lifetime_seconds=lifetime_seconds,
+    )
 
 
 # ---------------------------------------------------------------------------

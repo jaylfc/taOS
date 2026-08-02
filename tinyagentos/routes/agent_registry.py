@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_registry_store import mint_registry_token, renew_registry_token, verify_registry_token
 from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 
@@ -742,6 +742,35 @@ async def reactivate_agent(
 ):
     """Reactivate a suspended agent (suspended → active). Admin only."""
     return await _transition(request, canonical_id, "reactivate", "active", user)
+
+
+@router.post("/api/agents/registry/token/renew")
+async def renew_registry_token_route(request: Request):
+    """Renew the caller's registry token.
+
+    Accepts the current Bearer token (even if expired) and returns a new
+    token with the same claims and a fresh exp.  The agent must still be
+    active in the registry.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    raw_token = auth_header[7:].strip()
+    private_pem, public_pem = _get_keypair(request)
+
+    try:
+        new_token = renew_registry_token(raw_token, public_pem, private_pem)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    store = _get_store(request)
+    new_payload = verify_registry_token(new_token, public_pem)
+    record = await store.get(new_payload["sub"])
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    return {"token": new_token}
 
 
 # ---------------------------------------------------------------------------
