@@ -17,6 +17,9 @@ async def _mint_agent(app, project_id, scopes, handle="@taOS-dev"):
     rec = await registry.register(
         framework="claude-code",
         display_name="taOS dev",
+        # Simulates an internal driver agent; its name deliberately slugs to
+        # the reserved taos- prefix, so it needs the internal-path escape hatch.
+        allow_reserved=True,
         origin="internal",
         handle=handle,
     )
@@ -477,6 +480,9 @@ async def test_agent_expired_grant_cannot_read(client):
     rec = await registry.register(
         framework="claude-code",
         display_name="taOS dev",
+        # Simulates an internal driver agent; its name deliberately slugs to
+        # the reserved taos- prefix, so it needs the internal-path escape hatch.
+        allow_reserved=True,
         origin="internal",
         handle="@expired-x",
     )
