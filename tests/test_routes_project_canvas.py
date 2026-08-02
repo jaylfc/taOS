@@ -970,6 +970,16 @@ class TestCanvasStreamSnapshotSessionUnchanged:
         )
         assert resp.status_code == 200
 
+    async def test_session_gating_uses_project_visibility(self, ctx):
+        """A non-owner human session still collapses into 404 (D3 matrix),
+        so agent gating did not change session semantics."""
+        pid = await _new_project(ctx, "nonowner-snap")
+        async with _non_owner_client(ctx.app) as other:
+            resp = await other.get(
+                f"/api/projects/{pid}/canvas/snapshot.png"
+            )
+        assert resp.status_code == 404
+
     async def test_owner_watch_projection_allowed(self, ctx):
         pid = await _new_project(ctx, "owner-watch")
         resp = await ctx.client.get(f"/api/projects/{pid}/canvas/watch-projection")
@@ -1029,15 +1039,6 @@ class TestWatchProjectionAgentGating:
             )
         assert resp.status_code == 404
 
-    async def test_session_gating_uses_project_visibility(self, ctx):
-        """A non-owner human session still collapses into 404 (D3 matrix),
-        so agent gating did not change session semantics."""
-        pid = await _new_project(ctx, "nonowner-snap")
-        async with _non_owner_client(ctx.app) as other:
-            resp = await other.get(
-                f"/api/projects/{pid}/canvas/snapshot.png"
-            )
-        assert resp.status_code == 404
 
 
 def _stream_req(app, *, token=None, user_id=None, is_admin=False):
