@@ -970,6 +970,65 @@ class TestCanvasStreamSnapshotSessionUnchanged:
         )
         assert resp.status_code == 200
 
+    async def test_owner_watch_projection_allowed(self, ctx):
+        pid = await _new_project(ctx, "owner-watch")
+        resp = await ctx.client.get(f"/api/projects/{pid}/canvas/watch-projection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "version" in data
+        assert "elements" in data
+
+
+@pytest.mark.asyncio
+class TestWatchProjectionAgentGating:
+    async def test_watch_projection_allowed_with_scope_and_flag(self, ctx):
+        pid = await _new_project(ctx, "watch-read")
+        cid, token = await _mint_agent(ctx, pid, ("canvas_read",))
+        await _add_member(ctx, pid, cid)
+        await _grant_canvas(ctx, pid, cid, read=True)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.get(
+                f"/api/projects/{pid}/canvas/watch-projection",
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 200
+
+    async def test_watch_projection_without_scope_is_403(self, ctx):
+        pid = await _new_project(ctx, "watch-noscope")
+        cid, token = await _mint_agent(ctx, pid, ("canvas_write",))
+        await _add_member(ctx, pid, cid)
+        await _grant_canvas(ctx, pid, cid, read=True)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.get(
+                f"/api/projects/{pid}/canvas/watch-projection",
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 403
+
+    async def test_watch_projection_without_flag_is_403(self, ctx):
+        pid = await _new_project(ctx, "watch-noflag")
+        cid, token = await _mint_agent(ctx, pid, ("canvas_read",))
+        await _add_member(ctx, pid, cid)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.get(
+                f"/api/projects/{pid}/canvas/watch-projection",
+                headers=_hdr(token),
+            )
+        assert resp.status_code == 403
+
+    async def test_watch_projection_wrong_project_is_404(self, ctx):
+        pid_a = await _new_project(ctx, "watch-alpha")
+        pid_b = await _new_project(ctx, "watch-beta")
+        cid, token_a = await _mint_agent(ctx, pid_a, ("canvas_read",))
+        await _add_member(ctx, pid_a, cid)
+        await _grant_canvas(ctx, pid_a, cid, read=True)
+        async with _bare(ctx.app) as bare:
+            resp = await bare.get(
+                f"/api/projects/{pid_b}/canvas/watch-projection",
+                headers=_hdr(token_a),
+            )
+        assert resp.status_code == 404
+
     async def test_session_gating_uses_project_visibility(self, ctx):
         """A non-owner human session still collapses into 404 (D3 matrix),
         so agent gating did not change session semantics."""

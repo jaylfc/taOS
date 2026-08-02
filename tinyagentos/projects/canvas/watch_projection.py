@@ -80,6 +80,7 @@ def _text_card(el: dict, kind: str) -> dict:
 def _thumbnail(el: dict) -> dict:
     entry = _base_entry(el, "image", "thumbnail")
     entry["alt"] = _payload_str(el, "alt")
+    entry["file_id"] = _payload_str(el, "file_id")
     return entry
 
 
@@ -135,7 +136,7 @@ def _domain_of(url: Any) -> str:
     if not isinstance(url, str) or not url.strip():
         return ""
     try:
-        return urlparse(url).netloc or ""
+        return urlparse(url).hostname or ""
     except Exception:
         return ""
 

@@ -196,8 +196,8 @@ The surface, by scope:
 - **project_tasks_create**: `POST /api/projects/{pid}/tasks` (author new cards).
   This is a SEPARATE scope from project_tasks and is off by default; grant it
   explicitly when an agent needs to create cards.
-- **canvas_read**: `GET .../canvas/elements`, `.../canvas/snapshot.png|.tldr`,
-  `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
+- **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
+  `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`.
 - **files_read**: `GET /api/projects/{slug}/files` (list), `.../files/watch`,
   `GET .../files/{path}` (download), `.../trash`, `.../stats`. **files_write**:
