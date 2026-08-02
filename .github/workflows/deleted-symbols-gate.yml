@@ -1,0 +1,41 @@
+name: Deleted symbols gate
+
+# Detects PRs that silently delete Python symbols (def/class/test names) that
+# landed on the target branch after the PR's merge base. A PR cut before
+# hardening commits landed on dev would silently delete them when merged --
+# git reports "Automatic merge went well" with no conflict because the PR
+# branch simply wins on files dev touched after the branch point.
+#
+# This check fails such PRs and names the deleted symbols and the commits that
+# added them. A "Removes-Intentionally: <symbol>" trailer in the PR body
+# waives named symbols, making deliberate deletions a conscious, auditable act.
+#
+# See scripts/check_deleted_symbols.py for the implementation.
+
+on:
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  deleted-symbols-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch base branch
+        run: git fetch origin "$BASE_REF"
+
+      - name: Check for silently deleted symbols
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/check_deleted_symbols.py --base "origin/$BASE_REF"
