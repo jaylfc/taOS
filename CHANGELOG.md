@@ -7,6 +7,44 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.45] - 2026-08-02
+
+### Added
+
+- **Community view**: collaborator stats, leaderboard, and a read-only kanban of
+  the public board (#2042).
+- **Notes/Todo split**: Notes and Todo are now separate apps, final integration
+  pass (#2033).
+- **Hub sealed-envelope relay**: X25519 store-and-forward through taos.my so two
+  boxes can exchange DMs without a direct connection (#2034), plus the E1 DM
+  schema migration preparing cross-box messaging (#2047).
+- **Library**: storage accounting view (#2099), YouTube and Web ingest processors
+  with streaming, content-type gates and timeout guards (#2177), a broken
+  thumbnail now shows a placeholder instead of blank space (#2120), and the
+  source ingest option is actually wired up (#2117).
+- **Memory app**: shows taOSmd running mode, reachability and tier, with a
+  switch-to-remote control (#1959).
+- **Wallpaper picker**: Wallhaven browse via a server-side proxy, sectioned
+  picker (#1902).
+- **Decisions**: agents can ask a Decision and mirror a chat answer back onto the
+  card, with spoofing, consent and cross-project protections layered on
+  (#2179 series).
+- **Scope requests in the bell**: approve/deny buttons directly on scope-request
+  notifications (#2107), and `project_tasks_update` so lead agents can edit
+  their own board cards (#2184).
+- **taOStalk groundwork**: typed `content_blocks` and the render dispatcher
+  (#2154), theme-token migration (#2151).
+- **Share destinations**: authorization-filtered `GET /api/share/destinations`
+  (S2A, #2146).
+- **App tiering S1**: registry tier/group/handler fields (#2185).
+- **Device-bearer self-service**: push-token rotation and device management on
+  the device token itself (#2232).
+- **Reserved agent names**: `user-`, `human-`, `admin-` and `taos-` prefixes are
+  rejected at registration (including punctuation/spacing obfuscations), so an
+  external agent cannot squat an identity that reads as a person or as an
+  internal taOS agent (#2237).
+- Per-user 24h feedback submission cap (#2131).
+
 ### Fixed
 
 - **Push notifications never routed to the correct app.** Three independent faults
@@ -15,7 +53,44 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
   SW saw them, the deep-link fallback was always root, and no shell listener
   existed for the common mobile-PWA case where the app is already open. Decision
   pushes now open Decisions (or the mapped target app) whether or not a window
-  is already open, and the cross-origin guard remains intact.
+  is already open (#2179).
+- **Web push was silently broken**: the VAPID key format made every send fail
+  (#2166).
+- **Wallpapers squashed on square and odd-ratio screens**, in both desktop and
+  browser modes.
+- **SPA entry points missing the auth guard**: every entry point now installs it
+  (#2174).
+- **App Store install gate hardening**: signing failure is fail-closed instead of
+  silently unsigned (#2050), date-safe manifest canonicalisation and an async
+  TOCTOU re-check, and the unsigned-manifest policy contradiction is resolved
+  (#2218).
+- **Scope binding**: `project_tasks_create` and file scopes bind to a project on
+  approval instead of floating globally (#2127).
+- Watch-face projection issues (#2230).
+- CSRF token is merged into `Request`-object fetch inputs too (#1999).
+- Canvas `.tldr` export produces a file tldraw can actually open (#2133).
+- GPU arbiter: `drain_tick_seconds` floor clamped and a double capacity wake
+  removed (#1987).
+- Project create enforces name uniqueness and auto-rejects duplicates (#2168).
+- Duplicate channel header on rebased share routes (#2169).
+- Project lists: entry positioning and missing store wiring.
+
+### Changed
+
+- **CI test suite is sharded** across parallel jobs (#2137), the dependency audit
+  runs on dev PRs (#2189), the test timeout sits above the real suite runtime
+  (#2134), and CodeRabbit no longer spends review quota on generated diffs
+  (#2136).
+- **Dev dependencies moved to `[dependency-groups]`** so a plain `uv sync` gives
+  a working test environment (#2217).
+- **Doc drift gate**: rules can opt into firing on plain modifications
+  (`on_modify`), with changelog, agent-manual and contributor-skill coverage
+  (#2236).
+- The Workspace tab no longer embeds a chat pane.
+- Security dependency bumps: pillow 12.3.0, dompurify 3.4.12.
+- Docs: verification and collision working rules written down (#2163), realtime
+  A2A connection guide for deployed agents (#2161), agent token storage
+  hardening (#2159).
 
 ## [1.0.0-beta.44] - 2026-07-26
 
