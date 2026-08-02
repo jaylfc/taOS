@@ -769,11 +769,11 @@ async def get_task(
     return t
 
 
-# Fields an agent holding project_tasks_update may PATCH. Everything else in
-# UpdateTaskIn (assignee_id, parent_task_id, element_id, and any future field)
-# is rejected 400 for agents so the surface stays minimal and future task
-# fields are protected by default. Session owner/admin is unaffected.
-_AGENT_EDITABLE_FIELDS = frozenset({"title", "body", "labels", "status", "priority"})
+# Fields an agent holding project_tasks may PATCH. Everything else in
+# UpdateTaskIn (assignee_id, parent_task_id, element_id, status, and any
+# future field) is rejected 403 for agents so the surface stays minimal and
+# future task fields are protected by default. Session owner/admin is unaffected.
+_AGENT_EDITABLE_FIELDS = frozenset({"title", "body", "labels", "priority"})
 
 
 @router.patch("/api/projects/{project_id}/tasks/{task_id}")
@@ -783,12 +783,13 @@ async def update_task(
     payload: UpdateTaskIn,
     request: Request,
 ):
-    # Dual-auth: session owner/admin OR an agent holding project_tasks_update
-    # bound to THIS project. The agent gate (authorship/lead) and field
-    # whitelist are enforced below.
+    # Dual-auth: session owner/admin OR an agent holding project_tasks bound
+    # to THIS project (the same scope the claim/close/release lifecycle routes
+    # require). The agent gate (authorship/lead) and field whitelist are
+    # enforced below.
     pstore = request.app.state.project_store
     auth = await _authorize_task_actor(
-        request, pstore, project_id, scope="project_tasks_update"
+        request, pstore, project_id, scope="project_tasks"
     )
     if isinstance(auth, JSONResponse):
         return auth
@@ -810,14 +811,17 @@ async def update_task(
                 status_code=403,
             )
 
-    # Field whitelist for agents: title, body, labels, status, priority ONLY.
-    # Any other field that is set is rejected 400 (future fields included).
+    # Field whitelist for agents: title, body, labels, priority ONLY.
+    # Any other field that is set is rejected 403 (future fields included)
+    # so the surface stays minimal and future task fields are protected by
+    # default. assignee_id and parent_task_id stay human-only: an agent may
+    # not reassign work to itself or rewire hierarchies.
     if is_agent:
         for f in payload.model_fields:
             if f not in _AGENT_EDITABLE_FIELDS and getattr(payload, f) is not None:
                 return JSONResponse(
                     {"error": f"field {f!r} is not editable by agents"},
-                    status_code=400,
+                    status_code=403,
                 )
 
     if payload.parent_task_id is not None:
@@ -912,10 +916,10 @@ async def mark_task_claimable(
 
     LEAD-only curation: a project LEAD (session owner/admin, or the lead agent's
     ``project_tasks`` token) flags which cards the build fleet may pick up. This
-    is deliberately narrower than PATCH ``update_task`` (which stays session-only
-    per #1774): it touches ONLY the ``claimable`` label and preserves every other
-    label, so granting it to the lead agent does not widen the ``project_tasks``
-    scope into free field edits.
+    is deliberately narrower than PATCH ``update_task``: it toggles ONLY the
+    ``claimable`` label and preserves every other label, so granting it to the
+    lead agent does not widen the ``project_tasks`` scope beyond a single-label
+    toggle.
     """
     pstore = request.app.state.project_store
     auth = await _authorize_project_lead(request, pstore, project_id)
