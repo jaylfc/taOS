@@ -129,7 +129,16 @@ async def _run_git(
         stderr=asyncio.subprocess.STDOUT,
         cwd=str(repo),
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        logger.error("self-update: git %s timed out after %.0fs", args[0], timeout)
+        return -1, f"git {args[0]} timed out after {timeout:.0f}s"
     return proc.returncode or 0, (stdout.decode("utf-8", errors="replace") if stdout else "")
 
 
@@ -294,7 +303,20 @@ async def update_dependencies() -> dict:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(repo),
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return {
+                "ok": False,
+                "output": "uv sync timed out after 300s",
+                "exit_code": -1,
+                "package_manager": "uv",
+            }
         output = stdout.decode("utf-8", errors="replace") if stdout else ""
         return {
             "ok": proc.returncode == 0,
@@ -319,7 +341,20 @@ async def update_dependencies() -> dict:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        return {
+            "ok": False,
+            "output": "pip install timed out after 300s",
+            "exit_code": -1,
+            "package_manager": "pip",
+        }
     output = stdout.decode("utf-8", errors="replace") if stdout else ""
     return {
         "ok": proc.returncode == 0,

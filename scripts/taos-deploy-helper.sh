@@ -306,19 +306,46 @@ MANIFEST
 # (via at(1) or systemd-run) survives the teardown because it runs outside
 # the service cgroup.
 
+# Try restarting a worker service by name, first as a system service then
+# as a user service (systemctl --user).  The deploy helper runs via sudo
+# (as root), so plain systemctl cannot reach the invoking user's --user
+# session; we try both scopes to cover both system-level and user-level
+# worker installations.
+_restart_service_by_name() {
+    local svc_name="$1"
+    # System service (systemctl as root).
+    systemctl restart "$svc_name" 2>/dev/null && return 0
+    # User service — use the original user if sudo preserved SUDO_USER,
+    # otherwise try a raw ``systemctl --user`` (works when the helper is
+    # called without sudo).
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        su -l "$SUDO_USER" -c "systemctl --user restart '$svc_name'" 2>/dev/null && return 0
+    fi
+    systemctl --user restart "$svc_name" 2>/dev/null && return 0
+    return 1
+}
+
 _detached_restart_worker() {
-    local restart_cmd="systemctl restart tinyagentos-worker.service 2>/dev/null || systemctl restart taos-worker.service 2>/dev/null || true"
+    # Build an at(1) script that restarts via both system and user scope,
+    # because atd runs as the original user and can reach --user services.
+    local restart_script
+    restart_script="systemctl restart tinyagentos-worker.service 2>/dev/null || systemctl restart taos-worker.service 2>/dev/null || systemctl --user restart tinyagentos-worker.service 2>/dev/null || systemctl --user restart taos-worker.service 2>/dev/null || true"
 
     # 1 — at(1): schedules the restart after the helper exits (cleanest).
     if command -v at >/dev/null 2>&1; then
-        if echo "$restart_cmd" | at now 2>/dev/null; then
-            log "worker restart scheduled via at(1)"
-            return 0
+        # Only trust at(1) if the atd daemon is actually running —
+        # ``at now`` exits 0 even when atd is stopped (CodeRabbit, Jul 31).
+        if systemctl is-active --quiet atd 2>/dev/null || systemctl is-active --quiet atd.service 2>/dev/null; then
+            if echo "$restart_script" | at now 2>/dev/null; then
+                log "worker restart scheduled via at(1)"
+                return 0
+            fi
         fi
     fi
 
     # 2 — systemd-run --scope: runs outside the service cgroup.
     if command -v systemd-run >/dev/null 2>&1; then
+        # Direct systemctl via systemd-run (system scope).
         if systemd-run --scope --no-block systemctl restart tinyagentos-worker.service 2>/dev/null; then
             log "worker restart dispatched via systemd-run"
             return 0
@@ -327,15 +354,24 @@ _detached_restart_worker() {
             log "worker restart dispatched via systemd-run (taos-worker)"
             return 0
         fi
+        # Try --user scope via systemd-run.
+        if systemd-run --scope --no-block systemctl --user restart tinyagentos-worker.service 2>/dev/null; then
+            log "worker restart dispatched via systemd-run --user"
+            return 0
+        fi
+        if systemd-run --scope --no-block systemctl --user restart taos-worker.service 2>/dev/null; then
+            log "worker restart dispatched via systemd-run --user (taos-worker)"
+            return 0
+        fi
     fi
 
     # 3 — Last resort: --no-block may race with cgroup teardown, but the
     #     helper returns immediately so it often wins.
-    if systemctl restart --no-block tinyagentos-worker.service 2>/dev/null; then
-        log "worker restart dispatched via systemctl --no-block (may race with cgroup teardown)"
+    if _restart_service_by_name "tinyagentos-worker.service"; then
+        log "worker restart dispatched via systemctl --no-block"
         return 0
     fi
-    if systemctl restart --no-block taos-worker.service 2>/dev/null; then
+    if _restart_service_by_name "taos-worker.service"; then
         log "worker restart dispatched via systemctl --no-block (taos-worker)"
         return 0
     fi

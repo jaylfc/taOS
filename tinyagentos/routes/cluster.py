@@ -1989,8 +1989,8 @@ async def report_update_outcome(request: Request, name: str, body: UpdateOutcome
     """
     try:
         await require_worker_hmac(request)
-    except _HMACError:
-        return JSONResponse({"error": "hmac verification failed"}, status_code=403)
+    except _HMACError as exc:
+        return exc.response
 
     # Verify the HMAC-authenticated worker matches the body name.
     # Without this, worker A could spoof an outcome report for

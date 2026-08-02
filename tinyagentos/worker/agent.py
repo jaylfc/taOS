@@ -405,6 +405,37 @@ def _dedupe_candidates(candidates: list[tuple[str, str]]) -> list[tuple[str, str
     return out
 
 
+async def _run_post_update_hook(
+    controller_url: str,
+    agent,  # WorkerAgent
+    state_dir: Path,
+) -> None:
+    """Background wrapper around post_update_startup.
+
+    Runs the post-restart health-check and outcome-signalling hook as
+    a fire-and-forget task so the worker heartbeat loop is never blocked
+    by the grace period + health-check delay (CodeRabbit, Jul 31).
+    """
+    try:
+        from tinyagentos.worker.self_update import post_update_startup
+
+        outcome = await post_update_startup(
+            controller_url=controller_url,
+            agent=agent,
+            state_dir=state_dir,
+        )
+        if outcome is not None:
+            logger.info(
+                "self-update: post-restart outcome=%s",
+                outcome.get("outcome", "unknown"),
+            )
+    except Exception:
+        logger.warning(
+            "post_update_startup hook failed — continuing",
+            exc_info=True,
+        )
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -1299,23 +1330,15 @@ class WorkerAgent:
                         # pre-restart checkpoint, run the health-check and
                         # signal the outcome (success or rollback) to the
                         # controller.
-                        try:
-                            from tinyagentos.worker.self_update import post_update_startup
-                            outcome = await post_update_startup(
-                                controller_url=self.controller_url,
-                                agent=self,
-                                state_dir=self._state_dir,
-                            )
-                            if outcome is not None:
-                                logger.info(
-                                    "self-update: post-restart outcome=%s",
-                                    outcome.get("outcome", "unknown"),
-                                )
-                        except Exception:
-                            logger.warning(
-                                "post_update_startup hook failed — continuing",
-                                exc_info=True,
-                            )
+                        #
+                        # Scheduled as a background task so the worker loop
+                        # can register and send heartbeats immediately; the
+                        # hook's grace period + health check would otherwise
+                        # block the loop long enough for the controller to
+                        # mark the worker offline (CodeRabbit, Jul 31).
+                        asyncio.ensure_future(_run_post_update_hook(
+                            self.controller_url, self, self._state_dir,
+                        ))
                         continue
                     if result == _NEEDS_REPAIR:
                         # Controller rejected our key -- enter needs-re-pair state.
