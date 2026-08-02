@@ -4,10 +4,10 @@
 # entries here to cover new feature areas without touching the script.
 #
 # Precision over recall: `when_changed` only triggers a rule on a structural
-# change (a file added or deleted), never a plain modification, and every
-# glob below is scoped to the specific tree it names. This is deliberate --
-# a noisy gate gets disabled, so false positives are worse than an occasional
-# missed doc update.
+# change (a file added or deleted, or a plain modification when the rule sets
+# `on_modify = true`), and every glob below is scoped to the specific tree it
+# names. This is deliberate -- a noisy gate gets disabled, so false positives
+# are worse than an occasional missed doc update.
 
 [gate]
 trailer = "Docs-Reviewed:"
@@ -47,3 +47,29 @@ name = "agent-api"
 when_changed = ["tinyagentos/auth_middleware.py"]
 require_doc = ["docs/agent-coordination.md"]
 hint = "the agent-token route allowlist changed; update the agent-facing API surface (or add a Docs-Reviewed trailer explaining why not)"
+
+# User-visible behaviour needs a changelog line.
+[[rules]]
+name = "user-visible-changelog"
+on_modify = true
+when_changed = ["tinyagentos/routes/*.py", "desktop/src/apps/*/**", "tinyagentos/installers/*"]
+require_doc = ["CHANGELOG.md"]
+hint = "user-visible behaviour changed; add a CHANGELOG.md line (or add a Docs-Reviewed trailer explaining why not)"
+
+# Agent-facing behaviour needs the compiled agent manual reviewed.
+[[rules]]
+name = "agent-manual"
+on_modify = true
+when_changed = ["tinyagentos/agent_registry*.py", "tinyagentos/agent_token_auth.py", "tinyagentos/routes/agent_*.py", "tinyagentos/mcp/**"]
+require_doc = ["docs/agent-manual/*.md", "docs/agent-coordination.md"]
+hint = "agent-facing behaviour changed; review the agent manual or coordination doc (or add a Docs-Reviewed trailer explaining why not)"
+
+# The contributor skill documents how to contribute, test and ship. When CI,
+# packaging or the contribution rules move, it goes stale silently because
+# nothing imports it.
+[[rules]]
+name = "contributor-skill"
+on_modify = true
+when_changed = [".github/workflows/*.yml", "pyproject.toml", "CONTRIBUTING.md"]
+require_doc = [".claude/skills/taos-development-skill/*.md", "docs/*.md"]
+hint = "CI, packaging or contribution rules changed; review the contributor skill and docs (or add a Docs-Reviewed trailer explaining why not)"
