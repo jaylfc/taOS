@@ -180,6 +180,9 @@ def register_all_routers(app):
     from tinyagentos.routes.project_canvas import router as project_canvas_router
     app.include_router(project_canvas_router, dependencies=_csrf)
 
+    from tinyagentos.routes.project_doc_review import router as project_doc_review_router
+    app.include_router(project_doc_review_router, dependencies=_csrf)
+
     from tinyagentos.routes.desktop_control import router as desktop_control_router
     app.include_router(desktop_control_router, dependencies=_csrf)
 

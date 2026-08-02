@@ -23,6 +23,7 @@ from tinyagentos.agent_registry_store import (
     verify_registry_token,
     _slugify,
 )
+from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
 from datetime import datetime, timezone
 
 
@@ -818,3 +819,8 @@ class TestFeedReadScope:
         assert "revoked" in r1.json()
         assert r2.status_code == 200
         assert "grants" in r2.json()
+
+
+def test_allowed_scopes_includes_project_doc_review():
+    """project_doc_review must be in the mint allowlist so internal agents can be granted it."""
+    assert "project_doc_review" in _ALLOWED_SCOPES
