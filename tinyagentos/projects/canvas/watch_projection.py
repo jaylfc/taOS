@@ -17,9 +17,11 @@ Design rules (bus 1319):
 from __future__ import annotations
 
 from typing import Any
+import logging
 from urllib.parse import urlparse
 
 _VERSION = 1
+logger = logging.getLogger(__name__)
 
 _TEXT_CARD_KINDS = ("note", "text")
 _DIAGRAM_KINDS = ("mermaid", "flowchart")
@@ -38,6 +40,7 @@ def build_watch_projection(elements: list[dict]) -> dict:
         try:
             projected.append(_project_element(el))
         except Exception:
+            logger.debug("watch projection: element degraded to placeholder", exc_info=True)
             projected.append(_placeholder_entry(el, "malformed element"))
     projected.sort(key=lambda e: (e.get("z_index") or 0))
     return {"version": _VERSION, "elements": projected}

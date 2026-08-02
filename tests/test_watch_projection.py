@@ -94,7 +94,7 @@ def test_malformed_row_not_dict():
     assert e["z_index"] == 0
 
 
-def test_malformed_payload_dict():
+def test_string_payload_degrades_to_placeholder():
     el = {"kind": "note", "payload": "not a dict"}
     result = build_watch_projection([el])
     # Payload as string is valid - treated as text content
