@@ -34,6 +34,9 @@ jobs:
       - name: Schema-migration guard (#1865)
         run: python scripts/check_schema_migrations.py
 
+      - name: Retrofit-migration guard (#2188)
+        run: python scripts/check_retrofit_migrations.py
+
       - name: Diff gate (Layer B)
         env:
           BASE_REF: ${{ github.base_ref }}

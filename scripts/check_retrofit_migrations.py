@@ -30,6 +30,9 @@ It does NOT flag:
 
 Usage:
     python scripts/check_retrofit_migrations.py
+Invoked by the ``retrofit-migration-guard`` step in
+``.github/workflows/doc-gate.yml``.
+
 Prints ``retrofit-migration-guard: clean`` and exits 0 when no violations,
 or prints each violation and exits 1.
 
@@ -75,10 +78,16 @@ class Violation:
     detail: str
 
     def __str__(self) -> str:
-        fix = (
-            "move this migration into a guarded _post_init coroutine "
-            "(PRAGMA table_info check + ALTER TABLE only when absent)"
-        )
+        if self.kind == "CREATE INDEX":
+            fix = (
+                "move this index creation into a guarded _post_init coroutine "
+                "(PRAGMA index_list check + CREATE INDEX IF NOT EXISTS only when absent)"
+            )
+        else:
+            fix = (
+                "move this migration into a guarded _post_init coroutine "
+                "(PRAGMA table_info check + ALTER TABLE only when absent)"
+            )
         return (
             f"{self.path}: store '{self.store}', migration v{self.version}, "
             f"table '{self.table}' -- {self.kind} on a SCHEMA table\n"
@@ -169,7 +178,7 @@ def find_violations(path: Path) -> list[Violation]:
     except (OSError, SyntaxError):
         return []
 
-    # Collect all module-level string constant assignments (name -> value).
+    # Collect all module-level string/list constant assignments (name -> value).
     string_constants: dict[str, str] = {}
     list_constants: dict[str, ast.List] = {}
     for node in tree.body:
@@ -180,15 +189,31 @@ def find_violations(path: Path) -> list[Violation]:
                         string_constants[target.id] = node.value.value
                     elif isinstance(node.value, ast.List):
                         list_constants[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    string_constants[node.target.id] = node.value.value
+                elif isinstance(node.value, ast.List):
+                    list_constants[node.target.id] = node.value
 
     # Also collect string constants defined inside class bodies (for
-    # SCHEMA = "..." inside a class).
+    # SCHEMA = "..." inside a class), including annotated assignments
+    # (e.g. SCHEMA: str = "...").
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     if target.id not in string_constants:
                         string_constants[target.id] = node.value.value
+        elif isinstance(node, ast.AnnAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.value is not None
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                if node.target.id not in string_constants:
+                    string_constants[node.target.id] = node.value.value
 
     violations: list[Violation] = []
 
@@ -203,6 +228,12 @@ def find_violations(path: Path) -> list[Violation]:
                         module_schema = _resolve_string(node.value, string_constants)
                     elif target.id == "MIGRATIONS":
                         module_migrations = _resolve_list_node(node.value, list_constants)
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name):
+                if node.target.id == "SCHEMA":
+                    module_schema = _resolve_string(node.value, string_constants)
+                elif node.target.id == "MIGRATIONS":
+                    module_migrations = _resolve_list_node(node.value, list_constants)
 
     if module_schema and module_migrations:
         schema_tables = _extract_schema_tables(module_schema)
@@ -227,6 +258,12 @@ def find_violations(path: Path) -> list[Violation]:
                             class_schema = _resolve_string(item.value, string_constants)
                         elif target.id == "MIGRATIONS":
                             class_migrations = _resolve_list_node(item.value, list_constants)
+            elif isinstance(item, ast.AnnAssign):
+                if isinstance(item.target, ast.Name):
+                    if item.target.id == "SCHEMA":
+                        class_schema = _resolve_string(item.value, string_constants)
+                    elif item.target.id == "MIGRATIONS":
+                        class_migrations = _resolve_list_node(item.value, list_constants)
 
         if class_schema and class_migrations:
             schema_tables = _extract_schema_tables(class_schema)
