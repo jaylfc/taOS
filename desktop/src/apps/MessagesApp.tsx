@@ -1935,14 +1935,14 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
   /* ---------------------------------------------------------------- */
 
   return (
-    <div className="relative flex flex-col h-full bg-shell-base text-white overflow-hidden">
+    <div className="relative flex flex-col h-full bg-shell-base text-shell-text overflow-hidden">
       {/* Toolbar — hidden on mobile when a channel is selected */}
       {showToolbar && (
-        <div className="relative flex items-center px-3 py-2.5 border-b border-white/[0.06] shrink-0">
+        <div className="relative flex items-center px-3 py-2.5 border-b border-shell-border shrink-0">
           {title ? (
             <>
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-sm font-semibold text-white/90">{title}</span>
+                <span className="text-sm font-semibold text-shell-text">{title}</span>
               </div>
               <div className="ml-auto">
                 <Button
@@ -1958,7 +1958,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             </>
           ) : (
             <>
-              <div className="flex items-center gap-2 text-sm font-medium text-white/80">
+              <div className="flex items-center gap-2 text-sm font-medium text-shell-text">
                 <MessageCircle size={15} />
                 {!isMobile && "Messages"}
               </div>
@@ -2193,7 +2193,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
         <div
           role="dialog"
           aria-label={`Agent info for @${agentInfoPopover.slug}`}
-          className="fixed z-50 bg-shell-surface border border-white/10 rounded-lg shadow-xl p-3 text-xs min-w-[200px]"
+          className="fixed z-50 bg-shell-surface border border-shell-border rounded-lg shadow-xl p-3 text-xs min-w-[200px]"
           style={{ top: agentInfoPopover.y, left: agentInfoPopover.x }}
           onMouseLeave={() => setAgentInfoPopover(null)}
         >
@@ -2207,18 +2207,18 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
       {/* ---- Canvas Viewer ---- */}
       {viewingCanvas && (
         <div
-          className="fixed inset-0 z-[10002] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-[10002] flex items-center justify-center bg-shell-scrim backdrop-blur-sm"
           onClick={() => setViewingCanvas(null)}
           role="dialog"
           aria-modal="true"
           aria-label="Canvas viewer"
         >
           <div
-            className="w-[90vw] h-[85vh] max-w-5xl rounded-xl border border-white/10 overflow-hidden bg-shell-bg flex flex-col"
+            className="w-[90vw] h-[85vh] max-w-5xl rounded-xl border border-shell-border overflow-hidden bg-shell-bg flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0">
-              <div className="flex items-center gap-2 text-sm text-white/80">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-shell-border shrink-0">
+              <div className="flex items-center gap-2 text-sm text-shell-text">
                 <PanelRight size={14} />
                 <span>{viewingCanvas.title ?? "Canvas"}</span>
               </div>
@@ -2234,7 +2234,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             </div>
             <iframe
               src={viewingCanvas.url}
-              className="flex-1 w-full border-none bg-white"
+              className="flex-1 w-full border-none bg-white" // palette-ok: canvas iframe document background is legitimately white
               title="Canvas"
             />
           </div>
@@ -2252,7 +2252,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             aria-label="New channel"
           >
             <div
-              className="absolute bottom-0 left-0 right-0 bg-shell-bg border-t border-white/[0.08] rounded-t-2xl p-4 space-y-3"
+              className="absolute bottom-0 left-0 right-0 bg-shell-bg border-t border-shell-border rounded-t-2xl p-4 space-y-3"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-1">
@@ -2277,7 +2277,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
                   id="new-channel-type-mobile"
                   value={newChannel.type}
                   onChange={(e) => setNewChannel((s) => ({ ...s, type: e.target.value as "topic" | "group" }))}
-                  className="w-full bg-white/[0.06] border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-accent-line"
+                  className="w-full bg-shell-subtle border border-shell-border rounded-lg px-3 py-2 text-sm text-shell-text outline-none focus:border-accent-line"
                   aria-label="Channel type"
                 >
                   <option value="topic">Topic</option>
@@ -2300,9 +2300,9 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             </div>
           </div>
         ) : (
-          <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="absolute inset-0 bg-shell-scrim flex items-center justify-center z-50 p-4">
             <Card className="w-full max-w-[380px] max-h-full flex flex-col shadow-2xl bg-shell-bg">
-              <CardHeader className="flex flex-row items-center justify-between gap-2 p-0 px-4 py-3 border-b border-white/[0.06]">
+              <CardHeader className="flex flex-row items-center justify-between gap-2 p-0 px-4 py-3 border-b border-shell-border">
                 <CardTitle className="text-sm font-medium">New Channel</CardTitle>
                 <Button
                   variant="ghost"
@@ -2331,7 +2331,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
                     id="new-channel-type"
                     value={newChannel.type}
                     onChange={(e) => setNewChannel((s) => ({ ...s, type: e.target.value as "topic" | "group" }))}
-                    className="w-full bg-white/[0.06] border border-white/10 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-accent-line"
+                    className="w-full bg-shell-subtle border border-shell-border rounded-lg px-3 py-2 text-sm text-shell-text outline-none focus:border-accent-line"
                     aria-label="Channel type"
                   >
                     <option value="topic">Topic</option>

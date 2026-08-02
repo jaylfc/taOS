@@ -15,6 +15,7 @@ export const ALLOWED_TOKENS = new Set<string>([
   "--color-shell-surface-hover","--color-shell-surface-active",
   "--color-shell-border","--color-shell-border-strong",
   "--color-shell-text","--color-shell-text-secondary","--color-shell-text-tertiary",
+  "--color-shell-scrim","--color-shell-subtle",
   "--color-traffic-close","--color-traffic-minimize","--color-traffic-maximize",
   "--color-accent","--color-accent-glow",
   "--color-accent-soft","--color-accent-line","--color-accent-strong",
