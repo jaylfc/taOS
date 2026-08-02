@@ -45,7 +45,7 @@ describe("fetchAccounts", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/mail/accounts");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("acc-1");
     expect(result[0].email_address).toBe("test@example.com");
@@ -198,7 +198,7 @@ describe("fetchFolders", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/mail/accounts/acc-1/folders");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     expect(result).toEqual(["INBOX", "Sent", "Drafts"]);
   });
 
@@ -255,7 +255,7 @@ describe("fetchMessages", () => {
     expect(url).toContain("/api/mail/accounts/acc-1/messages?");
     expect(url).toContain("folder=INBOX");
     expect(url).toContain("limit=25");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     expect(result).toHaveLength(1);
     expect(result[0].uid).toBe("100");
     expect(result[0].subject).toBe("Hello");
@@ -323,7 +323,7 @@ describe("fetchMessage", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toContain("/api/mail/accounts/acc-1/messages/100?");
     expect(url).toContain("folder=INBOX");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     expect(result.uid).toBe("100");
     expect(result.body_text).toBe("Hi there");
     expect(result.attachments).toEqual([]);

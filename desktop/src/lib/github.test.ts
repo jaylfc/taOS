@@ -43,7 +43,7 @@ describe("fetchStarred", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toContain("/api/github/starred");
     expect(url).toContain("page=1");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
   });
 
   it("returns empty result on non-ok response", async () => {
@@ -96,7 +96,7 @@ describe("fetchNotifications", () => {
 
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/github/notifications");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
   });
 
   it("returns empty result on non-ok response", async () => {
@@ -136,7 +136,7 @@ describe("fetchRepo", () => {
 
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/github/repo/octocat/hello-world");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
   });
 
   it("returns null on non-ok response", async () => {
@@ -192,7 +192,7 @@ describe("fetchIssues", () => {
     expect(url).toContain("/api/github/repo/octocat/hello-world/issues");
     expect(url).toContain("state=open");
     expect(url).toContain("page=2");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
   });
 
   it("returns empty result on non-ok response", async () => {
@@ -399,7 +399,7 @@ describe("startDeviceFlow", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/github/oauth/device/start");
     expect(opts.method).toBe("POST");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
   });
 
   it("throws on non-ok response", async () => {
@@ -434,7 +434,7 @@ describe("pollDeviceFlow", () => {
     expect(url).toBe("/api/github/oauth/device/poll");
     expect(opts.method).toBe("POST");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.device_code).toBe("dev-code");
   });
@@ -501,7 +501,7 @@ describe("deleteIdentity", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/github/identities/gid-1");
     expect(opts.method).toBe("DELETE");
-    expect(opts.headers.Accept).toBe("application/json");
+    expect(opts.headers.get("Accept")).toBe("application/json");
   });
 
   it("returns false on non-ok response", async () => {
