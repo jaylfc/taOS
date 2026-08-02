@@ -394,6 +394,18 @@ class TestReservedPrefixGuard:
         assert row["status"] == "active"
 
     @pytest.mark.asyncio
+    async def test_allow_reserved_permits_internal_mint_names(self, store):
+        """The internal mint/seed path names driver agents under taos-;
+        allow_reserved=True is its explicit, non-body-reachable escape hatch."""
+        row = await store.register(
+            framework="taos-internal",
+            display_name="taos-dev",
+            origin="taos-internal",
+            allow_reserved=True,
+        )
+        assert row["canonical_id"].startswith("taos-dev-")
+
+    @pytest.mark.asyncio
     async def test_bypass_casing_rejected(self, store):
         with pytest.raises(ValueError, match="reserved prefix"):
             await store.register(framework="openclaw", display_name="USER")

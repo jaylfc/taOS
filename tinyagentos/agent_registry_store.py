@@ -478,6 +478,7 @@ class AgentRegistryStore(BaseStore):
         title: Optional[str] = None,
         reports_to: Optional[str] = None,
         capabilities: Optional[list[str]] = None,
+        allow_reserved: bool = False,
     ) -> dict:
         """Mint a canonical_id, persist the record, and return it.
 
@@ -485,7 +486,14 @@ class AgentRegistryStore(BaseStore):
         not exist yet, so it cannot be part of an existing cycle) - use
         ``set_reporting`` after registration to validate a manager change.
 
-        Raises ``RuntimeError`` if the store is not initialised.
+        ``allow_reserved`` bypasses the reserved-prefix guard. It exists for
+        the internal mint/seed path, which legitimately names agents under
+        the reserved ``taos-`` prefix; it is deliberately a keyword the HTTP
+        layer never populates from a request body, so external callers
+        cannot reach it.
+
+        Raises ``RuntimeError`` if the store is not initialised, and
+        ``ValueError`` if the name resolves to a reserved prefix.
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised - call init() first")
@@ -494,7 +502,8 @@ class AgentRegistryStore(BaseStore):
         now_utc = datetime.now(timezone.utc)
         source_name = display_name if display_name else framework
         slug = _slugify(source_name)
-        _check_reserved_prefix(slug, source_name)
+        if not allow_reserved:
+            _check_reserved_prefix(slug, source_name)
         base_id = mint_canonical_id(slug, now_utc)
         canonical_id = base_id
         created_ts = now_utc.isoformat()
