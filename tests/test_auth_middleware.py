@@ -566,3 +566,38 @@ class TestAgentDecisionsDispatch:
 
         assert resp.status_code == 401
         call_next.assert_not_awaited()
+
+
+class TestDeviceBearerPassthroughBoundary:
+    """The device-bearer passthrough must match ONLY device tokens on ONLY the
+    carded routes.
+
+    Both tests here exist because a mutation survived the original PR: forcing
+    `_is_device_bearer_path` to return True for every path left the whole suite
+    green, so nothing proved the allowlist's shape. The route-level
+    `current_user` dependency produced the 401s the old test observed, not the
+    middleware matcher.
+    """
+
+    def test_non_device_bearer_does_not_shadow_a_session(self):
+        # A logged-in user carrying an unrelated Authorization header must keep
+        # their session. Before the prefix check, this branch set user_id=None
+        # and every carded route answered 401 "invalid device token".
+        from tinyagentos.auth_middleware import _is_device_bearer_path
+
+        assert _is_device_bearer_path("GET", "/api/decisions") is True
+        header = "Bearer ghp_not_a_device_token"
+        from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
+
+        assert not header[7:].strip().startswith(DEVICE_TOKEN_PREFIX)
+
+    def test_allowlist_does_not_cover_unrelated_paths(self):
+        from tinyagentos.auth_middleware import _is_device_bearer_path
+
+        # Neighbouring paths that must NOT take the passthrough.
+        assert _is_device_bearer_path("GET", "/api/devices") is False
+        assert _is_device_bearer_path("DELETE", "/api/devices/abc") is False
+        assert _is_device_bearer_path("POST", "/api/decisions") is False
+        assert _is_device_bearer_path("POST", "/api/decisions/a/b/answer") is False
+        assert _is_device_bearer_path("GET", "/api/settings") is False
+        assert _is_device_bearer_path("POST", "/api/projects") is False

@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
+from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
+
 EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
@@ -452,7 +454,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # session-only, Invariant c). The route dependency
         # (current_user_or_device) resolves the token and synthesizes a
         # non-admin CurrentUser (Invariant a).
-        if _is_device_bearer_path(request.method, path) and auth_header.lower().startswith("bearer "):
+        if (
+            _is_device_bearer_path(request.method, path)
+            and auth_header.lower().startswith("bearer ")
+            # Only a DEVICE token may take this passthrough. Matching any
+            # bearer shadowed valid sessions: a logged-in user carrying an
+            # unrelated Authorization header got 401 on every carded route,
+            # because this branch sets user_id=None before the session was
+            # ever consulted.
+            and auth_header[7:].strip().startswith(DEVICE_TOKEN_PREFIX)
+        ):
             request.state.user_id = None
             request.state.is_admin = False
             request.state.via = "device_bearer_candidate"

@@ -235,6 +235,33 @@ further project via `POST /api/projects/{project_id}/members/assign-agent`
 active identity (the existing canonical_id and token are reused instead of
 409ing).
 
+## Device bearer self-service (second, narrower passthrough)
+
+Beyond the `EXEMPT_PATHS` entry for `GET /api/share/destinations`, a paired
+device may call a small fixed set of routes with its scoped bearer. This is a
+**different and narrower mechanism**: the path is not exempt from auth, the
+middleware simply lets the request through with `user_id=None` so the route's
+own `current_user_or_device` dependency resolves the device and synthesizes a
+NON-admin identity.
+
+Two properties hold this together and both are enforced in code and tests:
+
+- The passthrough matches only tokens carrying the device prefix
+  (`taosdev_`). Matching any bearer previously shadowed valid sessions: a
+  logged-in user who happened to send an unrelated `Authorization` header got
+  401 on every one of these routes.
+- The allowlist is method-and-path anchored. `GET /api/devices`,
+  `DELETE /api/devices/{id}` and `POST /api/decisions` are deliberately NOT on
+  it and stay session-only.
+
+Device identity always comes from the verified bearer, never from the path or
+body, and a device is never admin.
+
+Note for reviewers: answering a decision on this path can apply app, execution
+and delegation grants, so a device bearer carries real authority for its own
+user. Device scoped tokens do not expire and cannot be self-rotated; the only
+revocation is `DELETE /api/devices/{id}` from a session.
+
 ## Share destinations (device bearer)
 
 `GET /api/share/destinations` lets a paired device DISCOVER share targets. It is
