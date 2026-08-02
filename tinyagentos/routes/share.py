@@ -47,6 +47,16 @@ async def list_share_destinations(request: Request):
             if member in seen:
                 continue
             label = member
+            # A multi-user channel can carry another HUMAN username as a
+            # member; a username that happens to equal an agent slug must not
+            # resolve to that agent's chat. Skip known usernames outright.
+            auth = getattr(request.app.state, "auth", None)
+            if auth is not None:
+                try:
+                    if auth.find_user(member) is not None:
+                        continue
+                except Exception:
+                    pass
             if registry is not None:
                 try:
                     agent = await registry.get(member)

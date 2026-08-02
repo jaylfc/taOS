@@ -556,6 +556,11 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
+        # Slugs are strictly [a-z0-9-] (see _slugify). Reject anything else
+        # before building the GLOB pattern: bracket/star/question metachars in
+        # a caller-supplied string must not reach the matcher.
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug or ""):
+            return None
         # mint_canonical_id yields {slug}-{YYYYMMDD}-{HHMMSS} (and, on a
         # same-second slug collision, a -{2hex} suffix). GLOBing the 8-6 digit
         # tail pins the slug to its own canonical-id boundary.

@@ -1252,3 +1252,14 @@ class TestDirectReportsAndOrgTree:
         tree = await store.get_org_tree()
         ids = {node["canonical_id"] for node in tree}
         assert row["canonical_id"] in ids
+
+
+@pytest.mark.asyncio
+async def test_get_by_slug_rejects_glob_metacharacters(store):
+    # A caller-supplied member string with GLOB metachars must not reach the
+    # matcher: it returns None instead of matching or raising.
+    assert await store.get_by_slug("alpha[a-z]") is None
+    assert await store.get_by_slug("alpha*") is None
+    assert await store.get_by_slug("alpha?") is None
+    assert await store.get_by_slug("") is None
+    assert await store.get_by_slug("Alpha") is None
