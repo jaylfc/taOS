@@ -17,8 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import CurrentUser
 from tinyagentos.decisions.decision_store import DECISION_TYPES, PRIORITIES
+from tinyagentos.device_auth import current_user_or_device
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +242,7 @@ async def list_decisions(
     status: str | None = None,
     project_id: str | None = None,
     limit: int = 200,
-    user: CurrentUser = Depends(current_user),
+    user: CurrentUser = Depends(current_user_or_device),
 ):
     store = request.app.state.decision_store
     # Non-admins see only their own decisions; admins see all.
@@ -286,7 +287,7 @@ async def list_decisions_as_agent(request: Request):
 
 
 @router.get("/api/decisions/{decision_id}")
-async def get_decision(decision_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+async def get_decision(decision_id: str, request: Request, user: CurrentUser = Depends(current_user_or_device)):
     # Session-only path: human reading their own or admin reading any
     store = request.app.state.decision_store
     d = await store.get(decision_id)
@@ -334,7 +335,7 @@ async def get_decision_as_agent(decision_id: str, request: Request):
 
 
 @router.get("/api/decisions/{decision_id}/history")
-async def decision_history(decision_id: str, request: Request, user: CurrentUser = Depends(current_user)):
+async def decision_history(decision_id: str, request: Request, user: CurrentUser = Depends(current_user_or_device)):
     """The supersession lineage for a decision, oldest first: walk the
     parent_decision_id chain (L1). Cycle-guarded."""
     store = request.app.state.decision_store
@@ -357,7 +358,7 @@ async def decision_history(decision_id: str, request: Request, user: CurrentUser
 
 
 @router.post("/api/decisions/{decision_id}/answer")
-async def answer_decision(decision_id: str, body: AnswerIn, request: Request, user: CurrentUser = Depends(current_user)):
+async def answer_decision(decision_id: str, body: AnswerIn, request: Request, user: CurrentUser = Depends(current_user_or_device)):
     store = request.app.state.decision_store
     existing = await store.get(decision_id)
     # Authorization check: humans can answer decisions they own or admins; agents are

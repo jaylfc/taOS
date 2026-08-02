@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.device_auth import current_user_or_device
 
 router = APIRouter()
 
@@ -75,11 +76,22 @@ async def _owned_or_404(store, device_id: str, user: CurrentUser):
 @router.patch("/api/devices/{device_id}/push-token")
 async def update_push_token(
     device_id: str, body: PushTokenIn, request: Request,
-    user: CurrentUser = Depends(current_user),
+    user: CurrentUser = Depends(current_user_or_device),
 ):
     store = request.app.state.device_store
-    if await _owned_or_404(store, device_id, user) is None:
-        return JSONResponse({"error": "not found"}, status_code=404)
+    # A device bearer was resolved by current_user_or_device (Invariant c: the
+    # middleware does not set request.state.user_id for device bearers, so
+    # `user` is the synthesized non-admin CurrentUser). When present, the path
+    # device_id must be THIS device's own id -- a sibling device of the same
+    # user may not hijack or DoS another sibling's APNs token (Invariant b).
+    device = getattr(request.state, "_device", None)
+    if device is not None:
+        if device["device_id"] != device_id:
+            return JSONResponse({"error": "not found"}, status_code=404)
+    else:
+        # Session path: unchanged ownership check.
+        if await _owned_or_404(store, device_id, user) is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
     updated = await store.update_push_token(device_id, body.push_token)
     updated.pop("scoped_token", None)
     return updated
