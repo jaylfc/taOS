@@ -94,6 +94,7 @@ _AGENT_CANVAS_ROUTES = (
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.png$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/snapshot\.tldr$")),
     ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/stream$")),
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/canvas/watch-projection$")),
 )
 
 # Decisions route an agent may reach with its own registry JWT (scope
