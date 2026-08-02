@@ -24,8 +24,32 @@ hint = "a desktop app was added or removed"
 [[rules]]
 name = "routes"
 when_changed = ["tinyagentos/routes/*.py"]
-require_doc = ["docs/agent-coordination.md"]
+require_doc = ["CHANGELOG.md"]
 hint = "an API route module was added or removed"
+
+[[rules]]
+name = "auth-endpoints"
+when_changed = ["tinyagentos/routes/auth*.py"]
+require_doc = ["docs/agent-coordination.md"]
+hint = "an auth endpoint was added or removed; update the auth docs"
+
+[[rules]]
+name = "pairing-endpoints"
+when_changed = ["tinyagentos/routes/peer.py"]
+require_doc = ["docs/taos-agent-manual.md"]
+hint = "a pairing endpoint was added or removed; update the pairing docs"
+
+[[rules]]
+name = "device-endpoints"
+when_changed = ["tinyagentos/routes/devices.py"]
+require_doc = ["docs/getting-started.md"]
+hint = "a device endpoint was added or removed; update the device docs"
+
+[[rules]]
+name = "contributor-doc"
+when_changed = [".github/workflows/*", "pyproject.toml"]
+require_doc = ["CONTRIBUTING.md"]
+hint = "workflows or project config changed; update the contributor doc"
 
 [[rules]]
 name = "installers"

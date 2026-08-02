@@ -9,7 +9,7 @@ name: Doc drift gate
 
 on:
   pull_request:
-    branches: [master, dev]
+    branches: [main]
 
 jobs:
   doc-gate:
