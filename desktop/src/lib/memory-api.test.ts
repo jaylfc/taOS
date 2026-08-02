@@ -22,7 +22,7 @@ describe("fetchMemoryModel", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/memory/model");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     expect(result).toEqual({ model: "gpt-4o-mini", supported: true });
   });
 
@@ -85,7 +85,7 @@ describe("setMemoryModel", () => {
     expect(url).toBe("/api/memory/model");
     expect(opts.method).toBe("PUT");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.model).toBe("gpt-4o");
     expect(result).toEqual({ model: "gpt-4o" });

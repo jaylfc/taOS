@@ -48,7 +48,7 @@ describe("fetchThread", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toContain("/api/reddit/thread?");
     expect(url).toContain("url=https%3A%2F%2Freddit.com");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     expect(result).not.toBeNull();
     expect(result!.post.id).toBe("abc1");
     expect(result!.post.subreddit).toBe("typescript");
@@ -372,7 +372,7 @@ describe("saveToLibrary", () => {
     expect(url).toBe("/api/knowledge/ingest");
     expect(opts.method).toBe("POST");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.url).toBe("https://reddit.com/r/test/comments/abc");
     expect(body.title).toBe("Test Title");

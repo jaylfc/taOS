@@ -27,7 +27,7 @@ describe("fetchClusterWorkers", () => {
 
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/cluster/workers");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
   });
 
   it("returns workers array on 200 with { workers } body", async () => {
@@ -97,7 +97,7 @@ describe("fetchCloudProviders", () => {
 
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/providers");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
   });
 
   it("returns [] on non-ok response", async () => {

@@ -37,7 +37,7 @@ describe("fetchMemoryStats", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/memory/stats");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     expect(result).toEqual({ total: 42 });
   });
 
@@ -62,7 +62,7 @@ describe("fetchBackendCapabilities", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/memory/backend/capabilities");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     expect(result).toEqual({ name: "openai", version: "1", capabilities: ["embed"] });
   });
 
@@ -138,7 +138,7 @@ describe("updateMemorySettings", () => {
     expect(url).toBe("/api/memory/settings");
     expect(opts.method).toBe("PUT");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.model).toBe("gpt-4o");
     expect(result).toEqual({ model: "gpt-4o" });
@@ -240,7 +240,7 @@ describe("triggerCatalogIndex", () => {
     expect(url).toBe("/api/memory/catalog/index");
     expect(opts.method).toBe("POST");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const sentBody = JSON.parse(opts.body);
     expect(sentBody.date).toBe("2025-01-01");
     expect(sentBody.force).toBe(true);
@@ -342,7 +342,7 @@ describe("updateAgentMemoryConfig", () => {
     expect(url).toBe("/api/agents/agent-1/memory-config");
     expect(opts.method).toBe("PUT");
     expect(opts.headers["Content-Type"]).toBe("application/json");
-    expect(opts.headers.get("Accept")).toBe("application/json");
+    expect((opts.headers?.get?.("Accept") ?? opts.headers?.Accept)).toBe("application/json");
     const body = JSON.parse(opts.body);
     expect(body.auto_recall).toBe(false);
     expect(result).toEqual({ auto_recall: false });
