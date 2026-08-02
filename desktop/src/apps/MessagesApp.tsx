@@ -2234,7 +2234,7 @@ className="shrink-0 p-0.5 rounded hover:bg-shell-surface-active transition-color
             </div>
             <iframe
               src={viewingCanvas.url}
-              className="flex-1 w-full border-none bg-white"
+              className="flex-1 w-full border-none bg-white" // palette-ok: canvas iframe document background is legitimately white
               title="Canvas"
             />
           </div>
