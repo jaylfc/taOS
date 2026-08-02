@@ -200,6 +200,12 @@ Do not include AI tool attribution in commit messages.
 
 ---
 
+## Design laws
+
+Every taOS surface is a live surface: new or changed UI must auto-refresh and
+carry motion per `docs/design/live-surface-law.md`. PRs adding a static screen
+get bounced on review.
+
 ## Testing
 
 Run the full test suite:
