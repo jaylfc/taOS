@@ -36,7 +36,9 @@ export interface CookieEntry {
 
 async function fetchJson<T>(url: string, fallback: T, init?: RequestInit): Promise<T> {
   try {
-    const res = await fetch(url, { ...init, headers: { Accept: "application/json", ...init?.headers } });
+    const headers = new Headers(init?.headers);
+    headers.set("Accept", "application/json");
+    const res = await fetch(url, { ...init, headers });
     if (!res.ok) return fallback;
     const ct = res.headers.get("content-type") ?? "";
     if (!ct.includes("application/json")) return fallback;
