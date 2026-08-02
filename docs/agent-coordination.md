@@ -235,6 +235,13 @@ further project via `POST /api/projects/{project_id}/members/assign-agent`
 active identity (the existing canonical_id and token are reused instead of
 409ing).
 
+Reserved name prefixes: registration rejects any name whose slug is or starts
+with `user-`, `human-`, `admin-` or `taos-` (including casing, spacing and
+punctuation obfuscations like `U s e r`), so an external agent cannot mint an
+identity that reads as a person or as an internal taOS agent. The public
+register route returns 422. The admin-only internal mint/seed path is exempt -
+internal driver agents (`taos-dev`, ...) legitimately live under `taos-`.
+
 ## Device bearer self-service (second, narrower passthrough)
 
 Beyond the `EXEMPT_PATHS` entry for `GET /api/share/destinations`, a paired

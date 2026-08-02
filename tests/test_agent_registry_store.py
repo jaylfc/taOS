@@ -10,8 +10,10 @@ from tinyagentos.agent_registry_store import (
     _assert_valid_transition,
     _b64url_decode,
     _b64url_encode,
+    _check_reserved_prefix,
     _migration_v2_strip_at_display_name,
     _migration_v3_add_org_fields,
+    _RESERVED_PREFIXES,
     _row_to_dict,
     _slugify,
     load_or_create_signing_keypair,
@@ -359,6 +361,95 @@ class TestRegister:
         s = AgentRegistryStore(tmp_path / "not_init.db")
         with pytest.raises(RuntimeError, match="not initialised"):
             await s.register(framework="openclaw")
+
+
+# ---------------------------------------------------------------------------
+# Reserved-prefix guard
+# ---------------------------------------------------------------------------
+
+
+class TestReservedPrefixGuard:
+    @pytest.mark.asyncio
+    async def test_register_user_rejects_reserved_prefix(self, store):
+        """RED-FIRST: registering 'User' must not yield a user- prefixed id."""
+        with pytest.raises(ValueError, match="reserved prefix 'user-'"):
+            await store.register(framework="openclaw", display_name="User")
+
+    @pytest.mark.asyncio
+    async def test_each_reserved_prefix_is_rejected(self, store):
+        for name in ("User", "Human", "Admin", "TaOS"):
+            with pytest.raises(ValueError, match="reserved prefix"):
+                await store.register(framework="openclaw", display_name=name)
+
+    @pytest.mark.asyncio
+    async def test_slug_starting_with_reserved_prefix_rejected(self, store):
+        for name in ("user-agent", "human-friendly", "admin-panel", "taos-deploy"):
+            with pytest.raises(ValueError, match="reserved prefix"):
+                await store.register(framework="openclaw", display_name=name)
+
+    @pytest.mark.asyncio
+    async def test_normal_name_is_unaffected(self, store):
+        row = await store.register(framework="openclaw", display_name="Normal Agent")
+        assert row["canonical_id"].startswith("normal-agent-")
+        assert row["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_allow_reserved_permits_internal_mint_names(self, store):
+        """The internal mint/seed path names driver agents under taos-;
+        allow_reserved=True is its explicit, non-body-reachable escape hatch."""
+        row = await store.register(
+            framework="taos-internal",
+            display_name="taos-dev",
+            origin="taos-internal",
+            allow_reserved=True,
+        )
+        assert row["canonical_id"].startswith("taos-dev-")
+
+    @pytest.mark.asyncio
+    async def test_bypass_casing_rejected(self, store):
+        with pytest.raises(ValueError, match="reserved prefix"):
+            await store.register(framework="openclaw", display_name="USER")
+
+    @pytest.mark.asyncio
+    async def test_bypass_punctuation_rejected(self, store):
+        with pytest.raises(ValueError, match="reserved prefix"):
+            await store.register(framework="openclaw", display_name="user!")
+
+    @pytest.mark.asyncio
+    async def test_bypass_spacing_rejected(self, store):
+        with pytest.raises(ValueError, match="reserved prefix"):
+            await store.register(framework="openclaw", display_name="U s e r")
+
+    @pytest.mark.asyncio
+    async def test_find_reserved_prefix_identities_empty_when_clean(self, store):
+        assert await store.find_reserved_prefix_identities() == []
+
+    @pytest.mark.asyncio
+    async def test_find_reserved_prefix_identities_surfaces_collisions(self, store):
+        for prefix in _RESERVED_PREFIXES:
+            bare = prefix.rstrip("-")
+            cid = f"{bare}-20260101-000000"
+            await store._db.execute(
+                "INSERT INTO agent_registry "
+                "(canonical_id, display_name, framework, user_id, origin, "
+                "capabilities, created_ts, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    cid,
+                    f"Pre-{bare}",
+                    "seed",
+                    "",
+                    "taos-deployed",
+                    "[]",
+                    "2026-01-01T00:00:00",
+                    "active",
+                ),
+            )
+        await store._db.commit()
+        collisions = await store.find_reserved_prefix_identities()
+        assert len(collisions) == len(_RESERVED_PREFIXES)
+        found_slugs = {c["canonical_id"].split("-")[0] for c in collisions}
+        expected_slugs = {p.rstrip("-") for p in _RESERVED_PREFIXES}
+        assert found_slugs == expected_slugs
 
 
 # ---------------------------------------------------------------------------

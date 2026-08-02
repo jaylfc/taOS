@@ -477,6 +477,16 @@ class TestAgentRegistryRoutes:
             )
             assert resp.status_code == 200, f"origin={origin!r} should be accepted"
 
+    async def test_register_reserved_name_rejected_as_client_error(self, registry_client):
+        """A reserved name through the real HTTP caller must 422, not 500 --
+        the route has to translate the store's ValueError."""
+        resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "taos-dev"},
+        )
+        assert resp.status_code == 422
+        assert "reserved prefix" in resp.json()["detail"]
+
     async def test_pubkey_endpoint_returns_pem(self, registry_client):
         resp = await registry_client.get("/api/agents/registry/pubkey")
         assert resp.status_code == 200
