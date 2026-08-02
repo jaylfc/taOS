@@ -106,8 +106,14 @@ class TestEvaluateRulesEdgeCases:
     """Additional coverage for the on_modify implementation."""
 
     def test_test_paths_excluded_even_with_on_modify(self):
-        """Test paths must stay excluded from triggering, as now."""
+        """Test paths must stay excluded from triggering, as now.
+
+        The rule glob deliberately MATCHES the test path, so only the
+        test-path exclusion keeps it from firing -- without that exclusion
+        this test goes red.
+        """
         config = _base_config()
+        config["rules"][0]["when_changed"] = ["tests/routes/*.py"]
         changed = [("M", "tests/routes/test_themes.py")]
         commit_messages: list[str] = []
         failures = evaluate_rules(changed, commit_messages, config)
@@ -133,7 +139,12 @@ class TestEvaluateRulesEdgeCases:
                 },
             ],
         }
-        changed = [("M", "tinyagentos/routes/themes.py")]
+        changed = [
+            ("M", "tinyagentos/routes/themes.py"),
+            # Matches catalog_add's glob, so that rule is genuinely exercised:
+            # it must NOT fire on a plain modification without on_modify.
+            ("M", "app-catalog/foo/app.yml"),
+        ]
         failures = evaluate_rules(changed, [], config)
         assert len(failures) == 1
         assert "route_mod" in failures[0]
