@@ -112,14 +112,16 @@ async def bus_messages(
     Authorized readers: an admin session, the host local token, or an active
     agent registry JWT holding the ``a2a_receive`` scope.
 
-    ``channel`` is required and maps to the bus ``thread`` query param. ``limit``
-    is clamped to 1..500. ``since`` is forwarded verbatim to the bus as the
-    cursor (a message ``ts``); the bus replays everything after it, so an agent
-    can resume from the highest ``ts`` it has processed. On a bus error this
-    returns an empty list with ``available: false`` and HTTP 200.
+    ``channel`` is required and maps to the bus ``thread`` query param; ``*`` is
+    rejected here (it is only meaningful as an all-threads selector on the
+    stream endpoint). ``limit`` is clamped to 1..500. ``since`` is forwarded
+    verbatim to the bus as the cursor (a message ``ts``); the bus replays
+    everything after it, so an agent can resume from the highest ``ts`` it has
+    processed. On a bus error this returns an empty list with ``available:
+    false`` and HTTP 200.
     """
     await _authorize_bus_read(request)
-    if not channel:
+    if not channel or channel == "*":
         return JSONResponse({"error": "channel required"}, status_code=400)
 
     limit = max(1, min(500, limit))
@@ -156,12 +158,26 @@ async def bus_stream(
     (fail closed). It holds ONE upstream SSE connection to the bus per client and
     relays events verbatim, injecting a ``: ping`` heartbeat comment every 25s so
     idle streams are distinguishable from dead ones and intermediaries do not reap
-    them. The raw :7900 bus is never exposed directly: ``channel`` maps to the
-    bus ``thread`` query param and ``since`` to the bus cursor.
+    them. The raw :7900 bus is never exposed directly.
+
+    ``channel`` maps to the bus ``thread`` query param. Omitting it (or passing
+    ``channel=*``) subscribes to ALL threads: no ``thread`` param is forwarded
+    upstream, so the bus streams events from every thread. ``since`` maps to the
+    bus cursor.
     """
     await _authorize_bus_read(request)
-    if not channel:
-        return JSONResponse({"error": "channel required"}, status_code=400)
+
+    # An empty channel or "*" means "all threads": omit the thread param
+    # upstream so the bus streams every thread. NOTE: when per-channel bus ACLs
+    # land (card tsk-dp6fyv), an all-threads subscriber must receive ONLY the
+    # threads it is allowed to read, not everything -- filter here, not at the
+    # bus. This is the line a future change will get wrong.
+    all_threads = channel == "" or channel == "*"
+    params: dict = {}
+    if not all_threads:
+        params["thread"] = channel
+    if since is not None:
+        params["since"] = since
 
     bus = _bus_url()
 
@@ -171,7 +187,7 @@ async def bus_stream(
                 async with client.stream(
                     "GET",
                     f"{bus}/a2a/stream",
-                    params={"thread": channel, **({"since": since} if since is not None else {})},
+                    params=params,
                 ) as upstream:
                     heartbeat = asyncio.create_task(
                         _stream_sleep(_STREAM_HEARTBEAT_SEC)

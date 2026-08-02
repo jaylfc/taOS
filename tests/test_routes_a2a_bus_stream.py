@@ -1,9 +1,12 @@
 """Tests for the authenticated A2A SSE stream proxy (Slice S3).
 
 Covers: an agent-JWT (bound to a project) can open the stream and receives
-forwarded SSE frames relayed from the raw bus; the messages proxy forwards the
-`since` cursor; an unauthenticated request is rejected 401; and the raw :7900
-bus is never exposed directly (the upstream call is made by the proxy only).
+forwarded SSE frames relayed from the raw bus; an omitted or ``*`` channel
+subscribes to ALL threads with NO ``thread`` param forwarded upstream, while a
+named channel maps to ``thread``; the ``since`` cursor is honored in both
+modes; the messages proxy forwards ``since`` and rejects ``*``; an
+unauthenticated request is rejected 401; and the raw :7900 bus is never exposed
+directly (the upstream call is made by the proxy only).
 """
 from __future__ import annotations
 
@@ -139,13 +142,98 @@ class TestBusStreamProxy:
         assert params["thread"] == "general"
         assert float(params["since"]) == 1234.5
 
-    async def test_stream_requires_channel(self, agent_app, client):
-        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
-        resp = await client.get(
-            "/api/a2a/bus/stream",
-            headers={"Authorization": f"Bearer {token}"},
+    def _mock_upstream(self, sse_lines=None):
+        """Return a mock httpx.AsyncClient whose .stream() yields *sse_lines*."""
+        sse_lines = sse_lines if sse_lines is not None else []
+        upstream_resp = MagicMock()
+        upstream_resp.aiter_lines = MagicMock(
+            return_value=_fake_sse_lines(sse_lines)
         )
-        assert resp.status_code == 400
+        upstream_ctx = AsyncMock()
+        upstream_ctx.__aenter__ = AsyncMock(return_value=upstream_resp)
+        upstream_ctx.__aexit__ = AsyncMock(return_value=False)
+        client_ctx = AsyncMock()
+        client_ctx.stream = MagicMock(return_value=upstream_ctx)
+        client_ctx.__aenter__ = AsyncMock(return_value=client_ctx)
+        client_ctx.__aexit__ = AsyncMock(return_value=False)
+        return client_ctx
+
+    async def test_stream_no_channel_all_threads(self, agent_app, client):
+        """Omitting channel -> 200 SSE with NO thread param forwarded upstream."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        client_ctx = self._mock_upstream([
+            "event: message",
+            'data: {"id":"m1","ts":1,"from":"a","body":"hi"}',
+            "",
+        ])
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=client_ctx,
+        ):
+            resp = await client.get(
+                "/api/a2a/bus/stream",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert "m1" in resp.text
+        assert client_ctx.stream.called
+        params = client_ctx.stream.call_args.kwargs["params"]
+        assert "thread" not in params
+
+    async def test_stream_wildcard_channel_all_threads(self, agent_app, client):
+        """channel=* -> 200 SSE with NO thread param forwarded upstream."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        client_ctx = self._mock_upstream([])
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=client_ctx,
+        ):
+            resp = await client.get(
+                "/api/a2a/bus/stream",
+                params={"channel": "*"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert client_ctx.stream.called
+        params = client_ctx.stream.call_args.kwargs["params"]
+        assert "thread" not in params
+
+    async def test_stream_named_channel_forwards_thread(self, agent_app, client):
+        """Named channel -> thread forwarded upstream."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        client_ctx = self._mock_upstream([])
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=client_ctx,
+        ):
+            resp = await client.get(
+                "/api/a2a/bus/stream",
+                params={"channel": "general"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        params = client_ctx.stream.call_args.kwargs["params"]
+        assert params["thread"] == "general"
+
+    async def test_stream_since_honored_all_threads(self, agent_app, client):
+        """since cursor forwarded in all-threads (no-channel) mode."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        client_ctx = self._mock_upstream([])
+        with patch(
+            "tinyagentos.routes.a2a_bus.httpx.AsyncClient",
+            return_value=client_ctx,
+        ):
+            resp = await client.get(
+                "/api/a2a/bus/stream",
+                params={"since": "1234.5"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        params = client_ctx.stream.call_args.kwargs["params"]
+        assert "thread" not in params
+        assert float(params["since"]) == 1234.5
 
     async def test_unauthenticated_stream_is_401(self, noauth_client):
         resp = await noauth_client.get(
@@ -189,6 +277,16 @@ class TestMessagesSincePassthrough:
         call_kwargs = mock_client.get.call_args.kwargs
         assert call_kwargs["params"]["thread"] == "general"
         assert float(call_kwargs["params"]["since"]) == 42.0
+
+    async def test_messages_rejects_wildcard_channel(self, agent_app, client):
+        """bus_messages rejects channel=* (all-threads is stream-only)."""
+        _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
+        resp = await client.get(
+            "/api/a2a/bus/messages",
+            params={"channel": "*"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
