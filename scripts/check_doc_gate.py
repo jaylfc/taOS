@@ -9,12 +9,12 @@ Two layers:
                  scripts/, tinyagentos/, docs/, desktop/ path mentioned in the
                  configured doc set actually exists on disk.
   diff-gate   -- path -> doc rule engine (Layer B). A configured rule fires
-                 when a *structural* change (a file added or deleted, never a
-                 plain modification) matches one of its `when_changed` globs.
-                 A fired rule is satisfied by either editing one of its
-                 `require_doc` files in the same changeset, or by a commit
-                 message trailer line starting with the configured trailer
-                 (default "Docs-Reviewed:") with non-empty text after it.
+                when a *structural* change matches one of its `when_changed`
+                globs. By default only added/deleted files (status A/D) are
+                structural; set `on_modify = true` on a rule to also count
+                plain modifications (status M) for that rule. Any changed
+                file (any status) can *satisfy* a rule if it matches a
+                require_doc glob.
 
 Config lives in docs/doc-gate.toml. Rules are data, not code: add more by
 editing the TOML, no changes to this file required.
@@ -162,10 +162,12 @@ def evaluate_rules(
 
     changed_status: list of (status, path) pairs as from `git diff
     --name-status`, e.g. [("A", "desktop/src/apps/Foo/Foo.tsx"), ("M", "x")].
-    Only status "A" (added) or "D" (deleted) files count as structural change
-    for the purposes of *triggering* a rule; plain modifications ("M") are
-    ignored to keep the gate precise. Any changed file (any status) can
-    *satisfy* a rule if it matches a require_doc glob.
+    By default only status "A" (added) or "D" (deleted) files count as
+    structural change for triggering a rule. When a rule sets `on_modify =
+    true`, status "M" (plain modification) also counts for that rule.
+    Any changed file (any status) can satisfy a rule if it matches a
+    require_doc glob. Test paths are never structural and are always
+    excluded.
     commit_messages: full text of each commit message in range (empty list
     when there is no finalized commit yet, i.e. --staged mode).
     """
@@ -173,10 +175,6 @@ def evaluate_rules(
     rules = config.get("rules", [])
 
     all_paths = [path for _status, path in changed_status]
-    structural_paths = [
-        path for status, path in changed_status
-        if status in ("A", "D") and not _is_test_path(path)
-    ]
 
     trailer_present = any(
         line.strip().startswith(trailer) and line.strip()[len(trailer):].strip()
@@ -190,8 +188,15 @@ def evaluate_rules(
         when_changed = rule.get("when_changed", [])
         require_doc = rule.get("require_doc", [])
         hint = rule.get("hint", "")
+        on_modify = rule.get("on_modify", False)
 
-        triggered = any(_match_any(p, when_changed) for p in structural_paths)
+        rule_structural_paths = [
+            path for status, path in changed_status
+            if (status in ("A", "D") or (on_modify and status == "M"))
+            and not _is_test_path(path)
+        ]
+
+        triggered = any(_match_any(p, when_changed) for p in rule_structural_paths)
         if not triggered:
             continue
 
