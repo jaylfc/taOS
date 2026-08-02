@@ -40,6 +40,12 @@
   --color-dock-border: rgba(255, 255, 255, 0.08);
   --color-topbar-bg: rgba(29, 29, 31, 0.92);
 
+  /* Modal / overlay */
+  --color-shell-scrim: rgba(0, 0, 0, 0.6);
+
+  /* Subtle surface fills — input backgrounds, faint raised surfaces */
+  --color-shell-subtle: rgba(255, 255, 255, 0.06);
+
   /* Snap zones */
   --color-snap-preview: rgba(139, 146, 163, 0.15);
   --color-snap-border: rgba(139, 146, 163, 0.4);
