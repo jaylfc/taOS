@@ -577,34 +577,32 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
             return JSONResponse(err_body, status_code=500)
 
         # Register the agent in the agent registry, minting a canonical_id.
-        # Idempotent on redeploy: if the agent record already carries a
-        # registry_canonical_id and that exact row still exists, skip.
+        # Every deploy creates a NEW agent entry (slugs are made unique above),
+        # so every deploy mints a fresh identity. Never reuse another config
+        # entry's canonical_id by display_name: display names are not unique,
+        # and two agents sharing a canonical identity would cross-wire token
+        # subjects and memory namespaces.
         ar = getattr(request.app.state, "agent_registry", None)
         canonical_id = None
         if ar is not None and getattr(ar, "_db", None) is not None:
-            existing = next(
-                (a for a in config.agents if a.get("display_name") == display_name),
-                None,
-            )
-            if existing is not None:
-                canonical_id = existing.get("registry_canonical_id")
-            if canonical_id:
-                row = await ar.get(canonical_id)
-                if row is None:
-                    canonical_id = None
-            if canonical_id is None:
-                try:
-                    rec = await ar.register(
-                        framework=body.framework,
-                        display_name=display_name,
-                    )
-                    canonical_id = rec.get("canonical_id")
-                except Exception as e:
-                    logger.exception("agent_registry.register(%s) failed", unique_slug)
-                    err_body = {"error": f"Could not register agent in registry: {e}"}
-                    if scoped_key and idempotency_cache is not None:
-                        idempotency_cache.set(scoped_key, err_body)
-                    return JSONResponse(err_body, status_code=500)
+            try:
+                rec = await ar.register(
+                    framework=body.framework,
+                    display_name=display_name,
+                )
+                canonical_id = rec.get("canonical_id")
+            except ValueError as e:
+                # Reserved-prefix names are a user error, not a server fault.
+                err_body = {"error": str(e)}
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, err_body)
+                return JSONResponse(err_body, status_code=400)
+            except Exception as e:
+                logger.exception("agent_registry.register(%s) failed", unique_slug)
+                err_body = {"error": f"Could not register agent in registry: {e}"}
+                if scoped_key and idempotency_cache is not None:
+                    idempotency_cache.set(scoped_key, err_body)
+                return JSONResponse(err_body, status_code=500)
 
         # Add agent entry immediately with deploying status. qmd_url has
         # been removed from the agent schema — every agent reads and writes
