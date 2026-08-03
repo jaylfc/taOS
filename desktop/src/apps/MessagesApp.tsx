@@ -65,6 +65,8 @@ import {
 import { useProcessStore } from "@/stores/process-store";
 import { getApp } from "@/registry/app-registry";
 import { CodeBlock } from "@/components/CodeBlock";
+import { ToolCallBlock } from "@/components/ToolCallBlock";
+import { StatusBlock } from "@/components/StatusBlock";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SearchPanel } from "./chat/SearchPanel";
@@ -165,7 +167,7 @@ interface ThinkingContentBlock {
   collapsed?: boolean;
 }
 
-interface ToolCallContentBlock {
+export interface ToolCallContentBlock {
   kind: "tool_call";
   call_id: string;
   name: string;
@@ -174,9 +176,15 @@ interface ToolCallContentBlock {
   result_preview?: string;
 }
 
-interface StatusContentBlock {
+export interface StatusContentBlock {
   kind: "status";
   text: string;
+}
+
+export interface QuestionContentBlock {
+  kind: "question";
+  text: string;
+  options?: string[];
 }
 
 /**
@@ -190,6 +198,7 @@ export type ContentBlock =
   | ThinkingContentBlock
   | ToolCallContentBlock
   | StatusContentBlock
+  | QuestionContentBlock
   | { kind: string; [key: string]: unknown };
 
 interface Message {
@@ -253,18 +262,28 @@ export function relativeTime(ts: number | string, nowMs: number = Date.now()): s
 }
 
 /**
- * Dispatch a single content block to its renderer. Known kinds (text,
- * thinking, tool_call, status) are dispatched to dedicated block components
- * in separate cards; until those land, they fall through to the unknown
- * fallback. This is the slice-2 seam: add a case per kind and return the
- * block component.
+ * Dispatch a single content block to its renderer. Tool call, status, and
+ * question blocks render through their dedicated card components; text and
+ * thinking blocks land as separate cards (slice 1 #1953 sect 4) and currently
+ * fall through to the unknown-block fallback below. Any other/unrecognized
+ * kind also falls through -- the slice-2 seam for the renderer registry.
  */
 function renderContentBlock(block: ContentBlock, index: number): React.ReactElement {
   switch (block.kind) {
+    case "tool_call":
+      return (
+        <ToolCallBlock block={block as ToolCallContentBlock} key={`block-${index}`} />
+      );
+    case "status":
+      return (
+        <StatusBlock block={block as StatusContentBlock} key={`block-${index}`} />
+      );
+    case "question":
+      return (
+        <StatusBlock block={block as QuestionContentBlock} key={`block-${index}`} />
+      );
     case "text":
     case "thinking":
-    case "tool_call":
-    case "status":
     default:
       return (
         <div key={`block-${index}`} className="text-shell-text-tertiary text-[12px]">

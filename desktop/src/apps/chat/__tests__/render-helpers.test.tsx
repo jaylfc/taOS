@@ -68,31 +68,53 @@ describe("renderContent", () => {
     expect(container.textContent).toContain("hello world");
   });
 
-  it("renders unknown fallback for unrecognized block kinds", () => {
-    const { container } = render(<div>{renderContent("", [{ kind: "question", text: "what?" }])}</div>);
-    expect(container.textContent).toContain("unsupported block: question");
+  it("renders a tool_call block via the ToolCallBlock card", () => {
+    const { container } = render(
+      <div>{renderContent("", [{ kind: "tool_call", call_id: "c1", name: "Bash", status: "done" as const, input_preview: "echo hi" }])}</div>,
+    );
+    const card = container.querySelector('[data-tool-call="true"]');
+    expect(card).not.toBeNull();
+    expect(card?.getAttribute("data-status")).toBe("done");
+    expect(container.textContent).toContain("Bash");
+    expect(container.textContent).toContain("echo hi");
   });
 
-  it("renders unknown fallback for all known kinds (separate cards)", () => {
+  it("renders a status block via the StatusBlock card", () => {
+    const { container } = render(<div>{renderContent("", [{ kind: "status", text: "working" }])}</div>);
+    const line = container.querySelector('[data-status-block="true"][data-variant="status"]');
+    expect(line).not.toBeNull();
+    expect(container.textContent).toContain("working");
+  });
+
+  it("renders a question block through StatusBlock with a reply hint", () => {
+    const { container } = render(<div>{renderContent("", [{ kind: "question", text: "want more?" }])}</div>);
+    const line = container.querySelector('[data-status-block="true"][data-variant="question"]');
+    expect(line).not.toBeNull();
+    expect(container.textContent).toContain("want more?");
+    expect(container.textContent).toContain("reply below");
+  });
+
+  it("renders unknown fallback for unrecognized block kinds", () => {
+    const { container } = render(<div>{renderContent("", [{ kind: "mystery", text: "x" }])}</div>);
+    expect(container.textContent).toContain("unsupported block: mystery");
+  });
+
+  it("renders unknown fallback for text and thinking (separate cards)", () => {
     const { container } = render(
       <div>{renderContent("", [
         { kind: "text", text: "hi" },
         { kind: "thinking", text: "thinking...", collapsed: true },
-        { kind: "tool_call", call_id: "c1", name: "Bash", status: "running" as const },
-        { kind: "status", text: "done" },
       ])}</div>,
     );
     expect(container.textContent).toContain("unsupported block: text");
     expect(container.textContent).toContain("unsupported block: thinking");
-    expect(container.textContent).toContain("unsupported block: tool_call");
-    expect(container.textContent).toContain("unsupported block: status");
   });
 
-  it("renders one fallback line per block", () => {
+  it("renders one fallback line per block for stub kinds", () => {
     const { container } = render(
       <div>{renderContent("", [
         { kind: "text", text: "a" },
-        { kind: "status", text: "b" },
+        { kind: "thinking", text: "b" },
       ])}</div>,
     );
     const text = container.textContent || "";
