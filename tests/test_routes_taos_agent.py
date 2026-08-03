@@ -1,17 +1,19 @@
 """Endpoint tests for tinyagentos/routes/taos_agent.py.
 
-Covers the endpoints that are testable in-process with the FastAPI
+Covers every @router endpoint testable in-process with the FastAPI
 test client (no live LLM / opencode / container needed):
 
+    GET  /api/taos-agent/settings
+    PATCH /api/taos-agent/settings
     GET  /api/taos-agent/config
     PUT  /api/taos-agent/permitted-models
     PUT  /api/taos-agent/persona
-    PATCH /api/taos-agent/settings (validation)
     POST /api/taos-agent/chat (guard responses)
+    POST /api/taos-agent/attachments/upload
+    GET  /api/taos-agent/attachments/files/{token}
 
-Endpoints exercised in separate modules:
-    - GET/PATCH settings, attachments upload/serve: test_taos_agent_route.py
-    - POST /api/taos-agent/chat streaming happy path: test_taos_agent_chat.py
+Streaming happy path for POST /api/taos-agent/chat requires a live
+opencode server process; that endpoint is skipped with a comment below.
 """
 from __future__ import annotations
 
@@ -19,59 +21,24 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-import yaml
-from httpx import ASGITransport, AsyncClient
 
-from tinyagentos.app import create_app
 import tinyagentos.cluster.model_resolver as _model_resolver_mod
 from tinyagentos.cluster.model_resolver import ModelLocation
 
 
 # ---------------------------------------------------------------------------
-# Fixtures (same pattern as tests/test_taos_agent_route.py)
+# Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def tmp_data_dir(tmp_path):
-    config = {
-        "server": {"host": "0.0.0.0", "port": 6969},
-        "backends": [
-            {"name": "test-backend", "type": "rkllama", "url": "http://localhost:8080", "priority": 1}
-        ],
-        "qmd": {"url": "http://localhost:7832"},
-        "agents": [],
-        "metrics": {"poll_interval": 30, "retention_days": 30},
-    }
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.dump(config))
-    (tmp_path / ".setup_complete").touch()
-    return tmp_path
-
-
-@pytest.fixture
-def app(tmp_data_dir):
-    return create_app(data_dir=tmp_data_dir)
-
-
-@pytest_asyncio.fixture
-async def client(app):
-    ds = app.state.desktop_settings
+@pytest_asyncio.fixture(autouse=True)
+async def _init_desktop_settings(client):
+    """Ensure desktop_settings store is initialised for taos-agent routes."""
+    ds = client._transport.app.state.desktop_settings
     if ds._db is not None:
         await ds.close()
     await ds.init()
-    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
-    record = app.state.auth.find_user("admin")
-    uid = record["id"] if record else ""
-    token = app.state.auth.create_session(user_id=uid, long_lived=True)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        cookies={"taos_session": token},
-    ) as c:
-        yield c
+    yield
     await ds.close()
-    await app.state.http_client.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +52,61 @@ def _fake_proxy(running: bool = True) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/taos-agent/settings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_settings_returns_model_when_set(client):
+    """GET /settings returns the currently configured model."""
+    await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
+    resp = await client.get("/api/taos-agent/settings")
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_get_settings_returns_null_when_no_model(client):
+    """GET /settings returns null model when nothing has been configured."""
+    resp = await client.get("/api/taos-agent/settings")
+    assert resp.status_code == 200
+    assert resp.json()["model"] is None
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/taos-agent/settings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_patch_settings_happy_path(client):
+    """PATCH /settings with a model persists and returns it."""
+    resp = await client.patch("/api/taos-agent/settings", json={"model": "claude-3"})
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "claude-3"
+
+
+@pytest.mark.asyncio
+async def test_patch_settings_missing_model_returns_422(client):
+    """Omitting the required `model` field returns 422."""
+    resp = await client.patch("/api/taos-agent/settings", json={})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_settings_non_string_model_returns_422(client):
+    """A non-string model value returns 422."""
+    resp = await client.patch(
+        "/api/taos-agent/settings",
+        json={"model": 123},
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # GET /api/taos-agent/config
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_config_returns_full_payload(client, app):
+async def test_config_returns_full_payload(client):
     """GET /config returns model, permitted_models, persona, key_masked,
     framework, and system."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
@@ -108,7 +125,7 @@ async def test_config_returns_full_payload(client, app):
 
 
 @pytest.mark.asyncio
-async def test_config_key_masked_none_when_no_key(client, app):
+async def test_config_key_masked_none_when_no_key(client):
     """When taos_opencode_key is absent, key_masked is None."""
     resp = await client.get("/api/taos-agent/config")
     assert resp.status_code == 200
@@ -116,9 +133,12 @@ async def test_config_key_masked_none_when_no_key(client, app):
 
 
 @pytest.mark.asyncio
-async def test_config_key_masked_scrubs_long_key(client, app):
+async def test_config_key_masked_scrubs_long_key(client, monkeypatch):
     """A real-looking key is masked (first 6 + ellipsis + last 4)."""
-    app.state.taos_opencode_key = "sk-1234567890abcdef"
+    monkeypatch.setattr(
+        client._transport.app.state, "taos_opencode_key", "sk-1234567890abcdef",
+        raising=False,
+    )
     resp = await client.get("/api/taos-agent/config")
     assert resp.status_code == 200
     masked = resp.json()["key_masked"]
@@ -128,9 +148,12 @@ async def test_config_key_masked_scrubs_long_key(client, app):
 
 
 @pytest.mark.asyncio
-async def test_config_key_masked_short_key_returns_ellipsis(client, app):
+async def test_config_key_masked_short_key_returns_ellipsis(client, monkeypatch):
     """A key shorter than 12 chars is replaced with the ellipsis sentinel."""
-    app.state.taos_opencode_key = "short"
+    monkeypatch.setattr(
+        client._transport.app.state, "taos_opencode_key", "short",
+        raising=False,
+    )
     resp = await client.get("/api/taos-agent/config")
     assert resp.status_code == 200
     assert resp.json()["key_masked"] == "…"
@@ -141,7 +164,7 @@ async def test_config_key_masked_short_key_returns_ellipsis(client, app):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_put_permitted_models_happy_path(client, app, monkeypatch):
+async def test_put_permitted_models_happy_path(client, monkeypatch):
     """Setting permitted models with a reachable model returns the new set."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
 
@@ -172,7 +195,7 @@ async def test_put_permitted_models_empty_list_returns_400(client):
 
 
 @pytest.mark.asyncio
-async def test_put_permitted_models_unreachable_returns_409(client, app, monkeypatch):
+async def test_put_permitted_models_unreachable_returns_409(client, monkeypatch):
     """A model that resolves to not_found returns 409."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
 
@@ -191,10 +214,10 @@ async def test_put_permitted_models_unreachable_returns_409(client, app, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_put_permitted_models_downloaded_backend_down_returns_actionable_409(client, app, monkeypatch):
+async def test_put_permitted_models_downloaded_backend_down_returns_actionable_409(client, monkeypatch):
     """A downloaded model whose backend is confirmed down must return the
-    specific "downloaded but backend not running" message (#1599), not the
-    generic "not reachable anywhere" text."""
+    specific "downloaded but backend not running" message, not the generic
+    "not reachable anywhere" text."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
 
     monkeypatch.setattr(
@@ -217,7 +240,7 @@ async def test_put_permitted_models_downloaded_backend_down_returns_actionable_4
 
 
 @pytest.mark.asyncio
-async def test_put_permitted_models_prepends_current_model(client, app, monkeypatch):
+async def test_put_permitted_models_prepends_current_model(client, monkeypatch):
     """The current primary model is always included even if not in the list."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
 
@@ -237,19 +260,21 @@ async def test_put_permitted_models_prepends_current_model(client, app, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_put_permitted_models_re_scopes_key(client, app, monkeypatch):
+async def test_put_permitted_models_re_scopes_key(client, monkeypatch):
     """When proxy + key are present, key_rescoped reflects proxy.update_agent_key."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
-    app.state.llm_proxy = _fake_proxy(running=True)
-    app.state.taos_opencode_key = "sk-1234567890abcdef"
+    proxy = _fake_proxy(running=True)
+    monkeypatch.setattr(client._transport.app.state, "llm_proxy", proxy, raising=False)
+    monkeypatch.setattr(
+        client._transport.app.state, "taos_opencode_key", "sk-1234567890abcdef",
+        raising=False,
+    )
+    proxy.update_agent_key = AsyncMock(return_value=True)
 
     monkeypatch.setattr(
         _model_resolver_mod, "resolve_model_location",
         lambda request, model_id: ModelLocation(kind="cloud"),
     )
-
-    proxy = app.state.llm_proxy
-    proxy.update_agent_key = AsyncMock(return_value=True)
 
     resp = await client.put(
         "/api/taos-agent/permitted-models",
@@ -276,7 +301,7 @@ async def test_put_persona_happy_path(client):
 
 
 @pytest.mark.asyncio
-async def test_put_persona_persists_across_get_config(client, app):
+async def test_put_persona_persists_across_get_config(client):
     """After PUT persona, GET /config reflects the saved persona."""
     await client.put(
         "/api/taos-agent/persona",
@@ -299,27 +324,6 @@ async def test_put_persona_empty_string_accepted(client):
 
 
 # ---------------------------------------------------------------------------
-# PATCH /api/taos-agent/settings validation
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_patch_settings_missing_model_returns_422(client):
-    """Omitting the required `model` field returns 422."""
-    resp = await client.patch("/api/taos-agent/settings", json={})
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_patch_settings_non_string_model_returns_422(client):
-    """A non-string model value returns 422."""
-    resp = await client.patch(
-        "/api/taos-agent/settings",
-        json={"model": 123},
-    )
-    assert resp.status_code == 422
-
-
-# ---------------------------------------------------------------------------
 # POST /api/taos-agent/chat guards
 # ---------------------------------------------------------------------------
 
@@ -335,10 +339,11 @@ async def test_chat_no_model_returns_400(client):
 
 
 @pytest.mark.asyncio
-async def test_chat_proxy_not_running_returns_503(client, app):
+async def test_chat_proxy_not_running_returns_503(client, monkeypatch):
     """POST /chat when proxy is not running returns 503."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
-    app.state.llm_proxy = _fake_proxy(running=False)
+    proxy = _fake_proxy(running=False)
+    monkeypatch.setattr(client._transport.app.state, "llm_proxy", proxy)
 
     resp = await client.post(
         "/api/taos-agent/chat",
@@ -351,10 +356,81 @@ async def test_chat_proxy_not_running_returns_503(client, app):
 
 @pytest.mark.asyncio
 async def test_chat_missing_messages_field_returns_422(client):
-    """POST /chat with a body missing `messages` returns 422."""
+    """POST /chat with a body missing `messages` returns 422 (FastAPI validation)."""
     await client.patch("/api/taos-agent/settings", json={"model": "gpt-4o"})
     resp = await client.post(
         "/api/taos-agent/chat",
         json={},
     )
     assert resp.status_code == 422
+
+
+# Streaming happy path for POST /api/taos-agent/chat requires a live
+# opencode server process; skipped here per task instructions.
+
+
+# ---------------------------------------------------------------------------
+# POST /api/taos-agent/attachments/upload
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_upload_attachment_happy_path(client):
+    """A valid file upload returns metadata with the stored URL."""
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+    resp = await client.post(
+        "/api/taos-agent/attachments/upload",
+        files={"file": ("test.png", png_bytes, "image/png")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mime_type"] == "image/png"
+    assert data["size"] == len(png_bytes)
+    assert data["url"].startswith("/api/taos-agent/attachments/files/")
+
+
+@pytest.mark.asyncio
+async def test_upload_attachment_too_large_returns_413(client):
+    """Files over 50 MB are rejected with 413."""
+    big_bytes = b"x" * (51 * 1024 * 1024)
+    resp = await client.post(
+        "/api/taos-agent/attachments/upload",
+        files={"file": ("big.bin", big_bytes, "application/octet-stream")},
+    )
+    assert resp.status_code == 413
+
+
+# ---------------------------------------------------------------------------
+# GET /api/taos-agent/attachments/files/{token}
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_serve_attachment_happy_path(client):
+    """An uploaded safe image is served inline with correct headers."""
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+    upload_resp = await client.post(
+        "/api/taos-agent/attachments/upload",
+        files={"file": ("test.png", png_bytes, "image/png")},
+    )
+    assert upload_resp.status_code == 200
+    url = upload_resp.json()["url"]
+
+    resp = await client.get(url)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.content == png_bytes
+
+
+@pytest.mark.asyncio
+async def test_serve_attachment_not_found_returns_404(client):
+    """A token with no stored file returns 404."""
+    resp = await client.get("/api/taos-agent/attachments/files/doesnotexist")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_serve_attachment_path_traversal_returns_404(client):
+    """Path traversal tokens are rejected with 404."""
+    for token in ("../etc/passwd", "foo/bar", "foo\\bar"):
+        resp = await client.get(f"/api/taos-agent/attachments/files/{token}")
+        assert resp.status_code == 404
