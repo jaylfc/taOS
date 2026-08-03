@@ -7,6 +7,8 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.46] - 2026-08-03
+
 ### Fixed
 
 - Decisions API: authentication now runs before request-body validation, so an
@@ -20,9 +22,6 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 - Deployed agents are registered into the agent registry at deploy time, each
   minting its own canonical identity; names that resolve to a reserved prefix
   are rejected with a 400 (#2266).
-
-### Added
-
 - Lead agents can edit their own board cards: the seeded internal lead now
   carries the `project_tasks_update` scope (title/body/labels/priority on
   own-or-lead cards; a plain `project_tasks` grant still gets 403 on PATCH,
