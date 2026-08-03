@@ -138,17 +138,32 @@ class ProjectListEntriesStore(BaseStore):
         entry_id = new_id("ent")
         now = time.time()
 
-        await self._db.execute(
-            "INSERT INTO project_list_entries "
-            "(id, list_id, project_id, text, original_text, category, status, "
-            "done, author_kind, author_id, position, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                entry_id, list_id, project_id, text, original_text,
-                category, "new", 0, author_kind, author_id,
-                position if position is not None else await self._get_next_position(project_id, list_id), now, now,
-            ),
-        )
+        if position is not None:
+            await self._db.execute(
+                "INSERT INTO project_list_entries "
+                "(id, list_id, project_id, text, original_text, category, status, "
+                "done, author_kind, author_id, position, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry_id, list_id, project_id, text, original_text,
+                    category, "new", 0, author_kind, author_id,
+                    position, now, now,
+                ),
+            )
+        else:
+            await self._db.execute(
+                "INSERT INTO project_list_entries "
+                "(id, list_id, project_id, text, original_text, category, status, "
+                "done, author_kind, author_id, position, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "COALESCE((SELECT MAX(position) + 1 FROM project_list_entries "
+                "WHERE list_id = ? AND project_id = ?), 0), ?, ?)",
+                (
+                    entry_id, list_id, project_id, text, original_text,
+                    category, "new", 0, author_kind, author_id,
+                    list_id, project_id, now, now,
+                ),
+            )
         await self._db.commit()
         return await self.get_entry(entry_id)
 
@@ -243,14 +258,18 @@ class ProjectListEntriesStore(BaseStore):
         await self._db.commit()
         return cursor.rowcount == 1
 
-    async def reorder_entries(self, project_id: str, entries: list[dict]) -> None:
+    async def reorder_entries(self, project_id: str, list_id: str, entries: list[dict]) -> bool:
         for entry in entries:
-            await self._db.execute(
+            cursor = await self._db.execute(
                 "UPDATE project_list_entries SET position = ?, updated_at = ? "
-                "WHERE id = ? AND project_id = ?",
-                (entry["position"], time.time(), entry["id"], project_id),
+                "WHERE id = ? AND project_id = ? AND list_id = ?",
+                (entry["position"], time.time(), entry["id"], project_id, list_id),
             )
+            if cursor.rowcount == 0:
+                await self._db.rollback()
+                return False
         await self._db.commit()
+        return True
 
     async def _get_next_position(self, project_id: str, list_id: str) -> int:
         async with self._db.execute(

@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import pytest
@@ -168,6 +169,7 @@ async def test_reorder_entries(entries_store):
     )
     await entries_store.reorder_entries(
         project_id="prj-1",
+        list_id="lst-1",
         entries=[
             {"id": c["id"], "position": 0},
             {"id": a["id"], "position": 1},
@@ -250,3 +252,73 @@ async def test_add_entries_without_positions_gets_ascending(entries_store):
     assert positions == [0, 1, 2], (
         f"Expected [0, 1, 2] but got {positions}"
     )
+
+
+@pytest.mark.asyncio
+async def test_reorder_entries_does_not_corrupt_sibling_list(entries_store):
+    """A reorder scoped to one list must not reposition an entry that belongs
+    to a different list in the same project, and must signal the mismatch."""
+    a = await entries_store.add_entry(
+        list_id="lst-A",
+        project_id="prj-1",
+        text="A",
+        original_text="A",
+        author_kind="agent",
+        author_id="agent-1",
+        position=0,
+    )
+    b = await entries_store.add_entry(
+        list_id="lst-B",
+        project_id="prj-1",
+        text="B",
+        original_text="B",
+        author_kind="agent",
+        author_id="agent-1",
+        position=0,
+    )
+
+    result = await entries_store.reorder_entries(
+        project_id="prj-1",
+        list_id="lst-A",
+        entries=[{"id": b["id"], "position": 99}],
+    )
+
+    b_after = await entries_store.get_entry(b["id"])
+    assert b_after["position"] == 0, "sibling-list entry must not be moved"
+    assert result is False, "reorder should signal that id does not belong to list"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_add_entry_distinct_positions(entries_store, monkeypatch):
+    """Two concurrent add_entry calls without explicit positions must not
+    persist duplicate positions."""
+    original = entries_store._get_next_position
+
+    async def slow_next_position(project_id, list_id):
+        val = await original(project_id, list_id)
+        await asyncio.sleep(0)
+        return val
+
+    monkeypatch.setattr(entries_store, "_get_next_position", slow_next_position)
+
+    e1, e2 = await asyncio.gather(
+        entries_store.add_entry(
+            list_id="lst-1",
+            project_id="prj-1",
+            text="First",
+            original_text="First",
+            author_kind="agent",
+            author_id="agent-1",
+        ),
+        entries_store.add_entry(
+            list_id="lst-1",
+            project_id="prj-1",
+            text="Second",
+            original_text="Second",
+            author_kind="agent",
+            author_id="agent-1",
+        ),
+    )
+
+    positions = {e1["position"], e2["position"]}
+    assert len(positions) == 2, f"expected distinct positions, got {positions}"
