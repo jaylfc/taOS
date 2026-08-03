@@ -31,7 +31,52 @@ class TestStoreNoMigration(BaseStore):
             id   INTEGER PRIMARY KEY AUTOINCREMENT,
             val  TEXT NOT NULL
         );
+        """
+
+
+class TestStoreIndexInSchema(BaseStore):
+    """Bad pattern: CREATE INDEX in SCHEMA references a column added in _post_init."""
+    SCHEMA = """
+        CREATE TABLE IF NOT EXISTS items (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_items_extra_bad
+            ON items (extra_col);
     """
+
+    async def _post_init(self) -> None:
+        try:
+            await self._db.execute(
+                "ALTER TABLE items ADD COLUMN extra_col TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+
+
+class TestStoreIndexInPostInit(BaseStore):
+    """Good pattern: index created in _post_init AFTER the ALTER that adds the column."""
+    SCHEMA = """
+        CREATE TABLE IF NOT EXISTS items (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+        );
+        """
+
+    async def _post_init(self) -> None:
+        try:
+            await self._db.execute(
+                "ALTER TABLE items ADD COLUMN extra_col TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_items_extra_good "
+            "ON items (extra_col)"
+        )
+        await self._db.commit()
 
 
 @pytest.mark.asyncio
@@ -150,6 +195,42 @@ class TestBaseStore:
             )
             versions = [row[0] for row in await cursor.fetchall()]
             assert 1 in versions
+        finally:
+            await store.close()
+
+    async def _seed_old_items(self, db_path):
+        db = await aiosqlite.connect(str(db_path))
+        await db.executescript(
+            "CREATE TABLE IF NOT EXISTS items "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);"
+        )
+        await db.commit()
+        await db.close()
+
+    async def test_schema_index_on_post_init_column_fails_on_old_db(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        await self._seed_old_items(db_path)
+
+        store = TestStoreIndexInSchema(db_path)
+        try:
+            with pytest.raises(Exception):
+                await store.init()
+        finally:
+            await store.close()
+
+    async def test_index_in_post_init_boots_clean_on_old_db(self, tmp_path):
+        db_path = tmp_path / "old.db"
+        await self._seed_old_items(db_path)
+
+        store = TestStoreIndexInPostInit(db_path)
+        try:
+            await store.init()
+            cursor = await store._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name='idx_items_extra_good'"
+            )
+            row = await cursor.fetchone()
+            assert row is not None, "index was not created in _post_init"
         finally:
             await store.close()
 
