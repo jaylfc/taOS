@@ -213,7 +213,7 @@ class TestBaseStore:
 
         store = TestStoreIndexInSchema(db_path)
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(Exception, match="extra_col|no such column"):
                 await store.init()
         finally:
             await store.close()
