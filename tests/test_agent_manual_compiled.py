@@ -12,7 +12,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build-agent-manual.py"
 COMMITTED_OUTPUT = REPO_ROOT / "docs" / "taos-agent-manual.md"
 
-MAX_CHARS = 16000
+MAX_CHARS = 18000
 
 MUST_CONTAIN = [
     "You are the **taOS agent**",

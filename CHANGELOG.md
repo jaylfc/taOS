@@ -32,6 +32,10 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
   consent flow and internal mint) and the Files-app review UI. The feature has
   shipped on every install since beta.43 but lived only on the release branch;
   it is now developed and reviewed like everything else.
+- **Docs**: the agent manual now documents the project Files REST API for member
+  agents (multipart upload, listing, fetch, and the one-write principle), linked
+  from the manual index; the compiled-manual size guard is raised to 18000 chars
+  to make room (redo of #2139).
 
 ## [1.0.0-beta.45] - 2026-08-02
 
