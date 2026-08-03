@@ -7,6 +7,12 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Fixed
+
+- Decisions API: authentication now runs before request-body validation, so an
+  invalid bearer token always returns 401 and token validity can no longer be
+  probed through validation errors (#2268).
+
 ### Added
 
 - Observatory fleet view for agents holding a global `observatory_control`
