@@ -6,7 +6,7 @@ broadly, off-LAN remote access (taOSgo). Author: taOS-dev.
 ## Why this exists
 
 Web Studio v1 is a complete static-site builder (generate -> edit -> preview ->
-install/export). Its one missing feature, publish to `<label>.<handle>.taos.my`,
+install/export). Its one missing feature, publish to `<subdomain>.taos.my`
 is blocked, and so is off-LAN remote access to the desktop. The block is not a
 small wiring gap: the taOS **controller has no mesh-join code at all**. There is
 no `tailscale up`, no preauth-key consumption, no Headscale connection, and no
@@ -119,11 +119,11 @@ Once Units 1+2 land, publishing a Web Studio site is:
    only in v1 (matches Web Studio's stated scope); "dynamic + keep-running"
    containers are a later phase.
 2. **Register the route.** `POST hs.taos.my.../api/sites/publish` with
-   `Authorization: Bearer <sites_token>` and `{label, port, host_id}` -- handle is
-   derived server-side from the token (the anti-spoof we already reviewed in #94).
+   `Authorization: Bearer <sites_token>` and `{subdomain, port, host_id}` -- the
+   subdomain is checked against the account's active claims server-side
    The label is validated client-side against the same reserved rules, but taos.my
    re-validates.
-3. **Web Studio UI.** ShareView gains a "Publish to <handle>.taos.my" action
+3. **Web Studio UI.** ShareView gains a "Publish to <subdomain>.taos.my" action
    (alongside install/export): pick a label, POST, show the resulting FQDN + a
    copy link, and an "unpublish". Gated on the host having joined a mesh
    (`mesh_status().joined`) with a clear "connect your taOS account first" empty

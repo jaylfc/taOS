@@ -7,7 +7,8 @@ single-scope, host-bound bearer tokens:
 - ``controller_token`` -- scope ``taosnet:passkey`` (fetch the account taOSnet
   passkey; see ``passkey_client.py``)
 - ``sites_token``      -- scope ``sites:publish`` (publish a Web Studio site to
-  ``<label>.<handle>.taos.my``; taos.my #167)
+  a claimed subdomain under ``.taos.my``; see
+  ``docs/design/account-username-subdomain-model.md`` for the namespace model)
 
 This module is the *writer* for the ``get_controller_token()`` seam
 ``passkey_client.py`` documented: it persists those tokens to a single 0600 file

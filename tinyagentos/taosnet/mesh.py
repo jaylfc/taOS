@@ -2,7 +2,8 @@
 
 The always-on host joins the account's Headscale mesh using the single-use
 preauth key from the cluster-join ready payload, so that
-``<label>.<handle>.taos.my`` (Web Studio publish) and off-LAN desktop access can
+``<subdomain>.taos.my`` (a claimed subdomain; see
+``docs/design/account-username-subdomain-model.md``) and off-LAN desktop access can
 route to this host over the tailnet. Jay decided the mechanism is **system
 tailscale** (tailscale + tailscaled managed as a service), not userspace tsnet:
 real kernel networking, boot-persistent, best for the always-on host.
