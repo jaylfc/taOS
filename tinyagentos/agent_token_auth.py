@@ -110,6 +110,12 @@ async def _verify_agent_scope(
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
 
+    # Token iat cutoff: reject if iat < token_min_iat (token superseded)
+    payload_iat = payload.get("iat")
+    token_min_iat = record.get("token_min_iat")
+    if payload_iat is not None and token_min_iat is not None and payload_iat < token_min_iat:
+        raise HTTPException(status_code=401, detail="token superseded")
+
     # Must hold an active grant for the required scope.
     grants_store = _get_grants_store(request)
     grants = await grants_store.list_grants(canonical_id)

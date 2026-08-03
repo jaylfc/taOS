@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS agent_registry (
     capabilities    TEXT    NOT NULL DEFAULT '[]',
     created_ts      TEXT    NOT NULL,
     revoked_at      TEXT,
-    status          TEXT    NOT NULL DEFAULT 'active'
+    status          TEXT    NOT NULL DEFAULT 'active',
+    token_min_iat   INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -203,6 +204,25 @@ async def _migration_v4_dedupe_active_handles(conn) -> None:
         )
     if demoted:
         await conn.commit()
+
+
+async def _migration_v5_add_token_min_iat(conn) -> None:
+    """Add token_min_iat column (default 0) for iat cutoff.
+
+    Per-identity token rotation blocker: only new tokens with iat >= token_min_iat
+    are accepted. New rows default to 0, keeping all existing tokens valid.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "token_min_iat" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN token_min_iat INTEGER NOT NULL DEFAULT 0"
+        )
+    await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +481,8 @@ class AgentRegistryStore(BaseStore):
                 "active handles remain); continuing without it -- write-time "
                 "uniqueness still applies. Reconcile duplicate handles manually."
             )
+        # Add token_min_iat column (iat cutoff for token rotation)
+        await _migration_v5_add_token_min_iat(self._db)
 
     # ------------------------------------------------------------------
     # Registration
@@ -529,11 +551,11 @@ class AgentRegistryStore(BaseStore):
             """
             INSERT INTO agent_registry
                 (canonical_id, display_name, framework, user_id, origin,
-                 handle, role, title, reports_to, capabilities, created_ts, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 handle, role, title, reports_to, capabilities, created_ts, status, token_min_iat)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (canonical_id, display_name, framework, user_id, origin,
-             handle, role, title, reports_to, caps_json, created_ts, initial_status),
+             handle, role, title, reports_to, caps_json, created_ts, initial_status, 0),
         )
         await self._db.commit()
 
@@ -1010,3 +1032,34 @@ class AgentRegistryStore(BaseStore):
             }
 
         return [_node(r, 0, frozenset()) for r in roots]
+
+    # ------------------------------------------------------------------
+    # Token rotation helper
+    # ------------------------------------------------------------------
+
+    async def bump_token_min_iat(self, canonical_id: str, ts: str) -> dict:
+        """Advance the token_min_iat cutoff for an identity.
+
+        Called by rotation: after the agent issues a fresh token, this
+        makes all previous tokens for that identity invalid.
+
+        Returns the updated record.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            raise KeyError(canonical_id)
+
+        # Atomic: ensure the record still exists (state may have changed between
+        # the caller’s read and now). If it disappeared, the rotation call
+        # is a no-op and the fresh token will succeed anyway.
+        cur = await self._db.execute(
+            "UPDATE agent_registry SET token_min_iat = ? WHERE canonical_id = ?",
+            (ts, canonical_id),
+        )
+        if cur.rowcount == 0:
+            # Race: row vanished between get and update; nothing to cut off.
+            return record
+        await self._db.commit()
+        return await self.get(canonical_id)  # type: ignore[return-value]

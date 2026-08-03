@@ -459,6 +459,63 @@ async def seed_internal_agents(
     return {"seeded": seeded}
 
 
+@router.post("/api/agents/registry/{canonical_id}/rotate-token")
+async def rotate_token(
+    request: Request,
+    canonical_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Advance the token_min_iat cutoff (token rotation blocker).
+
+    Admin only.  Bumps the per-identity token_min_iat to now, invalidating
+    all previous tokens for that identity.  The caller must hold the token
+    (any previous token that still has iat >= token_min_iat is sufficient),
+    so an attacker cannot rotate without valid credentials.  Returns the
+    updated record for audit.  This is the first step in rotation: after
+    calling this, the operator can distribute a fresh token to the agent
+    host.
+
+    The route is similar to the governance actions (approve/reject/suspend),
+    matching the pattern of privileged identity edits.
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    store = _get_store(request)
+    record = await store.get(canonical_id)
+    if record is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    # Verify the caller holds a valid token for this identity (must have
+    # an active token with iat >= current token_min_iat before the bump).
+    # Use the shared verifier to ensure any token (including the one that will
+    # be minted next) would authenticate.
+    if not await _check_feed_token(request):
+        # Fallback to the more basic check_agent_identity which doesn't
+        # require a scope grant.
+        if await check_agent_identity(request) != canonical_id:
+            raise HTTPException(
+                status_code=403,
+                detail="caller does not hold a valid token for this identity",
+            )
+
+    before = record.get("token_min_iat")
+    now = datetime.now(timezone.utc).isoformat()
+    updated = await store.bump_token_min_iat(canonical_id, now)
+
+    # Log the rotation as a governance audit event (mirroring the driver-token
+    # mint audit). Before/after status is the same (token_min_iat is just a number).
+    await _audit_governance(
+        request,
+        action="rotate-token",
+        canonical_id=canonical_id,
+        actor_user_id=user.user_id,
+        before_status=str(before),
+        after_status=updated.get("token_min_iat"),
+    )
+    return updated
+
+
 @router.get("/api/agents/registry/pubkey")
 async def get_pubkey(request: Request):
     """Return the registry's Ed25519 public key in PEM format.
