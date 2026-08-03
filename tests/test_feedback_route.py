@@ -182,6 +182,12 @@ async def test_post_feedback_rate_limit_per_user(client, app):
         )
         assert resp.status_code == 201
 
+    resp = await client.post(
+        "/api/feedback",
+        json={"type": "bug", "title": "Admin over limit", "body": ""},
+    )
+    assert resp.status_code == 429
+
     invite_code = app.state.auth.add_user_invite("user2", "admin")
     app.state.auth.complete_invite("user2", invite_code, "User Two", "", "password")
     record = app.state.auth.find_user("user2")
