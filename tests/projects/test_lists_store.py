@@ -280,10 +280,15 @@ async def test_reorder_entries_does_not_corrupt_sibling_list(entries_store):
     result = await entries_store.reorder_entries(
         project_id="prj-1",
         list_id="lst-A",
-        entries=[{"id": b["id"], "position": 99}],
+        entries=[
+            {"id": a["id"], "position": 5},
+            {"id": b["id"], "position": 99},
+        ],
     )
 
+    a_after = await entries_store.get_entry(a["id"])
     b_after = await entries_store.get_entry(b["id"])
+    assert a_after["position"] == 0, "valid update before the mismatch must be rolled back"
     assert b_after["position"] == 0, "sibling-list entry must not be moved"
     assert result is False, "reorder should signal that id does not belong to list"
 
