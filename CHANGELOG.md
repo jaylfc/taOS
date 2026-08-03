@@ -9,6 +9,11 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- Observatory fleet view for agents holding a global `observatory_control`
+  grant; project-scoped grants see only their granted projects (#2267).
+
+### Added
+
 - Lead agents can edit their own board cards: the seeded internal lead now
   carries the `project_tasks_update` scope (title/body/labels/priority on
   own-or-lead cards; a plain `project_tasks` grant still gets 403 on PATCH,
