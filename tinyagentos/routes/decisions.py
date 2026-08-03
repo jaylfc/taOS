@@ -133,8 +133,39 @@ class _DecisionActor:
     is_admin: bool           # human-path admin flag; always False for agents
 
 
-async def _resolve_decision_actor(request: Request, project_id: str | None) -> _DecisionActor:
+async def _authenticate_request(request: Request) -> str | None:
+    """Verify a registry JWT bearer identity BEFORE body parsing.
+
+    FastAPI evaluates route dependencies before the body model, so probing the
+    bearer here guarantees a bad/invalid token raises 401 before Pydantic body
+    validation can surface a 422. Without this, a garbage bearer token paired
+    with a malformed body returned 422 (field errors) and only a valid body ever
+    reached the 401 -- so a dead token falsely looked authorized.
+
+    Returns the canonical_id for a present-and-valid Bearer registry JWT, or
+    None when no Bearer is present (the human/session path is handled later by
+    _resolve_decision_actor). Any Bearer that is not a valid registry JWT
+    (malformed, bad signature, inactive agent) raises 401/403 and never reaches
+    the body.
+    """
+    from tinyagentos.agent_token_auth import check_agent_identity
+    return await check_agent_identity(request)
+
+
+async def _resolve_decision_actor(
+    request: Request, project_id: str | None, agent_cid: str | None
+) -> _DecisionActor:
     """Authorize the caller as either a granted agent or a human session.
+
+    ``agent_cid`` is the agent's canonical_id, identity-verified up front by the
+    _authenticate_request dependency, which runs BEFORE body parsing. So a bad
+    bearer token 401s before Pydantic body validation can surface a 422 -- closing
+    the auth-leak where a garbage token plus a malformed body returned 422 and
+    falsely looked authorized.
+
+    When ``agent_cid`` is None no Bearer was presented and the human/session
+    path is taken: the session user (already resolved by the auth middleware)
+    creates the decision and is the decider.
 
     Agent path (bearer token with a decisions_write grant): the decision is
     attributed to the authenticated agent, and the decider is resolved from the
@@ -147,10 +178,12 @@ async def _resolve_decision_actor(request: Request, project_id: str | None) -> _
     """
     from tinyagentos.agent_token_auth import check_agent_scope_for_project
 
-    # Returns None when there is no Authorization header (a cookie-only human),
-    # the canonical_id when the agent holds the grant, or raises 401/403.
-    cid = await check_agent_scope_for_project(request, "decisions_write", project_id)
-    if cid is not None:
+    if agent_cid is not None:
+        # Bearer present and identity verified by the dependency; now enforce
+        # the grant + project binding. check_agent_scope_for_project re-verifies
+        # the token identity idempotently (as the answer/agent route already
+        # does) and raises 401/403 on a missing or project-mismatched grant.
+        cid = await check_agent_scope_for_project(request, "decisions_write", project_id)
         if project_id is not None:
             project = await request.app.state.project_store.get_project(project_id)
             if project is None:
@@ -173,7 +206,11 @@ async def _resolve_decision_actor(request: Request, project_id: str | None) -> _
 
 
 @router.post("/api/decisions")
-async def create_decision(body: DecisionIn, request: Request):
+async def create_decision(
+    request: Request,
+    body: DecisionIn,
+    agent_cid: str | None = Depends(_authenticate_request),
+):
     if body.type not in DECISION_TYPES:
         return JSONResponse({"error": f"type must be one of {DECISION_TYPES}"}, status_code=400)
     if body.priority not in PRIORITIES:
@@ -181,7 +218,7 @@ async def create_decision(body: DecisionIn, request: Request):
     if body.type in ("single_select", "multi_select") and not body.options:
         return JSONResponse({"error": "select types require options"}, status_code=400)
 
-    actor = await _resolve_decision_actor(request, body.project_id)
+    actor = await _resolve_decision_actor(request, body.project_id, agent_cid)
     # Agent identity is authoritative; a human may set from_agent in the body.
     from_agent = actor.from_agent or body.from_agent
 
@@ -523,17 +560,24 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
 
 
 @router.post("/api/decisions/{decision_id}/answer/agent")
-async def answer_decision_as_agent(decision_id: str, body: AnswerIn, request: Request):
+async def answer_decision_as_agent(
+    decision_id: str,
+    request: Request,
+    body: AnswerIn,
+    caller: str | None = Depends(_authenticate_request),
+):
     """Agent mirror: only the asking agent can answer its own decision.
+
     Verifies the registry JWT holds decisions_write for the decision's project,
     checks from_agent ownership, records the answer with source=mirrored_from_chat
     and the agent's canonical id as the mirroring actor, then pushes to the
     asking agent via A2A.  Consent side effects (app/execution/delegation grants)
-    are intentionally NOT run on this path for gate-kind decisions (409)."""
-    # JWT-first: validate the bearer token before touching the decision
-    # store so invalid tokens cannot probe decision existence via timing.
-    from tinyagentos.agent_token_auth import check_agent_identity
-    caller = await check_agent_identity(request)
+    are intentionally NOT run on this path for gate-kind decisions (409).
+
+    The bearer identity is verified by the _authenticate_request dependency
+    (which runs before body parsing) so a bad token 401s before a 422 can leak
+    and no invalid token can probe decision existence via timing.
+    """
     if caller is None:
         return JSONResponse({"error": "not found"}, status_code=404)
 
