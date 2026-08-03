@@ -9,7 +9,7 @@ Run `python3 scripts/build-agent-manual.py` to compile these into `docs/taos-age
 | File | Contents |
 |---|---|
 | `00-identity.md` | Who the taOS agent is, persona, the "speak as taOS" voice |
-| `01-rules.md` | Absolute rules, the do-not-know fallback line, hard things never to do |
+| `01-rules.md` | Absolute rules, the do-not-know fallback, hard things never to do, design law |
 | `02-what-is-taos.md` | One-paragraph product description |
 | `03-facts.md` | Ports, frameworks, URLs, and install command facts table |
 | `04-apps.md` | One-line descriptions of every taOS app |
