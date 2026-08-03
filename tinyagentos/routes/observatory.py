@@ -100,6 +100,7 @@ async def _authorize_observatory_read(request: Request) -> str:
     caller = await check_agent_scope(request, "observatory_control")
     if caller is None:
         raise HTTPException(status_code=403, detail="forbidden")
+    request.state.agent_caller = caller
     return caller
 
 
@@ -328,19 +329,44 @@ async def get_fleet(request: Request):
 
     Derives state from the board: an agent that holds a claimed task is
     'working' on it, and a registered agent that holds none is 'idle'. Admins
-    see every project + agent; other authorized callers see their own. The
-    current pause state is returned alongside so the UI can show both in one
-    read. Trace-timeline and PR-in-review enrichment are phase 2.
+    and agents holding a GLOBAL ``observatory_control`` grant see every project
+    + agent; project-scoped agents see their own granted projects. The current
+    pause state is returned alongside so the UI can show both in one read.
+    Trace-timeline and PR-in-review enrichment are phase 2.
     """
     await _authorize_observatory_read(request)
     is_admin = getattr(request.state, "is_admin", False)
+    caller = getattr(request.state, "agent_caller", None)
     user_id = getattr(request.state, "user_id", None)
+
+    grants_store = _get_grants_store(request)
+    caller_has_global = False
+    caller_project_ids: set[str] = set()
+    if caller and not is_admin:
+        grants = await grants_store.list_grants(caller)
+        now = datetime.now(timezone.utc)
+        caller_has_global = any(
+            g["scope"] == "observatory_control"
+            and g.get("project_id") is None
+            and _grant_unexpired(g.get("expires_at"), now)
+            for g in grants
+        )
+        caller_project_ids = {
+            g["project_id"] for g in grants
+            if g["scope"] == "observatory_control"
+            and g.get("project_id") is not None
+            and _grant_unexpired(g.get("expires_at"), now)
+        }
+
     pstore = request.app.state.project_store
     tstore = request.app.state.project_task_store
-    if is_admin:
+    if is_admin or caller_has_global:
         projects = await pstore.list_projects(status=None)
+    elif caller_project_ids:
+        all_projects = await pstore.list_projects(status=None)
+        projects = [p for p in all_projects if p.get("id") in caller_project_ids]
     else:
-        projects = await pstore.list_for_user(user_id, status=None)
+        projects = await pstore.list_for_user(user_id, status=None) if user_id else []
 
     now = time.time()
     agents: list[dict] = []
@@ -382,10 +408,10 @@ async def get_fleet(request: Request):
     registered: list[dict] = []
     if registry is not None:
         try:
-            if is_admin:
+            if is_admin or caller_has_global:
                 registered = await registry.list_all(status="active")
             else:
-                registered = await registry.list_for_user(user_id, status="active")
+                registered = await registry.list_for_user(user_id, status="active") if user_id else []
         except Exception:
             registered = []
         for rec in registered:

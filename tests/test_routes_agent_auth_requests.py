@@ -18,6 +18,10 @@ class TestRequestableScopes:
         from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
         assert "project_tasks" in VALID_SCOPES
 
+    def test_observatory_control_is_a_valid_scope(self):
+        from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
+        assert "observatory_control" in VALID_SCOPES
+
     @pytest.mark.asyncio
     async def test_create_accepts_project_tasks(self, client, monkeypatch):
         class _Store(_FakeAuthRequestsStore):

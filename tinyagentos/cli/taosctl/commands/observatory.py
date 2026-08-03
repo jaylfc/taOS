@@ -4,7 +4,8 @@ The Observatory backend exposes the fleet view plus the pause and concurrency
 dials the dispatch loop polls each iteration. This group is the terminal/script
 control surface for them, so steering the queue is a command rather than a hand
 edit of a local dispatch script. Pause/throttle changes are admin-only server
-side; reads are open to any authenticated caller.
+side; reads require an admin session or an agent token holding
+``observatory_control``.
 """
 from __future__ import annotations
 

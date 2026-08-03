@@ -1,5 +1,3 @@
-import asyncio
-from datetime import datetime, timezone
 from httpx import ASGITransport, AsyncClient
 
 import pytest
@@ -27,8 +25,8 @@ async def _non_admin_client(app):
 
 
 async def _make_obs_agent_token(app, *, scopes=("observatory_control",), project_id=None):
-    """Register an agent, add its grants through the public consent-mint path,
-    and return (canonical_id, signed JWT)."""
+    """Register an agent and add grants directly to the store (bypasses the
+    route-layer scope-validation path), then return (canonical_id, signed JWT)."""
     registry = app.state.agent_registry
     grants = app.state.agent_grants
     if registry._db is None:
@@ -555,3 +553,56 @@ class TestObservatoryAgentAuth:
         async with _bare(app) as bare:
             resp = await bare.get("/api/observatory/pause")
         assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_global_grant_agent_sees_fleet(self, app):
+        pstore = app.state.project_store
+        tstore = app.state.project_task_store
+        if pstore._db is None:
+            await pstore.init()
+        if tstore._db is None:
+            await tstore.init()
+        proj = await pstore.create_project(name="ObsG", slug="obs-global", created_by="admin", user_id="admin")
+        task = await tstore.create_task(proj["id"], title="Global card", created_by="admin")
+        await tstore.claim_task(task["id"], "@lane-global")
+
+        _cid, token = await _make_obs_agent_token(app)
+        async with _bare(app) as bare:
+            resp = await bare.get(
+                "/api/observatory/fleet",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        agents = resp.json()["agents"]
+        mine = [a for a in agents if a["handle"] == "@lane-global"]
+        assert len(mine) == 1
+        assert mine[0]["state"] == "working"
+
+    @pytest.mark.asyncio
+    async def test_project_scoped_agent_does_not_see_other_projects_lanes(self, app):
+        pstore = app.state.project_store
+        tstore = app.state.project_task_store
+        if pstore._db is None:
+            await pstore.init()
+        if tstore._db is None:
+            await tstore.init()
+        proj_a = await pstore.create_project(name="ObsA", slug="obs-a", created_by="admin", user_id="admin")
+        proj_b = await pstore.create_project(name="ObsB", slug="obs-b", created_by="admin", user_id="admin")
+        task_a = await tstore.create_task(proj_a["id"], title="Card A", created_by="admin")
+        task_b = await tstore.create_task(proj_b["id"], title="Card B", created_by="admin")
+        await tstore.claim_task(task_a["id"], "@lane-a")
+        await tstore.claim_task(task_b["id"], "@lane-b")
+
+        _cid, token = await _make_obs_agent_token(
+            app, scopes=("observatory_control",), project_id=proj_a["id"]
+        )
+        async with _bare(app) as bare:
+            resp = await bare.get(
+                "/api/observatory/fleet",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        agents = resp.json()["agents"]
+        handles = [a["handle"] for a in agents]
+        assert "@lane-a" in handles
+        assert "@lane-b" not in handles

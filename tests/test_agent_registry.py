@@ -824,3 +824,8 @@ class TestFeedReadScope:
 def test_allowed_scopes_includes_project_doc_review():
     """project_doc_review must be in the mint allowlist so internal agents can be granted it."""
     assert "project_doc_review" in _ALLOWED_SCOPES
+
+
+def test_allowed_scopes_includes_observatory_control():
+    """observatory_control must be in the mint allowlist so internal agents can be granted it."""
+    assert "observatory_control" in _ALLOWED_SCOPES
