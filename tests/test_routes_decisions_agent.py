@@ -552,3 +552,55 @@ async def test_agent_list_respects_project_grants(client):
     items = resp.json()["items"]
     assert len(items) == 1
     assert items[0]["project_id"] == pid_b
+
+
+class TestAuthRunsBeforeBodyValidation:
+    """A bad bearer must 401 before Pydantic body validation can 422.
+
+    Without the _authenticate_request dependency, a garbage token paired with a
+    malformed body returned 422 (field errors) while the same token with a valid
+    body returned 401 - an oracle that let an unauthenticated caller distinguish
+    token validity by varying the body."""
+
+    @pytest.mark.asyncio
+    async def test_garbage_token_with_invalid_body_401s_not_422(self, client):
+        app = client._transport.app
+        async with _agent_client(app, "garbage-token") as ac:
+            resp = await ac.post("/api/decisions", json={"from_agent": "@a"})
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_garbage_token_with_valid_body_401s(self, client):
+        app = client._transport.app
+        async with _agent_client(app, "garbage-token") as ac:
+            resp = await ac.post("/api/decisions", json=_decision_body())
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_answer_agent_garbage_token_with_invalid_body_401s(self, client):
+        app = client._transport.app
+        async with _agent_client(app, "garbage-token") as ac:
+            resp = await ac.post("/api/decisions/dec-xyz/answer/agent", json={})
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_valid_token_with_invalid_body_still_422(self, client):
+        app = client._transport.app
+        pid = await _new_project(client)
+        _cid, token = await _mint_agent(app, pid, ("decisions_write",))
+        async with _agent_client(app, token) as ac:
+            resp = await ac.post("/api/decisions", json={"from_agent": "@a"})
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_local_token_bearer_is_rejected_on_create(self, client, app):
+        """The admin local token is not a registry JWT: as a Bearer on the
+        agent path it is rejected 401 (unchanged from before the dependency -
+        admin drives decisions through the session path, never a bearer)."""
+        local_token = app.state.auth.get_local_token()
+        resp = await client.post(
+            "/api/decisions",
+            json=_decision_body(),
+            headers={"Authorization": f"Bearer {local_token}"},
+        )
+        assert resp.status_code == 401
