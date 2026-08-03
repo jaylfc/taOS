@@ -6,10 +6,12 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 
+from tinyagentos.auth_context import CurrentUser
 from tinyagentos.chat.reactions import maybe_trigger_semantic
+from tinyagentos.device_auth import current_user_or_device
 
 router = APIRouter()
 
@@ -296,8 +298,13 @@ async def chat_ws(websocket: WebSocket):
 
 
 @router.post("/api/chat/messages")
-async def post_message(request: Request):
-    """Send a message via HTTP (used by agents and the agent-bridge)."""
+async def post_message(request: Request, user: CurrentUser = Depends(current_user_or_device)):
+    """Send a message via HTTP (used by agents and the agent-bridge).
+
+    Authenticated via session cookie or device bearer token. When a device
+    bearer is used the author_id in the body must match the device owner's
+    user_id (prevents a compromised device from impersonating another user).
+    """
     body = await request.json()
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
@@ -305,6 +312,15 @@ async def post_message(request: Request):
 
     channel_id = body["channel_id"]
     content = body.get("content") or ""
+
+    # Device-bearer guard: a scoped device token must not impersonate another
+    # user. The author_id must match the device owner's user_id.
+    device = getattr(request.state, "_device", None)
+    if device is not None and body.get("author_id") != device["user_id"]:
+        return JSONResponse(
+            {"error": "author_id must match device owner"},
+            status_code=403,
+        )
 
     if content.startswith("/help"):
         from tinyagentos.chat.help import handle_help

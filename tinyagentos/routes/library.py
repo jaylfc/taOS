@@ -14,9 +14,11 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 
+from tinyagentos.auth_context import CurrentUser
+from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.library_pipeline import run_pipeline
 from tinyagentos.library_collections import handoff_to_collections
 from tinyagentos.task_utils import _create_supervised_task
@@ -99,6 +101,7 @@ async def _get_library_store(request: Request):
 @router.post("/api/library/ingest")
 async def ingest(
     request: Request,
+    user: CurrentUser = Depends(current_user_or_device),
     file: UploadFile | None = File(None),
     url: str | None = Form(None),
     title: str | None = Form(None),
@@ -106,7 +109,8 @@ async def ingest(
     """Ingest a file or URL into the library.
 
     Accepts a file upload (multipart) or a URL string form field. At least one
-    of ``file`` or ``url`` must be provided.
+    of ``file`` or ``url`` must be provided. Authenticated via session cookie
+    or device bearer token.
 
     Returns ``{item_id, status: \"pending\"}`` immediately — pipeline processing
     happens asynchronously in a background task.

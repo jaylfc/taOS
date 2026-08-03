@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import CurrentUser
+from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -44,7 +46,8 @@ async def _authorize_files_actor(
 
     Mirrors ``_authorize_canvas_actor``: accepts EITHER a session owner/admin
     (human behavior unchanged) OR an approved agent's registry JWT holding the
-    matching files scope bound to THIS project:
+    matching files scope bound to THIS project, OR a device bearer token whose
+    owner owns the project:
 
       * read mode  -> ``files_read`` grant on the project
       * write mode -> ``files_write`` grant on the project
@@ -68,6 +71,14 @@ async def _authorize_files_actor(
         if project is not None and not is_admin and project.get("user_id") != uid:
             return JSONResponse({"error": "not found"}, status_code=404)
         return ("user", uid)
+    # Device bearer path: current_user_or_device resolves the device and
+    # stashes it on request.state._device. A device may only write to projects
+    # owned by its user_id (same ownership gate as the session path above).
+    device = getattr(request.state, "_device", None)
+    if device is not None:
+        if project is not None and project.get("user_id") != device["user_id"]:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return ("device", device["user_id"])
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.lower().startswith("bearer "):
         # Middleware normally 401s unauthenticated requests before the route
@@ -202,8 +213,18 @@ async def api_project_watch_files(request: Request, slug: str, path: str = "", i
 
 
 @router.post("/api/projects/{slug}/files/upload")
-async def api_project_upload_file(request: Request, slug: str, path: str = "", file: UploadFile = File(...)):
-    """Upload a file to the project's files folder."""
+async def api_project_upload_file(
+    request: Request,
+    slug: str,
+    user: CurrentUser = Depends(current_user_or_device),
+    path: str = "",
+    file: UploadFile = File(...),
+):
+    """Upload a file to the project's files folder.
+
+    Authenticated via session cookie, device bearer token, or agent registry
+    JWT with the ``files_write`` scope bound to this project.
+    """
     auth = await _authorize_files_actor(request, slug, "write")
     if isinstance(auth, JSONResponse):
         return auth

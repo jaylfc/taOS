@@ -130,20 +130,25 @@ _AGENT_DECISIONS_ROUTES = (
 )
 
 # Device-bearer self-service paths (lock-screen push-token rotation plus
-# decision list/get/answer). A scoped device token (Bearer taosdev_...) may
-# pass through the auth gate on exactly these routes; the route dependency
-# (current_user_or_device) resolves the device and synthesizes a NON-admin
-# CurrentUser. request.state.user_id is left None on this path so device
-# bearers cannot reach other current_user / request.state consumers (e.g.
-# create_decision which reads uid=request.state.user_id). Session-authenticated
-# calls still work: the session-cookie check runs when no Bearer header is
-# present, so GET/POST without a Bearer reach the guard normally.
+# decision list/get/answer) AND share-write destinations (library ingest,
+# chat messages, project-files upload). A scoped device token (Bearer
+# taosdev_...) may pass through the auth gate on exactly these routes; the
+# route dependency (current_user_or_device) resolves the device and
+# synthesizes a NON-admin CurrentUser. request.state.user_id is left None on
+# this path so device bearers cannot reach other current_user /
+# request.state consumers (e.g. create_decision which reads
+# uid=request.state.user_id). Session-authenticated calls still work: the
+# session-cookie check runs when no Bearer header is present, so POST without
+# a Bearer reaches the guard normally.
 _DEVICE_BEARER_PATHS = (
     ("PATCH", re.compile(r"^/api/devices/[^/]+/push-token$")),
     ("GET", re.compile(r"^/api/decisions$")),
     ("GET", re.compile(r"^/api/decisions/[^/]+$")),
     ("GET", re.compile(r"^/api/decisions/[^/]+/history$")),
     ("POST", re.compile(r"^/api/decisions/[^/]+/answer$")),
+    ("POST", re.compile(r"^/api/library/ingest$")),
+    ("POST", re.compile(r"^/api/chat/messages$")),
+    ("POST", re.compile(r"^/api/projects/[^/]+/files/upload$")),
 )
 
 
