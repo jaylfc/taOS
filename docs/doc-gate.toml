@@ -49,12 +49,26 @@ require_doc = ["docs/agent-coordination.md"]
 hint = "the agent-token route allowlist changed; update the agent-facing API surface (or add a Docs-Reviewed trailer explaining why not)"
 
 # User-visible behaviour needs a changelog line.
+#
+# EITHER a CHANGELOG.md edit OR a new fragment under changelog.d/ satisfies
+# this; prefer the fragment. Every PR editing CHANGELOG.md writes at the same
+# [Unreleased] anchor, so concurrent PRs conflict there by construction and each
+# merge re-conflicts the next - N open PRs cost O(N^2) rebases touching no real
+# code. A fragment is a new file with a unique name and cannot conflict.
+# scripts/collate_changelog.py folds them in at release time.
+#
+# NOTE the glob is deliberately `changelog.d/*.md` and the directory holds
+# NOTHING but fragments: the convention doc lives at docs/changelog-fragments.md,
+# because a README.md inside changelog.d/ would ITSELF match this glob and let a
+# PR that merely touched the README satisfy the rule. Verified by probe: with the
+# doc inside the directory the gate went green on a change carrying no changelog
+# at all.
 [[rules]]
 name = "user-visible-changelog"
 on_modify = true
 when_changed = ["tinyagentos/routes/*.py", "desktop/src/apps/*/**", "tinyagentos/installers/*"]
-require_doc = ["CHANGELOG.md"]
-hint = "user-visible behaviour changed; add a CHANGELOG.md line (or add a Docs-Reviewed trailer explaining why not)"
+require_doc = ["CHANGELOG.md", "changelog.d/*.md"]
+hint = "user-visible behaviour changed; add a changelog.d/<pr>-<slug>.md fragment (preferred) or a CHANGELOG.md line (or add a Docs-Reviewed trailer explaining why not)"
 
 # Agent-facing behaviour needs the compiled agent manual reviewed.
 [[rules]]
