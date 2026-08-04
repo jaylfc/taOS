@@ -7,6 +7,12 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+### Added
+
+- Admin-only `POST /api/notifications` so orchestrators and lead agents can
+  raise review-request notifications through the store (and therefore through
+  SSE and web push) instead of a raw database insert (#2280).
+
 ## [1.0.0-beta.46] - 2026-08-03
 
 ### Fixed
