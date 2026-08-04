@@ -23,7 +23,7 @@ changes to their model:
 - **AgentsApp** — agents in LXC, server-side runtime
 - **ProjectsApp** — Kanban + canvas, server-side data
 - **MemoryApp** — memory store
-- **TasksApp** — server-side tasks
+- **RoutinesApp** — server-side tasks
 - **SecretsApp** — credentials live on the host
 - **MCPApp** — MCP server config
 - **ModelsApp** — model browser, host-side

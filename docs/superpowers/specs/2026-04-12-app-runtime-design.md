@@ -276,7 +276,7 @@ Core taOS services (Knowledge Base, Memory, Channels, etc.) also register their 
 
 ### Core (cannot uninstall, shipped built-in)
 
-Messages, Agents, Files, Store, Settings, Library, Memory, Channels, Secrets, Tasks, Dashboard, Models, Providers, Cluster, Import, Images, Calculator, Calendar, Contacts, Browser, Media Player, Text Editor, Image Viewer, Terminal, Chess, Wordle, Crosswords
+Messages, Agents, Files, Store, Settings, Library, Memory, Channels, Secrets, Routines, Dashboard, Models, Providers, Cluster, Import, Images, Calculator, Calendar, Contacts, Browser, Media Player, Text Editor, Image Viewer, Terminal, Chess, Wordle, Crosswords
 
 ### Installable (available in Store)
 

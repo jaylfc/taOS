@@ -118,7 +118,7 @@ Per-item controls:
 - Pin: override decay, always poll at set frequency
 - Stop: manual disable only (30-day floor from Monitor Service applies)
 
-All monitoring tasks visible in the Tasks app (#193).
+All monitoring tasks visible in the Routines app (#193).
 
 ---
 

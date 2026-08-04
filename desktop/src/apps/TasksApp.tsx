@@ -266,7 +266,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm("Delete this task?")) return;
+    if (!window.confirm("Delete this routine?")) return;
     try {
       const res = await fetch(`/api/tasks/${id}`, {
         method: "DELETE",
@@ -293,7 +293,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
         <div className="flex items-center gap-2">
           <CalendarClock size={18} className="text-accent" />
-          <h1 className="text-sm font-semibold">Tasks</h1>
+          <h1 className="text-sm font-semibold">Routines</h1>
           <span className="text-xs text-shell-text-tertiary">
             {tasks.length} scheduled
           </span>
@@ -301,10 +301,10 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
         <Button
           size="sm"
           onClick={() => { resetForm(); setShowDialog(true); }}
-          aria-label="Add task"
+          aria-label="Add routine"
         >
           <Plus size={14} />
-          Add Task
+          Add Routine
         </Button>
       </div>
 
@@ -312,14 +312,14 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary text-sm">
-            Loading tasks...
+            Loading routines...
           </div>
         ) : tasks.length === 0 && !showDialog ? (
           <div className="p-4 space-y-6">
             {/* Empty state */}
             <div className="flex flex-col items-center justify-center py-8 gap-3 text-shell-text-tertiary">
               <CalendarClock size={40} className="opacity-30" />
-              <p className="text-sm">No scheduled tasks</p>
+              <p className="text-sm">No scheduled routines</p>
             </div>
 
             {/* Presets */}
@@ -335,7 +335,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
                         <p className="text-[11px] text-shell-text-tertiary font-mono">{preset.schedule}</p>
                       )}
                       {preset.tasks && preset.tasks.length > 0 && (
-                        <p className="text-[11px] text-shell-text-tertiary">{preset.tasks.length} tasks</p>
+                        <p className="text-[11px] text-shell-text-tertiary">{preset.tasks.length} routines</p>
                       )}
                       <Button
                         variant="secondary"
@@ -355,7 +355,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
           <div className="p-4 space-y-4">
             {/* Task rows */}
             {tasks.length > 0 && (
-              <div className="space-y-2" aria-label="Task list">
+              <div className="space-y-2" aria-label="Routine list">
                 {tasks.map((task) => (
                   <Card key={task.id}>
                     <CardContent className="flex items-center gap-3 p-3">
@@ -448,14 +448,14 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
           onClick={() => resetForm()}
           role="dialog"
           aria-modal="true"
-          aria-label={editingId ? "Edit Task" : "Add Task"}
+          aria-label={editingId ? "Edit Routine" : "Add Routine"}
         >
           <Card
             className="w-full max-w-md max-h-full flex flex-col shadow-2xl overflow-hidden bg-shell-surface"
             onClick={(e) => e.stopPropagation()}
           >
             <CardHeader className="flex flex-row items-center justify-between border-b border-white/5 px-5 py-4 shrink-0">
-              <CardTitle className="text-sm font-semibold">{editingId ? "Edit Task" : "Add Task"}</CardTitle>
+              <CardTitle className="text-sm font-semibold">{editingId ? "Edit Routine" : "Add Routine"}</CardTitle>
               <Button
                 variant="ghost"
                 size="icon"
@@ -475,7 +475,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
                   type="text"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  placeholder="My Task"
+                  placeholder="My Routine"
                   autoFocus
                 />
               </div>
@@ -545,7 +545,7 @@ export function TasksApp({ windowId: _windowId }: { windowId: string }) {
                 disabled={submitting || !formName.trim() || !formSchedule.trim() || !formCommand.trim()}
               >
                 <Plus size={14} />
-                {submitting ? "Saving..." : editingId ? "Save Changes" : "Add Task"}
+                {submitting ? "Saving..." : editingId ? "Save Changes" : "Add Routine"}
               </Button>
             </div>
           </Card>

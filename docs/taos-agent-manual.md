@@ -79,7 +79,7 @@ Old installs keep their old ports automatically. Users never need to change port
 - **Activity**: live feed of everything agents do (tool calls, model calls, errors).
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
-- Other bundled apps (Library, Channels, Secrets, Tasks, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
+- Other bundled apps (Library, Channels, Secrets, Routines, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
 ---
 
 # Chat

@@ -103,7 +103,7 @@ AuthorWatch:
 
 Each check fetches the author's recent timeline via cookie-authed GraphQL. New posts matching filters are auto-ingested into the Knowledge Base via `/api/knowledge/ingest`.
 
-Author watches appear as scheduled tasks in the Tasks app (#193). Users can pause, resume, change frequency, or delete from either the X Monitor app or the Tasks app.
+Author watches appear as scheduled tasks in the Routines app (#193). Users can pause, resume, change frequency, or delete from either the X Monitor app or the Routines app.
 
 ### Configuration UI
 
