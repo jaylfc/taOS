@@ -9,6 +9,14 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- **Docs**: new `taos-agent` OS skill (`.claude/skills/taos-agent/SKILL.md`) that
+  consolidates the agent-manual OS-operation content into actionable instructions for
+  the OS-native agent (opening and driving apps/windows, projects, files, memory,
+  notes, chat conventions, image generation, and answering the user), with the hard
+  rule that all desktop driving goes only through `POST /api/desktop/command` +
+  `POST /api/desktop/screenshot` prominently featured. The agent-manual index now
+  points at both the OS skill and the existing `taos-development-skill`. Draft for
+  @taOS-dev review.
 - Projects gain a Notes area: title + markdown notes per project, readable and
   writable by the project owner or by an agent holding a project-bound
   `project_notes` grant (new requestable scope) (#2285).

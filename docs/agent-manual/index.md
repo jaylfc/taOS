@@ -20,3 +20,15 @@ Run `python3 scripts/build-agent-manual.py` to compile these into `docs/taos-age
 | `09-os-control.md` | Driving the desktop: open_app / arrange_windows tools |
 | `10-image-prompting.md` | Writing good prompts for the generate_image tool |
 | `11-files-api.md` | Project Files REST API for agents: upload (multipart), list, fetch, and the one-write principle |
+
+## Companion skills
+
+- **taos-agent** (`../../.claude/skills/taos-agent/SKILL.md`): the actionable skill for the
+  OS-native taOS agent that operates the host desktop on the user's behalf. Consolidates the
+  OS-operation content from this manual (desktop/window control, apps, projects, files, memory,
+  notes, chat conventions, image generation, and answering). Features the hard rule that all
+  desktop driving goes only through `POST /api/desktop/command` + `POST /api/desktop/screenshot`.
+  Load this when you are the built-in taOS agent acting on the host desktop.
+- **taos-development-skill** (`../../.claude/skills/taos-development-skill/SKILL.md`): the skill
+  for contributors developing on the taOS codebase (Git workflow, testing, architecture, PR flow).
+  This is codebase work, not OS operation.
