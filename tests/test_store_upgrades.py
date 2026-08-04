@@ -160,6 +160,37 @@ class TestNotificationStoreUpgrade:
         finally:
             await store.close()
 
+    async def test_upgrade_keeps_the_pre_upgrade_mute_IN_EFFECT(self, tmp_path):
+        """The row surviving is not the point - the MUTE still applying is.
+
+        The migration parks old global prefs under a sentinel user_id, but every
+        read path looks up the caller's OWN id. Without a fallback the row sits
+        there unread and a notification the user had muted starts arriving again
+        after the upgrade, with nothing failing to signal it.
+        """
+        db_path = tmp_path / "notif_effect.db"
+        _seed_db(db_path, NOTIF_V0_SCHEMA)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("INSERT INTO notification_prefs (event_type, muted) VALUES (?, ?)", ("worker.join", 1))
+        conn.commit()
+        conn.close()
+
+        store = NotificationStore(db_path)
+        await store.init()
+        try:
+            # A real user id, i.e. NOT the migration sentinel.
+            assert await store._is_event_muted("worker.join", "usr-real-1") is True
+            prefs = {p["event_type"]: p["muted"] for p in await store.get_event_prefs("usr-real-1")}
+            assert prefs["worker.join"] is True
+
+            # A user's own choice still wins over the inherited global one.
+            await store.set_event_muted("worker.join", False, "usr-real-1")
+            assert await store._is_event_muted("worker.join", "usr-real-1") is False
+            # and it does not leak to a different user, who still inherits.
+            assert await store._is_event_muted("worker.join", "usr-real-2") is True
+        finally:
+            await store.close()
+
 
 # ---------------------------------------------------------------------------
 # BoardAuditLog -- columns project_id + detail added in _post_init

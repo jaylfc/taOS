@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS notification_prefs (
 );
 """
 
+# Sentinel user_id the global->per-user prefs migration parks old rows under.
+# Read paths fall back to it so a pre-upgrade mute keeps applying to everyone
+# until that user sets their own preference.
+MIGRATED_GLOBAL_USER = "default"
+
 DEFAULT_MUTED: dict[str, bool] = {
     "task.claimed": True,
 }
@@ -144,7 +149,7 @@ class NotificationStore(BaseStore):
                 )
                 await self._db.execute(
                     "INSERT INTO notification_prefs_new (user_id, event_type, muted) "
-                    "SELECT 'default', event_type, muted FROM notification_prefs"
+                    "SELECT ?, event_type, muted FROM notification_prefs", (MIGRATED_GLOBAL_USER,)
                 )
                 await self._db.execute("DROP TABLE notification_prefs")
                 await self._db.execute("ALTER TABLE notification_prefs_new RENAME TO notification_prefs")
@@ -325,7 +330,21 @@ class NotificationStore(BaseStore):
             "SELECT muted FROM notification_prefs WHERE user_id = ? AND event_type = ?", (user_id, event_type)
         ) as cursor:
             row = await cursor.fetchone()
-        return bool(row[0]) if row else DEFAULT_MUTED.get(event_type, False)
+        if row is not None:
+            return bool(row[0])
+        # Fall back to the MIGRATED_GLOBAL_USER row before the built-in default.
+        # Prefs used to be global (event_type was the whole PK); the upgrade
+        # parks them under this sentinel. Without this lookup every mute a user
+        # set before the upgrade silently stops applying - the table keeps the
+        # row, nothing ever reads it, and the notification simply comes back.
+        async with self._db.execute(
+            "SELECT muted FROM notification_prefs WHERE user_id = ? AND event_type = ?",
+            (MIGRATED_GLOBAL_USER, event_type),
+        ) as cursor:
+            legacy = await cursor.fetchone()
+        if legacy is not None:
+            return bool(legacy[0])
+        return DEFAULT_MUTED.get(event_type, False)
 
     async def set_event_muted(self, event_type: str, muted: bool, user_id: str) -> None:
         await self._db.execute(
@@ -335,11 +354,20 @@ class NotificationStore(BaseStore):
         await self._db.commit()
 
     async def get_event_prefs(self, user_id: str) -> list[dict]:
+        # Same fallback as _is_event_muted, and order matters: the sentinel rows
+        # are applied first so the caller's OWN row overwrites them.
+        stored: dict[str, bool] = {}
+        async with self._db.execute(
+            "SELECT event_type, muted FROM notification_prefs WHERE user_id = ?",
+            (MIGRATED_GLOBAL_USER,),
+        ) as cursor:
+            for r in await cursor.fetchall():
+                stored[r[0]] = bool(r[1])
         async with self._db.execute(
             "SELECT event_type, muted FROM notification_prefs WHERE user_id = ?", (user_id,)
         ) as cursor:
-            rows = await cursor.fetchall()
-        stored = {r[0]: bool(r[1]) for r in rows}
+            for r in await cursor.fetchall():
+                stored[r[0]] = bool(r[1])
         return [
             {"event_type": et, "muted": stored.get(et, DEFAULT_MUTED.get(et, False))}
             for et in self.EVENT_TYPES

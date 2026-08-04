@@ -9,6 +9,9 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- Settings gains a Notifications pane with per-type toggles, stored per user;
+  preferences set before the per-user migration keep applying until that user
+  overrides them (#2284).
 - Chat renders `text` and `thinking` content blocks: thinking is a
   collapsed-by-default disclosure with a proper ARIA expand/collapse contract (#2282).
 - Messages sidebar shows a live "thinking" badge on channels whose bound
