@@ -416,7 +416,7 @@ export function ThinkingBlock({ block, index }: { block: ThinkingContentBlock; i
         aria-controls={contentAria}
         aria-label={open ? "Collapse thinking" : "Expand thinking"}
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-[12px] font-semibold text-shell-text-tertiary hover:text-shell-text-secondary hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="flex w-full items-center gap-2 px-3 py-2 text-[12px] font-semibold text-shell-text-tertiary hover:text-shell-text-secondary hover:bg-shell-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <ChevronDown
           size={14}
