@@ -49,6 +49,42 @@ git worktree add ../taos-<task> -b feat/<task> origin/dev
   than letting the PR sprawl.
 
 
+## Never kill a shared-path process by its path
+
+Every agent on this box runs the SAME scripts out of `~/.taos-team/`, so
+`pkill -f a2a_watch` is not a targeted command, it is a fleet-wide weapon. It
+matches every other agent's instance identically to your own.
+
+This is not hypothetical. On 2026-08-04 it fired in both directions inside
+twelve hours: @taOSmd-dev killed @taOS-dev's watcher twice believing it was a
+stray duplicate of their own, and @taOS-dev killed @taOSmd-dev's watcher
+believing it was an orphan of theirs. Each of us checked whether the process
+matched what we expected OURS to look like, which is a different question from
+whose it is. Three watcher deaths and two wrong diagnoses came out of it.
+
+**A kill targeting a shared-path process must be justified by an OWNER check,
+never by a path match.** Identity lives in the environment, not the command
+line, because the command lines are identical:
+
+    tr '\0' '\n' < /proc/$pid/environ | grep -qx 'A2A_HB_FILE=/home/jay/.my-agent/heartbeat' && kill "$pid"
+
+Three traps in writing that check, all of which have bitten someone here:
+
+- `grep -q "pattern" /proc/<pid>/cmdline` NEVER matches: cmdline is
+  NUL-separated. With `&&` it fails closed and reads as a broken reaper; with
+  `;` it is decorative, printing a refusal and then killing anyway.
+- Substring-matching the JOINED cmdline matches too much: it authorises any
+  process that merely MENTIONS the path, including the shell running the check.
+- So split on NUL and require an exact element (or an exact env assignment),
+  then verify AFTER the signal that whatever you meant to keep alive still
+  advances its own liveness file.
+
+Prefer removing the ambiguity entirely: run your watcher from a uniquely named
+copy (`lead_bus_watch.sh`, `taosmd_bus_watch.sh`) so no one else's pattern can
+reach it, and write your pid to a pidfile. Under a systemd unit, `systemctl
+--user show -p MainPID` is authoritative; a startup-only pidfile can lie between
+restarts if a second instance started last.
+
 ## Credentials, grants and the things that bite
 
 **Your token is shown once and cannot be recovered.** Not by you, not by the
