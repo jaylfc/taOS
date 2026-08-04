@@ -37,6 +37,7 @@ export function Desktop() {
   const wallpaperComponent = useThemeStore((s) => s.wallpaperComponent);
   const wallpaperOverlayText = useThemeStore((s) => s.wallpaperOverlayText);
   const showOverlayText = useThemeStore((s) => s.showOverlayText);
+  const reduceEffects = useThemeStore((s) => s.reduceEffects);
   const isAnimated = wallpaperKind === "animated";
   // Invert the wallpaper with the theme: use the light variant when present.
   const useLight = scheme === "light" && !!wallpaperLightImage;
@@ -161,7 +162,7 @@ export function Desktop() {
       onContextMenu={handleContextMenu}
       data-desktop-surface
     >
-      {isAnimated && wallpaperComponent === "particles" && <ParticlesWallpaper />}
+      {isAnimated && !reduceEffects && wallpaperComponent === "particles" && <ParticlesWallpaper />}
       {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <ScreenshotFlash />
       <DesktopIcons />

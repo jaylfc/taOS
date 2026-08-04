@@ -408,7 +408,7 @@ export function App() {
       <SystemShortcuts toggleSearch={toggleSearch} toggleLaunchpad={toggleLaunchpad} toggleAssistant={toggleAssistant} />
       <LoginGate>
     <div className={`taos-wallpaper taos-mobile-root relative h-screen w-screen flex flex-col text-shell-text${isBrowserMobile ? " taos-browser" : ""}`} style={{ backgroundColor: effWallpaperFallback, ["--wallpaper-desktop" as never]: isAnimatedWallpaper ? "none" : effWallpaperImage, ["--wallpaper-mobile" as never]: isAnimatedWallpaper ? "none" : effWallpaperMobile }}>
-      {isAnimatedWallpaper && wallpaperComponent === "particles" && <ParticlesWallpaper />}
+      {isAnimatedWallpaper && !reduceEffects && wallpaperComponent === "particles" && <ParticlesWallpaper />}
       {showOverlayText && wallpaperOverlayText && <WallpaperTextOverlay text={wallpaperOverlayText} />}
       <EffectsLayer />
       {/* Install banner — shown in browser mode, hidden in PWA */}
