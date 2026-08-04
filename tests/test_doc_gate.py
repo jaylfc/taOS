@@ -204,7 +204,14 @@ CHANGELOG_RULE_CONFIG = {
         {
             "name": "user-visible-changelog",
             "on_modify": True,
-            "when_changed": ["tinyagentos/routes/*.py"],
+            "when_changed": [
+                "tinyagentos/routes/*.py",
+                "desktop/src/apps/*/**",
+                "desktop/src/App.tsx",
+                "desktop/src/components/**",
+                "desktop/src/stores/**",
+                "tinyagentos/installers/*",
+            ],
             "require_doc": ["CHANGELOG.md", "changelog.d/*.md"],
             "hint": "user-visible behaviour changed",
         },
@@ -256,3 +263,35 @@ class TestChangelogFragments:
             ("A", "changelog.d/2291-notes.txt"),
         ]
         assert len(dg.evaluate_rules(changed, [], CHANGELOG_RULE_CONFIG)) == 1
+
+    def test_desktop_app_shell_triggers_changelog_rule(self):
+        changed = [("M", "desktop/src/App.tsx")]
+        failures = dg.evaluate_rules(changed, [], CHANGELOG_RULE_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("user-visible-changelog -- ")
+
+    def test_desktop_component_triggers_changelog_rule(self):
+        changed = [("M", "desktop/src/components/Desktop.tsx")]
+        failures = dg.evaluate_rules(changed, [], CHANGELOG_RULE_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("user-visible-changelog -- ")
+
+    def test_desktop_store_triggers_changelog_rule(self):
+        changed = [("M", "desktop/src/stores/theme-store.ts")]
+        failures = dg.evaluate_rules(changed, [], CHANGELOG_RULE_CONFIG)
+        assert len(failures) == 1
+        assert failures[0].startswith("user-visible-changelog -- ")
+
+    def test_desktop_shell_fragment_satisfies_rule(self):
+        changed = [
+            ("M", "desktop/src/App.tsx"),
+            ("A", "changelog.d/2303-reduce-effects.md"),
+        ]
+        assert dg.evaluate_rules(changed, [], CHANGELOG_RULE_CONFIG) == []
+
+    def test_desktop_shell_test_file_does_not_trigger(self):
+        changed = [
+            ("A", "desktop/src/components/__tests__/Desktop.test.tsx"),
+            ("A", "desktop/src/stores/__tests__/theme-store.test.ts"),
+        ]
+        assert dg.evaluate_rules(changed, [], CHANGELOG_RULE_CONFIG) == []

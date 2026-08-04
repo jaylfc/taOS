@@ -66,7 +66,7 @@ hint = "the agent-token route allowlist changed; update the agent-facing API sur
 [[rules]]
 name = "user-visible-changelog"
 on_modify = true
-when_changed = ["tinyagentos/routes/*.py", "desktop/src/apps/*/**", "tinyagentos/installers/*"]
+when_changed = ["tinyagentos/routes/*.py", "desktop/src/apps/*/**", "desktop/src/App.tsx", "desktop/src/components/**", "desktop/src/stores/**", "tinyagentos/installers/*"]
 require_doc = ["CHANGELOG.md", "changelog.d/*.md"]
 hint = "user-visible behaviour changed; add a changelog.d/<pr>-<slug>.md fragment (preferred) or a CHANGELOG.md line (or add a Docs-Reviewed trailer explaining why not)"
 
