@@ -754,18 +754,16 @@ export function RegistryPanel() {
   }
 
   const pendingCount = entries.filter((e) => e.status === "pending").length;
-  // Anything not explicitly retired (revoked/rejected/suspended) is visible
-  // by default so future RegistryStatus values are never silently hidden.
-  const retiredEntries = entries.filter(
-    (e) => e.status === "revoked" || e.status === "rejected" || e.status === "suspended",
-  );
-  const knownVisibleEntries = entries.filter(
-    (e) => !retiredEntries.includes(e) && (e.status === "active" || e.status === "pending"),
-  );
-  // Catch-all for any RegistryStatus values not in the known groups above.
-  const otherEntries = entries.filter(
-    (e) => !retiredEntries.includes(e) && e.status !== "active" && e.status !== "pending",
-  );
+  // Retired (collapsed) entries are derived from a single not-active predicate:
+  // anything that is not an active or pending registry entry folds into the
+  // Retired section. Deriving retired as "not active" rather than an allow-list
+  // of revoked/rejected/suspended keeps status-derivation robust to future
+  // RegistryStatus values, so a newly added non-active status is automatically
+  // retired instead of requiring an allow-list update.
+  const isActiveEntry = (e: RegistryEntry) =>
+    e.status === "active" || e.status === "pending";
+  const visibleEntries = entries.filter(isActiveEntry);
+  const retiredEntries = entries.filter((e) => !isActiveEntry(e));
   const [retiredExpanded, setRetiredExpanded] = useState(false);
 
   return (
@@ -814,7 +812,7 @@ export function RegistryPanel() {
         ) : (
           <>
             {/* Active + Pending: always visible */}
-            {knownVisibleEntries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <RegistryEntryRow
                 key={entry.canonical_id}
                 entry={entry}
@@ -824,28 +822,6 @@ export function RegistryPanel() {
                 onAssign={setAssignEntry}
               />
             ))}
-
-            {/* Other: catch-all for unknown RegistryStatus values */}
-            {otherEntries.length > 0 && (
-              <section className="mt-2" aria-label="Other registry entries">
-                <div className="flex items-center gap-2 text-xs text-shell-text-tertiary mb-2">
-                  <Archive size={12} aria-hidden />
-                  Other ({otherEntries.length})
-                </div>
-                <div className="space-y-2">
-                  {otherEntries.map((entry) => (
-                    <RegistryEntryRow
-                      key={entry.canonical_id}
-                      entry={entry}
-                      isAdmin={isAdmin}
-                      currentUserId={currentUserId}
-                      onAction={handleAction}
-                      onAssign={setAssignEntry}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
 
             {/* Retired: collapsed by default */}
             {retiredEntries.length > 0 && (

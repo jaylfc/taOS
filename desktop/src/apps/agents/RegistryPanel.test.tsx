@@ -5,6 +5,7 @@ import {
   registryEntriesEqual,
   RegistryPanel,
   type RegistryEntry,
+  type RegistryStatus,
 } from "./RegistryPanel";
 
 /* ------------------------------------------------------------------ */
@@ -351,5 +352,100 @@ describe("RegistryPanel collapsed retired", () => {
     // Retired toggle is now expanded, panel class loses "hidden"
     expect(retiredToggle).toHaveAttribute("aria-expanded", "true");
     expect(retiredPanel!).not.toHaveClass("hidden");
+  }, 10_000);
+
+  it("folds every not-active/pending status into Retired, including a new RegistryStatus", async () => {
+    // Simulate a RegistryStatus value the current union does not yet know
+    // about (a newly added "deactivated" status). Because retired is derived
+    // from a single not-active predicate rather than an allow-list of
+    // revoked/rejected/suspended, every non-active/pending entry folds into
+    // Retired — including the unknown one, instead of leaking into a visible
+    // "Other" section or being silently dropped.
+    const entries: RegistryEntry[] = [
+      { ...fakeEntry, canonical_id: "active-1", display_name: "ActiveAgent" },
+      {
+        ...fakeEntry,
+        canonical_id: "pending-1",
+        display_name: "PendingAgent",
+        status: "pending",
+      },
+      {
+        ...fakeEntry,
+        canonical_id: "revoked-1",
+        display_name: "RevokedAgent",
+        status: "revoked",
+      },
+      {
+        ...fakeEntry,
+        canonical_id: "rejected-1",
+        display_name: "RejectedAgent",
+        status: "rejected",
+      },
+      {
+        ...fakeEntry,
+        canonical_id: "suspended-1",
+        display_name: "SuspendedAgent",
+        status: "suspended",
+      },
+      {
+        ...fakeEntry,
+        canonical_id: "deactivated-1",
+        display_name: "DeactivatedAgent",
+        // Cast: simulate a future RegistryStatus the type union hasn't added yet.
+        status: "deactivated" as unknown as RegistryStatus,
+      },
+    ];
+    vi.stubGlobal("fetch", makeFetch(entries));
+
+    render(<RegistryPanel />);
+
+    // Expand the outer registry panel so entries load
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        // Active + pending are always visible
+        expect(screen.getByText("ActiveAgent")).toBeInTheDocument();
+        expect(screen.getByText("PendingAgent")).toBeInTheDocument();
+        // Retired summary counts every not-active/pending entry:
+        // revoked + rejected + suspended + the new "deactivated" = 4
+        expect(
+          screen.getByRole("button", { name: /retired \(4\)/i }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    const retiredToggle = screen.getByRole("button", {
+      name: /retired \(4\)/i,
+    });
+    // Collapsed by default
+    expect(retiredToggle).toHaveAttribute("aria-expanded", "false");
+
+    // No separate visible "Other" section leaks a future status
+    expect(
+      screen.queryByRole("region", { name: "Other registry entries" }),
+    ).not.toBeInTheDocument();
+
+    // Collapsed panel is hidden, but retired entries (incl. the unknown one)
+    // remain in the DOM so nothing is silently dropped
+    const retiredPanel = document.getElementById("retired-registry-panel");
+    expect(retiredPanel).toBeInTheDocument();
+    expect(retiredPanel).toHaveClass("hidden");
+    expect(screen.getByText("RevokedAgent")).toBeInTheDocument();
+    expect(screen.getByText("RejectedAgent")).toBeInTheDocument();
+    expect(screen.getByText("SuspendedAgent")).toBeInTheDocument();
+    expect(screen.getByText("DeactivatedAgent")).toBeInTheDocument();
+
+    // Click to expand — reveals the retired entries
+    await act(async () => {
+      retiredToggle.click();
+    });
+    expect(retiredToggle).toHaveAttribute("aria-expanded", "true");
+    expect(retiredPanel!).not.toHaveClass("hidden");
+    expect(screen.getByText("DeactivatedAgent")).toBeInTheDocument();
   }, 10_000);
 });
