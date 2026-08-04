@@ -146,7 +146,7 @@ class TestNotificationStore:
         assert "req-1" not in active_ids
         assert "req-2" in active_ids
         # Resolving moves it into History (archived, not deleted) AND marks it
-        # read — acting on a notification both reads and archives it (#62).
+        # read -- acting on a notification both reads and archives it (#62).
         history = await notif_store.list_archived()
         archived = next(h for h in history if (h["data"] or {}).get("request_id") == "req-1")
         assert archived["read"] is True
@@ -245,3 +245,40 @@ async def test_notification_api_archived_history(client):
     assert resp.status_code == 200
     data = resp.json()
     assert [d["title"] for d in data] == ["Kept"]
+
+
+@pytest.mark.asyncio
+class TestNotificationDispatchFilter:
+    async def test_disabled_type_not_dispatched(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            await store.set_event_muted("task.claimed", True, user_id="user-1")
+            await store.add("Task claimed", "Task 123 claimed by user", source="task.claimed", user_id="user-1")
+            items = await store.list()
+            assert len(items) == 0
+        finally:
+            await store.close()
+
+    async def test_enabled_type_is_dispatched(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            await store.set_event_muted("task.claimed", False, user_id="user-1")
+            await store.add("Task claimed", "Task 123 claimed by user", source="task.claimed", user_id="user-1")
+            items = await store.list()
+            assert len(items) == 1
+            assert items[0]["title"] == "Task claimed"
+        finally:
+            await store.close()
+
+    async def test_broadcast_not_filtered_by_prefs(self, tmp_path):
+        store = NotificationStore(tmp_path / "notif.db")
+        await store.init()
+        try:
+            await store.set_event_muted("task.claimed", True, user_id="user-1")
+            await store.add("Task claimed", "Task 123 claimed by user", source="task.claimed")
+            items = await store.list()
+            assert len(items) == 1
+        finally:
+            await store.close()

@@ -121,13 +121,13 @@ async def mark_all_read_counted(request: Request):
 
 
 @router.get("/api/notifications/prefs")
-async def get_notification_prefs(request: Request):
+async def get_notification_prefs(request: Request, current_user: dict[str, Any] = Depends(get_current_user)):  # noqa: B008
     store = request.app.state.notifications
-    return await store.get_event_prefs()
+    return await store.get_event_prefs(str(current_user.get("id") or ""))
 
 
 @router.put("/api/notifications/prefs/{event_type}")
-async def set_notification_pref(request: Request, event_type: str):
+async def set_notification_pref(request: Request, event_type: str, current_user: dict[str, Any] = Depends(get_current_user)):  # noqa: B008
     store = request.app.state.notifications
     if event_type not in store.EVENT_TYPES:
         return JSONResponse({"error": "unknown_event_type"}, status_code=404)
@@ -141,7 +141,7 @@ async def set_notification_pref(request: Request, event_type: str):
     if not isinstance(muted_raw, bool):
         return JSONResponse({"error": "muted must be a boolean"}, status_code=400)
     muted = bool(muted_raw)
-    await store.set_event_muted(event_type, muted)
+    await store.set_event_muted(event_type, muted, str(current_user.get("id") or ""))
     return {"event_type": event_type, "muted": muted}
 
 

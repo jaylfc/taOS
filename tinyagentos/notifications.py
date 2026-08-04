@@ -25,10 +25,16 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(timestamp DESC);
 CREATE TABLE IF NOT EXISTS notification_prefs (
-    event_type TEXT PRIMARY KEY,
-    muted INTEGER NOT NULL DEFAULT 0
+    user_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    muted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, event_type)
 );
 """
+
+DEFAULT_MUTED: dict[str, bool] = {
+    "task.claimed": True,
+}
 
 
 def _serialize_row(r) -> dict:
@@ -102,46 +108,50 @@ class NotificationStore(BaseStore):
             logger.warning("NotificationStore: web-push sender failed", exc_info=True)
 
     async def _post_init(self) -> None:
-        # `archived` was added after the initial notifications ship. Guarded
-        # ALTER so existing databases gain it without a destructive migration
-        # (SQLite lacks ADD COLUMN IF NOT EXISTS before 3.37). Dismissing a
-        # notification archives it (#62); nothing is hard-deleted by the user.
         cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notifications)")).fetchall()}
         if "archived" not in cols:
             await self._db.execute(
                 "ALTER TABLE notifications ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
             )
             await self._db.commit()
-        # `data` carries a JSON payload for structured notifications (e.g. an
-        # agent auth-request's request_id + scopes). Guarded ALTER so existing
-        # databases gain the column without a destructive migration.
         if "data" not in cols:
             await self._db.execute(
                 "ALTER TABLE notifications ADD COLUMN data TEXT"
             )
             await self._db.commit()
-        # `user_id` scopes notifications to a specific user. Guarded ALTER so
-        # existing databases gain the column without a destructive migration.
-        # NULL = broadcast (system-wide notice); non-NULL = scoped to that user.
         if "user_id" not in cols:
             await self._db.execute(
                 "ALTER TABLE notifications ADD COLUMN user_id TEXT"
             )
             await self._db.commit()
-        # Create the per-user index if it doesn't exist yet. Cannot live in
-        # the SCHEMA because the column is added via guarded ALTER after init.
-        #
-        # NOTE: On first boot after deployment this builds synchronously
-        # inside _post_init (app startup).  On an instance with a large
-        # ``notifications`` table the build takes a write lock on the table
-        # and blocks notification writes for the duration.  This is a
-        # one‑time cost — subsequent starts hit IF NOT EXISTS and return
-        # immediately.  If this becomes a problem at scale, the index can
-        # be built lazily after the server is already serving requests.
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id)"
         )
         await self._db.commit()
+        # Migrate notification_prefs from global (event_type PK) to per-user
+        # (user_id, event_type PK) if the old schema is detected.
+        prefs_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_prefs)")).fetchall()}
+        if "user_id" not in prefs_cols:
+            await self._db.execute("BEGIN")
+            try:
+                await self._db.execute(
+                    "CREATE TABLE IF NOT EXISTS notification_prefs_new ("
+                    "    user_id TEXT NOT NULL,"
+                    "    event_type TEXT NOT NULL,"
+                    "    muted INTEGER NOT NULL DEFAULT 0,"
+                    "    PRIMARY KEY (user_id, event_type)"
+                    ")"
+                )
+                await self._db.execute(
+                    "INSERT INTO notification_prefs_new (user_id, event_type, muted) "
+                    "SELECT 'default', event_type, muted FROM notification_prefs"
+                )
+                await self._db.execute("DROP TABLE notification_prefs")
+                await self._db.execute("ALTER TABLE notification_prefs_new RENAME TO notification_prefs")
+                await self._db.commit()
+            except BaseException:
+                await self._db.rollback()
+                raise
 
     async def add(
         self,
@@ -154,6 +164,10 @@ class NotificationStore(BaseStore):
     ) -> None:
         """Create a notification row and fan out to emitters + push.
 
+        If ``user_id`` is set and ``source`` is a known event type that is
+        muted for that user, the notification is suppressed entirely: it is
+        not stored and no web-push is fired.
+
         Args:
             user_id: Scope the notification to a specific user. When None
                 (default), the notification is a broadcast delivered to every
@@ -161,6 +175,9 @@ class NotificationStore(BaseStore):
                 user id, web-push delivery fans out only to that user's
                 subscriptions.
         """
+        if user_id and source in self.EVENT_TYPES:
+            if await self._is_event_muted(source, user_id):
+                return
         ts = int(time.time())
         data_json = json.dumps(data) if data is not None else None
         cursor = await self._db.execute(
@@ -174,7 +191,7 @@ class NotificationStore(BaseStore):
                 await self._webhook_notifier.notify(title, message, level)
             except Exception as e:
                 logger.warning(f"Webhook notification error: {e}")
-        # Push to EventBus broadcast for SSE delivery — best-effort, never breaks add()
+        # Push to EventBus broadcast for SSE delivery -- best-effort, never breaks add()
         row = {
             "id": cursor.lastrowid,
             "timestamp": ts,
@@ -296,32 +313,34 @@ class NotificationStore(BaseStore):
         await self._db.commit()
         return cursor.rowcount
 
-    async def emit_event(self, event_type: str, title: str, message: str, level: str = "info") -> None:
-        if await self._is_event_muted(event_type):
+    async def emit_event(self, event_type: str, title: str, message: str, level: str = "info", user_id: str | None = None) -> None:
+        if await self._is_event_muted(event_type, user_id):
             return
-        await self.add(title, message, level=level, source=event_type)
+        await self.add(title, message, level=level, source=event_type, user_id=user_id)
 
-    async def _is_event_muted(self, event_type: str) -> bool:
+    async def _is_event_muted(self, event_type: str, user_id: str | None = None) -> bool:
+        if user_id is None:
+            return False
         async with self._db.execute(
-            "SELECT muted FROM notification_prefs WHERE event_type = ?", (event_type,)
+            "SELECT muted FROM notification_prefs WHERE user_id = ? AND event_type = ?", (user_id, event_type)
         ) as cursor:
             row = await cursor.fetchone()
-        return bool(row[0]) if row else False
+        return bool(row[0]) if row else DEFAULT_MUTED.get(event_type, False)
 
-    async def set_event_muted(self, event_type: str, muted: bool) -> None:
+    async def set_event_muted(self, event_type: str, muted: bool, user_id: str) -> None:
         await self._db.execute(
-            "INSERT OR REPLACE INTO notification_prefs (event_type, muted) VALUES (?, ?)",
-            (event_type, int(muted)),
+            "INSERT OR REPLACE INTO notification_prefs (user_id, event_type, muted) VALUES (?, ?, ?)",
+            (user_id, event_type, int(muted)),
         )
         await self._db.commit()
 
-    async def get_event_prefs(self) -> list[dict]:
+    async def get_event_prefs(self, user_id: str) -> list[dict]:
         async with self._db.execute(
-            "SELECT event_type, muted FROM notification_prefs"
+            "SELECT event_type, muted FROM notification_prefs WHERE user_id = ?", (user_id,)
         ) as cursor:
             rows = await cursor.fetchall()
         stored = {r[0]: bool(r[1]) for r in rows}
         return [
-            {"event_type": et, "muted": stored.get(et, False)}
+            {"event_type": et, "muted": stored.get(et, DEFAULT_MUTED.get(et, False))}
             for et in self.EVENT_TYPES
         ]

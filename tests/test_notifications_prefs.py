@@ -4,14 +4,17 @@ from tinyagentos.notifications import NotificationStore
 
 
 @pytest.mark.asyncio
-async def test_get_prefs_returns_all_event_types_default_unmuted(client):
+async def test_get_prefs_returns_all_event_types_with_defaults(client):
     r = await client.get("/api/notifications/prefs")
     assert r.status_code == 200
     prefs = r.json()
     assert len(prefs) == len(NotificationStore.EVENT_TYPES)
     assert {p["event_type"] for p in prefs} == set(NotificationStore.EVENT_TYPES)
     for pref in prefs:
-        assert pref["muted"] is False
+        if pref["event_type"] == "task.claimed":
+            assert pref["muted"] is True
+        else:
+            assert pref["muted"] is False
 
 
 @pytest.mark.asyncio

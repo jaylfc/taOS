@@ -17,6 +17,7 @@ import {
   UserCircle,
   ScrollText,
   Save,
+  Bell,
 } from "lucide-react";
 import {
   Button,
@@ -40,7 +41,7 @@ import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs";
+type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications";
 
 interface SectionDef {
   id: Section;
@@ -82,6 +83,7 @@ const SECTIONS: SectionDef[] = [
   { id: "users", label: "Users", icon: Users },
   { id: "themes", label: "Themes", icon: Palette },
   { id: "logs", label: "Logs", icon: ScrollText },
+  { id: "notifications", label: "Notifications", icon: Bell },
 ];
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
@@ -148,7 +150,7 @@ function SystemInfoSection() {
         hw.npu?.tops && hw.npu.tops > 0 ? ` · ${hw.npu.tops} TOPS` : "";
       const diskType = hw.disk?.type ? ` ${hw.disk.type}` : "";
       const osParts = [hw.os?.distro, hw.os?.version].filter(Boolean);
-      const osStr = osParts.length > 0 ? osParts.join(" ") : "—";
+      const osStr = osParts.length > 0 ? osParts.join(" ") : "--";
       setInfo({
         cpu: `${cpuModel}${cpuCores}${cpuArch}`,
         ram:
@@ -156,10 +158,10 @@ function SystemInfoSection() {
             ? `${(ramMb / 1024).toFixed(1)} GB`
             : ramMb > 0
               ? `${ramMb} MB`
-              : "—",
+              : "--",
         npu: `${npuType}${npuTops}`,
         gpu: `${gpuModel}${gpuVram}`,
-        disk: diskGb > 0 ? `${diskGb} GB${diskType}` : "—",
+        disk: diskGb > 0 ? `${diskGb} GB${diskType}` : "--",
         os: osStr,
       });
     } else {
@@ -547,7 +549,7 @@ function AdvancedSection() {
           <h3 className="font-medium mb-1">Raw server config</h3>
           <p className="text-muted-foreground">
             Advanced settings are stored in <code className="font-mono text-xs px-1 py-0.5 rounded bg-muted">data/config.yaml</code> on
-            the server. Edit the file directly and restart taOS to apply changes — there is
+            the server. Edit the file directly and restart taOS to apply changes -- there is
             no in-app YAML editor.
           </p>
         </div>
@@ -860,6 +862,105 @@ export function DesktopDockSection() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Notifications                                                      */
+/* ------------------------------------------------------------------ */
+
+interface NotifPref {
+  event_type: string;
+  muted: boolean;
+}
+
+const NOTIF_LABELS: Record<string, string> = {
+  "worker.join": "Worker Join",
+  "worker.online": "Worker Online",
+  "worker.leave": "Worker Leave",
+  "backend.up": "Backend Up",
+  "backend.down": "Backend Down",
+  "training.complete": "Training Complete",
+  "training.failed": "Training Failed",
+  "app.installed": "App Installed",
+  "app.failed": "App Failed",
+  "disk_quota": "Disk Quota",
+  "task.claimed": "Task Claimed",
+  "task.closed": "Task Closed",
+};
+
+function NotificationsSection() {
+  const [prefs, setPrefs] = useState<NotifPref[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  useEffect(() => {
+    safeFetch<NotifPref[] | null>("/api/notifications/prefs", null)
+      .then((data) => {
+        if (data && Array.isArray(data)) setPrefs(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const toggle = async (event_type: string, muted: boolean) => {
+    setSaving(event_type);
+    try {
+      const res = await fetch(`/api/notifications/prefs/${event_type}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ muted }),
+      });
+      if (res.ok) {
+        setPrefs((prev) => (prev ? prev.map((p) => (p.event_type === event_type ? { ...p, muted } : p)) : prev));
+      }
+    } catch {
+      // ignore
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <section aria-label="Notification settings">
+        <h2 className="text-lg font-semibold mb-5">Notifications</h2>
+        <p className="text-sm text-shell-text-tertiary">Loading...</p>
+      </section>
+    );
+  }
+
+  return (
+    <section aria-label="Notification settings">
+      <h2 className="text-lg font-semibold mb-2">Notifications</h2>
+      <p className="text-sm text-shell-text-tertiary mb-5">
+        Choose which notification types you want to receive. Disabled types will not appear in-app or trigger web push.
+      </p>
+      <div className="space-y-2">
+        {prefs?.map((pref) => {
+          const id = `notif-${pref.event_type}`;
+          return (
+            <Card key={pref.event_type} className="p-4 flex items-center justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <Label htmlFor={id} className="text-sm font-medium text-shell-text">
+                  {NOTIF_LABELS[pref.event_type] ?? pref.event_type}
+                </Label>
+                <p className="text-xs text-shell-text-tertiary mt-0.5">
+                  {pref.muted ? "Disabled" : "Enabled"}
+                </p>
+              </div>
+              <Switch
+                id={id}
+                checked={!pref.muted}
+                onCheckedChange={(v) => toggle(pref.event_type, !v)}
+                disabled={saving === pref.event_type}
+                aria-label={`${NOTIF_LABELS[pref.event_type] ?? pref.event_type} notifications`}
+              />
+            </Card>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main SettingsApp                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -913,6 +1014,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     users: <UsersSection />,
     themes: <ThemesPanel />,
     logs: <LogsSection />,
+    notifications: <NotificationsSection />,
   };
 
   const handleSelectSection = (id: Section) => {

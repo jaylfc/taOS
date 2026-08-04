@@ -2,7 +2,7 @@
 
 BaseStore.init() runs SCHEMA (CREATE TABLE + CREATE INDEX) before _post_init
 migrations.  Any CREATE INDEX in SCHEMA that references a column added by
-_post_init bricks boot on existing databases — the column does not exist yet
+_post_init bricks boot on existing databases -- the column does not exist yet
 when the index is created.
 
 These tests simulate the upgrade path by seeding a "v0" database (only the
@@ -53,7 +53,7 @@ def _column_names(db_path: Path, table: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# NotificationStore — columns archived + data added in _post_init
+# NotificationStore -- columns archived + data added in _post_init
 # ---------------------------------------------------------------------------
 
 NOTIF_V0_SCHEMA = """\
@@ -127,9 +127,42 @@ class TestNotificationStoreUpgrade:
         finally:
             await store.close()
 
+    async def test_upgrade_migrates_notification_prefs_to_per_user(self, tmp_path):
+        db_path = tmp_path / "notif.db"
+        _seed_db(db_path, NOTIF_V0_SCHEMA)
+        store = NotificationStore(db_path)
+        await store.init()
+        try:
+            cols = _column_names(db_path, "notification_prefs")
+            assert "user_id" in cols, "user_id column missing after upgrade"
+            assert "event_type" in cols, "event_type column missing after upgrade"
+            assert "muted" in cols, "muted column missing after upgrade"
+        finally:
+            await store.close()
+
+    async def test_upgrade_preserves_notification_prefs_data(self, tmp_path):
+        db_path = tmp_path / "notif.db"
+        _seed_db(db_path, NOTIF_V0_SCHEMA)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("INSERT INTO notification_prefs (event_type, muted) VALUES (?, ?)", ("worker.join", 1))
+        conn.commit()
+        conn.close()
+
+        store = NotificationStore(db_path)
+        await store.init()
+        try:
+            cursor = await store._db.execute("SELECT user_id, event_type, muted FROM notification_prefs")
+            rows = await cursor.fetchall()
+            assert len(rows) == 1
+            assert rows[0][0] == "default"
+            assert rows[0][1] == "worker.join"
+            assert rows[0][2] == 1
+        finally:
+            await store.close()
+
 
 # ---------------------------------------------------------------------------
-# BoardAuditLog — columns project_id + detail added in _post_init
+# BoardAuditLog -- columns project_id + detail added in _post_init
 # ---------------------------------------------------------------------------
 
 BOARD_AUDIT_V0_SCHEMA = """\
@@ -182,7 +215,7 @@ class TestBoardAuditUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# DecisionStore — column metadata added in _post_init
+# DecisionStore -- column metadata added in _post_init
 # ---------------------------------------------------------------------------
 
 DECISIONS_V0_SCHEMA = """\
@@ -223,7 +256,7 @@ class TestDecisionStoreUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# ProjectStore — multiple migration columns on project_members + projects
+# ProjectStore -- multiple migration columns on project_members + projects
 # ---------------------------------------------------------------------------
 
 PROJECTS_V0_SCHEMA = """\
@@ -273,7 +306,7 @@ class TestProjectStoreUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# ProjectInviteStore — column redeemed_request_id added in _post_init
+# ProjectInviteStore -- column redeemed_request_id added in _post_init
 # ---------------------------------------------------------------------------
 
 INVITES_V0_SCHEMA = """\
@@ -309,7 +342,7 @@ class TestProjectInviteStoreUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# ProjectCanvasStore — column element_id added in _post_init
+# ProjectCanvasStore -- column element_id added in _post_init
 # ---------------------------------------------------------------------------
 
 CANVAS_V0_SCHEMA = """\
@@ -348,7 +381,7 @@ class TestCanvasStoreUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# ProjectTaskStore — column element_id added in _post_init
+# ProjectTaskStore -- column element_id added in _post_init
 # ---------------------------------------------------------------------------
 
 TASKS_V0_SCHEMA = """\
@@ -389,7 +422,7 @@ class TestProjectTaskStoreUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# ChatChannelStore — column project_id added in _post_init
+# ChatChannelStore -- column project_id added in _post_init
 # ---------------------------------------------------------------------------
 
 CHANNELS_V0_SCHEMA = """\
@@ -423,7 +456,7 @@ class TestChatChannelStoreUpgrade:
 
 
 # ---------------------------------------------------------------------------
-# SharedDocsStore — columns permission, action, discuss_channel_id added
+# SharedDocsStore -- columns permission, action, discuss_channel_id added
 # ---------------------------------------------------------------------------
 
 SHARED_DOCS_V0_SCHEMA = """\
