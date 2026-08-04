@@ -259,6 +259,136 @@ describe("ProjectMembers rename external agent", () => {
       }),
     );
   });
+
+  it("disables Save and ignores Enter while the rename request is in flight", async () => {
+    let resolveRename!: (value: { ok: boolean }) => void;
+    const renamePromise = new Promise<{ ok: boolean }>((resolve) => {
+      resolveRename = resolve;
+    });
+
+    const fetchMock = vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      if (input === "/api/agents/registry/grok-taos-20260711-000736" && init?.method === "PATCH") {
+        return renamePromise.then(() => ({
+          ok: true,
+          json: async () => ({ ok: true }),
+          text: async () => "",
+        }));
+      }
+      if (input === "/api/projects/prj-test/members") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [externalMember] }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [registryEntry],
+          text: async () => "",
+        });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ProjectMembers project={project} onChanged={vi.fn()} />);
+    await flush();
+
+    fireEvent.click(screen.getByLabelText("Rename grok-taOS"));
+    const input = screen.getByLabelText("New name for grok-taOS");
+    fireEvent.change(input, { target: { value: "hy3 (grok)" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const saveButton = screen.getByRole("button", { name: "Saving..." });
+    expect(saveButton).toBeDisabled();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    resolveRename({ ok: true });
+    await flush();
+
+    const patchCalls = fetchMock.mock.calls.filter(
+      (c: [string, RequestInit]) => c[1]?.method === "PATCH",
+    );
+    expect(patchCalls).toHaveLength(1);
+  });
+
+  it("shows an error when the rename PATCH rejects", async () => {
+    const fetchMock = mockFetch({
+      "/api/projects/prj-test/members": { ok: true, body: { items: [externalMember] } },
+      "/api/agents": { ok: true, body: [] },
+      "/api/agents/registry": { ok: true, body: [registryEntry] },
+      "/api/agents/registry/grok-taos-20260711-000736": { ok: false, status: 400, body: { error: "Bad request" } },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ProjectMembers project={project} onChanged={vi.fn()} />);
+    await flush();
+
+    fireEvent.click(screen.getByLabelText("Rename grok-taOS"));
+    const input = screen.getByLabelText("New name for grok-taOS");
+    fireEvent.change(input, { target: { value: "new-name" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await flush();
+    });
+
+    expect(screen.getByText("Bad request")).toBeInTheDocument();
+  });
+
+  it("reloads the registry and refreshes the label after a successful rename", async () => {
+    const registryCalls: string[] = [];
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input === "/api/projects/prj-test/members") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [externalMember] }),
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents") {
+        return Promise.resolve({ ok: true, json: async () => [], text: async () => "" });
+      }
+      if (input === "/api/agents/registry") {
+        registryCalls.push(input);
+        const displayName = registryCalls.filter((c) => c === input).length === 1
+          ? "grok-taOS"
+          : "hy3 (grok)";
+        return Promise.resolve({
+          ok: true,
+          json: async () => [{ ...registryEntry, display_name: displayName }],
+          text: async () => "",
+        });
+      }
+      if (input === "/api/agents/registry/grok-taos-20260711-000736") {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true }), text: async () => "" });
+      }
+      throw new Error(`Unmocked fetch: ${input}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ProjectMembers project={project} onChanged={vi.fn()} />);
+    await flush();
+
+    const externalSection = screen.getByText("External / Connected agents").closest("section")!;
+    expect(within(externalSection).getByText("grok-taOS")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Rename grok-taOS"));
+    const input = screen.getByLabelText("New name for grok-taOS");
+    fireEvent.change(input, { target: { value: "hy3 (grok)" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await flush();
+    });
+
+    expect(registryCalls.filter((c) => c === "/api/agents/registry").length).toBeGreaterThanOrEqual(2);
+    expect(within(externalSection).getByText("hy3 (grok)")).toBeInTheDocument();
+  });
 });
 
 const project = { id: "prj-test", name: "taOS", slug: "taos" } as unknown as Project;
