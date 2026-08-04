@@ -274,8 +274,8 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                                {thinkingChannelIds.includes(ch.id) && (
                                  <span
                                    className="relative inline-flex h-1.5 w-1.5 shrink-0"
-                                   aria-hidden="true"
-                                   title="thinking"
+                                   role="img"
+                                   aria-label="Agent is thinking"
                                  >
                                    <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
                                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />
@@ -501,8 +501,8 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                        {thinkingChannelIds.includes(ch.id) && (
                          <span
                            className="relative inline-flex h-1.5 w-1.5 shrink-0"
-                           aria-hidden="true"
-                           title="thinking"
+                           role="img"
+                           aria-label="Agent is thinking"
                          >
                            <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />

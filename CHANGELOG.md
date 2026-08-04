@@ -9,6 +9,8 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- Messages sidebar shows a live "thinking" badge on channels whose bound
+  taOStalk agent is currently working, on desktop and mobile (#2281).
 - Admin-only `POST /api/notifications` so orchestrators and lead agents can
   raise review-request notifications through the store (and therefore through
   SSE and web push) instead of a raw database insert (#2280).
