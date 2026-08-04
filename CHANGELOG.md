@@ -9,6 +9,8 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- Chat renders `text` and `thinking` content blocks: thinking is a
+  collapsed-by-default disclosure with a proper ARIA expand/collapse contract (#2282).
 - Messages sidebar shows a live "thinking" badge on channels whose bound
   taOStalk agent is currently working, on desktop and mobile (#2281).
 - Admin-only `POST /api/notifications` so orchestrators and lead agents can
