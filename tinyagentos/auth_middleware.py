@@ -102,10 +102,28 @@ _AGENT_DOC_REVIEW_ROUTES = (
     ("PUT", re.compile(rf"^/api/projects/{_SEG}/doc-review/(.+)$")),
 )
 
+# Project notes store routes an agent may reach with its own registry JWT
+# (scope project_notes, verified + project-bound by the route).  The token only
+# reaches the handler, which then verifies the JWT + grant + project binding;
+# nothing else is reachable by the token.  List/create are on the collection
+# segment; patch/delete target a specific note id.
+_AGENT_NOTES_ROUTES = (
+    ("GET", re.compile(rf"^/api/projects/{_SEG}/notes$")),
+    ("POST", re.compile(rf"^/api/projects/{_SEG}/notes$")),
+    ("PATCH", re.compile(rf"^/api/projects/{_SEG}/notes/{_SEG}$")),
+    ("DELETE", re.compile(rf"^/api/projects/{_SEG}/notes/{_SEG}$")),
+)
+
 
 def _is_agent_doc_review_path(method: str, path: str) -> bool:
     """True only for the doc-review routes a project_doc_review token may reach."""
     return any(m == method and rx.match(path) for m, rx in _AGENT_DOC_REVIEW_ROUTES)
+
+
+def _is_agent_notes_path(method: str, path: str) -> bool:
+    """True only for the notes routes a project_notes token may reach.
+    Strict method + anchored-regex match; everything else is excluded."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_NOTES_ROUTES)
 
 
 _AGENT_CANVAS_ROUTES = (
@@ -458,6 +476,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             path in _AGENT_TOKEN_PATHS
             or _is_agent_task_path(request.method, path)
             or _is_agent_doc_review_path(request.method, path)
+            or _is_agent_notes_path(request.method, path)
             or _is_agent_canvas_path(request.method, path)
             or _is_agent_decisions_path(request.method, path)
             or _is_agent_files_path(request.method, path)
