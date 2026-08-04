@@ -257,6 +257,29 @@ class TestContactsStore:
         c = await store.get_contact("hub:hogne")
         assert c["status"] == "revoked"
 
+    async def test_revoke_peer_link_same_timestamp(self, store):
+        """Both peer_link and contact must share the same revoked_at timestamp."""
+        await store.add_contact(
+            contact_id="hub:hogne", hub_username="hogne", display_name="H",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        await store.establish_peer_link(
+            contact_id="hub:hogne",
+            inbound_token=generate_peer_token(),
+            outbound_token=generate_peer_token(),
+        )
+
+        before = time.time()
+        await store.revoke_peer_link("hub:hogne")
+        after = time.time()
+
+        link = await store.get_peer_link("hub:hogne")
+        c = await store.get_contact("hub:hogne")
+        assert link["revoked_at"] is not None
+        assert c["revoked_at"] is not None
+        assert link["revoked_at"] == c["revoked_at"]
+        assert before <= link["revoked_at"] <= after
+
 
 # ---------------------------------------------------------------------------
 # peer envelope crypto tests
@@ -392,6 +415,29 @@ class TestPeerEnvelope:
             # Tamper with the payload
             env["kind"] = "evil"
             assert not verify_envelope_signature(env, signing_pub)
+        finally:
+            _clear()
+
+    def test_verify_envelope_signature_wrong_pubkey(self, monkeypatch, tmp_path):
+        """Verifying with a wrong pubkey must fail."""
+        from tinyagentos.hub.identity import load_or_create, clear as _clear, public_identity
+
+        monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path))
+        _clear()
+        try:
+            identity = load_or_create()
+            pub = public_identity()
+            signing_pub = pub["signing_pubkey"]
+
+            env = build_envelope(
+                from_username="jaylfc",
+                to_username="hogne",
+                kind="handshake",
+            )
+
+            wrong_pub = ("a" * 20) + signing_pub[20:]
+            assert wrong_pub != signing_pub
+            assert not verify_envelope_signature(env, wrong_pub)
         finally:
             _clear()
 
@@ -712,3 +758,159 @@ class TestPeerRoutes:
         data = resp.json()
         assert data["status"] == "acked"
         assert data["envelope_id"] == "test-nonce-123"
+
+    async def test_inbox_tampered_signature_rejected(self, client_with_contacts, app_with_contacts):
+        """A tampered envelope must be rejected with 403 at the route level."""
+        local_id = resolve_local_identity_id()
+
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:tamper-test", hub_username="tamper-test", display_name="T",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:tamper-test",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+
+        env = build_envelope(
+            from_username="tamper-test",
+            to_username=_TEST_HUB_USERNAME,
+            kind="handshake",
+        )
+        env["kind"] = "evil"
+
+        resp = await client_with_contacts.post(
+            "/api/peer/inbox",
+            json={"envelope": env},
+            headers={"Authorization": f"Bearer {inbound}"},
+        )
+        assert resp.status_code == 403, f"expected 403, got {resp.status_code}: {resp.text}"
+
+    async def test_inbox_future_timestamp_rejected(self, client_with_contacts, app_with_contacts):
+        """An envelope with a future timestamp must be rejected with 400."""
+        local_id = resolve_local_identity_id()
+
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:future-ts", hub_username="future-ts", display_name="F",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:future-ts",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+
+        env = build_envelope(
+            from_username="future-ts",
+            to_username=_TEST_HUB_USERNAME,
+            kind="handshake",
+        )
+        env["ts"] = time.time() + 400
+
+        resp = await client_with_contacts.post(
+            "/api/peer/inbox",
+            json={"envelope": env},
+            headers={"Authorization": f"Bearer {inbound}"},
+        )
+        assert resp.status_code == 400, f"expected 400, got {resp.status_code}: {resp.text}"
+
+    async def test_peer_token_non_peer_route_401(self, app_with_contacts):
+        """A peer token must not grant access to non-peer routes."""
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:hogne", hub_username="hogne", display_name="H",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:hogne",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+
+        transport = ASGITransport(app=app_with_contacts)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(
+                "/api/projects",
+                headers={"Authorization": f"Bearer {inbound}"},
+            )
+            assert resp.status_code == 401
+
+    async def test_chat_rate_limit(self, client_with_contacts, app_with_contacts):
+        """Verify rate limiting kicks in after 60 requests to /chat."""
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:chat-rl", hub_username="chat-rl", display_name="C",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:chat-rl",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+
+        headers = {"Authorization": f"Bearer {inbound}"}
+        statuses = []
+        for _ in range(65):
+            resp = await client_with_contacts.post(
+                "/api/peer/chat",
+                json={"envelope": {"kind": "chat"}},
+                headers=headers,
+            )
+            statuses.append(resp.status_code)
+
+        assert 429 in statuses, f"expected 429 in statuses, got: {set(statuses)}"
+
+    async def test_chat_envelope_too_large(self, client_with_contacts, app_with_contacts):
+        """Verify /chat rejects oversized envelopes with 413."""
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:chat-big", hub_username="chat-big", display_name="B",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:chat-big",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+
+        big_body = "x" * (33 * 1024)
+        resp = await client_with_contacts.post(
+            "/api/peer/chat",
+            json={"envelope": {"kind": "chat", "body": big_body}},
+            headers={"Authorization": f"Bearer {inbound}"},
+        )
+        assert resp.status_code == 413
+
+    async def test_ack_rate_limit(self, client_with_contacts, app_with_contacts):
+        """Verify rate limiting kicks in after 60 requests to /ack."""
+        store = app_with_contacts.state.contacts_store
+        await store.add_contact(
+            contact_id="hub:ack-rl", hub_username="ack-rl", display_name="A",
+            ed25519_pub="pk", x25519_pub="ek",
+        )
+        inbound = generate_peer_token()
+        await store.establish_peer_link(
+            contact_id="hub:ack-rl",
+            inbound_token=inbound,
+            outbound_token=generate_peer_token(),
+        )
+
+        headers = {"Authorization": f"Bearer {inbound}"}
+        statuses = []
+        for i in range(65):
+            resp = await client_with_contacts.post(
+                "/api/peer/ack",
+                json={"envelope_id": f"ack-rl-nonce-{i}", "contact_id": "hub:ack-rl"},
+                headers=headers,
+            )
+            statuses.append(resp.status_code)
+
+        assert 429 in statuses, f"expected 429 in statuses, got: {set(statuses)}"
