@@ -206,6 +206,14 @@ The surface, by scope:
   (read one), and `PUT /api/projects/{pid}/doc-review/{path}` (set state).
   The route verifies the JWT + grant + project binding; the middleware allowlist
   is closed to these paths only.
+- **project_notes**: read and write a project's persistent idea notes
+  (title + markdown body). `GET /api/projects/{pid}/notes` (list),
+  `POST /api/projects/{pid}/notes` (create), `PATCH /api/projects/{pid}/notes/{nid}`
+  (edit) and `DELETE /api/projects/{pid}/notes/{nid}`. One scope covers read and
+  write, mirroring project_doc_review. The route verifies the JWT + grant +
+  project binding, and a token bound to a DIFFERENT project gets a 404 rather
+  than a 403, so it cannot confirm that another project exists. The note's
+  author is taken from the verified token, never from the request body.
 - **canvas_read**: `GET .../canvas/elements`, `.../canvas/watch-projection`,
   `.../canvas/snapshot.png|.tldr`, `.../canvas/stream`. **canvas_write**: `POST .../canvas/elements`,
   `PATCH|DELETE .../canvas/elements/{id}`.

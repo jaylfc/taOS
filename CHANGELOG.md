@@ -9,6 +9,9 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- Projects gain a Notes area: title + markdown notes per project, readable and
+  writable by the project owner or by an agent holding a project-bound
+  `project_notes` grant (new requestable scope) (#2285).
 - Chat renders `text` and `thinking` content blocks: thinking is a
   collapsed-by-default disclosure with a proper ARIA expand/collapse contract (#2282).
 - Messages sidebar shows a live "thinking" badge on channels whose bound
