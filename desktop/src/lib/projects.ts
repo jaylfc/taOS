@@ -159,10 +159,12 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   // withCsrf attaches X-CSRF-Token on mutating methods (POST/PUT/PATCH/DELETE);
   // without it, cookie-authenticated project create/update/delete 403 with
   // "CSRF token missing". Non-mutating GETs pass through unchanged.
+  const headers = new Headers(init?.headers);
+  headers.set("Content-Type", "application/json");
   const r = await fetch(path, withCsrf({
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
+    headers,
   }));
   if (!r.ok) {
     const text = await r.text().catch(() => r.statusText);

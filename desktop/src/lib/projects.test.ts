@@ -609,3 +609,50 @@ describe("projectsApi.activity", () => {
     await expect(projectsApi.activity("p-1")).rejects.toThrow("500");
   });
 });
+
+describe("projectsApi.http CSRF + header merge (Headers-spread regression)", () => {
+  const originalDocument = global.document;
+
+  afterEach(() => {
+    vi.stubGlobal("document", originalDocument);
+  });
+
+  const headerValue = (opts: unknown, name: string): string | null => {
+    const headers = (opts as { headers?: Headers | Record<string, string> }).headers;
+    if (headers instanceof Headers) return headers.get(name);
+    return headers ? (headers as Record<string, string>)[name] ?? null : null;
+  };
+
+  it("attaches X-CSRF-Token and preserves Content-Type on POST", async () => {
+    vi.stubGlobal("document", { cookie: "csrf_token=hdr-token" } as unknown as Document);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: "p-1", name: "New", slug: "new", description: "", status: "active", created_by: "u-1", created_at: 1, updated_at: 1 }),
+      text: async () => "",
+      statusText: "OK",
+    });
+    global.fetch = fetchMock;
+    await projectsApi.create({ name: "New", slug: "new" });
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(opts.method).toBe("POST");
+    expect(headerValue(opts, "X-CSRF-Token")).toBe("hdr-token");
+    expect(headerValue(opts, "Content-Type")).toBe("application/json");
+  });
+
+  it("does not add X-CSRF-Token on non-mutating GET", async () => {
+    vi.stubGlobal("document", { cookie: "csrf_token=hdr-token" } as unknown as Document);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [] }),
+      text: async () => "",
+      statusText: "OK",
+    });
+    global.fetch = fetchMock;
+    await projectsApi.list();
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(headerValue(opts, "X-CSRF-Token")).toBe(null);
+    expect(headerValue(opts, "Content-Type")).toBe("application/json");
+  });
+});
