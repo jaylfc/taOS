@@ -59,8 +59,8 @@ describe("renderContent", () => {
   });
 
   it("dispatches to content_blocks when non-empty", () => {
-    const { container } = render(<div>{renderContent("", [{ kind: "text", text: "hello" }])}</div>);
-    expect(container.textContent).toContain("unsupported block: text");
+    const { container } = render(<div>{renderContent("", [{ kind: "text", text: "hello world" }])}</div>);
+    expect(container.textContent).toContain("hello world");
   });
 
   it("falls through to markdown when content_blocks is empty", () => {
@@ -99,26 +99,30 @@ describe("renderContent", () => {
     expect(container.textContent).toContain("unsupported block: mystery");
   });
 
-  it("renders unknown fallback for text and thinking (separate cards)", () => {
+  it("renders all four slice-1 kinds with no fallback", () => {
     const { container } = render(
       <div>{renderContent("", [
         { kind: "text", text: "hi" },
-        { kind: "thinking", text: "thinking...", collapsed: true },
-      ])}</div>,
-    );
-    expect(container.textContent).toContain("unsupported block: text");
-    expect(container.textContent).toContain("unsupported block: thinking");
-  });
-
-  it("renders one fallback line per block for stub kinds", () => {
-    const { container } = render(
-      <div>{renderContent("", [
-        { kind: "text", text: "a" },
-        { kind: "thinking", text: "b" },
+        { kind: "thinking", text: "pondering" },
+        { kind: "tool_call", name: "grep", args: {} },
+        { kind: "status", text: "done" },
       ])}</div>,
     );
     const text = container.textContent || "";
-    expect(text.match(/unsupported block/g)?.length).toBe(2);
+    expect(text).toContain("hi");
+    expect(text).toContain("Thinking");
+    expect(text).toContain("done");
+    expect(text).not.toContain("unsupported block");
+  });
+
+  it("still falls back once for a single unrecognised block", () => {
+    const { container } = render(
+      <div>{renderContent("", [
+        { kind: "mystery", text: "a" },
+      ])}</div>,
+    );
+    const text = container.textContent || "";
+    expect(text.match(/unsupported block/g)?.length).toBe(1);
   });
 });
 

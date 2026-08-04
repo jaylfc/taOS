@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useId } from "react";
 import {
   MessageCircle,
   Hash,
@@ -263,14 +263,21 @@ export function relativeTime(ts: number | string, nowMs: number = Date.now()): s
 }
 
 /**
- * Dispatch a single content block to its renderer. Tool call, status, and
- * question blocks render through their dedicated card components; text and
- * thinking blocks land as separate cards (slice 1 #1953 sect 4) and currently
- * fall through to the unknown-block fallback below. Any other/unrecognized
- * kind also falls through -- the slice-2 seam for the renderer registry.
+ * Dispatch a single content block to its renderer. All four slice-1 kinds now
+ * have dedicated components: text and thinking (cards 3+4), tool call and
+ * status/question (cards 5+6). Any unrecognised kind still falls through to
+ * the unknown-block fallback -- the slice-2 seam for the renderer registry.
  */
 function renderContentBlock(block: ContentBlock, index: number): React.ReactElement {
   switch (block.kind) {
+    case "text": {
+      const textBlock = block as TextContentBlock;
+      return <TextBlock block={textBlock} index={index} key={`block-${index}`} />;
+    }
+    case "thinking": {
+      const thinkingBlock = block as ThinkingContentBlock;
+      return <ThinkingBlock block={thinkingBlock} index={index} key={`block-${index}`} />;
+    }
     case "tool_call":
       return (
         <ToolCallBlock block={block as ToolCallContentBlock} key={`block-${index}`} />
@@ -283,8 +290,6 @@ function renderContentBlock(block: ContentBlock, index: number): React.ReactElem
       return (
         <StatusBlock block={block as QuestionContentBlock} key={`block-${index}`} />
       );
-    case "text":
-    case "thinking":
     default:
       return (
         <div key={`block-${index}`} className="text-shell-text-tertiary text-[12px]">
@@ -373,6 +378,64 @@ export function renderInline(text: string, keyPrefix: string) {
       </ReactMarkdown>
     </div>,
   ];
+}
+
+/* ------------------------------------------------------------------ */
+/*  Content block renderers (taOStalk session turns)                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * TextBlock -- renders a {kind:"text"} content block by reusing the existing
+ * inline markdown renderer (renderInline), so a text block renders
+ * identically to a plain message's markdown body.
+ */
+export function TextBlock({ block, index }: { block: TextContentBlock; index: number }): React.ReactElement {
+  return <>{renderInline(block.text, `text-block-${index}`)}</>;
+}
+
+/**
+ * ThinkingBlock -- renders a {kind:"thinking"} content block as a
+ * collapsed-by-default disclosure. The toggle button carries the ARIA
+ * disclosure contract (aria-expanded / aria-controls) and a chevron; the
+ * panel is dim-styled to de-emphasize the agent's internal reasoning. The
+ * container matches the Store/Images card bar (rounded border, shell
+ * surface background, dim tertiary text).
+ */
+export function ThinkingBlock({ block, index }: { block: ThinkingContentBlock; index: number }): React.ReactElement {
+  const [open, setOpen] = useState(block.collapsed === false);
+  const summaryRef = useId();
+  const contentId = useId();
+  const summaryAria = `taostalk-thinking-summary-${summaryRef}`;
+  const contentAria = `taostalk-thinking-content-${contentId}`;
+  return (
+    <div className="rounded-2xl border border-shell-border bg-shell-surface/60 shadow-card overflow-hidden">
+      <button
+        type="button"
+        id={summaryAria}
+        aria-expanded={open}
+        aria-controls={contentAria}
+        aria-label={open ? "Collapse thinking" : "Expand thinking"}
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-[12px] font-semibold text-shell-text-tertiary hover:text-shell-text-secondary hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <ChevronDown
+          size={14}
+          aria-hidden={true}
+          className="transition-transform duration-150"
+          style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}
+        />
+        <span>Thinking</span>
+      </button>
+      <div
+        id={contentAria}
+        aria-labelledby={summaryAria}
+        hidden={!open}
+        className="px-3 py-2 text-[13px] text-shell-text-tertiary"
+      >
+        {renderInline(block.text, `thinking-${index}`)}
+      </div>
+    </div>
+  );
 }
 
 
