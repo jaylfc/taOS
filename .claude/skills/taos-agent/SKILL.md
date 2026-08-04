@@ -36,7 +36,14 @@ Every desktop and window action must go through the control API. There is one ch
   `/api/desktop/layout-result`.
 
 Commands are **scoped to the authenticated user** (`request.state.user_id`), so a user
-only ever drives their own desktop. The browser subscribes over
+only ever drives their own desktop.
+
+> **These routes need a user SESSION, not a registry JWT.** `/api/desktop/*` is not on
+> the agent-bearer allowlist in `auth_middleware.py`, and it scopes by
+> `request.state.user_id`, which the middleware deliberately leaves unset for registry
+> tokens. A `Authorization: Bearer <registry JWT>` call here is rejected, unlike the
+> project-files routes below, which ARE agent-reachable with `files_read`/`files_write`.
+> Drive the desktop from the in-OS agent's session; do not retry with an agent token. The browser subscribes over
 `GET /api/desktop/stream` (SSE) and re-dispatches each command to the existing
 window/app receivers -- `open-app` becomes a `taos:open-app` event, `window` becomes a
 `taos:window` event.
