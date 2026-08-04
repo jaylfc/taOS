@@ -17,4 +17,13 @@
 - **Activity**: live feed of everything agents do (tool calls, model calls, errors).
 - **Decisions**: your inbox for agent approvals and questions.
 - **Observatory**: watch the agent fleet; pause or throttle work lanes.
-- Other bundled apps (Library, Channels, Secrets, Tasks, Images, MCP, Guides and more); if you do not know one, guess from its name and point to Guides.
+## Project Files
+
+An agent with the appropriate scopes can read and write files in a project.
+
+- `GET /api/projects/{slug}/files?path=<subdir>` list files in a subdirectory (requires `files_read`)
+- `GET /api/projects/{slug}/files/{path}` download a single file (requires `files_read`)
+- `POST /api/projects/{slug}/files/upload?path=<subdir>` upload a file using multipart form field `file` (requires `files_write`)
+- `POST /api/projects/{mkdir}` with body `{"path": "<subdir>"}` create a subdirectory (requires `files_write`)
+
+Routes key on the project SLUG, not the internal project id. Authenticate with the registry JWT: `Authorization: Bearer <token>`. A token for a different project returns 404. Access is granted per project.
