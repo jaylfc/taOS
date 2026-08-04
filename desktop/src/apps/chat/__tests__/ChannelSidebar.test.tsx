@@ -81,6 +81,7 @@ function buildProps(overrides: Partial<ChannelSidebarProps> = {}): ChannelSideba
     busSelected: null,
     onSelectBusChannel: vi.fn(),
     formatRelativeTime: (ts) => String(ts),
+    thinkingChannelIds: [],
     ...overrides,
   };
 }
@@ -709,5 +710,71 @@ describe("ChannelSidebar — edge cases", () => {
     render(<ChannelSidebar {...buildProps({ sections })} />);
     const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
     expect(btn).not.toHaveAttribute("title");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Live thinking badge                                                 */
+/* ------------------------------------------------------------------ */
+
+describe("ChannelSidebar — thinking badge", () => {
+  it("shows a pulsing amber dot on a thinking channel (desktop)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-alice" });
+    const sections = [makeSection("Live", [ch])];
+    const { container } = render(
+      <ChannelSidebar
+        {...buildProps({ sections, thinkingChannelIds: ["ch-1"] })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    const dot = btn.querySelector(".taos-status-pulse");
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-amber-400");
+  });
+
+  it("does not show thinking dot on non-thinking channels (desktop)", () => {
+    const ch = makeChannel({ id: "ch-1", name: "general" });
+    const sections = [makeSection("Topics", [ch])];
+    render(
+      <ChannelSidebar
+        {...buildProps({ sections, thinkingChannelIds: [] })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.querySelector(".taos-status-pulse")).toBeNull();
+  });
+
+  it("shows thinking dot on mobile when channel is thinking", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-bob" });
+    const sections = [makeSection("Live", [ch])];
+    const { container } = render(
+      <ChannelSidebar
+        {...buildProps({ isMobile: true, sections, thinkingChannelIds: ["ch-1"] })}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    const dot = btn.querySelector(".taos-status-pulse");
+    expect(dot).toBeTruthy();
+    expect(dot).toHaveClass("bg-amber-400");
+  });
+
+  it("clears thinking dot when channel leaves thinkingChannelIds", () => {
+    const ch = makeChannel({ id: "ch-1", name: "session-carol" });
+    const sections = [makeSection("Live", [ch])];
+    const { rerender } = render(
+      <ChannelSidebar
+        {...buildProps({ sections, thinkingChannelIds: ["ch-1"] })}
+      />,
+    );
+    let btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.querySelector(".taos-status-pulse")).toBeTruthy();
+
+    rerender(
+      <ChannelSidebar
+        {...buildProps({ sections, thinkingChannelIds: [] })}
+      />,
+    );
+    btn = screen.getByRole("button", { name: `Channel ${ch.name}` });
+    expect(btn.querySelector(".taos-status-pulse")).toBeNull();
   });
 });

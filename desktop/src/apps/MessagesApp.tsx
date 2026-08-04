@@ -105,6 +105,7 @@ interface Channel {
     archived_agent_slug?: string;
     muted?: string[];
     kind?: string;
+    taostalk_agent?: string;
   };
 }
 
@@ -1626,6 +1627,13 @@ export function MessagesApp({
     archivedChannels.length === 0 &&
     projectGroups.length === 0;
 
+  const thinkingChannelIds: string[] = channels
+    .filter((ch) => {
+      const bound = (ch.settings as { taostalk_agent?: string } | undefined)?.taostalk_agent;
+      return bound && typingAgents.some((a) => a.slug === bound);
+    })
+    .map((ch) => ch.id);
+
   /* ---------------------------------------------------------------- */
   /*  Channel list — iOS 26 grouped on mobile, flat sidebar on desktop */
   /* ---------------------------------------------------------------- */
@@ -1663,6 +1671,7 @@ export function MessagesApp({
       busSelected={busSelected}
       onSelectBusChannel={selectBusChannel}
       formatRelativeTime={relativeTime}
+      thinkingChannelIds={thinkingChannelIds}
     />
   );
 

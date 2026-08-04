@@ -61,6 +61,8 @@ export interface ChannelSidebarProps {
   onSelectBusChannel: (channel: string) => void;
   /** Relative time formatter. */
   formatRelativeTime: (ts: number | string, nowMs: number) => string;
+  /** Channel ids whose bound taostalk_agent is currently thinking (live badge). */
+  thinkingChannelIds: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -96,6 +98,7 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
     busSelected,
     onSelectBusChannel,
     formatRelativeTime,
+    thinkingChannelIds,
   } = props;
 
   if (isMobile) {
@@ -255,20 +258,30 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                                 gap: 8,
                               }}
                             >
-                              <span
-                                style={{
-                                  flex: 1,
-                                  fontSize: 15,
-                                  fontWeight: count > 0 ? 700 : 600,
-                                  color: "var(--color-shell-text)",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {ch.name}
-                              </span>
-                              {ch.last_message_at && (
+                               <span
+                                 style={{
+                                   flex: 1,
+                                   fontSize: 15,
+                                   fontWeight: count > 0 ? 700 : 600,
+                                   color: "var(--color-shell-text)",
+                                   overflow: "hidden",
+                                   textOverflow: "ellipsis",
+                                   whiteSpace: "nowrap",
+                                 }}
+                               >
+                                 {ch.name}
+                               </span>
+                               {thinkingChannelIds.includes(ch.id) && (
+                                 <span
+                                   className="relative inline-flex h-1.5 w-1.5 shrink-0"
+                                   aria-hidden="true"
+                                   title="thinking"
+                                 >
+                                   <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
+                                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />
+                                 </span>
+                               )}
+                               {ch.last_message_at && (
                                 <span
                                   style={{
                                     fontSize: 11,
@@ -476,16 +489,26 @@ export function ChannelSidebar(props: ChannelSidebarProps) {
                           )}
                         </span>
                       )}
-                      <span
-                        className={`truncate flex-1 text-[14px] tracking-tight ${
-                          count > 0
-                            ? "font-bold text-shell-text"
-                            : "font-semibold text-shell-text"
-                        }`}
-                      >
-                        {ch.name}
-                      </span>
-                      {count > 0 && (
+                       <span
+                         className={`truncate flex-1 text-[14px] tracking-tight ${
+                           count > 0
+                             ? "font-bold text-shell-text"
+                             : "font-semibold text-shell-text"
+                         }`}
+                       >
+                         {ch.name}
+                       </span>
+                       {thinkingChannelIds.includes(ch.id) && (
+                         <span
+                           className="relative inline-flex h-1.5 w-1.5 shrink-0"
+                           aria-hidden="true"
+                           title="thinking"
+                         >
+                           <span className="taos-status-pulse absolute inset-0 rounded-full bg-amber-400" />
+                           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-400" />
+                         </span>
+                       )}
+                       {count > 0 && (
                         <span className="shrink-0 bg-unread text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 tabular-nums">
                           {count}
                         </span>
