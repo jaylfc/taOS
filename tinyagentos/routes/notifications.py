@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, field_validator
 
 from tinyagentos.auth import get_current_user
+from tinyagentos.routes.auth import _require_admin
 
 router = APIRouter()
 
@@ -45,6 +46,35 @@ async def list_notifications(request: Request, unread_only: bool = False):
             )
         return HTMLResponse("".join(html_parts))
     return items
+
+
+class CreateNotificationRequest(BaseModel):
+    title: str
+    message: str
+    level: str = "info"
+    source: str = "system"
+    data: dict | None = None
+
+
+@router.post("/api/notifications")
+async def create_notification(request: Request, body: CreateNotificationRequest):
+    """Admin-only: create a notification through the internal store.
+
+    Lets orchestrators and lead agents signal that a doc or PR is ready for
+    review without a raw DB insert, which would skip SSE and web-push delivery.
+    """
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
+    store = request.app.state.notifications
+    await store.add(
+        title=body.title,
+        message=body.message,
+        level=body.level,
+        source=body.source,
+        data=body.data,
+    )
+    return {"ok": True}
 
 
 @router.get("/api/notifications/count", response_class=HTMLResponse)
