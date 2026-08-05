@@ -25,7 +25,7 @@ Run `python3 scripts/build-agent-manual.py` to compile these into `docs/taos-age
 
 - **taos-agent** (`../../.claude/skills/taos-agent/SKILL.md`): the actionable skill for the
   OS-native taOS agent that operates the host desktop on the user's behalf. Consolidates the
-  OS-operation content from this manual (desktop/window control, apps, projects, files, memory,
+  OS-operation content from this manual (desktop and window control, apps, projects, files, memory,
   notes, chat conventions, image generation, and answering). Features the hard rule that all
   desktop driving goes only through `POST /api/desktop/command` + `POST /api/desktop/screenshot`.
   Load this when you are the built-in taOS agent acting on the host desktop.
