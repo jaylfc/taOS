@@ -29,6 +29,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useThemeStore } from "@/stores/theme-store";
 import { useDockStore } from "@/stores/dock-store";
 import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
+import { DisplayScaleCard } from "@/apps/SettingsApp/DisplayScaleCard";
 import { safeFetch, ProgressBar, RestartProgressModal } from "@/apps/SettingsApp/_shared";
 import { WallpaperPicker } from "@/components/WallpaperPicker";
 import { UpdatesSection } from "@/apps/SettingsApp/UpdatesPanel";
@@ -788,6 +789,7 @@ export function DesktopDockSection() {
       <h2 className="text-lg font-semibold mb-5">Desktop & Dock</h2>
 
       <div className="space-y-3">
+        <DisplayScaleCard />
         <Card className="p-4">
           <p className="text-sm font-medium mb-3">Wallpaper</p>
           <div className="flex items-center gap-3">

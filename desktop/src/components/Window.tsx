@@ -7,6 +7,7 @@ import { getSnapBounds } from "@/hooks/use-snap-zones";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { WindowContent } from "./WindowContent";
 import { InstallHelperPanel } from "./InstallHelperPanel";
+import { useEffectiveViewport } from "@/hooks/use-effective-viewport";
 
 interface Props {
   win: WindowState;
@@ -46,9 +47,13 @@ function WindowImpl({ win, onDrag, onDragStop }: Props) {
   // the dock. Total bottom inset = 12 (gap) + 64 (dock) + 8 (breathing)
   // = 84px. Viewport.dockH represents that total reserved area, not
   // just the dock element's height.
+  // Effective viewport, not window.innerWidth: with a display scale in effect
+  // the root is zoomed, so innerWidth no longer describes the space this window
+  // is laid out in and every clamp/maximize/snap would drift.
+  const effective = useEffectiveViewport();
   const viewport = {
-    width: window.innerWidth,
-    height: window.innerHeight,
+    width: effective.width,
+    height: effective.height,
     topBarH: 32,
     dockH: 84,
   };
