@@ -226,3 +226,53 @@ For both, then:
 
 Reviewer's job: ask where the fixture came from. A green test over a fictional
 contract is worse than no test, because it certifies the bug.
+
+## A gate that passes because it examined nothing
+
+`scripts/check_doc_gate.py diff-gate --base origin/dev` compares `origin/dev...HEAD`. Run it on a
+dirty tree **before committing** and HEAD is still `origin/dev`, so the diff is empty, no rule can
+trigger, and it prints:
+
+```
+doc-gate: clean
+```
+
+That output is byte-identical to a real pass. Nothing distinguishes "your change satisfies every
+rule" from "there was no change to check".
+
+This is not hypothetical. PR #2310 was opened with "doc-gate verified locally, both subcommands"
+in its body. The verification had run against an empty diff, and CI immediately failed the
+`contributor-skill` rule that the change had triggered all along.
+
+**So: commit first, then run the gate.** And run all four steps the workflow actually runs, not
+the two that are easy to remember:
+
+```bash
+git commit ...                                      # FIRST, or the next line proves nothing
+python scripts/check_doc_gate.py invariants
+python scripts/check_doc_gate.py diff-gate --base origin/dev
+python scripts/check_schema_migrations.py
+python scripts/check_retrofit_migrations.py
+```
+
+The general form, and it is the most common way a check lies here: **an empty result is not a
+passing result.** The same shape has appeared in a zero-byte CI log read as "no failures", a
+`grep -c` returning 0 over a log that was never fetched, and an API error payload parsed as 0%
+usage. Before trusting a green, ask what it would have printed had it examined nothing, and
+whether you would be able to tell.
+
+## Changing the dependency-audit ignore list
+
+`.github/workflows/security.yml` runs `pip-audit` with a short `--ignore-vuln` list. Every entry
+is documented inline with its own reachability argument and a re-check command. Read that block
+before touching it.
+
+- **Never add an ignore to silence a red build.** Each is a suppression, not a fix, and needs what
+  the existing entries have: why the vulnerable path is unreachable from taOS, why no upgrade
+  path exists (proved with the resolver, not the changelog), and how to re-check it.
+- **An ignore list rots, and the rot is invisible.** A new advisory against an already-suppressed
+  package looks exactly like the deliberate entries. On 2026-08-06 a third `cryptography`
+  advisory appeared between one CI run and the next; a list written from the earlier run would
+  have left the audit red while reading as a completed fix.
+- **Ignoring by CVE id works even though pip-audit reports PYSEC ids** (alias matching). Verify it
+  anyway when adding one: an ignore that silently fails to match is inert and looks correct.
