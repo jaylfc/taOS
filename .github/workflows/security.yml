@@ -46,7 +46,57 @@ jobs:
         # a patched pip is available on PyPI.
         # CVE-2026-6357 is fixed in pip 26.1 — upgrade before auditing so the
         # runner's bundled pip 26.0.1 doesn't trip the check.
+        #
+        # Three cryptography 48.0.1 advisories, ignored 2026-08-06 by Jay's
+        # decision (dec-26leeh). Each is listed with its OWN reachability
+        # argument, because they are not all in the same subsystem and a single
+        # blanket justification would be wrong for at least one of them.
+        #
+        # NO UPGRADE PATH for any of them. Every available litellm[proxy]
+        # release, including the 1.96.0.dev1 prerelease, depends on
+        # cryptography>=48.0.1,<49.0. Confirmed with the resolver rather than
+        # the changelog: forcing cryptography>=49.0 makes `uv lock` fail with
+        # "tinyagentos[proxy] depends on cryptography>=48.0.1,<49.0". Note that
+        # 69247 below is not fixed until 50.0.0, so even a 49.x bump would not
+        # clear it.
+        #
+        # CVE-2026-69249 (PYSEC-2026-3553), fixed 49.0.0. Exponential path
+        # building on duplicate self-signed intermediates, i.e. a DoS.
+        # CVE-2026-69248 (PYSEC-2026-3554), fixed 49.0.0. The verifier accepts a
+        # wildcard SAN that escapes an intermediate CA's permittedSubtrees.
+        #   Both live solely in the X.509 CHAIN-BUILDING VERIFIER. Not reachable
+        #   here: grepping the fully populated venv for x509.verification /
+        #   PolicyBuilder / ServerVerifier / ClientVerifier /
+        #   verify_directly_issued_by returns exactly one package, cryptography
+        #   itself. taOS uses this library for Ed25519 sign/verify, RSA (GitHub
+        #   App JWT), Fernet, X25519, hashes and serialization, none of which
+        #   touch chain building.
+        #
+        # CVE-2026-69247 (PYSEC-2026-3552), fixed 50.0.0. A Bleichenbacher
+        # oracle in PKCS#7 EnvelopedData DECRYPTION via distinguishable errors
+        # and timing. This is a DIFFERENT subsystem from the two above and the
+        # chain-builder argument does NOT cover it, which is why it carries its
+        # own note.
+        #   Not reachable here either: nothing in taOS references pkcs7,
+        #   EnvelopedData or S/MIME at all, and the only site-packages hits for
+        #   the vulnerable decrypt API are a pygments PHP builtin-name wordlist
+        #   (a string in a lexer, not a call). The azure and pycryptodome hits
+        #   are PKCS#7 *block padding*
+        #   (cryptography.hazmat.primitives.padding.PKCS7), an unrelated
+        #   construct that merely shares the name.
+        #
+        # REVISIT: these are suppressions, not fixes, and the list rots. A new
+        # advisory appeared between 2026-08-05 and 2026-08-06 and would have
+        # been silently masked by an incomplete list. Re-check with:
+        #   uv lock --upgrade-package cryptography     (does 49.x/50.x resolve yet?)
+        #   pip-audit                                  (any finding NOT listed here?)
+        # Drop each ignore the moment its fix version resolves. See the tracking
+        # card for the periodic re-check.
         run: |
           python -m pip install --upgrade "pip>=26.1"
           pip install pip-audit
-          pip-audit --ignore-vuln CVE-2026-3219
+          pip-audit \
+            --ignore-vuln CVE-2026-3219 \
+            --ignore-vuln CVE-2026-69247 \
+            --ignore-vuln CVE-2026-69248 \
+            --ignore-vuln CVE-2026-69249
