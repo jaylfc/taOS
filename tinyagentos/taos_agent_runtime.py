@@ -157,6 +157,98 @@ async def ensure_taos_opencode_server(app_state, model: str) -> OpenCodeServer:
     return server
 
 
+async def ensure_agent_opencode_server(
+    app_state,
+    agent_id: str,
+    model: str,
+    llm_key: str | None = None,
+) -> OpenCodeServer:
+    """Ensure an opencode server is running for the given agent.
+
+    Per-agent version of :func:`ensure_taos_opencode_server`.  Each agent gets
+    its own server with its own home directory, port, password, and LiteLLM
+    key so conversation history, memory, and identity are isolated per agent.
+    """
+    if not hasattr(app_state, "opencode_servers"):
+        app_state.opencode_servers = {}
+    if not hasattr(app_state, "opencode_server_passwords"):
+        app_state.opencode_server_passwords = {}
+    if not hasattr(app_state, "opencode_server_keys"):
+        app_state.opencode_server_keys = {}
+    if not hasattr(app_state, "opencode_server_models"):
+        app_state.opencode_server_models = {}
+    if not hasattr(app_state, "opencode_server_session_ids"):
+        app_state.opencode_server_session_ids = {}
+
+    if agent_id not in app_state.opencode_server_passwords:
+        app_state.opencode_server_passwords[agent_id] = secrets.token_hex(16)
+    password = app_state.opencode_server_passwords[agent_id]
+
+    existing = app_state.opencode_servers.get(agent_id)
+    existing_model = app_state.opencode_server_models.get(agent_id)
+
+    if existing is not None and existing.is_running() and existing_model == model:
+        return existing
+
+    if existing is not None:
+        try:
+            await existing.stop()
+        except Exception:
+            logger.debug("taos_agent_runtime: error stopping agent server", exc_info=True)
+
+    if llm_key is None:
+        llm_key = get_litellm_master_key(getattr(app_state, "data_dir", None))
+
+    from tinyagentos.installers.port_allocator import allocate_host_port
+
+    data_dir = getattr(app_state, "data_dir", None)
+    home = str(data_dir / f"{agent_id}-opencode") if data_dir else f"{agent_id}-opencode"
+    port = allocate_host_port(f"opencode-{agent_id}")
+
+    llm_proxy = getattr(app_state, "llm_proxy", None)
+    litellm_base_url = (
+        f"http://127.0.0.1:{llm_proxy.port}/v1"
+        if llm_proxy is not None
+        else "http://127.0.0.1:7834/v1"
+    )
+
+    cfg = OpenCodeServerConfig(
+        home=home,
+        port=port,
+        server_password=password,
+        litellm_base_url=litellm_base_url,
+        litellm_key=llm_key,
+        model_ids=[model],
+    )
+    server = OpenCodeServer(cfg)
+    app_state.opencode_servers[agent_id] = server
+    app_state.opencode_server_models[agent_id] = model
+    app_state.opencode_server_keys[agent_id] = llm_key
+    app_state.opencode_server_session_ids[agent_id] = None
+
+    await server.ensure_running(deadline_s=180.0)
+    return server
+
+
+async def stop_agent_opencode_server(app_state, agent_id: str) -> None:
+    """Stop the opencode server for a single agent.
+
+    Safe to call even if the server was never created.
+    """
+    servers = getattr(app_state, "opencode_servers", {})
+    server = servers.get(agent_id)
+    if server is None:
+        return
+    try:
+        await server.stop()
+    except Exception:
+        logger.debug("taos_agent_runtime: error during agent server stop", exc_info=True)
+    finally:
+        servers.pop(agent_id, None)
+        session_ids = getattr(app_state, "opencode_server_session_ids", {})
+        session_ids.pop(agent_id, None)
+
+
 async def stop_taos_opencode_server(app_state) -> None:
     """Stop the taOS agent opencode server if it was started.
 

@@ -7,21 +7,29 @@ consent flow) and gets THEIR agent(s) exposed as models. The key maps to
 
 GET /v1/models lists the agents the caller's key is consented for, each as an
 OpenAI model entry. POST /v1/chat/completions enforces the same consent contract
-(valid key, requested model in the key's agent_ids) but does NOT yet run the
-agent turn: that step drives the agent's harness and is the next slice, pending
-the turn-seam choice (see ~/.taos-team/pending-decisions.md), so a valid request
-returns 501. Scope (per-capability) enforcement and rate limiting also build on
-this binding. Per the spec, the endpoint must never resolve a model without a
-valid consent key, so the auth + scope contract lands first.
+(valid key, requested model in the key's agent_ids) and runs ONE non-streaming
+turn through the agent's host opencode server, translating the result into an
+OpenAI ChatCompletion response.  The agent keeps its memory, tools and identity
+because the turn runs through the same opencode harness the local taOS agent
+uses, not through a lightweight direct LiteLLM call.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
+from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
+from tinyagentos.taos_agent_runtime import ensure_agent_opencode_server
+
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _openai_error(message: str, *, type: str, code: str, status: int) -> JSONResponse:
@@ -58,6 +66,17 @@ async def resolve_consent_key(request: Request) -> dict | None:
     return await store.resolve(token)
 
 
+def _resolve_agent(config, agent_ref: str) -> dict | None:
+    """Return the agent dict for *agent_ref* (matched by name first, then id) or None."""
+    for agent in config.agents:
+        if agent.get("name") == agent_ref:
+            return agent
+    for agent in config.agents:
+        if agent.get("id") == agent_ref:
+            return agent
+    return None
+
+
 @router.get("/v1/models")
 async def list_models(request: Request):
     """OpenAI /v1/models: the agents this consent key may address, as models."""
@@ -80,9 +99,9 @@ async def chat_completions(request: Request):
     """OpenAI /v1/chat/completions for an agent-as-a-model.
 
     Enforces the consent contract: a valid key is required, and the requested
-    model must be one of the agents that key is consented for. Running the turn
-    through the agent's harness is the next slice (pending the seam choice), so a
-    contract-valid request returns 501 rather than a fabricated completion.
+    model must be one of the agents that key is consented for.  The turn runs
+    through the agent's host opencode server (reusing the same harness the
+    local taOS agent uses) so the agent keeps its memory, tools and identity.
 
     The body is parsed manually AFTER the auth check (not via a Pydantic
     parameter) for two reasons: auth must take precedence so an unauthenticated
@@ -125,10 +144,116 @@ async def chat_completions(request: Request):
             code="model_not_found",
             status=404,
         )
-    # Contract satisfied; the turn execution is the next slice.
-    return _openai_error(
-        "agent turn execution is not yet implemented for this surface",
-        type="server_error",
-        code="not_implemented",
-        status=501,
+
+    agent = _resolve_agent(request.app.state.config, model)
+    if agent is None:
+        return _openai_error(
+            f"the model '{model}' does not exist or you do not have access to it",
+            type="invalid_request_error",
+            code="model_not_found",
+            status=404,
+        )
+
+    agent_model = agent.get("model") or model
+    llm_key = agent.get("llm_key")
+
+    try:
+        server = await ensure_agent_opencode_server(
+            request.app.state, model, agent_model, llm_key,
+        )
+    except OpenCodeBinaryNotFoundError as exc:
+        logger.error("agent_model_api: opencode binary not found: %s", exc)
+        return _openai_error(
+            "opencode is not installed. Install it with: "
+            "curl -fsSL https://opencode.ai/install | bash -- then restart taOS.",
+            type="server_error",
+            code="service_unavailable",
+            status=503,
+        )
+    except Exception as exc:
+        logger.exception("agent_model_api: opencode server failed to start")
+        return _openai_error(
+            f"agent runtime failed to start: {exc}",
+            type="server_error",
+            code="service_unavailable",
+            status=503,
+        )
+
+    app_state = request.app.state
+    password = getattr(app_state, "opencode_server_passwords", {}).get(model, "")
+
+    cfg = OpenCodeConfig(
+        base_url=server.base_url,
+        server_password=password,
+        model_provider_id="litellm",
+        model_id=agent_model,
     )
+
+    result: dict = {"content": "", "error": None}
+
+    def sink(reply: dict) -> None:
+        kind = reply.get("kind")
+        if kind == "delta":
+            result["content"] += reply.get("content", "")
+        elif kind == "final":
+            result["content"] = reply.get("content", result["content"])
+        elif kind == "error":
+            result["error"] = reply.get("error")
+
+    adapter = OpenCodeAdapter(cfg, sink)
+    session_ids = getattr(app_state, "opencode_server_session_ids", {})
+    adapter.session_id = session_ids.get(model)
+
+    async def _drive() -> None:
+        try:
+            await adapter.ensure_session()
+            session_ids[model] = adapter.session_id
+            trace_id = uuid.uuid4().hex
+            await adapter.prompt(messages[-1].get("content", ""), trace_id=trace_id)
+            await adapter.close()
+        except Exception as exc:
+            logger.exception("agent_model_api: drive task error")
+            result["error"] = str(exc)
+
+    drive_task = asyncio.create_task(_drive())
+
+    try:
+        await asyncio.wait_for(drive_task, timeout=300.0)
+    except asyncio.TimeoutError:
+        if not drive_task.done():
+            drive_task.cancel()
+            try:
+                await drive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        result["error"] = "agent turn timed out (limit: 300s)"
+
+    if result["error"]:
+        return _openai_error(
+            result["error"],
+            type="server_error",
+            code="service_unavailable",
+            status=500,
+        )
+
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result["content"],
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    }
