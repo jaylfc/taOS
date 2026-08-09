@@ -205,6 +205,26 @@ async def _migration_v4_dedupe_active_handles(conn) -> None:
         await conn.commit()
 
 
+async def _migration_v5_add_token_min_iat(conn) -> None:
+    """Add token_min_iat column (idempotent) for per-identity token rotation.
+
+    Default value 0 means every existing row's tokens remain valid so the
+    migration cannot lock the fleet out.  Future bumps store a Unix timestamp;
+    any token whose ``iat`` claim is strictly less than this value is rejected
+    during auth, allowing per-identity credential rotation without revoking the
+    entire identity.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "token_min_iat" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN token_min_iat INTEGER NOT NULL DEFAULT 0"
+        )
+        await conn.commit()
 # ---------------------------------------------------------------------------
 # Signing-key helpers (Ed25519, persisted to disk)
 # ---------------------------------------------------------------------------
@@ -448,6 +468,7 @@ class AgentRegistryStore(BaseStore):
         # Dedupe BEFORE the index so a pre-invariant DB with duplicate active
         # handles cannot make the CREATE UNIQUE INDEX (hence boot) fail.
         await _migration_v4_dedupe_active_handles(self._db)
+        await _migration_v5_add_token_min_iat(self._db)
         # Created after the status migration so the partial index's WHERE clause
         # can reference the status column on the pre-status migration path.
         # Guard the index creation too: if some path we did not anticipate still
@@ -846,6 +867,25 @@ class AgentRegistryStore(BaseStore):
             "UPDATE agent_registry SET revoked_at = ?, status = 'revoked' "
             "WHERE canonical_id = ? AND revoked_at IS NULL",
             (now, canonical_id),
+        )
+        await self._db.commit()
+        return await self.get(canonical_id)
+
+    async def bump_token_min_iat(self, canonical_id: str, ts: int) -> Optional[dict]:
+        """Set *canonical_id*'s ``token_min_iat`` to *ts*, invalidating every
+        token minted before that Unix timestamp.
+
+        The caller is responsible for authorisation (admin/session-owner checks).
+        Returns the updated record, or ``None`` if *canonical_id* does not exist.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        record = await self.get(canonical_id)
+        if record is None:
+            return None
+        await self._db.execute(
+            "UPDATE agent_registry SET token_min_iat = MAX(token_min_iat, ?) WHERE canonical_id = ?",
+            (ts, canonical_id),
         )
         await self._db.commit()
         return await self.get(canonical_id)
