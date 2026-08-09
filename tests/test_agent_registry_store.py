@@ -1354,3 +1354,119 @@ async def test_get_by_slug_rejects_glob_metacharacters(store):
     assert await store.get_by_slug("alpha?") is None
     assert await store.get_by_slug("") is None
     assert await store.get_by_slug("Alpha") is None
+
+
+# ---------------------------------------------------------------------------
+# Migration v5: token_min_iat — existing-DB pathway
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationV5ExistingDB:
+    """Verify the guarded ALTER works on a DB created *before* token_min_iat existed."""
+
+    @pytest.mark.asyncio
+    async def test_existing_db_gains_column_and_tokens_still_work(self, tmp_path, signing_keypair):
+        """Build the pre-change agent_registry schema by hand, insert a row,
+        then init the store.  The row must gain token_min_iat = 0 and old
+        tokens must still authenticate — a fresh-schema test would pass
+        vacuously because the column is already in SCHEMA.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "pre_v5.db"
+        priv, pub = signing_keypair
+
+        # --- Build the pre-v5 schema by hand (no token_min_iat column) ---
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE agent_registry (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                canonical_id    TEXT    NOT NULL UNIQUE,
+                display_name    TEXT    NOT NULL DEFAULT '',
+                framework       TEXT    NOT NULL DEFAULT '',
+                user_id         TEXT    NOT NULL DEFAULT '',
+                origin          TEXT    NOT NULL DEFAULT 'taos-deployed',
+                handle          TEXT    NOT NULL DEFAULT '',
+                role            TEXT,
+                title           TEXT,
+                reports_to      TEXT,
+                capabilities    TEXT    NOT NULL DEFAULT '[]',
+                created_ts      TEXT    NOT NULL,
+                revoked_at      TEXT,
+                status          TEXT    NOT NULL DEFAULT 'active'
+            );
+        """)
+        # Insert a pre-existing row
+        conn.execute(
+            "INSERT INTO agent_registry "
+            "(canonical_id, display_name, framework, user_id, origin, "
+            "capabilities, created_ts, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "pre-v5-agent-20260101-000000",
+                "Pre V5 Agent",
+                "test",
+                "user-1",
+                "taos-deployed",
+                "[]",
+                "2026-01-01T00:00:00",
+                "active",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        # --- Now init the store — this runs _migration_v5_add_token_min_iat ---
+        store = AgentRegistryStore(db_path)
+        await store.init()
+
+        # The pre-existing row should have gained token_min_iat = 0
+        row = await store.get("pre-v5-agent-20260101-000000")
+        assert row is not None
+        assert row["token_min_iat"] == 0
+        assert row["display_name"] == "Pre V5 Agent"
+
+        # Old tokens should still authenticate (token_min_iat=0 means no cutoff)
+        token = mint_registry_token(
+            "pre-v5-agent-20260101-000000", priv,
+            user_id="user-1", framework="test",
+        )
+        payload = verify_registry_token(token, pub)
+        assert payload["sub"] == "pre-v5-agent-20260101-000000"
+
+        await store.close()
+
+
+# ---------------------------------------------------------------------------
+# token_min_iat — per-identity token rotation
+# ---------------------------------------------------------------------------
+
+
+class TestBumpTokenMinIat:
+    @pytest.mark.asyncio
+    async def test_bump_sets_cutoff(self, store):
+        """bump_token_min_iat persists the cutoff and the new token_min_iat is
+        readable on the record."""
+        row = await store.register(framework="test", display_name="test-agent")
+        cid = row["canonical_id"]
+
+        ts = 1700000000
+        updated = await store.bump_token_min_iat(cid, ts)
+        assert updated is not None
+        assert updated["token_min_iat"] == ts
+
+        reread = await store.get(cid)
+        assert reread["token_min_iat"] == ts
+
+    @pytest.mark.asyncio
+    async def test_default_zero_on_new_registration(self, store):
+        """Freshly registered agents have token_min_iat = 0 so all tokens
+        are valid (migration-safe default)."""
+        row = await store.register(framework="test", display_name="test-agent")
+        assert row["token_min_iat"] == 0
+
+    @pytest.mark.asyncio
+    async def test_bump_nonexistent_returns_none(self, store):
+        """bump_token_min_iat on an unknown canonical_id returns None."""
+        result = await store.bump_token_min_iat("no-such-agent-20260101-000000", 1700000000)
+        assert result is None

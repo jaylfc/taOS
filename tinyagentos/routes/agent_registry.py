@@ -15,6 +15,7 @@ POST   /api/agents/registry/{id}/approve     - lifecycle: pending → active (ad
 POST   /api/agents/registry/{id}/reject      - lifecycle: pending → rejected (admin only)
 POST   /api/agents/registry/{id}/suspend     - lifecycle: active → suspended (admin only)
 POST   /api/agents/registry/{id}/reactivate  - lifecycle: suspended → active (admin only)
+POST   /api/agents/registry/{id}/rotate-tokens - bump token_min_iat, invalidate old tokens (owner/admin)
 
 Route ordering matters: /pubkey, /revoked, and /inactive are declared before
 /{canonical_id} so the literal strings are not captured as a path parameter.
@@ -22,6 +23,7 @@ Route ordering matters: /pubkey, /revoked, and /inactive are declared before
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 import aiosqlite
@@ -218,23 +220,27 @@ async def _audit_governance(
     actor_user_id: str,
     before_status: str,
     after_status: str,
+    **extras,
 ) -> None:
-    """Write a governance audit event to the trace store (best-effort, non-fatal)."""
+    """Write a governance audit event to the trace store (best-effort, non-fatal).
+
+    Extra keyword arguments are merged into the payload (e.g. before/after
+    token_min_iat for rotation events).
+    """
     try:
         trace_registry = getattr(request.app.state, "trace_registry", None)
         if trace_registry is None:
             return
         ts = await trace_registry.get(_GOVERNANCE_SLUG)
-        await ts.record(
-            "governance",
-            payload={
-                "action": action,
-                "canonical_id": canonical_id,
-                "actor_user_id": actor_user_id,
-                "before_status": before_status,
-                "after_status": after_status,
-            },
-        )
+        payload = {
+            "action": action,
+            "canonical_id": canonical_id,
+            "actor_user_id": actor_user_id,
+            "before_status": before_status,
+            "after_status": after_status,
+            **extras,
+        }
+        await ts.record("governance", payload=payload)
     except Exception:
         logger.exception("governance audit write failed (non-fatal)")
 
@@ -753,6 +759,44 @@ async def reactivate_agent(
 ):
     """Reactivate a suspended agent (suspended → active). Admin only."""
     return await _transition(request, canonical_id, "reactivate", "active", user)
+
+
+@router.post("/api/agents/registry/{canonical_id}/rotate-tokens")
+async def rotate_tokens(
+    request: Request,
+    canonical_id: str,
+    user: CurrentUser = Depends(current_user),
+):
+    """Bump ``token_min_iat`` to the current Unix timestamp, invalidating every
+    token minted before now for this identity.
+
+    Session owner or admin only.  The rotation is a single-write DB bump (no
+    new token is minted — the caller re-mints after).  Leaves a forensic
+    audit-log entry so every rotation is traceable to an actor.
+    """
+    store = _get_store(request)
+    record = await store.get(canonical_id)
+    if record is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    require_owner_or_admin(user, record["user_id"])
+
+    ts = int(time.time())
+    before_iat = record.get("token_min_iat") or 0
+    updated = await store.bump_token_min_iat(canonical_id, ts)
+    if updated is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    await _audit_governance(
+        request,
+        action="rotate-tokens",
+        canonical_id=canonical_id,
+        actor_user_id=user.user_id,
+        before_status=record.get("status") or "active",
+        after_status=updated.get("status") or "active",
+        before_token_min_iat=before_iat,
+        after_token_min_iat=ts,
+    )
+    return updated
 
 
 # ---------------------------------------------------------------------------

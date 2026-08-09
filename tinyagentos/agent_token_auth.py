@@ -17,8 +17,10 @@ Semantics (fail closed):
   - Valid signature but the agent is not active in the registry, the sub is
     unknown, or the required scope grant is missing/expired -> 403.
 
-The registry JWT itself carries no exp claim; revocation is achieved by
-suspending the agent (status != 'active') or by setting expires_at on the grant.
+The registry JWT itself carries no exp claim; per-identity token rotation is
+achieved by bumping ``token_min_iat`` on the registry record — any token whose
+``iat`` is strictly less than the cutoff is rejected as superseded.  Per-agent
+revocation (suspending the agent or expiring the grant) remains available.
 """
 
 from datetime import datetime, timezone
@@ -109,6 +111,12 @@ async def _verify_agent_scope(
     record = await registry.get(canonical_id)
     if record is None or record.get("status") != "active":
         raise HTTPException(status_code=403, detail="agent is not active in the registry")
+
+    # Reject tokens issued before the identity's token_min_iat cutoff (rotation).
+    token_min_iat = record.get("token_min_iat") or 0
+    token_iat = payload.get("iat") or 0
+    if token_iat < token_min_iat:
+        raise HTTPException(status_code=401, detail="token superseded")
 
     # Must hold an active grant for the required scope.
     grants_store = _get_grants_store(request)
