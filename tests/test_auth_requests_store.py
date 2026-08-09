@@ -88,7 +88,7 @@ async def test_list_pending_returns_only_pending_ordered_by_created_ts(tmp_path)
         return ts.replace(tzinfo=timezone.utc)
 
     with patch("tinyagentos.auth_requests_store.datetime") as mock_dt:
-        mock_dt.now.side_effect = _now
+        mock_dt.now = lambda tz=None: _now(tz)
         mock_dt.timezone = timezone
         mock_dt.timedelta = timedelta
         s = await _store(tmp_path)
