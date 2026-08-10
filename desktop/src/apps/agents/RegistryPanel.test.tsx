@@ -352,4 +352,47 @@ describe("RegistryPanel collapsed retired", () => {
     expect(retiredToggle).toHaveAttribute("aria-expanded", "true");
     expect(retiredPanel!).not.toHaveClass("hidden");
   }, 10_000);
+
+  it("treats unknown RegistryStatus as retired (robust to new statuses)", async () => {
+    const entries: RegistryEntry[] = [
+      { ...fakeEntry, canonical_id: "active-1", display_name: "ActiveAgent", status: "active" },
+      {
+        ...fakeEntry,
+        canonical_id: "deprecated-1",
+        display_name: "DeprecatedAgent",
+        status: "deprecated",
+      },
+    ];
+    vi.stubGlobal("fetch", makeFetch(entries));
+
+    render(<RegistryPanel />);
+
+    // Expand the registry panel
+    const toggle = screen.getByRole("button", { name: /agent registry/i });
+    await act(async () => {
+      toggle.click();
+    });
+
+    await waitFor(
+      () => {
+        // Active agents always visible
+        expect(screen.getByText("ActiveAgent")).toBeInTheDocument();
+      },
+      { timeout: 3000 },
+    );
+
+    // Unknown status agent appears in the retired section
+    const retiredSection = screen.getByRole("region", {
+      name: "Retired registry entries",
+    });
+    expect(retiredSection).toBeInTheDocument();
+
+    const retiredToggle = screen.getByRole("button", {
+      name: /retired \(1\)/i,
+    });
+    expect(retiredToggle).toBeInTheDocument();
+
+    // DeprecatedAgent is in the DOM but hidden inside collapsed retired panel
+    expect(screen.getByText("DeprecatedAgent")).toBeInTheDocument();
+  }, 10_000);
 });
