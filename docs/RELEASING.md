@@ -34,6 +34,20 @@ CI runs the backend pytest suite and frontend vitest on every PR; both must be g
 Once the PR is merged to `dev`, open a follow-up PR from `dev` to `master`.
 After that PR merges, the install-count telemetry at taos.my starts recording the new version for every fresh install.
 
+The `secret-ignores-gate` runs on the `master` push (and on the PR merge result)
+and confirms the promoted `.gitignore` still ignores every secret-shaped path it
+did on `dev` -- `identity.json`, `*.key`, `*.p8`, `*credentials.json`, `*creds*.json`
+and the `*_private.*` key shapes, plus the `secrets/` and `data/hub/` rules. Re-run
+it by hand if a conflict resolution touched `.gitignore`:
+
+```
+python3 scripts/check_secret_ignores.py
+```
+
+Do not skip this: a `.gitignore` conflict resolution can quietly drop a
+key-material rule while every test stays green. The gate is the verification, not
+an assumption.
+
 ### 5. Tag and create a GitHub Release
 
 On `master`, after the merge commit:

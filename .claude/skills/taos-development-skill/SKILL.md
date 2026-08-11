@@ -452,6 +452,29 @@ trailer, which is logged by the gate:
 Store-Unwired-Intentionally: <ClassName>, <why>
 ```
 
+## Secret-ignores gate
+
+A gate (`.github/workflows/secret-ignores-gate.yml`, running `scripts/check_secret_ignores.py`)
+verifies that the committed `.gitignore` still protects known secret-shaped paths on every
+promotion target. A `.gitignore` rule is the kind of file a rebase conflict can quietly drop
+during a dev->master promotion while every test stays green and nothing builds red, so the
+protection is asserted here, not assumed. The gate runs on push to `master`, `dev` and
+`release/*` (a dropped rule fails the branch it lands on) and on PRs to those branches (a
+conflict-resolution loss fails before the merge, since the merge commit's `.gitignore` is what
+is checked).
+
+Two signals, defense in depth:
+
+- Every required protection rule must appear verbatim as an active line of `.gitignore`
+  (`*.key`, `identity.json`, `*.p8`, `*credentials.json`, `*creds*.json`, the `*_private.*`
+  key shapes, `secrets/`, `data/hub/`, and the rest listed in `REQUIRED_PATTERNS` in the
+  script). Comment prose and narrower sibling rules do not satisfy a rule.
+- A set of secret-shaped paths (`data/hub/identity.json`, `foo.key`, `creds.json`, `x.p8`,
+  `y_credentials.json`, ...) must all be reported ignored by `git check-ignore`.
+
+Removing any one protection pattern turns the gate red -- proven by a parametrized test that
+drops each pattern from a copy of the real `.gitignore` and asserts the guard fails.
+
 ## Upstream conventions (from CONTRIBUTING.md)
 
 - **Target branch is `dev`, not `master`.** `master` is the stable live-install track.
