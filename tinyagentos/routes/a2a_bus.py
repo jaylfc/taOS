@@ -250,6 +250,12 @@ class BusSendBody(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class UpdateVerificationRequest(BaseModel):
+    """Request body for update verification endpoint."""
+    content_type: str
+    capability_identifiers: list[str]
+
+
 async def _resolve_send_identity(request: Request, body_from: str | None) -> str:
     """Return the bus ``from`` handle authorized for this send, or raise.
 
