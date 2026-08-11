@@ -70,6 +70,10 @@ REQUIRED_PATTERNS = [
     "data/*.key",
     "data/*.token",
     "data/hub/",
+    # LiteLLM proxy master key: bare `_key` suffix, matched by NO glob above
+    # (data/*.key needs a `.key` suffix). It sat live and unignored on dev
+    # boxes until this rule (JAY-QUEUE item, 2026-08-08).
+    "data/.litellm_master_key",
 ]
 
 # Secret-shaped paths that must actually be ignored by `git check-ignore`. Each
@@ -92,6 +96,7 @@ SECRET_PATHS = [
     "secrets/foo.token",            # secrets/
     "data/.secrets_key",            # data/.secrets_key
     "data/secrets.db-wal",          # data/secrets.db*
+    "data/.litellm_master_key",     # data/.litellm_master_key (exact)
 ]
 
 

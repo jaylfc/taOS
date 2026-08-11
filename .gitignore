@@ -152,6 +152,7 @@ data/.seeded-agent-tokens.json
 data/secrets.db*
 data/*.key
 data/*.token
+data/.litellm_master_key
 
 # Key material and secrets. Added 2026-07-27 after data/hub/identity.json was
 # committed to PR #2043 with signing_private and encryption_private in
