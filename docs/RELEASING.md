@@ -40,7 +40,7 @@ did on `dev` -- `identity.json`, `*.key`, `*.p8`, `*credentials.json`, `*creds*.
 and the `*_private.*` key shapes, plus the `secrets/` and `data/hub/` rules. Re-run
 it by hand if a conflict resolution touched `.gitignore`:
 
-```
+```bash
 python3 scripts/check_secret_ignores.py
 ```
 
