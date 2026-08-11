@@ -151,17 +151,16 @@ class ProjectListEntriesStore(BaseStore):
                 ),
             )
         else:
+            position = await self._get_next_position(project_id, list_id)
             await self._db.execute(
                 "INSERT INTO project_list_entries "
                 "(id, list_id, project_id, text, original_text, category, status, "
                 "done, author_kind, author_id, position, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                "COALESCE((SELECT MAX(position) + 1 FROM project_list_entries "
-                "WHERE list_id = ? AND project_id = ?), 0), ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry_id, list_id, project_id, text, original_text,
                     category, "new", 0, author_kind, author_id,
-                    list_id, project_id, now, now,
+                    position, now, now,
                 ),
             )
         await self._db.commit()
@@ -174,8 +173,8 @@ class ProjectListEntriesStore(BaseStore):
             row = await cur.fetchone()
             if row is None:
                 return None
-        keys = [d[0] for d in cur.description]
-        return dict(zip(keys, row))
+            keys = [d[0] for d in cur.description]
+            return dict(zip(keys, row))
 
     async def list_entries(
         self,
@@ -259,19 +258,31 @@ class ProjectListEntriesStore(BaseStore):
         return cursor.rowcount == 1
 
     async def reorder_entries(self, project_id: str, list_id: str, entries: list[dict]) -> bool:
-        for entry in entries:
-            cursor = await self._db.execute(
-                "UPDATE project_list_entries SET position = ?, updated_at = ? "
-                "WHERE id = ? AND project_id = ? AND list_id = ?",
-                (entry["position"], time.time(), entry["id"], project_id, list_id),
-            )
-            if cursor.rowcount == 0:
-                await self._db.rollback()
-                return False
+        try:
+            for entry in entries:
+                cursor = await self._db.execute(
+                    "UPDATE project_list_entries SET position = ?, updated_at = ? "
+                    "WHERE id = ? AND project_id = ? AND list_id = ?",
+                    (entry["position"], time.time(), entry["id"], project_id, list_id),
+                )
+                if cursor.rowcount == 0:
+                    await self._db.rollback()
+                    return False
+        except Exception:
+            await self._db.rollback()
+            raise
         await self._db.commit()
         return True
 
     async def _get_next_position(self, project_id: str, list_id: str) -> int:
+        if list_id is None:
+            async with self._db.execute(
+                "SELECT MAX(position) + 1 FROM project_list_entries "
+                "WHERE project_id = ? AND list_id IS NULL",
+                (project_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                return row[0] if row[0] is not None else 0
         async with self._db.execute(
             "SELECT MAX(position) + 1 FROM project_list_entries "
             "WHERE project_id = ? AND list_id = ?",

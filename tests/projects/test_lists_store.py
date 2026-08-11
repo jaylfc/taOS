@@ -294,36 +294,122 @@ async def test_reorder_entries_does_not_corrupt_sibling_list(entries_store):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_add_entry_distinct_positions(entries_store, monkeypatch):
-    """Two concurrent add_entry calls without explicit positions must not
-    persist duplicate positions."""
-    original = entries_store._get_next_position
+async def test_get_entry_does_not_raise_on_description_access(entries_store):
+    """get_entry must read cur.description inside the async with block, not
+    after the cursor is closed."""
+    e = await entries_store.add_entry(
+        list_id="lst-1",
+        project_id="prj-1",
+        text="Test entry",
+        original_text="Test entry",
+        author_kind="agent",
+        author_id="agent-1",
+        position=0,
+    )
+    result = await entries_store.get_entry(e["id"])
+    assert result is not None
+    assert result["id"] == e["id"]
+    assert result["text"] == "Test entry"
 
-    async def slow_next_position(project_id, list_id):
-        val = await original(project_id, list_id)
-        await asyncio.sleep(0)
-        return val
 
-    monkeypatch.setattr(entries_store, "_get_next_position", slow_next_position)
+@pytest.mark.asyncio
+async def test_reorder_entries_rolls_back_on_exception(entries_store):
+    """If an UPDATE raises mid-loop, reorder_entries must rollback all prior
+    partial updates so no position change persists, even after a later commit."""
+    a = await entries_store.add_entry(
+        list_id="lst-1", project_id="prj-1", text="A", original_text="A",
+        author_kind="agent", author_id="agent-1", position=0,
+    )
+    b = await entries_store.add_entry(
+        list_id="lst-1", project_id="prj-1", text="B", original_text="B",
+        author_kind="agent", author_id="agent-1", position=1,
+    )
+    original_execute = entries_store._db.execute
 
-    e1, e2 = await asyncio.gather(
-        entries_store.add_entry(
-            list_id="lst-1",
+    async def fake_execute(sql, params=()):
+        if "UPDATE project_list_entries SET position" in sql:
+            raise RuntimeError("simulated failure")
+        return await original_execute(sql, params)
+
+    entries_store._db.execute = fake_execute
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        await entries_store.reorder_entries(
             project_id="prj-1",
-            text="First",
-            original_text="First",
-            author_kind="agent",
-            author_id="agent-1",
-        ),
-        entries_store.add_entry(
             list_id="lst-1",
-            project_id="prj-1",
-            text="Second",
-            original_text="Second",
-            author_kind="agent",
-            author_id="agent-1",
-        ),
+            entries=[
+                {"id": a["id"], "position": 10},
+                {"id": b["id"], "position": 20},
+            ],
+        )
+
+    entries_store._db.execute = original_execute
+    await entries_store._db.commit()
+
+    a_after = await entries_store.get_entry(a["id"])
+    b_after = await entries_store.get_entry(b["id"])
+    assert a_after["position"] == 0
+    assert b_after["position"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_next_position_uses_is_null_for_none_list_id(entries_store):
+    """_get_next_position with list_id=None must not coerce None to ''.
+    It must use the IS NULL branch so that rows with NULL list_id are
+    visible (rather than the old list_id = '' path which cannot match NULL)."""
+    # With no unfiled rows, should return 0 without error
+    result = await entries_store._get_next_position("prj-1", None)
+    assert result == 0
+
+    # Seed a row with an explicit list_id; _get_next_position(None) must
+    # NOT see it (it belongs to a named list, not the unfiled bucket).
+    await entries_store.add_entry(
+        list_id="lst-seed",
+        project_id="prj-1",
+        text="Seeded",
+        original_text="Seeded",
+        author_kind="agent",
+        author_id="agent-1",
+        position=0,
+    )
+    result_after_seed = await entries_store._get_next_position("prj-1", None)
+    assert result_after_seed == 0, (
+        "_get_next_position(prj-1, None) should not count rows with a "
+        f"named list_id, got {result_after_seed}"
     )
 
-    positions = {e1["position"], e2["position"]}
-    assert len(positions) == 2, f"expected distinct positions, got {positions}"
+
+@pytest.mark.asyncio
+async def test_concurrent_add_entry_distinct_positions(entries_store, monkeypatch):
+    """Two sequential add_entry calls without explicit positions must each
+    call _get_next_position, not use a hard-coded fallback."""
+    positions_seen = []
+    original = entries_store._get_next_position
+
+    async def recording_next_position(project_id, list_id):
+        val = await original(project_id, list_id)
+        positions_seen.append(val)
+        return val
+
+    monkeypatch.setattr(entries_store, "_get_next_position", recording_next_position)
+
+    e1 = await entries_store.add_entry(
+        list_id="lst-1",
+        project_id="prj-1",
+        text="First",
+        original_text="First",
+        author_kind="agent",
+        author_id="agent-1",
+    )
+    e2 = await entries_store.add_entry(
+        list_id="lst-1",
+        project_id="prj-1",
+        text="Second",
+        original_text="Second",
+        author_kind="agent",
+        author_id="agent-1",
+    )
+
+    assert e1["position"] == 0
+    assert e2["position"] == 1
+    assert positions_seen == [0, 1]
