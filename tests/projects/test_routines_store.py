@@ -212,6 +212,7 @@ async def test_update_routine_changes_fields(store):
 
 @pytest.mark.asyncio
 async def test_update_routine_cron_expr_recomputes_next_fire(store):
+    store._clock = staticmethod(lambda: 43200.0)
     r = await store.create_routine(
         project_id="prj-1", title="Original", created_by="u", cron_expr="0 3 * * *",
     )

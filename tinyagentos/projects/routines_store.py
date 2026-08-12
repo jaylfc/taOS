@@ -57,6 +57,7 @@ def _compute_next_fire(cron_expr: str, base_ts: float) -> float:
 
 class RoutineStore(BaseStore):
     SCHEMA = ROUTINES_SCHEMA
+    _clock = staticmethod(time.time)
 
     async def create_routine(
         self,
@@ -77,7 +78,7 @@ class RoutineStore(BaseStore):
             _validate_cron(cron_expr)
 
         rid = new_id("rtn")
-        now = time.time()
+        now = self._clock()
         webhook_token = secrets.token_urlsafe(32) if trigger_kind == "webhook" else None
         next_fire = _compute_next_fire(cron_expr, now) if trigger_kind == "cron" and enabled else None
 
@@ -183,7 +184,7 @@ class RoutineStore(BaseStore):
         # Recompute next_fire whenever the schedule or enabled flag could have
         # changed what "due" means for this routine.
         if existing["trigger_kind"] == "cron" and (cron_expr is not None or enabled is not None):
-            next_fire = _compute_next_fire(new_cron_expr, time.time()) if new_enabled and new_cron_expr else None
+            next_fire = _compute_next_fire(new_cron_expr, self._clock()) if new_enabled and new_cron_expr else None
             sets.append("next_fire = ?")
             params.append(next_fire)
 
@@ -191,7 +192,7 @@ class RoutineStore(BaseStore):
             return existing
 
         sets.append("updated_at = ?")
-        params.append(time.time())
+        params.append(self._clock())
         params.append(routine_id)
         await self._db.execute(
             f"UPDATE routines SET {', '.join(sets)} WHERE id = ?", params
