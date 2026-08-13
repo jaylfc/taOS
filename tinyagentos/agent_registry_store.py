@@ -670,6 +670,47 @@ class AgentRegistryStore(BaseStore):
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
 
+    async def get_by_handle_normalised(
+        self, handle: str, *, status: str = "active"
+    ) -> Optional[dict]:
+        """Return the oldest entry whose handle SLUGIFIES to *handle*'s slug.
+
+        ``get_by_handle`` is an exact SQL match, which is why one identity can
+        exist under two spellings at once: the consent approve path registers
+        ``_slugify(identity_claim)`` (``taosmd-dev``) while ``_INTERNAL_AGENTS``
+        names the display spelling (``@taOSmd-dev``).  Looking up only the
+        spelling we happen to hold misses the other row and mints a duplicate.
+
+        Matching on the slug is direction-free: every spelling of one handle
+        maps to the same key, so it does not matter which the caller has.  The
+        reverse is impossible to do by string surgery -- ``taosmd-dev`` cannot
+        be turned back into ``@taOSmd-dev`` because slugifying discards case.
+
+        The scan is deliberate: the registry holds a handful of rows, there is
+        no index on a normalised handle, and correctness here is worth more than
+        an index.  Pass ``status=None`` to match any status.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        want = _slugify(handle)
+        if not want:
+            return None
+        if status is None:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE handle != '' ORDER BY id"
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM agent_registry WHERE handle != '' AND status = ? ORDER BY id",
+                (status,),
+            )
+        rows = await cursor.fetchall()
+        for row in rows:
+            rec = _row_to_dict(row)
+            if _slugify(rec.get("handle") or "") == want:
+                return rec
+        return None
+
     async def list_all(self, *, status: Optional[str] = None) -> list[dict]:
         """Return all registry records, optionally filtered by *status*."""
         if self._db is None:
