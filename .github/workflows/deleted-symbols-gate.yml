@@ -14,6 +14,9 @@ name: Deleted symbols gate
 
 on:
   pull_request:
+    # "edited" so a waiver trailer added by editing the PR body retriggers the
+    # gate (a re-run replays the stale event payload with the old body).
+    types: [opened, synchronize, reopened, edited]
     branches: [master, dev]
 
 jobs:

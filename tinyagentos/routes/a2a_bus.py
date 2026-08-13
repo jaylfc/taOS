@@ -25,6 +25,7 @@ Bus API (verified live):
 from __future__ import annotations
 
 import logging
+import math
 import os
 
 import httpx
@@ -100,39 +101,105 @@ async def bus_channels(request: Request):
     return {"channels": channels, "available": True}
 
 
+# Query params this endpoint understands.  Anything else is a 400 rather than a
+# silent no-op: an ignored cursor param is indistinguishable from a cursor that
+# works, so a reader that passes `since_id=` believes it is reading incrementally
+# while it re-reads the whole window forever.  Measured on the live proxy before
+# this changed: `since_id=2430` returned 500 messages starting at id 1890.
+_MESSAGES_PARAMS = frozenset({"channel", "thread", "limit", "since"})
+
+# Selectors meaning "every thread", not one named channel.  `all` is the idiom
+# the raw bus and `taosmd a2a-watch` document, and it exists precisely so a
+# reader cannot miss a thread created after it started.  Forwarded here as "omit
+# the thread param", which is how the bus itself spells all-threads.
+_ALL_CHANNELS = frozenset({"all", "*"})
+
+
 @router.get("/api/a2a/bus/messages")
-async def bus_messages(
-    request: Request,
-    channel: str = "",
-    limit: int = 100,
-    since: float | None = None,
-):
-    """Read messages from one bus channel, oldest-first as the bus returns them.
+async def bus_messages(request: Request):
+    """Read messages from the bus, oldest-first as the bus returns them.
 
     Authorized readers: an admin session, the host local token, or an active
     agent registry JWT holding the ``a2a_receive`` scope.
 
-    ``channel`` is required and maps to the bus ``thread`` query param; ``*`` is
-    rejected here (it is only meaningful as an all-threads selector on the
-    stream endpoint). ``limit`` is clamped to 1..500. ``since`` is forwarded
-    verbatim to the bus as the cursor (a message ``ts``); the bus replays
-    everything after it, so an agent can resume from the highest ``ts`` it has
-    processed. On a bus error this returns an empty list with ``available:
-    false`` and HTTP 200.
+    ``channel`` is required and maps to the bus ``thread`` query param;
+    ``thread`` is accepted as an alias because that is the raw bus's own name
+    for it.  ``channel=all`` (or ``*``) reads every thread.  ``limit`` is clamped
+    to 1..500.  ``since`` is the cursor and is a message ``ts`` (a float), NOT an
+    id -- it is forwarded verbatim and the bus replays everything after it.  Any
+    other query param is a 400.  On a bus error this returns an empty list with
+    ``available: false`` and HTTP 200.
+
+    A named channel that the bus does not know is reported as ``channel_known:
+    false`` alongside the empty list.  Channels on this bus exist only once
+    something has been posted to them, so an unknown name and a channel nobody
+    has written to yet are the same state -- but a reader that quietly gets a
+    200 and nothing else cannot tell a typo from a quiet channel, and stays
+    silent forever believing it is connected.
     """
     await _authorize_bus_read(request)
-    if not channel:
-        return JSONResponse({"error": "channel required"}, status_code=400)
-    if channel == "*":
+
+    unknown = sorted(set(request.query_params.keys()) - _MESSAGES_PARAMS)
+    if unknown:
         return JSONResponse(
-            {"error": "wildcard channel not supported here; use /api/a2a/bus/stream for all-threads"},
+            {
+                "error": f"unknown query parameter(s): {', '.join(unknown)}",
+                "accepted": sorted(_MESSAGES_PARAMS),
+                "hint": "the cursor is 'since' and takes a message ts (float), not an id",
+            },
             status_code=400,
         )
 
+    # `thread` is an alias for `channel`, so passing BOTH with different values
+    # has no correct interpretation -- and picking one silently drops the other,
+    # which is the same "ignored param reads as a working one" failure this
+    # endpoint is being fixed for.  Identical values are harmless and allowed.
+    chan_param = request.query_params.get("channel") or ""
+    thread_param = request.query_params.get("thread") or ""
+    if chan_param and thread_param and chan_param != thread_param:
+        return JSONResponse(
+            {
+                "error": (
+                    "channel and thread are the same parameter and disagree: "
+                    f"channel={chan_param!r} thread={thread_param!r}"
+                ),
+                "hint": "pass one of them, not both",
+            },
+            status_code=400,
+        )
+    channel = chan_param or thread_param
+    if not channel:
+        return JSONResponse({"error": "channel required"}, status_code=400)
+
+    try:
+        limit = int(request.query_params.get("limit", 100))
+    except ValueError:
+        return JSONResponse({"error": "limit must be an integer"}, status_code=400)
     limit = max(1, min(500, limit))
-    params: dict = {"thread": channel, "limit": limit}
-    if since is not None:
-        params["since"] = since
+
+    since_raw = request.query_params.get("since")
+    params: dict = {"limit": limit}
+    if channel not in _ALL_CHANNELS:
+        params["thread"] = channel
+    if since_raw is not None:
+        try:
+            since_val = float(since_raw)
+        except ValueError:
+            return JSONResponse(
+                {"error": "since must be a message ts (float), not an id"},
+                status_code=400,
+            )
+        # float() happily accepts "nan", "inf" and "-inf".  A NaN cursor makes
+        # every comparison on the bus side false, so the reader gets a silent
+        # empty window forever and a 200 confirming it -- the exact failure this
+        # endpoint is being fixed for, reintroduced through the validator.
+        if not math.isfinite(since_val):
+            return JSONResponse(
+                {"error": "since must be a finite message ts (float), not an id"},
+                status_code=400,
+            )
+        params["since"] = since_val
+
     bus = _bus_url()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -147,7 +214,52 @@ async def bus_messages(
         return JSONResponse({"messages": [], "available": False}, status_code=200)
 
     messages = data.get("messages", []) if isinstance(data, dict) else []
-    return {"messages": messages, "available": True}
+    body: dict = {"messages": messages, "available": True}
+
+    # Only pay for the channel lookup when the answer is empty AND a specific
+    # channel was named -- that is the only case where "no messages" is
+    # ambiguous, and it keeps the normal read at one bus call.
+    if not messages and channel not in _ALL_CHANNELS:
+        body["channel_known"] = await _channel_exists(bus, channel)
+    return body
+
+
+async def _channel_exists(bus: str, channel: str) -> bool:
+    """True if *channel* appears in the bus channel list.
+
+    Fails OPEN (returns True) when the channel list cannot be fetched: an
+    unreachable bus must not be reported to the caller as "your channel name is
+    wrong", which would send them chasing a typo that does not exist.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{bus}/a2a/channels")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("A2A bus channel probe failed (%s): %s", bus, exc)
+        return True
+    # Fail open on a payload we cannot read, not just on a transport failure.
+    # A 200 carrying an error body (or anything that is not the channel list)
+    # would otherwise leave `channels` empty and report every channel as
+    # unknown -- an accusation of a typo, generated by a bus-side fault, which
+    # is precisely the false alarm this probe exists to avoid.
+    if not isinstance(data, dict) or "channels" not in data:
+        logger.warning(
+            "A2A bus channel probe got an unreadable payload from %s: %r", bus, data
+        )
+        return True
+    channels = data.get("channels") or []
+    # The bus spells it "channel" in this payload (verified against the live bus:
+    # {"channels":[{"channel":"build","members":[...],...}]}) while the SAME
+    # concept is "thread" on /a2a/messages. Accept both rather than trust one
+    # spelling; an empty name set here would silently report every channel as
+    # unknown, which is the exact false alarm this function exists to avoid.
+    names = {
+        (c.get("channel") or c.get("name") or c.get("thread")) if isinstance(c, dict) else c
+        for c in channels
+    }
+    return channel in names
 
 
 @router.get("/api/a2a/bus/stream")
