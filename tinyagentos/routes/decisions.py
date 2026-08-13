@@ -606,7 +606,8 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     routed_exec = await _apply_execution_grant(request, updated, stored_value)
     routed_deleg = await _apply_delegation_grant(request, updated, stored_value)
     routed_pair = await _apply_device_pairing_grant(request, updated, stored_value)
-    if not (routed_app or routed_exec or routed_deleg or routed_pair):
+    routed_collab = await _apply_collab_delegation_grant(request, updated, stored_value)
+    if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_collab):
         await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
 
@@ -798,6 +799,48 @@ async def _apply_delegation_grant(request: Request, decision: dict, value) -> bo
         reply = "delegation approved - the task has been assigned"
     else:
         reply = "delegation approved, but assigning the task failed - please retry"
+    await _route_answer_to_agent(decision, reply)
+    return True
+
+
+async def _apply_collab_delegation_grant(request: Request, decision: dict, value) -> bool:
+    """Side effect for a cross-user collab delegation-gate Decision (D1): the
+    decision's metadata carries {kind: "collab_delegation_gate", contact_id,
+    agent_slug, display_name, granted_scopes, denied_scopes, project_id}.
+    Approving it mints the sponsored project invite via
+    ``complete_delegation_approval`` — this is the manual approval path that
+    previously had NO caller, so a delegation request reached a Decisions card
+    but nothing ever happened on approval.  Denying just routes the answer.
+    Mirrors ``_apply_delegation_grant``: the answer is already persisted, so a
+    mint hiccup must not fail the answer."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "collab_delegation_gate":
+        return False
+    approved = value == "approve"
+    completed = False
+    if approved:
+        try:
+            from tinyagentos.delegation_handler import complete_delegation_approval
+
+            result = await complete_delegation_approval(
+                request, decision_metadata=meta
+            )
+            completed = result.get("status") == "approved"
+        except Exception:
+            logger.warning(
+                "collab delegation approval failed for decision %s",
+                decision.get("id"), exc_info=True,
+            )
+    # The collab delegation decision's from_agent is a hub contact id (e.g.
+    # "hub:sponsor"), not an "@agent" handle, so _route_answer_to_agent is a
+    # no-op here; the mint result is delivered over the peer channel.  Keep the
+    # reply routing call for symmetry/consistency with the other gate handlers.
+    if not approved:
+        reply = "delegation denied"
+    elif completed:
+        reply = "delegation approved - the agent invite has been minted"
+    else:
+        reply = "delegation approved, but minting the invite failed - please retry"
     await _route_answer_to_agent(decision, reply)
     return True
 

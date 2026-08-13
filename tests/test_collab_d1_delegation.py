@@ -223,7 +223,7 @@ class TestSponsorRegistryMethods:
 
     @pytest.mark.asyncio
     async def test_migration_adds_sponsor_column(self, tmp_path):
-        from tinyagentos.agent_registry_store import _migration_v5_add_sponsor_contact_id
+        from tinyagentos.agent_registry_store import _migration_v7_add_sponsor_contact_id
 
         import aiosqlite
 
@@ -249,7 +249,7 @@ class TestSponsorRegistryMethods:
         await conn.commit()
 
         # Migration should add the column
-        await _migration_v5_add_sponsor_contact_id(conn)
+        await _migration_v7_add_sponsor_contact_id(conn)
 
         # Verify column exists
         cols = {row[1] for row in await (await conn.execute(
@@ -258,7 +258,7 @@ class TestSponsorRegistryMethods:
         assert "sponsor_contact_id" in cols
 
         # Idempotent
-        await _migration_v5_add_sponsor_contact_id(conn)
+        await _migration_v7_add_sponsor_contact_id(conn)
 
         await conn.close()
 
@@ -586,3 +586,136 @@ class TestDelegationE2E:
             await store.redeem(invite_id, "9999")
 
         await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Manual approval path (the WIRED path): approving a collab_delegation_gate
+# decision must actually mint the sponsored invite via complete_delegation_approval.
+# ---------------------------------------------------------------------------
+
+class TestManualApprovalWiring:
+    """Regression guard for the dead manual path: a delegation request that
+    lands in a Decisions card (kind collab_delegation_gate) must, on approval,
+    actually mint the sponsored project invite.  Previously nothing read the
+    decision's metadata kind, so approval was a no-op."""
+
+    @pytest.mark.asyncio
+    async def test_approve_delegation_gate_mints_invite(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.projects.invite_store import ProjectInviteStore
+        from tinyagentos.routes.decisions import AnswerIn, answer_decision
+
+        invite_store = ProjectInviteStore(tmp_path / "invites.db")
+        await invite_store.init()
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        # The contact must still be a human collaborator at approval time.
+        project_store = AsyncMock()
+        project_store.is_project_member.return_value = True
+
+        request = MagicMock()
+        request.app.state.project_invites = invite_store
+        request.app.state.project_store = project_store
+        request.app.state.decision_store = decision_store
+
+        decision = await decision_store.create(
+            from_agent="hub:sponsor",
+            question=(
+                "hub:sponsor wants to delegate agent 'Grok TAOS' (grok-taos) "
+                "to this project. Requested scopes: a2a_send, project_tasks."
+            ),
+            type="approve_deny",
+            priority="blocking",
+            project_id="prj-test",
+            user_id="admin-user",
+            metadata={
+                "kind": "collab_delegation_gate",
+                "contact_id": "hub:sponsor",
+                "agent_slug": "grok-taos",
+                "display_name": "Grok TAOS",
+                "granted_scopes": ["a2a_send", "project_tasks"],
+                "denied_scopes": [],
+                "project_id": "prj-test",
+            },
+        )
+
+        user = MagicMock()
+        user.is_admin = True
+        user.user_id = "admin-user"
+
+        updated = await answer_decision(
+            decision["id"], AnswerIn(value="approve"), request, user
+        )
+
+        assert updated["status"] == "answered"
+
+        # The delegation must have actually minted a project invite.
+        invites = await invite_store.list_for_project("prj-test")
+        assert len(invites) == 1
+        minted = invites[0]
+        assert minted["display_name"] == "Grok TAOS"
+        assert minted["created_by"] == "hub:sponsor"
+        scopes = minted["scopes"]
+        assert "a2a_send" in scopes
+        assert "project_tasks" in scopes
+
+        await invite_store.close()
+        await decision_store.close()
+
+    @pytest.mark.asyncio
+    async def test_deny_delegation_gate_mints_nothing(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from tinyagentos.decisions.decision_store import DecisionStore
+        from tinyagentos.projects.invite_store import ProjectInviteStore
+        from tinyagentos.routes.decisions import AnswerIn, answer_decision
+
+        invite_store = ProjectInviteStore(tmp_path / "invites.db")
+        await invite_store.init()
+        decision_store = DecisionStore(tmp_path / "decisions.db")
+        await decision_store.init()
+
+        project_store = AsyncMock()
+        project_store.is_project_member.return_value = True
+
+        request = MagicMock()
+        request.app.state.project_invites = invite_store
+        request.app.state.project_store = project_store
+        request.app.state.decision_store = decision_store
+
+        decision = await decision_store.create(
+            from_agent="hub:sponsor",
+            question="delegation gate",
+            type="approve_deny",
+            priority="blocking",
+            project_id="prj-test",
+            user_id="admin-user",
+            metadata={
+                "kind": "collab_delegation_gate",
+                "contact_id": "hub:sponsor",
+                "agent_slug": "grok-taos",
+                "display_name": "Grok TAOS",
+                "granted_scopes": ["a2a_send"],
+                "denied_scopes": [],
+                "project_id": "prj-test",
+            },
+        )
+
+        user = MagicMock()
+        user.is_admin = True
+        user.user_id = "admin-user"
+
+        updated = await answer_decision(
+            decision["id"], AnswerIn(value="deny"), request, user
+        )
+
+        assert updated["status"] == "answered"
+        invites = await invite_store.list_for_project("prj-test")
+        assert invites == []
+
+        await invite_store.close()
+        await decision_store.close()
+
