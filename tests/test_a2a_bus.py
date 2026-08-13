@@ -266,3 +266,89 @@ async def test_since_is_forwarded_as_the_cursor(client):
         "/api/a2a/bus/messages", params={"channel": "build", "since": "1786630185.75"}
     )
     assert route.calls.last.request.url.params["since"] == "1786630185.75"
+
+
+@pytest.mark.asyncio
+async def test_channel_and_thread_disagreeing_is_400(client):
+    """`thread` is an ALIAS for `channel`, so both-with-different-values has no
+    correct reading -- and silently preferring one drops the other, which is the
+    same "ignored param reads as a working one" defect this endpoint was fixed
+    for. Reintroducing it through the alias would be the quietest possible
+    regression: the caller names the channel they want and reads another one.
+    """
+    resp = await client.get(
+        "/api/a2a/bus/messages", params={"channel": "build", "thread": "ops"}
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "build" in body["error"] and "ops" in body["error"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_channel_and_thread_agreeing_is_accepted(client):
+    """The 400 above must fire on DISAGREEMENT, not on the alias being present.
+
+    Without this pair the check could reject every request carrying both params
+    and still pass its own test.
+    """
+    route = respx.get(f"{_BUS}/a2a/messages").mock(
+        return_value=Response(200, json={"messages": []})
+    )
+    resp = await client.get(
+        "/api/a2a/bus/messages", params={"channel": "build", "thread": "build"}
+    )
+    assert resp.status_code == 200
+    assert route.calls.last.request.url.params["thread"] == "build"
+
+
+@pytest.mark.asyncio
+async def test_since_rejects_non_finite_cursors(client):
+    """`float()` accepts "nan", "inf" and "-inf".
+
+    A NaN cursor makes every comparison on the bus side false, so the reader
+    gets an empty window and a 200 confirming it, forever -- the exact silence
+    this endpoint was fixed for, smuggled back in through the validator that was
+    supposed to close it.
+    """
+    for bad in ("nan", "NaN", "inf", "-inf", "Infinity"):
+        resp = await client.get(
+            "/api/a2a/bus/messages", params={"channel": "build", "since": bad}
+        )
+        assert resp.status_code == 400, f"{bad} was accepted as a cursor"
+        assert "finite" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_channel_probe_fails_open_on_an_unreadable_payload(client):
+    """Fail open on a payload we cannot read, not only on transport failure.
+
+    A bus returning HTTP 200 with an error body leaves the channel list empty,
+    which would report every channel as unknown -- accusing the caller of a typo
+    because of a fault on the bus side. The docstring promised fail-open; only
+    the transport path delivered it.
+    """
+    respx.get(f"{_BUS}/a2a/messages").mock(return_value=Response(200, json={"messages": []}))
+    for payload in ({"error": "bus is having a bad day"}, ["build", "ops"], "nope"):
+        respx.get(f"{_BUS}/a2a/channels").mock(return_value=Response(200, json=payload))
+        resp = await client.get("/api/a2a/bus/messages", params={"channel": "build"})
+        assert resp.status_code == 200
+        assert resp.json()["channel_known"] is True, f"accused a typo on payload {payload!r}"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_channel_probe_still_reports_unknown_on_a_real_empty_list(client):
+    """The fail-open above must not swallow the real signal.
+
+    A bus that genuinely knows no channels answers with the `channels` key and
+    an empty list -- that is a real "unknown", and it has to stay reportable or
+    the typo-distinction feature is gone.
+    """
+    respx.get(f"{_BUS}/a2a/messages").mock(return_value=Response(200, json={"messages": []}))
+    respx.get(f"{_BUS}/a2a/channels").mock(return_value=Response(200, json={"channels": []}))
+
+    resp = await client.get("/api/a2a/bus/messages", params={"channel": "build"})
+    assert resp.status_code == 200
+    assert resp.json()["channel_known"] is False
