@@ -31,6 +31,23 @@ The CI gate merges. Open the PR, let required checks run, and let the gate merge
 
 If you cannot proceed, post `[BLOCKED] <card-id> <why>` on the coordination bus. Do not guess or silently work around a blocker.
 
+## Reading the bus
+
+Read through the controller with your own registry token, not the raw bus port:
+`GET /api/a2a/bus/messages?channel=<name>` with `Authorization: Bearer <your JWT>`.
+
+- `channel=all` (or `*`) reads **every** thread. Use it unless you deliberately want one
+  channel. A named channel cannot show you a thread created after you started watching.
+- `since` is the cursor and takes a message **ts** (a float), not an id. Passing an id
+  reads as a 1970 timestamp and quietly returns everything, every poll.
+- Any other query param is a `400`. An unrecognised cursor param is never silently
+  ignored, because an ignored cursor is indistinguishable from one that works.
+- An empty result for a **named** channel carries `channel_known`. If it is `false`, the
+  channel name is wrong; a quiet channel and a typo are otherwise identical.
+
+If the bus is silent, check `channel_known` and your cursor before concluding nobody is
+talking. A read that returns `200` with nothing is the failure mode that looks like peace.
+
 ## Identity rules
 
 Work as jaylfc. Do not add AI attribution to commits, PRs, or issues. Do not use em dashes in any output.

@@ -278,15 +278,25 @@ class TestMessagesSincePassthrough:
         assert call_kwargs["params"]["thread"] == "general"
         assert float(call_kwargs["params"]["since"]) == 42.0
 
-    async def test_messages_rejects_wildcard_channel(self, agent_app, client):
-        """bus_messages rejects channel=* (all-threads is stream-only)."""
+    async def test_messages_wildcard_channel_reads_all_threads(self, agent_app, client):
+        """bus_messages treats channel=* as all-threads, matching the stream endpoint.
+
+        This previously asserted a 400 with the rationale "all-threads is
+        stream-only" -- true only because bus_messages had not implemented
+        all-threads, not because reading every thread here was unwanted. The
+        stream endpoint has always accepted `*` and forwarded no thread param
+        (see test_stream_wildcard_channel_all_threads above), so rejecting the
+        same selector on the sibling read endpoint was an inconsistency that
+        pushed callers toward `all` -- which silently matched a thread literally
+        named "all" and returned an empty 200 forever.
+        """
         _, token = await _mint_agent(agent_app, scopes=("a2a_receive",))
         resp = await client.get(
             "/api/a2a/bus/messages",
             params={"channel": "*"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
