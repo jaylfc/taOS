@@ -6,6 +6,7 @@ from the human's and could not be revoked without revoking the human. These
 tests pin the identity it gets instead, and the properties that make it worth
 having: per-install, owner-linked, not shared, conservative.
 """
+import os
 import stat
 
 import pytest
@@ -57,7 +58,7 @@ async def _ensure(stores, user_id="user-1"):
 class TestNativeAgentIdentity:
     async def test_mints_an_owned_active_identity_with_a_bus_handle(self, tmp_path):
         stores = await _stores(tmp_path)
-        registry, grants, data_dir, _ = stores
+        _registry, grants, data_dir, _ = stores
         rec = await _ensure(stores)
 
         assert rec is not None
@@ -125,6 +126,52 @@ class TestNativeAgentIdentity:
 
         assert token_path(data_dir).read_text() == "a-token-already-in-use"
 
+    async def test_a_failed_token_write_does_not_pin_an_empty_credential(self, tmp_path):
+        """A zero-byte token file must never count as "already minted".
+
+        O_EXCL creates the file and fdopen truncates it, so a write that fails
+        after that point (ENOSPC, quota, disk error) leaves an empty file --
+        which is exactly the signal that tells the next boot the token exists.
+        Left alone, one transient error pins the agent to an empty credential
+        forever while every boot reports success.
+        """
+        stores = await _stores(tmp_path)
+        _, _, data_dir, _ = stores
+
+        # A file left behind by a crash between create and write, i.e. what an
+        # earlier build (or a hard kill) leaves on disk.
+        token_path(data_dir).write_text("")
+
+        rec = await _ensure(stores)
+
+        assert rec is not None
+        assert token_path(data_dir).read_text().strip(), "empty token file was treated as minted"
+
+    async def test_write_failure_removes_the_file_it_created(self, tmp_path, monkeypatch):
+        """The failing write must clean up after itself, not leave the marker."""
+        stores = await _stores(tmp_path)
+        _, _, data_dir, _ = stores
+
+        real_fdopen = os.fdopen
+
+        def _boom(fd, *a, **kw):
+            fh = real_fdopen(fd, *a, **kw)
+            class _Failing:
+                def __enter__(self_inner):
+                    return self_inner
+                def __exit__(self_inner, *exc):
+                    fh.close()
+                    return False
+                def write(self_inner, _data):
+                    raise OSError("ENOSPC")
+            return _Failing()
+
+        monkeypatch.setattr("tinyagentos.native_agent_identity.os.fdopen", _boom)
+
+        await _ensure(stores)
+
+        assert not token_path(data_dir).exists(), "empty token file left behind after a failed write"
+
     async def test_deferred_when_the_install_has_no_owner_yet(self, tmp_path):
         """user_id is immutable on the registry row, so minting before an owner
         exists would strand the identity ownerless for life. Skip and let the
@@ -173,7 +220,7 @@ class TestNativeAgentIdentity:
         """An image cloned to a new machine gets a new install id and mints its
         own identity rather than carrying the original's credential."""
         stores = await _stores(tmp_path)
-        registry, grants, data_dir, keypair = stores
+        registry, _grants, data_dir, _keypair = stores
         first = await _ensure(stores)
 
         (data_dir / ".install_id").write_text("f" * 32)

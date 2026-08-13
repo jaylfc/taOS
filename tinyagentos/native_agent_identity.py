@@ -101,6 +101,22 @@ def token_path(data_dir: Path | str) -> Path:
     return Path(data_dir) / TOKEN_FILENAME
 
 
+def _has_token(data_dir: Path | str) -> bool:
+    """True only if a NON-EMPTY token file exists.
+
+    Existence alone is not enough. A zero-byte file is what a crash or a failed
+    write between O_EXCL and the write leaves behind, and treating it as "already
+    minted" pins the agent to an empty credential forever while every boot looks
+    successful. Belt and braces with the unlink in _write_token, because that
+    unlink cannot help a file left by an earlier version or a hard kill.
+    """
+    path = token_path(data_dir)
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _write_token(data_dir: Path | str, token: str) -> Optional[Path]:
     """Write *token* 0600, creating it only if absent. Returns the path or None.
 
@@ -114,7 +130,22 @@ def _write_token(data_dir: Path | str, token: str) -> Optional[Path]:
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        return path
+        # Someone got there first -- but "there is a file" is not "there is a
+        # token". A zero-byte file is the leftover of a crash or a failed write,
+        # and honouring it here would defeat _has_token: the caller would decide
+        # to mint, and this would refuse to write, so the agent stays credentialless
+        # on every boot forever. An empty file is nobody's token, so replace it.
+        if _has_token(data_dir):
+            return path
+        try:
+            os.unlink(path)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Lost a genuine race in the gap; the winner's token stands.
+            return path
+        except OSError as exc:
+            logger.error("could not replace the empty token file at %s: %s", path, exc)
+            return None
     except OSError as exc:
         logger.error("native agent token could not be written to %s: %s", path, exc)
         return None
@@ -122,7 +153,18 @@ def _write_token(data_dir: Path | str, token: str) -> Optional[Path]:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(token)
     except OSError as exc:
+        # REMOVE the file we just created.  O_EXCL created it and fdopen
+        # truncated it, so a failed write (ENOSPC, a full quota, a disk error)
+        # leaves a ZERO-BYTE file behind -- and an existing file is exactly what
+        # tells the next boot the token is already minted.  Left in place, one
+        # transient write error permanently pins the agent to an empty
+        # credential, and every subsequent boot reports success. A broken state
+        # that reads as a finished one.
         logger.error("native agent token write failed at %s: %s", path, exc)
+        try:
+            os.unlink(path)
+        except OSError:
+            logger.error("could not remove the empty token file at %s", path)
         return None
     return path
 
@@ -196,15 +238,20 @@ async def ensure_native_agent_identity(
     for scope in NATIVE_AGENT_SCOPES:
         await grants.add_grant(record["canonical_id"], scope)
 
-    if not token_path(data_dir).exists():
+    if not _has_token(data_dir):
         token = mint_registry_token(
             record["canonical_id"],
             signing_key_pem,
             user_id=record.get("user_id", ""),
             framework=record.get("framework", NATIVE_AGENT_ORIGIN),
         )
+        existed = _has_token(data_dir)
         written = _write_token(data_dir, token)
-        if written is not None:
+        if written is not None and not existed:
             logger.info("native agent token written to %s", written)
+        elif written is not None:
+            # Startup race: another worker won and this process wrote nothing.
+            # Saying "written" here would be a log that lies about who did what.
+            logger.info("native agent token already present at %s", written)
 
     return record
