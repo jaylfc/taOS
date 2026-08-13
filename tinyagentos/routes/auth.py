@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -8,6 +9,8 @@ from collections import OrderedDict
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from tinyagentos.middleware.csrf import verify_csrf
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -504,6 +507,32 @@ async def lock(request: Request):
     return resp
 
 
+async def _ensure_native_agent_identity(request: Request, user_id: str) -> None:
+    """Mint this install's native agent identity, now that it has an owner.
+
+    Called from BOTH setup paths (JSON and form).  They are two routes into the
+    same event -- an install acquiring its first user -- and wiring only the one
+    you happened to test is how a fresh install ends up with no agent identity
+    while every test passes.  The paired tests below cover both.
+
+    Never raises: an install whose agent identity failed to mint is degraded,
+    not broken, and failing setup over it would strand the user on the setup
+    page with an account that already exists.
+    """
+    try:
+        from tinyagentos.native_agent_identity import ensure_native_agent_identity
+
+        await ensure_native_agent_identity(
+            registry=request.app.state.agent_registry,
+            grants=request.app.state.agent_grants,
+            data_dir=request.app.state.data_dir,
+            signing_key_pem=request.app.state.agent_registry_keypair[0],
+            user_id=user_id,
+        )
+    except Exception:
+        logger.exception("native agent identity could not be minted at setup")
+
+
 @router.post("/setup")
 async def auth_setup(request: Request):
     """Onboard the first user. Only works when zero users exist.
@@ -543,6 +572,7 @@ async def auth_setup(request: Request):
         record = auth_mgr.find_user(username)
         user_id = record["id"] if record else ""
         auth_mgr.update_last_login(user_id)
+        await _ensure_native_agent_identity(request, user_id)
         token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
         resp = JSONResponse({"ok": True, "user": user})
         if long_lived:
@@ -576,6 +606,7 @@ async def auth_setup(request: Request):
     record = auth_mgr.find_user(username)
     user_id = record["id"] if record else ""
     auth_mgr.update_last_login(user_id)
+    await _ensure_native_agent_identity(request, user_id)
     token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
     response = RedirectResponse("/desktop", status_code=303)
     if long_lived:

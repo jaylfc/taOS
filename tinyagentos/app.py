@@ -525,6 +525,31 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await agent_scope_requests_store.init()
         await agent_grants_store.init()
         app.state.agent_grants = agent_grants_store
+
+        # First-boot identity for the OS-native agent.  Runs on EVERY start, not
+        # only on a fresh install: it is how an install that upgraded into this
+        # code gets an identity without the owner doing anything, and it is
+        # idempotent by install id.  An ownerless install (setup not completed
+        # yet) is skipped and picked up by the setup route the moment an owner
+        # exists.
+        #
+        # Never fatal.  An install with no agent identity is degraded -- the
+        # agent keeps working through the owner's credential exactly as it did
+        # before this existed -- and refusing to boot over it would turn that
+        # into an outage.
+        try:
+            from tinyagentos.native_agent_identity import ensure_native_agent_identity
+
+            _owner = auth_manager.get_primary_user()
+            await ensure_native_agent_identity(
+                registry=agent_registry_store,
+                grants=agent_grants_store,
+                data_dir=data_dir,
+                signing_key_pem=agent_registry_keypair[0],
+                user_id=(_owner or {}).get("id", ""),
+            )
+        except Exception:
+            logger.exception("native agent identity could not be ensured at startup")
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await app_grants_store.init()
