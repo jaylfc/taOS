@@ -370,3 +370,74 @@ class TestSetupMintsTheIdentity:
         assert resp.status_code == 200, resp.text
         assert app.state.auth.is_configured() is True
         assert await _native_row(app) is None
+
+
+@pytest.mark.asyncio
+class TestStartupRaceLogsTheTruth:
+    """The loser of a startup race must not log that it wrote the token.
+
+    A log that says "written" having written nothing is the same failure that
+    let a zero-byte token file look like a successful mint on every later boot:
+    the record of what happened disagrees with what happened, so the next reader
+    debugs the wrong thing. The caller cannot derive this -- a _has_token
+    snapshot taken before the write is False whether this process went on to
+    write the file or another worker did it in the gap -- so _write_token
+    reports it.
+    """
+
+    async def test_write_token_reports_it_did_not_write_an_existing_token(self, tmp_path):
+        from tinyagentos.native_agent_identity import _write_token
+
+        path = token_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("the-winners-token", encoding="utf-8")
+
+        returned, created = _write_token(tmp_path, "the-losers-token")
+
+        assert returned == path
+        assert created is False, "reported writing a token it did not write"
+        # The winner's credential is untouched: the agent may already be running
+        # with it, so replacing it would strand a live process on a token nobody
+        # recognises.
+        assert path.read_text(encoding="utf-8") == "the-winners-token"
+
+    async def test_write_token_reports_the_write_it_did_do(self, tmp_path):
+        from tinyagentos.native_agent_identity import _write_token
+
+        returned, created = _write_token(tmp_path, "a-fresh-token")
+
+        assert returned == token_path(tmp_path)
+        assert created is True
+        assert returned.read_text(encoding="utf-8") == "a-fresh-token"
+
+    async def test_race_loser_logs_already_present_not_written(self, tmp_path, caplog):
+        """The caller's log follows _write_token's report, not a stale snapshot.
+
+        Simulates losing the race in the exact window that matters: the token is
+        absent when ensure_native_agent_identity checks (so it mints and tries to
+        write), and another worker's file is there by the time _write_token runs.
+        """
+        import tinyagentos.native_agent_identity as mod
+
+        stores = await _stores(tmp_path)
+        winner = token_path(tmp_path)
+        real_write = mod._write_token
+
+        def _lose_the_race(data_dir, token):
+            winner.parent.mkdir(parents=True, exist_ok=True)
+            winner.write_text("another-workers-token", encoding="utf-8")
+            return real_write(data_dir, token)
+
+        mod._write_token = _lose_the_race
+        try:
+            with caplog.at_level("INFO", logger=mod.logger.name):
+                await _ensure(stores)
+        finally:
+            mod._write_token = real_write
+
+        messages = [r.getMessage() for r in caplog.records]
+        wrote = [m for m in messages if "token written to" in m]
+        present = [m for m in messages if "token already present at" in m]
+        assert not wrote, f"claimed to have written a token it did not write: {wrote}"
+        assert present, f"never reported the token it found: {messages}"
+        assert winner.read_text(encoding="utf-8") == "another-workers-token"

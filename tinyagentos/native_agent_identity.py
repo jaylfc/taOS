@@ -117,8 +117,15 @@ def _has_token(data_dir: Path | str) -> bool:
         return False
 
 
-def _write_token(data_dir: Path | str, token: str) -> Optional[Path]:
-    """Write *token* 0600, creating it only if absent. Returns the path or None.
+def _write_token(data_dir: Path | str, token: str) -> tuple[Optional[Path], bool]:
+    """Write *token* 0600, creating it only if absent.
+
+    Returns ``(path, created_by_this_call)``. The flag is not decoration: the
+    caller cannot work it out. Snapshotting ``_has_token`` before the call
+    cannot distinguish "I wrote it" from "another worker wrote it during my
+    call", so the loser of a startup race logged "token written" having
+    written nothing. Only this function knows which of its three exits it
+    took, so it is the only place the fact can come from.
 
     Created with O_EXCL rather than a plain write: two workers racing at startup
     must not have one truncate the file the other is reading.  An existing file
@@ -136,19 +143,19 @@ def _write_token(data_dir: Path | str, token: str) -> Optional[Path]:
         # to mint, and this would refuse to write, so the agent stays credentialless
         # on every boot forever. An empty file is nobody's token, so replace it.
         if _has_token(data_dir):
-            return path
+            return path, False
         try:
             os.unlink(path)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             # Lost a genuine race in the gap; the winner's token stands.
-            return path
+            return path, False
         except OSError as exc:
             logger.error("could not replace the empty token file at %s: %s", path, exc)
-            return None
+            return None, False
     except OSError as exc:
         logger.error("native agent token could not be written to %s: %s", path, exc)
-        return None
+        return None, False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(token)
@@ -165,8 +172,8 @@ def _write_token(data_dir: Path | str, token: str) -> Optional[Path]:
             os.unlink(path)
         except OSError:
             logger.error("could not remove the empty token file at %s", path)
-        return None
-    return path
+        return None, False
+    return path, True
 
 
 async def ensure_native_agent_identity(
@@ -245,13 +252,14 @@ async def ensure_native_agent_identity(
             user_id=record.get("user_id", ""),
             framework=record.get("framework", NATIVE_AGENT_ORIGIN),
         )
-        existed = _has_token(data_dir)
-        written = _write_token(data_dir, token)
-        if written is not None and not existed:
+        written, created = _write_token(data_dir, token)
+        if created:
             logger.info("native agent token written to %s", written)
         elif written is not None:
             # Startup race: another worker won and this process wrote nothing.
-            # Saying "written" here would be a log that lies about who did what.
+            # Saying "written" here would be a log that lies about who did what,
+            # and the fact comes from _write_token because a pre-write
+            # _has_token snapshot is False in exactly this case too.
             logger.info("native agent token already present at %s", written)
 
     return record
