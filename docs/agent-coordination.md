@@ -34,3 +34,32 @@ If you cannot proceed, post `[BLOCKED] <card-id> <why>` on the coordination bus.
 ## Identity rules
 
 Work as jaylfc. Do not add AI attribution to commits, PRs, or issues. Do not use em dashes in any output.
+
+## The OS-native agent's identity
+
+Every install mints an identity for the built-in taOS agent at first boot. No admin step, no prompt: if the install has an owner, the agent has an identity.
+
+Before this, the native agent authenticated as the **owner** — the caller's browser session, or `data/.auth_local_token`, which is admin-equivalent. Its actions were therefore indistinguishable from the human's in every audit trail, it could not appear on the A2A bus as itself, and nothing it did could be revoked without revoking the human.
+
+| | |
+|---|---|
+| canonical_id | `taos-agent-<install8>-<date>-<time>` |
+| handle | `@taOS-agent-<install8>` |
+| owner | the install's primary user (`user_id`) |
+| scopes | `a2a_send`, `a2a_receive` |
+| token | `<data_dir>/.taos_agent_token`, mode 0600 |
+
+Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity.py`, from two idempotent call sites: `/auth/setup` (fresh install) and lifespan startup (an install that upgraded into this code). Neither is fatal on failure — an install without the identity is degraded, not broken.
+
+**Anchored to `<data_dir>/.install_id`**, the same id the version ping uses. `install_id()` in `auto_update.py` is public for that reason: two readers of one id, never two ids that can drift apart.
+
+**The handle carries the install discriminator, and must.** The registry holds a unique index on `(handle) WHERE status = 'active'`, so a bare `@taOS-agent` makes the second insert impossible the moment two installs' identities share one registry — which is exactly what the account/cluster model is for.
+
+**Registry rows carry `install_id`** (migration v6). Blank means **unknown**, not "this install": rows minted before installs were tracked have none, and `list_for_install()` refuses a blank id rather than scooping them all up. That query is what a per-machine revocation would be built on.
+
+**Scopes are deliberately minimal.** Bus participation only. Anything further goes through the normal user-mediated scope-request flow; a first-boot mint that silently granted file or task access would be a privilege grant nobody approved.
+
+**Two boundaries worth knowing before you build on this:**
+
+- The token does **not** authenticate desktop control. `/api/desktop/*` resolves the acting user from a session, and the middleware sets `user_id = None` for registry JWTs, so a registry token arrives there as nobody. Desktop control still uses the session or the host local token.
+- **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then — the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
