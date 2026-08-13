@@ -225,6 +225,46 @@ class TestMintInternalRoute:
         rows = await mint_client._app.state.agent_registry.list_all()
         assert sum(1 for r in rows if r["handle"] == "@taOS-dev") == 1
 
+    async def test_adopt_finds_selfjoined_driver_stored_under_slugified_handle(self, mint_client):
+        """A driver that self-joined is stored under the SLUGIFIED handle.
+
+        The consent approve path registers with ``_slugify(identity_claim)``, so
+        `@taOSmd-dev` lands in the registry as `taosmd-dev` -- while
+        ``_INTERNAL_AGENTS`` carries the display spelling. ``get_by_handle`` is an
+        exact SQL match, so a mint that looks up only the display spelling misses
+        the existing row and registers a SECOND one: the duplicate receives the
+        driver scopes and a token while the original keeps the project grants, and
+        the agent silently owns two identities with the wrong one credentialed.
+
+        Note the sibling adopt tests seed the fixture with the '@' spelling, which
+        is not what the real approve path writes -- that mismatch is why this went
+        unnoticed. This test reproduces what is actually in the live registry.
+        """
+        registry = mint_client._app.state.agent_registry
+        rec = await registry.register(
+            framework="claude-code", display_name="taosmd-dev",
+            origin="external-selfjoin", handle="taosmd-dev",
+        )
+        await registry.set_status(rec["canonical_id"], "active")
+
+        resp = await mint_client.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "@taOSmd-dev", "slug": "taosmd-dev",
+                  "scopes": ["a2a_send", "a2a_receive"], "adopt": True},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["canonical_id"] == rec["canonical_id"], "forked a second identity"
+        assert data["created"] is False and data["adopted"] is True
+
+        # The scopes must land on the ORIGINAL identity, not on a duplicate.
+        grants = await mint_client._app.state.agent_grants.list_grants(rec["canonical_id"])
+        assert {g["scope"] for g in grants} == {"a2a_send", "a2a_receive"}
+
+        # Exactly one row for this driver under EITHER spelling.
+        rows = await registry.list_all()
+        assert sum(1 for r in rows if r["handle"] in ("taosmd-dev", "@taOSmd-dev")) == 1
+
     async def test_adopt_writes_governance_audit(self, mint_client):
         """Adopting a pre-existing identity is trust-changing -- it must leave a
         governance audit event (action='adopt') for a forensic trail."""

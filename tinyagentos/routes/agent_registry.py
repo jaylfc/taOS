@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_registry_store import _slugify, mint_registry_token
 from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import CurrentUser, current_user
 
@@ -321,8 +321,20 @@ async def _mint_internal_identity(
 
     # The lock makes the check-then-register atomic: a concurrent mint of the
     # same handle waits, then sees the row the first one created and reuses it.
+    # The consent approve path registers with ``_slugify(identity_claim)``, so a
+    # driver that self-joined is stored as `taosmd-dev` while ``_INTERNAL_AGENTS``
+    # names it `@taOSmd-dev`.  ``get_by_handle`` is an exact SQL match, so looking
+    # up only the spelling we were given misses that row and registers a SECOND
+    # identity: the duplicate takes the driver scopes and the token while the
+    # original keeps the project grants, leaving the agent with two identities and
+    # the wrong one credentialed.  Try the given spelling first (a row may already
+    # be stored that way), then the slugified form.
+    handle_slug = _slugify(handle) if handle.strip() else ""
+
     async with _mint_lock:
         existing = await store.get_by_handle(handle)
+        if existing is None and handle_slug and handle_slug != handle:
+            existing = await store.get_by_handle(handle_slug)
         if existing is not None:
             # A non-internal owner is only reused when the admin adopts it: this
             # blocks an impostor that grabbed "@Hermes" from silently receiving
