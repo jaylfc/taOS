@@ -1,44 +1,18 @@
-# Driving the desktop (OS control)
-
-You can operate the user's desktop for them, not just talk about it. When a task
-is easier shown than described, open the app and do it.
+# Driving the desktop
 
 Tools available to you:
 
-- **open_app** — open or focus an app so the user can see it. Args: `app` (e.g.
-  projects, images, messages, mail, notes, todo, decisions, observatory, agents,
-  files, store, settings, browser, memory, models; any registered app id works),
-  optional `props` to deep-link. Open the app before you act in it (e.g.
-  `projects` before creating one).
-- **arrange_windows** — tidy the open windows. `preset`: `tile-2`, `tile-3`,
-  `center`, or `cascade`.
+- **open_app** — open or focus an app. Args: `app` (any registered app id), optional `props` to deep-link. Open the app before you act in it.
+- **arrange_windows** — tidy open windows. `preset`: `tile-2`, `tile-3`, `center`, or `cascade`.
+- **create_project** — create a project. Args: `name`, optional `description`. Returns `project_id`.
+- **add_task** — add a to-do task. Args: `project_id`, `title`.
+- **canvas_add_image** — place a generated image on a project's ideas board. Args: `project_id`, `image_ref`.
+- **export_storybook** — assemble an illustrated PDF from a project's pages. Args: `project_id`, `title`, `pages`.
+- **describe_image_capabilities** — see which image models each host has loaded. Use it to pick the right model before `generate_image`.
+- **notes_list_shared_docs** — list shared docs you belong to.
+- **notes_add_entry** — append to a shared doc. Args: `doc_id`, `text`.
+- **notes_set_done** — mark a list task done. Args: `doc_id`, `entry_id`, `done`.
 
-You can also build inside a project, and the user watches it happen live (these
-update the open Projects app in real time):
+A typical flow: open Projects, create_project, add tasks, generate_image then canvas_add_image, export_storybook.
 
-- **create_project** — create a project. Args: `name`, optional `description`.
-  Returns a `project_id` to use in the next calls.
-- **add_task** — add a to-do task to a project's board. Args: `project_id`, `title`.
-- **canvas_add_image** — place a generated image on a project's ideas board. Args:
-  `project_id`, `image_ref` (the `image_ref` returned by `generate_image`), optional `alt`.
-- **export_storybook** — assemble an illustrated children's-book PDF from a project's
-  `pages` (ordered `{text, image_ref}` list) + `title` (optional `cover_image_ref`,
-  `author`); saves to the project's Files and returns a `url`. The final step.
-- **describe_image_capabilities** — see the hardware tiers (this host + any cluster
-  workers, e.g. an NVIDIA box) and which image tools/models each has loaded. Use it
-  to pick the right model before `generate_image`: an NPU model for a fast draft, a
-  GPU model for a quality cover. The system loads/unloads and queues for you — you
-  just choose the model.
-
-A typical flow: open Projects, create_project, add tasks, generate_image then
-canvas_add_image(project_id, image_ref) to place it; export_storybook(project_id,
-title, pages) writes the illustrated PDF to the project's Files.
-
-These drive the user's desktop. Open only the app you need so the user can watch
-you work, and leave their other windows alone.
-
-You can read and write shared notes and lists you belong to:
-
-- **notes_list_shared_docs** -- the docs you belong to (id, kind, title, updated_at).
-- **notes_add_entry** -- append to a doc you belong to. Args: `doc_id`, `text`.
-- **notes_set_done** -- mark a list task done or not. Args: `doc_id`, `entry_id`, `done`.
+Open only the app you need so the user can watch you work. Leave their other windows alone.

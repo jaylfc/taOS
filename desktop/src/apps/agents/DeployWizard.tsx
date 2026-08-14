@@ -403,6 +403,7 @@ export function DeployWizard({
   // Step 4 — Memory layer
   // null = no choice yet (show picker); "taosmd" = enabled; null plugin = skipped
   const [memoryPlugin, setMemoryPlugin] = useState<"taosmd" | null>("taosmd");
+  const [memoryMode, setMemoryMode] = useState<"both" | "framework" | "taosmd">("both");
   const [memoryDeviceId, setMemoryDeviceId] = useState<string | null>(null);
   const [memoryTierId, setMemoryTierId] = useState<string | null>(null);
   // null = loading; "none" = no default; object = has default
@@ -788,6 +789,7 @@ export function DeployWizard({
       setMemory("");
       setCpus("");
       setMemoryPlugin("taosmd");
+      setMemoryMode("both");
       setMemoryDeviceId(null);
       setMemoryTierId(null);
       setMemoryDefault(null);
@@ -879,6 +881,7 @@ export function DeployWizard({
           memory_config: (memoryPlugin && memoryDeviceId && memoryTierId)
             ? { device_id: memoryDeviceId, tier_id: memoryTierId }
             : undefined,
+          memory_mode: memoryMode,
         }),
       });
       if (!res.ok) {
@@ -1302,30 +1305,64 @@ export function DeployWizard({
 
           {/* Step 4: Memory layer */}
           {step === 4 && (
-            <MemoryWizardStep
-              memoryPlugin={memoryPlugin}
-              setMemoryPlugin={setMemoryPlugin}
-              memoryDeviceId={memoryDeviceId}
-              setMemoryDeviceId={setMemoryDeviceId}
-              memoryTierId={memoryTierId}
-              setMemoryTierId={setMemoryTierId}
-              memoryDefault={memoryDefault}
-              setMemoryDefault={setMemoryDefault}
-              memoryInstallTargets={memoryInstallTargets}
-              setMemoryInstallTargets={setMemoryInstallTargets}
-              memoryDevicesLoaded={memoryDevicesLoaded}
-              setMemoryDevicesLoaded={setMemoryDevicesLoaded}
-              memorySetupTaskId={memorySetupTaskId}
-              setMemorySetupTaskId={setMemorySetupTaskId}
-              memorySetupState={memorySetupState}
-              setMemorySetupState={setMemorySetupState}
-              memorySetupMsg={memorySetupMsg}
-              setMemorySetupMsg={setMemorySetupMsg}
-              memorySetupError={memorySetupError}
-              setMemorySetupError={setMemorySetupError}
-              memoryPickerMode={memoryPickerMode}
-              setMemoryPickerMode={setMemoryPickerMode}
-            />
+            <div className="space-y-4">
+              <span className="block text-xs text-shell-text-secondary mb-2">Memory Mode</span>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  ["both", "Both", "Framework memory + taOSmd"],
+                  ["framework", "Framework only", "Native memory, no taOSmd"],
+                  ["taosmd", "taOSmd only", "Durable shared memory"],
+                ] as const).map(([value, label, desc]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setMemoryMode(value)}
+                    className={`p-2.5 rounded-lg border text-left transition-colors ${
+                      memoryMode === value
+                        ? "border-accent bg-accent/10"
+                        : "border-white/10 bg-shell-bg-deep hover:bg-white/5"
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">{label}</div>
+                    <p className="text-[10px] text-shell-text-tertiary leading-tight mt-0.5">{desc}</p>
+                  </button>
+                ))}
+              </div>
+
+              <div className="text-xs text-shell-text-tertiary">
+                {memoryMode === "both" && "Framework memory holds live working state. taOSmd holds durable facts shared across agents. The agent writes each fact to the right store."}
+                {memoryMode === "framework" && "All memory stays in the framework's native store. Fast and local, dies with the container. No taOSmd calls."}
+                {memoryMode === "taosmd" && "All memory goes to taOSmd. Durable and searchable across the fleet. Use this when the framework has no native memory."}
+              </div>
+
+              <div className="border-t border-white/5 pt-3">
+                <span className="block text-xs text-shell-text-secondary mb-2">Memory Layer</span>
+                <MemoryWizardStep
+                  memoryPlugin={memoryPlugin}
+                  setMemoryPlugin={setMemoryPlugin}
+                  memoryDeviceId={memoryDeviceId}
+                  setMemoryDeviceId={setMemoryDeviceId}
+                  memoryTierId={memoryTierId}
+                  setMemoryTierId={setMemoryTierId}
+                  memoryDefault={memoryDefault}
+                  setMemoryDefault={setMemoryDefault}
+                  memoryInstallTargets={memoryInstallTargets}
+                  setMemoryInstallTargets={setMemoryInstallTargets}
+                  memoryDevicesLoaded={memoryDevicesLoaded}
+                  setMemoryDevicesLoaded={setMemoryDevicesLoaded}
+                  memorySetupTaskId={memorySetupTaskId}
+                  setMemorySetupTaskId={setMemorySetupTaskId}
+                  memorySetupState={memorySetupState}
+                  setMemorySetupState={setMemorySetupState}
+                  memorySetupMsg={memorySetupMsg}
+                  setMemorySetupMsg={setMemorySetupMsg}
+                  memorySetupError={memorySetupError}
+                  setMemorySetupError={setMemorySetupError}
+                  memoryPickerMode={memoryPickerMode}
+                  setMemoryPickerMode={setMemoryPickerMode}
+                />
+              </div>
+            </div>
           )}
 
           {/* Step 5: Permissions */}
@@ -1521,6 +1558,7 @@ export function DeployWizard({
                   ["Framework", frameworks.find((f) => f.id === selectedFramework)?.name ?? selectedFramework],
                   ["Model", models.find((m) => m.id === selectedModel)?.name ?? selectedModel],
                   ["Memory layer", memoryPlugin === null ? "Skipped" : memoryTierId ? `taOSmd · ${memoryTierId} on ${memoryDeviceId}` : "taOSmd (global default)"],
+                  ["Memory mode", memoryMode],
                   ["RAM limit", memory ? (parseInt(memory, 10) >= 1024 ? `${Math.round(parseInt(memory, 10) / 1024)} GB` : `${memory} MB`) : "Unlimited"],
                   ["CPUs", cpus ? `${cpus} Core${cpus !== "1" ? "s" : ""}` : "Unlimited"],
                   ["User Memory", canReadUserMemory ? "Allowed (read-only)" : "Denied"],

@@ -568,6 +568,27 @@ class TestDeployAgent:
             assert env["TAOS_AGENT_HOME"] == "/root"
 
     @pytest.mark.asyncio
+    async def test_memory_mode_env_injected(self, tmp_path):
+        """TAOS_MEMORY_MODE reflects the DeployRequest memory_mode."""
+        for mode in ("both", "framework", "taosmd"):
+            req = _req(name=f"mm-{mode}", data_dir=tmp_path, memory_mode=mode)
+
+            async def mock_exec_fn(name, cmd, **kwargs):
+                if "hostname -I" in " ".join(cmd):
+                    return (0, "10.0.0.81")
+                return (0, "ok")
+
+            with patch("tinyagentos.deployer.create_container", new_callable=AsyncMock) as mock_create, \
+                 patch("tinyagentos.deployer.exec_in_container", side_effect=mock_exec_fn), \
+                 patch("tinyagentos.deployer.push_file", new_callable=AsyncMock, return_value=(0, "")), \
+                 patch("tinyagentos.deployer.add_proxy_device", new_callable=AsyncMock, return_value={"success": True, "output": ""}):
+                mock_create.return_value = {"success": True, "name": f"taos-agent-mm-{mode}"}
+                result = await deploy_agent(req)
+                assert result["success"] is True
+                env = mock_create.call_args.kwargs["env"]
+                assert env["TAOS_MEMORY_MODE"] == mode
+
+    @pytest.mark.asyncio
     async def test_manifest_script_missing_file_fails(self, tmp_path):
         mock_manifest = MagicMock()
         mock_manifest.install = {"method": "script", "script": "install.sh"}

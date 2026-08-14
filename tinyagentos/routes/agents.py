@@ -462,9 +462,13 @@ class DeployAgentRequest(BaseModel):
     soul_md: str = ""
     agent_md: str = ""
     memory_plugin: str | None = "taosmd"
-    # Per-agent override for taOSmd device + tier. None → use global default
+    # Per-agent override for taOSmd device + tier. None -> use global default
     # from data_dir/taosmd_default.json set by the memory wizard.
     memory_config: dict | None = None
+    # Memory mode: "both" (default), "framework" (native only), "taosmd" (taOSmd only).
+    # Persisted on the agent record and injected as TAOS_MEMORY_MODE env var at
+    # deploy time so the framework runtime can honour it without a separate push.
+    memory_mode: str = "both"
     source_persona_id: str | None = None
     save_to_library: dict | None = None  # {"name": str, "description": str|None}
     # KV-cache quantisation — sent by DeployWizard; defaults mirror normalize_agent.
@@ -629,6 +633,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         new_agent["agent_md"] = body.agent_md
         new_agent["memory_plugin"] = body.memory_plugin
         new_agent["memory_config"] = body.memory_config
+        new_agent["memory_mode"] = body.memory_mode
         new_agent["source_persona_id"] = body.source_persona_id
         new_agent["migrated_to_v2_personas"] = True
         new_agent["registry_canonical_id"] = canonical_id
@@ -683,6 +688,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                     secrets_store=secrets_store,
                     remote=deploy_remote,
                     taos_host=deploy_taos_host,
+                    memory_mode=body.memory_mode,
                 ))
                 agent = find_agent(config, body.name)
                 if result.get("success"):
@@ -1259,17 +1265,24 @@ async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch):
 
 class MemoryPatch(BaseModel):
     memory_plugin: str
+    memory_mode: str | None = None
 
 
 _VALID_MEMORY_PLUGINS = {"taosmd", "none"}
+_VALID_MEMORY_MODES = {"both", "framework", "taosmd"}
 
 
 @router.patch("/api/agents/{slug}/memory")
 async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch):
-    """Set the memory_plugin for an agent. Valid values: 'taosmd', 'none'."""
+    """Set the memory_plugin and/or memory_mode for an agent."""
     if body.memory_plugin not in _VALID_MEMORY_PLUGINS:
         return JSONResponse(
             {"error": f"Invalid memory_plugin '{body.memory_plugin}'. Must be one of: {sorted(_VALID_MEMORY_PLUGINS)}"},
+            status_code=400,
+        )
+    if body.memory_mode is not None and body.memory_mode not in _VALID_MEMORY_MODES:
+        return JSONResponse(
+            {"error": f"Invalid memory_mode '{body.memory_mode}'. Must be one of: {sorted(_VALID_MEMORY_MODES)}"},
             status_code=400,
         )
     config = request.app.state.config
@@ -1277,6 +1290,8 @@ async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch):
     if not agent:
         return JSONResponse({"error": "agent not found"}, status_code=404)
     agent["memory_plugin"] = body.memory_plugin
+    if body.memory_mode is not None:
+        agent["memory_mode"] = body.memory_mode
     await save_config_locked(config, config.config_path)
     return {"status": "ok", "agent": agent}
 

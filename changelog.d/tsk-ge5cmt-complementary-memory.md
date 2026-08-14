@@ -1,0 +1,3 @@
+- Added per-agent `memory_mode` (`both`, `framework`, `taosmd`) surfaced in the Agents deploy wizard, persisted on the agent record, and injected as `TAOS_MEMORY_MODE` at deploy time.
+- Added three onboarding guides in `docs/agent-manual/` (one per mode) and linked them from the manual index. Compiled manual stays under the size budget.
+- Added tests for mode persistence, deploy-time env injection, and the conflict rule (taOSmd authoritative for durable facts, framework memory for live working set).

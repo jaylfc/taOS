@@ -9,6 +9,17 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ### Added
 
+- Complementary memory mode: each agent now has a `memory_mode` field with three
+  values (`both` default, `framework`, `taosmd`), surfaced in the Agents app deploy
+  wizard and persisted on the agent record. The mode is injected as `TAOS_MEMORY_MODE`
+  at deploy time so the framework runtime can honour it without a separate config push.
+
+- Three onboarding guides in `docs/agent-manual/` covering each memory mode:
+  `12-memory-mode-both.md`, `13-memory-mode-framework.md`,
+  `14-memory-mode-taosmd.md`. The compiled agent manual stays under the size limit.
+
+### Changed
+
 - Doc-gate now triggers on plain modifications (not only add/delete) for
   behaviour-bearing trees: routes, installers, app-catalog, and auth_middleware.
   A modified route file now requires `docs/agent-coordination.md` to be touched
