@@ -16,6 +16,7 @@ import secrets
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from tinyagentos.user_shares_store import UserSharesStore
 
 
 # ---------------------------------------------------------------------------
@@ -25,11 +26,6 @@ from httpx import ASGITransport, AsyncClient
 @pytest_asyncio.fixture
 async def shares_client(client, tmp_data_dir):
     """Async client with user_shares store initialised + CSRF tokens, as admin."""
-    try:
-        from tinyagentos.user_shares_store import UserSharesStore
-    except ImportError:
-        pytest.skip("UserSharesStore not merged yet (depends on #1897)")
-        return  # unreachable; keeps type-checkers happy
 
     app = client._transport.app
 

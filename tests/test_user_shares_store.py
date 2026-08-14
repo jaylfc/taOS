@@ -1,12 +1,7 @@
 """Tests for UserSharesStore — user-to-user resource sharing persistence."""
 
 import pytest
-
-_user_shares_module = pytest.importorskip(
-    "tinyagentos.user_shares_store",
-    reason="UserSharesStore not merged yet (depends on #1897)",
-)
-UserSharesStore = _user_shares_module.UserSharesStore
+from tinyagentos.user_shares_store import UserSharesStore
 
 
 def _require_method(obj, name: str, pr: str) -> None:
