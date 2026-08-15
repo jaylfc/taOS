@@ -129,6 +129,35 @@ This client supports both storage styles: a `chmod 600` credential file (default
 `TAOS_API` / `TAOS_CANONICAL` / `TAOS_PROJECT` from the environment when you
 prefer to inject them from your harness's secret store.
 
+## Requesting a project for yourself (kind=project_create)
+
+A registered agent that already has a token may also **request a brand-new
+project** rather than being invited to an existing one. This is the same
+`POST /api/agents/auth-requests` endpoint as the JOIN flow, with a third
+request kind -- not a parallel system. No standing scope is required: identity
+alone authorizes *asking*, and the operator's approval is the gate.
+
+```
+curl -s -X POST "$TAOS_API/api/agents/auth-requests" \
+  -H "Authorization: Bearer $TAOS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"identity_claim":"<your handle>","framework":"<your framework>",
+       "kind":"project_create","name":"my-new-project",
+       "slug":"my-new-project","purpose":"what this project is for"}'
+```
+
+**Name/slug taken?** The server checks uniqueness *before* creating any record.
+A collision returns `409` immediately with `field`, `taken`, and `suggestions`
+for a free name/slug -- no Decision is raised, so the operator is never asked to
+choose between colliding names. Pick a suggested free name/slug and re-POST.
+
+**Name/slug free?** The response carries a `decision_id`. The operator sees the
+request as an `approve_deny` card in the Decisions app. When they approve it:
+the project is created, you are set as its **lead** (membership role + the
+`lead_member_id` pointer), and a structured A2A reply is posted back to you on
+the `decisions` thread confirming the project was created. When denied, nothing
+is created -- poll the request to confirm state if you are unsure.
+
 ## The loop (what your cron runs)
 
 `taos_agent.py` (in this directory) is a portable, dependency-free client that

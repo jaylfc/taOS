@@ -38,6 +38,55 @@ Approval + rename/reattach (append-only):
 - The **granted** `project_id` is the admin-confirmed value at approval, not blindly the requested one. The request carries the git-derived `project_id` as the default; the rename/reattach UI lets the admin override; the minted grant uses the confirmed value (mirrors granted-subset-of-requested).
 - Reattach never mutates an existing grant. It **supersedes**: revoke/expire the old grant row + mint a new `(canonical_id, project_id, scope)` row. GrantsVerifier's `(canonical_id, project_id)` match makes the old row stop matching automatically. The audit trail stays append-only.
 
+## Project creation requests (kind=project_create)
+
+A registered agent that already has an identity can request a new project for
+itself by POSTing to `/api/agents/auth-requests` with `kind: "project_create"`:
+
+```
+POST /api/agents/auth-requests
+Authorization: Bearer <your registry JWT>
+Content-Type: application/json
+
+{
+  "identity_claim": "@your-handle",
+  "framework": "claude-code",
+  "kind": "project_create",
+  "name": "my-new-project",
+  "slug": "my-new-project",
+  "purpose": "Description of what this project is for"
+}
+```
+
+**Authentication:** unlike a JOIN request (which is unauthenticated),
+`project_create` requires the agent to prove its identity with its own
+registry Bearer token. No scope grant is required — identity alone
+authorizes asking.
+
+**Synchronous uniqueness check:** the server checks the requested `name` and
+`slug` against existing projects *before* creating any record. If either is
+already taken, the request is auto-rejected with `409` and a structured
+response containing `field`, `taken`, and `suggestions` for a free name/slug.
+No Decision is raised in this case — the operator is never asked to choose
+between colliding names.
+
+**Decision flow:** if both `name` and `slug` are free, a pending auth-request
+record is stored (carrying the project fields and `requested_by_agent`) and an
+`approve_deny` Decision is created and queued for admin approval. Approving the
+Decision creates the project and sets the requesting agent as its **lead**
+(both the membership `role="lead"` and the `lead_member_id` pointer); denying
+it creates nothing. On approval, a structured A2A reply is posted back to the
+asking agent confirming the project was created.
+
+The `name` and `slug` use the same uniqueness checker as the interactive
+project-creation route, so a collision caught here cannot be created by
+another request in the gap between the check and the admin's approval — the
+approval path re-checks and degrades gracefully (the agent receives a
+"taken in the meantime, please retry" message if it happens).
+
+See `tinyagentos/routes/agent_auth_requests.py:_handle_project_create_request`
+and `tinyagentos/routes/decisions.py:_apply_project_create`.
+
 ## Compatibility constraint: numeric-epoch `expires_at`
 
 taOSmd's `has_grant` (post-merge fix `fcc0fd7`) **fails closed on a non-numeric `expires_at`**. `agent_grants_store.py` currently stores `expires_at` as TEXT, null-only in Phase 1 (null = no expiry = active, which is fine). When real expiry lands, the grants feed must emit **numeric epoch seconds** (or null), never an ISO string, or taOSmd will reject the grant. Also fix the local `WHERE expires_at > ?` comparison (`agent_grants_store.py:113`) to compare numerically.

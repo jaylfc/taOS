@@ -1677,4 +1677,290 @@ class TestDeferBindingApproval:
 
         await registry.close()
         await auth_store.close()
-        await grants.close()
+
+
+# ---------------------------------------------------------------------------
+# project_create kind: registered agent requests new project creation
+# ---------------------------------------------------------------------------
+
+class TestProjectCreateAuthRequest:
+    """An already-registered agent (proven via its own registry Bearer JWT)
+    requests creation of a new project.
+
+    * Name or slug already taken → synchronous 409 (no Decision, auto-reject).
+    * Both free → auth-request record + approve_deny Decision created; Jay
+      approves via the Decisions app to actually create the project and set
+      the requester as lead.
+    """
+
+    async def _wire(self, client, monkeypatch, tmp_path):
+        """Fresh auth_requests + registry + decision stores, wired on app.state."""
+        from tinyagentos.agent_registry_store import (
+            AgentRegistryStore,
+            load_or_create_signing_keypair,
+        )
+        from tinyagentos.auth_requests_store import AuthRequestsStore
+
+        app = client._transport.app
+
+        auth_store = AuthRequestsStore(tmp_path / "auth-pc.db")
+        await auth_store.init()
+        registry = AgentRegistryStore(tmp_path / "reg-pc.db")
+        await registry.init()
+        priv, pub = load_or_create_signing_keypair(tmp_path / "keys-pc")
+        decision_store = app.state.decision_store
+        if decision_store._db is None:
+            await decision_store.init()
+
+        monkeypatch.setattr(app.state, "auth_requests", auth_store)
+        monkeypatch.setattr(app.state, "agent_registry", registry)
+        monkeypatch.setattr(app.state, "agent_registry_keypair", (priv, pub))
+
+        return auth_store, registry, (priv, pub), decision_store
+
+    async def _register_active(self, registry, *, handle="@worker", display="worker"):
+        rec = await registry.register(
+            framework="test",
+            display_name=display,
+            origin="external-selfjoin",
+            handle=handle,
+        )
+        cid = rec["canonical_id"]
+        await registry.set_status(cid, "active")
+        return cid
+
+    @pytest.mark.asyncio
+    async def test_name_taken_returns_409_no_decision(self, client, monkeypatch, tmp_path):
+        from tinyagentos.agent_registry_store import mint_registry_token
+
+        auth_store, registry, (priv, pub), decision_store = await self._wire(
+            client, monkeypatch, tmp_path
+        )
+        cid = await self._register_active(registry, handle="@worker", display="worker")
+        token = mint_registry_token(cid, priv, framework="test")
+
+        # Pre-create a project with the same name.
+        pstore = client._transport.app.state.project_store
+        await pstore.create_project(
+            name="my-project", slug="my-project", created_by=cid
+        )
+
+        before = len(await auth_store.list_pending())
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@worker",
+                "framework": "test",
+                "kind": "project_create",
+                "name": "my-project",
+                "slug": "new-slug",
+                "purpose": "test project",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 409
+        data = resp.json()
+        assert data["field"] == "name"
+        assert "suggestions" in data
+        assert len(await auth_store.list_pending()) == before
+        projects = await pstore.list_projects()
+        assert len(projects) == 1  # no new project
+
+        await registry.close()
+        await auth_store.close()
+
+    @pytest.mark.asyncio
+    async def test_slug_taken_returns_409_no_decision(self, client, monkeypatch, tmp_path):
+        from tinyagentos.agent_registry_store import mint_registry_token
+
+        auth_store, registry, (priv, pub), decision_store = await self._wire(
+            client, monkeypatch, tmp_path
+        )
+        cid = await self._register_active(registry, handle="@worker", display="worker")
+        token = mint_registry_token(cid, priv, framework="test")
+
+        pstore = client._transport.app.state.project_store
+        await pstore.create_project(
+            name="other-project", slug="taken-slug", created_by=cid
+        )
+
+        before = len(await auth_store.list_pending())
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@worker",
+                "framework": "test",
+                "kind": "project_create",
+                "name": "fresh-project",
+                "slug": "taken-slug",
+                "purpose": "test project",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 409
+        data = resp.json()
+        assert data["field"] == "slug"
+        assert "suggestions" in data
+        assert len(await auth_store.list_pending()) == before
+
+        await registry.close()
+        await auth_store.close()
+
+    @pytest.mark.asyncio
+    async def test_free_name_and_slug_creates_decision(self, client, monkeypatch, tmp_path):
+        from tinyagentos.agent_registry_store import mint_registry_token
+
+        auth_store, registry, (priv, pub), decision_store = await self._wire(
+            client, monkeypatch, tmp_path
+        )
+        cid = await self._register_active(registry, handle="@worker", display="worker")
+        token = mint_registry_token(cid, priv, framework="test")
+
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@worker",
+                "framework": "test",
+                "kind": "project_create",
+                "name": "brand-new",
+                "slug": "brand-new",
+                "purpose": "a brand new project",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "pending"
+        assert "request_id" in data
+        assert "decision_id" in data
+
+        req_rec = await auth_store.get(data["request_id"])
+        assert req_rec["kind"] == "project_create"
+        assert req_rec["requested_name"] == "brand-new"
+        assert req_rec["requested_slug"] == "brand-new"
+        assert req_rec["purpose"] == "a brand new project"
+
+        dec = await decision_store.get(data["decision_id"])
+        assert dec is not None
+        assert dec["type"] == "approve_deny"
+        assert dec["metadata"]["kind"] == "project_create"
+        assert dec["metadata"]["requester_canonical_id"] == cid
+        assert dec["from_agent"] == "@worker"
+
+        await registry.close()
+        await auth_store.close()
+
+    @pytest.mark.asyncio
+    async def test_approve_creates_project_and_sets_lead(self, client, monkeypatch, tmp_path):
+        from tinyagentos.agent_registry_store import mint_registry_token
+
+        auth_store, registry, (priv, pub), decision_store = await self._wire(
+            client, monkeypatch, tmp_path
+        )
+        cid = await self._register_active(registry, handle="@worker", display="worker")
+        token = mint_registry_token(cid, priv, framework="test")
+
+        pstore = client._transport.app.state.project_store
+        before = len(await pstore.list_projects())
+
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@worker",
+                "framework": "test",
+                "kind": "project_create",
+                "name": "approved-proj",
+                "slug": "approved-proj",
+                "purpose": "approved project",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Approve the decision.
+        resp2 = await client.post(
+            f"/api/decisions/{data['decision_id']}/answer",
+            json={"value": "approve"},
+        )
+        assert resp2.status_code == 200, resp2.text
+
+        # Project should now exist.
+        after = len(await pstore.list_projects())
+        assert after == before + 1
+        proj = await pstore.get_project_by_slug("approved-proj")
+        assert proj is not None
+        assert proj["lead_member_id"] == cid
+
+        # Requester is a member with lead role.
+        members = await pstore.list_members(proj["id"])
+        lead_member = [m for m in members if m["member_id"] == cid]
+        assert len(lead_member) == 1
+        assert lead_member[0]["role"] == "lead"
+
+        await registry.close()
+        await auth_store.close()
+
+    @pytest.mark.asyncio
+    async def test_deny_creates_nothing(self, client, monkeypatch, tmp_path):
+        from tinyagentos.agent_registry_store import mint_registry_token
+
+        auth_store, registry, (priv, pub), decision_store = await self._wire(
+            client, monkeypatch, tmp_path
+        )
+        cid = await self._register_active(registry, handle="@worker", display="worker")
+        token = mint_registry_token(cid, priv, framework="test")
+
+        pstore = client._transport.app.state.project_store
+        before = len(await pstore.list_projects())
+
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@worker",
+                "framework": "test",
+                "kind": "project_create",
+                "name": "denied-proj",
+                "slug": "denied-proj",
+                "purpose": "denied project",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Deny the decision.
+        resp2 = await client.post(
+            f"/api/decisions/{data['decision_id']}/answer",
+            json={"value": "deny"},
+        )
+        assert resp2.status_code == 200, resp2.text
+
+        # No new project.
+        after = len(await pstore.list_projects())
+        assert after == before
+
+        await registry.close()
+        await auth_store.close()
+
+    @pytest.mark.asyncio
+    async def test_no_bearer_token_returns_401(self, client, monkeypatch, tmp_path):
+        auth_store, registry, (priv, pub), decision_store = await self._wire(
+            client, monkeypatch, tmp_path
+        )
+        resp = await client.post(
+            "/api/agents/auth-requests",
+            json={
+                "identity_claim": "@worker",
+                "framework": "test",
+                "kind": "project_create",
+                "name": "no-auth-proj",
+                "slug": "no-auth-proj",
+                "purpose": "no auth",
+            },
+        )
+        assert resp.status_code == 401
+
+        await registry.close()
+        await auth_store.close()
+

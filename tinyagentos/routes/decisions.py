@@ -451,7 +451,8 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     routed_exec = await _apply_execution_grant(request, updated, body.value)
     routed_deleg = await _apply_delegation_grant(request, updated, body.value)
     routed_pair = await _apply_device_pairing_grant(request, updated, body.value)
-    if not (routed_app or routed_exec or routed_deleg or routed_pair):
+    routed_proj_create = await _apply_project_create(request, updated, body.value)
+    if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_proj_create):
         await _route_answer_to_agent(updated, body.value)
     return updated
 
@@ -766,3 +767,143 @@ async def _apply_app_grant(request: Request, decision: dict, value) -> bool:
             app_id, decision.get("id"), exc_info=True,
         )
     return False
+
+
+async def _apply_project_create(request: Request, decision: dict, value) -> bool:
+    """Side effect for a project_create Decision (taOS tsk-tacez2).
+
+    The decision's metadata carries:
+        {kind: "project_create",
+         auth_request_id, requester_canonical_id,
+         requested_name, requested_slug, requested_purpose}
+
+    Approving it creates the project via ``project_store.create_project`` and
+    sets the requesting agent as the project LEAD -- both the membership role
+    (role="lead" on project_members) and the ``projects.lead_member_id``
+    pointer via ``set_lead`` -- since the role label alone is cosmetic and
+    every lead-gated check reads the pointer (taOS #2113, Hermes).
+
+    Denying does nothing -- no project is created.
+
+    Best-effort: the answer is already persisted, so a store hiccup must not
+    fail the answer.  Returns True (a more specific message is routed to the
+    asking agent) so the generic _route_answer_to_agent is skipped.
+    """
+    meta = decision.get("metadata") or {}
+    if not isinstance(meta, dict) or meta.get("kind") != "project_create":
+        return False
+
+    approved = value == "approve"
+    requester_cid = meta.get("requester_canonical_id") or ""
+
+    if not approved:
+        await _route_answer_to_agent(
+            decision, "your project creation request was denied"
+        )
+        return True
+
+    # Approve: create the project and set the requester as lead.
+    pstore = getattr(request.app.state, "project_store", None)
+    if pstore is None:
+        logger.warning(
+            "project_create approve: project_store missing (decision %s)",
+            decision.get("id"),
+        )
+        await _route_answer_to_agent(
+            decision,
+            "your project creation request was approved, but the project could "
+            "not be created - please retry",
+        )
+        return True
+
+    name = meta.get("requested_name", "")
+    slug = meta.get("requested_slug", "")
+    purpose = meta.get("requested_purpose", "")
+
+    from tinyagentos.projects.project_store import ProjectConflict
+
+    try:
+        project = await pstore.create_project(
+            name=name,
+            slug=slug,
+            description=purpose,
+            created_by=requester_cid,
+            user_id="",
+        )
+    except ProjectConflict:
+        # Race: another request created the project with this name/slug between
+        # the uniqueness pre-check and this approval.
+        logger.warning(
+            "project_create approve: name/slug collision at commit time "
+            "(decision %s, name=%s, slug=%s)",
+            decision.get("id"), name, slug,
+        )
+        await _route_answer_to_agent(
+            decision,
+            f"your project creation request was approved, but '{name}' "
+            f"(slug {slug}) was taken in the meantime - please retry",
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "project_create approve: project creation failed (decision %s)",
+            decision.get("id"), exc_info=True,
+        )
+        await _route_answer_to_agent(
+            decision,
+            "your project creation request was approved, but creating the "
+            "project failed - please retry",
+        )
+        return True
+
+    # Set the requester as lead: both the membership role AND the
+    # projects.lead_member_id pointer. The role label is cosmetic; set_lead
+    # is the structural writer (taOS #2113).
+    try:
+        await pstore.add_member(
+            project_id=project["id"],
+            member_id=requester_cid,
+            member_kind="native",
+            role="lead",
+        )
+        await pstore.set_lead(project["id"], requester_cid)
+        await pstore.log_activity(
+            project["id"], requester_cid, "project.created", {"slug": slug}
+        )
+    except Exception:
+        logger.warning(
+            "project_create approve: lead setup failed for project %s",
+            project.get("id"), exc_info=True,
+        )
+
+    # Mirror to filesystem (best-effort, mirrors create_project route).
+    try:
+        from tinyagentos.routes.projects import _mirror
+        _mirror(request, project)
+    except Exception:
+        logger.warning(
+            "project_create approve: folder mirror failed for project %s",
+            project.get("id"), exc_info=True,
+        )
+
+    # Ensure a2a channel (best-effort).
+    try:
+        from tinyagentos.projects.a2a import ensure_a2a_channel
+        await ensure_a2a_channel(
+            request.app.state.chat_channels,
+            pstore,
+            project["id"],
+            config=getattr(request.app.state, "config", None),
+        )
+    except Exception:
+        logger.warning(
+            "project_create approve: a2a channel ensure failed for project %s",
+            project.get("id"), exc_info=True,
+        )
+
+    await _route_answer_to_agent(
+        decision,
+        f"your project creation request was approved - the project '{name}' "
+        f"has been created and you are the lead",
+    )
+    return True

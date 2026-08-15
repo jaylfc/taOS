@@ -22,14 +22,16 @@ Security notes
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from aiosqlite import IntegrityError
 from tinyagentos.agent_registry_store import _slugify, mint_registry_token
+from tinyagentos.agent_token_auth import check_agent_identity
 from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,19 @@ VALID_SCOPES = frozenset({
     "project_lists",
 })
 
+# Closed vocabulary of request kinds on the auth-request endpoint. An empty/None
+# kind is the original JOIN consent request. "project_create" lets a *registered*
+# agent (proven via its own registry Bearer token) request creation of a new
+# project; approval happens later via the Decisions app. A create request needs
+# no standing scope -- anyone with an active identity may request -- but the
+# requester must authenticate so the identity is verifiable.
+VALID_REQUEST_KINDS = frozenset({"project_create"})
+
+# A project slug is [a-z0-9] followed by up to 62 [a-z0-9_-] characters.
+# Mirrors the validator on routes.projects.CreateProjectIn so the auth-request
+# path rejects a malformed slug before it ever reaches the store.
+_PROJECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
 
 # ---------------------------------------------------------------------------
 # Request bodies
@@ -104,11 +119,38 @@ VALID_SCOPES = frozenset({
 class CreateAuthRequest(BaseModel):
     identity_claim: str
     framework: str
-    requested_scopes: list[str]
+    requested_scopes: list[str] = []
     requested_skills: Optional[list[str]] = None
     reason: str = ""
     duration_secs: Optional[int] = None
     project_id: Optional[str] = None
+    # New: kind selects the request type. None/"" is the original consent (JOIN).
+    # "project_create" carries project creation metadata and requires the
+    # agent to authenticate with its own registry Bearer token.
+    kind: Optional[str] = None
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    purpose: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_request_kind(self) -> "CreateAuthRequest":
+        if self.kind and self.kind not in VALID_REQUEST_KINDS:
+            raise ValueError(
+                f"unknown request kind: {self.kind!r}; valid: "
+                f"{sorted(VALID_REQUEST_KINDS)}"
+            )
+        if self.kind == "project_create":
+            if not self.name:
+                raise ValueError("name is required for project_create requests")
+            if not self.slug:
+                raise ValueError("slug is required for project_create requests")
+            if not self.purpose:
+                raise ValueError("purpose is required for project_create requests")
+            if not _PROJECT_SLUG_RE.fullmatch(self.slug):
+                raise ValueError(
+                    "slug must match ^[a-z0-9][a-z0-9_-]{0,62}$"
+                )
+        return self
 
 
 class ApproveBody(BaseModel):
@@ -230,18 +272,169 @@ def _get_approve_lock(request: Request, request_id: str) -> asyncio.Lock:
     return locks[request_id]
 
 
+async def _handle_project_create_request(request: Request, body: CreateAuthRequest, store) -> dict:
+    """Handle a kind=project_create auth request.
+
+    Flow:
+       1. Verify the caller's registry identity via its own Bearer token
+        (check_agent_identity, identity only, no scope grant required).
+    2. Immediately check requested name / slug uniqueness, reusing the
+        project-store checker (Card A).  If either is taken the request is
+        auto-rejected synchronously with structured suggestions and *no*
+        Decision is raised -- Jay is never bothered with a name collision.
+    3. If both are free, create a pending auth-request record carrying the
+        project fields and the requester's canonical_id, then create a
+        Decision (approve_deny) queued for admin (Jay) approval.  On
+        approval the decision's side-effect handler creates the project and
+        sets the requester as lead.
+
+    Returns the JSON response body / JSONResponse.
+    """
+    # 1. Authenticate the requester with its own registry JWT.  No scope is
+    #    required to make the request -- identity alone authorises asking.
+    canonical_id = await check_agent_identity(request)
+    if canonical_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Bearer token required for project_create requests",
+        )
+
+    # Resolve the agent's handle for the Decision's from_agent (display +
+    # A2A answer routing, which keys on the leading '@').
+    registry = _get_registry_store(request)
+    agent_rec = await registry.get(canonical_id)
+    if agent_rec is None:
+        raise HTTPException(status_code=404, detail="agent not found in registry")
+    handle = agent_rec.get("handle") or ""
+    if handle.startswith("@"):
+        from_agent = handle
+    elif handle:
+        from_agent = f"@{handle}"
+    else:
+        from_agent = canonical_id
+
+    # 2. Uniqueness pre-check -- reuse Card A's checker before creating any
+    #    record so a collision never reaches Jay's inbox.
+    pstore = getattr(request.app.state, "project_store", None)
+    if pstore is None:
+        raise HTTPException(status_code=500, detail="project store unavailable")
+
+    from tinyagentos.routes.projects import _free_suggestions
+
+    if body.name and await pstore.get_project_by_name(body.name) is not None:
+        suggestions = await _free_suggestions(pstore, "name", body.name)
+        return JSONResponse(
+            {
+                "error": f"project name already used: {body.name}",
+                "field": "name",
+                "taken": body.name,
+                "suggestions": suggestions,
+            },
+            status_code=409,
+        )
+    if body.slug and await pstore.get_project_by_slug(body.slug) is not None:
+        suggestions = await _free_suggestions(pstore, "slug", body.slug)
+        return JSONResponse(
+            {
+                "error": f"project slug already used: {body.slug}",
+                "field": "slug",
+                "taken": body.slug,
+                "suggestions": suggestions,
+            },
+            status_code=409,
+        )
+
+    # 3. Both name and slug are free -- create the auth-request record (pending)
+    #    and a Decision queued for admin approval.
+    record = await store.create(
+        identity_claim=body.identity_claim,
+        framework=body.framework,
+        requested_scopes=[],
+        requested_skills=None,
+        reason=body.reason,
+        duration_secs=body.duration_secs,
+        project_id=None,
+        kind="project_create",
+        requested_name=body.name,
+        requested_slug=body.slug,
+        purpose=body.purpose or "",
+        requested_by_agent=canonical_id,
+    )
+
+    decision_store = getattr(request.app.state, "decision_store", None)
+    if decision_store is None:
+        raise HTTPException(status_code=500, detail="decision store unavailable")
+
+    # OS-level decision (project_id=None): addressed to the instance admin(s).
+    admin_uid = ""
+    admins = [u for u in request.app.state.auth.list_users() if u.get("is_admin")]
+    if admins:
+        admin_uid = admins[0]["id"]
+
+    decision = await decision_store.create(
+        from_agent=from_agent,
+        question=(
+            f"Agent {from_agent} requests project creation: "
+            f"'{body.name}' (slug: {body.slug})"
+        ),
+        type="approve_deny",
+        options=[
+            {"label": "Approve", "value": "approve"},
+            {"label": "Deny", "value": "deny"},
+        ],
+        priority="normal",
+        project_id=None,
+        user_id=admin_uid,
+        metadata={
+            "kind": "project_create",
+            "auth_request_id": record["id"],
+            "requester_canonical_id": canonical_id,
+            "requested_name": body.name,
+            "requested_slug": body.slug,
+            "requested_purpose": body.purpose or "",
+        },
+    )
+
+    # Surface the decision as a bell notification (best effort).
+    notifs = getattr(request.app.state, "notifications", None)
+    if notifs is not None:
+        try:
+            await notifs.add(
+                title="Decision needed",
+                message=f"{from_agent} requests project creation: {body.name}",
+                level="info",
+                source="decisions",
+            )
+        except Exception:
+            pass
+
+    return {"request_id": record["id"], "decision_id": decision["id"], "status": "pending"}
+
+
 # ---------------------------------------------------------------------------
 # Routes — public (EXEMPT)
 # ---------------------------------------------------------------------------
 
 @router.post("/api/agents/auth-requests")
 async def create_auth_request(request: Request, body: CreateAuthRequest):
-    """Submit an access request from an external agent.
+    """Submit a request from an external or already-registered agent.
 
-    No authentication required — the agent has no credentials yet.
-    Returns {request_id, status: 'pending'}.
+    Two request kinds share this endpoint (EXEMPT, no session required):
+
+    * JOIN (kind omitted/null): the original consent flow. No credentials
+      required; the agent registers on approval.
+    * project_create (kind="project_create"): a *registered* agent requests
+      creation of a new project. The agent must authenticate with its own
+      registry Bearer token (no scope needed -- identity alone suffices).
+      If the requested name/slug is already taken the request is auto-rejected
+      synchronously (409 with suggestions) and no Decision is raised. If free,
+      a Decision (approve_deny) is queued for admin approval; approving it
+      creates the project and sets the requester as lead.
     """
     store = _get_auth_requests_store(request)
+
+    if body.kind == "project_create":
+        return await _handle_project_create_request(request, body, store)
 
     # Only known scopes may be requested — reject unknown ones up front so
     # the admin is never shown (and can never approve) a scope the system

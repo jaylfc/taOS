@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS auth_requests (
     reason          TEXT NOT NULL DEFAULT '',
     duration_secs   INTEGER,
     project_id      TEXT,
+    kind            TEXT NOT NULL DEFAULT '',
+    requested_name  TEXT NOT NULL DEFAULT '',
+    requested_slug  TEXT NOT NULL DEFAULT '',
+    purpose         TEXT NOT NULL DEFAULT '',
+    requested_by_agent TEXT,
     status          TEXT NOT NULL DEFAULT 'pending',
     canonical_id    TEXT,
     token           TEXT,
@@ -85,6 +90,11 @@ class AuthRequestsStore(BaseStore):
         reason: str = "",
         duration_secs: Optional[int] = None,
         project_id: Optional[str] = None,
+        kind: str = "",
+        requested_name: str = "",
+        requested_slug: str = "",
+        purpose: str = "",
+        requested_by_agent: Optional[str] = None,
     ) -> dict:
         """Create a new pending auth request. Returns the full record."""
         if self._db is None:
@@ -97,8 +107,9 @@ class AuthRequestsStore(BaseStore):
             """
             INSERT INTO auth_requests
                 (id, identity_claim, framework, requested_scopes, requested_skills,
-                 reason, duration_secs, project_id, status, created_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                 reason, duration_secs, project_id, kind, requested_name,
+                 requested_slug, purpose, requested_by_agent, status, created_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (
                 request_id,
@@ -109,6 +120,11 @@ class AuthRequestsStore(BaseStore):
                 reason,
                 duration_secs,
                 project_id,
+                kind,
+                requested_name,
+                requested_slug,
+                purpose,
+                requested_by_agent,
                 now,
             ),
         )
