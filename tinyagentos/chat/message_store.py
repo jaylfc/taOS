@@ -282,6 +282,26 @@ class ChatMessageStore(BaseStore):
         )
         await self._db.commit()
 
+    async def append_content_block(self, message_id: str, block: dict) -> list | None:
+        """Append a single content block to a message's ``content_blocks`` JSON array.
+
+        Returns the updated blocks list, or None if the message was not found.
+        """
+        async with self._db.execute(
+            "SELECT content_blocks FROM chat_messages WHERE id = ?", (message_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        blocks = json.loads(row[0]) if row[0] else []
+        blocks.append(block)
+        await self._db.execute(
+            "UPDATE chat_messages SET content_blocks = ? WHERE id = ?",
+            (json.dumps(blocks), message_id),
+        )
+        await self._db.commit()
+        return blocks
+
     async def soft_delete_message(self, message_id: str) -> bool:
         """Mark message as soft-deleted; returns True if a row was updated."""
         now = time.time()

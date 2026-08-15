@@ -13,6 +13,8 @@ import {
   PauseCircle,
   AlertTriangle,
   Loader2,
+  Check,
+  Clock,
 } from "lucide-react";
 import {
   Button,
@@ -189,11 +191,16 @@ export interface QuestionContentBlock {
   options?: string[];
 }
 
+export interface DecisionContentBlock {
+  kind: "decision";
+  decision_id: string;
+}
+
 /**
  * Structured message content for taOStalk session turns.
  * Known kinds are handled by dedicated block components (separate cards);
  * any unrecognized kind falls through to the unknown-block fallback in
- * renderContent, which is the slice-2 seam.
+ * renderContent, which is the slice-2 seam for the renderer registry.
  */
 export type ContentBlock =
   | TextContentBlock
@@ -201,6 +208,7 @@ export type ContentBlock =
   | ToolCallContentBlock
   | StatusContentBlock
   | QuestionContentBlock
+  | DecisionContentBlock
   | { kind: string; [key: string]: unknown };
 
 interface Message {
@@ -290,6 +298,10 @@ function renderContentBlock(block: ContentBlock, index: number): React.ReactElem
     case "question":
       return (
         <StatusBlock block={block as QuestionContentBlock} key={`block-${index}`} />
+      );
+    case "decision":
+      return (
+        <DecisionBlock block={block as DecisionContentBlock} key={`block-${index}`} />
       );
     default:
       return (
@@ -439,6 +451,198 @@ export function ThinkingBlock({ block, index }: { block: ThinkingContentBlock; i
   );
 }
 
+
+type DecisionBlockStatus = "pending" | "answered" | "superseded" | string;
+
+interface DecisionData {
+  id: string;
+  from_agent: string;
+  question: string;
+  type: string;
+  options?: Array<{ label: string; value: string; rationale?: string }>;
+  context?: string | null;
+  priority?: string;
+  status: DecisionBlockStatus;
+  answer?: { value: unknown; answered_by?: string; answered_at?: number } | null;
+  created_at: number | string;
+}
+
+function decisionTypeLabel(t: string): string {
+  switch (t) {
+    case "single_select": return "Pick one";
+    case "multi_select": return "Pick any";
+    case "approve_deny": return "Approve / Deny";
+    case "free_text": return "Free text";
+    default: return t;
+  }
+}
+
+function resolveAnswerLabel(d: DecisionData): string | null {
+  const ans = d.answer;
+  if (!ans || ans.value == null) return null;
+  const opts = d.options || [];
+  const optMap = new Map(opts.map((o) => [o.value, o.label]));
+  const vals = Array.isArray(ans.value) ? ans.value : [ans.value];
+  const labels = vals.map((v) => optMap.get(String(v)) ?? String(v));
+  return labels.join(", ");
+}
+
+/**
+ * DecisionBlock -- read-only renderer for a `{kind:"decision", decision_id}`
+ * content block. Fetches the decision from the Decisions API and renders the
+ * question, options (disabled), type, and current state (open / answered).
+ * No click-to-answer: the operator answers from the Decisions app.
+ */
+export function DecisionBlock({ block }: { block: DecisionContentBlock }): React.ReactElement {
+  const [decision, setDecision] = useState<DecisionData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/decisions/${block.decision_id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled) {
+          if (data && typeof data === "object" && "question" in data) {
+            setDecision(data as DecisionData);
+            setError(null);
+          } else {
+            setError("decision not found");
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("could not load decision");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [block.decision_id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-[12px] text-shell-text-tertiary py-2">
+        <Loader2 size={12} className="animate-spin" />
+        loading decision...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-[12px] text-red-400 py-1" role="alert">
+        {error}
+      </div>
+    );
+  }
+
+  if (!decision) return <></>;
+
+  const isOpen = decision.status === "pending";
+  const isAnswered = decision.status === "answered";
+  const showOptions = decision.type !== "free_text" && decision.options && decision.options.length > 0;
+
+  return (
+    <div
+      data-decision-block="true"
+      className="rounded-xl border border-shell-border bg-shell-surface/60 py-2.5 text-[13px]"
+    >
+      {/* header: question + type badge + state */}
+      <div className="flex flex-col gap-1 px-3">
+        <p className="text-sm font-semibold text-shell-text">{decision.question}</p>
+        {decision.context && (
+          <p className="text-xs leading-relaxed text-shell-text-secondary">
+            {decision.context}
+          </p>
+        )}
+        <span className="text-[11px] uppercase tracking-wide text-shell-text-tertiary">
+          {decisionTypeLabel(decision.type)}
+        </span>
+      </div>
+
+      {/* options (disabled -- read-only) */}
+      {showOptions && (
+        <div className="mt-2 flex flex-col gap-1.5 px-3">
+          {decision.options!.map((opt) => {
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                disabled
+                aria-pressed={false}
+                className={[
+                  "flex w-full flex-col gap-0.5 rounded-lg border px-3 py-1.5 text-left",
+                  "disabled:cursor-not-allowed disabled:opacity-60",
+                  "border-shell-border bg-shell-bg-deep text-shell-text-secondary",
+                ].join(" ")}
+              >
+                <span className="text-sm">{opt.label}</span>
+                {opt.rationale && (
+                  <span className="text-[10px] text-shell-text-tertiary">{opt.rationale}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* answer line for select-type answered decisions */}
+      {isAnswered && showOptions && (
+        <div className="mt-2 px-3 text-[12px] text-shell-text-secondary">
+          answered: {resolveAnswerLabel(decision) ?? "no answer recorded"}
+        </div>
+      )}
+
+      {/* free_text answered: show the answer text */}
+      {isAnswered && decision.type === "free_text" && decision.answer && (
+        <div className="mt-2 px-3 text-[12px] text-shell-text-secondary">
+          answered: {String(decision.answer.value)}
+        </div>
+      )}
+
+      {/* free_text pending: show a disabled textarea placeholder */}
+      {isOpen && decision.type === "free_text" && (
+        <div className="mt-2 px-3">
+          <textarea
+            readOnly
+            disabled
+            placeholder="awaiting free-text answer"
+            className="w-full resize-none rounded border border-shell-border bg-shell-bg-deep px-2 py-1.5 text-[12px] text-shell-text-tertiary"
+            rows={3}
+          />
+        </div>
+      )}
+
+      {/* footer: state + answerer/timestamp */}
+      <div className="mt-2 flex items-center gap-3 px-3 text-[11px] text-shell-text-tertiary">
+        <span className="inline-flex items-center gap-1">
+          {isOpen ? (
+            <CircleDot size={10} className="text-amber-400" />
+          ) : isAnswered ? (
+            <Check size={10} className="text-green-400" />
+          ) : (
+            <AlertTriangle size={10} className="text-shell-text-tertiary" />
+          )}
+          <span>
+            {decision.status === "pending" ? "open" : decision.status}
+          </span>
+        </span>
+        {isAnswered && decision.answer && (
+          <span className="inline-flex items-center gap-1">
+            <Clock size={10} />
+            <span>
+              {decision.answer.answered_by
+                ? `answered by ${decision.answer.answered_by}`
+                : "answered"}
+            </span>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Best-effort per-channel draft storage. Drafts are user input that may
 // contain sensitive material; they are kept in localStorage (the same
@@ -857,12 +1061,15 @@ export function MessagesApp({
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === data.message_id
-                  ? {
-                      ...m,
-                      ...(data.content !== undefined && { content: data.content }),
-                      ...(data.edited_at !== undefined && { edited_at: data.edited_at }),
-                      ...(data.metadata !== undefined && { metadata: data.metadata }),
-                    }
+               ? {
+                       ...m,
+                       ...(data.content !== undefined && { content: data.content }),
+                       ...(data.edited_at !== undefined && { edited_at: data.edited_at }),
+                       ...(data.metadata !== undefined && { metadata: data.metadata }),
+                       ...(data.content_blocks !== undefined && {
+                         content_blocks: data.content_blocks as ContentBlock[],
+                       }),
+                     }
                   : m,
               ),
             );

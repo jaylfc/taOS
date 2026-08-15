@@ -265,3 +265,37 @@ async def test_soft_delete_nonexistent_returns_false(tmp_path):
     await store.init()
     ok = await store.soft_delete_message("does-not-exist")
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_append_content_block(tmp_path):
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    msg = await _send(store)
+    blocks = await store.append_content_block(msg["id"], {"kind": "decision", "decision_id": "dec-1"})
+    assert blocks is not None
+    assert blocks[-1] == {"kind": "decision", "decision_id": "dec-1"}
+    fetched = await store.get_message(msg["id"])
+    assert fetched["content_blocks"] == blocks
+
+
+@pytest.mark.asyncio
+async def test_append_content_block_missing_message(tmp_path):
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    result = await store.append_content_block("nope", {"kind": "decision", "decision_id": "dec-1"})
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_append_multiple_content_blocks(tmp_path):
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    msg = await _send(store)
+    await store.append_content_block(msg["id"], {"kind": "decision", "decision_id": "dec-1"})
+    await store.append_content_block(msg["id"], {"kind": "text", "text": "follow-up"})
+    fetched = await store.get_message(msg["id"])
+    assert fetched["content_blocks"] == [
+        {"kind": "decision", "decision_id": "dec-1"},
+        {"kind": "text", "text": "follow-up"},
+    ]
