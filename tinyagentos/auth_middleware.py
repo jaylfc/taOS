@@ -11,7 +11,11 @@ from starlette.responses import RedirectResponse
 
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 
-EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+# PWA manifest and every icon it references must be fetchable without auth.
+# Chrome on Android aborts the PWA install flow if the manifest or any icon
+# gets a 401. These paths are listed individually -- NOT via the /static/
+# prefix in EXEMPT_PREFIXES -- so the exemption is explicit and reviewable.
+EXEMPT_PATHS = {"/auth/login", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations", "/static/manifest-desktop.json", "/static/manifest-chat.json", "/static/icon-192.png", "/static/icon-512.png"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the

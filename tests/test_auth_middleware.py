@@ -1,6 +1,8 @@
 """Unit tests for auth_middleware allow/deny logic."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -81,6 +83,50 @@ class TestIsExempt:
 
     def test_protected_api_not_exempt(self):
         assert _is_exempt("GET", "/api/system") is False
+
+
+class TestPwaManifestExempt:
+    """PWA manifest and every icon it references must be fetchable without auth.
+
+    Chrome on Android aborts the install flow if the manifest or any icon it
+    references returns 401. These paths are exempted individually in
+    EXEMPT_PATHS -- not via a blanket /static/ prefix -- so only PWA-critical
+    assets are public.
+    """
+
+    _REPO_ROOT = Path(__file__).resolve().parent.parent
+    _MANIFEST_URL = "/static/manifest-desktop.json"
+
+    @classmethod
+    def _pwa_asset_paths(cls) -> set[str]:
+        """Read the real desktop PWA manifest and return every URL path it
+        references: the manifest itself plus all icon srcs."""
+        manifest_file = cls._REPO_ROOT / "static" / "manifest-desktop.json"
+        data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        paths = {cls._MANIFEST_URL}
+        for icon in data.get("icons", []):
+            paths.add(icon["src"])
+        return paths
+
+    def test_manifest_exempt(self):
+        assert _is_exempt("GET", self._MANIFEST_URL) is True
+
+    def test_every_icon_referenced_by_manifest_exempt(self):
+        for path in self._pwa_asset_paths():
+            assert _is_exempt("GET", path) is True
+
+    @pytest.mark.asyncio
+    async def test_manifest_and_icons_pass_without_auth(self):
+        for path in self._pwa_asset_paths():
+            middleware = AuthMiddleware(app=MagicMock())
+            req = _request(method="GET", path=path, auth_mgr=_default_auth_mgr())
+            call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+            resp = await middleware.dispatch(req, call_next)
+
+            assert resp.status_code == 200, f"{path} must pass without auth"
+            assert req.state.via == "exempt"
+            call_next.assert_awaited_once()
 
 
 class TestIsLoopbackClient:
