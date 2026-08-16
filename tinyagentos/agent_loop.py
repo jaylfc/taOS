@@ -416,7 +416,8 @@ class AgentLoop:
 
         If the subagent was cancelled (e.g. via ``cancel_subagents`` or a
         redirect at a safe point), the handle state is ``"cancelled"`` and
-        the result (``None``) is returned without re-raising.
+        the result (``None``) is returned without re-raising. If the worker
+        raised, that exception is re-raised here at the caller.
 
         A *timeout* only limits how long this call waits. It does NOT cancel
         the subagent task. The subagent keeps running and can be awaited again
@@ -425,6 +426,7 @@ class AgentLoop:
         Raises:
             KeyError: if *sub_id* is unknown.
             asyncio.TimeoutError: if *timeout* is given and exceeded.
+            Exception: the worker's own exception, if the subagent failed.
         """
         async with self._lock:
             entry = self._subagents.get(sub_id)
