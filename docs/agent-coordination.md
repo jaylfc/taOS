@@ -713,32 +713,34 @@ Never fix such a leak by removing the field from `to_dict()`: `save_config()`
 serialises from there, so that makes the setting unpersistable.
 ## Task checklist items (`/api/projects/{project_id}/tasks/{task_id}/checklist-items`)
 
-Route module `tinyagentos/routes/projects.py`. Session owner/admin **or** an
-approved external agent's registry JWT bound to THIS project.
+Route module `tinyagentos/routes/projects.py`.
 
-- `POST .../checklist-items` requires scope **`project_tasks_create`**, the same
-  narrower authoring grant task creation uses. `project_tasks` alone is NOT
-  enough: it is documented and tested as read plus lifecycle plus comments, so
-  authoring deliberately does not ride on it.
-- `GET .../checklist-items` requires only **`project_tasks`**. Takes
-  `?include_archived=true` to include archived items; the default is
-  non-archived only.
+- `POST .../checklist-items` takes a JSON body `{"text": "..."}` and creates one
+  item. A missing `text` is a `422`.
+- `GET .../checklist-items` lists items, newest state included. Takes
+  `?include_archived=true`; the default hides archived items.
 - Both answer `404` when the task is not in the named project, so a task id from
   another project is existence-hiding rather than merely forbidden.
 - Creating an item logs `checklist.item.created` to the project activity feed
   with the actor, task id, item id and text.
+- Archiving is store-level only and refuses unless the item is both **verified**
+  and **reported**; there is no archive route.
 
-**The create route takes `text` as a REQUIRED QUERY PARAMETER and accepts no
-request body**, unlike `POST /api/projects/{project_id}/tasks` next to it, which
-takes a JSON body. Verified against the generated OpenAPI schema, not inferred:
+**SESSION OWNER/ADMIN ONLY TODAY. AN AGENT TOKEN CANNOT REACH THESE ROUTES.**
+The handlers call `_authorize_task_actor(..., scope="project_tasks_create")` and
+their docstrings advertise agent access, but `tinyagentos/auth_middleware.py`
+carries **no checklist pattern** in its Bearer allowlist, and that allowlist is
+exact. A registry JWT is therefore refused `401 Authentication required` before
+any scope check runs, so the agent-authorization branch in both handlers is
+currently unreachable.
 
-    POST params: [('project_id','path',True), ('task_id','path',True), ('text','query',True)]
-    POST requestBody: NONE
+Proven with a control, not inferred: with one fixture and one token, the
+allowlisted `GET /api/projects/{project_id}/tasks` answers `200` while
+`GET .../checklist-items` answers `401`.
 
-So the call is `POST .../checklist-items?text=<the+item+text>`. A client that
-follows the neighbouring convention and sends `{"text": "..."}` as JSON gets a
-`422` for a missing query parameter, which reads as a validation bug rather than
-a shape mismatch.
+`tests/test_routes_task_checklist.py` pins this as two **strict** xfails, so the
+moment the allowlist gains the patterns they turn XPASS and fail, forcing this
+paragraph to be corrected rather than left to rot.
 
 ## Identity rules
 

@@ -1239,12 +1239,16 @@ async def list_comments(
 # Checklist routes
 # ---------------------------------------------------------------------------
 
+class CreateChecklistItemIn(BaseModel):
+    text: str
+
+
 @router.post("/api/projects/{project_id}/tasks/{task_id}/checklist-items")
 async def create_checklist_item(
     project_id: str,
     task_id: str,
+    payload: CreateChecklistItemIn,
     request: Request,
-    text: str,
 ):
     """Create a checklist item for a task.
 
@@ -1267,7 +1271,7 @@ async def create_checklist_item(
         return JSONResponse({"error": "not found"}, status_code=404)
     item = await store.create_checklist_item(
         task_id=task_id,
-        text=text,
+        text=payload.text,
         created_by=actor_id,
     )
     _beads_mark_dirty(request, project_id)
