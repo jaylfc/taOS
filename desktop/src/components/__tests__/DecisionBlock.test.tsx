@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { DecisionBlock } from "@/apps/MessagesApp";
 import type { DecisionContentBlock } from "@/apps/MessagesApp";
@@ -30,17 +30,51 @@ describe("DecisionBlock", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders question, type label, and disabled option buttons for a pending single_select", async () => {
-    mockDecisionFetch({
-      ...baseDecision,
-      question: "Which engine?",
-      type: "single_select",
-      options: [
-        { label: "Excalidraw", value: "excalidraw" },
-        { label: "Konva", value: "konva" },
-      ],
-      context: "canvas replacement",
+  it("renders enabled option buttons for an open pending single_select and disabled when not open", async () => {
+    let getCount = 0;
+    const fn = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      const isAnswer = options?.method === "POST" && url.includes("/answer");
+      const isGet = !options && /\/api\/decisions\/dec-1$/.test(url);
+      if (isAnswer) return { ok: true, json: async () => ({}) };
+      if (isGet) {
+        getCount++;
+        if (getCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              ...baseDecision,
+              id: "dec-1",
+              question: "Which engine?",
+              type: "single_select",
+              options: [
+                { label: "Excalidraw", value: "excalidraw" },
+                { label: "Konva", value: "konva" },
+              ],
+              context: "canvas replacement",
+              status: "pending",
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ...baseDecision,
+            id: "dec-1",
+            question: "Which engine?",
+            type: "single_select",
+            options: [
+              { label: "Excalidraw", value: "excalidraw" },
+              { label: "Konva", value: "konva" },
+            ],
+            context: "canvas replacement",
+            status: "answered",
+            answer: { value: "excalidraw", answered_by: "tester", answered_at: 1700000100 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
     });
+    vi.stubGlobal("fetch", fn);
 
     const block: DecisionContentBlock = {
       kind: "decision",
@@ -58,26 +92,74 @@ describe("DecisionBlock", () => {
     expect(container.textContent).toContain("Excalidraw");
     expect(container.textContent).toContain("Konva");
 
-    // Pending state indicator
+    // OPEN (status === "pending"): state indicator and enabled controls
     expect(container.textContent).toContain("open");
+    const enabledButtons = container.querySelectorAll('button:not([disabled])');
+    expect(enabledButtons.length).toBeGreaterThanOrEqual(2);
 
-    // Options render as disabled buttons (no click-to-answer)
-    const buttons = container.querySelectorAll('button[disabled]');
-    expect(buttons.length).toBeGreaterThanOrEqual(2);
+    // Activating an enabled button submits the answer
+    const firstButton = enabledButtons[0] as HTMLElement;
+    firstButton.click();
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        expect.stringContaining("/api/decisions/dec-1/answer"),
+        expect.anything()
+      );
+    });
+
+    // NOT OPEN: after answering, options render as disabled buttons
+    await waitFor(() => {
+      expect(container.textContent).toContain("answered");
+    });
+    const disabledButtons = container.querySelectorAll('button[disabled]');
+    expect(disabledButtons.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("renders approve/deny as disabled buttons for approve_deny type", async () => {
-    mockDecisionFetch({
-      ...baseDecision,
-      id: "dec-2",
-      question: "Run code_exec?",
-      type: "approve_deny",
-      options: [
-        { label: "Approve", value: "approve" },
-        { label: "Deny", value: "deny" },
-      ],
-      priority: "blocking",
+  it("renders enabled approve/deny buttons for an open decision and disabled when not open", async () => {
+    let getCount = 0;
+    const fn = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      const isAnswer = options?.method === "POST" && url.includes("/answer");
+      const isGet = !options && /\/api\/decisions\/dec-2$/.test(url);
+      if (isAnswer) return { ok: true, json: async () => ({}) };
+      if (isGet) {
+        getCount++;
+        if (getCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              ...baseDecision,
+              id: "dec-2",
+              question: "Run code_exec?",
+              type: "approve_deny",
+              options: [
+                { label: "Approve", value: "approve" },
+                { label: "Deny", value: "deny" },
+              ],
+              priority: "blocking",
+              status: "pending",
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ...baseDecision,
+            id: "dec-2",
+            question: "Run code_exec?",
+            type: "approve_deny",
+            options: [
+              { label: "Approve", value: "approve" },
+              { label: "Deny", value: "deny" },
+            ],
+            priority: "blocking",
+            status: "answered",
+            answer: { value: "approve", answered_by: "tester", answered_at: 1700000100 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
     });
+    vi.stubGlobal("fetch", fn);
 
     const block: DecisionContentBlock = {
       kind: "decision",
@@ -90,9 +172,27 @@ describe("DecisionBlock", () => {
     });
 
     expect(container.textContent).toContain("Approve / Deny");
-    // approve_deny uses options rendered as disabled buttons
-    const buttons = container.querySelectorAll('button[disabled]');
-    expect(buttons.length).toBeGreaterThanOrEqual(2);
+
+    // OPEN (status === "pending"): controls are enabled
+    const enabledButtons = container.querySelectorAll('button:not([disabled])');
+    expect(enabledButtons.length).toBeGreaterThanOrEqual(2);
+
+    // Activating an enabled button submits the answer
+    const firstButton = enabledButtons[0] as HTMLElement;
+    firstButton.click();
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        expect.stringContaining("/api/decisions/dec-2/answer"),
+        expect.anything()
+      );
+    });
+
+    // NOT OPEN: after answering, controls are disabled
+    await waitFor(() => {
+      expect(container.textContent).toContain("answered");
+    });
+    const disabledButtons = container.querySelectorAll('button[disabled]');
+    expect(disabledButtons.length).toBeGreaterThanOrEqual(2);
   });
 
   it("shows answer label and answerer when the decision is answered", async () => {
@@ -120,14 +220,43 @@ describe("DecisionBlock", () => {
     expect(container.textContent).toContain("answered by jay");
   });
 
-  it("renders a disabled textarea for a pending free_text decision", async () => {
-    mockDecisionFetch({
-      ...baseDecision,
-      id: "dec-4",
-      question: "Any notes?",
-      type: "free_text",
-      options: [],
+  it("renders an enabled textarea for an open pending free_text decision and none when not open", async () => {
+    let getCount = 0;
+    const fn = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      const isAnswer = options?.method === "POST" && url.includes("/answer");
+      const isGet = !options && /\/api\/decisions\/dec-4$/.test(url);
+      if (isAnswer) return { ok: true, json: async () => ({}) };
+      if (isGet) {
+        getCount++;
+        if (getCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              ...baseDecision,
+              id: "dec-4",
+              question: "Any notes?",
+              type: "free_text",
+              options: [],
+              status: "pending",
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ...baseDecision,
+            id: "dec-4",
+            question: "Any notes?",
+            type: "free_text",
+            options: [],
+            status: "answered",
+            answer: { value: "looks good", answered_by: "tester", answered_at: 1700000200 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
     });
+    vi.stubGlobal("fetch", fn);
 
     const block: DecisionContentBlock = {
       kind: "decision",
@@ -140,8 +269,26 @@ describe("DecisionBlock", () => {
     });
 
     expect(container.textContent).toContain("Free text");
-    const textarea = container.querySelector("textarea[disabled]");
+
+    // OPEN (status === "pending"): textarea renders without disabled attribute
+    const textarea = container.querySelector("textarea");
     expect(textarea).not.toBeNull();
+    expect(textarea).not.toHaveAttribute("disabled");
+
+    // Activating the textarea (Enter) submits the answer
+    fireEvent.keyDown(textarea!, { key: "Enter", shiftKey: false });
+    await waitFor(() => {
+      expect(fn).toHaveBeenCalledWith(
+        expect.stringContaining("/api/decisions/dec-4/answer"),
+        expect.anything()
+      );
+    });
+
+    // NOT OPEN: after answering, no textarea renders
+    await waitFor(() => {
+      expect(container.textContent).toContain("answered");
+    });
+    expect(container.querySelector("textarea")).toBeNull();
   });
 
   it("shows answered free_text value when resolved", async () => {
@@ -211,5 +358,82 @@ describe("DecisionBlock", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("decision not found");
     });
+  });
+
+  it("rejects subsequent answers after the first is accepted", async () => {
+    let answerCount = 0;
+    let getCount = 0;
+    const fn = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      const isAnswer = options?.method === "POST" && url.includes("/answer");
+      const isGet = !options && /\/api\/decisions\/dec-faw$/.test(url);
+      if (isAnswer) {
+        answerCount++;
+        if (answerCount === 1) {
+          return { ok: true, json: async () => ({}) };
+        }
+        return { ok: false, status: 409, json: async () => ({ detail: "Decision already answered" }) };
+      }
+      if (isGet) {
+        getCount++;
+        if (getCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              ...baseDecision,
+              id: "dec-faw",
+              question: "Pick one",
+              type: "single_select",
+              options: [
+                { label: "Excalidraw", value: "excalidraw" },
+                { label: "Konva", value: "konva" },
+              ],
+              status: "pending",
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ...baseDecision,
+            id: "dec-faw",
+            question: "Pick one",
+            type: "single_select",
+            options: [
+              { label: "Excalidraw", value: "excalidraw" },
+              { label: "Konva", value: "konva" },
+            ],
+            status: "answered",
+            answer: { value: "excalidraw", answered_by: "tester", answered_at: 1700000100 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fn);
+
+    const block: DecisionContentBlock = {
+      kind: "decision",
+      decision_id: "dec-faw",
+    };
+    const { container } = render(<DecisionBlock block={block} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-decision-block="true"]')).not.toBeNull();
+    });
+
+    // Submit first answer
+    const firstButton = container.querySelector('button:not([disabled])') as HTMLElement;
+    firstButton.click();
+
+    // Wait for the decision to be answered
+    await waitFor(() => expect(container.textContent).toContain("answered"));
+
+    // Attempt a second answer by firing click on a button
+    const anyButton = container.querySelector('button') as HTMLElement;
+    fireEvent.click(anyButton);
+
+    // First answer retained, second rejected
+    expect(container.textContent).toContain("answered: Excalidraw");
+    expect(answerCount).toBe(1);
   });
 });
