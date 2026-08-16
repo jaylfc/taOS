@@ -44,6 +44,24 @@ class FileResult:
     module_skipped: bool = False
     module_skip_reason: str = ""
     pytest_exit_code: int = 0
+    defined_tests: int = 0
+
+
+def _count_defined_tests(filepath: str, repo_root: Path) -> int:
+    p = Path(filepath)
+    abs_path = p if p.is_absolute() else repo_root / filepath
+    if not abs_path.exists():
+        return 0
+    try:
+        tree = ast.parse(abs_path.read_text())
+    except SyntaxError:
+        return 0
+    count = 0
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("test_"):
+                count += 1
+    return count
 
 
 def _run_git(args: list[str], repo_root: Path) -> str:
@@ -130,7 +148,8 @@ def _run_pytest_on_file(filepath: str, repo_root: Path) -> FileResult:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
 
-    reporter.pytest_exit_code = exit_code
+    reporter.result.pytest_exit_code = exit_code
+    reporter.result.defined_tests = _count_defined_tests(filepath, repo_root)
     if exit_code == 5 and not reporter.result.module_skipped:
         reporter.result.total = 0
     return reporter.result
@@ -199,7 +218,12 @@ def check_skip_only_tests(
         result = _run_pytest_on_file(file_path, repo_root)
         results[file_path] = result
 
-        if result.module_skipped or (result.total > 0 and result.skipped == result.total):
+        if (
+            result.module_skipped
+            or (result.total > 0 and result.skipped == result.total)
+            or result.pytest_exit_code in (2, 3, 4)
+            or (result.total == 0 and not result.module_skipped)
+        ):
             violations.append(result)
 
     return violations, waived, touched_test_files, results
@@ -239,6 +263,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"  - {v.path}: module-level skip (0 tests collected). "
                     f"Guard: {v.module_skip_reason or 'unknown module-level skip'}"
+                )
+            elif v.pytest_exit_code in (2, 3, 4) or (
+                v.total == 0 and not v.module_skipped
+            ):
+                print(
+                    f"  - {v.path}: collection error "
+                    f"({v.defined_tests} tests defined in file, 0 collected)"
                 )
             else:
                 common_reason = _most_common(v.skip_reasons)

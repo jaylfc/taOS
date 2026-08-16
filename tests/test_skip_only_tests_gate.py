@@ -112,3 +112,46 @@ def test_parse_waived_files():
         "Tests-Skipped-Intentionally: tests/test_bar.py, different file"
     )
     assert set() == checker._parse_waived_files("no trailer here")
+
+
+def test_collection_error_is_violation():
+    with patch.object(checker, "_git_changed", return_value=[("A", "tests/test_foo.py")]):
+        with patch.object(checker, "_run_pytest_on_file") as mock_run:
+            mock_run.return_value = checker.FileResult(
+                path="tests/test_foo.py",
+                total=0,
+                skipped=0,
+                module_skipped=False,
+                pytest_exit_code=2,
+            )
+            violations, _, _, _ = checker.check_skip_only_tests("origin/dev")
+            assert len(violations) == 1
+            assert violations[0].path == "tests/test_foo.py"
+
+
+def test_zero_total_not_module_skip_is_violation():
+    with patch.object(checker, "_git_changed", return_value=[("A", "tests/test_foo.py")]):
+        with patch.object(checker, "_run_pytest_on_file") as mock_run:
+            mock_run.return_value = checker.FileResult(
+                path="tests/test_foo.py",
+                total=0,
+                skipped=0,
+                module_skipped=False,
+                pytest_exit_code=0,
+            )
+            violations, _, _, _ = checker.check_skip_only_tests("origin/dev")
+            assert len(violations) == 1
+            assert violations[0].path == "tests/test_foo.py"
+
+
+def test_partial_pass_stays_clean():
+    with patch.object(checker, "_git_changed", return_value=[("A", "tests/test_foo.py")]):
+        with patch.object(checker, "_run_pytest_on_file") as mock_run:
+            mock_run.return_value = checker.FileResult(
+                path="tests/test_foo.py",
+                total=3,
+                skipped=1,
+                passed=2,
+            )
+            violations, _, _, _ = checker.check_skip_only_tests("origin/dev")
+            assert len(violations) == 0
