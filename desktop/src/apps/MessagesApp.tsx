@@ -571,7 +571,6 @@ export function DecisionBlock({ block }: { block: DecisionContentBlock }): React
                 key={opt.value}
                 type="button"
                 disabled
-                aria-pressed={false}
                 className={[
                   "flex w-full flex-col gap-0.5 rounded-lg border px-3 py-1.5 text-left",
                   "disabled:cursor-not-allowed disabled:opacity-60",

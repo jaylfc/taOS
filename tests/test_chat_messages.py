@@ -1,6 +1,7 @@
 """Tests for ChatMessageStore — 19 tests."""
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -277,6 +278,32 @@ async def test_append_content_block(tmp_path):
     assert blocks[-1] == {"kind": "decision", "decision_id": "dec-1"}
     fetched = await store.get_message(msg["id"])
     assert fetched["content_blocks"] == blocks
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_do_not_drop_blocks(tmp_path):
+    """Every concurrent append must survive.
+
+    A read-modify-write in Python interleaves at its await points: two callers
+    SELECT the same array, each appends to its own copy, and the second UPDATE
+    overwrites the first. The loser disappears with no error and no log line,
+    so this asserts on the surviving SET rather than on any ordering.
+    """
+    store = ChatMessageStore(tmp_path / "chat.db")
+    await store.init()
+    msg = await _send(store)
+    count = 12
+    await asyncio.gather(
+        *(
+            store.append_content_block(msg["id"], {"kind": "text", "text": f"b{i}"})
+            for i in range(count)
+        )
+    )
+    fetched = await store.get_message(msg["id"])
+    assert len(fetched["content_blocks"]) == count
+    assert {b["text"] for b in fetched["content_blocks"]} == {
+        f"b{i}" for i in range(count)
+    }
 
 
 @pytest.mark.asyncio

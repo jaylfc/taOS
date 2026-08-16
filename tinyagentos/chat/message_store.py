@@ -286,21 +286,29 @@ class ChatMessageStore(BaseStore):
         """Append a single content block to a message's ``content_blocks`` JSON array.
 
         Returns the updated blocks list, or None if the message was not found.
+
+        The append happens in a single UPDATE so it is atomic. Reading the array
+        into Python, appending and writing it back lets two concurrent appends
+        interleave, and the loser is dropped with no error and no log line.
         """
+        cursor = await self._db.execute(
+            "UPDATE chat_messages SET content_blocks = json_insert("
+            "  CASE WHEN content_blocks IS NULL OR content_blocks = '' THEN '[]'"
+            "       ELSE content_blocks END,"
+            "  '$[#]', json(?)"
+            ") WHERE id = ?",
+            (json.dumps(block), message_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        await self._db.commit()
         async with self._db.execute(
             "SELECT content_blocks FROM chat_messages WHERE id = ?", (message_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        ) as read_cursor:
+            row = await read_cursor.fetchone()
         if row is None:
             return None
-        blocks = json.loads(row[0]) if row[0] else []
-        blocks.append(block)
-        await self._db.execute(
-            "UPDATE chat_messages SET content_blocks = ? WHERE id = ?",
-            (json.dumps(blocks), message_id),
-        )
-        await self._db.commit()
-        return blocks
+        return json.loads(row[0]) if row[0] else []
 
     async def soft_delete_message(self, message_id: str) -> bool:
         """Mark message as soft-deleted; returns True if a row was updated."""
