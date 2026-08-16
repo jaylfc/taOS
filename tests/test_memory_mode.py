@@ -99,6 +99,47 @@ class TestMemoryModeDeployValidation:
         assert resp.status_code == 400
         assert len(app.state.config.agents) == before
 
+    async def test_deploy_rejects_null_plugin_with_taosmd_mode(self, client, app):
+        """An explicit null plugin is the same incoherent pair as 'none'.
+
+        `memory_plugin` is typed `str | None`, so a client can send JSON null.
+        Nothing downstream turns that back into "taosmd": `setdefault` only
+        fills a MISSING key and `.get(k, default)` returns the stored None, so
+        prompt_assembly's `== "taosmd"` gate is False and the agent runs in
+        memory_mode 'taosmd' with no taOSmd rules in its prompt at all.
+        """
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        before = len(app.state.config.agents)
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "NullPlugin",
+            "framework": "openclaw",
+            "memory_plugin": None,
+            "memory_mode": "taosmd",
+        })
+        assert resp.status_code == 400
+        assert len(app.state.config.agents) == before
+
+    async def test_deploy_accepts_null_plugin_with_framework_mode(self, client, app):
+        """Control for the test above: null is rejected as a PAIR, not on sight.
+
+        This is the wizard's real "Skip memory for this agent" payload with a
+        coherent mode. Without this control the null test would also pass
+        against a route that refused every null plugin, which would break the
+        one memory-free deploy the wizard actually offers.
+        """
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "NullPluginFramework",
+            "framework": "openclaw",
+            "memory_plugin": None,
+            "memory_mode": "framework",
+        })
+        assert resp.status_code == 200
+
     async def test_deploy_still_accepts_a_valid_mode(self, client, app):
         """Control: the guard rejects bad values without rejecting good ones.
 

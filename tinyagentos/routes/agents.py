@@ -451,6 +451,18 @@ def _memory_selection_error(memory_plugin: str | None, memory_mode: str | None) 
     and then the PAIR is checked: the two taOSmd-backed modes are incoherent
     when the taOSmd plugin is switched off, and validating the fields
     independently lets that combination through.
+
+    "Switched off" means None *or* the string "none". The deploy wizard's
+    "Skip memory for this agent" sends JSON null, not "none" (its state is
+    typed ``"taosmd" | null``), so a pair check that only matched the string
+    guarded a value the real caller never sends and let the one it does send
+    through. Nothing downstream repairs a stored None either: ``setdefault``
+    only fills a MISSING key and ``.get(k, default)`` returns the stored None,
+    so prompt_assembly's ``== "taosmd"`` gate is False and the agent runs in a
+    taOSmd-backed mode with no taOSmd rules in its prompt.
+
+    On PATCH ``memory_plugin`` is typed ``str`` (non-nullable), so None here
+    is always an explicit "skipped", never an omitted field.
     """
     if memory_plugin is not None and memory_plugin not in _VALID_MEMORY_PLUGINS:
         return (
@@ -462,11 +474,12 @@ def _memory_selection_error(memory_plugin: str | None, memory_mode: str | None) 
             f"Invalid memory_mode '{memory_mode}'. "
             f"Must be one of: {sorted(_VALID_MEMORY_MODES)}"
         )
-    if memory_plugin == "none" and memory_mode in ("both", "taosmd"):
+    if memory_plugin in (None, "none") and memory_mode in ("both", "taosmd"):
+        chosen = "skipped" if memory_plugin is None else "'none'"
         return (
             f"memory_mode '{memory_mode}' needs the taOSmd memory plugin, but "
-            "memory_plugin is 'none'. Use memory_mode 'framework', or set "
-            "memory_plugin to 'taosmd'."
+            f"the memory layer is {chosen}. Use memory_mode 'framework', or "
+            "set memory_plugin to 'taosmd'."
         )
     return None
 
