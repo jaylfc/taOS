@@ -59,6 +59,65 @@ class TestMemoryModePersistence:
 
 
 @pytest.mark.asyncio
+class TestMemoryModeDeployValidation:
+    """Deploy rejects a memory selection it cannot honour, before side effects.
+
+    memory_mode is persisted on the agent record and injected as the
+    TAOS_MEMORY_MODE env var, so an unvalidated value reaches the agent
+    runtime as a mode no branch handles and nothing fails at the boundary.
+    PATCH validated this from the start; deploy did not.
+    """
+
+    async def test_deploy_rejects_unknown_memory_mode(self, client, app):
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        before = len(app.state.config.agents)
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "BadMode",
+            "framework": "openclaw",
+            # Correct spelling of the product, wrong case for the enum. This is
+            # the realistic mistake, not an obviously junk string.
+            "memory_mode": "taOSmd",
+        })
+        assert resp.status_code == 400
+        assert "memory_mode" in resp.json()["error"]
+        # The guard runs before any side effect, so no agent may exist.
+        assert len(app.state.config.agents) == before
+
+    async def test_deploy_rejects_contradictory_plugin_and_mode(self, client, app):
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        before = len(app.state.config.agents)
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "Contradiction",
+            "framework": "openclaw",
+            "memory_plugin": "none",
+            "memory_mode": "taosmd",
+        })
+        assert resp.status_code == 400
+        assert len(app.state.config.agents) == before
+
+    async def test_deploy_still_accepts_a_valid_mode(self, client, app):
+        """Control: the guard rejects bad values without rejecting good ones.
+
+        Without this, both tests above would pass against a deploy route that
+        refused everything, and would prove nothing about the guard.
+        """
+        app.state.archive = MagicMock(
+            record=AsyncMock(), query=AsyncMock(return_value=[{}])
+        )
+        resp = await client.post("/api/agents/deploy", json={
+            "name": "GoodMode",
+            "framework": "openclaw",
+            "memory_plugin": "none",
+            "memory_mode": "framework",
+        })
+        assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 class TestMemoryModeRuntime:
     """Deployer injects TAOS_MEMORY_MODE env var honouring the mode."""
 

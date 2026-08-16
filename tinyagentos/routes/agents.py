@@ -439,6 +439,38 @@ async def delete_agent(request: Request, name: str):
     return result
 
 
+_VALID_MEMORY_PLUGINS = {"taosmd", "none"}
+_VALID_MEMORY_MODES = {"both", "framework", "taosmd"}
+
+
+def _memory_selection_error(memory_plugin: str | None, memory_mode: str | None) -> str | None:
+    """Return an error message if the plugin/mode pair is invalid, else None.
+
+    Shared by deploy and PATCH so the same request cannot be accepted on one
+    route and rejected on the other. Each value is checked against its own set,
+    and then the PAIR is checked: the two taOSmd-backed modes are incoherent
+    when the taOSmd plugin is switched off, and validating the fields
+    independently lets that combination through.
+    """
+    if memory_plugin is not None and memory_plugin not in _VALID_MEMORY_PLUGINS:
+        return (
+            f"Invalid memory_plugin '{memory_plugin}'. "
+            f"Must be one of: {sorted(_VALID_MEMORY_PLUGINS)}"
+        )
+    if memory_mode is not None and memory_mode not in _VALID_MEMORY_MODES:
+        return (
+            f"Invalid memory_mode '{memory_mode}'. "
+            f"Must be one of: {sorted(_VALID_MEMORY_MODES)}"
+        )
+    if memory_plugin == "none" and memory_mode in ("both", "taosmd"):
+        return (
+            f"memory_mode '{memory_mode}' needs the taOSmd memory plugin, but "
+            "memory_plugin is 'none'. Use memory_mode 'framework', or set "
+            "memory_plugin to 'taosmd'."
+        )
+    return None
+
+
 class DeployAgentRequest(BaseModel):
     name: str
     framework: str = "none"
@@ -502,6 +534,14 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
     rejection = _reject_non_chat_model((body.model or "").strip())
     if rejection is not None:
         return rejection
+
+    # Reject an invalid memory selection before any side effects, for the same
+    # reason. memory_mode is persisted on the agent record AND injected as the
+    # TAOS_MEMORY_MODE env var, so an unchecked value reaches the runtime as a
+    # mode no branch handles, with nothing failing at the boundary.
+    memory_error = _memory_selection_error(body.memory_plugin, body.memory_mode)
+    if memory_error is not None:
+        return JSONResponse({"error": memory_error}, status_code=400)
 
     # --- Idempotency guard ---
     idempotency_cache = getattr(request.app.state, "idempotency_cache", None)
@@ -1268,23 +1308,12 @@ class MemoryPatch(BaseModel):
     memory_mode: str | None = None
 
 
-_VALID_MEMORY_PLUGINS = {"taosmd", "none"}
-_VALID_MEMORY_MODES = {"both", "framework", "taosmd"}
-
-
 @router.patch("/api/agents/{slug}/memory")
 async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch):
     """Set the memory_plugin and/or memory_mode for an agent."""
-    if body.memory_plugin not in _VALID_MEMORY_PLUGINS:
-        return JSONResponse(
-            {"error": f"Invalid memory_plugin '{body.memory_plugin}'. Must be one of: {sorted(_VALID_MEMORY_PLUGINS)}"},
-            status_code=400,
-        )
-    if body.memory_mode is not None and body.memory_mode not in _VALID_MEMORY_MODES:
-        return JSONResponse(
-            {"error": f"Invalid memory_mode '{body.memory_mode}'. Must be one of: {sorted(_VALID_MEMORY_MODES)}"},
-            status_code=400,
-        )
+    memory_error = _memory_selection_error(body.memory_plugin, body.memory_mode)
+    if memory_error is not None:
+        return JSONResponse({"error": memory_error}, status_code=400)
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:

@@ -725,14 +725,27 @@ memory systems the framework runtime is told to use:
 | `framework` | the framework's own memory only |
 | `taosmd` | taOSmd only |
 
+- **`framework` is ADVISORY today, not enforced.** The mode tells the agent
+  runtime what to use; it does **not** yet stop the controller from involving
+  taOSmd. A `framework`-mode deploy still registers the agent with taOSmd
+  (`routes/agents.py`) and still splices taOSmd rules into `AGENTS.md`
+  (`deployer.py`, gated on the agent FRAMEWORK, not on this field). So a taOSmd
+  outage can still block a `framework` deploy, and the agent still receives
+  taOSmd rules. **Do not choose `framework` expecting isolation from taOSmd.**
+  Tracked as `tsk-6tfpun`; this note comes out when the mode is enforced.
 - `POST /api/agents/deploy` takes `memory_mode` on the body, defaulting to
   `both`. It is persisted on the agent record and **injected into the agent's
   environment as `TAOS_MEMORY_MODE`** at deploy time, so the runtime honours it
-  without a second push.
+  without a second push. **Deploy validates the pair before any side effect:**
+  an unknown `memory_mode` or `memory_plugin` answers `400` naming the valid
+  set, and so does a contradictory pair such as
+  `{"memory_plugin": "none", "memory_mode": "taosmd"}`, which asks for taOSmd-only
+  memory with the taOSmd plugin switched off. No agent is created on rejection.
 - `PATCH /api/agents/{slug}/memory` takes `{memory_plugin, memory_mode?}`.
   `memory_plugin` must be one of `taosmd` or `none`; `memory_mode` must be one of
   `both`, `framework` or `taosmd`. Either invalid value answers `400` naming the
-  valid set; an unknown slug answers `404`.
+  valid set; an unknown slug answers `404`. **Deploy and PATCH share one
+  validator**, so a body rejected on one route is rejected on the other.
 - **`memory_mode` is OPTIONAL on the PATCH and omitting it leaves the stored
   value alone.** Only `memory_plugin` is required, so a caller that wants to
   change the plugin without disturbing the mode simply leaves it out.
