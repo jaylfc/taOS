@@ -203,6 +203,8 @@ class SkillStore(BaseStore):
                         "properties": {
                             "prompt": {"type": "string"},
                             "size": {"type": "string", "default": "512x512"},
+                            "steps": {"type": "integer", "default": 4, "minimum": 1, "maximum": 8},
+                            "seed": {"type": "integer", "description": "Random seed for reproducibility (omit for a fresh image; reuse a returned seed to tweak a liked image)."},
                             "model": {"type": "string"},
                             "guidance_scale": {"type": "number", "default": 7.5},
                             "negative_prompt": {"type": "string", "default": ""},

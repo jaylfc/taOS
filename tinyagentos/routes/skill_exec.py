@@ -238,6 +238,7 @@ async def _skill_image_generation(args: dict, request: Request) -> dict:
             model=args.get("model") or None,
             guidance_scale=float(args.get("guidance_scale", 7.5)),
             negative_prompt=args.get("negative_prompt", ""),
+            seed=args.get("seed"),
         )
         return result
     except Exception as exc:
