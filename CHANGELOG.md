@@ -7,6 +7,68 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.49] - 2026-08-15
+
+### Added
+
+- Fixed `PUT /api/config` silently dropping `archive`, `archived_agents` and `github_app_id`: both `AppConfig` rebuild sites (config save and backup restore) omitted them, so saving settings wiped an archive target, the archived-agent list and the GitHub App id. A key-parity test now fails if any `to_dict()` field is forgotten at a rebuild site.
+- Added a Lists tab to the Projects app: a rail of the project's lists beside an entry panel with quick-add, done toggles, category and status pills, a status selector, and the original text behind any entry an agent tidied.
+- Fixed memory settings, catalog indexing and per-agent memory-config updates failing with a 403 "CSRF token missing" on a cookie-authenticated session: the three mutating calls in the Memory API client did not send the double-submit token.
+- Fixed three ways `GET /api/a2a/bus/messages` returned HTTP 200 and nothing, leaving a reader silently disconnected: `channel=all` (the idiom the raw bus and `taosmd a2a-watch` document for "every thread") was forwarded as a channel literally named `all` and matched nothing; an unknown channel name was indistinguishable from a quiet one; and unrecognised cursor params such as `since_id` were silently dropped, so an incremental reader re-read the whole window every poll believing it held a cursor. `all` and `*` now read every thread, an unrecognised query param is a 400 naming the accepted set, an empty result for a named channel reports `channel_known`, and `thread` is accepted as an alias for `channel`.
+- **Doc-drift gate covers the full doc surface**: the invariants scan now
+  takes globs and checks every agent-manual page, runbook, OS skill
+  (`.claude/skills/*/SKILL.md`), the worker README, CONTRIBUTING and
+  RELEASING for references to files that no longer exist (with a documented
+  tombstone list for deliberate mentions of removed files). Three new
+  diff-gate rules: desktop-driving route changes require the taos-agent
+  skill / OS-control manual reviewed, update/release machinery changes
+  require RELEASING.md or a runbook reviewed, and worker-tree changes
+  require the worker README. RELEASING.md now documents the sync-branch
+  promotion pattern for a BEHIND dev->master PR, including the back-merge
+  and empty-tree-diff identity check.
+- Fixed `POST /api/agents/registry/mint-internal` and `seed-internal` forking a duplicate identity for every driver agent that had self-joined through the consent flow. The consent approve path stores a slugified handle (`@taOSmd-dev` becomes `taosmd-dev`) while the internal-driver table names the display spelling, and the lookup was an exact SQL match — so the mint missed the existing row and registered a second one, which then received the driver scopes and a token while the original identity kept its project grants. The lookup now falls back to the slugified handle.
+- **LoRA Studio backend**: share a Civitai LoRA/LoCon/DoRA model URL and taOS
+  archives it -- safetensors file (SHA256-verified), name, description,
+  preview images, tags, and trigger words -- under a new `loras` store and
+  `/api/loras/*` endpoints. Civitai's edge geo-blocks some regions with HTTP
+  451; a new `lora_ingest_proxy_url` config key lets the fetcher (and only
+  the fetcher) go out through an explicit proxy instead. Every failure mode
+  (451, connect error, SHA256 mismatch, a non-LoRA model type) fails loud
+  with a specific reason and leaves no partial file on disk. LoRA files live
+  under `models_root()/loras/` and are excluded from the Models app's disk
+  scan so adapters never show up as loadable models. `/api/library/ingest`
+  also recognises Civitai URLs and delegates to the same ingest job.
+- **The OS-native agent has its own identity.** Every install now mints an agent identity at first boot — no admin step and no prompt. Previously the built-in agent authenticated as the owner (the browser session or the admin-equivalent `.auth_local_token`), so its actions were indistinguishable from the human's in every audit trail, it could not appear on the A2A bus as itself, and nothing it did could be revoked without revoking the human. The identity is per-install (anchored to `.install_id`), owner-linked, and conservative: `a2a_send` + `a2a_receive` only, with anything further going through the existing user-mediated scope-request flow. Its token is written to `<data_dir>/.taos_agent_token` (0600) and never leaves the install that minted it. The identity is provisioned but not yet wired into the chat runtime, which still authenticates as the owner as before; this ships the identity, not the switchover. Registry rows gain an `install_id` column so an owner's identities can be listed and revoked per machine.
+- Design spec for taOS Beach, the sandbox provisioning system: object model, state machine, approval flow over the Decisions app, quotas, port and DNS hygiene, harness-agnostic agent access, and a Phase 1 cut with acceptance criteria (`docs/design/taos-beach.md`).
+- **Shared `useRefreshOnFocus` hook + adoption in seven high-traffic apps.** A new `desktop/src/hooks/use-refresh-on-focus.ts` hook re-runs a supplied refetch callback when the window regains focus or the document visibility state returns to visible, with a ~1s debounce that coalesces rapid focus flapping. It is now wired into Projects, Agents, Messages, Files, Notifications, Cluster, and Decisions so windows show current data without requiring the user to close and reopen them.
+- **Settings-update brings a locally-hosted taOSmd to latest in the same
+  action**: with the new config keys `taosmd_dir` and `taosmd_restart_cmd` set
+  (and `memory_url` local), `POST /api/settings/update` ff-only-pulls the
+  taOSmd checkout, announces the restart on the A2A bus `build` thread before
+  dropping SSE subscribers, restarts the service, and then verifies the
+  RUNNING server's `/health` — Content-Type must be `application/json` (a
+  `text/html` 200 from the SPA catch-all fails) and the core capability
+  identifiers (`a2a.v1`, `collections.v1`, `search.v1`) must be present in the
+  body. Any taOSmd failure fails the whole update loudly with a named reason;
+  unconfigured or remote installs get an explicit `taosmd: {"skipped": <why>}`
+  in the response, never a silent half-update (tsk-jjkukj).
+- **OS-level typed change-event stream + `useOsEvents` hook.** A new authenticated SSE endpoint (`GET /api/os/events`) streams typed change events carrying only the event kind, id and timestamp, never the payload, so apps can opt into live updates with a single hook call. The shared `useOsEvents(kinds, onEvent)` hook manages one connection per client, exposes `connected` and `stale`, reconnects with exponential backoff, and reopens the stream when the requested kinds change. At most 256 events are buffered per connection: a client that falls further behind loses the oldest and is told so with an `events.lagged` frame rather than silently stalling. The lag frame is a control frame, so it reaches subscribers that asked for a narrow set of kinds, and repeated lag frames are never collapsed as duplicates. Requested kinds are filtered as events enter that buffer rather than as they leave it, so unrelated traffic cannot evict the events a subscriber asked for; and a `kinds` parameter that names no kind (`?kinds=`, `?kinds=%20`) means every kind, where it previously matched nothing and delivered an empty stream.
+- Added the project lists HTTP API: `/api/projects/{pid}/lists` and `.../lists/{lid}/entries` (create, read, update, delete and reorder), usable by a project owner/admin session or by an agent holding the new project-bound `project_lists` scope. A token without the scope is refused 403; a token bound to another project gets 404 so it cannot confirm that project exists. A reorder body must name both `id` and `position` for every element (422 otherwise), and a reorder that matches no entry returns 400 without logging a reorder to the project activity feed.
+- **ModelsApp refresh-failure guard.** A background refetch that hits the total-failure path no longer blanks real, already-loaded models with the "No models yet" empty state. When `downloaded.length > 0` the failing refresh now leaves the rows on screen and only clears loading, while the no-data path still shows the empty state as before. `useRefreshOnFocus(fetchModels)` is also wired in so the guard is exercised on every window focus.
+- Adopted `useRefreshOnFocus` in Tasks, Activity, Models, and Notes so each window refetches its current data on focus without requiring a reopen.
+- Fixed Routines (Tasks) blanking to "No scheduled routines" when a background refresh hits an unreachable backend; the routines already on screen are kept instead.
+
+### Fixed
+
+- **Un-quarantined cards return to a genuinely claimable pool**:
+  `unquarantine_task` set the card back to `open` but kept the old
+  `claimed_by`, and `claim_task` requires an unclaimed row -- so a
+  claimed-then-quarantined card came back permanently unclaimable.
+  Un-quarantine now clears the claimer, matching `reopen_task` and
+  `release_task`. The generic `update_task` edit path (owner/admin PATCH)
+  had the same gap when setting a claimed card's status back to `open`;
+  it now clears the claimer too.
+
 ### Added
 
 - Doc-gate now triggers on plain modifications (not only add/delete) for

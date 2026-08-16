@@ -1,1 +1,0 @@
-- Added a Lists tab to the Projects app: a rail of the project's lists beside an entry panel with quick-add, done toggles, category and status pills, a status selector, and the original text behind any entry an agent tidied.

@@ -1,1 +1,0 @@
-- Fixed `PUT /api/config` silently dropping `archive`, `archived_agents` and `github_app_id`: both `AppConfig` rebuild sites (config save and backup restore) omitted them, so saving settings wiped an archive target, the archived-agent list and the GitHub App id. A key-parity test now fails if any `to_dict()` field is forgotten at a rebuild site.
