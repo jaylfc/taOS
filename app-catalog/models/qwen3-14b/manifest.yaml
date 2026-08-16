@@ -41,6 +41,7 @@ variants:
       targets:
       - cpu
       min_ram_mb: 10240
+  sha256: 500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0
 hardware_tiers:
   arm-npu-32gb:
     recommended: q4_k_m

@@ -25,6 +25,7 @@ variants:
       targets:
       - rockchip
       min_ram_mb: 2048
+  sha256: b6e2854629760706d8b6d9af6ebfb3a28c513a3cf15dd4f103d92b06a9676208
 hardware_tiers:
   arm-npu-16gb:
     recommended: w8a8
@@ -32,5 +33,4 @@ hardware_tiers:
     recommended: w8a8
   arm-npu-2gb:
     recommended: w8a8
-# context_window: rkllm quantizer cap; base Qwen3-VL-4B is 262144 (256K) but rkllm caps at 40960
 context_window: 40960

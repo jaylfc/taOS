@@ -2,15 +2,14 @@ id: ltx-video
 name: LTX-Video
 type: model
 version: 0.9.5
-description: "Lightricks open video gen — 2B params, real-time generation on H100, 24 fps, 768×512. Apache-2.0 weights, fastest open video model in its class."
+description: Lightricks open video gen — 2B params, real-time generation on H100,
+  24 fps, 768×512. Apache-2.0 weights, fastest open video model in its class.
 homepage: https://huggingface.co/Lightricks/LTX-Video
 license: Apache-2.0
-# T5 text-encoder prompt limit (diffusers LTXPipeline max_sequence_length default).
 context_window: 128
 capabilities:
 - video-generation
 - image-to-video
-
 variants:
 - id: bf16-safetensors
   name: bf16 safetensors (~9GB)
@@ -20,15 +19,26 @@ variants:
   requires:
     backends:
     - id: diffusers
-      targets: [apple-silicon, x86-cuda, x86-vulkan]
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
       min_ram_mb: 12288
     - id: comfyui
-      targets: [apple-silicon, x86-cuda, x86-vulkan]
+      targets:
+      - apple-silicon
+      - x86-cuda
+      - x86-vulkan
       min_ram_mb: 12288
-
+  sha256: 720d15c9f19f7d0f6b2a92bbbc34410e2cfb2f6856a100b38f734fbf973d4adf
 hardware_tiers:
-  apple-silicon: {recommended: bf16-safetensors}
-  x86-cuda-12gb: {recommended: bf16-safetensors}
-  x86-cuda-16gb: {recommended: bf16-safetensors}
-  x86-cuda-24gb: {recommended: bf16-safetensors}
-  x86-vulkan-16gb: {recommended: bf16-safetensors}
+  apple-silicon:
+    recommended: bf16-safetensors
+  x86-cuda-12gb:
+    recommended: bf16-safetensors
+  x86-cuda-16gb:
+    recommended: bf16-safetensors
+  x86-cuda-24gb:
+    recommended: bf16-safetensors
+  x86-vulkan-16gb:
+    recommended: bf16-safetensors

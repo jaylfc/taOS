@@ -43,16 +43,19 @@ def _answer_text(decision: dict, value) -> str:
     return ", ".join(str(opts.get(v, v)) for v in vals)
 
 
-async def _route_answer_to_agent(decision: dict, value) -> None:
+async def _route_answer_to_agent(decision: dict, value, note: str | None = None) -> None:
     """Best-effort: post the recorded answer back to the asking agent on the
     A2A bus. Never raises; the answer is already persisted and the agent can
     also poll GET /api/decisions/{id}."""
     agent = (decision.get("from_agent") or "").strip()
     if not agent.startswith("@"):
         return
+    text = _answer_text(decision, value)
+    if note:
+        text = f"{text} (note: {note})"
     body = (
         f"{agent} decision {decision.get('id')} answered: "
-        f"{decision.get('question', '')} -> {_answer_text(decision, value)}"
+        f"{decision.get('question', '')} -> {text}"
     )
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -119,6 +122,8 @@ class DecisionIn(BaseModel):
 
 class AnswerIn(BaseModel):
     value: object
+    other_value: str | None = None
+    note: str | None = None
     answered_by: str = ""
     source: str = "in_app"
 
@@ -403,30 +408,51 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
     if existing is None or (not user.is_admin and existing["user_id"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
 
-    # For select types, the answer must reference the declared options so a
-    # stale or malformed client cannot record an arbitrary value.
+    # For select types, the answer may reference the declared options or use
+    # the free-text Other path.  A stale or malformed client cannot record an
+    # arbitrary value: explicit option values are still validated against the
+    # declared list so a typo is rejected; the free-text path is accepted only
+    # when flagged via other_value.
     dtype = existing.get("type")
     if dtype in ("single_select", "multi_select"):
-        valid = {
-            o.get("value")
-            for o in (existing.get("options") or [])
-            if o.get("value") is not None
-        }
-        if valid:
-            try:
-                if dtype == "single_select":
-                    if body.value not in valid:
-                        return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
-                else:
-                    vals = body.value if isinstance(body.value, list) else None
-                    if vals is None or any(v not in valid for v in vals):
-                        return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
-            except TypeError:
-                # A list, dict, or other non-hashable/iterable value in the
-                # answer body can hit set membership or any() with a TypeError
-                # (e.g. a list value for single_select, or non-iterable for
-                # multi_select).  Fail closed: 400, not 500.
-                return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+        if body.other_value is not None:
+            # Other / free-text path: validate any explicit option values but
+            # accept the free-text value as-is.
+            if dtype == "single_select":
+                if body.value is not None and isinstance(body.value, str) and body.value.strip():
+                    return JSONResponse(
+                        {"error": "cannot combine value with other_value"},
+                        status_code=400,
+                    )
+            else:
+                vals = body.value if isinstance(body.value, list) else None
+                if vals is None:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+                valid = {
+                    o.get("value")
+                    for o in (existing.get("options") or [])
+                    if o.get("value") is not None
+                }
+                if valid and any(v not in valid for v in vals):
+                    return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+        else:
+            # Option-only path: existing strict validation.
+            valid = {
+                o.get("value")
+                for o in (existing.get("options") or [])
+                if o.get("value") is not None
+            }
+            if valid:
+                try:
+                    if dtype == "single_select":
+                        if body.value not in valid:
+                            return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
+                    else:
+                        vals = body.value if isinstance(body.value, list) else None
+                        if vals is None or any(v not in valid for v in vals):
+                            return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+                except TypeError:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
 
     # Source is derived server-side from the authenticated route, never trusted
     # from the request body.  The human path always records in_app; the agent
@@ -440,19 +466,30 @@ async def answer_decision(decision_id: str, body: AnswerIn, request: Request, us
         )
     source = "in_app"
     answered_by = body.answered_by or user.user_id or "user"
-    updated = await store.answer(decision_id, body.value, answered_by, source=source)
+    dtype = existing.get("type")
+    if dtype == "single_select" and body.other_value is not None:
+        stored_value = body.other_value.strip()
+    elif dtype == "multi_select" and body.other_value is not None:
+        vals = list(body.value) if isinstance(body.value, list) else []
+        stored_value = [*vals, body.other_value.strip()]
+    else:
+        stored_value = body.value
+    updated = await store.answer(
+        decision_id, stored_value, answered_by, source=source,
+        other_value=body.other_value, note=body.note,
+    )
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
     # Each kind-specific handler runs its side effect and returns True if it
     # already routed a reply to the asking agent (a more informative,
     # kind-specific message). Only route the generic answer when none did, so
     # a gated decision does not send the agent two messages.
-    routed_app = await _apply_app_grant(request, updated, body.value)
-    routed_exec = await _apply_execution_grant(request, updated, body.value)
-    routed_deleg = await _apply_delegation_grant(request, updated, body.value)
-    routed_pair = await _apply_device_pairing_grant(request, updated, body.value)
+    routed_app = await _apply_app_grant(request, updated, stored_value)
+    routed_exec = await _apply_execution_grant(request, updated, stored_value)
+    routed_deleg = await _apply_delegation_grant(request, updated, stored_value)
+    routed_pair = await _apply_device_pairing_grant(request, updated, stored_value)
     if not (routed_app or routed_exec or routed_deleg or routed_pair):
-        await _route_answer_to_agent(updated, body.value)
+        await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
 
 
@@ -698,28 +735,58 @@ async def answer_decision_as_agent(
     # Validate select-type answers against declared options (same as human path).
     dtype = existing.get("type")
     if dtype in ("single_select", "multi_select"):
-        valid = {
-            o.get("value")
-            for o in (existing.get("options") or [])
-            if o.get("value") is not None
-        }
-        if valid:
-            try:
-                if dtype == "single_select":
-                    if body.value not in valid:
-                        return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
-                else:
-                    vals = body.value if isinstance(body.value, list) else None
-                    if vals is None or any(v not in valid for v in vals):
-                        return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
-            except TypeError:
-                return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+        if body.other_value is not None:
+            if dtype == "single_select":
+                if body.value is not None and isinstance(body.value, str) and body.value.strip():
+                    return JSONResponse(
+                        {"error": "cannot combine value with other_value"},
+                        status_code=400,
+                    )
+            else:
+                vals = body.value if isinstance(body.value, list) else None
+                if vals is None:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
+                valid = {
+                    o.get("value")
+                    for o in (existing.get("options") or [])
+                    if o.get("value") is not None
+                }
+                if valid and any(v not in valid for v in vals):
+                    return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+        else:
+            valid = {
+                o.get("value")
+                for o in (existing.get("options") or [])
+                if o.get("value") is not None
+            }
+            if valid:
+                try:
+                    if dtype == "single_select":
+                        if body.value not in valid:
+                            return JSONResponse({"error": "answer is not one of the options"}, status_code=400)
+                    else:
+                        vals = body.value if isinstance(body.value, list) else None
+                        if vals is None or any(v not in valid for v in vals):
+                            return JSONResponse({"error": "answer must be a subset of the options"}, status_code=400)
+                except TypeError:
+                    return JSONResponse({"error": "invalid answer value shape"}, status_code=400)
 
     # Agent mirrors are always from chat; record the canonical agent id as the
     # mirroring actor (not "user") so the audit trail is complete.
     source = "mirrored_from_chat"
     answered_by = canonical_id
-    updated = await store.answer(decision_id, body.value, answered_by, source=source)
+    dtype = existing.get("type")
+    if dtype == "single_select" and body.other_value is not None:
+        stored_value = body.other_value.strip()
+    elif dtype == "multi_select" and body.other_value is not None:
+        vals = list(body.value) if isinstance(body.value, list) else []
+        stored_value = [*vals, body.other_value.strip()]
+    else:
+        stored_value = body.value
+    updated = await store.answer(
+        decision_id, stored_value, answered_by, source=source,
+        other_value=body.other_value, note=body.note,
+    )
     if updated is None:
         return JSONResponse({"error": "already answered or not pending"}, status_code=409)
 
@@ -728,7 +795,7 @@ async def answer_decision_as_agent(
     # NOT run on the agent mirror path: an agent must not be able to create a
     # privileged decision and then self-approve the consent via its own mirror
     # endpoint.  Only the human answer path runs consent side effects.
-    await _route_answer_to_agent(updated, body.value)
+    await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
 
 

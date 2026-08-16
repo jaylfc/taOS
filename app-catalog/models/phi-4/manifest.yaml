@@ -33,6 +33,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 11264
+  sha256: 009aba717c09d4a35890c7d35eb59d54e1dba884c7c526e7197d9c13ab5911d9
 hardware_tiers:
   arm-cpu-16gb:
     recommended: q4_k_m

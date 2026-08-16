@@ -35,6 +35,7 @@ variants:
       targets:
       - x86-cuda
       min_ram_mb: 4096
+  sha256: 7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5
 - id: q8_0
   name: Q8_0 (4.5GB)
   format: gguf
@@ -61,6 +62,7 @@ variants:
       targets:
       - x86-cuda
       min_ram_mb: 6144
+  sha256: 8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300
 hardware_tiers:
   arm-npu-16gb:
     recommended: q4_k_m

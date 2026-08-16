@@ -28,6 +28,7 @@ variants:
       - x86-vulkan
       - apple-silicon
       min_ram_mb: 8192
+  sha256: 425ff1dcbe3a70ac13d3afdd69bd4e3176b0c3260722527c80b210f11d2d966c
 hardware_tiers:
   arm-cpu-8gb:
     recommended: null

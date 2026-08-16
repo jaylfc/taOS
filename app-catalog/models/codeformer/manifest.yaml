@@ -15,6 +15,7 @@ variants:
   size_mb: 360
   min_ram_mb: 2048
   download_url: https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth
+  sha256: 1009e537e0c2a07d4cabce6355f53cb66767cd4b4297ec7a4a64ca4b8a5684b7
   requires:
     backends:
     - id: comfyui

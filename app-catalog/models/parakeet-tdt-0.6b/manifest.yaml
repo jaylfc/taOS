@@ -27,6 +27,7 @@ variants:
       - arm-vulkan
       - cpu
       min_ram_mb: 2048
+  sha256: d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c
 hardware_tiers:
   arm-cpu-8gb:
     recommended: nemo

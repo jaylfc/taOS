@@ -1,0 +1,2 @@
+### Added
+- Select decisions can be answered off-menu: single-select and multi-select decisions accept an `other_value` free-text answer plus an optional `note`, so a decision whose declared options do not fit no longer forces a wrong choice. Declared option values are still validated, combining `value` with `other_value` on a single-select is rejected, and the free-text entry is appended for multi-select (#2412).

@@ -37,6 +37,7 @@ variants:
       targets:
       - x86-cuda
       min_ram_mb: 10240
+  sha256: 0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181
 hardware_tiers:
   arm-npu-32gb:
     recommended: q4_k_m

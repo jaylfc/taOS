@@ -3,6 +3,11 @@ import { render, screen, act, fireEvent, waitFor, within } from "@testing-librar
 import type { Project } from "@/lib/projects";
 import { ProjectLists } from "../ProjectLists";
 
+vi.mock("../../../hooks/use-is-mobile", () => ({
+  useIsMobile: vi.fn(),
+}));
+import { useIsMobile } from "../../../hooks/use-is-mobile";
+
 const fakeProject: Project = {
   id: "p1",
   slug: "p1",
@@ -144,15 +149,18 @@ describe("ProjectLists", () => {
   // (only the mount effect ever called setLists), so a created list never
   // appeared and a deleted one never left.
   it("a created list appears in the rail", async () => {
-    vi.stubGlobal("prompt", vi.fn(() => "New list"));
     await act(async () => {
       render(<ProjectLists project={fakeProject} />);
     });
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Create new list"));
     });
-    // Scope to the rail: the entries header renders the selected list's title
-    // too, so a whole-document match could pass while the rail stayed stale.
+    const dialog = screen.getByRole("dialog", { name: /new list/i });
+    const input = within(dialog).getByRole("textbox");
+    fireEvent.change(input, { target: { value: "New list" } });
+    await act(async () => {
+      fireEvent.submit(input.closest("form")!);
+    });
     await waitFor(() => {
       const rail = screen.getByLabelText("Project lists");
       expect(within(rail).getByText("New list")).toBeInTheDocument();
@@ -177,12 +185,17 @@ describe("ProjectLists", () => {
   });
 
   it("a whitespace-only list name creates nothing", async () => {
-    vi.stubGlobal("prompt", vi.fn(() => "   "));
     await act(async () => {
       render(<ProjectLists project={fakeProject} />);
     });
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Create new list"));
+    });
+    const dialog = screen.getByRole("dialog", { name: /new list/i });
+    const input = within(dialog).getByRole("textbox");
+    fireEvent.change(input, { target: { value: "   " } });
+    await act(async () => {
+      fireEvent.submit(input.closest("form")!);
     });
     const posted = fetchMock.mock.calls.find(([u, i]) => String(u) === "/api/projects/p1/lists" && (i as RequestInit | undefined)?.method === "POST");
     expect(posted).toBeUndefined();
@@ -227,7 +240,6 @@ describe("ProjectLists", () => {
   });
 
   it("a deleted list disappears from the rail", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => true));
     await act(async () => {
       render(<ProjectLists project={fakeProject} />);
     });
@@ -235,6 +247,59 @@ describe("ProjectLists", () => {
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Delete Shopping"));
     });
-    await waitFor(() => expect(screen.queryByText("Shopping")).not.toBeInTheDocument());
+    const confirmDialog = screen.getByRole("dialog", { name: /delete list/i });
+    expect(confirmDialog).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(confirmDialog).getByRole("button", { name: "Delete" }));
+    });
+    await waitFor(() => {
+      const rail = screen.queryByLabelText("Project lists");
+      if (rail) {
+        expect(within(rail).queryByText("Shopping")).not.toBeInTheDocument();
+      } else {
+        expect(screen.queryByText("Shopping")).not.toBeInTheDocument();
+      }
+    });
+  });
+
+  it("stacks the rail and entries panel on mobile", async () => {
+    (useIsMobile as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    await act(async () => {
+      render(<ProjectLists project={fakeProject} />);
+    });
+    const container = document.querySelector("[class*='listsContainer']");
+    expect(container).toBeTruthy();
+    expect(screen.getByLabelText("Project lists")).toBeInTheDocument();
+    expect(screen.getByLabelText("List entries")).toBeInTheDocument();
+  });
+
+  it("removes an entry after confirming the delete dialog", async () => {
+    await act(async () => {
+      render(<ProjectLists project={fakeProject} />);
+    });
+    await waitFor(() => expect(screen.getByText("Milk")).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Delete entry Milk"));
+    });
+    const confirmDialog = screen.getByRole("dialog", { name: /remove entry/i });
+    expect(confirmDialog).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(confirmDialog).getByRole("button", { name: "Remove" }));
+    });
+    await waitFor(() => expect(screen.queryByText("Milk")).not.toBeInTheDocument());
+  });
+
+  it("shows the original text in a popover instead of alert when the original button is clicked", async () => {
+    const alertMock = vi.fn();
+    vi.stubGlobal("alert", alertMock);
+    await act(async () => {
+      render(<ProjectLists project={fakeProject} />);
+    });
+    await waitFor(() => expect(screen.getByText("original")).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("View original text for Bread"));
+    });
+    expect(screen.getByText("Whole grain bread")).toBeInTheDocument();
+    expect(alertMock).not.toHaveBeenCalled();
   });
 });

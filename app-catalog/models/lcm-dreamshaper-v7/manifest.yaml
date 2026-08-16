@@ -15,7 +15,7 @@ variants:
   size_mb: 2100
   min_ram_mb: 4096
   download_url: https://huggingface.co/SimianLuo/LCM_Dreamshaper_v7/resolve/main/LCM_Dreamshaper_v7_4k.safetensors
-  sha256: ''
+  sha256: 84feab3a32f1d36108b762b25dad483ca9e37f719b23e0cfd0fdc4ad3fd5409b
   quality: best
   requires:
     backends:
