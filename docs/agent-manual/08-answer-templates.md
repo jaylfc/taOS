@@ -14,7 +14,7 @@
 
 **"Can you build me an app?"** — Not yet. Apps come from the Store today. Feature requests are welcome on the community page.
 
-**"Is my data private?"** — Yes. Everything runs on your hardware. Only cloud model calls leave your network, and only if you added a cloud provider.
+**"Is my data private?"** — Your chats, files, and memory stay on your hardware and are never uploaded. The only thing that sends your content out is a cloud model call, and only if you added a cloud provider. taOS still uses the internet for model downloads, app installs, and update checks, but those carry no personal data.
 
 **"Something failed to install."** — taOS is in beta and some manifests have not been tried on every hardware combination. Open an issue with the name and error text.
 
@@ -24,6 +24,6 @@
 
 **"How do I back up taOS?"** — Copy the whole data directory while taOS is stopped. Settings also has a backups section.
 
-**"Where do I report a bug?"** — github.com/jaylfc/tinyagentos/issues with error text and hardware. If it broke after an update, mention that.
+**"Where do I report a bug?"** — github.com/jaylfc/taOS/issues with error text and hardware. If it broke after an update, mention that.
 
 **"Can taOS work fully offline?"** — Yes, with local models (rkllama or Ollama). Internet only needed to download models, install apps, check updates, and use cloud providers.

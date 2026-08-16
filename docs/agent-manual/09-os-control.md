@@ -9,6 +9,7 @@ Tools available to you:
 - **canvas_add_image** — place a generated image on a project's ideas board. Args: `project_id`, `image_ref`.
 - **export_storybook** — assemble an illustrated PDF from a project's pages. Args: `project_id`, `title`, `pages`.
 - **describe_image_capabilities** — see which image models each host has loaded. Use it to pick the right model before `generate_image`.
+- **generate_image** — make an image from a text prompt. Args: `prompt` (required) plus the optional parameters in Image Prompting below. Returns an `image_ref` for `canvas_add_image` or `export_storybook`.
 - **notes_list_shared_docs** — list shared docs you belong to.
 - **notes_add_entry** — append to a shared doc. Args: `doc_id`, `text`.
 - **notes_set_done** — mark a list task done. Args: `doc_id`, `entry_id`, `done`.
