@@ -365,11 +365,29 @@ async def test_subagent_failure_sets_state_to_failed():
         raise RuntimeError("kaboom")
 
     sub_id = await loop.spawn_subagent("doomed", worker)
-    await loop.await_subagent(sub_id)
+    with pytest.raises(RuntimeError, match="kaboom"):
+        await loop.await_subagent(sub_id)
 
     handle = loop.get_subagent(sub_id)
     assert handle.state == "failed"
     assert "kaboom" in (handle.error or "")
+
+
+@pytest.mark.asyncio
+async def test_await_subagent_raises_on_worker_exception():
+    """A worker exception propagates through await_subagent, not swallowed."""
+    loop = AgentLoop()
+
+    async def worker(progress):
+        raise RuntimeError("subagent boom")
+
+    sub_id = await loop.spawn_subagent("doomed", worker)
+    with pytest.raises(RuntimeError, match="subagent boom"):
+        await loop.await_subagent(sub_id)
+
+    handle = loop.get_subagent(sub_id)
+    assert handle.state == "failed"
+    assert "subagent boom" in (handle.error or "")
 
 
 # ---------------------------------------------------------------------------

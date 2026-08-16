@@ -283,6 +283,7 @@ class AgentLoop:
                     handle.state = "failed"
                     handle.error = str(exc)
                 logger.exception("subagent %s (%s) failed", sub_id, task)
+                raise
 
         task_obj = _create_supervised_task(_runner(), self._subagent_tasks)
         task_obj.set_name(f"subagent:{sub_id}")
@@ -432,6 +433,8 @@ class AgentLoop:
         if entry.task_obj.done():
             if entry.handle.state == "cancelled":
                 return entry.handle.result
+            if entry.handle.state == "failed":
+                raise entry.task_obj.exception()
             return entry.handle.result
         done, pending = await asyncio.wait([entry.task_obj], timeout=timeout)
         if entry.task_obj in pending:
@@ -440,6 +443,8 @@ class AgentLoop:
             )
         if entry.handle.state == "cancelled":
             return entry.handle.result
+        if entry.handle.state == "failed":
+            raise entry.task_obj.exception()
         return entry.handle.result
 
     def get_subagent(self, sub_id: str) -> SubagentHandle | None:
